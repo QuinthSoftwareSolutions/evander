@@ -18,6 +18,7 @@ def test_worker_playbook_exists_with_expected_roles() -> None:
     assert "agent_sandbox_worker_sandbox_profile in ['default', 'strict']" in worker
     assert "container worker daemon refuses Docker host networking" in worker
     assert "- role: host_prereqs" in worker
+    assert "- role: worker_git_access" in worker
     assert "- role: repo_checkout" in worker
     assert "- role: python_env" in worker
     assert "- role: container_worker_runtime" in worker
@@ -26,6 +27,7 @@ def test_worker_playbook_exists_with_expected_roles() -> None:
 
     for role_name in [
         "container_worker_runtime",
+        "worker_git_access",
         "container_worker_service",
         "container_worker_verification",
     ]:
@@ -35,6 +37,7 @@ def test_worker_playbook_exists_with_expected_roles() -> None:
 def test_worker_role_task_files_are_not_ignored_by_git() -> None:
     role_task_paths = [
         "ansible/roles/container_worker_runtime/tasks/main.yml",
+        "ansible/roles/worker_git_access/tasks/main.yml",
         "ansible/roles/container_worker_service/tasks/main.yml",
         "ansible/roles/container_worker_verification/tasks/main.yml",
     ]
@@ -77,7 +80,11 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "agent_sandbox_worker_allowed_git_source_prefixes" in text
     assert "ssh://{{ agent_sandbox_git_ssh_alias }}{{ agent_sandbox_git_root }}/" in text
     assert "agent_sandbox_worker_git_ssh_source_dir" in text
+    assert "agent_sandbox_worker_git_access_enabled" in text
     assert "agent_sandbox_worker_install_control_plane_git_authorized_key" in text
+    assert "agent_sandbox_worker_repo_checkout_via_control_plane_git" in text
+    assert "agent_sandbox_worker_repo_mirror_name" in text
+    assert "agent_sandbox_worker_repo_checkout_url" in text
     assert 'agent_sandbox_runner_image_name: "agent-sandbox-runner:latest"' in text
     assert "agent_sandbox_runner_image_archive_path" in text
     assert "agent_sandbox_worker_toolchain_cache_root" in text
@@ -149,10 +156,6 @@ def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_contro
     assert "agent_sandbox_worker_runtime_dir" in runtime
     assert "Resolve worker service user uid" in runtime
     assert "agent_sandbox_effective_worker_container_user" in runtime
-    assert "Generate restricted worker Git SSH key" in runtime
-    assert "IdentityFile ~/.ssh/agent-sandbox-git" in runtime
-    assert "Authorize worker Git key on the control plane" in runtime
-    assert "git_ssh_command_wrapper.sh" in runtime
     assert "Check local runner image archive" in runtime
     assert "scripts/build_agent_sandbox_runner_image.sh" in runtime
     assert "docker\n      - load" in runtime
@@ -166,6 +169,27 @@ def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_contro
     assert "container user: {{ agent_sandbox_effective_worker_container_user }}" in verification
     assert "agent-sandbox-gateway.service" not in verification
     assert "agent-sandbox-admin-web.service" not in verification
+
+
+def test_worker_git_access_role_sets_up_private_repo_checkout_before_repo_checkout() -> None:
+    worker = (ROOT / "ansible" / "worker.yml").read_text(encoding="utf-8")
+    role = (ROOT / "ansible" / "roles" / "worker_git_access" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert worker.index("- role: host_prereqs") < worker.index("- role: worker_git_access")
+    assert worker.index("- role: worker_git_access") < worker.index("- role: repo_checkout")
+    assert "Generate restricted worker Git SSH key" in role
+    assert "IdentityFile ~/.ssh/agent-sandbox-git" in role
+    assert "Authorize worker Git key on the control plane" in role
+    assert "git_ssh_command_wrapper.sh" in role
+    assert "Ensure control-plane deployment repo mirror exists" in role
+    assert "scripts/create_git_remote.sh" in role
+    assert "agent-sandbox.mirrorSource" in role
+    assert "agent-sandbox.mirrorSyncRemote" in role
+    assert "Use private control-plane mirror for worker repo checkout" in role
+    assert "agent_sandbox_repo_url: \"{{ agent_sandbox_worker_repo_checkout_url }}\"" in role
+    assert "Deploy the control plane first, then rerun ansible/worker.yml" in role
 
 
 def test_worker_docs_and_inventory_reference_playbook() -> None:

@@ -1,0 +1,170 @@
+---
+- name: Assert control-plane Git host is configured for private worker checkout
+  ansible.builtin.assert:
+    that:
+      - (agent_sandbox_control_plane_host | default('') | string | length) > 0
+      - agent_sandbox_worker_install_control_plane_git_authorized_key | bool
+    fail_msg: >-
+      agent_sandbox_worker_repo_checkout_via_control_plane_git requires an
+      agent_sandbox_hosts control-plane inventory entry so the worker can fetch
+      the deployment repo through the private restricted-SSH mirror.
+    success_msg: Worker private repo checkout control-plane target is configured.
+  when: agent_sandbox_worker_repo_checkout_via_control_plane_git | bool
+
+- name: Ensure worker Git SSH directory exists
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_worker_git_ssh_source_dir }}"
+    state: directory
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0700"
+  when: agent_sandbox_worker_git_access_enabled | bool
+
+- name: Generate restricted worker Git SSH key
+  ansible.builtin.command:
+    argv:
+      - ssh-keygen
+      - -q
+      - -t
+      - ed25519
+      - -N
+      - ""
+      - -C
+      - "agent-sandbox-worker-git@{{ inventory_hostname }}"
+      - -f
+      - "{{ agent_sandbox_worker_git_key_path }}"
+    creates: "{{ agent_sandbox_worker_git_key_path }}"
+  become_user: "{{ agent_sandbox_run_user }}"
+  when: agent_sandbox_worker_git_access_enabled | bool
+
+- name: Render worker Git SSH config
+  ansible.builtin.blockinfile:
+    path: "{{ agent_sandbox_worker_git_ssh_source_dir }}/config"
+    create: true
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0600"
+    marker: "# {mark} agent-sandbox git host"
+    block: |
+      Host {{ agent_sandbox_git_ssh_alias }}
+        HostName {{ agent_sandbox_git_host }}
+        User {{ agent_sandbox_git_user }}
+        IdentityFile ~/.ssh/agent-sandbox-git
+        IdentitiesOnly yes
+        StrictHostKeyChecking accept-new
+  when: agent_sandbox_worker_git_access_enabled | bool
+
+- name: Read worker Git public key
+  ansible.builtin.slurp:
+    src: "{{ agent_sandbox_worker_git_key_path }}.pub"
+  register: agent_sandbox_worker_git_public_key_slurp
+  when: agent_sandbox_worker_git_access_enabled | bool
+
+- name: Record worker Git public key
+  ansible.builtin.set_fact:
+    agent_sandbox_worker_git_public_key: "{{ agent_sandbox_worker_git_public_key_slurp.content | b64decode | trim }}"
+  when: agent_sandbox_worker_git_access_enabled | bool
+
+- name: Resolve control-plane Git user home
+  ansible.builtin.command:
+    argv:
+      - getent
+      - passwd
+      - "{{ agent_sandbox_git_user }}"
+  delegate_to: "{{ agent_sandbox_control_plane_host }}"
+  register: agent_sandbox_control_plane_git_user_getent
+  changed_when: false
+  when: agent_sandbox_worker_install_control_plane_git_authorized_key | bool
+
+- name: Ensure control-plane Git SSH directory exists
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_control_plane_git_user_getent.stdout.split(':')[5] }}/.ssh"
+    state: directory
+    owner: "{{ agent_sandbox_git_user }}"
+    group: "{{ agent_sandbox_git_user }}"
+    mode: "0700"
+  delegate_to: "{{ agent_sandbox_control_plane_host }}"
+  when: agent_sandbox_worker_install_control_plane_git_authorized_key | bool
+
+- name: Authorize worker Git key on the control plane
+  ansible.builtin.lineinfile:
+    path: "{{ agent_sandbox_control_plane_git_user_getent.stdout.split(':')[5] }}/.ssh/authorized_keys"
+    create: true
+    owner: "{{ agent_sandbox_git_user }}"
+    group: "{{ agent_sandbox_git_user }}"
+    mode: "0600"
+    regexp: "{{ agent_sandbox_worker_git_public_key.split()[1] | regex_escape }}"
+    line: >-
+      from="{{ agent_sandbox_worker_git_allowed_from }}",no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding,command="{{ agent_sandbox_control_plane_deploy_path }}/scripts/git_ssh_command_wrapper.sh" {{ agent_sandbox_worker_git_public_key }}
+  delegate_to: "{{ agent_sandbox_control_plane_host }}"
+  when: agent_sandbox_worker_install_control_plane_git_authorized_key | bool
+
+- name: Assert control-plane checkout has the requested worker revision
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ agent_sandbox_control_plane_deploy_path }}"
+      - rev-parse
+      - --verify
+      - "{{ agent_sandbox_repo_version }}^{commit}"
+  delegate_to: "{{ agent_sandbox_control_plane_host }}"
+  become_user: "{{ agent_sandbox_git_user }}"
+  changed_when: false
+  register: agent_sandbox_control_plane_repo_revision_check
+  failed_when: false
+  when: agent_sandbox_worker_repo_checkout_via_control_plane_git | bool
+
+- name: Assert control-plane checkout contains the requested worker revision
+  ansible.builtin.assert:
+    that:
+      - agent_sandbox_control_plane_repo_revision_check.rc == 0
+    fail_msg: >-
+      The control-plane checkout at {{ agent_sandbox_control_plane_deploy_path }}
+      does not contain agent_sandbox_repo_version={{ agent_sandbox_repo_version }}.
+      Deploy the control plane first, then rerun ansible/worker.yml so workers can
+      fetch the repo through the private control-plane mirror without GitHub egress.
+    success_msg: Control-plane checkout contains the requested worker revision.
+  when: agent_sandbox_worker_repo_checkout_via_control_plane_git | bool
+
+- name: Ensure control-plane deployment repo mirror exists
+  ansible.builtin.command:
+    argv:
+      - "{{ agent_sandbox_control_plane_deploy_path }}/scripts/create_git_remote.sh"
+      - "{{ agent_sandbox_worker_repo_mirror_name }}"
+  environment:
+    AGENT_SANDBOX_GIT_ROOT: "{{ agent_sandbox_git_root }}"
+    AGENT_SANDBOX_GIT_HOST: "{{ agent_sandbox_git_host }}"
+    AGENT_SANDBOX_GIT_USER: "{{ agent_sandbox_git_user }}"
+    AGENT_SANDBOX_GIT_SSH_ALIAS: "{{ agent_sandbox_git_ssh_alias }}"
+  delegate_to: "{{ agent_sandbox_control_plane_host }}"
+  become_user: "{{ agent_sandbox_git_user }}"
+  changed_when: false
+  when: agent_sandbox_worker_repo_checkout_via_control_plane_git | bool
+
+- name: Configure control-plane deployment repo mirror metadata
+  ansible.builtin.command:
+    argv:
+      - git
+      - "--git-dir={{ agent_sandbox_worker_repo_mirror_path }}"
+      - config
+      - "{{ item.key }}"
+      - "{{ item.value }}"
+  loop:
+    - key: agent-sandbox.mirrorSource
+      value: "{{ agent_sandbox_control_plane_deploy_path }}"
+    - key: agent-sandbox.mirrorRemoteName
+      value: origin
+    - key: agent-sandbox.mirrorSyncRemote
+      value: "0"
+    - key: agent-sandbox.mirrorForceLocal
+      value: "0"
+  delegate_to: "{{ agent_sandbox_control_plane_host }}"
+  become_user: "{{ agent_sandbox_git_user }}"
+  changed_when: false
+  when: agent_sandbox_worker_repo_checkout_via_control_plane_git | bool
+
+- name: Use private control-plane mirror for worker repo checkout
+  ansible.builtin.set_fact:
+    agent_sandbox_repo_url: "{{ agent_sandbox_worker_repo_checkout_url }}"
+  when: agent_sandbox_worker_repo_checkout_via_control_plane_git | bool

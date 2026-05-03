@@ -40,6 +40,8 @@ tasks/
 !ansible/roles/package_cache_nexus/tasks/main.yml
 !ansible/roles/worker_apt_proxy/tasks/
 !ansible/roles/worker_apt_proxy/tasks/main.yml
+!ansible/roles/worker_git_access/tasks/
+!ansible/roles/worker_git_access/tasks/main.yml
 frontend/workflow-editor/node_modules/
 frontend/workflow-editor/tsconfig.tsbuildinfo
 **/dist/*

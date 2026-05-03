@@ -46,6 +46,11 @@ The worker playbook writes `/etc/apt/apt.conf.d/01agent-sandbox-proxy` before it
 `host_prereqs` apt update. Container-session `pip` and `npm` traffic remains separate and resolves
 through Nexus on `8081`.
 
+For Azure-style deployments that include `agent_sandbox_hosts`, the worker playbook also prepares
+restricted SSH before `repo_checkout` and checks out the deployment repo through a control-plane bare
+mirror instead of talking to GitHub directly. Deploy the control plane first so that mirror can serve
+the requested worker revision from the control-plane checkout.
+
 If the host Docker bridge cannot reach Ubuntu apt mirrors during the image build, run the same build
 with `RUNNER_BUILD_NETWORK=host`. That option only affects the host-side artifact build; worker
 runtime containers still use the daemon sandbox profile and must not use Docker `host` networking.

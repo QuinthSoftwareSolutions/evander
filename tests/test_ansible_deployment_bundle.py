@@ -23,6 +23,7 @@ def test_ansible_bundle_exists_with_expected_roles() -> None:
         "apt_cache_relay",
         "package_cache_nexus",
         "worker_apt_proxy",
+        "worker_git_access",
         "verification",
     ]:
         assert (ansible_dir / "roles" / role_name / "tasks" / "main.yml").exists()
@@ -105,6 +106,19 @@ def test_ansible_apt_cache_role_tasks_are_not_ignored_by_git() -> None:
 def test_ansible_worker_apt_proxy_tasks_are_not_ignored_by_git() -> None:
     repo = Path(__file__).resolve().parents[1]
     role_task_path = "ansible/roles/worker_apt_proxy/tasks/main.yml"
+
+    result = subprocess.run(
+        ["git", "check-ignore", "--quiet", "--", role_task_path],
+        cwd=repo,
+        check=False,
+    )
+
+    assert result.returncode == 1
+
+
+def test_ansible_worker_git_access_tasks_are_not_ignored_by_git() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    role_task_path = "ansible/roles/worker_git_access/tasks/main.yml"
 
     result = subprocess.run(
         ["git", "check-ignore", "--quiet", "--", role_task_path],

@@ -275,6 +275,14 @@ enabled. The worker playbook renders `/etc/apt/apt.conf.d/01agent-sandbox-proxy`
 direct Ubuntu mirror egress. Verify the private path from a worker with
 `curl http://<control-plane-private-ip>:3142/acng-report.html`.
 
+When `agent_sandbox_worker_repo_checkout_via_control_plane_git` is enabled, the worker playbook
+also prepares restricted SSH before `repo_checkout`, creates a control-plane bare mirror named by
+`agent_sandbox_worker_repo_mirror_name`, and points `agent_sandbox_repo_url` at
+`ssh://{{ agent_sandbox_git_ssh_alias }}{{ agent_sandbox_worker_repo_mirror_path }}`. This keeps the
+worker deploy checkout on the private control-plane Git path instead of requiring worker egress to
+GitHub. The control-plane checkout must already contain the requested `agent_sandbox_repo_version`;
+deploy `site.yml` first, then run `worker.yml`.
+
 The worker playbook renders systemd units from the local Ansible checkout and installs the daemon
 package from Git on the worker VM. To keep those artifacts compatible, the worker defaults set
 `agent_sandbox_repo_version` to the local playbook commit before checkout and verify that

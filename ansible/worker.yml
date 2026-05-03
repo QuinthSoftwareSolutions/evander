@@ -131,6 +131,7 @@
   roles:
     - role: worker_apt_proxy
     - role: host_prereqs
+    - role: worker_git_access
     - role: repo_checkout
     - role: python_env
     - role: container_worker_runtime
