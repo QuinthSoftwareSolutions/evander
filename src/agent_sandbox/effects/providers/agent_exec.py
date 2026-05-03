@@ -183,8 +183,7 @@ class AgentExecEffectProvider(VmExecEffectProvider):
         stdin: str | None,
     ) -> str:
         lines = [container_shell_preamble().rstrip()]
-        if working_directory:
-            lines.append(f"cd {shlex.quote(working_directory)}")
+        lines.append(f"cd {shlex.quote(working_directory or '/home/agent')}")
         if stdin is not None:
             lines.append("cat <<'EOF_AGENT_EXEC_STDIN' >/tmp/agent_exec.stdin")
             lines.append(stdin)

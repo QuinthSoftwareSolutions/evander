@@ -103,7 +103,6 @@ class DockerContainerRuntime:
         paths: WorkerSessionPaths,
     ) -> list[str]:
         for host_path, container_path in (
-            (paths.workspace, "/workspace"),
             (paths.agent_home, "/home/agent"),
             (paths.artifacts, "/artifacts"),
         ):
@@ -120,8 +119,6 @@ class DockerContainerRuntime:
             "--rm=false",
             "--network",
             self.sandbox_profile.network_mode,
-            "-v",
-            f"{paths.workspace}:/workspace",
             "-v",
             f"{paths.agent_home}:/home/agent",
             "-v",

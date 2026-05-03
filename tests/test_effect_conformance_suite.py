@@ -133,7 +133,9 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "display_name": "Copy agent files",
             "type": "effect:agent:copy-files",
             "session_id": "session-1",
-            "files": [{"destination_path": "/workspace/task.yaml", "content": "task"}],
+            "files": [
+                {"destination_path": "/home/agent/repos/repo/task.yaml", "content": "task"}
+            ],
         }
     )
     prompt = adapter.validate_python(

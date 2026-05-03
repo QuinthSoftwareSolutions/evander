@@ -11,7 +11,7 @@ from .agent_session import (
     container_backend,
     effective_config_for_session,
     frontend_bootstrap_command,
-    map_install_roots_to_workspace,
+    map_install_roots_to_container_repo,
     normalize_optional_string,
     require_container_session_id,
     required_string,
@@ -58,7 +58,7 @@ class AgentBootstrapFrontendEffectProvider(EffectProviderBase):
             session_id,
             fallback_directory_path=getattr(session, "directory_path", directory_path),
         )
-        install_roots = map_install_roots_to_workspace(
+        install_roots = map_install_roots_to_container_repo(
             host_checkout=required_string(
                 payload.get("host_checkout"),
                 "effect:agent:bootstrap-frontend requires host_checkout",
@@ -68,7 +68,7 @@ class AgentBootstrapFrontendEffectProvider(EffectProviderBase):
         if not install_roots:
             return {
                 "success": True,
-                "message": "No container frontend install roots mapped under /workspace",
+                "message": "No container frontend install roots mapped under /home/agent/repos",
                 "session_id": session_id,
                 "execution_backend": "container_worker_vm",
                 "vm_name": None,

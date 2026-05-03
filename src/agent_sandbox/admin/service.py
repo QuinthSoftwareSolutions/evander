@@ -4426,8 +4426,8 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             "message": f"Prepared container worker session {session_id}",
             "status": "prepared",
             "session_id": session_id,
-            "workspace": session_record.workspace_container_path,
             "agent_home": session_record.agent_home_container_path,
+            "repo_root": session_record.repo_root_container_path,
         }
 
     def _resolve_container_agent_session(

@@ -34,8 +34,8 @@ def _record(paths: WorkerSessionPaths) -> WorkerJobRecord:
         image="codex:latest",
         command=["codex", "exec", "hello"],
         container_name="agent-worker-job-1",
-        workspace_path=str(paths.workspace),
         agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
         artifacts_path=str(paths.artifacts),
         logs_path=str(paths.logs),
     )
@@ -64,10 +64,10 @@ def test_docker_run_args_use_restricted_container_shape_and_persistent_mounts(
     assert args[args.index("--cap-drop") + 1] == "ALL"
     assert "--security-opt" in args
     assert args[args.index("--security-opt") + 1] == "no-new-privileges"
-    assert f"{paths.workspace}:/workspace" in args
+    assert not any("/workspace" in arg for arg in args)
     assert f"{paths.agent_home}:/home/agent" in args
     assert f"{paths.artifacts}:/artifacts" in args
-    assert args[args.index("-w") + 1] == "/workspace"
+    assert args[args.index("-w") + 1] == "/home/agent"
     assert args[args.index("--memory") + 1] == "512m"
     assert args[args.index("--cpus") + 1] == "1.5"
     assert args[args.index("--pids-limit") + 1] == "256"
@@ -152,8 +152,8 @@ def test_docker_runtime_rejects_docker_socket_mount(tmp_path: Path) -> None:
     unsafe_paths = WorkerSessionPaths(
         session_id=paths.session_id,
         root=paths.root,
-        workspace=Path("/var/run/docker.sock"),
-        agent_home=paths.agent_home,
+        agent_home=Path("/var/run/docker.sock"),
+        repo_root=paths.repo_root,
         artifacts=paths.artifacts,
         logs=paths.logs,
         metadata_path=paths.metadata_path,

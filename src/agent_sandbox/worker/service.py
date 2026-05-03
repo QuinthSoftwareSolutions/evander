@@ -8,7 +8,7 @@ import subprocess
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from starlette.applications import Starlette
 
@@ -78,7 +78,7 @@ class WorkerDaemon:
         self._sync_git_ssh_into_agent_home(
             paths, required=_repo_source_requires_git_ssh(request.repo_source)
         )
-        self._clone_repo_if_workspace_empty(request, paths)
+        self._clone_repo_if_requested(request, paths)
         job_id = request.job_id or uuid.uuid4().hex
         container_name = f"agent-worker-{job_id}"
         record = WorkerJobRecord(
@@ -89,8 +89,8 @@ class WorkerDaemon:
             container_name=container_name,
             status="starting",
             started_at=now_utc(),
-            workspace_path=str(paths.workspace),
             agent_home_path=str(paths.agent_home),
+            repo_root_path=str(paths.repo_root),
             artifacts_path=str(paths.artifacts),
             logs_path=str(paths.logs),
             metadata=sanitize_metadata(request.metadata),
@@ -177,15 +177,17 @@ class WorkerDaemon:
         self._sync_git_ssh_into_agent_home(
             paths, required=_repo_source_requires_git_ssh(request.repo_source)
         )
-        cloned = self._clone_repo_into_workspace(
+        repo_name = request.repo_name or self._repo_name(request.repo_source)
+        _target_dir, cloned = self._clone_repo_into_repo_root(
             paths=paths,
             repo_source=request.repo_source,
             clone_branch=request.clone_branch,
+            repo_name=repo_name,
         )
         return WorkerRepoCloneRecord(
             session_id=session_id,
-            target_dir="/workspace",
-            guest_repo_name=self._repo_name(request.repo_source),
+            target_dir=f"/home/agent/repos/{repo_name}",
+            guest_repo_name=repo_name,
             remote_url=request.repo_source,
             cloned=cloned,
         )
@@ -224,7 +226,7 @@ class WorkerDaemon:
             session_id=session_id,
             copied_count=len(copied_paths),
             copied_paths=copied_paths,
-            roots={"workspace": "/workspace", "agent_home": "/home/agent"},
+            roots={"agent_home": "/home/agent", "repo_root": "/home/agent/repos"},
         )
 
     def delete_session(self, session_id: str) -> bool:
@@ -262,35 +264,54 @@ class WorkerDaemon:
     def _log_path(self, record: WorkerJobRecord) -> Path:
         return Path(record.logs_path) / f"{record.job_id}.log"
 
-    def _clone_repo_if_workspace_empty(
+    def _clone_repo_if_requested(
         self,
         request: WorkerJobRequest,
         paths: WorkerSessionPaths,
     ) -> None:
         if not request.repo_source:
             return
-        self._clone_repo_into_workspace(
+        self._clone_repo_into_repo_root(
             paths=paths,
             repo_source=request.repo_source,
             clone_branch=request.clone_branch,
+            repo_name=self._repo_name(request.repo_source),
         )
 
-    def _clone_repo_into_workspace(
+    def _clone_repo_into_repo_root(
         self,
         *,
         paths: WorkerSessionPaths,
         repo_source: str,
         clone_branch: str | None,
-    ) -> bool:
+        repo_name: str,
+    ) -> tuple[Path, bool]:
         self._ensure_allowed_git_source(repo_source)
-        if any(paths.workspace.iterdir()):
-            return False
+        target_dir = paths.repo_root / repo_name
+        if target_dir.is_symlink():
+            raise ValueError(
+                f"repo target already exists and is not a directory: "
+                f"/home/agent/repos/{repo_name}"
+            )
+        if target_dir.exists() and not target_dir.is_dir():
+            raise ValueError(
+                f"repo target already exists and is not a directory: "
+                f"/home/agent/repos/{repo_name}"
+            )
+        if target_dir.exists() and any(target_dir.iterdir()):
+            if self._is_git_checkout_for_source(target_dir, repo_source):
+                return target_dir, False
+            raise ValueError(
+                f"repo target already exists and is not a checkout for requested source: "
+                f"/home/agent/repos/{repo_name}"
+            )
+        target_dir.mkdir(parents=True, exist_ok=True)
         args = ["git", "clone"]
         if clone_branch:
             args.extend(["--branch", clone_branch])
-        args.extend([repo_source, "."])
-        subprocess.run(args, cwd=paths.workspace, check=True, capture_output=True, text=True)
-        return True
+        args.extend([repo_source, str(target_dir)])
+        subprocess.run(args, cwd=paths.repo_root, check=True, capture_output=True, text=True)
+        return target_dir, True
 
     def _ensure_allowed_git_source(self, repo_source: str) -> None:
         if not self.allowed_git_source_prefixes:
@@ -347,8 +368,8 @@ class WorkerDaemon:
         return WorkerSessionRecord(
             session_id=paths.session_id,
             root_path=str(paths.root),
-            workspace_path=str(paths.workspace),
             agent_home_path=str(paths.agent_home),
+            repo_root_path=str(paths.repo_root),
             artifacts_path=str(paths.artifacts),
             logs_path=str(paths.logs),
             metadata_path=str(paths.metadata_path),
@@ -384,7 +405,6 @@ class WorkerDaemon:
     ) -> tuple[Path, Path, str]:
         normalized = destination_path.strip()
         for container_root, host_root in (
-            ("/workspace", paths.workspace),
             ("/home/agent", paths.agent_home),
         ):
             if normalized == container_root:
@@ -397,7 +417,7 @@ class WorkerDaemon:
             if relative.is_absolute() or ".." in relative.parts:
                 raise ValueError(f"destination_path must stay below {container_root}")
             return host_root, relative, f"{container_root}/{relative.as_posix()}"
-        raise ValueError("destination_path must be under /workspace or /home/agent")
+        raise ValueError("destination_path must be under /home/agent")
 
     @staticmethod
     def _ensure_resolved_destination_stays_under_root(
@@ -411,10 +431,7 @@ class WorkerDaemon:
         try:
             resolved_destination.relative_to(resolved_root)
         except ValueError as exc:
-            container_root = (
-                "/home/agent" if container_path.startswith("/home/agent/") else "/workspace"
-            )
-            raise ValueError(f"destination_path must stay below {container_root}") from exc
+            raise ValueError("destination_path must stay below /home/agent") from exc
 
     @staticmethod
     def _normalize_mode(mode: str) -> str:
@@ -427,10 +444,28 @@ class WorkerDaemon:
     def _repo_name(repo_source: str) -> str:
         parsed = urlparse(repo_source)
         raw_path = parsed.path if parsed.scheme else repo_source
-        candidate = raw_path.rstrip("/").rsplit("/", 1)[-1].strip() or "workspace"
+        candidate = unquote(raw_path.rstrip("/").rsplit("/", 1)[-1]).strip() or "repo"
         if candidate.endswith(".git"):
             candidate = candidate[:-4]
-        return candidate or "workspace"
+        candidate = re.sub(r"[^A-Za-z0-9_.-]+", "-", candidate).strip(".-")
+        if not candidate or candidate in {".", ".."}:
+            return "repo"
+        return candidate
+
+    @staticmethod
+    def _is_git_checkout_for_source(target_dir: Path, repo_source: str) -> bool:
+        if not (target_dir / ".git").exists():
+            return False
+        try:
+            completed = subprocess.run(
+                ["git", "-C", str(target_dir), "remote", "get-url", "origin"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError:
+            return False
+        return completed.stdout.strip() == repo_source
 
 
 def _repo_source_requires_git_ssh(repo_source: str | None) -> bool:

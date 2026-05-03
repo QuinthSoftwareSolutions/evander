@@ -185,7 +185,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "execution_backend": "container_worker_vm",
             "vm_name": None,
             "agent_home": session_record.agent_home_container_path,
-            "workspace": session_record.workspace_container_path,
+            "repo_root": session_record.repo_root_container_path,
         }
 
     def _effect(self) -> AgentCreateEffectDefinition:

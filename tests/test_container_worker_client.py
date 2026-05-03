@@ -23,8 +23,8 @@ def _job_payload(status: str = "running") -> dict[str, object]:
         "command": ["true"],
         "container_name": "agent-worker-job-1",
         "status": status,
-        "workspace_path": "/worker/session-1/workspace",
         "agent_home_path": "/worker/session-1/agent_home",
+        "repo_root_path": "/worker/session-1/agent_home/repos",
         "artifacts_path": "/worker/session-1/artifacts",
         "logs_path": "/worker/session-1/logs",
         "metadata": {},
@@ -126,8 +126,8 @@ def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
                 json={
                     "session_id": "session-1",
                     "root_path": "/worker/session-1",
-                    "workspace_path": "/worker/session-1/workspace",
                     "agent_home_path": "/worker/session-1/agent_home",
+                    "repo_root_path": "/worker/session-1/agent_home/repos",
                     "artifacts_path": "/worker/session-1/artifacts",
                     "logs_path": "/worker/session-1/logs",
                     "metadata_path": "/worker/session-1/metadata.json",
@@ -139,7 +139,7 @@ def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
                 200,
                 json={
                     "session_id": "session-1",
-                    "target_dir": "/workspace",
+                    "target_dir": "/home/agent/repos/repo",
                     "guest_repo_name": "repo",
                     "remote_url": "/tmp/repo",
                     "cloned": True,
@@ -157,8 +157,8 @@ def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
             json={
                 "session_id": "session-1",
                 "copied_count": 1,
-                "copied_paths": ["/workspace/AGENT_TASK.yaml"],
-                "roots": {"workspace": "/workspace"},
+                "copied_paths": ["/home/agent/repos/repo/AGENT_TASK.yaml"],
+                "roots": {"repo_root": "/home/agent/repos"},
             },
             request=request,
         )
@@ -172,18 +172,25 @@ def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
     assert (
         worker.prepare_session(
             WorkerSessionPrepareRequest(session_id="session-1", metadata={"purpose": "test"})
-        ).workspace_container_path
-        == "/workspace"
+        ).repo_root_container_path
+        == "/home/agent/repos"
     )
     assert (
-        worker.clone_repo("session-1", WorkerRepoCloneRequest(repo_source="/tmp/repo")).target_dir
-        == "/workspace"
+        worker.clone_repo(
+            "session-1", WorkerRepoCloneRequest(repo_source="/tmp/repo", repo_name="repo")
+        ).target_dir
+        == "/home/agent/repos/repo"
     )
     assert (
         worker.write_files(
             "session-1",
             WorkerFileWriteRequest(
-                files=[{"destination_path": "/workspace/AGENT_TASK.yaml", "content": "x"}]
+                files=[
+                    {
+                        "destination_path": "/home/agent/repos/repo/AGENT_TASK.yaml",
+                        "content": "x",
+                    }
+                ]
             ),
         ).copied_count
         == 1

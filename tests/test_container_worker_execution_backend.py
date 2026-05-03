@@ -75,8 +75,8 @@ class FakeContainerWorkerClient:
         return WorkerSessionRecord(
             session_id=request.session_id,
             root_path=f"/worker/{request.session_id}",
-            workspace_path=f"/worker/{request.session_id}/workspace",
             agent_home_path=f"/worker/{request.session_id}/agent_home",
+            repo_root_path=f"/worker/{request.session_id}/agent_home/repos",
             artifacts_path=f"/worker/{request.session_id}/artifacts",
             logs_path=f"/worker/{request.session_id}/logs",
             metadata_path=f"/worker/{request.session_id}/metadata.json",
@@ -89,8 +89,8 @@ class FakeContainerWorkerClient:
         self.cloned_repos.append((session_id, request))
         return WorkerRepoCloneRecord(
             session_id=session_id,
-            target_dir="/workspace",
-            guest_repo_name="repo",
+            target_dir=f"/home/agent/repos/{request.repo_name or 'repo'}",
+            guest_repo_name=request.repo_name or "repo",
             remote_url=request.repo_source,
             cloned=True,
         )
@@ -114,8 +114,8 @@ def _record(request: WorkerJobRequest, status: str) -> WorkerJobRecord:
         command=request.command,
         container_name=f"agent-worker-{request.job_id}",
         status=status,
-        workspace_path="/worker/session-1/workspace",
         agent_home_path="/worker/session-1/agent_home",
+        repo_root_path="/worker/session-1/agent_home/repos",
         artifacts_path="/worker/session-1/artifacts",
         logs_path="/worker/session-1/logs",
         metadata=request.metadata,
@@ -273,17 +273,20 @@ def test_session_preparation_clone_and_write_delegate_to_worker_client(tmp_path:
     backend = _backend(tmp_path, client)
 
     prepared = backend.prepare_session(session_id="session-1", metadata={"purpose": "test"})
-    clone = backend.clone_repo(session_id="session-1", repo_source="/tmp/repo")
+    clone = backend.clone_repo(session_id="session-1", repo_source="/tmp/repo", repo_name="Repo")
     written = backend.write_files(
         session_id="session-1",
-        files=[{"destination_path": "/workspace/AGENT_TASK.yaml", "content": "task"}],
+        files=[
+            {"destination_path": "/home/agent/repos/Repo/AGENT_TASK.yaml", "content": "task"}
+        ],
     )
 
-    assert prepared.workspace_container_path == "/workspace"
+    assert prepared.repo_root_container_path == "/home/agent/repos"
     assert client.prepared_sessions[0].metadata == {"purpose": "test"}
-    assert clone.target_dir == "/workspace"
+    assert clone.target_dir == "/home/agent/repos/Repo"
     assert client.cloned_repos[0][1].repo_source == "/tmp/repo"
-    assert written.copied_paths == ["/workspace/AGENT_TASK.yaml"]
+    assert client.cloned_repos[0][1].repo_name == "Repo"
+    assert written.copied_paths == ["/home/agent/repos/Repo/AGENT_TASK.yaml"]
     assert client.written_files[0][1].files[0].content == "task"
 
 

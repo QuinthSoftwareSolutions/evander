@@ -86,26 +86,26 @@ Durable state lives under:
 
 Each session contains:
 
-- `workspace/`: mounted into containers at `/workspace`
 - `agent_home/`: mounted into containers at `/home/agent`
+- `agent_home/repos/`: in-container repository root at `/home/agent/repos`
 - `artifacts/`: mounted into containers at `/artifacts`
 - `logs/`: platform-owned job logs
 - `metadata.json`: platform bookkeeping for paths and creation time
 
-Containers are disposable. Continuity comes from mounting the same `workspace/` and `agent_home/` into each run for a session. The runner image currently sets `CODEX_HOME=/home/agent/.config/agent-sandbox/codex`, so native Codex resume state is persisted under `/var/lib/agent-worker/sessions/<session_id>/agent_home/.config/agent-sandbox/codex/sessions`. The bootstrap also writes `/var/lib/agent-worker/sessions/<session_id>/agent_home/.codex/config.toml` for compatibility, but `.codex/sessions` is not the active session store unless `CODEX_HOME` is changed.
+Containers are disposable. Continuity comes from mounting the same `agent_home/` into each run for a session. The runner image currently sets `CODEX_HOME=/home/agent/.config/agent-sandbox/codex`, so native Codex resume state is persisted under `/var/lib/agent-worker/sessions/<session_id>/agent_home/.config/agent-sandbox/codex/sessions`. The bootstrap also writes `/var/lib/agent-worker/sessions/<session_id>/agent_home/.codex/config.toml` for compatibility, but `.codex/sessions` is not the active session store unless `CODEX_HOME` is changed.
 
-The daemon does not rewrite commands into `codex resume`. Callers must send the exact command they want to execute. The daemon preserves `/home/agent` and `/workspace` so those commands can resume naturally.
+The daemon does not rewrite commands into `codex resume`. Callers must send the exact command they want to execute. The daemon preserves `/home/agent` so Codex state, identity files, and checked-out repos can resume naturally.
 
 Prompt effects invoke Codex with `codex exec --json` and translate the JSONL event stream back into the legacy human-readable job log. The control plane emits `session id: <thread_id>` as soon as Codex reports `thread.started`, then prints completed assistant messages from `item.completed` events. This keeps existing log consumers on the old text shape while using Codex's supported non-interactive thread-id contract.
 
-If a request includes `repo_source`, the daemon clones it only when `workspace/` is empty. Existing workspace contents are left untouched. Worker Git intake is prefix-gated: deployed workers should be started with one or more `--allowed-git-source-prefix` values, and a missing prefix list means all `repo_source` values are rejected.
+If a request includes `repo_source`, the daemon clones it under `/home/agent/repos/<repo-name>`. Existing non-empty target directories are rejected unless they are already Git checkouts for the same requested source. Worker Git intake is prefix-gated: deployed workers should be started with one or more `--allowed-git-source-prefix` values, and a missing prefix list means all `repo_source` values are rejected.
 
 The worker API also exposes a session-preparation surface used by portable
 `effect:agent:*` workflow nodes:
 
 - `POST /v1/sessions` creates or reconciles durable session directories without starting a job.
-- `POST /v1/sessions/{session_id}/repo` clones a repo into an empty `workspace/`.
-- `POST /v1/sessions/{session_id}/files` writes files under `/workspace` or `/home/agent`.
+- `POST /v1/sessions/{session_id}/repo` clones a repo under `/home/agent/repos/<repo-name>`.
+- `POST /v1/sessions/{session_id}/files` writes files under `/home/agent`.
 
 Those endpoints do not accept raw environment variables or secrets. Prompt and exec effects still
 use typed container jobs: the host builds an `ExecutionSpec.command`, starts the job, waits through
@@ -151,7 +151,7 @@ agent-sandbox-cli execution start-container-job \
   --cpus 1 \
   --pids-limit 256 \
   --metadata purpose=manual-smoke \
-  --command 'echo hello from /workspace' \
+  --command 'echo hello from /home/agent' \
   --json
 ```
 
@@ -167,7 +167,7 @@ agent-sandbox-cli execution list-container-worker-executions --json
 
 `destroy` deletes the worker job/container record. It does not delete durable session state under `/var/lib/agent-worker/sessions/<session_id>/`.
 
-The smoke command runs two unique jobs with the same session id. The first writes markers under `/home/agent` and `/workspace`; the second reads them back and fails if continuity or logs are missing:
+The smoke command runs two unique jobs with the same session id. The first writes markers under `/home/agent` and `/home/agent/repos`; the second reads them back and fails if continuity or logs are missing:
 
 ```bash
 agent-sandbox-cli execution smoke-container-worker \
@@ -209,9 +209,9 @@ Docker is used as a local container runtime on the worker VM. The default sandbo
 - no privileged mode
 - no Docker socket mount
 - no host network
-- persistent mounts for `/workspace`, `/home/agent`, and `/artifacts`
+- persistent mounts for `/home/agent` and `/artifacts`
 - worker-level read-only cache mounts configured with `--readonly-mount`
-- working directory `/workspace`
+- working directory `/home/agent`
 
 The Docker network can be overridden with worker config or `--docker-network`, but `host` is refused.
 When Codex or package restores need the control-plane gateway, OpenAI relay, NuGet relay, or Nexus

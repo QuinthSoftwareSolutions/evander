@@ -834,23 +834,24 @@ def execution_smoke_container_worker(
     backend = _build_execution_backend_for_kind(config, default_container=True)
     run_id = uuid.uuid4().hex[:12]
     agent_marker = f"agent-home-{run_id}"
-    workspace_marker = f"workspace-{run_id}"
+    repo_root_marker = f"repo-root-{run_id}"
     run1_target = f"phase4-smoke-{run_id}-1"
     run2_target = f"phase4-smoke-{run_id}-2"
     run1_command = (
         "set -euo pipefail; "
         f"printf '%s\\n' {agent_marker!r} > /home/agent/phase4-agent-home-marker.txt; "
-        f"printf '%s\\n' {workspace_marker!r} > /workspace/phase4-workspace-marker.txt; "
+        "mkdir -p /home/agent/repos; "
+        f"printf '%s\\n' {repo_root_marker!r} > /home/agent/repos/phase4-repo-root-marker.txt; "
         "cat /home/agent/phase4-agent-home-marker.txt; "
-        "cat /workspace/phase4-workspace-marker.txt"
+        "cat /home/agent/repos/phase4-repo-root-marker.txt"
     )
     run2_command = (
         "set -euo pipefail; "
         "agent_marker=$(cat /home/agent/phase4-agent-home-marker.txt); "
-        "workspace_marker=$(cat /workspace/phase4-workspace-marker.txt); "
+        "repo_root_marker=$(cat /home/agent/repos/phase4-repo-root-marker.txt); "
         f'test "$agent_marker" = {agent_marker!r}; '
-        f'test "$workspace_marker" = {workspace_marker!r}; '
-        'printf \'agent_marker=%s\\nworkspace_marker=%s\\n\' "$agent_marker" "$workspace_marker"'
+        f'test "$repo_root_marker" = {repo_root_marker!r}; '
+        'printf \'agent_marker=%s\\nrepo_root_marker=%s\\n\' "$agent_marker" "$repo_root_marker"'
     )
 
     run1 = backend.start(
@@ -900,7 +901,7 @@ def execution_smoke_container_worker(
         raise typer.BadParameter(
             f"smoke run 2 did not complete successfully: {run2_status.status.value}"
         )
-    if agent_marker not in run2_logs or workspace_marker not in run2_logs:
+    if agent_marker not in run2_logs or repo_root_marker not in run2_logs:
         raise typer.BadParameter("smoke run 2 logs did not prove both marker reads.")
 
     payload = {

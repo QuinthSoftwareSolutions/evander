@@ -206,10 +206,15 @@ class ContainerWorkerVmExecutionBackend:
         session_id: str,
         repo_source: str,
         clone_branch: str | None = None,
+        repo_name: str | None = None,
     ) -> WorkerRepoCloneRecord:
         return self.client.clone_repo(
             session_id,
-            WorkerRepoCloneRequest(repo_source=repo_source, clone_branch=clone_branch),
+            WorkerRepoCloneRequest(
+                repo_source=repo_source,
+                clone_branch=clone_branch,
+                repo_name=repo_name,
+            ),
         )
 
     def write_files(

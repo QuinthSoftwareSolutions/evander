@@ -592,12 +592,14 @@ def container_shell_preamble() -> str:
     )
 
 
-def map_install_roots_to_workspace(
+def map_install_roots_to_container_repo(
     *,
     host_checkout: str,
     install_roots: Sequence[str],
 ) -> list[str]:
     normalized_checkout = str(Path(host_checkout).expanduser().resolve())
+    repo_name = Path(normalized_checkout).name or "repo"
+    container_checkout = f"/home/agent/repos/{repo_name}"
     mapped: list[str] = []
     for raw_root in install_roots:
         root = str(raw_root).strip()
@@ -608,11 +610,11 @@ def map_install_roots_to_workspace(
         except OSError:
             resolved_root = root
         if resolved_root == normalized_checkout:
-            mapped.append("/workspace")
+            mapped.append(container_checkout)
         elif resolved_root.startswith(f"{normalized_checkout}/"):
             relative = resolved_root[len(normalized_checkout) + 1 :]
-            mapped.append(f"/workspace/{relative}")
-        elif root.startswith("/workspace"):
+            mapped.append(f"{container_checkout}/{relative}")
+        elif root.startswith("/home/agent/repos"):
             mapped.append(root)
     return list(dict.fromkeys(mapped))
 
@@ -657,12 +659,12 @@ def container_prompt_command(
             "-s",
             "danger-full-access",
             "-C",
-            "/workspace",
+            "/home/agent",
             prompt,
         ]
     return (
         container_shell_preamble()
-        + "cd /workspace\n"
+        + "cd /home/agent\n"
         + _codex_json_log_filter_shell()
         + shlex.join(args)
         + " | agent_sandbox_codex_json_to_log\n"
@@ -857,7 +859,7 @@ def _codex_config_content(*, model: str, openai_base_url: str, gateway_url: str)
         f"url = {_toml_string(gateway_url)}\n"
         "enabled = true\n"
         "\n"
-        '[projects."/workspace"]\n'
+        '[projects."/home/agent"]\n'
         'trust_level = "trusted"\n'
     )
 

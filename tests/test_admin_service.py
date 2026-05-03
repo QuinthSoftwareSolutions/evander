@@ -356,8 +356,8 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
         return WorkerSessionRecord(
             session_id=request.session_id,
             root_path=f"/worker/{request.session_id}",
-            workspace_path=f"/worker/{request.session_id}/workspace",
             agent_home_path=f"/worker/{request.session_id}/agent_home",
+            repo_root_path=f"/worker/{request.session_id}/agent_home/repos",
             artifacts_path=f"/worker/{request.session_id}/artifacts",
             logs_path=f"/worker/{request.session_id}/logs",
             metadata_path=f"/worker/{request.session_id}/metadata.json",

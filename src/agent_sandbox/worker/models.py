@@ -97,8 +97,8 @@ class WorkerJobRequest(BaseModel):
 class WorkerSessionPaths(BaseModel):
     session_id: str
     root: Path
-    workspace: Path
     agent_home: Path
+    repo_root: Path
     artifacts: Path
     logs: Path
     metadata_path: Path
@@ -110,11 +110,12 @@ class WorkerSessionPaths(BaseModel):
                 "session_id must contain only letters, numbers, dots, underscores, or dashes"
             )
         root = worker_root / "sessions" / session_id
+        agent_home = root / "agent_home"
         paths = cls(
             session_id=session_id,
             root=root,
-            workspace=root / "workspace",
-            agent_home=root / "agent_home",
+            agent_home=agent_home,
+            repo_root=agent_home / "repos",
             artifacts=root / "artifacts",
             logs=root / "logs",
             metadata_path=root / "metadata.json",
@@ -123,7 +124,7 @@ class WorkerSessionPaths(BaseModel):
         return paths
 
     def ensure(self) -> None:
-        for path in (self.workspace, self.agent_home, self.artifacts, self.logs):
+        for path in (self.agent_home, self.repo_root, self.artifacts, self.logs):
             path.mkdir(parents=True, exist_ok=True)
         if not self.metadata_path.exists():
             self.metadata_path.write_text(
@@ -131,8 +132,8 @@ class WorkerSessionPaths(BaseModel):
                     {
                         "session_id": self.session_id,
                         "created_at": now_utc().isoformat(),
-                        "workspace": str(self.workspace),
                         "agent_home": str(self.agent_home),
+                        "repo_root": str(self.repo_root),
                         "artifacts": str(self.artifacts),
                         "logs": str(self.logs),
                     },
@@ -165,13 +166,13 @@ class WorkerSessionRecord(BaseModel):
 
     session_id: str
     root_path: str
-    workspace_path: str
     agent_home_path: str
+    repo_root_path: str
     artifacts_path: str
     logs_path: str
     metadata_path: str
-    workspace_container_path: str = "/workspace"
     agent_home_container_path: str = "/home/agent"
+    repo_root_container_path: str = "/home/agent/repos"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -180,6 +181,7 @@ class WorkerRepoCloneRequest(BaseModel):
 
     repo_source: str
     clone_branch: str | None = None
+    repo_name: str | None = None
 
     @field_validator("repo_source", mode="before")
     @classmethod
@@ -197,12 +199,26 @@ class WorkerRepoCloneRequest(BaseModel):
         text = str(value).strip()
         return text or None
 
+    @field_validator("repo_name", mode="before")
+    @classmethod
+    def normalize_repo_name(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if text in {".", ".."} or not SAFE_ID_PATTERN.fullmatch(text):
+            raise ValueError(
+                "repo_name must contain only letters, numbers, dots, underscores, or dashes"
+            )
+        return text
+
 
 class WorkerRepoCloneRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     session_id: str
-    target_dir: str = "/workspace"
+    target_dir: str
     guest_repo_name: str
     remote_url: str
     cloned: bool
@@ -268,8 +284,8 @@ class WorkerJobRecord(BaseModel):
     created_at: datetime = Field(default_factory=now_utc)
     started_at: datetime | None = None
     finished_at: datetime | None = None
-    workspace_path: str
     agent_home_path: str
+    repo_root_path: str
     artifacts_path: str
     logs_path: str
     metadata: dict[str, Any] = Field(default_factory=dict)

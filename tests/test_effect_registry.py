@@ -83,15 +83,16 @@ class _FakeContainerBackend:
     def prepare_session(self, **kwargs):
         self.prepared_sessions.append(kwargs)
         return SimpleNamespace(
-            workspace_container_path="/workspace",
             agent_home_container_path="/home/agent",
+            repo_root_container_path="/home/agent/repos",
         )
 
     def clone_repo(self, **kwargs):
         self.cloned_repos.append(kwargs)
+        repo_name = kwargs.get("repo_name") or "repo"
         return SimpleNamespace(
-            target_dir="/workspace",
-            guest_repo_name="repo",
+            target_dir=f"/home/agent/repos/{repo_name}",
+            guest_repo_name=repo_name,
             remote_url=kwargs["repo_source"],
             cloned=True,
         )
@@ -685,6 +686,8 @@ def test_container_prompt_command_does_not_resume_synthetic_dispatch_id() -> Non
     assert "exec resume dispatch-effect-agent-enqueue-prompt-1-deadbeef" not in command
     assert "codex exec --json" in command
     assert "-s danger-full-access" in command
+    assert "-C /home/agent" in command
+    assert "cd /home/agent" in command
 
 
 def test_container_prompt_command_does_not_resume_synthetic_chat_thread_id() -> None:
@@ -697,6 +700,7 @@ def test_container_prompt_command_does_not_resume_synthetic_chat_thread_id() -> 
     assert "exec resume chat-thread-alice-123" not in command
     assert "codex exec --json" in command
     assert "-s danger-full-access" in command
+    assert "-C /home/agent" in command
 
 
 def test_container_thread_id_from_logs_parses_json_filter_output() -> None:
@@ -1025,7 +1029,9 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
             display_name="Copy",
             type="effect:agent:copy-files",
             session_id="session-1",
-            files=[{"destination_path": "/workspace/AGENT_TASK.yaml", "content": "task"}],
+            files=[
+                {"destination_path": "/home/agent/repos/repo/AGENT_TASK.yaml", "content": "task"}
+            ],
         )
     ).execute()
     prompted = factory.build(
@@ -1045,10 +1051,12 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert manifest.vm_provider == "container_worker_vm"
     assert ToolName.SET_ISSUE_PLAN in manifest.allowed_tools
     assert create["execution_backend"] == "container_worker_vm"
-    assert clone["target_dir"] == "/workspace"
+    assert create["agent_home"] == "/home/agent"
+    assert create["repo_root"] == "/home/agent/repos"
+    assert clone["target_dir"] == "/home/agent/repos/repo"
     assert clone["remote_url"] == "ssh://agent-sandbox-git-host/git-remotes/repo.git"
     assert clone["canonical_repo_source"] == "https://example.test/org/repo.git"
-    assert copied["copied_paths"] == ["/workspace/AGENT_TASK.yaml"]
+    assert copied["copied_paths"] == ["/home/agent/repos/repo/AGENT_TASK.yaml"]
     assert prompted["execution_backend"] == "container_worker_vm"
     assert prompted["output_mode"] == "on_completion"
     assert backend.prepared_sessions[0]["session_id"] == "session-1"
@@ -1057,6 +1065,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         backend.cloned_repos[0]["repo_source"]
         == "ssh://agent-sandbox-git-host/git-remotes/repo.git"
     )
+    assert backend.cloned_repos[0]["repo_name"] == "repo"
     bootstrap_files = backend.written_files[0]["files"]
     bootstrap_by_path = {entry["destination_path"]: entry for entry in bootstrap_files}
     assert "/home/agent/.agent-sandbox/session.env" in bootstrap_by_path
@@ -1093,12 +1102,14 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert backend.written_files[1]["files"][0]["destination_path"].endswith("agent-pr-note")
     assert backend.written_files[2]["files"][0]["content"] == "task"
     clone_config_command = str(backend.started_specs[0].command)
+    assert "cd /home/agent/repos/repo" in clone_config_command
     assert "config alias.agent-pr-note" in clone_config_command
     assert "config alias.push-agent" in clone_config_command
     assert 'git config agent-sandbox.pushAgentAvailable "true"' in clone_config_command
     assert "CANONICAL_REMOTE_URL=https://example.test/org/repo.git" in clone_config_command
     assert "url.${PUSH_REMOTE_URL}.insteadOf" in clone_config_command
     assert backend.started_specs[-1].command is not None
+    assert "cd /home/agent" in str(backend.started_specs[-1].command)
     assert "continue" in str(backend.started_specs[-1].command)
 
 
@@ -1107,6 +1118,7 @@ def test_agent_clone_container_skips_push_alias_for_unreachable_remotes() -> Non
 
     command = AgentCloneRepoEffectProvider._container_git_config_command(
         session_id="session-1",
+        target_dir="/home/agent/repos/sample-repo",
         repo_source=remote_source,
         remote_url=remote_source,
         clone_branch=None,
@@ -1121,6 +1133,7 @@ def test_agent_clone_container_skips_push_alias_for_unreachable_remotes() -> Non
 def test_agent_clone_container_uses_private_ssh_mirror_for_push_and_instead_of() -> None:
     command = AgentCloneRepoEffectProvider._container_git_config_command(
         session_id="session-1",
+        target_dir="/home/agent/repos/repo",
         repo_source="https://dev.azure.com/org/project/_git/repo",
         remote_url="ssh://agent-sandbox-git-host/opt/agent-sandbox/git-remotes/repo-abc.git",
         clone_branch="main",
@@ -1198,6 +1211,7 @@ def test_agent_clone_container_fails_before_worker_when_mirror_resolution_fails(
 def test_agent_clone_container_allows_push_alias_for_mounted_remotes() -> None:
     command = AgentCloneRepoEffectProvider._container_git_config_command(
         session_id="session-1",
+        target_dir="/home/agent/repos/repo",
         repo_source="git@example.test/org/repo.git",
         remote_url="file:///artifacts/agent-push.git",
         clone_branch="main",
@@ -1211,12 +1225,15 @@ def test_agent_clone_container_allows_push_alias_for_mounted_remotes() -> None:
 
 
 def test_container_reachable_git_remote_url_is_limited_to_mounted_paths() -> None:
-    assert _container_reachable_git_remote_url("/workspace/push.git") == "/workspace/push.git"
+    assert (
+        _container_reachable_git_remote_url("/home/agent/repos/repo/push.git")
+        == "/home/agent/repos/repo/push.git"
+    )
     assert (
         _container_reachable_git_remote_url("file:///home/agent/remotes/repo.git")
         == "/home/agent/remotes/repo.git"
     )
-    assert _container_reachable_git_remote_url("/workspace/../tmp/repo.git") is None
+    assert _container_reachable_git_remote_url("/home/agent/../tmp/repo.git") is None
     assert _container_reachable_git_remote_url("/tmp/repo.git") is None
     assert _container_reachable_git_remote_url("git@example.test/org/repo.git") is None
     assert (
@@ -1385,7 +1402,7 @@ def test_agent_exec_provider_runs_container_command_and_cleans_up(
             type="effect:agent:exec",
             session_id="session-container",
             command=["echo", "prepared"],
-            working_directory="/workspace",
+            working_directory="/home/agent/repos/repo",
         )
     ).execute()
 
@@ -1396,7 +1413,7 @@ def test_agent_exec_provider_runs_container_command_and_cleans_up(
     assert output["stderr"] == ""
     assert backend.started_specs[0].session_id == "session-container"
     assert backend.started_specs[0].directory_path == "root/team-a"
-    assert "cd /workspace" in str(backend.started_specs[0].command)
+    assert "cd /home/agent/repos/repo" in str(backend.started_specs[0].command)
     assert "echo prepared" in str(backend.started_specs[0].command)
     assert backend.destroyed == [output["execution_id"]]
 
@@ -1459,6 +1476,7 @@ def test_agent_exec_provider_returns_container_failure_when_check_disabled(
     assert output["exit_code"] == 22
     assert output["stdout"] == "failure log\n"
     assert output["stderr"] == "command failed"
+    assert "cd /home/agent" in str(backend.started_specs[0].command)
     assert backend.destroyed == [output["execution_id"]]
 
 

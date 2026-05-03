@@ -14,7 +14,8 @@ def test_runner_dockerfile_contains_minimal_runtime_contract() -> None:
     assert "FROM ubuntu:24.04" in dockerfile
     assert "COPY codex /usr/local/bin/codex" in dockerfile
     assert "ENV HOME=/home/agent" in dockerfile
-    assert "WORKDIR /workspace" in dockerfile
+    assert "WORKDIR /home/agent" in dockerfile
+    assert "/home/agent/repos" in dockerfile
     assert "python3-pip" in dockerfile
     assert "python3-venv" in dockerfile
     assert "ripgrep" in dockerfile

@@ -86,11 +86,13 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             session_id=session_id,
             repo_source=mirror.worker_repo_source,
             clone_branch=clone_branch,
+            repo_name=mirror.repo_name,
         )
         self._configure_container_git(
             backend=backend,
             session_id=session_id,
             directory_path=session.directory_path if session is not None else directory_path,
+            target_dir=result.target_dir,
             repo_source=mirror.canonical_repo_source,
             remote_url=result.remote_url,
             clone_branch=clone_branch,
@@ -101,7 +103,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "message": (
                 f"Cloned repo into container worker session {session_id}"
                 if result.cloned
-                else f"Workspace already prepared for container worker session {session_id}"
+                else f"Repo already prepared for container worker session {session_id}"
             ),
             "session_id": session_id,
             "target_dir": result.target_dir,
@@ -118,6 +120,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         backend: Any,
         session_id: str,
         directory_path: str,
+        target_dir: str,
         repo_source: str,
         remote_url: str,
         clone_branch: str | None,
@@ -127,7 +130,9 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             session_id=session_id,
             files=[
                 {
-                    "destination_path": "/workspace/.agent-sandbox/bin/agent-pr-note",
+                    "destination_path": (
+                        f"{target_dir.rstrip('/')}/.agent-sandbox/bin/agent-pr-note"
+                    ),
                     "content": self._agent_pr_note_helper_content(),
                     "mode": "0755",
                 }
@@ -136,6 +141,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         execution_id = safe_effect_execution_id("clone-config", session_id)
         command = self._container_git_config_command(
             session_id=session_id,
+            target_dir=target_dir,
             repo_source=repo_source,
             remote_url=remote_url,
             clone_branch=clone_branch,
@@ -189,6 +195,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
     def _container_git_config_command(
         *,
         session_id: str,
+        target_dir: str,
         repo_source: str,
         remote_url: str,
         clone_branch: str | None,
@@ -197,7 +204,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         push_remote_url = _container_reachable_git_remote_url(remote_url)
         lines = [
             container_shell_preamble().rstrip(),
-            "cd /workspace",
+            f"cd {shlex.quote(target_dir)}",
             f"REMOTE_URL={shlex.quote(remote_url)}",
             f"PUSH_REMOTE_URL={shlex.quote(push_remote_url or '')}",
             f"CANONICAL_REMOTE_URL={shlex.quote(canonical_remote_url)}",
@@ -308,7 +315,7 @@ def _container_mounted_git_path(remote_url: str) -> str | None:
 
 
 def _is_container_mounted_path(path: str) -> bool:
-    for root in ("/workspace", "/home/agent", "/artifacts"):
+    for root in ("/home/agent", "/artifacts"):
         if path == root or path.startswith(f"{root}/"):
             return True
     return False

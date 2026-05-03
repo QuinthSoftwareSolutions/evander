@@ -17,7 +17,7 @@ class WorkerSandboxProfile:
     read_only_rootfs: bool = False
     tmpfs: tuple[str, ...] = ()
     user: str | None = None
-    workdir: str = "/workspace"
+    workdir: str = "/home/agent"
     default_pids_limit: int | None = None
 
     def with_overrides(
@@ -118,7 +118,7 @@ def validate_worker_read_only_mount(mount: WorkerReadOnlyMount) -> WorkerReadOnl
         raise ValueError("read-only mount container path must be absolute")
     if mount.container_path == "/":
         raise ValueError("read-only mount container path must not be /")
-    for writable_root in ("/workspace", "/home/agent", "/artifacts"):
+    for writable_root in ("/home/agent", "/artifacts"):
         if mount.container_path == writable_root or mount.container_path.startswith(
             f"{writable_root}/"
         ):

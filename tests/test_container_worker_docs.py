@@ -16,6 +16,7 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     docs = (ROOT / "docs" / "container-worker-backend.md").read_text(encoding="utf-8")
 
     assert "/var/lib/agent-worker/sessions/<session_id>/agent_home" in docs
+    assert "/home/agent/repos/<repo-name>" in docs
     assert "CODEX_HOME=/home/agent/.config/agent-sandbox/codex" in docs
     assert "agent_home/.config/agent-sandbox/codex/sessions" in docs
     assert "agent_home/.codex/config.toml" in docs

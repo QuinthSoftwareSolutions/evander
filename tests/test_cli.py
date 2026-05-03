@@ -165,11 +165,11 @@ class FakeExecutionBackend:
             if started.execution_id == target:
                 command = str(started.command)
                 agent_match = re.search(r"agent-home-[0-9a-f]+", command)
-                workspace_match = re.search(r"workspace-[0-9a-f]+", command)
-                if agent_match and workspace_match:
-                    return f"agent_marker={agent_match.group(0)}\nworkspace_marker={workspace_match.group(0)}\n"
+                repo_root_match = re.search(r"repo-root-[0-9a-f]+", command)
+                if agent_match and repo_root_match:
+                    return f"agent_marker={agent_match.group(0)}\nrepo_root_marker={repo_root_match.group(0)}\n"
         return self.logs_by_target.get(
-            target, "agent_marker=agent-home\nworkspace_marker=workspace\n"
+            target, "agent_marker=agent-home\nrepo_root_marker=repo-root\n"
         )
 
     def stop(self, target: str, *, timeout_seconds: int = 60) -> ExecutionStatus:
@@ -571,7 +571,7 @@ def test_execution_smoke_container_worker_runs_two_jobs_with_same_session(
     assert {started.session_id for started in backend.started} == {"smoke-session"}
     assert backend.started[0].target_name != backend.started[1].target_name
     assert "phase4-agent-home-marker.txt" in str(backend.started[0].command)
-    assert "phase4-workspace-marker.txt" in str(backend.started[1].command)
+    assert "phase4-repo-root-marker.txt" in str(backend.started[1].command)
     payload = json.loads(result.output)
     assert payload["success"] is True
     assert payload["session_id"] == "smoke-session"

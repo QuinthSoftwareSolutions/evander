@@ -2161,8 +2161,8 @@ def test_admin_web_agents_create_container_session_and_list_it(
             return WorkerSessionRecord(
                 session_id=session_id,
                 root_path=f"/worker/{session_id}",
-                workspace_path=f"/worker/{session_id}/workspace",
                 agent_home_path=f"/worker/{session_id}/agent_home",
+                repo_root_path=f"/worker/{session_id}/agent_home/repos",
                 artifacts_path=f"/worker/{session_id}/artifacts",
                 logs_path=f"/worker/{session_id}/logs",
                 metadata_path=f"/worker/{session_id}/metadata.json",

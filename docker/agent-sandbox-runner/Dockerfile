@@ -57,7 +57,7 @@ RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::T
 COPY codex /usr/local/bin/codex
 
 RUN chmod 0755 /usr/local/bin/codex \
-    && install -d -m 0775 /workspace /home/agent /artifacts \
+    && install -d -m 0775 /home/agent /home/agent/repos /artifacts \
     && install -d -m 0700 /home/agent/.agent-sandbox /home/agent/.codex \
       /home/agent/.config/agent-sandbox/codex \
     && install -d -m 0755 /opt/agent-sandbox/toolchains /opt/agent-sandbox/playwright-runtime \
@@ -73,6 +73,6 @@ fi
 export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"
 PROFILE
 
-WORKDIR /workspace
+WORKDIR /home/agent
 
 CMD ["bash", "-lc", "codex --version"]
