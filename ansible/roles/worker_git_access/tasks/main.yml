@@ -4,10 +4,15 @@
     that:
       - (agent_sandbox_control_plane_host | default('') | string | length) > 0
       - agent_sandbox_worker_install_control_plane_git_authorized_key | bool
+      - (agent_sandbox_git_host | default('') | string | trim | length) > 0
+      - "'<' not in (agent_sandbox_git_host | string)"
+      - "'>' not in (agent_sandbox_git_host | string)"
     fail_msg: >-
       agent_sandbox_worker_repo_checkout_via_control_plane_git requires an
       agent_sandbox_hosts control-plane inventory entry so the worker can fetch
-      the deployment repo through the private restricted-SSH mirror.
+      the deployment repo through the private restricted-SSH mirror. It also
+      requires agent_sandbox_git_host to resolve to the control-plane private IP,
+      not the literal <control-plane-private-ip> placeholder.
     success_msg: Worker private repo checkout control-plane target is configured.
   when: agent_sandbox_worker_repo_checkout_via_control_plane_git | bool
 

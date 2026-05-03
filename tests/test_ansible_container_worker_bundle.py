@@ -75,6 +75,8 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "agent_sandbox_control_plane_host" in text
     assert "hostvars[agent_sandbox_control_plane_host].agent_sandbox_deploy_path" in text
     assert "hostvars[agent_sandbox_control_plane_host].agent_sandbox_run_user" in text
+    assert "agent_sandbox_control_plane_private_ip" in text
+    assert 'agent_sandbox_git_host: "<control-plane-private-ip>"' not in text
     assert 'agent_sandbox_git_root: "{{ agent_sandbox_control_plane_deploy_path }}/git-remotes"' in text
     assert 'agent_sandbox_git_ssh_alias: "agent-sandbox-git-host"' in text
     assert "agent_sandbox_worker_allowed_git_source_prefixes" in text
@@ -190,6 +192,7 @@ def test_worker_git_access_role_sets_up_private_repo_checkout_before_repo_checko
     assert "Use private control-plane mirror for worker repo checkout" in role
     assert "agent_sandbox_repo_url: \"{{ agent_sandbox_worker_repo_checkout_url }}\"" in role
     assert "Deploy the control plane first, then rerun ansible/worker.yml" in role
+    assert "not the literal <control-plane-private-ip> placeholder" in role
 
 
 def test_worker_docs_and_inventory_reference_playbook() -> None:

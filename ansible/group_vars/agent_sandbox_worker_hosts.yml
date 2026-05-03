@@ -67,7 +67,21 @@ agent_sandbox_control_plane_deploy_path: >-
     if (agent_sandbox_control_plane_host | string | length) > 0
     else '/opt/agent-sandbox'
   }}
-agent_sandbox_git_host: "<control-plane-private-ip>"
+agent_sandbox_git_host: >-
+  {{
+    hostvars[agent_sandbox_control_plane_host].get(
+      'agent_sandbox_control_plane_private_ip',
+      hostvars[agent_sandbox_control_plane_host].get(
+        'ansible_default_ipv4',
+        {}
+      ).get(
+        'address',
+        hostvars[agent_sandbox_control_plane_host].get('ansible_host', '')
+      )
+    )
+    if (agent_sandbox_control_plane_host | string | length) > 0
+    else (agent_sandbox_control_plane_private_ip | default(''))
+  }}
 agent_sandbox_git_user: >-
   {{
     hostvars[agent_sandbox_control_plane_host].agent_sandbox_run_user | default('agent-sandbox')
