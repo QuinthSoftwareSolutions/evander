@@ -18,7 +18,9 @@ class JsonChatAssistantSessionRepository:
         if not self.path.exists():
             self.path.write_text("{}", encoding="utf-8")
 
-    def get_mapping(self, *, user_id: str, backend: str, assistant_scope: str) -> dict[str, str] | None:
+    def get_mapping(
+        self, *, user_id: str, backend: str, assistant_scope: str
+    ) -> dict[str, str] | None:
         key = self._compose_key(user_id=user_id, backend=backend, assistant_scope=assistant_scope)
         with self._lock:
             payload = self._read_raw()
@@ -55,7 +57,50 @@ class JsonChatAssistantSessionRepository:
             payload = self._read_raw()
             payload[key] = normalized
             self._atomic_write(payload)
-        return {"session_id": normalized["session_id"], "agent_thread_id": normalized["agent_thread_id"]}
+        return {
+            "session_id": normalized["session_id"],
+            "agent_thread_id": normalized["agent_thread_id"],
+        }
+
+    def update_agent_thread_id_for_session(
+        self,
+        *,
+        session_id: str,
+        agent_thread_id: str,
+        backend: str | None = None,
+        assistant_scope: str | None = None,
+    ) -> int:
+        normalized_session_id = str(session_id or "").strip()
+        normalized_thread_id = str(agent_thread_id or "").strip()
+        if not normalized_session_id or not normalized_thread_id:
+            return 0
+        normalized_backend = str(backend or "").strip()
+        normalized_scope = str(assistant_scope or "").strip()
+        updated = 0
+        with self._lock:
+            payload = self._read_raw()
+            for value in payload.values():
+                if not isinstance(value, dict):
+                    continue
+                if str(value.get("session_id") or "").strip() != normalized_session_id:
+                    continue
+                if (
+                    normalized_backend
+                    and str(value.get("backend") or "").strip() != normalized_backend
+                ):
+                    continue
+                if (
+                    normalized_scope
+                    and str(value.get("assistant_scope") or "").strip() != normalized_scope
+                ):
+                    continue
+                if str(value.get("agent_thread_id") or "").strip() == normalized_thread_id:
+                    continue
+                value["agent_thread_id"] = normalized_thread_id
+                updated += 1
+            if updated:
+                self._atomic_write(payload)
+        return updated
 
     def _read_raw(self) -> dict[str, object]:
         payload = json.loads(self.path.read_text(encoding="utf-8"))
@@ -77,4 +122,3 @@ class JsonChatAssistantSessionRepository:
                 str(assistant_scope or "").strip(),
             ]
         )
-

@@ -360,6 +360,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
         thread_id: str,
     ) -> None:
         admin_service = getattr(getattr(worker, "provider_factory", None), "admin_service", None)
+        cls._persist_chat_assistant_mapping_thread_id(
+            admin_service=admin_service,
+            session_id=session_id,
+            thread_id=thread_id,
+        )
         update_fn = getattr(admin_service, "session_update_metadata", None)
         if callable(update_fn):
             try:
@@ -384,6 +389,28 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 update={"metadata": {**dict(metadata), "agent_thread_id": thread_id}}
             )
             upsert_session(updated)
+        except Exception:
+            pass
+
+    @classmethod
+    def _persist_chat_assistant_mapping_thread_id(
+        cls,
+        *,
+        admin_service: Any,
+        session_id: str,
+        thread_id: str,
+    ) -> None:
+        vm_agent_admin = getattr(admin_service, "vm_agent_admin", None)
+        persist = getattr(vm_agent_admin, "persist_chat_assistant_agent_thread_id", None)
+        if not callable(persist):
+            return
+        try:
+            persist(
+                session_id=session_id,
+                agent_thread_id=thread_id,
+                backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                assistant_scope="admin_chat",
+            )
         except Exception:
             pass
 

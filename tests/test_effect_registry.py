@@ -573,7 +573,7 @@ def test_agent_enqueue_prompt_provider_dispatches_immediately_when_idle() -> Non
         type="effect:agent:enqueue-prompt",
         prompt="continue",
         session_id="session-42",
-        resume_thread_id="thread-123",
+        queue_key="chat:thread-ui-1:msg-1",
     )
     admin_service = _AdminServiceStub(
         create_vm_calls=[],
@@ -583,6 +583,10 @@ def test_agent_enqueue_prompt_provider_dispatches_immediately_when_idle() -> Non
         resume_calls=[],
     )
     admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
+    persisted: list[dict[str, object]] = []
+    admin_service.vm_agent_admin = SimpleNamespace(  # type: ignore[attr-defined]
+        persist_chat_assistant_agent_thread_id=lambda **kwargs: persisted.append(kwargs)
+    )
     factory = EffectProviderFactory(
         provider_config_resolver=_ResolverStub(), admin_service=admin_service
     )
@@ -593,6 +597,16 @@ def test_agent_enqueue_prompt_provider_dispatches_immediately_when_idle() -> Non
     assert output["dispatch_id"].startswith("dispatch-effect-prompt-")
     assert output["queued"] is False
     assert admin_service.resume_calls[0]["target"] == "session-42"
+    assert admin_service.resume_calls[0]["resume_thread_id"] is None
+    assert persisted == [
+        {
+            "session_id": "session-42",
+            "agent_thread_id": "thread-new-123",
+            "backend": "libvirt_vm",
+            "assistant_scope": "admin_chat",
+            "queue_key": "chat:thread-ui-1:msg-1",
+        }
+    ]
 
 
 def test_agent_enqueue_prompt_provider_uses_container_backend_for_container_session(
@@ -669,6 +683,18 @@ def test_container_prompt_command_does_not_resume_synthetic_dispatch_id() -> Non
     )
 
     assert "exec resume dispatch-effect-agent-enqueue-prompt-1-deadbeef" not in command
+    assert "codex exec --json" in command
+    assert "-s danger-full-access" in command
+
+
+def test_container_prompt_command_does_not_resume_synthetic_chat_thread_id() -> None:
+    command = container_prompt_command(
+        prompt="check admin chat",
+        model="gpt-5.4-mini",
+        resume_thread_id="chat-thread-alice-123",
+    )
+
+    assert "exec resume chat-thread-alice-123" not in command
     assert "codex exec --json" in command
     assert "-s danger-full-access" in command
 
@@ -772,9 +798,7 @@ def test_chat_assistant_ensure_session_uses_event_capability_mode(tmp_path) -> N
                 "agent_thread_id": "assistant-thread",
                 "vm_name": "assistant-session",
                 "execution_backend": kwargs["backend"],
-                "capability_profile": "read-only"
-                if settings.get("read_only")
-                else "full-admin",
+                "capability_profile": "read-only" if settings.get("read_only") else "full-admin",
             }
 
     vm_agent_admin = FakeVmAgentAdmin()
@@ -1029,7 +1053,10 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert prompted["output_mode"] == "on_completion"
     assert backend.prepared_sessions[0]["session_id"] == "session-1"
     assert mirror_resolver.resolved[0]["repo_source"] == "/tmp/repo"
-    assert backend.cloned_repos[0]["repo_source"] == "ssh://agent-sandbox-git-host/git-remotes/repo.git"
+    assert (
+        backend.cloned_repos[0]["repo_source"]
+        == "ssh://agent-sandbox-git-host/git-remotes/repo.git"
+    )
     bootstrap_files = backend.written_files[0]["files"]
     bootstrap_by_path = {entry["destination_path"]: entry for entry in bootstrap_files}
     assert "/home/agent/.agent-sandbox/session.env" in bootstrap_by_path

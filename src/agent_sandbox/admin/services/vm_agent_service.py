@@ -32,6 +32,28 @@ def _safe_chat_assistant_identifier(value: str) -> str:
     return f"{normalized[:37]}-{digest}"
 
 
+def _is_synthetic_chat_assistant_thread_id(value: str | None) -> bool:
+    return str(value or "").strip().startswith("chat-thread-")
+
+
+def _chat_thread_mapping_key(*, agent_thread_id: str | None, thread_id: str | None) -> str:
+    normalized_agent_thread_id = str(agent_thread_id or "").strip()
+    if normalized_agent_thread_id:
+        return normalized_agent_thread_id
+    normalized_thread_id = str(thread_id or "").strip()
+    if normalized_thread_id:
+        return f"admin-chat:{normalized_thread_id}"
+    return "admin-chat:unbound"
+
+
+def _chat_thread_id_from_queue_key(queue_key: str | None) -> str:
+    normalized = str(queue_key or "").strip()
+    if not normalized.startswith("chat:"):
+        return ""
+    parts = normalized.split(":", 2)
+    return parts[1].strip() if len(parts) >= 2 else ""
+
+
 def _assistant_capability_profile(settings: dict[str, Any] | None) -> str:
     payload = settings or {}
     if bool(payload.get("read_only", True)):
@@ -584,18 +606,22 @@ class VmAgentAdminService:
         scope = str(assistant_scope or "chat_assistant").strip() or "chat_assistant"
         safe_user_id = _safe_chat_assistant_identifier(normalized_user_id)
 
-        mapping_user_id = "global" if normalized_backend == "libvirt_vm" else normalized_user_id
+        mapping_user_id = normalized_user_id
         existing = self._assistant_session_repo.get_mapping(
             user_id=mapping_user_id,
             backend=normalized_backend,
             assistant_scope=scope,
         )
         if existing is not None:
-            agent_thread_id = (
-                f"chat-thread-{safe_user_id}"
-                if normalized_backend == "libvirt_vm"
-                else existing.get("agent_thread_id") or f"chat-thread-{safe_user_id}"
+            stored_agent_thread_id = (
+                self._stored_chat_assistant_thread_id(existing["session_id"])
+                if normalized_backend == ExecutionBackendKind.CONTAINER_WORKER_VM.value
+                else ""
             )
+            existing_agent_thread_id = existing.get("agent_thread_id") or ""
+            if _is_synthetic_chat_assistant_thread_id(existing_agent_thread_id):
+                existing_agent_thread_id = ""
+            agent_thread_id = stored_agent_thread_id or existing_agent_thread_id
             self._ensure_chat_assistant_manifest(
                 session_id=existing["session_id"],
                 backend=normalized_backend,
@@ -634,13 +660,13 @@ class VmAgentAdminService:
             session_id = "assistant-shared"
         else:
             session_id = f"assistant-{safe_user_id}"
-        agent_thread_id = f"chat-thread-{safe_user_id}"
+        agent_thread_id = ""
         persisted = self._assistant_session_repo.upsert_mapping(
             user_id=mapping_user_id,
             backend=normalized_backend,
             assistant_scope=scope,
             session_id=session_id,
-            agent_thread_id="" if normalized_backend == "libvirt_vm" else agent_thread_id,
+            agent_thread_id=agent_thread_id,
         )
         self._ensure_chat_assistant_manifest(
             session_id=session_id,
@@ -676,6 +702,87 @@ class VmAgentAdminService:
             "capability_profile": _assistant_capability_profile(settings),
         }
 
+    def persist_chat_assistant_agent_thread_id(
+        self,
+        *,
+        session_id: str,
+        agent_thread_id: str,
+        backend: str | None = None,
+        assistant_scope: str | None = None,
+        user_id: str | None = None,
+        thread_id: str | None = None,
+        queue_key: str | None = None,
+    ) -> int:
+        normalized_session_id = str(session_id or "").strip()
+        normalized_thread_id = str(agent_thread_id or "").strip()
+        if not normalized_session_id or not normalized_thread_id:
+            return 0
+        normalized_backend = str(backend or "").strip()
+        normalized_scope = str(assistant_scope or "").strip() or "admin_chat"
+        chat_thread_id = str(thread_id or "").strip() or _chat_thread_id_from_queue_key(queue_key)
+        repository = self._session_repository()
+        session = repository.get_session(normalized_session_id)
+        metadata = dict(getattr(session, "metadata", {}) or {}) if session is not None else {}
+        chat_threads = metadata.get("admin_chat_threads")
+        if not isinstance(chat_threads, dict):
+            chat_threads = {}
+        normalized_user_id = str(user_id or "").strip()
+        if not normalized_user_id and chat_thread_id:
+            for raw_mapping in chat_threads.values():
+                if not isinstance(raw_mapping, dict):
+                    continue
+                if str(raw_mapping.get("thread_id") or "").strip() != chat_thread_id:
+                    continue
+                normalized_user_id = str(raw_mapping.get("user_id") or "").strip()
+                break
+
+        updated = 0
+        if normalized_user_id:
+            self._assistant_session_repo.upsert_mapping(
+                user_id=normalized_user_id,
+                backend=normalized_backend,
+                assistant_scope=normalized_scope,
+                session_id=normalized_session_id,
+                agent_thread_id=normalized_thread_id,
+            )
+            updated += 1
+        else:
+            updated += self._assistant_session_repo.update_agent_thread_id_for_session(
+                session_id=normalized_session_id,
+                agent_thread_id=normalized_thread_id,
+                backend=normalized_backend,
+                assistant_scope=normalized_scope,
+            )
+
+        if session is not None and chat_thread_id:
+            replacement: dict[str, Any] | None = None
+            for raw_key, raw_mapping in list(chat_threads.items()):
+                if not isinstance(raw_mapping, dict):
+                    continue
+                if str(raw_mapping.get("thread_id") or "").strip() != chat_thread_id:
+                    continue
+                replacement = dict(raw_mapping)
+                if raw_key != normalized_thread_id:
+                    chat_threads.pop(raw_key, None)
+            if replacement is not None:
+                replacement["thread_id"] = chat_thread_id
+                if normalized_user_id:
+                    replacement["user_id"] = normalized_user_id
+                chat_threads[normalized_thread_id] = replacement
+                metadata["admin_chat_threads"] = chat_threads
+                repository.upsert_session(session.model_copy(update={"metadata": metadata}))
+        return updated
+
+    def _stored_chat_assistant_thread_id(self, session_id: str) -> str:
+        session = self._session_repository().get_session(session_id)
+        metadata = getattr(session, "metadata", {}) if session is not None else {}
+        if not isinstance(metadata, dict):
+            return ""
+        agent_thread_id = str(metadata.get("agent_thread_id") or "").strip()
+        if _is_synthetic_chat_assistant_thread_id(agent_thread_id):
+            return ""
+        return agent_thread_id
+
     def _ensure_chat_assistant_manifest(
         self,
         *,
@@ -704,7 +811,12 @@ class VmAgentAdminService:
         if not isinstance(chat_threads, dict):
             chat_threads = {}
         if thread_id:
-            chat_threads[agent_thread_id] = {
+            chat_threads[
+                _chat_thread_mapping_key(
+                    agent_thread_id=agent_thread_id,
+                    thread_id=thread_id,
+                )
+            ] = {
                 "thread_id": thread_id,
                 "user_id": user_id,
                 "user_message_id": user_message_id or "",
@@ -1177,9 +1289,7 @@ tail -n "${TAIL_LINES}" "${LOG_PATH}"
                 text=True,
                 env=run_env,
             )
-            message = _admin_service._combined_process_message(
-                completed.stdout, completed.stderr
-            )
+            message = _admin_service._combined_process_message(completed.stdout, completed.stderr)
         return completed, message
 
     def enable_agent(self, target: str, *, vm_user: str = "agent") -> VmActionResult:
@@ -1400,6 +1510,8 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             effective_resume_thread_id = (
                 str(resume_thread_id or "").strip() or stored_resume_thread_id
             )
+            if _is_synthetic_chat_assistant_thread_id(effective_resume_thread_id):
+                effective_resume_thread_id = None
         except ValueError as exc:
             return VmActionResult(
                 success=False,
@@ -2240,9 +2352,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             response = helper.call("destroy_vm", script_path=str(destroy_script), vm_name=vm_name)
             message = str(response.get("stdout") or response.get("stderr") or "").strip()
         else:
-            completed, message = self._run_privileged_host_script(
-                destroy_script, [vm_name]
-            )
+            completed, message = self._run_privileged_host_script(destroy_script, [vm_name])
             if completed.returncode != 0:
                 return VmActionResult(
                     success=False,

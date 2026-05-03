@@ -407,14 +407,18 @@ def wait_for_container_execution(
 
 
 def container_worker_guest_gateway_url(config: GatewayConfig) -> str:
-    return normalize_optional_string(config.container_worker_guest_gateway_url) or config.gateway_url
+    return (
+        normalize_optional_string(config.container_worker_guest_gateway_url) or config.gateway_url
+    )
 
 
 def container_worker_guest_openai_base_url(config: GatewayConfig) -> str:
     configured = normalize_optional_string(config.container_worker_guest_openai_base_url)
     if configured:
         return configured
-    return _service_url_from_gateway_url(config.gateway_url, port=config.openai_relay_port, path="/v1")
+    return _service_url_from_gateway_url(
+        config.gateway_url, port=config.openai_relay_port, path="/v1"
+    )
 
 
 def container_worker_guest_nuget_relay_base_url(config: GatewayConfig) -> str:
@@ -479,9 +483,7 @@ def build_container_session_files(
         "AGENT_SANDBOX_LLM_BASE_URL": openai_base_url,
         "OPENAI_BASE_URL": openai_base_url,
         "NUGET_RELAY_BASE_URL": nuget_relay_base_url,
-        "AGENT_SANDBOX_NUGET_FALLBACK_PACKAGES": (
-            "/opt/agent-sandbox/nuget-cache-ro"
-        ),
+        "AGENT_SANDBOX_NUGET_FALLBACK_PACKAGES": ("/opt/agent-sandbox/nuget-cache-ro"),
         "NUGET_PACKAGES": "/home/agent/.nuget/packages-local",
         "NUGET_HTTP_CACHE_PATH": "/home/agent/.nuget/http-cache",
         "PIP_INDEX_URL": pypi_index_url,
@@ -515,20 +517,12 @@ def build_container_session_files(
         {
             "destination_path": "/home/agent/.bashrc",
             "mode": "0644",
-            "content": (
-                'if [ -f "$HOME/.profile" ]; then\n'
-                '  . "$HOME/.profile"\n'
-                "fi\n"
-            ),
+            "content": ('if [ -f "$HOME/.profile" ]; then\n  . "$HOME/.profile"\nfi\n'),
         },
         {
             "destination_path": "/home/agent/.bash_profile",
             "mode": "0644",
-            "content": (
-                'if [ -f "$HOME/.profile" ]; then\n'
-                '  . "$HOME/.profile"\n'
-                "fi\n"
-            ),
+            "content": ('if [ -f "$HOME/.profile" ]; then\n  . "$HOME/.profile"\nfi\n'),
         },
         {
             "destination_path": "/home/agent/.codex/config.toml",
@@ -594,7 +588,7 @@ def container_shell_preamble() -> str:
         "if [ -f /home/agent/.profile ]; then\n"
         "  . /home/agent/.profile\n"
         "fi\n"
-        "export OPENAI_API_KEY=\"${OPENAI_API_KEY:-relay-placeholder}\"\n"
+        'export OPENAI_API_KEY="${OPENAI_API_KEY:-relay-placeholder}"\n'
     )
 
 
@@ -628,10 +622,10 @@ def frontend_bootstrap_command(install_roots: Sequence[str]) -> str:
     return (
         "set -euo pipefail; "
         f"for dir in {quoted_roots}; do "
-        "if [ -f \"$dir/package-lock.json\" ]; then "
-        "(cd \"$dir\" && npm ci); "
-        "elif [ -f \"$dir/package.json\" ]; then "
-        "(cd \"$dir\" && npm install); "
+        'if [ -f "$dir/package-lock.json" ]; then '
+        '(cd "$dir" && npm ci); '
+        'elif [ -f "$dir/package.json" ]; then '
+        '(cd "$dir" && npm install); '
         "else "
         "printf 'Skipping frontend bootstrap for %s (no package.json)\\n' \"$dir\"; "
         "fi; "
@@ -681,6 +675,8 @@ def _container_resume_thread_id(resume_thread_id: str | None) -> str | None:
         return None
     if normalized.startswith("dispatch-"):
         return None
+    if normalized.startswith("chat-thread-"):
+        return None
     return normalized
 
 
@@ -692,7 +688,7 @@ def container_thread_id_from_logs(logs: str) -> str | None:
 
 
 def _codex_json_log_filter_shell() -> str:
-    script = r'''
+    script = r"""
 import json
 import sys
 
@@ -796,7 +792,7 @@ for raw_line in sys.stdin:
         message = first_string(event.get("message"), event.get("error"))
         if message:
             print(f"codex {event_type}: {message}", flush=True)
-'''
+"""
     return (
         "agent_sandbox_codex_json_to_log() {\n"
         "  if command -v python3 >/dev/null 2>&1; then\n"

@@ -145,6 +145,12 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             raise RuntimeError(
                 "effect:agent:enqueue-prompt did not receive a thread_id from resume_agent"
             )
+        self._persist_chat_assistant_thread_id(
+            session_id=session_id,
+            thread_id=thread_id,
+            queue_key=queue_key,
+            backend=ExecutionBackendKind.LIBVIRT_VM.value,
+        )
         return {
             "dispatch_id": dispatch_id,
             "thread_id": thread_id,
@@ -356,6 +362,32 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             backend=container_backend(context, config),
             session_id=session_id,
         )
+
+    def _persist_chat_assistant_thread_id(
+        self,
+        *,
+        session_id: str,
+        thread_id: str,
+        queue_key: str | None,
+        backend: str,
+    ) -> None:
+        if not (queue_key or "").startswith("chat:"):
+            return
+        context = self._context()
+        vm_agent_admin = getattr(getattr(context, "admin_service", None), "vm_agent_admin", None)
+        persist = getattr(vm_agent_admin, "persist_chat_assistant_agent_thread_id", None)
+        if not callable(persist):
+            return
+        try:
+            persist(
+                session_id=session_id,
+                agent_thread_id=thread_id,
+                backend=backend,
+                assistant_scope="admin_chat",
+                queue_key=queue_key,
+            )
+        except Exception:
+            pass
 
     def _find_vm_summary(self, *, vm_name: str, vm_user: str) -> Any | None:
         context = self._context()

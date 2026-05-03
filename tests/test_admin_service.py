@@ -27,7 +27,13 @@ from agent_sandbox.execution.container_worker_repository import (
     ContainerWorkerExecutionRepository,
 )
 from agent_sandbox.execution.container_worker_client import ContainerWorkerClient
-from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionManifest, ToolName, VmSummary
+from agent_sandbox.models import (
+    ApprovalRequest,
+    ApprovalStatus,
+    SessionManifest,
+    ToolName,
+    VmSummary,
+)
 from agent_sandbox.worker.models import (
     WorkerFileWriteRecord,
     WorkerFileWriteRequest,
@@ -925,6 +931,38 @@ def test_resume_agent_reuses_stored_session_thread_id(tmp_path: Path, monkeypatc
     assert "--resume-thread-id" in captured["cmd"]
     assert "thread-stored-1" in captured["cmd"]
     assert "--resume-mode" not in captured["cmd"]
+
+
+def test_resume_agent_ignores_synthetic_chat_thread_id(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="assistant-session",
+            vm_id="assistant-shared",
+            expires_at=datetime(2026, 4, 7, 12, 0, tzinfo=UTC),
+            allowed_tools=[],
+            model="gpt-5.4",
+            metadata={"agent_thread_id": "chat-thread-alice"},
+        ),
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_run_subprocess(cmd: list[str], **kwargs: object):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="thread_id=thread-real-1\nok\n", stderr=""
+        )
+
+    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", fake_run_subprocess)
+
+    result = service.resume_agent("assistant-shared", "Resume now")
+
+    assert result.success is True
+    assert result.thread_id == "thread-real-1"
+    assert "--resume-thread-id" not in captured["cmd"]
+    assert "--resume-mode" in captured["cmd"]
+    assert "new_context" in captured["cmd"]
 
 
 def test_resume_agent_persists_returned_thread_id_to_session_metadata(
@@ -1845,19 +1883,14 @@ def test_admin_service_chat_post_publishes_hidden_trigger_event(tmp_path: Path) 
         enqueue_node["config"]["execution_backend"]
         == "${{system.chat_assistant.ensure_session.execution_backend}}"
     )
-    assert (
-        enqueue_node["config"]["queue_key"]
-        == (
-            "chat:${{system.chat_assistant.ensure_session.thread_id}}:"
-            "${{system.chat_assistant.ensure_session.user_message_id}}"
-        )
+    assert enqueue_node["config"]["queue_key"] == (
+        "chat:${{system.chat_assistant.ensure_session.thread_id}}:"
+        "${{system.chat_assistant.ensure_session.user_message_id}}"
     )
     _merged, changed = service._with_system_chat_assistant_workflow(persisted)
     assert changed is False
     queue_payload = json.loads(
-        (tmp_path / "runtime" / "trigger-orchestrator-events.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "runtime" / "trigger-orchestrator-events.json").read_text(encoding="utf-8")
     )
     queued = queue_payload["chat:msg-1"]
     assert queued["trigger_id"] == "system.chat_assistant"
@@ -1910,7 +1943,7 @@ def test_workflow_editor_hides_and_preserves_system_managed_workflow_nodes(tmp_p
                         "display_name": "Prompt agent",
                         "type": "effect:agent:prompt",
                         "prompt": "Summarize",
-                    }
+                    },
                 ],
                 "edges": [{"source_id": "system.chat_assistant", "target_id": "prompt-agent"}],
             }
@@ -1923,7 +1956,9 @@ def test_workflow_editor_hides_and_preserves_system_managed_workflow_nodes(tmp_p
     assert [effect["id"] for effect in document.config["effects"]] == ["prompt-agent"]
     assert document.config["edges"] == []
 
-    save_result = service.save_workflow_editor_document(config=document.config, layout={"nodes": {}})
+    save_result = service.save_workflow_editor_document(
+        config=document.config, layout={"nodes": {}}
+    )
     assert [trigger["id"] for trigger in save_result.config["triggers"]] == ["cron-15m"]
 
     persisted = json.loads(config_path.read_text(encoding="utf-8"))
@@ -4859,9 +4894,7 @@ def test_destroy_vm_prunes_generic_sessions_and_feedback_state(
 
     def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append(cmd)
-        return subprocess.CompletedProcess(
-            args=cmd, returncode=0, stdout="destroyed", stderr=""
-        )
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="destroyed", stderr="")
 
     monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
     monkeypatch.setattr(
@@ -4927,9 +4960,7 @@ def test_destroy_vm_falls_back_to_pkexec_when_prompt_is_available(
             return subprocess.CompletedProcess(
                 args=cmd, returncode=1, stdout="", stderr="sudo: a password is required"
             )
-        return subprocess.CompletedProcess(
-            args=cmd, returncode=0, stdout="destroyed", stderr=""
-        )
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="destroyed", stderr="")
 
     monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
 

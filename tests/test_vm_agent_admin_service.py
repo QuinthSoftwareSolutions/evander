@@ -380,7 +380,8 @@ def test_chat_assistant_session_resolution_is_backend_aware(
 
     assert alice_libvirt["session_id"] == "assistant-shared"
     assert bob_libvirt["session_id"] == "assistant-shared"
-    assert alice_libvirt["agent_thread_id"] != bob_libvirt["agent_thread_id"]
+    assert alice_libvirt["agent_thread_id"] == ""
+    assert bob_libvirt["agent_thread_id"] == ""
     assert [call["vm_name"] for call in create_vm_calls] == ["assistant-shared"]
     assert create_vm_calls[0]["provider"] == "libvirt"
     assert create_vm_calls[0]["allow_existing_session"] is True
@@ -397,9 +398,16 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     assert shared_session.metadata["execution_backend"] == "libvirt_vm"
     assert ToolName.ASSISTANT_POST_CHAT_REPLY in shared_session.allowed_tools
     assert {
-        value["thread_id"]
-        for value in shared_session.metadata["admin_chat_threads"].values()
+        value["thread_id"] for value in shared_session.metadata["admin_chat_threads"].values()
     } == {"thread-a", "thread-b"}
+
+    service.persist_chat_assistant_agent_thread_id(
+        session_id="assistant-shared",
+        agent_thread_id="thread-real-alice-1",
+        backend="libvirt_vm",
+        assistant_scope="admin_chat",
+        thread_id="thread-a",
+    )
 
     created_vm_names.clear()
     create_vm_calls.clear()
@@ -413,6 +421,7 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     )
 
     assert reused_libvirt["session_id"] == "assistant-shared"
+    assert reused_libvirt["agent_thread_id"] == "thread-real-alice-1"
     assert [call["vm_name"] for call in create_vm_calls] == ["assistant-shared"]
     assert create_vm_calls[0]["allow_existing_session"] is True
     assert [call[0] for call in vm_copy_calls] == [
@@ -439,13 +448,47 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     )
 
     assert alice_container["session_id"] != bob_container["session_id"]
+    assert alice_container["agent_thread_id"] == ""
     alice_session = admin.runtime.session_repository.get_session(alice_container["session_id"])
     assert alice_session is not None
     assert alice_session.vm_provider == "container_worker_vm"
     assert alice_session.metadata["capability_profile"] == "read-only"
+    assert {
+        value["thread_id"] for value in alice_session.metadata["admin_chat_threads"].values()
+    } == {"thread-c"}
+
+    admin.runtime.session_repository.upsert_session(
+        alice_session.model_copy(
+            update={
+                "metadata": {
+                    **alice_session.metadata,
+                    "agent_thread_id": "thread-real-alice-1",
+                }
+            }
+        )
+    )
+    alice_container_reused = service.resolve_chat_assistant_session(
+        user_id="alice@example.com",
+        backend="container_worker_vm",
+        assistant_scope="admin_chat",
+        settings={**settings, "read_only": True},
+        thread_id="thread-c2",
+        user_message_id="msg-c2",
+    )
+
+    assert alice_container_reused["session_id"] == alice_container["session_id"]
+    assert alice_container_reused["agent_thread_id"] == "thread-real-alice-1"
+    alice_session_reused = admin.runtime.session_repository.get_session(
+        alice_container["session_id"]
+    )
+    assert alice_session_reused is not None
+    assert {
+        value["thread_id"] for value in alice_session_reused.metadata["admin_chat_threads"].values()
+    } == {"thread-c", "thread-c2"}
     assert [item[0] for item in fake_container_backend.prepared] == [
         alice_container["session_id"],
         bob_container["session_id"],
+        alice_container["session_id"],
     ]
     assert all(
         "/home/agent/.codex/config.toml"

@@ -96,10 +96,46 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 resume_thread_id=record.resume_thread_id,
             )
             if result is not None and bool(getattr(result, "success", False)):
+                self._persist_chat_assistant_thread_id(
+                    worker=worker,
+                    record=record,
+                    result=result,
+                    queue_key=queue_key,
+                )
                 queue_store.delete(queue_key)
                 dispatched += 1
 
         return dispatched
+
+    def _persist_chat_assistant_thread_id(
+        self,
+        *,
+        worker: Any,
+        record: Any,
+        result: Any,
+        queue_key: str,
+    ) -> None:
+        if not str(queue_key or "").startswith("chat:"):
+            return
+        thread_id = str(getattr(result, "thread_id", "") or "").strip()
+        session_id = str(getattr(record, "session_id", "") or "").strip()
+        if not thread_id or not session_id:
+            return
+        admin_service = getattr(getattr(worker, "provider_factory", None), "admin_service", None)
+        vm_agent_admin = getattr(admin_service, "vm_agent_admin", None)
+        persist = getattr(vm_agent_admin, "persist_chat_assistant_agent_thread_id", None)
+        if not callable(persist):
+            return
+        try:
+            persist(
+                session_id=session_id,
+                agent_thread_id=thread_id,
+                backend=ExecutionBackendKind.LIBVIRT_VM.value,
+                assistant_scope="admin_chat",
+                queue_key=queue_key,
+            )
+        except Exception:
+            pass
 
     def _container_queue_keys(self, *, worker: Any, records: dict[str, Any]) -> set[str]:
         keys: set[str] = set()
@@ -130,9 +166,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         ):
             return False
 
-        dispatch_id = (
-            f"dispatch-{record.effect_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
-        )
+        dispatch_id = f"dispatch-{record.effect_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
         model = str(record.model or getattr(session, "model", None) or "gpt-5.4").strip()
         execution_id = safe_effect_execution_id("agent", session_id)
         try:
@@ -237,9 +271,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "queue_key": queue_key,
         }
         execution_record = EffectExecutionRecord(
-            execution_id=(
-                f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}"
-            ),
+            execution_id=(f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}"),
             idempotency_key=idempotency_key,
             event_id=event_id,
             trace_id=f"queued-agent-prompt:{queue_key}",
