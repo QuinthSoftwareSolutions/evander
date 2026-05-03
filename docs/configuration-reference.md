@@ -39,7 +39,7 @@ manager environment or optional repo-root `secrets.env`.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `ALLOWED_TCP_PORTS` | `config/firewall.env.example` | `scripts/apply_firewall.sh` (nftables allow-list for guest->host TCP ports; current defaults include `22`, `8000`, `11434`, `11666`, and `11777` for the HTTP target relay port). |
+| `ALLOWED_TCP_PORTS` | `config/firewall.env.example` | `scripts/apply_firewall.sh` (nftables allow-list for guest->host TCP ports; current defaults include `22`, `8000`, `11434`, `11666`, `11777` for the HTTP target relay port, `8081` for Nexus PyPI/npm, and `3142` for apt-cacher-ng). |
 
 ## `config/ado-worker.env.example`
 

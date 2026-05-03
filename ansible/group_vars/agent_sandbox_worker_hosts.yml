@@ -19,6 +19,7 @@ agent_sandbox_worker_enforce_revision_match: true
 agent_sandbox_worker_revision_guard_paths:
   - ansible/worker.yml
   - ansible/group_vars/agent_sandbox_worker_hosts.yml
+  - ansible/roles/worker_apt_proxy
   - ansible/roles/container_worker_runtime
   - ansible/roles/container_worker_service
   - ansible/roles/container_worker_verification

@@ -53,6 +53,10 @@ container_worker_guest_pypi_index_url: "http://<control-plane-private-ip>:8081/r
 container_worker_guest_npm_registry_url: "http://<control-plane-private-ip>:8081/repository/npm-all/"
 ```
 
+Those container-session PyPI/npm URLs are separate from worker VM OS provisioning. The worker
+Ansible playbook configures apt to use the control-plane apt-cacher-ng relay on `3142` before
+`host_prereqs` runs; Nexus remains only the PyPI/npm path.
+
 This does not replace `vm_provider`; provider-specific lifecycle details still live behind the existing VM services in this phase.
 
 For `container_worker_vm`, execution-defining inputs are first-class `ExecutionSpec` fields: `command`, `image`, `repo_source`, `clone_branch`, `resource_limits`, `persistence_mode`, and `workspace_mode`. `metadata` is reserved for sanitized caller context and is not used to smuggle the container command or clone settings.

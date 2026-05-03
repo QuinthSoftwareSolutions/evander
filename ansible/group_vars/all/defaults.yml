@@ -86,16 +86,35 @@ agent_sandbox_base_allowed_tcp_ports:
   - 11434
   - 11666
   - 11777
+agent_sandbox_control_plane_private_ip: "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
+
+# Control-plane apt cache for worker VM provisioning. This is intentionally
+# separate from Nexus, which only proxies PyPI and npm.
+agent_sandbox_apt_cache_port: 3142
+agent_sandbox_apt_cache_bind_host: "0.0.0.0"
+agent_sandbox_apt_cache_cache_dir: "/var/cache/apt-cacher-ng"
+agent_sandbox_apt_cache_config_path: "/etc/apt-cacher-ng/acng.conf"
+agent_sandbox_worker_use_apt_proxy: true
+agent_sandbox_worker_apt_proxy_config_path: "/etc/apt/apt.conf.d/01agent-sandbox-proxy"
+agent_sandbox_worker_apt_proxy_url: "http://{{ agent_sandbox_control_plane_private_ip }}:{{ agent_sandbox_apt_cache_port }}"
+agent_sandbox_worker_apt_proxy_https_url: ""
 agent_sandbox_package_cache_allowed_tcp_ports: >-
   {{
     [agent_sandbox_nexus_port]
     if (agent_sandbox_services.package_cache | default(false) | bool)
     else []
   }}
+agent_sandbox_apt_cache_allowed_tcp_ports: >-
+  {{
+    [agent_sandbox_apt_cache_port]
+    if (agent_sandbox_services.apt_cache | default(false) | bool)
+    else []
+  }}
 agent_sandbox_allowed_tcp_ports: >-
   {{
     agent_sandbox_base_allowed_tcp_ports
     + agent_sandbox_package_cache_allowed_tcp_ports
+    + agent_sandbox_apt_cache_allowed_tcp_ports
   }}
 
 # Control-plane package cache. Nexus Repository Community Edition proxies only
@@ -122,7 +141,6 @@ agent_sandbox_nexus_pypi_remote_url: "https://pypi.org/"
 agent_sandbox_nexus_npm_proxy_repository: "npm-proxy"
 agent_sandbox_nexus_npm_group_repository: "npm-all"
 agent_sandbox_nexus_npm_remote_url: "https://registry.npmjs.org"
-agent_sandbox_control_plane_private_ip: "{{ ansible_default_ipv4.address | default('127.0.0.1') }}"
 agent_sandbox_worker_pypi_index_url: "http://{{ agent_sandbox_control_plane_private_ip }}:{{ agent_sandbox_nexus_port }}/repository/{{ agent_sandbox_nexus_pypi_group_repository }}/simple"
 agent_sandbox_worker_npm_registry_url: "http://{{ agent_sandbox_control_plane_private_ip }}:{{ agent_sandbox_nexus_port }}/repository/{{ agent_sandbox_nexus_npm_group_repository }}/"
 
@@ -295,6 +313,7 @@ agent_sandbox_services:
   openai_relay: true
   nuget_relay: true
   package_cache: true
+  apt_cache: true
   http_target_relay: true
   ado_worker: true
   discord_ingest: true

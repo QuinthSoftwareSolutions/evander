@@ -129,6 +129,7 @@
         success_msg: Worker state paths are absolute.
 
   roles:
+    - role: worker_apt_proxy
     - role: host_prereqs
     - role: repo_checkout
     - role: python_env

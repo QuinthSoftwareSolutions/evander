@@ -95,7 +95,7 @@ Directory-scoped config is rooted at `root`:
    sudo ./scripts/apply_firewall.sh
    ```
 
-  The default firewall policy allows host ports `22`, `8000`, `11434`, `11666`, `11777`, and `8081` so VMs can use SSH for Git remotes, MCP on `8000`, the OpenAI relay on `11434`, the NuGet relay on `11666`, the session-scoped HTTP target relay on `11777` for approved external web endpoints such as APP demo environments, and the Nexus package cache on `8081` for PyPI/npm package restores.
+  The default firewall policy allows host ports `22`, `8000`, `11434`, `11666`, `11777`, `8081`, and `3142` so VMs can use SSH for Git remotes, MCP on `8000`, the OpenAI relay on `11434`, the NuGet relay on `11666`, the session-scoped HTTP target relay on `11777` for approved external web endpoints such as APP demo environments, the Nexus package cache on `8081` for PyPI/npm package restores, and the apt-cacher-ng relay on `3142` for worker apt provisioning.
 
 6. Start the host-side services:
 
@@ -1075,4 +1075,4 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
 - The gateway is ready for integration adapters, not production credentials by default.
 - Network/firewall scripts assume Ubuntu 24.04 and nftables-backed libvirt hosts.
 - VM disk and seed artifacts default to `/var/lib/libvirt/images/agent-sandbox`, so VM lifecycle scripts should be run with `sudo` unless you deliberately provision an alternate libvirt-accessible storage path.
-- Guests can reach only the specific host TCP ports you allow in `ALLOWED_TCP_PORTS`; the defaults are `22` for host SSH/Git, `8000` for MCP, `11434` for the host-side OpenAI relay or another OpenAI-compatible LLM endpoint, `11666` for the host-side NuGet relay, `11777` for the HTTP target relay, and `8081` for the host-side Nexus package cache.
+- Guests can reach only the specific host TCP ports you allow in `ALLOWED_TCP_PORTS`; the defaults are `22` for host SSH/Git, `8000` for MCP, `11434` for the host-side OpenAI relay or another OpenAI-compatible LLM endpoint, `11666` for the host-side NuGet relay, `11777` for the HTTP target relay, `8081` for the host-side Nexus package cache, and `3142` for the host-side apt-cacher-ng relay.

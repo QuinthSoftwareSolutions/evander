@@ -17,6 +17,8 @@
         unit: agent-sandbox-nuget-relay.service
       - key: package_cache
         unit: agent-sandbox-nexus.service
+      - key: apt_cache
+        unit: apt-cacher-ng.service
       - key: http_target_relay
         unit: agent-sandbox-http-target-relay.service
       - key: ado_worker
@@ -107,6 +109,8 @@
       port: 11666
     - key: package_cache
       port: "{{ agent_sandbox_nexus_port }}"
+    - key: apt_cache
+      port: "{{ agent_sandbox_apt_cache_port }}"
     - key: http_target_relay
       port: 11777
   when: agent_sandbox_services[item.key] | bool
@@ -126,6 +130,8 @@
       url: "http://127.0.0.1:11666/healthz"
     - key: package_cache
       url: "http://127.0.0.1:{{ agent_sandbox_nexus_port }}/service/rest/v1/status"
+    - key: apt_cache
+      url: "http://127.0.0.1:{{ agent_sandbox_apt_cache_port }}/acng-report.html"
     - key: http_target_relay
       url: "http://127.0.0.1:11777/healthz"
   when: agent_sandbox_services[item.key] | bool

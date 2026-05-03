@@ -33,18 +33,19 @@ the base Ubuntu cloud image.
 The playbook follows the repo-native bootstrap order:
 
 1. Install Ubuntu packages, Node/npm, and `uv`
-2. Clone or update the repo
-3. Create `.venv` and install the package
-4. Run `agent-sandbox-cli init-state --runtime-dir runtime`
-5. Render managed config under `config/` and optional `secrets.env`
-6. Run `scripts/install_systemd_units.sh`
-7. Build the Admin Web frontend bundle with `npm ci && npm run build`
-8. Run `scripts/create_libvirt_network.sh` in the `full` profile
-9. Run `scripts/apply_firewall.sh` when the `full` profile firewall service is enabled
-10. Run `scripts/create_base_vm.sh` in the `full` profile
-11. Enable and start only the selected repo-native services
-12. Install and configure the Nexus PyPI/npm package cache when enabled
-13. Verify unit state, enabled firewall, full-profile VM host state, package-cache health, and repo-aware status
+2. Install and configure the apt-cacher-ng relay when enabled
+3. Clone or update the repo
+4. Create `.venv` and install the package
+5. Run `agent-sandbox-cli init-state --runtime-dir runtime`
+6. Render managed config under `config/` and optional `secrets.env`
+7. Run `scripts/install_systemd_units.sh`
+8. Build the Admin Web frontend bundle with `npm ci && npm run build`
+9. Run `scripts/create_libvirt_network.sh` in the `full` profile
+10. Run `scripts/apply_firewall.sh` when the `full` profile firewall service is enabled
+11. Run `scripts/create_base_vm.sh` in the `full` profile
+12. Enable and start only the selected repo-native services
+13. Install and configure the Nexus PyPI/npm package cache when enabled
+14. Verify unit state, enabled firewall, full-profile VM host state, package-cache health, and repo-aware status
 
 VM/session launch is intentionally not part of initial deployment. After the host is prepared, use
 the existing operator flow to create a session manifest and launch a VM.
@@ -64,8 +65,9 @@ Core defaults:
 - `agent_sandbox_service_profile`: `full`
 - `agent_sandbox_run_user_supplementary_groups`: `libvirt`, `kvm` for `full`; empty for
   `control_plane_only`
-- `agent_sandbox_allowed_tcp_ports`: `22`, `8000`, `11434`, `11666`, `11777`, and `8081`
-  when `agent_sandbox_services.package_cache` is enabled
+- `agent_sandbox_allowed_tcp_ports`: `22`, `8000`, `11434`, `11666`, `11777`, plus `8081`
+  when `agent_sandbox_services.package_cache` is enabled and `3142` when
+  `agent_sandbox_services.apt_cache` is enabled
 
 Service profiles:
 
@@ -86,6 +88,7 @@ Service toggles:
 - `agent_sandbox_services.openai_relay`
 - `agent_sandbox_services.nuget_relay`
 - `agent_sandbox_services.package_cache`
+- `agent_sandbox_services.apt_cache`
 - `agent_sandbox_services.http_target_relay`
 - `agent_sandbox_services.ado_worker`
 - `agent_sandbox_services.discord_ingest`
@@ -135,6 +138,13 @@ password, enables anonymous read access, and creates only proxy/group repositori
 The Azure inventory maps this from `vault_agent_sandbox_nexus_admin_password`; add that value to
 the Vault file or set `agent_sandbox_services.package_cache: false` for deployments that should not
 run Nexus.
+
+The apt cache relay uses the Ubuntu `apt-cacher-ng` package and does not share Nexus. When
+`agent_sandbox_services.apt_cache` is enabled, the control plane listens on
+`agent_sandbox_apt_cache_bind_host:agent_sandbox_apt_cache_port` (`0.0.0.0:3142` by default).
+Worker VM apt provisioning points at
+`http://{{ agent_sandbox_control_plane_private_ip }}:{{ agent_sandbox_apt_cache_port }}` before
+the worker playbook's first `apt update`.
 
 Worker/global JSON files are also editable from the Admin GUI. Set
 `agent_sandbox_force_render_worker_config: false` for hosts where operators own those settings
@@ -208,6 +218,8 @@ The verification role checks:
 - local relay endpoints respond where applicable
 - when enabled, `agent-sandbox-nexus.service` is active and
   `http://127.0.0.1:8081/service/rest/v1/status` responds
+- when enabled, `apt-cacher-ng.service` is active and
+  `http://127.0.0.1:3142/acng-report.html` responds
 
 After the playbook completes, common manual follow-ups are:
 
@@ -257,6 +269,12 @@ ansible-playbook \
   ansible/worker.yml
 ```
 
+Deploy or re-run the control-plane `site.yml` first when `agent_sandbox_services.apt_cache` is
+enabled. The worker playbook renders `/etc/apt/apt.conf.d/01agent-sandbox-proxy` before
+`host_prereqs`, so the first worker `apt update` uses the private apt-cacher-ng relay instead of
+direct Ubuntu mirror egress. Verify the private path from a worker with
+`curl http://<control-plane-private-ip>:3142/acng-report.html`.
+
 The worker playbook renders systemd units from the local Ansible checkout and installs the daemon
 package from Git on the worker VM. To keep those artifacts compatible, the worker defaults set
 `agent_sandbox_repo_version` to the local playbook commit before checkout and verify that
@@ -284,8 +302,9 @@ The default allowed Git source prefix is
 `ssh://{{ agent_sandbox_git_ssh_alias }}{{ agent_sandbox_git_root }}/`. The worker rejects
 job-level and session repo clone requests outside `agent_sandbox_worker_allowed_git_source_prefixes`.
 Do not grant worker hosts or runner containers direct GitHub/Azure DevOps egress for this mode; the
-control plane owns upstream credentials and mirror refresh. npm and pip package access must use
-separate registry proxies or mirrors.
+control plane owns upstream credentials and mirror refresh. Worker host apt provisioning uses
+apt-cacher-ng on `3142`; npm and pip package access uses the separate Nexus registry proxies on
+`8081`.
 
 Configure the control plane to point at the worker's private address:
 
@@ -309,9 +328,7 @@ directories for .NET, Node/Playwright, Playwright browsers, and NuGet fallback p
 `playwright=true` sessions; npm workflows also require the worker Node cache to be populated so the
 mounted Node/npm binary is present. Docker `host` networking remains refused; choose a private Docker
 network/routing setup that can reach only the required control-plane relay and gateway endpoints
-plus the Nexus package cache on `8081`. Worker outbound rules should still deny direct access to
-`pypi.org` and `registry.npmjs.org`; the control plane is the only host that needs upstream package
-internet access for these formats.
+plus the apt relay on `3142` and the Nexus package cache on `8081`. Worker outbound rules should still deny direct access to Ubuntu mirrors, `pypi.org`, and `registry.npmjs.org`; the control plane is the only host that needs upstream package internet access for these formats.
 If the host Docker bridge cannot reach apt mirrors while building the tarball, build it with
 `RUNNER_BUILD_NETWORK=host ./scripts/build_agent_sandbox_runner_image.sh`; this does not change the
 worker daemon's runtime networking policy.

@@ -1,0 +1,59 @@
+---
+- name: Stop apt cache relay when disabled
+  ansible.builtin.systemd:
+    name: apt-cacher-ng.service
+    enabled: false
+    state: stopped
+  failed_when: false
+  when: not (agent_sandbox_services.apt_cache | default(false) | bool)
+
+- name: Configure apt cache relay
+  when: agent_sandbox_services.apt_cache | default(false) | bool
+  block:
+    - name: Install apt-cacher-ng package
+      ansible.builtin.apt:
+        name: apt-cacher-ng
+        state: present
+        update_cache: true
+
+    - name: Ensure apt-cacher-ng cache directory exists
+      ansible.builtin.file:
+        path: "{{ agent_sandbox_apt_cache_cache_dir }}"
+        state: directory
+        owner: apt-cacher-ng
+        group: apt-cacher-ng
+        mode: "0755"
+
+    - name: Configure apt-cacher-ng listener and cache directory
+      ansible.builtin.lineinfile:
+        path: "{{ agent_sandbox_apt_cache_config_path }}"
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - regexp: '^\s*#?\s*Port:'
+          line: "Port: {{ agent_sandbox_apt_cache_port }}"
+        - regexp: '^\s*#?\s*BindAddress:'
+          line: "BindAddress: {{ agent_sandbox_apt_cache_bind_host }}"
+        - regexp: '^\s*#?\s*CacheDir:'
+          line: "CacheDir: {{ agent_sandbox_apt_cache_cache_dir }}"
+      register: agent_sandbox_apt_cache_config
+
+    - name: Reconcile apt cache relay service
+      ansible.builtin.systemd:
+        name: apt-cacher-ng.service
+        enabled: true
+        state: "{{ 'restarted' if agent_sandbox_apt_cache_config.changed else 'started' }}"
+        daemon_reload: true
+
+    - name: Wait for apt cache relay listener
+      ansible.builtin.wait_for:
+        host: "127.0.0.1"
+        port: "{{ agent_sandbox_apt_cache_port }}"
+        timeout: 60
+
+    - name: Verify apt cache relay report endpoint
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ agent_sandbox_apt_cache_port }}/acng-report.html"
+        method: GET
+        return_content: true
+        status_code: 200

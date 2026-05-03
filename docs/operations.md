@@ -395,11 +395,11 @@ Storage layout for directory config:
 ## Host-Side LLM Access
 
 - The firewall allows only the host TCP ports listed in `ALLOWED_TCP_PORTS`.
-- Defaults: `22` for host SSH/Git, `8000` for the MCP gateway, `11434` for the host-side OpenAI relay or a local OpenAI-compatible LLM endpoint such as Ollama, `11666` for the host-side NuGet relay, `11777` for the host-side HTTP target relay used to reach approved external web endpoints such as APP demo environments, and `8081` for the host-side Nexus package cache used by worker PyPI/npm restores.
+- Defaults: `22` for host SSH/Git, `8000` for the MCP gateway, `11434` for the host-side OpenAI relay or a local OpenAI-compatible LLM endpoint such as Ollama, `11666` for the host-side NuGet relay, `11777` for the host-side HTTP target relay used to reach approved external web endpoints such as APP demo environments, `8081` for the host-side Nexus package cache used by worker PyPI/npm restores, and `3142` for the host-side apt-cacher-ng relay used by worker apt provisioning.
 - Override when applying firewall rules, for example:
 
   ```bash
-  sudo ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 8081 4000" ./scripts/apply_firewall.sh
+  sudo ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 8081 3142 4000" ./scripts/apply_firewall.sh
   ```
 
 - The guest receives `AGENT_SANDBOX_LLM_BASE_URL` and `OPENAI_BASE_URL` in `/etc/agent-sandbox/session.env`.

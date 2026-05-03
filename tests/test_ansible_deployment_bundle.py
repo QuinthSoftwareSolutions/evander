@@ -20,7 +20,9 @@ def test_ansible_bundle_exists_with_expected_roles() -> None:
         "frontend_build",
         "network_vm_bootstrap",
         "service_runtime",
+        "apt_cache_relay",
         "package_cache_nexus",
+        "worker_apt_proxy",
         "verification",
     ]:
         assert (ansible_dir / "roles" / role_name / "tasks" / "main.yml").exists()
@@ -36,6 +38,7 @@ def test_ansible_site_uses_repo_native_bootstrap_order() -> None:
     )
     assert "agent_sandbox_runtime_dir == agent_sandbox_expected_runtime_dir" in site
     assert "- role: host_prereqs" in site
+    assert "- role: apt_cache_relay" in site
     assert "- role: repo_checkout" in site
     assert "- role: python_env" in site
     assert "- role: runtime_bootstrap" in site
@@ -46,6 +49,8 @@ def test_ansible_site_uses_repo_native_bootstrap_order() -> None:
     assert "- role: service_runtime" in site
     assert "- role: package_cache_nexus" in site
     assert "- role: verification" in site
+    assert site.index("- role: host_prereqs") < site.index("- role: apt_cache_relay")
+    assert site.index("- role: apt_cache_relay") < site.index("- role: repo_checkout")
 
 
 def test_ansible_nexus_package_cache_role_is_control_plane_only() -> None:
@@ -60,9 +65,46 @@ def test_ansible_nexus_package_cache_role_is_control_plane_only() -> None:
     assert (role / "templates" / "agent-sandbox-nexus.service.j2").exists()
 
 
+def test_ansible_apt_cache_relay_role_is_control_plane_only() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    site = (repo / "ansible" / "site.yml").read_text(encoding="utf-8")
+    worker = (repo / "ansible" / "worker.yml").read_text(encoding="utf-8")
+    role = repo / "ansible" / "roles" / "apt_cache_relay"
+
+    assert "- role: apt_cache_relay" in site
+    assert "apt_cache_relay" not in worker
+    assert (role / "tasks" / "main.yml").exists()
+
+
 def test_ansible_nexus_package_cache_tasks_are_not_ignored_by_git() -> None:
     repo = Path(__file__).resolve().parents[1]
     role_task_path = "ansible/roles/package_cache_nexus/tasks/main.yml"
+
+    result = subprocess.run(
+        ["git", "check-ignore", "--quiet", "--", role_task_path],
+        cwd=repo,
+        check=False,
+    )
+
+    assert result.returncode == 1
+
+
+def test_ansible_apt_cache_role_tasks_are_not_ignored_by_git() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    role_task_path = "ansible/roles/apt_cache_relay/tasks/main.yml"
+
+    result = subprocess.run(
+        ["git", "check-ignore", "--quiet", "--", role_task_path],
+        cwd=repo,
+        check=False,
+    )
+
+    assert result.returncode == 1
+
+
+def test_ansible_worker_apt_proxy_tasks_are_not_ignored_by_git() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    role_task_path = "ansible/roles/worker_apt_proxy/tasks/main.yml"
 
     result = subprocess.run(
         ["git", "check-ignore", "--quiet", "--", role_task_path],
@@ -122,16 +164,90 @@ def test_ansible_nexus_package_cache_defaults_and_role_contract() -> None:
     assert "User={{ agent_sandbox_nexus_user }}" in unit
 
 
+def test_ansible_apt_cache_relay_defaults_and_role_contract() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    tasks = (
+        repo / "ansible" / "roles" / "apt_cache_relay" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    verification = (
+        repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "apt_cache: true" in defaults
+    assert "agent_sandbox_apt_cache_port: 3142" in defaults
+    assert 'agent_sandbox_apt_cache_bind_host: "0.0.0.0"' in defaults
+    assert 'agent_sandbox_apt_cache_cache_dir: "/var/cache/apt-cacher-ng"' in defaults
+    assert "agent_sandbox_apt_cache_allowed_tcp_ports" in defaults
+    assert "[agent_sandbox_apt_cache_port]" in defaults
+
+    assert "Install apt-cacher-ng package" in tasks
+    assert "name: apt-cacher-ng" in tasks
+    assert "Port: {{ agent_sandbox_apt_cache_port }}" in tasks
+    assert "BindAddress: {{ agent_sandbox_apt_cache_bind_host }}" in tasks
+    assert "CacheDir: {{ agent_sandbox_apt_cache_cache_dir }}" in tasks
+    assert "apt-cacher-ng.service" in tasks
+    assert "acng-report.html" in tasks
+
+    assert "apt-cacher-ng.service" in verification
+    assert "agent_sandbox_apt_cache_port" in verification
+    assert "http://127.0.0.1:{{ agent_sandbox_apt_cache_port }}/acng-report.html" in verification
+
+
 def test_ansible_azure_inventory_maps_nexus_password_from_vault() -> None:
     repo = Path(__file__).resolve().parents[1]
     azure = (repo / "ansible" / "group_vars" / "azure.yml").read_text(encoding="utf-8")
+    inventory = (repo / "ansible" / "inventory" / "azure.yml").read_text(encoding="utf-8")
     docs = (repo / "ansible" / "README.md").read_text(encoding="utf-8")
 
     assert (
         'agent_sandbox_nexus_admin_password: "{{ vault_agent_sandbox_nexus_admin_password | default(\'\') }}"'
         in azure
     )
+    assert 'agent_sandbox_control_plane_private_ip: "10.2.0.4"' in azure
+    assert "agent_sandbox_control_plane_private_ip" not in inventory
     assert "vault_agent_sandbox_nexus_admin_password" in docs
+
+
+def test_worker_apt_proxy_runs_before_host_prereqs_and_can_be_disabled() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    worker = (repo / "ansible" / "worker.yml").read_text(encoding="utf-8")
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    worker_defaults = (
+        repo / "ansible" / "group_vars" / "agent_sandbox_worker_hosts.yml"
+    ).read_text(encoding="utf-8")
+    tasks = (
+        repo / "ansible" / "roles" / "worker_apt_proxy" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    template = (
+        repo
+        / "ansible"
+        / "roles"
+        / "worker_apt_proxy"
+        / "templates"
+        / "01agent-sandbox-proxy.j2"
+    ).read_text(encoding="utf-8")
+
+    assert "- role: worker_apt_proxy" in worker
+    assert worker.index("- role: worker_apt_proxy") < worker.index("- role: host_prereqs")
+    assert "agent_sandbox_worker_use_apt_proxy: true" in defaults
+    assert (
+        'agent_sandbox_worker_apt_proxy_url: "http://{{ agent_sandbox_control_plane_private_ip }}:{{ agent_sandbox_apt_cache_port }}"'
+        in defaults
+    )
+    assert "/etc/apt/apt.conf.d/01agent-sandbox-proxy" in defaults
+    assert "ansible/roles/worker_apt_proxy" in worker_defaults
+
+    assert "Remove managed worker apt proxy when disabled" in tasks
+    assert "state: absent" in tasks
+    assert "when: not (agent_sandbox_worker_use_apt_proxy | bool)" in tasks
+    assert "Render worker apt proxy config" in tasks
+    assert 'Acquire::http::Proxy "{{ agent_sandbox_worker_apt_proxy_url }}";' in template
+    assert 'Acquire::https::Proxy "{{ agent_sandbox_worker_apt_proxy_https_url }}";' in template
 
 
 def test_ansible_repo_checkout_supports_private_deploy_key() -> None:

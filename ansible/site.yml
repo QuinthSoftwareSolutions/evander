@@ -39,6 +39,7 @@
 
   roles:
     - role: host_prereqs
+    - role: apt_cache_relay
     - role: repo_checkout
     - role: python_env
     - role: runtime_bootstrap

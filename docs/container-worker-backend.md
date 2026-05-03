@@ -41,6 +41,11 @@ The build script creates `agent-sandbox-runner:latest` locally and saves
 `/var/lib/agent-worker`, and verifies the local `/healthz` endpoint. It intentionally does not
 install the control-plane services.
 
+Worker host OS packages are provisioned through the control-plane apt-cacher-ng relay on `3142`.
+The worker playbook writes `/etc/apt/apt.conf.d/01agent-sandbox-proxy` before its first
+`host_prereqs` apt update. Container-session `pip` and `npm` traffic remains separate and resolves
+through Nexus on `8081`.
+
 If the host Docker bridge cannot reach Ubuntu apt mirrors during the image build, run the same build
 with `RUNNER_BUILD_NETWORK=host`. That option only affects the host-side artifact build; worker
 runtime containers still use the daemon sandbox profile and must not use Docker `host` networking.
@@ -214,10 +219,11 @@ Docker is used as a local container runtime on the worker VM. The default sandbo
 - working directory `/home/agent`
 
 The Docker network can be overridden with worker config or `--docker-network`, but `host` is refused.
-When Codex or package restores need the control-plane gateway, OpenAI relay, NuGet relay, or Nexus
-package cache, choose a non-host Docker network and worker VM routing/firewall rules that allow only
-those specific private control-plane endpoints. Workers should not have direct outbound access to
-`pypi.org` or `registry.npmjs.org`; Nexus is the private PyPI/npm egress point.
+When Codex or package restores need the control-plane gateway, OpenAI relay, NuGet relay,
+apt-cacher-ng relay, or Nexus package cache, choose a non-host Docker network and worker VM
+routing/firewall rules that allow only those specific private control-plane endpoints. Workers
+should not have direct outbound access to Ubuntu mirrors, `pypi.org`, or `registry.npmjs.org`;
+apt-cacher-ng is the private apt egress point and Nexus is the private PyPI/npm egress point.
 
 The `strict` sandbox profile keeps the default profile behavior and also adds:
 

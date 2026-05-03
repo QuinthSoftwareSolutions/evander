@@ -27,6 +27,7 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     assert "container_worker_guest_pypi_index_url" in docs
     assert "container_worker_guest_npm_registry_url" in docs
     assert "/home/agent/.config/pip/pip.conf" in docs
+    assert "apt-cacher-ng relay on `3142`" in docs
     assert "registry.npmjs.org" in docs
     assert "does not turn containers into a VM-equivalent trust boundary" in docs
     assert "Non-`none` networking requires Phase 5" in docs
