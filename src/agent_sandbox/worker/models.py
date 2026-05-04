@@ -290,3 +290,14 @@ class WorkerJobRecord(BaseModel):
     logs_path: str
     metadata: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_workspace_path(cls, data: object) -> object:
+        if not isinstance(data, dict) or "workspace_path" not in data:
+            return data
+        migrated = dict(data)
+        workspace_path = migrated.pop("workspace_path")
+        if "repo_root_path" not in migrated:
+            migrated["repo_root_path"] = workspace_path
+        return migrated

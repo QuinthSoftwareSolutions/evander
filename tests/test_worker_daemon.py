@@ -484,6 +484,58 @@ def test_container_mount_paths_are_persisted_for_repo_root_and_agent_home(tmp_pa
     assert paths.repo_root == paths.agent_home / "repos"
 
 
+def test_worker_job_store_migrates_legacy_workspace_path_records(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    legacy_workspace = tmp_path / "worker-root" / "sessions" / "legacy-session" / "workspace"
+    store_path = runtime_dir / "worker-jobs.json"
+    store_path.write_text(
+        json.dumps(
+            {
+                "legacy-job": {
+                    "job_id": "legacy-job",
+                    "session_id": "legacy-session",
+                    "image": "codex:latest",
+                    "command": ["true"],
+                    "container_name": "agent-worker-legacy-job",
+                    "status": "exited",
+                    "created_at": "2026-05-03T20:00:00+00:00",
+                    "workspace_path": str(legacy_workspace),
+                    "agent_home_path": str(
+                        tmp_path / "worker-root" / "sessions" / "legacy-session" / "agent_home"
+                    ),
+                    "artifacts_path": str(
+                        tmp_path / "worker-root" / "sessions" / "legacy-session" / "artifacts"
+                    ),
+                    "logs_path": str(
+                        tmp_path / "worker-root" / "sessions" / "legacy-session" / "logs"
+                    ),
+                    "metadata": {},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = FakeContainerRuntime()
+    client = _client(tmp_path, runtime)
+
+    response = client.post(
+        "/v1/jobs",
+        headers=_auth(),
+        json={
+            "session_id": "session-1",
+            "job_id": "job-1",
+            "image": "codex:latest",
+            "command": ["true"],
+        },
+    )
+
+    assert response.status_code == 201
+    payload = json.loads(store_path.read_text(encoding="utf-8"))
+    assert payload["legacy-job"]["repo_root_path"] == str(legacy_workspace)
+    assert "workspace_path" not in payload["legacy-job"]
+
+
 def test_job_lifecycle_create_inspect_stop_delete(tmp_path: Path) -> None:
     runtime = FakeContainerRuntime()
     client = _client(tmp_path, runtime)

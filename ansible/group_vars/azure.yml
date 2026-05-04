@@ -25,7 +25,7 @@ agent_sandbox_admin_web_env:
   AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID: "{{ vault_admin_web_azure_tenant_id }}"
   AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID: "{{ vault_admin_web_azure_client_id }}"
   AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET: "{{ vault_admin_web_azure_client_secret }}"
-  AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS: "operator@example.invalid,operator@example.invalid"
+  AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS: "operator@example.invalid,operator@example.invalid,operator@example.invalid,operator@example.invalid,operator@example.invalid,operator@example.invalid,operator@example.invalid,operator@example.invalid,operator@example.invalid,operator@example.invalid,operator@example.invalid,operator@example.invalid"
   AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI: "https://truman-admin.northeurope.cloudapp.azure.com/api/auth/azure-sso/callback"
 
 agent_sandbox_render_shared_secrets_env: true
