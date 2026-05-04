@@ -67,11 +67,13 @@ fallback packages are worker-level caches mounted read-only into containers:
 - `/opt/agent-sandbox/ms-playwright`
 - `/opt/agent-sandbox/nuget-cache-ro`
 
-The Ansible role creates the cache directories under `agent_sandbox_worker_toolchain_cache_root`
-and wires them into the daemon with repeated `--readonly-mount` flags. Populate those caches through
-an operator-controlled path; they are not baked into the image and secrets are not mounted.
-The Node cache must be populated before npm workflows are expected to pass; the session profile adds
-that mounted Node/npm path to `PATH`.
+The worker playbook creates the cache directories under `agent_sandbox_worker_toolchain_cache_root`
+and wires them into the daemon with repeated `--readonly-mount` flags. It also seeds the Node cache
+from the Ansible control machine and verifies `node`, `npm`, and `npx` inside
+`agent-sandbox-runner:latest`. By default it reads `HOST_NODE_ROOT` or
+`~/.nvm/versions/node/v24.14.0`; set `agent_sandbox_worker_node_toolchain_archive_path` to copy a
+prebuilt tarball instead. Other caches remain operator-controlled and are not baked into the image.
+Secrets are not mounted.
 
 Container sessions write `/home/agent/.config/pip/pip.conf` and `/home/agent/.npmrc` so `pip` and
 `npm` resolve through the control-plane Nexus package cache. The same URLs are exported as

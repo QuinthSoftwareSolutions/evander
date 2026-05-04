@@ -23,6 +23,7 @@ def test_worker_playbook_exists_with_expected_roles() -> None:
     assert "- role: worker_package_cache_preflight" in worker
     assert "- role: python_env" in worker
     assert "- role: container_worker_runtime" in worker
+    assert "- role: worker_node_toolchain" in worker
     assert "- role: container_worker_service" in worker
     assert "- role: container_worker_verification" in worker
 
@@ -30,6 +31,7 @@ def test_worker_playbook_exists_with_expected_roles() -> None:
         "container_worker_runtime",
         "worker_git_access",
         "worker_package_cache_preflight",
+        "worker_node_toolchain",
         "container_worker_service",
         "container_worker_verification",
     ]:
@@ -41,6 +43,7 @@ def test_worker_role_task_files_are_not_ignored_by_git() -> None:
         "ansible/roles/container_worker_runtime/tasks/main.yml",
         "ansible/roles/worker_git_access/tasks/main.yml",
         "ansible/roles/worker_package_cache_preflight/tasks/main.yml",
+        "ansible/roles/worker_node_toolchain/tasks/main.yml",
         "ansible/roles/container_worker_service/tasks/main.yml",
         "ansible/roles/container_worker_verification/tasks/main.yml",
     ]
@@ -68,6 +71,7 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "src/agent_sandbox/worker" in text
     assert "ansible/roles/python_env" in text
     assert "ansible/roles/worker_package_cache_preflight" in text
+    assert "ansible/roles/worker_node_toolchain" in text
     assert "ansible/roles/container_worker_service" in text
     assert "  - docker" in text
     assert "  - docker.io" in text
@@ -103,6 +107,10 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert 'agent_sandbox_runner_image_name: "agent-sandbox-runner:latest"' in text
     assert "agent_sandbox_runner_image_archive_path" in text
     assert "agent_sandbox_worker_toolchain_cache_root" in text
+    assert "agent_sandbox_worker_node_toolchain_enabled: true" in text
+    assert "agent_sandbox_worker_node_toolchain_local_path" in text
+    assert "HOST_NODE_ROOT" in text
+    assert "agent_sandbox_worker_node_toolchain_archive_path" in text
     assert "agent_sandbox_worker_readonly_mounts" in text
     assert "/opt/agent-sandbox/toolchains/dotnet" in text
     assert "/opt/agent-sandbox/toolchains/node-v24.14.0" in text
@@ -221,6 +229,32 @@ def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_contro
     assert "container user: {{ agent_sandbox_effective_worker_container_user }}" in verification
     assert "agent-sandbox-gateway.service" not in verification
     assert "agent-sandbox-admin-web.service" not in verification
+
+
+def test_worker_node_toolchain_role_seeds_and_verifies_runner_node_cache() -> None:
+    worker = (ROOT / "ansible" / "worker.yml").read_text(encoding="utf-8")
+    role = (ROOT / "ansible" / "roles" / "worker_node_toolchain" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert worker.index("- role: container_worker_runtime") < worker.index(
+        "- role: worker_node_toolchain"
+    )
+    assert worker.index("- role: worker_node_toolchain") < worker.index(
+        "- role: container_worker_service"
+    )
+    assert "Check local Node toolchain directory" in role
+    assert "bin/node" in role
+    assert "bin/npm" in role
+    assert "bin/npx" in role
+    assert "Pack local Node toolchain directory" in role
+    assert "Copy Node toolchain archive to worker" in role
+    assert "Unpack Node toolchain into worker cache" in role
+    assert "Verify worker Node toolchain binaries on host cache" in role
+    assert "Verify Node toolchain is available inside runner container" in role
+    assert "agent_sandbox_runner_image_name" in role
+    assert "/opt/agent-sandbox/toolchains/node-v24.14.0/bin" in role
+    assert "node --version && npm --version && npx --version" in role
 
 
 def test_worker_git_access_role_sets_up_private_repo_checkout_before_repo_checkout() -> None:
