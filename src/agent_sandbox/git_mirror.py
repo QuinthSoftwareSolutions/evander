@@ -177,6 +177,7 @@ class ContainerGitMirrorResolver:
         )
         mirror_sync_remote = "1" if _git_remote_url(self, resolved_repo_path, remote_name) else "0"
         for key, value in (
+            ("agent-sandbox.trustedRepoPath", str(Path(resolved_repo_path).resolve(strict=False))),
             ("agent-sandbox.mirrorSource", mirror_source),
             ("agent-sandbox.mirrorRemoteName", remote_name),
             ("agent-sandbox.mirrorSyncRemote", mirror_sync_remote),

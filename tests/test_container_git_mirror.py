@@ -81,6 +81,14 @@ def test_container_git_mirror_resolves_remote_url_to_private_ssh_mirror(
     assert mirror.worker_repo_source.startswith("ssh://agent-sandbox-git-host")
     assert mirror.worker_repo_source.endswith(f"{mirror.mirror_name}.git")
     assert mirror.mirror_path.is_dir()
+    trusted_repo_path = subprocess.run(
+        ["git", f"--git-dir={mirror.mirror_path}", "config", "--get", "agent-sandbox.trustedRepoPath"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert trusted_repo_path == mirror.resolved_repo_path
     assert _has_ref(mirror.mirror_path, "refs/heads/main")
     assert _has_ref(mirror.mirror_path, "refs/heads/feature/test")
 

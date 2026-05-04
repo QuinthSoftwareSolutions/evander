@@ -518,6 +518,13 @@ def test_handle_git_push_trigger_resolves_git_push_triggers_from_workflow_packs(
             {
                 "runtime_dir": "runtime",
                 "event_queue_store_path": str(relative_queue),
+                "triggers": [
+                    {
+                        "id": "system-chat",
+                        "display_name": "System Chat",
+                        "type": "trigger:system:chat-assistant",
+                    }
+                ],
                 "workflow_packs": [pack_path.name],
             }
         ),

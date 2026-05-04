@@ -74,23 +74,23 @@ def _load_config(path: Path) -> dict:
 
 
 def _resolve_git_push_triggers(*, config: dict, project_dir: Path) -> list[dict]:
+    normalized_triggers: list[dict] = []
     triggers = config.get("triggers", [])
-    if isinstance(triggers, list) and triggers:
-        return triggers
+    if isinstance(triggers, list):
+        normalized_triggers.extend(trigger for trigger in triggers if isinstance(trigger, dict))
 
     configured_packs = config.get("workflow_packs")
     inline_ir = config.get("workflow_ir")
     has_configured_packs = isinstance(configured_packs, list) and bool(configured_packs)
     has_inline_ir = isinstance(inline_ir, dict)
     if not has_configured_packs and not has_inline_ir:
-        return []
+        return normalized_triggers
 
     composition = compose_workflow_ir(
         project_dir=project_dir,
         workflow_packs=configured_packs if has_configured_packs else [],
         inline_ir=inline_ir if has_inline_ir else None,
     )
-    normalized_triggers: list[dict] = []
     for trigger in composition.triggers:
         if not isinstance(trigger, dict):
             continue
