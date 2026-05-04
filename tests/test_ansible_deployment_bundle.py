@@ -151,7 +151,7 @@ def test_ansible_nexus_package_cache_defaults_and_role_contract() -> None:
     assert "agent_sandbox_nexus_port: 8081" in defaults
     assert 'agent_sandbox_nexus_bind_host: "0.0.0.0"' in defaults
     assert "agent_sandbox_nexus_accept_community_eula: true" in defaults
-    assert "https://links.sonatype.com/products/nxrm/ce-eula" in defaults
+    assert "agent_sandbox_nexus_community_eula_disclaimer" not in defaults
     assert 'agent_sandbox_nexus_pypi_proxy_repository: "pypi-proxy"' in defaults
     assert 'agent_sandbox_nexus_pypi_group_repository: "pypi-all"' in defaults
     assert 'agent_sandbox_nexus_npm_proxy_repository: "npm-proxy"' in defaults
@@ -175,6 +175,8 @@ def test_ansible_nexus_package_cache_defaults_and_role_contract() -> None:
     assert "Read Nexus Community Edition EULA status" in tasks
     assert "Accept Nexus Community Edition EULA" in tasks
     assert "service/rest/v1/system/eula" in tasks
+    assert "agent_sandbox_nexus_community_eula_status.json.disclaimer" in tasks
+    assert "agent_sandbox_nexus_community_eula_disclaimer" not in tasks
     assert "no_log: true\n\n    - name: Ensure Nexus service group exists" not in tasks
     assert "Download pinned Nexus archive" in tasks
     assert "agent-sandbox-nexus.service" in tasks
