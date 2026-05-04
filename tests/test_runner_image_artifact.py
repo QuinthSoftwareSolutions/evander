@@ -15,6 +15,8 @@ def test_runner_dockerfile_contains_minimal_runtime_contract() -> None:
     assert "COPY codex /usr/local/bin/codex" in dockerfile
     assert "ENV HOME=/home/agent" in dockerfile
     assert "WORKDIR /home/agent" in dockerfile
+    assert "useradd --uid 1001" not in dockerfile
+    assert "USER agent:agent" not in dockerfile
     assert "/home/agent/repos" in dockerfile
     assert "python3-pip" in dockerfile
     assert "python3-venv" in dockerfile

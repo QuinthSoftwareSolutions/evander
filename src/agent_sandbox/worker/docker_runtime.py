@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from .models import WorkerJobRecord, WorkerJobRequest, WorkerSessionPaths
@@ -109,6 +111,7 @@ class DockerContainerRuntime:
             reject_unsafe_mount(host_path, container_path)
         for mount in self.read_only_mounts:
             validate_worker_read_only_mount(mount)
+        identity_mounts = self._container_identity_mounts(paths)
 
         args = [
             self.docker_binary,
@@ -126,6 +129,8 @@ class DockerContainerRuntime:
             "-w",
             self.sandbox_profile.workdir,
         ]
+        for mount in identity_mounts:
+            args.extend(["-v", mount])
         for mount in self.read_only_mounts:
             args.extend(["-v", mount.docker_volume_arg])
         for cap in self.sandbox_profile.cap_drop:
@@ -150,6 +155,48 @@ class DockerContainerRuntime:
         args.append(request.image)
         args.extend(request.command)
         return args
+
+    def _container_identity_mounts(self, paths: WorkerSessionPaths) -> list[str]:
+        identity = _numeric_container_identity(self.sandbox_profile.user)
+        if identity is None:
+            return []
+        uid, gid = identity
+        identity_dir = paths.root / "container-identity"
+        identity_dir.mkdir(parents=True, exist_ok=True)
+        passwd_path = identity_dir / "passwd"
+        group_path = identity_dir / "group"
+        _write_container_identity_file(
+            passwd_path,
+            f"root:x:0:0:root:/root:/bin/bash\n"
+            f"agent:x:{uid}:{gid}:Agent Sandbox:/home/agent:/bin/bash\n",
+        )
+        _write_container_identity_file(
+            group_path,
+            f"root:x:0:\nagent:x:{gid}:\n",
+        )
+        return [
+            f"{passwd_path}:/etc/passwd:ro",
+            f"{group_path}:/etc/group:ro",
+        ]
+
+
+def _numeric_container_identity(user: str | None) -> tuple[int, int] | None:
+    normalized = str(user or "").strip()
+    if not normalized:
+        return None
+    match = re.fullmatch(r"(?P<uid>[0-9]+)(?::(?P<gid>[0-9]+))?", normalized)
+    if match is None:
+        return None
+    uid = int(match.group("uid"))
+    gid = int(match.group("gid") or match.group("uid"))
+    if uid < 0 or gid < 0:
+        return None
+    return uid, gid
+
+
+def _write_container_identity_file(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o644)
 
 
 def docker_state_to_status(state: dict[str, Any]) -> str:

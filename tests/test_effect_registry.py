@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -14,6 +16,7 @@ from agent_sandbox.effects.providers.agent_clone_repo import (
     _container_reachable_git_remote_url,
 )
 from agent_sandbox.effects.providers.agent_session import (
+    _codex_json_log_filter_script,
     container_prompt_command,
     container_thread_id_from_logs,
     selected_execution_backend_for_target,
@@ -701,6 +704,61 @@ def test_container_prompt_command_does_not_resume_synthetic_chat_thread_id() -> 
     assert "codex exec --json" in command
     assert "-s danger-full-access" in command
     assert "-C /home/agent" in command
+
+
+def test_codex_json_log_filter_handles_current_exec_event_stream() -> None:
+    events = [
+        {"type": "session_meta", "payload": {"id": "019de31a-8393-71d2-8990-e5f4fb0a4df2"}},
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "agent_message",
+                "message": "I am checking the repo now.",
+                "phase": "commentary",
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "I am checking the repo now.",
+                    }
+                ],
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Done."}],
+            },
+        },
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "task_complete",
+                "last_agent_message": "Done.",
+            },
+        },
+    ]
+    completed = subprocess.run(
+        ["python3", "-c", _codex_json_log_filter_script()],
+        input="\n".join(json.dumps(event) for event in events) + "\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.stdout == (
+        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
+        "I am checking the repo now.\n"
+        "Done.\n"
+    )
 
 
 def test_container_thread_id_from_logs_parses_json_filter_output() -> None:

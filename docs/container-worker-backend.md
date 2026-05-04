@@ -73,7 +73,9 @@ from the Ansible control machine and verifies `node`, `npm`, and `npx` inside
 `agent-sandbox-runner:latest`. By default it reads `HOST_NODE_ROOT` or
 `~/.nvm/versions/node/v24.14.0`; set `agent_sandbox_worker_node_toolchain_archive_path` to copy a
 prebuilt tarball instead. Other caches remain operator-controlled and are not baked into the image.
-Secrets are not mounted.
+Secrets are not mounted. When `--container-user` is numeric, the worker daemon writes a per-session
+`/etc/passwd` and `/etc/group` bind mount so tools such as OpenSSH can resolve the active uid
+without the runner image hard-coding a host-specific user id.
 
 Container sessions write `/home/agent/.config/pip/pip.conf` and `/home/agent/.npmrc` so `pip` and
 `npm` resolve through the control-plane Nexus package cache. The same URLs are exported as
@@ -110,7 +112,7 @@ Containers are disposable. Continuity comes from mounting the same `agent_home/`
 
 The daemon does not rewrite commands into `codex resume`. Callers must send the exact command they want to execute. The daemon preserves `/home/agent` so Codex state, identity files, and checked-out repos can resume naturally.
 
-Prompt effects invoke Codex with `codex exec --json` and translate the JSONL event stream back into the legacy human-readable job log. The control plane emits `session id: <thread_id>` as soon as Codex reports `thread.started`, then prints completed assistant messages from `item.completed` events. This keeps existing log consumers on the old text shape while using Codex's supported non-interactive thread-id contract.
+Prompt effects invoke Codex with `codex exec --json` and translate the JSONL event stream back into the legacy human-readable job log. The control plane emits `session id: <thread_id>` as soon as Codex reports either `session_meta` or the older `thread.started` event, then prints assistant messages from the current `event_msg` / `response_item` stream and the older `item.completed` event. This keeps existing log consumers on the old text shape while using Codex's supported non-interactive thread-id contract.
 
 If a request includes `repo_source`, the daemon clones it under `/home/agent/repos/<repo-name>`. Existing non-empty target directories are rejected unless they are already Git checkouts for the same requested source. Worker Git intake is prefix-gated: deployed workers should be started with one or more `--allowed-git-source-prefix` values, and a missing prefix list means all `repo_source` values are rejected.
 

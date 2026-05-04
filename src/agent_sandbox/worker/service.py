@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -33,6 +34,9 @@ from .security import safe_subprocess_error, sanitize_metadata, sanitize_text
 from .store import WorkerJobStore
 
 logger = logging.getLogger(__name__)
+_CODEX_SESSION_ID_LOG_PATTERN = re.compile(
+    r"^session id:\s*(?P<thread_id>\S+)\s*$", re.IGNORECASE | re.MULTILINE
+)
 
 
 class WorkerDaemon:
@@ -153,9 +157,53 @@ class WorkerDaemon:
         try:
             text = self.container_runtime.get_logs(record)
         except subprocess.CalledProcessError:
-            return log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+            text = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+        text = self._augment_codex_session_log(record, text)
         log_path.write_text(text, encoding="utf-8")
         return text
+
+    def _augment_codex_session_log(self, record: WorkerJobRecord, text: str) -> str:
+        thread_ids = list(dict.fromkeys(_CODEX_SESSION_ID_LOG_PATTERN.findall(text)))
+        if not thread_ids:
+            return text
+        messages: list[str] = []
+        seen: set[str] = set()
+        agent_home = Path(record.agent_home_path)
+        for thread_id in thread_ids:
+            for message in self._codex_session_messages(agent_home, thread_id):
+                if message in seen or message in text:
+                    continue
+                seen.add(message)
+                messages.append(message)
+        if not messages:
+            return text
+        prefix = text
+        if prefix and not prefix.endswith("\n"):
+            prefix += "\n"
+        return prefix + "\n".join(messages) + "\n"
+
+    @staticmethod
+    def _codex_session_messages(agent_home: Path, thread_id: str) -> list[str]:
+        messages: list[str] = []
+        seen: set[str] = set()
+        for path in _codex_session_jsonl_paths(agent_home, thread_id):
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for raw_line in lines:
+                try:
+                    event = json.loads(raw_line)
+                except ValueError:
+                    continue
+                for message in _codex_messages_from_session_event(event):
+                    if not message:
+                        continue
+                    if message in seen:
+                        continue
+                    seen.add(message)
+                    messages.append(message)
+        return messages
 
     def prepare_session(self, request: WorkerSessionPrepareRequest) -> WorkerSessionRecord:
         paths = WorkerSessionPaths.resolve(self.worker_root, request.session_id)
@@ -475,3 +523,81 @@ def _repo_source_requires_git_ssh(repo_source: str | None) -> bool:
     return normalized.startswith("ssh://") or bool(
         re.match(r"^[^/@:\s]+@[^:\s]+:.+", normalized)
     )
+
+
+def _codex_session_jsonl_paths(agent_home: Path, thread_id: str) -> list[Path]:
+    roots = [
+        agent_home / ".config" / "agent-sandbox" / "codex" / "sessions",
+        agent_home / ".codex" / "sessions",
+    ]
+    paths: dict[Path, None] = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            matches = root.rglob(f"*{thread_id}*.jsonl")
+            for path in matches:
+                if path.is_file():
+                    paths[path] = None
+        except OSError:
+            continue
+    return sorted(paths, key=lambda path: (path.stat().st_mtime, str(path)))
+
+
+def _codex_messages_from_session_event(event: object) -> list[str]:
+    if not isinstance(event, dict):
+        return []
+    event_type = str(event.get("type") or "")
+    payload = event.get("payload")
+    if event_type == "event_msg" and isinstance(payload, dict):
+        payload_type = str(payload.get("type") or "")
+        if payload_type == "agent_message":
+            return [_codex_first_text(payload.get("message"))]
+        if payload_type == "task_complete":
+            return [_codex_first_text(payload.get("last_agent_message"))]
+        return []
+    if event_type == "response_item" and isinstance(payload, dict):
+        if str(payload.get("type") or "") != "message":
+            return []
+        if str(payload.get("role") or "") != "assistant":
+            return []
+        return [
+            _codex_first_text(
+                payload.get("text"),
+                payload.get("message"),
+                _codex_content_text(payload.get("content")),
+                _codex_content_text(payload.get("formatted")),
+            )
+        ]
+    return []
+
+
+def _codex_content_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for part in value:
+            if isinstance(part, str):
+                if part:
+                    parts.append(part)
+                continue
+            if not isinstance(part, dict):
+                continue
+            part_type = str(part.get("type") or "")
+            if part_type and part_type not in {"text", "output_text", "assistant_message"}:
+                continue
+            text = _codex_first_text(part.get("text"), part.get("content"), part.get("message"))
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+    if isinstance(value, dict):
+        return _codex_first_text(value.get("text"), value.get("content"), value.get("message"))
+    return ""
+
+
+def _codex_first_text(*values: object) -> str:
+    for value in values:
+        if isinstance(value, str) and value:
+            return value
+    return ""

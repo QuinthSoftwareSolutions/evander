@@ -689,14 +689,15 @@ def container_thread_id_from_logs(logs: str) -> str | None:
     return match.group("thread_id").strip() or None
 
 
-def _codex_json_log_filter_shell() -> str:
-    script = r"""
+def _codex_json_log_filter_script() -> str:
+    return r"""
 import json
 import sys
 
 TEXT_PART_TYPES = {"text", "output_text", "assistant_message"}
 ASSISTANT_ITEM_TYPES = {"assistant_message", "message", "final_message"}
 thread_id_printed = False
+printed_messages = set()
 
 
 def first_string(*values):
@@ -737,6 +738,18 @@ def content_text(value):
     return ""
 
 
+def print_message(message):
+    if not isinstance(message, str) or not message:
+        return
+    if message in printed_messages:
+        return
+    printed_messages.add(message)
+    if message.endswith("\n"):
+        print(message, end="", flush=True)
+    else:
+        print(message, flush=True)
+
+
 def thread_id_from_event(event):
     thread = event.get("thread")
     payload = event.get("payload")
@@ -744,6 +757,22 @@ def thread_id_from_event(event):
         event.get("thread_id"),
         thread.get("id") if isinstance(thread, dict) else None,
         payload.get("id") if isinstance(payload, dict) else None,
+    )
+
+
+def text_from_response_item(event):
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return ""
+    if str(payload.get("type") or "") != "message":
+        return ""
+    if str(payload.get("role") or "") != "assistant":
+        return ""
+    return first_text(
+        payload.get("text"),
+        payload.get("message"),
+        content_text(payload.get("content")),
+        content_text(payload.get("formatted")),
     )
 
 
@@ -774,6 +803,14 @@ for raw_line in sys.stdin:
         continue
 
     event_type = str(event.get("type") or "")
+    if event_type == "session_meta":
+        payload = event.get("payload")
+        thread_id = first_string(payload.get("id") if isinstance(payload, dict) else None)
+        if thread_id and not thread_id_printed:
+            print(f"session id: {thread_id}", flush=True)
+            thread_id_printed = True
+        continue
+
     if event_type == "thread.started":
         thread_id = thread_id_from_event(event)
         if thread_id and not thread_id_printed:
@@ -781,13 +818,22 @@ for raw_line in sys.stdin:
             thread_id_printed = True
         continue
 
+    if event_type == "event_msg":
+        payload = event.get("payload")
+        if isinstance(payload, dict):
+            payload_type = str(payload.get("type") or "")
+            if payload_type == "agent_message":
+                print_message(first_text(payload.get("message")))
+            elif payload_type == "task_complete":
+                print_message(first_text(payload.get("last_agent_message")))
+        continue
+
+    if event_type == "response_item":
+        print_message(text_from_response_item(event))
+        continue
+
     if event_type == "item.completed":
-        text = text_from_item_completed(event)
-        if text:
-            if text.endswith("\n"):
-                print(text, end="", flush=True)
-            else:
-                print(text, flush=True)
+        print_message(text_from_item_completed(event))
         continue
 
     if event_type in {"error", "turn.failed"}:
@@ -795,6 +841,10 @@ for raw_line in sys.stdin:
         if message:
             print(f"codex {event_type}: {message}", flush=True)
 """
+
+
+def _codex_json_log_filter_shell() -> str:
+    script = _codex_json_log_filter_script()
     return (
         "agent_sandbox_codex_json_to_log() {\n"
         "  if command -v python3 >/dev/null 2>&1; then\n"

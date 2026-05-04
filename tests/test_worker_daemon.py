@@ -591,6 +591,91 @@ def test_logs_are_written_and_read_from_session_logs(tmp_path: Path) -> None:
     assert log_path.read_text(encoding="utf-8") == "hello from container\n"
 
 
+def test_logs_recover_codex_messages_from_session_jsonl(tmp_path: Path) -> None:
+    thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    runtime = FakeContainerRuntime()
+    runtime.logs["job-1"] = f"session id: {thread_id}\n"
+    client = _client(tmp_path, runtime)
+
+    created = client.post(
+        "/v1/jobs",
+        headers=_auth(),
+        json={
+            "session_id": "session-1",
+            "job_id": "job-1",
+            "image": "codex:latest",
+            "command": ["true"],
+        },
+    )
+    assert created.status_code == 201
+    session_dir = (
+        tmp_path
+        / "worker-root"
+        / "sessions"
+        / "session-1"
+        / "agent_home"
+        / ".config"
+        / "agent-sandbox"
+        / "codex"
+        / "sessions"
+        / "2026"
+        / "05"
+        / "04"
+    )
+    session_dir.mkdir(parents=True)
+    rollout = session_dir / f"rollout-2026-05-04T19-30-23-{thread_id}.jsonl"
+    rollout.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "session_meta", "payload": {"id": thread_id}},
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "agent_message",
+                        "message": "I am checking the repo now.",
+                    },
+                },
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "I am checking the repo now.",
+                            }
+                        ],
+                    },
+                },
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "Done."}],
+                    },
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    response = client.get("/v1/jobs/job-1/logs", headers=_auth())
+
+    assert response.status_code == 200
+    assert response.text == (
+        f"session id: {thread_id}\n"
+        "I am checking the repo now.\n"
+        "Done.\n"
+    )
+    assert response.text.count("I am checking the repo now.") == 1
+    log_path = tmp_path / "worker-root" / "sessions" / "session-1" / "logs" / "job-1.log"
+    assert log_path.read_text(encoding="utf-8") == response.text
+
+
 def test_job_store_omits_secret_fields_and_rejects_raw_environment(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
