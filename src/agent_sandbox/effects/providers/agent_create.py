@@ -144,6 +144,14 @@ class AgentCreateEffectProvider(EffectProviderBase):
             resolved_allowed_tools = requested_tools
         else:
             resolved_allowed_tools = allowed_tools_for_profile(capability_profile)
+        backend = container_backend(context, config)
+        worker_url = normalize_optional_string(
+            getattr(getattr(backend, "client", None), "base_url", None)
+        ) or normalize_optional_string(
+            getattr(getattr(backend, "config", None), "container_worker_base_url", None)
+        )
+        if worker_url:
+            metadata["worker_url"] = worker_url
         manifest = build_container_session_manifest(
             config=effective_config_for_directory(context, directory_path),
             session_id=session_id,
@@ -158,13 +166,13 @@ class AgentCreateEffectProvider(EffectProviderBase):
             metadata=metadata,
         )
         runtime_session_repository(context, config).upsert_session(manifest)
-        backend = container_backend(context, config)
         session_record = backend.prepare_session(
             session_id=session_id,
             metadata={
                 "execution_backend": "container_worker_vm",
                 "directory_path": directory_path,
                 "labels": labels,
+                **({"worker_url": worker_url} if worker_url else {}),
             },
         )
         backend.write_files(

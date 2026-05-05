@@ -2407,6 +2407,69 @@ def test_admin_web_agents_delete_container_cleans_mapping_and_session(
     assert service.runtime.approvals.read_all() == {}
 
 
+def test_admin_web_agents_delete_container_session_uses_persisted_worker_url(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={"execution_backend": "container_worker_vm"},
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-1",
+            session_id="container-session",
+            worker_job_id="job-1",
+            worker_url="http://worker.test",
+            target_name="container-target",
+            last_status="removed",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.deleted_sessions: list[str] = []
+
+        def delete_session(self, session_id: str) -> dict[str, object]:
+            self.deleted_sessions.append(session_id)
+            return {"deleted": True, "session_id": session_id}
+
+    fake_backend = FakeContainerBackend()
+    backend_kwargs: list[dict[str, object]] = []
+
+    def fake_container_worker_backend(self, **kwargs):
+        backend_kwargs.append(dict(kwargs))
+        return fake_backend
+
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(fake_container_worker_backend, service),
+    )
+    client = TestClient(create_app(service))
+
+    response = client.delete(
+        "/api/admin/agents/container-session?backend=container_worker_vm"
+    )
+
+    assert response.status_code == 200
+    assert backend_kwargs == [
+        {"directory_path": "root", "worker_url": "http://worker.test"}
+    ]
+    assert fake_backend.deleted_sessions == ["container-session"]
+    assert service.runtime.session_repository.get_session("container-session") is None
+    assert repository.read_all() == {}
+
+
 def test_admin_web_agents_delete_ambiguous_vm_session_link_fails(
     tmp_path: Path, monkeypatch
 ) -> None:

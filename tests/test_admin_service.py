@@ -404,6 +404,7 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
                 "directory_path": team_path,
                 "target_name": "container-target",
                 "labels": {},
+                "worker_url": "http://team-worker.test:11888",
             },
         )
     ]
@@ -411,6 +412,9 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
     assert "/home/agent/.profile" in written_paths
     assert "/home/agent/.codex/config.toml" in written_paths
     assert "/home/agent/.nuget/NuGet/NuGet.Config" in written_paths
+    manifest = service.runtime.session_repository.get_session("container-session")
+    assert manifest is not None
+    assert manifest.metadata["worker_url"] == "http://team-worker.test:11888"
 
 
 def test_create_container_agent_rejects_mssql(tmp_path: Path) -> None:

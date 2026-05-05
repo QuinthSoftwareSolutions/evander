@@ -3836,7 +3836,12 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             self.config.runtime_dir / "container-worker-executions.json"
         )
 
-    def _container_worker_backend(self, *, directory_path: str | None = None):
+    def _container_worker_backend(
+        self,
+        *,
+        directory_path: str | None = None,
+        worker_url: str | None = None,
+    ):
         from agent_sandbox.execution.container_worker_backend import (
             ContainerWorkerVmExecutionBackend,
         )
@@ -3844,10 +3849,63 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         resolved_config = self.runtime.provider_config.resolve_for_directory(
             self._normalize_directory_path(directory_path)
         )
-        config = resolved_config.model_copy(
-            update={"execution_backend": "container_worker_vm"}
-        )
+        update: dict[str, Any] = {"execution_backend": "container_worker_vm"}
+        normalized_worker_url = str(worker_url or "").strip()
+        if normalized_worker_url:
+            update["container_worker_base_url"] = normalized_worker_url
+        config = resolved_config.model_copy(update=update)
         return ContainerWorkerVmExecutionBackend(config=config)
+
+    @staticmethod
+    def _container_worker_backend_url(backend: Any) -> str | None:
+        client = getattr(backend, "client", None)
+        client_url = str(getattr(client, "base_url", "") or "").strip()
+        if client_url:
+            return client_url
+        config = getattr(backend, "config", None)
+        config_url = str(getattr(config, "container_worker_base_url", "") or "").strip()
+        return config_url or None
+
+    @staticmethod
+    def _container_worker_url_from_metadata(metadata: Any) -> str | None:
+        if not isinstance(metadata, Mapping):
+            return None
+        for key in ("worker_url", "container_worker_base_url"):
+            value = str(metadata.get(key) or "").strip()
+            if value:
+                return value
+        return None
+
+    def _container_worker_url_for_target(
+        self,
+        *,
+        session: SessionManifest | None = None,
+        record: Any | None = None,
+        records: list[Any] | None = None,
+    ) -> str | None:
+        candidates: list[Any] = []
+        if record is not None:
+            candidates.append(record)
+        if records:
+            candidates.extend(
+                sorted(
+                    records,
+                    key=self._container_execution_sort_key,
+                    reverse=True,
+                )
+            )
+        for candidate in candidates:
+            worker_url = str(getattr(candidate, "worker_url", "") or "").strip()
+            if worker_url:
+                return worker_url
+            metadata_url = self._container_worker_url_from_metadata(
+                getattr(candidate, "metadata", None)
+            )
+            if metadata_url:
+                return metadata_url
+        if session is not None:
+            return self._container_worker_url_from_metadata(session.metadata)
+        return None
 
     @staticmethod
     def _agent_record_directory_path(directory_path: str | None) -> str:
@@ -4061,9 +4119,10 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 reconciled.append(record)
                 continue
             try:
-                self._container_worker_backend(directory_path=record.directory_path).inspect(
-                    record.execution_id
-                )
+                self._container_worker_backend(
+                    directory_path=record.directory_path,
+                    worker_url=self._container_worker_url_for_target(record=record),
+                ).inspect(record.execution_id)
                 record = (
                     self._container_worker_execution_repository().get(record.execution_id)
                     or record
@@ -4103,9 +4162,10 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         message: str | None = None
         if reconcile:
             try:
-                self._container_worker_backend(directory_path=record.directory_path).inspect(
-                    record.execution_id
-                )
+                self._container_worker_backend(
+                    directory_path=record.directory_path,
+                    worker_url=self._container_worker_url_for_target(record=record),
+                ).inspect(record.execution_id)
             except Exception as exc:
                 message = str(exc)
             else:
@@ -4374,6 +4434,10 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         if labels:
             metadata["labels"] = labels
         model = self._agent_optional_string(payload, "model")
+        backend = self._container_worker_backend(directory_path=directory_path)
+        worker_url = self._container_worker_backend_url(backend)
+        if worker_url:
+            metadata["worker_url"] = worker_url
         manifest = _build_issue_session_manifest(
             policy=policy,
             session_id=session_id,
@@ -4395,7 +4459,6 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 "metadata": metadata,
             }
         )
-        backend = self._container_worker_backend(directory_path=directory_path)
         session_record = backend.prepare_session(
             session_id=session_id,
             metadata={
@@ -4403,6 +4466,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 "directory_path": directory_path,
                 "target_name": target_name,
                 "labels": labels,
+                **({"worker_url": worker_url} if worker_url else {}),
             },
         )
         from agent_sandbox.effects.providers.agent_session import (
@@ -4637,12 +4701,18 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             if session is not None
             else str(getattr(record, "target_name", "") or agent_id)
         )
+        execution_records = self._container_execution_records_for_session(session_id)
         worker_backend = self._container_worker_backend(
             directory_path=(
                 session.directory_path
                 if session is not None
                 else getattr(record, "directory_path", None)
-            )
+            ),
+            worker_url=self._container_worker_url_for_target(
+                session=session,
+                record=record,
+                records=execution_records,
+            ),
         )
         if record is not None:
             worker_backend.destroy(record.execution_id)
@@ -4700,12 +4770,22 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 if session is not None
                 else str(getattr(record, "session_id", "") or "").strip()
             )
+            execution_records = (
+                self._container_execution_records_for_session(session_id)
+                if session_id
+                else []
+            )
             worker_backend = self._container_worker_backend(
                 directory_path=(
                     session.directory_path
                     if session is not None
                     else getattr(record, "directory_path", None)
-                )
+                ),
+                worker_url=self._container_worker_url_for_target(
+                    session=session,
+                    record=record,
+                    records=execution_records,
+                ),
             )
             if session is None or record is not None:
                 try:
@@ -4713,7 +4793,6 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 except Exception:
                     pass
                 return worker_backend.get_log_snapshot(agent_id, lines=lines)
-            execution_records = self._container_execution_records_for_session(session_id)
             if not execution_records:
                 return f"No container executions have run for session {session_id}.\n"
             per_execution_lines = lines
@@ -4815,18 +4894,30 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 agent_id, require_session=False
             )
             is_session_target = session is not None and record is None
+            session_id = (
+                str(session.session_id).strip()
+                if session is not None
+                else str(getattr(record, "session_id", "") or "").strip()
+            )
+            execution_records = (
+                self._container_execution_records_for_session(session_id)
+                if session_id
+                else []
+            )
             worker_backend = self._container_worker_backend(
                 directory_path=(
                     session.directory_path
                     if session is not None
                     else getattr(record, "directory_path", None)
-                )
+                ),
+                worker_url=self._container_worker_url_for_target(
+                    session=session,
+                    record=record,
+                    records=execution_records,
+                ),
             )
             if action == "stop":
                 if session is not None and record is None:
-                    execution_records = self._container_execution_records_for_session(
-                        session.session_id
-                    )
                     active_records = [
                         candidate
                         for candidate in execution_records
@@ -4852,9 +4943,6 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                     message = status.message or "stop completed"
             elif action == "destroy":
                 if session is not None and record is None:
-                    execution_records = self._container_execution_records_for_session(
-                        session.session_id
-                    )
                     if not execution_records:
                         raise ValueError(
                             f"No container executions for session {session.session_id}"
