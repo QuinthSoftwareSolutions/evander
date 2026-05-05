@@ -75,6 +75,17 @@ type WorkflowGraphLabel = {
 
 type WorkflowGraphView = "directory" | "private";
 
+type CopiedWorkflowNode = {
+  node: WorkflowNodeConfig;
+  position: { x: number; y: number };
+};
+
+type CopiedWorkflowSelection = {
+  nodes: CopiedWorkflowNode[];
+  edges: WorkflowEdge[];
+  primaryNodeId: string | null;
+};
+
 const SYSTEM_BINDING_OPTIONS: ReadonlyArray<BindingOption> = [
   { value: "${{system.now.utc_timestamp}}", label: "[System] now.utc_timestamp" },
   { value: "${{system.now.utc_timestamp_compact}}", label: "[System] now.utc_timestamp_compact" },
@@ -1639,7 +1650,8 @@ export default function App() {
   const { privilegedUnlocked, selectedDirectoryPath, currentUserId, currentUserLabel } = useAdminUi();
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const hasAutoFitRef = useRef(false);
-  const copiedNodeRef = useRef<WorkflowNodeConfig | null>(null);
+  const initialGraphDirectoryPathRef = useRef(selectedDirectoryPath);
+  const copiedSelectionRef = useRef<CopiedWorkflowSelection | null>(null);
   const sidebarResizeRef = useRef<SidebarResizeState | null>(null);
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
@@ -1784,14 +1796,20 @@ export default function App() {
   }, [isResizingSidebar]);
 
   useEffect(() => {
+    let cancelled = false;
     Promise.all([
       fetchJson<WorkflowEditorDocument>("/api/workflow-editor/document"),
       fetchJson<WorkflowEditorCatalog>("/api/workflow-editor/catalog"),
       fetchJson<WorkflowRunSnapshot>("/api/workflow-editor/runs"),
     ])
       .then(([payload, catalogPayload, runSnapshotPayload]) => {
+        if (cancelled) return;
         const normalizedConfig = normalizeDerivedNodeFields(normalizeWorkflowConfigShape(payload.config));
-        const normalizedGraphs = normalizeWorkflowGraphs(normalizedConfig, payload.graphs ?? [], selectedDirectoryPath);
+        const normalizedGraphs = normalizeWorkflowGraphs(
+          normalizedConfig,
+          payload.graphs ?? [],
+          initialGraphDirectoryPathRef.current,
+        );
         const normalizedDocument = { ...payload, config: normalizedConfig, graphs: normalizedGraphs };
         setCatalog(catalogPayload);
         setRunSnapshot(runSnapshotPayload);
@@ -1800,9 +1818,13 @@ export default function App() {
         setFlowEdges(buildEdges(normalizedConfig));
       })
       .catch((reason: unknown) => {
+        if (cancelled) return;
         setError(reason instanceof Error ? reason.message : String(reason));
       });
-  }, [selectedDirectoryPath]);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const stream = new EventSource("/api/workflow-editor/runs/stream");
@@ -1910,16 +1932,16 @@ export default function App() {
 
   useEffect(() => {
     if (!document) return;
-    setFlowNodes((currentNodes) =>
-      buildNodes(
+    setFlowNodes((currentNodes) => {
+      return buildNodes(
         document.config,
         document.layout,
         catalog,
         runSnapshot?.node_activity ?? {},
         currentPositionsFromNodes(currentNodes),
         currentNodes.filter((node) => node.selected).map((node) => node.id),
-      ),
-    );
+      );
+    });
     setFlowEdges(buildEdges(document.config));
   }, [catalog, document, runSnapshot]);
 
@@ -2034,6 +2056,7 @@ export default function App() {
     nextConfig: WorkflowConfig,
     nextLayout: WorkflowLayout,
     nextGraphs?: WorkflowGraphMetadata[],
+    selectedNodeIdsAfterPatch?: string[],
   ) {
     if (!document) return;
     const normalizedConfig = normalizeDerivedNodeFields(normalizeWorkflowConfigShape(nextConfig));
@@ -2050,6 +2073,17 @@ export default function App() {
       graphs: normalizedGraphs,
     };
     setDocument(nextDocument);
+    setFlowNodes((currentNodes) =>
+      buildNodes(
+        normalizedConfig,
+        nextLayout,
+        catalog,
+        runSnapshot?.node_activity ?? {},
+        currentPositionsFromNodes(currentNodes),
+        selectedNodeIdsAfterPatch ?? currentNodes.filter((node) => node.selected).map((node) => node.id),
+      ),
+    );
+    setFlowEdges(buildEdges(normalizedConfig));
     setSaveState("idle");
   }
 
@@ -2127,42 +2161,99 @@ export default function App() {
     setError(null);
   }
 
-  function handleAppShellKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
-    if (isEditableEventTarget(event.target)) return;
-    const isCopy = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c";
-    const isPaste = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v";
-    if (isCopy) {
-      if (!selectedNode) return;
-      event.preventDefault();
-      copiedNodeRef.current = cloneNodeConfig(selectedNode);
-      setError(null);
-      return;
-    }
-    if (isPaste) {
-      if (!document || !copiedNodeRef.current || editLocked) return;
-      event.preventDefault();
-      const templateNode = copiedNodeRef.current;
+  function copySelectedNodes() {
+    if (!document || selectedNodeIds.length === 0) return false;
+    const selectedNodeIdSet = new Set(selectedNodeIds);
+    const nodesById = new Map(workflowNodes(document.config).map((node) => [node.id, node]));
+    const positionsById = new Map(flowNodes.map((node) => [node.id, node.position]));
+    const copiedNodes = selectedNodeIds
+      .map((nodeId, index) => {
+        const node = nodesById.get(nodeId);
+        if (!node) return null;
+        return {
+          node: cloneNodeConfig(node),
+          position: positionsById.get(nodeId) ?? document.layout.nodes[nodeId] ?? fallbackPosition(index),
+        };
+      })
+      .filter((node): node is CopiedWorkflowNode => Boolean(node));
+    if (copiedNodes.length === 0) return false;
+    copiedSelectionRef.current = {
+      nodes: copiedNodes,
+      edges: document.config.edges
+        .filter((edge) => selectedNodeIdSet.has(edge.source_id) && selectedNodeIdSet.has(edge.target_id))
+        .map((edge) => ({ ...edge })),
+      primaryNodeId:
+        selectedNodeId && selectedNodeIdSet.has(selectedNodeId)
+          ? selectedNodeId
+          : copiedNodes[0]?.node.id ?? null,
+    };
+    setError(null);
+    return true;
+  }
+
+  function pasteCopiedSelection() {
+    const copiedSelection = copiedSelectionRef.current;
+    if (!document || !copiedSelection || copiedSelection.nodes.length === 0 || editLocked) return false;
+    const nextConfig = cloneConfig(document.config);
+    nextConfig.triggers ??= [];
+    nextConfig.gates ??= [];
+    nextConfig.effects ??= [];
+    nextConfig.queries ??= [];
+    const idMap = new Map<string, string>();
+    for (const copiedNode of copiedSelection.nodes) {
+      const templateNode = copiedNode.node;
       const templateKind = nodeKindFromType(templateNode.type);
-      const nextConfig = cloneConfig(document.config);
-      nextConfig.triggers ??= [];
-      nextConfig.gates ??= [];
-      nextConfig.effects ??= [];
-      nextConfig.queries ??= [];
       const nextId = generateNodeId(nextConfig, templateKind, templateNode.type);
       const duplicatedNode = cloneNodeConfig(templateNode);
       duplicatedNode.id = nextId;
       duplicatedNode.display_name = `${templateNode.display_name} Copy`;
       nextConfig[kindCollectionKey(templateKind)].push(duplicatedNode);
-      const currentPosition =
-        flowNodes.find((node) => node.id === templateNode.id)?.position ??
-        document.layout.nodes[templateNode.id] ??
-        fallbackPosition(0);
-      const nextLayout = cloneLayout(document.layout);
-      nextLayout.nodes[nextId] = { x: currentPosition.x + 40, y: currentPosition.y + 40 };
-      patchDocument(nextConfig, nextLayout);
-      setProgrammaticSelection([nextId], nextId);
-      setSelectedEdgeId(null);
-      setError(null);
+      idMap.set(templateNode.id, nextId);
+    }
+    const duplicatedEdges = copiedSelection.edges
+      .map((edge) => {
+        const sourceId = idMap.get(edge.source_id);
+        const targetId = idMap.get(edge.target_id);
+        if (!sourceId || !targetId) return null;
+        return {
+          ...edge,
+          source_id: sourceId,
+          target_id: targetId,
+        };
+      })
+      .filter((edge): edge is WorkflowEdge => Boolean(edge));
+    nextConfig.edges = [...nextConfig.edges, ...duplicatedEdges];
+    const nextLayout = cloneLayout(document.layout);
+    for (const copiedNode of copiedSelection.nodes) {
+      const nextId = idMap.get(copiedNode.node.id);
+      if (!nextId) continue;
+      nextLayout.nodes[nextId] = {
+        x: copiedNode.position.x + 40,
+        y: copiedNode.position.y + 40,
+      };
+    }
+    const pastedNodeIds = copiedSelection.nodes
+      .map((copiedNode) => idMap.get(copiedNode.node.id))
+      .filter((nodeId): nodeId is string => Boolean(nodeId));
+    const preferredPastedNodeId =
+      copiedSelection.primaryNodeId ? idMap.get(copiedSelection.primaryNodeId) ?? null : null;
+    patchDocument(nextConfig, nextLayout, undefined, pastedNodeIds);
+    setProgrammaticSelection(pastedNodeIds, preferredPastedNodeId);
+    setSelectedEdgeId(null);
+    setError(null);
+    return true;
+  }
+
+  function handleAppShellKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (isEditableEventTarget(event.target)) return;
+    const isCopy = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c";
+    const isPaste = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v";
+    if (isCopy) {
+      if (copySelectedNodes()) event.preventDefault();
+      return;
+    }
+    if (isPaste) {
+      if (pasteCopiedSelection()) event.preventDefault();
       return;
     }
     if (!selectedEdgeId) return;
@@ -2202,7 +2293,7 @@ export default function App() {
         nextConfig.queries.length -
         1,
     );
-    patchDocument(nextConfig, nextLayout);
+    patchDocument(nextConfig, nextLayout, undefined, [node.id]);
     setProgrammaticSelection([node.id], node.id);
     setSelectedEdgeId(null);
     setError(null);
@@ -2370,7 +2461,7 @@ export default function App() {
         nextLayout.nodes[rawId] = nextLayout.nodes[selectedNode.id] ?? fallbackPosition(0);
         delete nextLayout.nodes[selectedNode.id];
       }
-      patchDocument(nextConfig, nextLayout);
+      patchDocument(nextConfig, nextLayout, undefined, [rawId]);
       setProgrammaticSelection([rawId], rawId);
       setSelectedEdgeId(null);
       setError(null);
