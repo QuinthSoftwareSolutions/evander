@@ -175,6 +175,28 @@ ansible-playbook \
   ansible/site.yml
 ```
 
+## Azure Pipelines
+
+The repository root includes `azure-pipelines.yml` for a manual deploy pipeline that reuses these
+playbooks instead of replacing them. The pipeline runs the control-plane deployment first, then
+builds `dist/agent-sandbox-runner.tar`, then deploys the worker VM:
+
+1. `ansible-playbook -i <inventory> ansible/site.yml`
+2. `./scripts/build_agent_sandbox_runner_image.sh`
+3. `ansible-playbook -i <inventory> ansible/worker.yml`
+
+The pipeline passes `$(Build.SourceVersion)` as `agent_sandbox_repo_version` so target hosts deploy
+the same revision that Azure Pipelines checked out. The default inventory is
+`ansible/inventory/azure.yml`; override the `inventoryPath`, `controlPlaneLimit`, and `workerLimit`
+parameters when deploying a different environment or a subset of hosts.
+
+Set the secret Azure Pipelines variable `ANSIBLE_VAULT_PASSWORD` so the pipeline can read the
+encrypted Vault-backed variables. The selected self-hosted agent pool must have SSH reachability to
+the control plane and worker hosts, the inventory-referenced SSH private keys, known host entries or
+an SSH accept-new policy, Python, and Docker for the runner-image build. A self-hosted agent in the
+Azure VNet or on the control-plane host is usually the lowest-friction option for private worker
+access.
+
 ## Re-Runs And Idempotency
 
 The playbook is intended to be safe to re-run:

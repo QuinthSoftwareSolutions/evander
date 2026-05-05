@@ -1,0 +1,151 @@
+trigger: none
+pr: none
+
+parameters:
+  - name: agentPoolName
+    displayName: Self-hosted agent pool
+    type: string
+    default: Default
+  - name: inventoryPath
+    displayName: Ansible inventory path
+    type: string
+    default: ansible/inventory/azure.yml
+  - name: controlPlaneLimit
+    displayName: Optional control-plane host limit
+    type: string
+    default: ""
+  - name: workerLimit
+    displayName: Optional worker host limit
+    type: string
+    default: ""
+
+variables:
+  AGENT_SANDBOX_REPO_VERSION: $(Build.SourceVersion)
+  ANSIBLE_FORCE_COLOR: "true"
+  ANSIBLE_INVENTORY: ${{ parameters.inventoryPath }}
+  CONTROL_PLANE_LIMIT: ${{ parameters.controlPlaneLimit }}
+  PYTHONUNBUFFERED: "1"
+  WORKER_LIMIT: ${{ parameters.workerLimit }}
+
+stages:
+  - stage: DeployControlPlane
+    displayName: Deploy control plane
+    jobs:
+      - deployment: ControlPlane
+        displayName: Run ansible/site.yml
+        environment: agent-sandbox-control-plane
+        pool:
+          name: ${{ parameters.agentPoolName }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  clean: true
+                  fetchDepth: 0
+
+                - bash: |
+                    set -euo pipefail
+
+                    export PATH="$HOME/.local/bin:$PATH"
+                    if ! command -v ansible-playbook >/dev/null 2>&1; then
+                      python3 -m pip install --user ansible-core
+                    fi
+
+                    echo "##vso[task.prependpath]$HOME/.local/bin"
+                    ansible-playbook --version
+                  displayName: Ensure Ansible is available
+
+                - bash: |
+                    set -euo pipefail
+
+                    if [ -z "${ANSIBLE_VAULT_PASSWORD:-}" ] || [ "$ANSIBLE_VAULT_PASSWORD" = '$(ANSIBLE_VAULT_PASSWORD)' ]; then
+                      echo "Set the secret pipeline variable ANSIBLE_VAULT_PASSWORD." >&2
+                      exit 1
+                    fi
+
+                    vault_file="$PIPELINE_WORKSPACE/.ansible-vault-pass"
+                    umask 077
+                    printf '%s\n' "$ANSIBLE_VAULT_PASSWORD" > "$vault_file"
+                    trap 'rm -f "$vault_file"' EXIT
+
+                    limit_args=()
+                    if [ -n "${CONTROL_PLANE_LIMIT:-}" ]; then
+                      limit_args=(--limit "$CONTROL_PLANE_LIMIT")
+                    fi
+
+                    ansible-playbook \
+                      -i "$ANSIBLE_INVENTORY" \
+                      --vault-password-file "$vault_file" \
+                      -e "agent_sandbox_repo_version=$AGENT_SANDBOX_REPO_VERSION" \
+                      "${limit_args[@]}" \
+                      ansible/site.yml
+                  displayName: Deploy control plane with Ansible
+                  env:
+                    ANSIBLE_VAULT_PASSWORD: $(ANSIBLE_VAULT_PASSWORD)
+                    PIPELINE_WORKSPACE: $(Pipeline.Workspace)
+
+  - stage: DeployWorkerVm
+    displayName: Deploy worker VM
+    dependsOn: DeployControlPlane
+    jobs:
+      - deployment: WorkerVm
+        displayName: Build runner image and run ansible/worker.yml
+        environment: agent-sandbox-worker
+        pool:
+          name: ${{ parameters.agentPoolName }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  clean: true
+                  fetchDepth: 0
+
+                - bash: |
+                    set -euo pipefail
+
+                    export PATH="$HOME/.local/bin:$PATH"
+                    if ! command -v ansible-playbook >/dev/null 2>&1; then
+                      python3 -m pip install --user ansible-core
+                    fi
+
+                    echo "##vso[task.prependpath]$HOME/.local/bin"
+                    ansible-playbook --version
+                  displayName: Ensure Ansible is available
+
+                - bash: |
+                    set -euo pipefail
+
+                    ./scripts/build_agent_sandbox_runner_image.sh
+                    test -s dist/agent-sandbox-runner.tar
+                  displayName: Build container runner image archive
+
+                - bash: |
+                    set -euo pipefail
+
+                    if [ -z "${ANSIBLE_VAULT_PASSWORD:-}" ] || [ "$ANSIBLE_VAULT_PASSWORD" = '$(ANSIBLE_VAULT_PASSWORD)' ]; then
+                      echo "Set the secret pipeline variable ANSIBLE_VAULT_PASSWORD." >&2
+                      exit 1
+                    fi
+
+                    vault_file="$PIPELINE_WORKSPACE/.ansible-vault-pass"
+                    umask 077
+                    printf '%s\n' "$ANSIBLE_VAULT_PASSWORD" > "$vault_file"
+                    trap 'rm -f "$vault_file"' EXIT
+
+                    limit_args=()
+                    if [ -n "${WORKER_LIMIT:-}" ]; then
+                      limit_args=(--limit "$WORKER_LIMIT")
+                    fi
+
+                    ansible-playbook \
+                      -i "$ANSIBLE_INVENTORY" \
+                      --vault-password-file "$vault_file" \
+                      -e "agent_sandbox_repo_version=$AGENT_SANDBOX_REPO_VERSION" \
+                      "${limit_args[@]}" \
+                      ansible/worker.yml
+                  displayName: Deploy worker VM with Ansible
+                  env:
+                    ANSIBLE_VAULT_PASSWORD: $(ANSIBLE_VAULT_PASSWORD)
+                    PIPELINE_WORKSPACE: $(Pipeline.Workspace)
