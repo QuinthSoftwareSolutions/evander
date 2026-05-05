@@ -2262,6 +2262,34 @@ select {
   border: 1px solid rgba(93, 75, 48, 0.12);
   border-radius: 14px;
   background: rgba(244, 239, 231, 0.94);
+  min-width: 0;
+}
+
+.users-page .feature-toolbar > div,
+.users-page .panel-header,
+.users-page .panel-meta,
+.user-list-item {
+  min-width: 0;
+}
+
+.users-page .feature-toolbar h2,
+.users-page .feature-toolbar .muted-text,
+.users-page .panel-meta,
+.user-list-item strong,
+.user-list-item .feature-list-meta {
+  overflow-wrap: anywhere;
+}
+
+.user-list-item-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  width: 100%;
+}
+
+.user-list-item-row .status-pill {
+  align-self: start;
+  margin-top: 0.08rem;
 }
 
 .vm-list-item {
@@ -2422,9 +2450,16 @@ select {
 }
 
 .status-pill {
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  max-width: 100%;
+  flex-shrink: 0;
   padding: 0.2rem 0.55rem;
   border-radius: 999px;
   font-size: 0.74rem;
+  line-height: 1.1;
+  white-space: nowrap;
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -3283,6 +3318,28 @@ select {
   border-spacing: 0;
 }
 
+.users-page .admin-table {
+  min-width: 860px;
+  table-layout: fixed;
+}
+
+.users-page .admin-table th:first-child,
+.users-page .admin-table td:first-child {
+  width: 32%;
+}
+
+.users-page .admin-table th:nth-child(2),
+.users-page .admin-table td:nth-child(2) {
+  width: 8rem;
+}
+
+.users-page .admin-table th:nth-child(4),
+.users-page .admin-table td:nth-child(4),
+.users-page .admin-table th:nth-child(5),
+.users-page .admin-table td:nth-child(5) {
+  width: 14rem;
+}
+
 .admin-table thead th {
   position: sticky;
   top: 0;
@@ -3303,6 +3360,7 @@ select {
   border-bottom: 1px solid rgba(32, 69, 78, 0.08);
   color: #183142;
   vertical-align: top;
+  overflow-wrap: anywhere;
 }
 
 .admin-table tbody tr {
@@ -3892,6 +3950,29 @@ select {
 :root[data-theme="dark"] .agent-execution-row > div:first-child span,
 :root[data-theme="dark"] .agent-execution-meta {
   color: #b8a386;
+}
+
+:root[data-theme="dark"] .admin-table thead th {
+  border-bottom-color: rgba(125, 170, 190, 0.2);
+  background: rgba(31, 46, 55, 0.98);
+  color: #b9cad5;
+}
+
+:root[data-theme="dark"] .admin-table tbody td {
+  border-bottom-color: rgba(125, 170, 190, 0.12);
+  color: #d7e3ea;
+}
+
+:root[data-theme="dark"] .admin-table tbody tr:hover {
+  background: rgba(48, 68, 78, 0.56);
+}
+
+:root[data-theme="dark"] .admin-table tbody tr.selected {
+  background: rgba(47, 102, 132, 0.38);
+}
+
+:root[data-theme="dark"] .empty-state-cell {
+  color: #a7bac8;
 }
 
 :root[data-theme="dark"] .vm-list-item:hover {
