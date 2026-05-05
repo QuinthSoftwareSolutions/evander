@@ -16,6 +16,7 @@ from agent_sandbox.workflow.compiler import (
     compile_trigger_orchestrator_config,
     compile_trigger_orchestrator_config_with_diagnostics,
 )
+from agent_sandbox.workflow.migrations import migrate_agent_prompt_lifecycle_ports
 from agent_sandbox.workflow.transforms import resolve_workflow_transforms
 from agent_sandbox.workflow.packs import _pack_path, compose_workflow_ir
 
@@ -183,6 +184,7 @@ def compile_worker_global_config_with_diagnostics(
 def _compose_configured_workflow_ir(
     *, project_dir: Path, payload: dict[str, Any]
 ) -> dict[str, Any]:
+    payload = migrate_agent_prompt_lifecycle_ports(payload)
     configured_packs = payload.get("workflow_packs")
     inline_ir = payload.get("workflow_ir")
     has_configured_packs = isinstance(configured_packs, list) and bool(configured_packs)
@@ -206,7 +208,7 @@ def _compose_configured_workflow_ir(
         configured_edges=payload.get("edges"),
         node_ids=_collect_workflow_node_ids(merged),
     )
-    return merged
+    return migrate_agent_prompt_lifecycle_ports(merged)
 
 
 def _merge_system_managed_workflow_nodes(

@@ -292,6 +292,10 @@ orchestrator’s durable execution stores.
 - `workflow_packs`: ordered list of pack file names (relative to `config/workflow-packs/`)
 - optional `workflow_ir`: inline IR fragment for local overlays
 
+Each pack can also carry optional `graphs` metadata. A graph entry names one connected node set
+inside the pack (`id`, `name`, `description`, `directory_paths`, `user_ids`, `node_ids`) so the
+editor can select, filter, and label that workflow without treating the whole pack as one graph.
+
 At load time, the orchestrator composes selected pack IR + optional inline IR into executable
 runtime arrays (`triggers`, `gates`, `effects`, `queries`, `edges`) and then runs existing graph
 validation/compilation.

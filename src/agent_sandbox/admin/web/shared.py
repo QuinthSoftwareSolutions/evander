@@ -16,6 +16,12 @@ import jwt
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from agent_sandbox.admin.web.user_store import (
+    AdminWebUserRecord,
+    AdminWebUserStore,
+    normalize_admin_web_login,
+)
+
 AdminAuthMode = Literal["none", "local_password", "azure_sso"]
 
 AZURE_SSO_START_PATH = "/api/auth/azure-sso/start"
@@ -49,7 +55,7 @@ class AzureSsoConfig:
     client_secret: str
     redirect_uri: str
     authority_base_url: str
-    allowed_users: frozenset[str]
+    bootstrap_users: frozenset[str]
     post_login_redirect: str
 
     @property
@@ -148,7 +154,7 @@ class AdminWebConfig:
             raise ValueError(
                 "AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT must be an absolute in-app path"
             )
-        allowed_users = frozenset(
+        bootstrap_users = frozenset(
             item
             for item in (
                 _normalize_user_identifier(value)
@@ -167,8 +173,6 @@ class AdminWebConfig:
             missing.append(
                 "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI or AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL"
             )
-        if not allowed_users:
-            missing.append("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS")
         if missing:
             raise ValueError(f"Azure SSO admin auth is incomplete; missing {', '.join(missing)}")
         return AzureSsoConfig(
@@ -177,16 +181,31 @@ class AdminWebConfig:
             client_secret=client_secret,
             redirect_uri=redirect_uri,
             authority_base_url=authority_base_url,
-            allowed_users=allowed_users,
+            bootstrap_users=bootstrap_users,
             post_login_redirect=post_login_redirect,
         )
 
 
 class AdminWebAuth:
-    def __init__(self, config: AdminWebConfig) -> None:
+    def __init__(self, config: AdminWebConfig, user_store: AdminWebUserStore | None = None) -> None:
         self.config = config
+        self.user_store = user_store
         self._privileged_session_id: str | None = None
         self._azure_metadata_cache: dict[str, Any] | None = None
+        if self.config.auth_mode == "azure_sso":
+            if self.user_store is None:
+                raise ValueError("Azure SSO admin auth requires an admin web user store")
+            azure = self._require_azure_sso_config()
+            self.user_store.bootstrap_admins(azure.bootstrap_users)
+            users = self.user_store.list_users()
+            if not users:
+                raise ValueError(
+                    "Azure SSO admin auth has no configured users; set "
+                    "AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS for first startup "
+                    "or populate runtime/admin-web-users.json"
+                )
+            if not any(user.role == "admin" for user in users):
+                raise ValueError("Azure SSO admin auth requires at least one admin user")
 
     def authentication_payload(self, request: Request) -> dict[str, Any]:
         session = self.read_session(request)
@@ -198,6 +217,8 @@ class AdminWebAuth:
             "authenticated": session is not None or not self.config.auth_required,
             "username": session.get("login") if session else default_identity,
             "display_name": session.get("name") if session else default_identity,
+            "role": session.get("role") if session else None,
+            "can_manage_users": bool(session.get("can_manage_users")) if session else False,
             "session_id": session_id,
             "available_login_methods": (
                 []
@@ -265,6 +286,8 @@ class AdminWebAuth:
                 "sid": "local-dev",
                 "login": self.config.username,
                 "name": self.config.username,
+                "role": "admin",
+                "can_manage_users": True,
             }
         return session
 
@@ -275,6 +298,8 @@ class AdminWebAuth:
                 "sid": "local-dev",
                 "login": self.config.username,
                 "name": self.config.username,
+                "role": "admin",
+                "can_manage_users": True,
             }
         token = request.cookies.get(self.config.cookie_name, "")
         if not token:
@@ -284,6 +309,13 @@ class AdminWebAuth:
             return None
         if payload.get("kind") != "session":
             return None
+        if self.config.auth_mode == "azure_sso":
+            user = self._user_for_session_payload(payload)
+            if user is None:
+                return None
+            return self._enrich_azure_session(payload, user)
+        payload["role"] = "admin"
+        payload["can_manage_users"] = True
         return payload
 
     def attach_session_cookie(self, response: Response, token: str) -> None:
@@ -374,11 +406,13 @@ class AdminWebAuth:
         claims = await self._validate_azure_id_token(str(token_response.get("id_token") or ""))
         if str(claims.get("tid") or "") != azure.tenant_id:
             raise ValueError("Azure sign-in tenant is not allowed")
-        login = self._extract_allowed_azure_login(claims)
+        login = self._extract_azure_login(claims)
+        display_name = str(claims.get("name") or login)
+        user = self._require_azure_user(login, display_name=display_name)
         token = self._encode_session(
             subject=str(claims.get("sub") or ""),
-            login=login,
-            display_name=str(claims.get("name") or login),
+            login=user.login,
+            display_name=user.display_name or display_name,
             extras={
                 "auth_mode": "azure_sso",
                 "tid": str(claims.get("tid") or ""),
@@ -451,8 +485,7 @@ class AdminWebAuth:
         self._azure_metadata_cache = payload
         return payload
 
-    def _extract_allowed_azure_login(self, claims: dict[str, Any]) -> str:
-        azure = self._require_azure_sso_config()
+    def _extract_azure_login(self, claims: dict[str, Any]) -> str:
         login = (
             _normalize_user_identifier(claims.get("preferred_username"))
             or _normalize_user_identifier(claims.get("upn"))
@@ -460,9 +493,39 @@ class AdminWebAuth:
         )
         if not login:
             raise ValueError("Azure sign-in token did not include a supported user identifier")
-        if login not in azure.allowed_users:
-            raise ValueError("Azure sign-in user is not allowed")
         return login
+
+    def _require_azure_user(
+        self, login: str, *, display_name: str | None = None
+    ) -> AdminWebUserRecord:
+        if self.user_store is None:
+            raise ValueError("Azure SSO admin auth requires an admin web user store")
+        user = self.user_store.record_login(login=login, display_name=display_name)
+        if user is None:
+            raise ValueError("Azure sign-in user is not allowed")
+        return user
+
+    def _user_for_session_payload(self, payload: dict[str, Any]) -> AdminWebUserRecord | None:
+        if self.user_store is None:
+            return None
+        login = normalize_admin_web_login(payload.get("login"))
+        if login is None:
+            return None
+        return self.user_store.get_user(login)
+
+    def _enrich_azure_session(
+        self, payload: dict[str, Any], user: AdminWebUserRecord
+    ) -> dict[str, Any]:
+        enriched = dict(payload)
+        enriched["login"] = user.login
+        enriched["name"] = user.display_name or str(payload.get("name") or user.login)
+        enriched["role"] = user.role
+        enriched["can_manage_users"] = user.role == "admin"
+        return enriched
+
+    def can_manage_users(self, request: Request) -> bool:
+        session = self.read_session(request)
+        return bool(session and session.get("can_manage_users"))
 
     def _require_azure_sso_config(self) -> AzureSsoConfig:
         if self.config.auth_mode != "azure_sso" or self.config.azure_sso is None:

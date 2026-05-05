@@ -18,6 +18,7 @@ from agent_sandbox.events.provider_models import (
     GitPromoteAgentBranchEffectDefinition,
     GitPushTriggerDefinition,
     IssueUpdateStateEffectDefinition,
+    NotificationSendEffectDefinition,
     PrCreateEffectDefinition,
     PullRequestNewFeedbackTriggerDefinition,
     ReviewNewRequestTriggerDefinition,
@@ -486,6 +487,32 @@ def test_pr_create_effect_requires_host_repo_path() -> None:
                 "id": "effect-pr-missing-path",
                 "display_name": "Create PR",
                 "type": "effect:pr:create",
+            }
+        )
+
+
+def test_notification_send_effect_requires_target_and_message() -> None:
+    effect = NotificationSendEffectDefinition.model_validate(
+        {
+            "id": "effect-notify",
+            "display_name": "Notify",
+            "type": "effect:notification:send",
+            "communication_target_id": "Teams-Primary",
+            "message": "Done",
+            "severity": "success",
+        }
+    )
+
+    assert effect.communication_target_id == "teams-primary"
+    assert effect.severity == "success"
+
+    with pytest.raises(ValueError, match="Field required"):
+        NotificationSendEffectDefinition.model_validate(
+            {
+                "id": "effect-notify-missing-message",
+                "display_name": "Notify",
+                "type": "effect:notification:send",
+                "communication_target_id": "teams-primary",
             }
         )
 

@@ -671,6 +671,7 @@ class VmAgentAdminService:
             assistant_scope=scope,
             session_id=session_id,
             agent_thread_id=agent_thread_id,
+            thread_id=thread_id,
         )
         self._ensure_chat_assistant_manifest(
             session_id=session_id,
@@ -741,16 +742,36 @@ class VmAgentAdminService:
                 break
 
         updated = 0
+        skip_repository_update = False
         if normalized_user_id:
+            current_mapping = self._assistant_session_repo.get_mapping(
+                user_id=normalized_user_id,
+                backend=normalized_backend,
+                assistant_scope=normalized_scope,
+            )
+            current_chat_thread_id = (
+                str((current_mapping or {}).get("thread_id") or "").strip()
+                if current_mapping is not None
+                else ""
+            )
+            should_update_mapping = not (
+                current_chat_thread_id
+                and chat_thread_id
+                and current_chat_thread_id != chat_thread_id
+            )
+            if not should_update_mapping:
+                skip_repository_update = True
+        if normalized_user_id and not skip_repository_update:
             self._assistant_session_repo.upsert_mapping(
                 user_id=normalized_user_id,
                 backend=normalized_backend,
                 assistant_scope=normalized_scope,
                 session_id=normalized_session_id,
                 agent_thread_id=normalized_thread_id,
+                thread_id=chat_thread_id,
             )
             updated += 1
-        else:
+        elif not skip_repository_update and not chat_thread_id:
             updated += self._assistant_session_repo.update_agent_thread_id_for_session(
                 session_id=normalized_session_id,
                 agent_thread_id=normalized_thread_id,
@@ -776,6 +797,53 @@ class VmAgentAdminService:
                 metadata["admin_chat_threads"] = chat_threads
                 repository.upsert_session(session.model_copy(update={"metadata": metadata}))
         return updated
+
+    def reset_chat_assistant_thread_context(
+        self,
+        *,
+        user_id: str,
+        backend: str | None = None,
+        assistant_scope: str | None = None,
+        thread_id: str | None = None,
+    ) -> dict[str, str]:
+        normalized_backend = str(backend or "libvirt_vm").strip() or "libvirt_vm"
+        normalized_user_id = str(user_id or "anonymous").strip() or "anonymous"
+        normalized_scope = str(assistant_scope or "admin_chat").strip() or "admin_chat"
+        normalized_chat_thread_id = str(thread_id or "").strip()
+        existing = self._assistant_session_repo.get_mapping(
+            user_id=normalized_user_id,
+            backend=normalized_backend,
+            assistant_scope=normalized_scope,
+        )
+        if existing is not None:
+            session_id = existing["session_id"]
+        elif normalized_backend == "libvirt_vm":
+            session_id = "assistant-shared"
+        else:
+            session_id = f"assistant-{_safe_chat_assistant_identifier(normalized_user_id)}"
+
+        self._assistant_session_repo.upsert_mapping(
+            user_id=normalized_user_id,
+            backend=normalized_backend,
+            assistant_scope=normalized_scope,
+            session_id=session_id,
+            agent_thread_id="",
+            thread_id=normalized_chat_thread_id,
+        )
+
+        repository = self._session_repository()
+        session = repository.get_session(session_id)
+        if session is not None:
+            metadata = dict(getattr(session, "metadata", {}) or {})
+            if "agent_thread_id" in metadata:
+                metadata.pop("agent_thread_id", None)
+                repository.upsert_session(session.model_copy(update={"metadata": metadata}))
+
+        return {
+            "session_id": session_id,
+            "agent_thread_id": "",
+            "thread_id": normalized_chat_thread_id,
+        }
 
     def _stored_chat_assistant_thread_id(self, session_id: str) -> str:
         session = self._session_repository().get_session(session_id)

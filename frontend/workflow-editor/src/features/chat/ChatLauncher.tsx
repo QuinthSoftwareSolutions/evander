@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchTranscript,
   postChatMessage,
+  startNewChatSession,
   startOrGetChatSession,
   type CapabilityMode,
   type ChatMessage,
@@ -42,15 +43,22 @@ export function ChatLauncher({
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const activeThreadRef = useRef("");
 
   const expanded = state === "expanded";
   const disabled = !assistantEnabled || state === "disabled";
-  const canSend = assistantEnabled && !sending && Boolean(threadId) && draft.trim().length > 0;
+  const canSend =
+    assistantEnabled && !sending && !resetting && Boolean(threadId) && draft.trim().length > 0;
   const statusText = useMemo(() => {
     if (!assistantEnabled) return "Disabled";
     return mode === "full-access" ? "Full access" : "Read only";
   }, [assistantEnabled, mode]);
+
+  useEffect(() => {
+    activeThreadRef.current = threadId;
+  }, [threadId]);
 
   useEffect(() => {
     if (!launcherAllowed || !assistantEnabled) {
@@ -129,18 +137,42 @@ export function ChatLauncher({
   async function send(event?: { preventDefault: () => void }) {
     event?.preventDefault();
     const content = draft.trim();
-    if (!content || !threadId || sending) return;
+    if (!content || !threadId || sending || resetting) return;
+    const targetThreadId = threadId;
     setSending(true);
     setError("");
     try {
-      const response = await postChatMessage(threadId, content);
+      const response = await postChatMessage(targetThreadId, content);
+      if (activeThreadRef.current !== response.thread_id) return;
       setMessages((current) => mergeMessages(current, response.messages));
       setMode(response.assistant_capability_mode);
       setDraft("");
     } catch (e) {
+      if (activeThreadRef.current !== targetThreadId) return;
       setError(e instanceof Error ? e.message : "Failed to send message");
     } finally {
       setSending(false);
+    }
+  }
+
+  async function startNewChat() {
+    if (resetting || !assistantEnabled) return;
+    setResetting(true);
+    setSending(false);
+    setError("");
+    try {
+      const session = await startNewChatSession();
+      activeThreadRef.current = session.thread_id;
+      setThreadId(session.thread_id);
+      setMode(session.assistant_capability_mode);
+      setMessages([]);
+      setDraft("");
+      setState("expanded");
+      window.localStorage.setItem(UI_KEY, "expanded");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to start new chat");
+    } finally {
+      setResetting(false);
     }
   }
 
@@ -163,9 +195,24 @@ export function ChatLauncher({
                 {statusText}
               </span>
             </div>
-            <button type="button" className="chat-icon-button" aria-label="Minimize assistant" onClick={toggleState}>
-              -
-            </button>
+            <div className="chat-panel-actions">
+              <button
+                type="button"
+                className="chat-new-button"
+                onClick={() => void startNewChat()}
+                disabled={resetting || !assistantEnabled}
+              >
+                {resetting ? "Starting" : "New chat"}
+              </button>
+              <button
+                type="button"
+                className="chat-icon-button"
+                aria-label="Minimize assistant"
+                onClick={toggleState}
+              >
+                -
+              </button>
+            </div>
           </header>
 
           <div className="chat-messages" ref={scrollRef}>
@@ -198,7 +245,7 @@ export function ChatLauncher({
                   void send(event);
                 }
               }}
-              disabled={disabled || sending}
+              disabled={disabled || sending || resetting}
             />
             <button type="submit" className="chat-send-button" disabled={!canSend}>
               {sending ? "Sending" : "Send"}

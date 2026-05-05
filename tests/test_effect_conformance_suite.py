@@ -108,6 +108,14 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "session_id": "session-1",
         }
     )
+    agent_destroy = adapter.validate_python(
+        {
+            "id": "effect-agent-destroy",
+            "display_name": "Destroy agent",
+            "type": "effect:agent:destroy",
+            "session_id": "session-1",
+        }
+    )
     agent_clone = adapter.validate_python(
         {
             "id": "effect-agent-clone",
@@ -222,12 +230,22 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "host_repo_path": "/repo",
         }
     )
+    notification = adapter.validate_python(
+        {
+            "id": "effect-notify",
+            "display_name": "Notify",
+            "type": "effect:notification:send",
+            "communication_target_id": "teams-primary",
+            "message": "Done",
+        }
+    )
 
     assert vm.type == "effect:vm:create"
     assert vm.labels == {"workflow": "issue-worker"}
     assert vm_start.type == "effect:vm:start"
     assert vm_stop.type == "effect:vm:stop"
     assert agent_create.type == "effect:agent:create"
+    assert agent_destroy.type == "effect:agent:destroy"
     assert agent_clone.type == "effect:agent:clone-repo"
     assert agent_frontend.type == "effect:agent:bootstrap-frontend"
     assert agent_copy.type == "effect:agent:copy-files"
@@ -238,6 +256,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert vm_exec.type == "effect:vm:exec"
     assert vm_copy.type == "effect:vm:copy-files"
     assert issue_state.type == "effect:issue:update-state"
+    assert notification.type == "effect:notification:send"
     assert promote.type == "effect:git:promote-agent-branch"
     assert pr_create.type == "effect:pr:create"
     assert prompt.prompt == "Continue ${{effect_1.session_id}}"

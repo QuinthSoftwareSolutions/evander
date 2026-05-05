@@ -1770,7 +1770,6 @@ def test_admin_service_can_read_and_mutate_trigger_orchestrator_effects_by_id(
             "display_name": "Prompt agent updated",
             "type": "effect:agent:prompt",
             "prompt": "Summarize latest",
-            "output_mode": "immediate",
         }
     ]
     assert updated.config["edges"] == [{"source_id": "cron-15m", "target_id": "prompt-agent"}]
@@ -2227,6 +2226,167 @@ def test_workflow_editor_save_updates_single_workflow_pack_without_flattening_wr
     assert reread.config["effects"][0]["display_name"] == "Prompt agent with context"
     assert reread.layout_path == str(layout_path)
     assert reread.layout["nodes"]["prompt-agent"] == {"x": 300.0, "y": 50.0}
+
+
+def test_workflow_editor_reads_and_saves_named_graphs_inside_single_pack(
+    tmp_path: Path,
+) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    pack_path = packs_dir / "demo.v1.json"
+    pack_path.write_text(
+        json.dumps(
+            {
+                "pack_id": "demo",
+                "pack_version": "v1",
+                "graphs": [
+                    {
+                        "id": "graph-ticket",
+                        "name": "Ticket intake",
+                        "description": "Handles new tickets.",
+                        "directory_paths": ["root"],
+                        "user_ids": ["alice"],
+                        "node_ids": ["trigger-ticket", "effect-ticket"],
+                    },
+                    {
+                        "id": "graph-cron",
+                        "name": "Scheduled cleanup",
+                        "directory_paths": ["root/team-a"],
+                        "user_ids": ["bob"],
+                        "node_ids": ["trigger-cron", "effect-cron"],
+                    },
+                ],
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-ticket",
+                            "display_name": "Ticket created",
+                            "type": "trigger:ticket:created",
+                            "directories": ["root"],
+                        },
+                        {
+                            "id": "effect-ticket",
+                            "display_name": "Prompt ticket",
+                            "type": "effect:agent:prompt",
+                            "prompt": "Handle ticket",
+                        },
+                        {
+                            "id": "trigger-cron",
+                            "display_name": "Every hour",
+                            "type": "trigger:cron",
+                            "expression": "0 * * * *",
+                        },
+                        {
+                            "id": "effect-cron",
+                            "display_name": "Cleanup",
+                            "type": "effect:bash:script",
+                            "script_path": "/bin/echo",
+                        },
+                    ],
+                    "edges": [
+                        {"source_id": "trigger-ticket", "target_id": "effect-ticket"},
+                        {"source_id": "trigger-cron", "target_id": "effect-cron"},
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    config_path = config_root / "config.json"
+    config_path.write_text(
+        json.dumps({"runtime_dir": str(tmp_path / "runtime"), "workflow_packs": ["demo.v1.json"]}),
+        encoding="utf-8",
+    )
+    service = AdminService(write_config(tmp_path))
+
+    document = service.read_workflow_editor_document()
+
+    assert [
+        (graph.id, graph.name, graph.directory_paths, graph.user_ids, graph.node_ids)
+        for graph in document.graphs
+    ] == [
+        ("graph-ticket", "Ticket intake", ["root"], ["alice"], ["trigger-ticket", "effect-ticket"]),
+        ("graph-cron", "Scheduled cleanup", ["root/team-a"], ["bob"], ["trigger-cron", "effect-cron"]),
+    ]
+
+    edited_graphs = [graph.model_dump(mode="json") for graph in document.graphs]
+    edited_graphs[0]["name"] = "Root ticket intake"
+    edited_graphs[0]["description"] = "Visible root-directory graph edit."
+    save_result = service.save_workflow_editor_document(
+        config=document.config,
+        layout=document.layout,
+        graphs=edited_graphs,
+    )
+
+    assert save_result.graphs[0].name == "Root ticket intake"
+    wrapper_config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert wrapper_config["workflow_packs"] == ["demo.v1.json"]
+    assert "workflow_graphs" not in wrapper_config
+    pack_payload = json.loads(pack_path.read_text(encoding="utf-8"))
+    assert pack_payload["graphs"] == [
+        {
+            "id": "graph-ticket",
+            "name": "Root ticket intake",
+            "description": "Visible root-directory graph edit.",
+            "directory_paths": ["root"],
+            "user_ids": ["alice"],
+            "node_ids": ["trigger-ticket", "effect-ticket"],
+        },
+        {
+            "id": "graph-cron",
+            "name": "Scheduled cleanup",
+            "directory_paths": ["root/team-a"],
+            "user_ids": ["bob"],
+            "node_ids": ["trigger-cron", "effect-cron"],
+        },
+    ]
+    assert pack_payload["graphs"][1] == {
+        "id": "graph-cron",
+        "name": "Scheduled cleanup",
+        "directory_paths": ["root/team-a"],
+        "user_ids": ["bob"],
+        "node_ids": ["trigger-cron", "effect-cron"],
+    }
+
+
+def test_workflow_editor_rejects_graph_metadata_that_crosses_connected_components(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    with pytest.raises(ValueError, match="node_ids must match one connected graph"):
+        service.validate_workflow_editor_document(
+            config={
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "trigger-a",
+                        "display_name": "Trigger A",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    },
+                    {
+                        "id": "trigger-b",
+                        "display_name": "Trigger B",
+                        "type": "trigger:cron",
+                        "expression": "*/5 * * * *",
+                    },
+                ],
+                "effects": [],
+                "edges": [],
+            },
+            layout={},
+            graphs=[
+                {
+                    "id": "graph-crossed",
+                    "name": "Crossed graph",
+                    "node_ids": ["trigger-a", "trigger-b"],
+                }
+            ],
+        )
 
 
 def test_workflow_editor_validation_rejects_unknown_layout_nodes(tmp_path: Path) -> None:

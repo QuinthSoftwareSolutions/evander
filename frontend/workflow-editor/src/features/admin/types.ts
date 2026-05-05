@@ -1,4 +1,31 @@
-export type AdminView = "workflow" | "agents" | "vms" | "issues";
+export type AdminView =
+  | "workflow"
+  | "agents"
+  | "vms"
+  | "issues"
+  | "sessions"
+  | "configuration"
+  | "users"
+  | "workers";
+
+export type AdminWebUserRole = "admin" | "regular";
+
+export type AdminWebUserRecord = {
+  login: string;
+  role: AdminWebUserRole;
+  display_name: string | null;
+  created_at: string;
+  updated_at: string;
+  last_login_at: string | null;
+};
+
+export type AdminUserListResponse = {
+  users: AdminWebUserRecord[];
+};
+
+export type AdminUserMutationResponse = {
+  user: AdminWebUserRecord;
+};
 
 export type AgentBackend = "libvirt_vm" | "container_worker_vm";
 

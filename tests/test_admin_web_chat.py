@@ -27,16 +27,27 @@ class FakeAuth:
 
 
 class FakeVmAgentAdmin:
+    def __init__(self) -> None:
+        self.reset_calls: list[dict[str, Any]] = []
+
     def resolve_chat_assistant_session(self, **_kwargs: Any) -> dict[str, str]:
         return {
             "session_id": "assistant-session",
             "agent_thread_id": "assistant-thread",
         }
 
+    def reset_chat_assistant_thread_context(self, **kwargs: Any) -> dict[str, str]:
+        self.reset_calls.append(dict(kwargs))
+        return {
+            "session_id": "assistant-session",
+            "agent_thread_id": "",
+            "thread_id": str(kwargs.get("thread_id") or ""),
+        }
+
 
 class FakeAdminService:
     def __init__(self, runtime_dir: Path) -> None:
-        self.config = SimpleNamespace(runtime_dir=runtime_dir)
+        self.config = SimpleNamespace(runtime_dir=runtime_dir, execution_backend="libvirt_vm")
         self.vm_agent_admin = FakeVmAgentAdmin()
         self.published_chat_events: list[dict[str, Any]] = []
 
@@ -112,3 +123,38 @@ def test_chat_routes_normalize_user_ids_and_enforce_thread_ownership(tmp_path: P
     alice_transcript = alice.get(f"/api/chat/transcript/{alice_session['thread_id']}").json()
     assert [message["role"] for message in alice_transcript["messages"]] == ["user"]
     assert alice_transcript["messages"][0]["status"] == "queued"
+
+
+def test_chat_new_session_clears_widget_thread_and_resets_assistant_context(
+    tmp_path: Path,
+) -> None:
+    service = FakeAdminService(tmp_path)
+    alice = _client_for_user(service, {"username": "alice"})
+
+    first_session = alice.post("/api/chat/session").json()
+    first_post = alice.post(
+        "/api/chat/message",
+        json={"thread_id": first_session["thread_id"], "content": "keep this separate"},
+    )
+    assert first_post.status_code == 200
+
+    new_session_response = alice.post("/api/chat/session/new")
+    assert new_session_response.status_code == 200
+    new_session = new_session_response.json()
+
+    assert new_session["thread_id"] != first_session["thread_id"]
+    assert service.vm_agent_admin.reset_calls == [
+        {
+            "user_id": "alice",
+            "backend": "libvirt_vm",
+            "assistant_scope": "admin_chat",
+            "thread_id": new_session["thread_id"],
+        }
+    ]
+
+    old_transcript = alice.get(f"/api/chat/transcript/{first_session['thread_id']}").json()
+    new_transcript = alice.get(f"/api/chat/transcript/{new_session['thread_id']}").json()
+    assert [message["content"] for message in old_transcript["messages"]] == [
+        "keep this separate"
+    ]
+    assert new_transcript["messages"] == []

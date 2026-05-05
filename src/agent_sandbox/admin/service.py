@@ -22,7 +22,7 @@ from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, field_validator
 import yaml
 
 from agent_sandbox.agent_control import AgentControlStore
@@ -81,6 +81,11 @@ from agent_sandbox.models import (
 from agent_sandbox.runtime import RuntimeContext, build_runtime
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.workflow.events import WorkflowEventJournal, workflow_event_journal_path
+from agent_sandbox.workflow.migrations import (
+    AGENT_PROMPT_COMPLETED_PORT,
+    AGENT_PROMPT_STARTED_PORT,
+    migrate_agent_prompt_lifecycle_ports,
+)
 from agent_sandbox.workflow.runtime_config import (
     _compose_configured_workflow_ir,
     compile_worker_global_config_with_diagnostics,
@@ -310,6 +315,24 @@ class WorkflowEditorLayoutDocument(BaseModel):
     nodes: dict[str, WorkflowEditorNodeLayout] = Field(default_factory=dict)
 
 
+class WorkflowEditorGraphMetadata(BaseModel):
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    description: str | None = None
+    directory_paths: list[str] = Field(default_factory=lambda: ["root"])
+    user_ids: list[str] = Field(default_factory=list)
+    node_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("directory_paths", "user_ids", "node_ids", mode="before")
+    @classmethod
+    def _normalize_string_lists(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        return value
+
+
 class WorkflowEditorDocumentPayload(BaseModel):
     worker_id: str = "trigger-orchestrator"
     config_path: str
@@ -318,6 +341,7 @@ class WorkflowEditorDocumentPayload(BaseModel):
     layout_exists: bool
     config: dict[str, object]
     layout: dict[str, object]
+    graphs: list[WorkflowEditorGraphMetadata] = Field(default_factory=list)
     saved_at: datetime | None = None
     revision: str | None = None
 
@@ -326,6 +350,7 @@ class WorkflowEditorValidationPayload(BaseModel):
     worker_id: str = "trigger-orchestrator"
     config: dict[str, object]
     layout: dict[str, object]
+    graphs: list[WorkflowEditorGraphMetadata] = Field(default_factory=list)
     validation_diagnostics: list[dict[str, object]] = Field(default_factory=list)
 
 
@@ -335,6 +360,7 @@ class WorkflowEditorSavePayload(BaseModel):
     layout_path: str
     config: dict[str, object]
     layout: dict[str, object]
+    graphs: list[WorkflowEditorGraphMetadata] = Field(default_factory=list)
     saved_at: datetime | None = None
     revision: str | None = None
 
@@ -1047,6 +1073,26 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="effect",
+        type="effect:agent:destroy",
+        label="Agent destroy",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field(
+                "execution_backend",
+                "Execution backend",
+                "enum",
+                options=[
+                    _field_option("libvirt_vm", "Libvirt VM"),
+                    _field_option("container_worker_vm", "Container worker VM"),
+                ],
+            ),
+            _field("directory_path", "Directory path", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
         type="effect:agent:clone-repo",
         label="Agent clone repo",
         fields=[
@@ -1133,15 +1179,17 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("model", "Model", "string", bindable=True),
             _field("vm_user", "VM user", "string", bindable=True),
             _field("resume_thread_id", "Resume thread ID", "string", bindable=True),
-            _field(
-                "output_mode",
-                "Output mode",
-                "string",
-                bindable=True,
-                options=[
-                    _field_option("immediate", "Immediate"),
-                    _field_option("on_completion", "On completion"),
-                ],
+        ],
+        output_ports=[
+            _port(
+                AGENT_PROMPT_STARTED_PORT,
+                "Started",
+                description="Emits after the prompt has been dispatched.",
+            ),
+            _port(
+                AGENT_PROMPT_COMPLETED_PORT,
+                "Completed",
+                description="Emits after the agent run has completed.",
             ),
         ],
     ),
@@ -1285,6 +1333,28 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("issue_id", "Issue ID", "string", required=True, bindable=True),
             _field("state", "State", "string", required=True, bindable=True),
             _field("sync_proxy_cache", "Sync proxy cache", "boolean", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:notification:send",
+        label="Send notification",
+        fields=[
+            _field("communication_target_id", "Communication target ID", "string", required=True),
+            _field("message", "Message", "string", required=True, bindable=True, multiline=True),
+            _field(
+                "severity",
+                "Severity",
+                "enum",
+                options=[
+                    _field_option("info", "Info"),
+                    _field_option("success", "Success"),
+                    _field_option("warning", "Warning"),
+                    _field_option("error", "Error"),
+                ],
+            ),
+            _field("subject", "Subject", "string", bindable=True),
+            _field("thread_id", "Thread ID", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -5603,9 +5673,10 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         *,
         config: dict[str, object],
         layout: dict[str, object] | None = None,
+        graphs: list[dict[str, object]] | None = None,
     ) -> WorkflowEditorValidationPayload:
         return self.workflow_config_admin.validate_workflow_editor_document(
-            config=config, layout=layout
+            config=config, layout=layout, graphs=graphs
         )
 
     def save_workflow_editor_document(
@@ -5613,9 +5684,10 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         *,
         config: dict[str, object],
         layout: dict[str, object] | None = None,
+        graphs: list[dict[str, object]] | None = None,
     ) -> WorkflowEditorSavePayload:
         return self.workflow_config_admin.save_workflow_editor_document(
-            config=config, layout=layout
+            config=config, layout=layout, graphs=graphs
         )
 
     def read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
@@ -5802,6 +5874,332 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             raise ValueError("workflow pack reference must stay under config/workflow-packs")
         return self.project_dir / "config" / "workflow-packs" / relative
 
+    def _workflow_editor_stored_graphs(
+        self, raw_config: dict[str, object]
+    ) -> list[dict[str, object]]:
+        graphs: list[dict[str, object]] = []
+        workflow_packs = raw_config.get("workflow_packs")
+        if isinstance(workflow_packs, list):
+            for pack_reference in workflow_packs:
+                pack_path = self._workflow_editor_pack_path(pack_reference)
+                if not pack_path.exists():
+                    continue
+                pack_payload = json.loads(pack_path.read_text(encoding="utf-8"))
+                if not isinstance(pack_payload, dict):
+                    continue
+                pack_graphs = pack_payload.get("graphs")
+                if isinstance(pack_graphs, list):
+                    graphs.extend(item for item in pack_graphs if isinstance(item, dict))
+        inline_graphs = raw_config.get("workflow_graphs")
+        if isinstance(inline_graphs, list):
+            graphs.extend(item for item in inline_graphs if isinstance(item, dict))
+        return graphs
+
+    def _workflow_editor_nodes_by_id(
+        self, config: dict[str, object]
+    ) -> dict[str, dict[str, object]]:
+        nodes_by_id: dict[str, dict[str, object]] = {}
+        for collection_name in ("triggers", "gates", "effects", "queries"):
+            entries = config.get(collection_name)
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                node_id = str(entry.get("id") or "").strip()
+                if node_id:
+                    nodes_by_id[node_id] = entry
+        return nodes_by_id
+
+    def _workflow_editor_connected_graph_node_ids(
+        self, config: dict[str, object]
+    ) -> list[list[str]]:
+        nodes_by_id = self._workflow_editor_nodes_by_id(config)
+        ordered_node_ids = list(nodes_by_id)
+        node_ids = set(ordered_node_ids)
+        neighbors: dict[str, set[str]] = {node_id: set() for node_id in ordered_node_ids}
+        edges = config.get("edges")
+        if isinstance(edges, list):
+            for edge in edges:
+                if not isinstance(edge, dict):
+                    continue
+                source_id = str(edge.get("source_id") or "").strip()
+                target_id = str(edge.get("target_id") or "").strip()
+                if source_id not in node_ids or target_id not in node_ids:
+                    continue
+                neighbors[source_id].add(target_id)
+                neighbors[target_id].add(source_id)
+
+        components: list[list[str]] = []
+        visited: set[str] = set()
+        order = {node_id: index for index, node_id in enumerate(ordered_node_ids)}
+        for node_id in ordered_node_ids:
+            if node_id in visited:
+                continue
+            stack = [node_id]
+            component: set[str] = set()
+            while stack:
+                current = stack.pop()
+                if current in visited:
+                    continue
+                visited.add(current)
+                component.add(current)
+                stack.extend(sorted(neighbors[current] - visited, key=order.get, reverse=True))
+            components.append(sorted(component, key=order.get))
+        return components
+
+    def _workflow_editor_default_graph_name(
+        self,
+        *,
+        component: list[str],
+        nodes_by_id: dict[str, dict[str, object]],
+        index: int,
+    ) -> str:
+        trigger_node = next(
+            (
+                nodes_by_id[node_id]
+                for node_id in component
+                if str(nodes_by_id[node_id].get("type") or "").startswith("trigger:")
+            ),
+            None,
+        )
+        fallback_node = nodes_by_id.get(component[0]) if component else None
+        source_node = trigger_node or fallback_node
+        display_name = str(source_node.get("display_name") or "").strip() if source_node else ""
+        return display_name or f"Graph {index + 1}"
+
+    def _workflow_editor_graph_id_base(
+        self,
+        *,
+        component: list[str],
+        nodes_by_id: dict[str, dict[str, object]],
+        index: int,
+    ) -> str:
+        trigger_id = next(
+            (
+                node_id
+                for node_id in component
+                if str(nodes_by_id[node_id].get("type") or "").startswith("trigger:")
+            ),
+            "",
+        )
+        source = trigger_id or (component[0] if component else f"graph-{index + 1}")
+        slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", source).strip("-").lower()
+        return f"graph-{slug or index + 1}"
+
+    def _coerce_workflow_editor_graphs(
+        self,
+        graphs: object,
+        *,
+        strict: bool,
+    ) -> list[WorkflowEditorGraphMetadata]:
+        if graphs is None:
+            return []
+        if not isinstance(graphs, list):
+            if strict:
+                raise ValueError("Workflow graphs must be a JSON array.")
+            return []
+        normalized: list[WorkflowEditorGraphMetadata] = []
+        for entry in graphs:
+            if not isinstance(entry, dict):
+                if strict:
+                    raise ValueError("Workflow graph entries must be JSON objects.")
+                continue
+            try:
+                graph = WorkflowEditorGraphMetadata.model_validate(entry)
+            except ValidationError as exc:
+                if strict:
+                    raise _safe_validation_error(exc, context="Invalid workflow graph") from exc
+                continue
+            graph_id = graph.id.strip()
+            graph_name = graph.name.strip()
+            node_ids: list[str] = []
+            seen_node_ids: set[str] = set()
+            for raw_node_id in graph.node_ids:
+                node_id = str(raw_node_id or "").strip()
+                if not node_id or node_id in seen_node_ids:
+                    continue
+                seen_node_ids.add(node_id)
+                node_ids.append(node_id)
+            if not graph_id or not graph_name:
+                if strict:
+                    raise ValueError("Workflow graph id and name are required.")
+                continue
+            description = graph.description.strip() if graph.description else None
+            directory_paths: list[str] = []
+            seen_directory_paths: set[str] = set()
+            for raw_directory_path in graph.directory_paths:
+                directory_path = str(raw_directory_path or "").strip()
+                if not directory_path:
+                    continue
+                try:
+                    normalized_directory_path = DirectoryPath(
+                        segments=directory_path
+                    ).as_posix()
+                except ValueError as exc:
+                    if strict:
+                        raise ValueError(
+                            f"Workflow graph {graph_id} has invalid directory path: {directory_path}"
+                        ) from exc
+                    continue
+                if normalized_directory_path in seen_directory_paths:
+                    continue
+                seen_directory_paths.add(normalized_directory_path)
+                directory_paths.append(normalized_directory_path)
+            if not directory_paths:
+                directory_paths = ["root"]
+            user_ids: list[str] = []
+            seen_user_ids: set[str] = set()
+            for raw_user_id in graph.user_ids:
+                user_id = str(raw_user_id or "").strip()
+                if not user_id or user_id in seen_user_ids:
+                    continue
+                seen_user_ids.add(user_id)
+                user_ids.append(user_id)
+            normalized.append(
+                WorkflowEditorGraphMetadata(
+                    id=graph_id,
+                    name=graph_name,
+                    description=description or None,
+                    directory_paths=directory_paths,
+                    user_ids=user_ids,
+                    node_ids=node_ids,
+                )
+            )
+        return normalized
+
+    def _workflow_editor_graphs_for_config(
+        self,
+        *,
+        config: dict[str, object],
+        graphs: object,
+        strict: bool = False,
+    ) -> list[WorkflowEditorGraphMetadata]:
+        components = self._workflow_editor_connected_graph_node_ids(config)
+        component_keys = {frozenset(component) for component in components}
+        node_ids = set(self._workflow_editor_nodes_by_id(config))
+        stored_graphs = self._coerce_workflow_editor_graphs(graphs, strict=strict)
+        seen_graph_ids: set[str] = set()
+        seen_graph_keys: set[frozenset[str]] = set()
+        valid_stored_graphs: list[WorkflowEditorGraphMetadata] = []
+        for graph in stored_graphs:
+            graph_key = frozenset(graph.node_ids)
+            if graph.id in seen_graph_ids:
+                if strict:
+                    raise ValueError(f"Duplicate workflow graph id: {graph.id}")
+                continue
+            seen_graph_ids.add(graph.id)
+            unknown_node_ids = sorted(node_id for node_id in graph.node_ids if node_id not in node_ids)
+            if unknown_node_ids:
+                if strict:
+                    unknown_list = ", ".join(unknown_node_ids)
+                    raise ValueError(
+                        f"Workflow graph {graph.id} references unknown node IDs: {unknown_list}"
+                    )
+                continue
+            if graph_key in seen_graph_keys:
+                if strict:
+                    raise ValueError(
+                        f"Multiple workflow graphs describe the same connected graph: {graph.id}"
+                    )
+                continue
+            seen_graph_keys.add(graph_key)
+            if strict and graph_key not in component_keys:
+                raise ValueError(
+                    f"Workflow graph {graph.id} node_ids must match one connected graph."
+                )
+            valid_stored_graphs.append(graph)
+        stored_graphs = valid_stored_graphs
+
+        by_exact_key = {frozenset(graph.node_ids): graph for graph in stored_graphs}
+        unmatched_graphs = [
+            graph for graph in stored_graphs if frozenset(graph.node_ids) not in component_keys
+        ]
+        used_graph_ids: set[str] = set()
+        used_result_ids: set[str] = set()
+        result: list[WorkflowEditorGraphMetadata] = []
+        nodes_by_id = self._workflow_editor_nodes_by_id(config)
+        for index, component in enumerate(components):
+            component_key = frozenset(component)
+            matched = by_exact_key.get(component_key)
+            if matched is None:
+                matched = max(
+                    (
+                        graph
+                        for graph in unmatched_graphs
+                        if graph.id not in used_graph_ids and component_key.intersection(graph.node_ids)
+                    ),
+                    key=lambda graph: len(component_key.intersection(graph.node_ids)),
+                    default=None,
+                )
+            if matched is not None:
+                used_graph_ids.add(matched.id)
+                graph_id = matched.id
+                graph_name = matched.name
+                graph_description = matched.description
+                graph_directory_paths = matched.directory_paths or ["root"]
+                graph_user_ids = matched.user_ids
+            else:
+                graph_id = self._workflow_editor_graph_id_base(
+                    component=component, nodes_by_id=nodes_by_id, index=index
+                )
+                graph_name = self._workflow_editor_default_graph_name(
+                    component=component, nodes_by_id=nodes_by_id, index=index
+                )
+                graph_description = None
+                graph_directory_paths = ["root"]
+                graph_user_ids = []
+            unique_id = graph_id
+            suffix = 2
+            while unique_id in used_result_ids:
+                unique_id = f"{graph_id}-{suffix}"
+                suffix += 1
+            used_result_ids.add(unique_id)
+            result.append(
+                WorkflowEditorGraphMetadata(
+                    id=unique_id,
+                    name=graph_name,
+                    description=graph_description,
+                    directory_paths=graph_directory_paths,
+                    user_ids=graph_user_ids,
+                    node_ids=component,
+                )
+            )
+        return result
+
+    def _workflow_editor_graph_payloads_to_persist(
+        self,
+        *,
+        raw_graphs: list[dict[str, object]],
+        normalized_graphs: list[WorkflowEditorGraphMetadata],
+    ) -> list[dict[str, object]]:
+        raw_graphs_by_id: dict[str, dict[str, object]] = {}
+        normalized_raw_graphs_by_id: dict[str, dict[str, object]] = {}
+        for raw_graph in raw_graphs:
+            graph_id = str(raw_graph.get("id") or "").strip()
+            if not graph_id or graph_id in raw_graphs_by_id:
+                continue
+            raw_graphs_by_id[graph_id] = raw_graph
+            normalized_raw_graph = self._coerce_workflow_editor_graphs(
+                [raw_graph],
+                strict=False,
+            )
+            if normalized_raw_graph:
+                normalized_raw_graphs_by_id[graph_id] = normalized_raw_graph[0].model_dump(
+                    mode="json"
+                )
+
+        graph_payloads: list[dict[str, object]] = []
+        for graph in normalized_graphs:
+            graph_payload = graph.model_dump(mode="json")
+            raw_graph = raw_graphs_by_id.get(graph.id)
+            normalized_raw_graph = normalized_raw_graphs_by_id.get(graph.id)
+            if raw_graph is not None and graph_payload == normalized_raw_graph:
+                graph_payloads.append(json.loads(json.dumps(raw_graph)))
+            else:
+                graph_payloads.append(graph_payload)
+        return graph_payloads
+
     def _compose_workflow_editor_config(self, payload: dict[str, object]) -> dict[str, object]:
         candidate = json.loads(json.dumps(payload))
         if not isinstance(candidate, dict):
@@ -5834,6 +6232,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         pack_path: Path,
         workflow_packs: list[object],
         validated_config: dict[str, object],
+        graph_payloads: list[dict[str, object]] | None,
     ) -> None:
         if pack_path.exists():
             pack_payload = json.loads(pack_path.read_text(encoding="utf-8"))
@@ -5856,6 +6255,8 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             "nodes": nodes,
             "edges": validated_config.get("edges", []),
         }
+        if graph_payloads is not None:
+            pack_payload["graphs"] = graph_payloads
 
         graph_keys = {"triggers", "gates", "effects", "queries", "edges"}
         wrapper_config = {
@@ -5863,6 +6264,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         }
         wrapper_config["workflow_packs"] = workflow_packs
         wrapper_config.pop("workflow_ir", None)
+        wrapper_config.pop("workflow_graphs", None)
 
         self._write_json_file_atomic(config_path, wrapper_config)
         self._write_json_file_atomic(pack_path, pack_payload)
@@ -5926,6 +6328,10 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             node_ids=self._collect_workflow_node_ids(normalized_config),
             allow_unknown_nodes=True,
         )
+        graphs = self._workflow_editor_graphs_for_config(
+            config=normalized_config,
+            graphs=self._workflow_editor_stored_graphs(raw_config),
+        )
         saved_at = (
             datetime.fromtimestamp(config_path.stat().st_mtime, tz=UTC) if config_exists else None
         )
@@ -5937,6 +6343,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             layout_exists=layout_exists,
             config=normalized_config,
             layout=layout,
+            graphs=graphs,
             saved_at=saved_at,
             revision=revision,
         )
@@ -5949,6 +6356,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         *,
         config: dict[str, object],
         layout: dict[str, object] | None = None,
+        graphs: list[dict[str, object]] | None = None,
         base_config: dict[str, object] | None = None,
     ) -> WorkflowEditorValidationPayload:
         merged_config = self._merge_system_managed_workflows(
@@ -5965,13 +6373,23 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         normalized_config = _strip_default_edge_fields(
             compiled_config.model_dump(mode="json", exclude_none=True)
         )
+        editable_normalized_config = self._strip_system_managed_workflows(normalized_config)
         normalized_layout = self._validate_workflow_editor_layout(
             layout or {},
-            node_ids=self._collect_workflow_node_ids(normalized_config),
+            node_ids=self._collect_workflow_node_ids(editable_normalized_config),
+        )
+        graph_source: object = graphs
+        if graph_source is None and isinstance(base_config, dict):
+            graph_source = self._workflow_editor_stored_graphs(base_config)
+        normalized_graphs = self._workflow_editor_graphs_for_config(
+            config=editable_normalized_config,
+            graphs=graph_source,
+            strict=graphs is not None,
         )
         return WorkflowEditorValidationPayload(
-            config=self._strip_system_managed_workflows(normalized_config),
+            config=editable_normalized_config,
             layout=normalized_layout,
+            graphs=normalized_graphs,
             validation_diagnostics=[
                 {"code": "domain_validation", "message": message} for message in diagnostics
             ],
@@ -5982,6 +6400,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         *,
         config: dict[str, object],
         layout: dict[str, object] | None = None,
+        graphs: list[dict[str, object]] | None = None,
     ) -> WorkflowEditorSavePayload:
         config_path = self._worker_global_config_path("trigger-orchestrator")
         if config_path is None:
@@ -5994,7 +6413,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             raw_config = loaded_config
 
         validation = self._validate_workflow_editor_document(
-            config=config, layout=layout, base_config=raw_config
+            config=config, layout=layout, graphs=graphs, base_config=raw_config
         )
         merged_config = self._merge_system_managed_workflows(
             editable_config=validation.config,
@@ -6003,8 +6422,22 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         layout_path = self._workflow_editor_layout_path(raw_config)
         config_path.parent.mkdir(parents=True, exist_ok=True)
         layout_path.parent.mkdir(parents=True, exist_ok=True)
+        stored_graphs = self._workflow_editor_stored_graphs(raw_config)
+        graphs_to_persist = validation.graphs if graphs is not None or stored_graphs else None
+        graph_payloads_to_persist = (
+            self._workflow_editor_graph_payloads_to_persist(
+                raw_graphs=stored_graphs,
+                normalized_graphs=graphs_to_persist,
+            )
+            if graphs_to_persist is not None
+            else None
+        )
         pack_save = self._workflow_editor_pack_backed_save_paths(raw_config)
         if pack_save is None:
+            if graph_payloads_to_persist is not None:
+                merged_config["workflow_graphs"] = graph_payloads_to_persist
+            else:
+                merged_config.pop("workflow_graphs", None)
             self._write_json_file_atomic(config_path, merged_config)
         else:
             pack_path, workflow_packs = pack_save
@@ -6014,6 +6447,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 pack_path=pack_path,
                 workflow_packs=workflow_packs,
                 validated_config=merged_config,
+                graph_payloads=graph_payloads_to_persist,
             )
         self._write_json_file_atomic(layout_path, validation.layout)
         saved_at = datetime.fromtimestamp(config_path.stat().st_mtime, tz=UTC)
@@ -6023,6 +6457,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             layout_path=str(layout_path),
             config=validation.config,
             layout=validation.layout,
+            graphs=validation.graphs,
             saved_at=saved_at,
             revision=revision,
         )
@@ -6584,6 +7019,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         candidate = json.loads(json.dumps(payload))
         if not isinstance(candidate, dict):
             return payload
+        candidate = migrate_agent_prompt_lifecycle_ports(candidate)
 
         triggers = candidate.get("triggers")
         gates = candidate.get("gates")

@@ -16,6 +16,11 @@ from agent_sandbox.events.models import NODE_OUTPUTS_CONTEXT_KEY
 from agent_sandbox.events.provider_models import AgentPromptEffectDefinition
 from agent_sandbox.triggers.queue import TriggerQueueRecord
 from agent_sandbox.orchestration.effect_extensions import list_vm_summaries_for_agent_reconciliation
+from agent_sandbox.workflow.migrations import (
+    AGENT_PROMPT_COMPLETED_PORT,
+    AGENT_PROMPT_STARTED_PORT,
+)
+from agent_sandbox.workflow.validation import NodeCapability
 
 from .agent_session import (
     container_backend,
@@ -35,6 +40,17 @@ _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
 
 
 class AgentPromptEffectProvider(EffectProviderBase):
+    capability = NodeCapability(
+        min_inbound=1,
+        max_inbound=1,
+        allowed_source_ports=frozenset(
+            {
+                AGENT_PROMPT_STARTED_PORT,
+                AGENT_PROMPT_COMPLETED_PORT,
+            }
+        ),
+    )
+
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         effect = self._effect()
         context = self._context()
@@ -47,7 +63,6 @@ class AgentPromptEffectProvider(EffectProviderBase):
             "model": effect.model,
             "vm_user": effect.vm_user,
             "resume_thread_id": effect.resume_thread_id,
-            "output_mode": effect.output_mode,
         }
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -56,9 +71,6 @@ class AgentPromptEffectProvider(EffectProviderBase):
         target = self._resolve_target(payload)
         vm_user = self._normalize_optional_string(payload.get("vm_user")) or "agent"
         model = self._normalize_optional_string(payload.get("model"))
-        output_mode = self._normalize_optional_string(payload.get("output_mode")) or "immediate"
-        if output_mode not in {"immediate", "on_completion"}:
-            raise ValueError(f"Unsupported output_mode: {output_mode}")
 
         dispatch_id = self._make_dispatch_id(effect_id=effect.id)
         resume_thread_id = self._normalize_optional_string(payload.get("resume_thread_id"))
@@ -104,7 +116,6 @@ class AgentPromptEffectProvider(EffectProviderBase):
             "dispatch_id": dispatch_id,
             "thread_id": thread_id,
             "success": bool(result.success),
-            "output_mode": output_mode,
         }
 
     def _execute_container_prompt(
@@ -156,7 +167,6 @@ class AgentPromptEffectProvider(EffectProviderBase):
             "dispatch_id": dispatch_id,
             "thread_id": resume_thread_id or dispatch_id,
             "success": True,
-            "output_mode": "on_completion",
             "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
             "execution_id": handle.execution_id,
             "session_id": session_id,
@@ -170,9 +180,19 @@ class AgentPromptEffectProvider(EffectProviderBase):
             return False
         if outputs.get("success") is False:
             return False
-        if str(outputs.get("output_mode") or "").strip() != "on_completion":
-            return False
         return bool(str(outputs.get("dispatch_id") or "").strip())
+
+    @classmethod
+    def on_execution_waiting(cls, **kwargs: Any) -> None:
+        worker = kwargs.get("worker")
+        record = kwargs.get("record")
+        if worker is None or record is None:
+            return
+        worker._publish_completion_event_from_record(
+            record=record,
+            outputs=dict(record.outputs),
+            branch_port=AGENT_PROMPT_STARTED_PORT,
+        )
 
     @classmethod
     def on_completion_event(cls, **kwargs: Any) -> int:
@@ -677,8 +697,13 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 }
             },
         }
+        branch_port = (
+            AGENT_PROMPT_COMPLETED_PORT if record.effect_type == cls.node_type() else None
+        )
         published_event_id = worker._publish_completion_event_from_record(
-            record=record, outputs=merged_outputs
+            record=record,
+            outputs=merged_outputs,
+            branch_port=branch_port,
         )
         record.status = "succeeded"
         record.outputs = merged_outputs

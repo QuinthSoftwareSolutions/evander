@@ -70,6 +70,9 @@ session manifest and worker directories, `effect:agent:clone-repo` clones into
 `effect:agent:exec`
 runs deterministic setup commands in a transient worker job, and `effect:agent:prompt`
 starts a disposable worker job for Codex and removes the job after completion.
+`effect:agent:destroy` is the cleanup counterpart: VM-backed sessions destroy the linked VM,
+while container-backed sessions delete the worker session, worker-side files, host session
+manifest, and execution mappings.
 
 
 Chat Assistant session resolution is backend-aware and durable. For `libvirt_vm`, assistant initialization reuses one shared assistant VM/session globally while issuing distinct per-user `agent_thread_id` values. For `container_worker_vm`, assistant initialization reuses a distinct assistant session per user. The mapping is persisted in `runtime/chat-assistant-session-mappings.json` and initialized idempotently so concurrent first-message requests converge on the same mapping.

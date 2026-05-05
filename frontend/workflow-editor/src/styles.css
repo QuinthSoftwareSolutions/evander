@@ -492,6 +492,13 @@ body {
   line-height: 1.1;
 }
 
+.chat-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 0 0 auto;
+}
+
 .chat-mode-badge {
   display: inline-flex;
   align-items: center;
@@ -522,6 +529,19 @@ body {
   color: #203846;
   font-size: 1.3rem;
   line-height: 1;
+  cursor: pointer;
+}
+
+.chat-new-button {
+  min-height: 2.2rem;
+  border: 1px solid rgba(34, 67, 80, 0.16);
+  border-radius: 8px;
+  padding: 0 0.7rem;
+  background: #f8fbfa;
+  color: #203846;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 800;
   cursor: pointer;
 }
 
@@ -635,6 +655,7 @@ body {
 }
 
 .chat-send-button:disabled,
+.chat-new-button:disabled,
 .chat-pill:disabled,
 .chat-input-row textarea:disabled {
   opacity: 0.62;
@@ -1484,6 +1505,72 @@ select {
   line-height: 1.45;
 }
 
+.workflow-graph-view-toggle {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+  margin-bottom: 0.55rem;
+  padding: 0.25rem;
+  border: 1px solid rgba(91, 67, 37, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 250, 240, 0.48);
+}
+
+.sidebar .workflow-graph-view-toggle button {
+  margin: 0;
+  padding: 0.45rem 0.55rem;
+  border-radius: 6px;
+  background: transparent;
+  color: #5d4c36;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.sidebar .workflow-graph-view-toggle button.selected {
+  background: #23594f;
+  color: #f5f0e9;
+}
+
+.workflow-graph-list {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.sidebar .workflow-graph-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0;
+  text-align: left;
+  border: 1px solid rgba(91, 67, 37, 0.12);
+  background: rgba(231, 220, 201, 0.78);
+}
+
+.sidebar .workflow-graph-item.selected {
+  border-color: rgba(35, 89, 79, 0.42);
+  background: rgba(195, 221, 213, 0.78);
+  box-shadow: inset 0 0 0 1px rgba(35, 89, 79, 0.22);
+}
+
+.workflow-graph-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.workflow-graph-meta {
+  color: #7a6850;
+  font-size: 0.78rem;
+}
+
+.workflow-graph-editor {
+  margin-top: 0.8rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(91, 67, 37, 0.12);
+}
+
 .current-runs-section {
   overflow: hidden;
 }
@@ -1605,6 +1692,33 @@ select {
   position: relative;
   width: 100%;
   height: 100%;
+}
+
+.workflow-graph-label-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.workflow-graph-canvas-label {
+  position: absolute;
+  max-width: min(18rem, 32vw);
+  transform: translate(-100%, -50%);
+  color: rgba(48, 74, 73, 0.42);
+  font-family: "Avenir Next Condensed", "Franklin Gothic Medium", sans-serif;
+  font-size: clamp(1.5rem, 2.4vw, 2.5rem);
+  font-weight: 800;
+  line-height: 0.95;
+  overflow-wrap: anywhere;
+  text-align: right;
+  text-transform: uppercase;
+  text-shadow: 0 1px 0 rgba(255, 252, 246, 0.72);
+}
+
+.workflow-graph-canvas-label.selected {
+  color: rgba(32, 93, 84, 0.72);
 }
 
 .snap-guide {
@@ -3818,10 +3932,48 @@ select {
   background: #463927;
 }
 
+:root[data-theme="dark"] .sidebar .workflow-graph-item {
+  border-color: rgba(128, 106, 66, 0.18);
+  background: rgba(61, 50, 35, 0.82);
+}
+
+:root[data-theme="dark"] .sidebar .workflow-graph-item.selected {
+  border-color: rgba(107, 174, 204, 0.36);
+  background: rgba(39, 74, 87, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(107, 174, 204, 0.2);
+}
+
+:root[data-theme="dark"] .workflow-graph-view-toggle {
+  border-color: rgba(128, 106, 66, 0.18);
+  background: rgba(28, 23, 17, 0.44);
+}
+
+:root[data-theme="dark"] .sidebar .workflow-graph-view-toggle button {
+  color: #d2bf9d;
+}
+
+:root[data-theme="dark"] .sidebar .workflow-graph-view-toggle button.selected {
+  background: #2b6d62;
+  color: #f4fbff;
+}
+
+:root[data-theme="dark"] .workflow-graph-canvas-label {
+  color: rgba(179, 204, 204, 0.3);
+  text-shadow: 0 1px 0 rgba(5, 11, 15, 0.72);
+}
+
+:root[data-theme="dark"] .workflow-graph-canvas-label.selected {
+  color: rgba(126, 199, 185, 0.58);
+}
+
 :root[data-theme="dark"] .create-group-count,
 :root[data-theme="dark"] .current-runs-count {
   background: rgba(224, 187, 116, 0.16);
   color: #e8c98f;
+}
+
+:root[data-theme="dark"] .workflow-graph-meta {
+  color: #b8a386;
 }
 
 :root[data-theme="dark"] .create-group-summary,
@@ -3997,6 +4149,7 @@ select {
 }
 
 :root[data-theme="dark"] .chat-icon-button,
+:root[data-theme="dark"] .chat-new-button,
 :root[data-theme="dark"] .chat-message.is-assistant .chat-message-bubble,
 :root[data-theme="dark"] .chat-input-row textarea {
   border-color: rgba(124, 142, 154, 0.18);

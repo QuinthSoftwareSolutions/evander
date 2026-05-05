@@ -11,6 +11,7 @@ from agent_sandbox.effects.providers.agent_bootstrap_frontend import (
 from agent_sandbox.effects.providers.agent_clone_repo import AgentCloneRepoEffectProvider
 from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
 from agent_sandbox.effects.providers.agent_create import AgentCreateEffectProvider
+from agent_sandbox.effects.providers.agent_destroy import AgentDestroyEffectProvider
 from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
 from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
 from agent_sandbox.effects.providers.bash_script import BashScriptEffectProvider
@@ -19,6 +20,7 @@ from agent_sandbox.effects.providers.git_promote_agent_branch import (
     GitPromoteAgentBranchEffectProvider,
 )
 from agent_sandbox.effects.providers.issue_update_state import IssueUpdateStateEffectProvider
+from agent_sandbox.effects.providers.notification_send import NotificationSendEffectProvider
 from agent_sandbox.effects.providers.pr_create import PrCreateEffectProvider
 from agent_sandbox.effects.providers.session_update_metadata import (
     SessionUpdateMetadataEffectProvider,
@@ -92,6 +94,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:vm:start": VmStartEffectProvider,
             "effect:vm:stop": VmStopEffectProvider,
             "effect:agent:create": AgentCreateEffectProvider,
+            "effect:agent:destroy": AgentDestroyEffectProvider,
             "effect:agent:clone-repo": AgentCloneRepoEffectProvider,
             "effect:agent:bootstrap-frontend": AgentBootstrapFrontendEffectProvider,
             "effect:agent:copy-files": AgentCopyFilesEffectProvider,
@@ -104,6 +107,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:vm:copy-files": VmCopyFilesEffectProvider,
             "effect:vm:delete-files": VmDeleteFilesEffectProvider,
             "effect:issue:update-state": IssueUpdateStateEffectProvider,
+            "effect:notification:send": NotificationSendEffectProvider,
             "effect:session:update-metadata": SessionUpdateMetadataEffectProvider,
             "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectProvider,
             "effect:pr:create": PrCreateEffectProvider,

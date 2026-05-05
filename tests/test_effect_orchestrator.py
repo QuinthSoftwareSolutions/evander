@@ -163,8 +163,13 @@ class _ContainerDispatchBackendStub:
         self.destroyed.append(execution_id)
 
 
-def _edge(source_id: str, target_id: str) -> dict[str, str]:
-    return {"source_id": source_id, "target_id": target_id}
+def _edge(
+    source_id: str, target_id: str, *, source_port: str | None = None
+) -> dict[str, str]:
+    edge = {"source_id": source_id, "target_id": target_id}
+    if source_port is not None:
+        edge["source_port"] = source_port
+    return edge
 
 
 def _await_agent_store(worker: EffectOrchestratorWorker):
@@ -1717,7 +1722,6 @@ def test_agent_prompt_on_completion_releases_downstream_effect_without_await_gat
                     "type": "effect:agent:prompt",
                     "session_id": "session-42",
                     "prompt": "Continue main task",
-                    "output_mode": "on_completion",
                 },
                 {
                     "id": "effect-2",
@@ -1729,7 +1733,7 @@ def test_agent_prompt_on_completion_releases_downstream_effect_without_await_gat
             ],
             "edges": [
                 _edge("trigger-1", "effect-1"),
-                _edge("effect-1", "effect-2"),
+                _edge("effect-1", "effect-2", source_port="completed"),
             ],
         }
     )
@@ -1740,13 +1744,10 @@ def test_agent_prompt_on_completion_releases_downstream_effect_without_await_gat
                 "dispatch_id": "dispatch-effect-1-abc123",
                 "thread_id": "thread-1",
                 "success": True,
-                "output_mode": "on_completion",
             },
             "effect-2": {
-                "dispatch_id": "dispatch-effect-2-def456",
                 "thread_id": "thread-2",
                 "success": True,
-                "output_mode": "immediate",
             },
         }
     )
@@ -2028,7 +2029,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
                 runtime=SimpleNamespace(session_repository=session_repository)
             )
         ),
-        _publish_completion_event_from_record=lambda record, outputs: (
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: (
             published_outputs.append(outputs) or "effect-completed"
         ),
         _update_event_delivery_state=lambda event_id: None,
@@ -2132,7 +2133,6 @@ def test_agent_prompt_container_reconciliation_times_out_running_job(
             "dispatch_id": "dispatch-effect-1-abc123",
             "thread_id": "dispatch-effect-1-abc123",
             "success": True,
-            "output_mode": "on_completion",
             "execution_backend": "container_worker_vm",
             "execution_id": execution_id,
             "session_id": "session-1",
@@ -2146,7 +2146,7 @@ def test_agent_prompt_container_reconciliation_times_out_running_job(
         execution_store=execution_store,
         provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda session_id: config),
         provider_factory=SimpleNamespace(admin_service=None),
-        _publish_completion_event_from_record=lambda record, outputs: (
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: (
             published_outputs.append(outputs) or "effect-completed"
         ),
         _update_event_delivery_state=lambda event_id: delivery_updates.append(event_id),
@@ -2607,7 +2607,7 @@ def test_await_agent_gate_releases_follow_up_on_matching_completion(tmp_path: Pa
             ],
             "edges": [
                 _edge("trigger-1", "effect-1"),
-                _edge("effect-1", "await-agent-1"),
+                _edge("effect-1", "await-agent-1", source_port="started"),
                 _edge("await-agent-1", "effect-2"),
             ],
         }
@@ -2619,13 +2619,10 @@ def test_await_agent_gate_releases_follow_up_on_matching_completion(tmp_path: Pa
                 "dispatch_id": "dispatch-effect-1-abc123",
                 "thread_id": "thread-1",
                 "success": True,
-                "output_mode": "immediate",
             },
             "effect-2": {
-                "dispatch_id": "dispatch-effect-2-def456",
                 "thread_id": "thread-2",
                 "success": True,
-                "output_mode": "immediate",
             },
         }
     )
@@ -2743,7 +2740,7 @@ def test_await_agent_gate_releases_follow_up_from_in_process_vm_poll(
             ],
             "edges": [
                 _edge("trigger-1", "effect-1"),
-                _edge("effect-1", "await-agent-1"),
+                _edge("effect-1", "await-agent-1", source_port="started"),
                 _edge("await-agent-1", "effect-2"),
             ],
         }
@@ -2755,13 +2752,10 @@ def test_await_agent_gate_releases_follow_up_from_in_process_vm_poll(
                 "dispatch_id": "dispatch-effect-1-abc123",
                 "thread_id": "thread-1",
                 "success": True,
-                "output_mode": "immediate",
             },
             "effect-2": {
-                "dispatch_id": "dispatch-effect-2-def456",
                 "thread_id": "thread-2",
                 "success": True,
-                "output_mode": "immediate",
             },
         }
     )
@@ -2869,7 +2863,7 @@ def test_await_agent_gate_preserves_upstream_node_outputs_for_follow_up_bindings
             ],
             "edges": [
                 _edge("trigger-1", "effect-1"),
-                _edge("effect-1", "await-agent-1"),
+                _edge("effect-1", "await-agent-1", source_port="started"),
                 _edge("await-agent-1", "effect-2"),
             ],
         }
@@ -2881,13 +2875,10 @@ def test_await_agent_gate_preserves_upstream_node_outputs_for_follow_up_bindings
                 "dispatch_id": "dispatch-effect-1-abc123",
                 "thread_id": "thread-1",
                 "success": True,
-                "output_mode": "immediate",
             },
             "effect-2": {
-                "dispatch_id": "dispatch-effect-2-def456",
                 "thread_id": "thread-2",
                 "success": True,
-                "output_mode": "immediate",
             },
         }
     )
@@ -2996,7 +2987,7 @@ def test_force_complete_await_agent_releases_follow_up(tmp_path: Path, monkeypat
             ],
             "edges": [
                 _edge("trigger-1", "effect-1"),
-                _edge("effect-1", "await-agent-1"),
+                _edge("effect-1", "await-agent-1", source_port="started"),
                 _edge("await-agent-1", "effect-2"),
             ],
         }
@@ -3008,13 +2999,10 @@ def test_force_complete_await_agent_releases_follow_up(tmp_path: Path, monkeypat
                 "dispatch_id": "dispatch-effect-1-abc123",
                 "thread_id": "thread-1",
                 "success": True,
-                "output_mode": "immediate",
             },
             "effect-2": {
-                "dispatch_id": "dispatch-effect-2-def456",
                 "thread_id": "thread-2",
                 "success": True,
-                "output_mode": "immediate",
             },
         }
     )
@@ -3091,7 +3079,6 @@ def test_waiting_agent_prompt_reconciliation_completes_from_idle_matching_dispat
                     "type": "effect:agent:prompt",
                     "session_id": "session-42",
                     "prompt": "Continue main task",
-                    "output_mode": "on_completion",
                 },
                 {
                     "id": "effect-2",
@@ -3103,7 +3090,7 @@ def test_waiting_agent_prompt_reconciliation_completes_from_idle_matching_dispat
             ],
             "edges": [
                 _edge("trigger-1", "effect-1"),
-                _edge("effect-1", "effect-2"),
+                _edge("effect-1", "effect-2", source_port="completed"),
             ],
         }
     )
@@ -3114,7 +3101,6 @@ def test_waiting_agent_prompt_reconciliation_completes_from_idle_matching_dispat
                 "dispatch_id": "dispatch-effect-1-abc123",
                 "thread_id": "thread-1",
                 "success": True,
-                "output_mode": "on_completion",
             },
             "effect-2": {
                 "thread_id": "thread-2",
@@ -3190,7 +3176,6 @@ def test_waiting_agent_prompt_reconciliation_completes_idle_summary_without_disp
                     "type": "effect:agent:prompt",
                     "session_id": "session-42",
                     "prompt": "Continue main task",
-                    "output_mode": "on_completion",
                 },
                 {
                     "id": "effect-2",
@@ -3202,7 +3187,7 @@ def test_waiting_agent_prompt_reconciliation_completes_idle_summary_without_disp
             ],
             "edges": [
                 _edge("trigger-1", "effect-1"),
-                _edge("effect-1", "effect-2"),
+                _edge("effect-1", "effect-2", source_port="completed"),
             ],
         }
     )
@@ -3213,7 +3198,6 @@ def test_waiting_agent_prompt_reconciliation_completes_idle_summary_without_disp
                 "dispatch_id": "dispatch-effect-1-abc123",
                 "thread_id": "thread-1",
                 "success": True,
-                "output_mode": "on_completion",
             },
             "effect-2": {
                 "thread_id": "thread-2",
@@ -3321,7 +3305,7 @@ def test_await_agent_gate_releases_when_settled_summary_lacks_dispatch_id(
             ],
             "edges": [
                 _edge("trigger-1", "effect-1"),
-                _edge("effect-1", "await-agent-1"),
+                _edge("effect-1", "await-agent-1", source_port="started"),
                 _edge("await-agent-1", "effect-2"),
             ],
         }
@@ -3333,13 +3317,10 @@ def test_await_agent_gate_releases_when_settled_summary_lacks_dispatch_id(
                 "dispatch_id": "dispatch-effect-1-abc123",
                 "thread_id": "thread-1",
                 "success": True,
-                "output_mode": "immediate",
             },
             "effect-2": {
-                "dispatch_id": "dispatch-effect-2-def456",
                 "thread_id": "thread-2",
                 "success": True,
-                "output_mode": "immediate",
             },
         }
     )
@@ -3429,7 +3410,7 @@ def test_await_agent_reconciliation_completes_idle_pending_record_without_dispat
             ],
             "edges": [
                 _edge("trigger-1", "effect-1"),
-                _edge("effect-1", "await-agent-1"),
+                _edge("effect-1", "await-agent-1", source_port="started"),
             ],
         }
     )
@@ -3506,7 +3487,7 @@ def test_await_agent_reconciliation_keeps_pending_record_without_matching_summar
             ],
             "edges": [
                 _edge("trigger-1", "effect-1"),
-                _edge("effect-1", "await-agent-1"),
+                _edge("effect-1", "await-agent-1", source_port="started"),
             ],
         }
     )
@@ -3567,7 +3548,7 @@ def test_await_agent_reconciliation_keeps_settled_current_dispatch_record(
             ],
             "edges": [
                 _edge("trigger-1", "effect-1"),
-                _edge("effect-1", "await-agent-1"),
+                _edge("effect-1", "await-agent-1", source_port="started"),
             ],
         }
     )

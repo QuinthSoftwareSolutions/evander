@@ -260,7 +260,7 @@ Azure SSO env vars:
 - `AGENT_SANDBOX_ADMIN_WEB_AZURE_AUTHORITY_BASE_URL`
   Default: `https://login.microsoftonline.com`
 - `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS`
-  Comma-separated allowlist of user principal names / email-style logins, for example
+  Optional first-run seed list of admin user principal names / email-style logins, for example
   `alice@example.com,bob@example.com`
 - `AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT`
   Default: `/`
@@ -271,12 +271,17 @@ Azure SSO is optional and disabled by default. To enable it:
 2. Add the admin web callback URL as a redirect URI.
 3. Ensure the app can request OpenID scopes: `openid profile email`.
 4. Set the tenant you intend to trust with `AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID`.
-5. Set `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS` to the exact UPN/email-style identities that may use the admin UI.
+5. For the first startup, set `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS` to the initial admin UPN/email-style identities.
+
+Azure SSO users are then managed in `runtime/admin-web-users.json` through the Admin Web Users tab.
+The env list is only read when that runtime store is missing or empty, and imported users receive
+the `admin` role. Removing a user from the store invalidates their existing local admin session on
+the next authenticated request.
 
 The admin web only trusts a sign-in when both checks pass:
 
 - the ID token is issued for the configured tenant and client
-- the human-managed login identifier is explicitly allowlisted
+- the human-managed login identifier exists in the runtime user store
 
 Sign-out clears only the local admin session cookie. v1 does not force Microsoft global logout.
 

@@ -38,6 +38,15 @@ export type WorkflowLayout = {
   nodes: Record<string, { x: number; y: number }>;
 };
 
+export type WorkflowGraphMetadata = {
+  id: string;
+  name: string;
+  description?: string | null;
+  directory_paths: string[];
+  user_ids: string[];
+  node_ids: string[];
+};
+
 export type WorkflowEditorDocument = {
   config_path: string;
   layout_path: string;
@@ -45,11 +54,13 @@ export type WorkflowEditorDocument = {
   layout_exists: boolean;
   config: WorkflowConfig;
   layout: WorkflowLayout;
+  graphs: WorkflowGraphMetadata[];
 };
 
 export type WorkflowEditorValidation = {
   config: WorkflowConfig;
   layout: WorkflowLayout;
+  graphs: WorkflowGraphMetadata[];
 };
 
 export type WorkflowEditorFieldOption = {

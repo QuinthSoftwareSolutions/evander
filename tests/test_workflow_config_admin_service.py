@@ -12,12 +12,20 @@ class FakeFacade:
         return {"kind": "document"}
 
     def save_workflow_editor_document(
-        self, *, config: dict[str, object], layout: dict[str, object] | None = None
+        self,
+        *,
+        config: dict[str, object],
+        layout: dict[str, object] | None = None,
+        graphs: list[dict[str, object]] | None = None,
     ):
         self.calls.append(
-            ("save_workflow_editor_document", (), {"config": config, "layout": layout})
+            (
+                "save_workflow_editor_document",
+                (),
+                {"config": config, "layout": layout, "graphs": graphs},
+            )
         )
-        return {"kind": "save", "config": config, "layout": layout}
+        return {"kind": "save", "config": config, "layout": layout, "graphs": graphs}
 
     def upsert_trigger_config(self, trigger_id: str, payload: dict[str, object]):
         self.calls.append(("upsert_trigger_config", (trigger_id, payload), {}))
@@ -33,12 +41,37 @@ def test_workflow_config_service_delegates_representative_operations() -> None:
     service = WorkflowConfigAdminService(facade)
 
     document = service.read_workflow_editor_document()
-    saved = service.save_workflow_editor_document(config={"name": "demo"}, layout={"nodes": {}})
+    saved = service.save_workflow_editor_document(
+        config={"name": "demo"},
+        layout={"nodes": {}},
+        graphs=[
+            {
+                "id": "graph-demo",
+                "name": "Demo",
+                "directory_paths": ["root"],
+                "user_ids": ["admin"],
+                "node_ids": [],
+            }
+        ],
+    )
     trigger = service.upsert_trigger_config("trigger-1", {"type": "trigger:manual"})
     effect = service.delete_effect_config("effect-9")
 
     assert document == {"kind": "document"}
-    assert saved == {"kind": "save", "config": {"name": "demo"}, "layout": {"nodes": {}}}
+    assert saved == {
+        "kind": "save",
+        "config": {"name": "demo"},
+        "layout": {"nodes": {}},
+        "graphs": [
+            {
+                "id": "graph-demo",
+                "name": "Demo",
+                "directory_paths": ["root"],
+                "user_ids": ["admin"],
+                "node_ids": [],
+            }
+        ],
+    }
     assert trigger == {
         "kind": "trigger",
         "trigger_id": "trigger-1",
@@ -50,7 +83,19 @@ def test_workflow_config_service_delegates_representative_operations() -> None:
         (
             "save_workflow_editor_document",
             (),
-            {"config": {"name": "demo"}, "layout": {"nodes": {}}},
+            {
+                "config": {"name": "demo"},
+                "layout": {"nodes": {}},
+                "graphs": [
+                    {
+                        "id": "graph-demo",
+                        "name": "Demo",
+                        "directory_paths": ["root"],
+                        "user_ids": ["admin"],
+                        "node_ids": [],
+                    }
+                ],
+            },
         ),
         ("upsert_trigger_config", ("trigger-1", {"type": "trigger:manual"}), {}),
         ("delete_effect_config", ("effect-9",), {}),
