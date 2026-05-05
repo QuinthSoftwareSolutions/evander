@@ -19,6 +19,7 @@ RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::T
       libgssapi-krb5-2 \
       libicu74 \
       libssl3t64 \
+      libunwind8 \
       less \
       openssh-client \
       procps \

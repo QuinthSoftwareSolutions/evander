@@ -25,6 +25,7 @@ def test_runner_dockerfile_contains_minimal_runtime_contract() -> None:
     assert "libgssapi-krb5-2" in dockerfile
     assert "libicu74" in dockerfile
     assert "libssl3t64" in dockerfile
+    assert "libunwind8" in dockerfile
     assert "zlib1g" in dockerfile
     assert "libnss3" in dockerfile
     assert "libgtk-3-0" in dockerfile
