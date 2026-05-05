@@ -48,6 +48,10 @@ parameters:
     displayName: Control-plane SSH NSG name
     type: string
     default: auto
+  - name: hostCodexNpmPackage
+    displayName: Host Codex npm package
+    type: string
+    default: "@openai/codex"
 
 variables:
   AGENT_SANDBOX_REPO_VERSION: $(Build.SourceVersion)
@@ -420,9 +424,30 @@ stages:
                 - bash: |
                     set -euo pipefail
 
+                    if ! command -v npm >/dev/null 2>&1; then
+                      echo "Missing npm on the pipeline agent. Install Node/npm or use a pool image that includes it." >&2
+                      exit 1
+                    fi
+
+                    codex_prefix="$PIPELINE_WORKSPACE/host-codex"
+                    rm -rf "$codex_prefix"
+                    mkdir -p "$codex_prefix"
+
+                    npm install --prefix "$codex_prefix" --no-audit --no-fund "$HOST_CODEX_NPM_PACKAGE"
+
+                    export HOST_CODEX_ROOT="$codex_prefix/node_modules/@openai/codex"
+                    codex_binary="$HOST_CODEX_ROOT/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex/codex"
+                    if [ ! -x "$codex_binary" ]; then
+                      echo "Installed Codex package did not contain the expected executable: $codex_binary" >&2
+                      exit 1
+                    fi
+
                     ./scripts/build_agent_sandbox_runner_image.sh
                     test -s dist/agent-sandbox-runner.tar
                   displayName: Build container runner image archive
+                  env:
+                    HOST_CODEX_NPM_PACKAGE: ${{ parameters.hostCodexNpmPackage }}
+                    PIPELINE_WORKSPACE: $(Pipeline.Workspace)
 
                 - bash: |
                     set -euo pipefail

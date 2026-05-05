@@ -220,6 +220,12 @@ The selected agent pool must have Python and Docker for the runner-image build. 
 in the Azure VNet or on the control-plane host is usually the lowest-friction option for private
 worker access.
 
+The worker stage builds `dist/agent-sandbox-runner.tar` from a host-seeded Codex binary. On hosted
+agents the pipeline installs the npm package named by `hostCodexNpmPackage` into
+`$(Pipeline.Workspace)/host-codex`, exports that directory as `HOST_CODEX_ROOT`, and then runs
+`scripts/build_agent_sandbox_runner_image.sh`. The default package spec is `@openai/codex`; override
+it with a pinned package version when deployment reproducibility requires it.
+
 ## Re-Runs And Idempotency
 
 The playbook is intended to be safe to re-run:

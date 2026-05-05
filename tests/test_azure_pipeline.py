@@ -39,11 +39,16 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
     assert parameters["controlPlanePublicIp"]["default"] == "52.158.33.185"
     assert parameters["controlPlaneSshNsgResourceGroup"]["default"] == "auto"
     assert parameters["controlPlaneSshNsgName"]["default"] == "auto"
+    assert parameters["hostCodexNpmPackage"]["default"] == "@openai/codex"
     assert "DownloadSecureFile@1" in text
     assert "controlPlaneSshKey.secureFilePath" in text
     assert "workerSshKey.secureFilePath" in text
     assert "AGENT_SANDBOX_CONTROL_PLANE_SSH_KEY_FILE" in text
     assert "AGENT_SANDBOX_WORKER_SSH_KEY_FILE" in text
+    assert "npm install --prefix \"$codex_prefix\" --no-audit --no-fund" in text
+    assert 'export HOST_CODEX_ROOT="$codex_prefix/node_modules/@openai/codex"' in text
+    assert "HOST_CODEX_NPM_PACKAGE: ${{ parameters.hostCodexNpmPackage }}" in text
+    assert "PIPELINE_WORKSPACE: $(Pipeline.Workspace)" in text
     assert text.count("AzureCLI@2") == 4
     assert "azureSubscription: ${{ parameters.azureServiceConnection }}" in text
     assert "api.ipify.org" in text
