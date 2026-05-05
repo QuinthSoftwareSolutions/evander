@@ -1,6 +1,9 @@
 ---
 # Azure control-plane deployment overrides. Shared defaults live in all.yml.
-agent_sandbox_repo_url: "git@github.com:QuinthSoftwareSolutions/agent-orchestrator.git"
+# Must match the repository that owns azure-pipelines.yml. The pipeline passes
+# Build.SourceVersion as agent_sandbox_repo_version, so deploying from a lagging
+# mirror can fail with "reference is not a tree".
+agent_sandbox_repo_url: "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/Truman"
 agent_sandbox_repo_ssh_private_key: "{{ vault_agent_sandbox_repo_ssh_private_key }}"
 agent_sandbox_deploy_path: "/opt/truman"
 agent_sandbox_run_user: "truman"

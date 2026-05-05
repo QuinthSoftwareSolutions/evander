@@ -108,6 +108,19 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
     )
 
 
+def test_azure_deploy_repo_matches_pipeline_source_of_truth() -> None:
+    pipeline_text = (ROOT / "azure-pipelines.yml").read_text(encoding="utf-8")
+    azure_vars = yaml.safe_load(
+        (ROOT / "ansible" / "group_vars" / "azure.yml").read_text(encoding="utf-8")
+    )
+
+    assert 'agent_sandbox_repo_version=$AGENT_SANDBOX_REPO_VERSION' in pipeline_text
+    assert azure_vars["agent_sandbox_repo_url"] == (
+        "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/Truman"
+    )
+    assert "agent-orchestrator.git" not in azure_vars["agent_sandbox_repo_url"]
+
+
 def test_azure_inventory_uses_pipeline_supplied_ssh_key_paths() -> None:
     inventory_path = ROOT / "ansible" / "inventory" / "azure.yml"
     text = inventory_path.read_text(encoding="utf-8")

@@ -192,6 +192,11 @@ the same revision that Azure Pipelines checked out. The default inventory is
 parameters are dropdowns with `all` as the default; selecting `all` runs the relevant playbook
 without an Ansible `--limit`.
 
+Because the deploy is pinned to `$(Build.SourceVersion)`, the inventory's
+`agent_sandbox_repo_url` must point at the same repository that owns this pipeline, or at a mirror
+that already contains that exact commit. A lagging mirror fails during `repo_checkout` with
+`fatal: reference is not a tree`.
+
 Set the secret Azure Pipelines variable `ANSIBLE_VAULT_PASSWORD` so the pipeline can read the
 encrypted Vault-backed variables. Upload the SSH private keys to Azure DevOps Secure Files and make
 them available to this pipeline. The default secure-file names are `truman-control-center_key.pem`
