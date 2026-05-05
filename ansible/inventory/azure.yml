@@ -1,20 +1,32 @@
 all:
+  vars:
+    agent_sandbox_control_plane_public_host: 52.158.33.185
+    agent_sandbox_control_plane_ssh_user: azureuser
+    agent_sandbox_control_plane_ssh_private_key_file: >-
+      {{ lookup('env', 'AGENT_SANDBOX_CONTROL_PLANE_SSH_KEY_FILE')
+      | default('~/.ssh/truman-control-center_key.pem', true) }}
+    agent_sandbox_worker_ssh_private_key_file: >-
+      {{ lookup('env', 'AGENT_SANDBOX_WORKER_SSH_KEY_FILE')
+      | default('~/.ssh/truman-worker-1_key.pem', true) }}
   children:
     azure:
       children:
         agent_sandbox_hosts:
           hosts:
             truman-control-plane:
-              ansible_host: 52.158.33.185
-              ansible_user: azureuser
-              ansible_ssh_private_key_file: ~/.ssh/truman-control-center_key.pem
+              ansible_host: "{{ agent_sandbox_control_plane_public_host }}"
+              ansible_user: "{{ agent_sandbox_control_plane_ssh_user }}"
+              ansible_ssh_private_key_file: "{{ agent_sandbox_control_plane_ssh_private_key_file }}"
+              ansible_ssh_common_args: >-
+                -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o IdentitiesOnly=yes
         agent_sandbox_worker_hosts:
           hosts:
             truman-worker-1:
               ansible_host: 10.2.1.4
-              ansible_user: azureuser
-              ansible_ssh_private_key_file: ~/.ssh/truman-worker-1_key.pem
+              ansible_user: "{{ agent_sandbox_control_plane_ssh_user }}"
+              ansible_ssh_private_key_file: "{{ agent_sandbox_worker_ssh_private_key_file }}"
               ansible_ssh_common_args: >-
-                -o ProxyCommand="ssh -i /home/jonathan/.ssh/truman-control-center_key.pem
-                -o StrictHostKeyChecking=accept-new -o BatchMode=yes -W %h:%p
-                azureuser@52.158.33.185"
+                -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o IdentitiesOnly=yes
+                -o ProxyCommand="ssh -i {{ agent_sandbox_control_plane_ssh_private_key_file }}
+                -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o IdentitiesOnly=yes
+                -W %h:%p {{ agent_sandbox_control_plane_ssh_user }}@{{ agent_sandbox_control_plane_public_host }}"

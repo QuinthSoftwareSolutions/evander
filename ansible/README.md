@@ -193,11 +193,23 @@ parameters are dropdowns with `all` as the default; selecting `all` runs the rel
 without an Ansible `--limit`.
 
 Set the secret Azure Pipelines variable `ANSIBLE_VAULT_PASSWORD` so the pipeline can read the
-encrypted Vault-backed variables. The selected self-hosted agent pool must have SSH reachability to
-the control plane and worker hosts, the inventory-referenced SSH private keys, known host entries or
-an SSH accept-new policy, Python, and Docker for the runner-image build. A self-hosted agent in the
-Azure VNet or on the control-plane host is usually the lowest-friction option for private worker
-access.
+encrypted Vault-backed variables. Upload the SSH private keys to Azure DevOps Secure Files and make
+them available to this pipeline. The default secure-file names are `truman-control-center_key.pem`
+for the control plane and `truman-worker-1_key.pem` for the worker; override
+`controlPlaneSshKeySecureFile` or `workerSshKeySecureFile` when your secure files use different
+names.
+
+The pipeline downloads those secure files per job, sets
+`AGENT_SANDBOX_CONTROL_PLANE_SSH_KEY_FILE` and `AGENT_SANDBOX_WORKER_SSH_KEY_FILE`, and the Azure
+inventory uses those paths for Ansible SSH. The worker SSH path still uses the control-plane VM as a
+`ProxyCommand` jump host, so the pipeline agent must be able to reach the control-plane public SSH
+endpoint and the control plane must be able to reach the worker private IP. For local operator runs,
+export the same environment variables before invoking `ansible-playbook`, or place the keys at the
+fallback `~/.ssh/truman-control-center_key.pem` and `~/.ssh/truman-worker-1_key.pem` paths.
+
+The selected agent pool must have Python and Docker for the runner-image build. A self-hosted agent
+in the Azure VNet or on the control-plane host is usually the lowest-friction option for private
+worker access.
 
 ## Re-Runs And Idempotency
 

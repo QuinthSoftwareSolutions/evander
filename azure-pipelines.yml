@@ -24,6 +24,14 @@ parameters:
     values:
       - all
       - truman-worker-1
+  - name: controlPlaneSshKeySecureFile
+    displayName: Control-plane SSH key secure file
+    type: string
+    default: truman-control-center_key.pem
+  - name: workerSshKeySecureFile
+    displayName: Worker SSH key secure file
+    type: string
+    default: truman-worker-1_key.pem
 
 variables:
   AGENT_SANDBOX_REPO_VERSION: $(Build.SourceVersion)
@@ -50,6 +58,12 @@ stages:
                   clean: true
                   fetchDepth: 0
 
+                - task: DownloadSecureFile@1
+                  name: controlPlaneSshKey
+                  displayName: Download control-plane SSH key
+                  inputs:
+                    secureFile: ${{ parameters.controlPlaneSshKeySecureFile }}
+
                 - bash: |
                     set -euo pipefail
 
@@ -65,8 +79,9 @@ stages:
                 - bash: |
                     set -euo pipefail
 
-                    if [ "${ANSIBLE_VAULT_PASSWORD:-}" = '$(ANSIBLE_VAULT_PASSWORD)' ]; then
-                      echo "Azure Pipelines did not expand \$(ANSIBLE_VAULT_PASSWORD)." >&2
+                    unexpanded_vault_macro='$''(ANSIBLE_VAULT_PASSWORD)'
+                    if [ "${ANSIBLE_VAULT_PASSWORD:-}" = "$unexpanded_vault_macro" ]; then
+                      echo "Azure Pipelines did not expand the ANSIBLE_VAULT_PASSWORD variable." >&2
                       echo "Define ANSIBLE_VAULT_PASSWORD on this YAML pipeline, or include and authorize the variable group that contains it." >&2
                       exit 1
                     fi
@@ -75,6 +90,11 @@ stages:
                       echo "Set a non-empty secret value on this pipeline or in its linked variable group." >&2
                       exit 1
                     fi
+                    if [ -z "${AGENT_SANDBOX_CONTROL_PLANE_SSH_KEY_FILE:-}" ]; then
+                      echo "Control-plane SSH key secure file was not downloaded." >&2
+                      exit 1
+                    fi
+                    chmod 600 "$AGENT_SANDBOX_CONTROL_PLANE_SSH_KEY_FILE"
 
                     vault_file="$PIPELINE_WORKSPACE/.ansible-vault-pass"
                     umask 077
@@ -94,6 +114,7 @@ stages:
                       ansible/site.yml
                   displayName: Deploy control plane with Ansible
                   env:
+                    AGENT_SANDBOX_CONTROL_PLANE_SSH_KEY_FILE: $(controlPlaneSshKey.secureFilePath)
                     ANSIBLE_VAULT_PASSWORD: $(ANSIBLE_VAULT_PASSWORD)
                     PIPELINE_WORKSPACE: $(Pipeline.Workspace)
 
@@ -113,6 +134,18 @@ stages:
                 - checkout: self
                   clean: true
                   fetchDepth: 0
+
+                - task: DownloadSecureFile@1
+                  name: controlPlaneSshKey
+                  displayName: Download control-plane SSH jump key
+                  inputs:
+                    secureFile: ${{ parameters.controlPlaneSshKeySecureFile }}
+
+                - task: DownloadSecureFile@1
+                  name: workerSshKey
+                  displayName: Download worker SSH key
+                  inputs:
+                    secureFile: ${{ parameters.workerSshKeySecureFile }}
 
                 - bash: |
                     set -euo pipefail
@@ -136,8 +169,9 @@ stages:
                 - bash: |
                     set -euo pipefail
 
-                    if [ "${ANSIBLE_VAULT_PASSWORD:-}" = '$(ANSIBLE_VAULT_PASSWORD)' ]; then
-                      echo "Azure Pipelines did not expand \$(ANSIBLE_VAULT_PASSWORD)." >&2
+                    unexpanded_vault_macro='$''(ANSIBLE_VAULT_PASSWORD)'
+                    if [ "${ANSIBLE_VAULT_PASSWORD:-}" = "$unexpanded_vault_macro" ]; then
+                      echo "Azure Pipelines did not expand the ANSIBLE_VAULT_PASSWORD variable." >&2
                       echo "Define ANSIBLE_VAULT_PASSWORD on this YAML pipeline, or include and authorize the variable group that contains it." >&2
                       exit 1
                     fi
@@ -146,6 +180,14 @@ stages:
                       echo "Set a non-empty secret value on this pipeline or in its linked variable group." >&2
                       exit 1
                     fi
+                    for key_file_var in AGENT_SANDBOX_CONTROL_PLANE_SSH_KEY_FILE AGENT_SANDBOX_WORKER_SSH_KEY_FILE; do
+                      key_file="${!key_file_var:-}"
+                      if [ -z "$key_file" ]; then
+                        echo "$key_file_var was not set by the secure file download step." >&2
+                        exit 1
+                      fi
+                      chmod 600 "$key_file"
+                    done
 
                     vault_file="$PIPELINE_WORKSPACE/.ansible-vault-pass"
                     umask 077
@@ -165,5 +207,7 @@ stages:
                       ansible/worker.yml
                   displayName: Deploy worker VM with Ansible
                   env:
+                    AGENT_SANDBOX_CONTROL_PLANE_SSH_KEY_FILE: $(controlPlaneSshKey.secureFilePath)
+                    AGENT_SANDBOX_WORKER_SSH_KEY_FILE: $(workerSshKey.secureFilePath)
                     ANSIBLE_VAULT_PASSWORD: $(ANSIBLE_VAULT_PASSWORD)
                     PIPELINE_WORKSPACE: $(Pipeline.Workspace)

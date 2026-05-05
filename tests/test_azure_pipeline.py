@@ -17,6 +17,8 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
     assert parsed["variables"]["CONTROL_PLANE_TARGET"] == "${{ parameters.controlPlaneTarget }}"
     assert parsed["variables"]["WORKER_TARGET"] == "${{ parameters.workerTarget }}"
     assert "ANSIBLE_VAULT_PASSWORD" in text
+    assert "'$(ANSIBLE_VAULT_PASSWORD)'" not in text
+    assert "unexpanded_vault_macro='$''(ANSIBLE_VAULT_PASSWORD)'" in text
     assert "ansible/inventory/azure.yml" in text
     assert "ansible/site.yml" in text
     assert "scripts/build_agent_sandbox_runner_image.sh" in text
@@ -29,6 +31,15 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
     assert parameters["controlPlaneTarget"]["values"] == ["all", "truman-control-plane"]
     assert parameters["workerTarget"]["default"] == "all"
     assert parameters["workerTarget"]["values"] == ["all", "truman-worker-1"]
+    assert parameters["controlPlaneSshKeySecureFile"]["default"] == (
+        "truman-control-center_key.pem"
+    )
+    assert parameters["workerSshKeySecureFile"]["default"] == "truman-worker-1_key.pem"
+    assert "DownloadSecureFile@1" in text
+    assert "controlPlaneSshKey.secureFilePath" in text
+    assert "workerSshKey.secureFilePath" in text
+    assert "AGENT_SANDBOX_CONTROL_PLANE_SSH_KEY_FILE" in text
+    assert "AGENT_SANDBOX_WORKER_SSH_KEY_FILE" in text
 
     stage_names = [stage["stage"] for stage in parsed["stages"]]
     assert stage_names == ["DeployControlPlane", "DeployWorkerVm"]
@@ -39,3 +50,17 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
     assert worker_step_names.index("Build container runner image archive") < worker_step_names.index(
         "Deploy worker VM with Ansible"
     )
+
+
+def test_azure_inventory_uses_pipeline_supplied_ssh_key_paths() -> None:
+    inventory_path = ROOT / "ansible" / "inventory" / "azure.yml"
+    text = inventory_path.read_text(encoding="utf-8")
+
+    assert "/home/jonathan" not in text
+    assert "AGENT_SANDBOX_CONTROL_PLANE_SSH_KEY_FILE" in text
+    assert "AGENT_SANDBOX_WORKER_SSH_KEY_FILE" in text
+    assert "agent_sandbox_control_plane_ssh_private_key_file" in text
+    assert "agent_sandbox_worker_ssh_private_key_file" in text
+    assert "ProxyCommand" in text
+    assert "StrictHostKeyChecking=accept-new" in text
+    assert "IdentitiesOnly=yes" in text
