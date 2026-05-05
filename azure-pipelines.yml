@@ -433,6 +433,24 @@ stages:
                 - bash: |
                     set -euo pipefail
 
+                    playwright_browsers="$PIPELINE_WORKSPACE/ms-playwright"
+                    rm -rf "$playwright_browsers"
+                    mkdir -p "$playwright_browsers"
+
+                    npm ci --prefix frontend/workflow-editor --no-audit --no-fund
+                    PLAYWRIGHT_BROWSERS_PATH="$playwright_browsers" \
+                      npm exec --prefix frontend/workflow-editor -- playwright install chromium
+
+                    test -d frontend/workflow-editor/node_modules/playwright
+                    test -d frontend/workflow-editor/node_modules/playwright-core
+                    test -d "$playwright_browsers"
+                  displayName: Install worker Playwright runtime
+                  env:
+                    PIPELINE_WORKSPACE: $(Pipeline.Workspace)
+
+                - bash: |
+                    set -euo pipefail
+
                     if ! command -v npm >/dev/null 2>&1; then
                       echo "Missing npm on the pipeline agent. Install Node/npm or use a pool image that includes it." >&2
                       exit 1
@@ -536,6 +554,8 @@ stages:
                     AGENT_SANDBOX_WORKER_SSH_KEY_FILE: $(workerSshKey.secureFilePath)
                     ANSIBLE_VAULT_PASSWORD: $(ANSIBLE_VAULT_PASSWORD)
                     HOST_DOTNET_ROOT: $(Pipeline.Workspace)/dotnet
+                    HOST_PLAYWRIGHT_BROWSERS: $(Pipeline.Workspace)/ms-playwright
+                    HOST_PLAYWRIGHT_NODE_MODULES: $(Build.SourcesDirectory)/frontend/workflow-editor/node_modules
                     PIPELINE_WORKSPACE: $(Pipeline.Workspace)
 
                 - task: AzureCLI@2

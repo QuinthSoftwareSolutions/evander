@@ -49,6 +49,17 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
     assert "NodeTool@0" in text
     assert "displayName: Install worker Node.js runtime" in text
     assert "versionSpec: 24.14.0" in text
+    assert "displayName: Install worker Playwright runtime" in text
+    assert "npm ci --prefix frontend/workflow-editor --no-audit --no-fund" in text
+    assert (
+        'PLAYWRIGHT_BROWSERS_PATH="$playwright_browsers" \\\n'
+        "                      npm exec --prefix frontend/workflow-editor -- playwright install chromium"
+    ) in text
+    assert "HOST_PLAYWRIGHT_BROWSERS: $(Pipeline.Workspace)/ms-playwright" in text
+    assert (
+        "HOST_PLAYWRIGHT_NODE_MODULES: "
+        "$(Build.SourcesDirectory)/frontend/workflow-editor/node_modules"
+    ) in text
     assert "npm install --prefix \"$codex_prefix\" --no-audit --no-fund" in text
     assert 'export HOST_CODEX_ROOT="$codex_prefix/node_modules/@openai/codex"' in text
     assert "Installed Codex package did not contain the expected executable" not in text
@@ -84,6 +95,9 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
     worker_steps = parsed["stages"][1]["jobs"][0]["strategy"]["runOnce"]["deploy"]["steps"]
     worker_step_names = [step.get("displayName", "") for step in worker_steps]
     assert worker_step_names.index("Install worker Node.js runtime") < worker_step_names.index(
+        "Install worker Playwright runtime"
+    )
+    assert worker_step_names.index("Install worker Playwright runtime") < worker_step_names.index(
         "Build container runner image archive"
     )
     assert worker_step_names.index("Build container runner image archive") < worker_step_names.index(
