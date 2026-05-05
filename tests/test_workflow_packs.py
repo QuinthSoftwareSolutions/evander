@@ -188,6 +188,24 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         "${{effect-agent-clone-repo-2.target_dir}}/REVIEW_TASK.yaml"
         in container_effects["effect-agent-prompt-5"]["config"]["prompt"]
     )
+    assert (
+        "timeout --preserve-status <seconds> <command>"
+        in container_effects["effect-agent-prompt-1"]["config"]["prompt"]
+    )
+    assert (
+        "dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config"
+        in container_effects["effect-agent-prompt-1"]["config"]["prompt"]
+    )
+    assert "--no-restore" in container_effects["effect-agent-prompt-1"]["config"]["prompt"]
+    assert (
+        "timeout --preserve-status <seconds> <command>"
+        in container_effects["effect-agent-prompt-5"]["config"]["prompt"]
+    )
+    assert (
+        "dotnet restore --configfile ~/.nuget/NuGet/NuGet.Config"
+        in container_effects["effect-agent-prompt-5"]["config"]["prompt"]
+    )
+    assert "--no-restore" in container_effects["effect-agent-prompt-5"]["config"]["prompt"]
 
     all_node_ids = {
         *(trigger["id"] for trigger in container.triggers),

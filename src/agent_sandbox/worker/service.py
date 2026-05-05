@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import uuid
@@ -38,6 +39,7 @@ logger = logging.getLogger(__name__)
 _CODEX_SESSION_ID_LOG_PATTERN = re.compile(
     r"^session id:\s*(?P<thread_id>\S+)\s*$", re.IGNORECASE | re.MULTILINE
 )
+_CODEX_TOOL_SUMMARY_LIMIT = 240
 
 
 class WorkerDaemon:
@@ -195,7 +197,11 @@ class WorkerDaemon:
         seen: set[str] = set()
         agent_home = Path(record.agent_home_path)
         for thread_id in thread_ids:
-            for message in self._codex_session_messages(agent_home, thread_id):
+            for message in self._codex_session_messages(
+                agent_home,
+                thread_id,
+                include_running_context=record.status == "running",
+            ):
                 if message in seen or (skip_existing and message in text):
                     continue
                 seen.add(message)
@@ -240,9 +246,12 @@ class WorkerDaemon:
         *,
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
+        include_running_context: bool = False,
     ) -> list[str]:
         messages: list[str] = []
         seen: set[str] = set()
+        active_tool_calls: dict[str, str] = {}
+        latest_event_timestamp: str | None = None
         for path in _codex_session_jsonl_paths(agent_home, thread_id):
             try:
                 lines = path.read_text(encoding="utf-8").splitlines()
@@ -257,6 +266,10 @@ class WorkerDaemon:
                     event, started_at=started_at, finished_at=finished_at
                 ):
                     continue
+                latest_event_timestamp = _latest_codex_timestamp(
+                    latest_event_timestamp,
+                    event.get("timestamp"),
+                )
                 for message in _codex_messages_from_session_event(event):
                     if not message:
                         continue
@@ -264,6 +277,17 @@ class WorkerDaemon:
                         continue
                     seen.add(message)
                     messages.append(message)
+                if include_running_context:
+                    _update_codex_active_tool_calls(event, active_tool_calls)
+        if include_running_context:
+            for message in _codex_running_context_messages(
+                latest_event_timestamp=latest_event_timestamp,
+                active_tool_calls=active_tool_calls,
+            ):
+                if not message or message in seen:
+                    continue
+                seen.add(message)
+                messages.append(message)
         return messages
 
     def prepare_session(self, request: WorkerSessionPrepareRequest) -> WorkerSessionRecord:
@@ -643,6 +667,26 @@ def _normalize_datetime(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
+def _latest_codex_timestamp(current: str | None, candidate: object) -> str | None:
+    parsed_candidate = _parse_codex_timestamp(candidate)
+    if parsed_candidate is None:
+        return current
+    if current is None:
+        return (
+            str(candidate).strip()
+            if isinstance(candidate, str)
+            else parsed_candidate.isoformat()
+        )
+    parsed_current = _parse_codex_timestamp(current)
+    if parsed_current is None or parsed_candidate > parsed_current:
+        return (
+            str(candidate).strip()
+            if isinstance(candidate, str)
+            else parsed_candidate.isoformat()
+        )
+    return current
+
+
 def _codex_messages_from_session_event(event: object) -> list[str]:
     if not isinstance(event, dict):
         return []
@@ -669,6 +713,94 @@ def _codex_messages_from_session_event(event: object) -> list[str]:
             )
         ]
     return []
+
+
+def _update_codex_active_tool_calls(event: object, active_tool_calls: dict[str, str]) -> None:
+    if not isinstance(event, dict):
+        return
+    event_type = str(event.get("type") or "")
+    payload = event.get("payload")
+    if event_type == "response_item" and isinstance(payload, dict):
+        payload_type = str(payload.get("type") or "")
+        call_id = _codex_first_text(payload.get("call_id"), payload.get("id"))
+        if payload_type == "function_call":
+            if call_id:
+                active_tool_calls[call_id] = _codex_function_call_summary(payload)
+            return
+        if payload_type in {"function_call_output", "tool_call_output"} and call_id:
+            active_tool_calls.pop(call_id, None)
+            return
+    if event_type == "event_msg" and isinstance(payload, dict):
+        payload_type = str(payload.get("type") or "")
+        call_id = _codex_first_text(payload.get("call_id"), payload.get("id"))
+        if call_id and payload_type.endswith("_end"):
+            active_tool_calls.pop(call_id, None)
+
+
+def _codex_running_context_messages(
+    *,
+    latest_event_timestamp: str | None,
+    active_tool_calls: dict[str, str],
+) -> list[str]:
+    messages: list[str] = []
+    if not active_tool_calls:
+        return messages
+    if latest_event_timestamp:
+        messages.append(f"latest codex event: {latest_event_timestamp}")
+    for summary in active_tool_calls.values():
+        if summary:
+            messages.append(f"active tool call: {summary}")
+    return messages
+
+
+def _codex_function_call_summary(payload: dict[str, object]) -> str:
+    name = _codex_first_text(
+        payload.get("name"),
+        payload.get("tool_name"),
+        payload.get("function_name"),
+    ) or "tool"
+    arguments = _json_object_from_string(payload.get("arguments"))
+    command = _codex_command_from_arguments(arguments)
+    cwd = _codex_first_text(
+        arguments.get("workdir"),
+        arguments.get("cwd"),
+        payload.get("cwd"),
+    )
+    parts = [name]
+    if command:
+        parts.append(_truncate_log_fragment(command, limit=_CODEX_TOOL_SUMMARY_LIMIT))
+    if cwd:
+        parts.append(f"cwd={cwd}")
+    return " ".join(parts)
+
+
+def _json_object_from_string(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        return {"arguments": value}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _codex_command_from_arguments(arguments: dict[str, object]) -> str:
+    command = arguments.get("cmd") or arguments.get("command")
+    if isinstance(command, list) and all(isinstance(item, str) for item in command):
+        return shlex.join(command)
+    if isinstance(command, str) and command.strip():
+        return command.strip()
+    raw_arguments = arguments.get("arguments")
+    return raw_arguments.strip() if isinstance(raw_arguments, str) else ""
+
+
+def _truncate_log_fragment(value: str, *, limit: int) -> str:
+    text = " ".join(value.split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
 
 
 def _codex_content_text(value: object) -> str:

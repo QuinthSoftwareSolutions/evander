@@ -29,6 +29,7 @@ from .agent_session import (
 from .base import EffectProviderBase
 
 _AWAIT_AGENT_STALE_GRACE_SECONDS = 120
+_DEFAULT_CONTAINER_WORKER_JOB_TIMEOUT_SECONDS = 1800.0
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
 
@@ -255,6 +256,16 @@ class AgentPromptEffectProvider(EffectProviderBase):
             ExecutionStatusKind.FAILED,
             ExecutionStatusKind.DESTROYED,
         }:
+            timeout_result = cls._timeout_container_waiting_record_if_expired(
+                worker=worker,
+                record=record,
+                backend=backend,
+                status=status,
+                session_id=session_id,
+                execution_id=execution_id,
+            )
+            if timeout_result:
+                return timeout_result
             cls._capture_container_thread_id_from_running_logs(
                 worker=worker,
                 record=record,
@@ -292,6 +303,166 @@ class AgentPromptEffectProvider(EffectProviderBase):
         )
         cls._finalize_waiting_record(worker=worker, record=record, queue_record=queue_record)
         return 1
+
+    @classmethod
+    def _timeout_container_waiting_record_if_expired(
+        cls,
+        *,
+        worker: Any,
+        record: Any,
+        backend: Any,
+        status: Any,
+        session_id: str,
+        execution_id: str,
+    ) -> int:
+        timeout_seconds = cls._container_job_timeout_seconds(backend)
+        started_at = (
+            cls._container_status_started_at(status)
+            or record.finished_at
+            or record.started_at
+        )
+        elapsed_seconds = cls._elapsed_seconds_since(started_at)
+        if elapsed_seconds is None or elapsed_seconds <= timeout_seconds:
+            return 0
+
+        logs = ""
+        try:
+            logs = backend.get_log_snapshot(execution_id, lines=400)
+        except Exception:
+            logs = ""
+        thread_id = cls._thread_id_from_logs(logs)
+        if thread_id:
+            cls._store_container_thread_id(
+                worker=worker,
+                record=record,
+                session_id=session_id,
+                thread_id=thread_id,
+            )
+
+        stop_error = cls._stop_and_destroy_container_job(backend=backend, execution_id=execution_id)
+        message = cls._container_timeout_message(
+            execution_id=execution_id,
+            elapsed_seconds=elapsed_seconds,
+            timeout_seconds=timeout_seconds,
+            logs=logs,
+            stop_error=stop_error,
+        )
+        cls._fail_waiting_record_without_completion_event(
+            worker=worker,
+            record=record,
+            outputs={
+                "dispatch_id": str(record.outputs.get("dispatch_id") or "").strip(),
+                "thread_id": thread_id or str(record.outputs.get("thread_id") or ""),
+                "session_id": session_id,
+                "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                "worker_execution_id": execution_id,
+                "worker_status": "timeout",
+                "success": False,
+                "message": message,
+                "logs": logs,
+                "agent_state": "failed",
+                "scope": {
+                    "directory_path": str(record.resolved_config.get("directory_path") or "root"),
+                    "session_id": session_id,
+                    "vm_name": None,
+                    "vm_user": str(record.resolved_config.get("vm_user") or "agent"),
+                },
+            },
+            error=message,
+        )
+        return 1
+
+    @staticmethod
+    def _container_job_timeout_seconds(backend: Any) -> float:
+        config = getattr(backend, "config", None)
+        value = getattr(config, "container_worker_job_timeout_seconds", None)
+        try:
+            timeout = float(value)
+        except (TypeError, ValueError):
+            timeout = _DEFAULT_CONTAINER_WORKER_JOB_TIMEOUT_SECONDS
+        return timeout if timeout > 0 else _DEFAULT_CONTAINER_WORKER_JOB_TIMEOUT_SECONDS
+
+    @staticmethod
+    def _container_status_started_at(status: Any) -> datetime | None:
+        value = getattr(status, "started_at", None)
+        return value if isinstance(value, datetime) else None
+
+    @staticmethod
+    def _elapsed_seconds_since(started_at: datetime | None) -> float | None:
+        if started_at is None:
+            return None
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=UTC)
+        else:
+            started_at = started_at.astimezone(UTC)
+        return max(0.0, (datetime.now(UTC) - started_at).total_seconds())
+
+    @staticmethod
+    def _stop_and_destroy_container_job(*, backend: Any, execution_id: str) -> str | None:
+        stop_error: str | None = None
+        try:
+            backend.stop(execution_id, timeout_seconds=30)
+        except Exception as exc:  # noqa: BLE001
+            stop_error = str(exc)
+        try:
+            backend.destroy(execution_id)
+        except Exception as exc:  # noqa: BLE001
+            destroy_error = str(exc)
+            stop_error = (
+                f"{stop_error}; destroy failed: {destroy_error}"
+                if stop_error
+                else destroy_error
+            )
+        return stop_error
+
+    @classmethod
+    def _container_timeout_message(
+        cls,
+        *,
+        execution_id: str,
+        elapsed_seconds: float,
+        timeout_seconds: float,
+        logs: str,
+        stop_error: str | None,
+    ) -> str:
+        lines = [
+            "container worker prompt job timed out "
+            f"(execution_id={execution_id}, elapsed_seconds={elapsed_seconds:.1f}, "
+            f"timeout_seconds={timeout_seconds:.1f})"
+        ]
+        if stop_error:
+            lines.append(f"stop/remove error: {stop_error}")
+        last_lines = cls._last_useful_log_lines(logs, max_lines=20)
+        if last_lines:
+            lines.append("last log lines:")
+            lines.append(last_lines)
+        else:
+            lines.append("last log lines: <none>")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _last_useful_log_lines(logs: str, *, max_lines: int) -> str:
+        useful = [line.rstrip() for line in logs.splitlines() if line.strip()]
+        return "\n".join(useful[-max(1, max_lines) :])
+
+    @classmethod
+    def _fail_waiting_record_without_completion_event(
+        cls,
+        *,
+        worker: Any,
+        record: Any,
+        outputs: dict[str, Any],
+        error: str,
+    ) -> None:
+        finished_at = datetime.now(UTC)
+        record.status = "failed"
+        record.outputs = {**record.outputs, **outputs}
+        record.error = error
+        record.published_event_id = None
+        record.completion_event_enqueued_at = None
+        record.finished_at = finished_at
+        worker.execution_store.put(record)
+        worker._update_event_delivery_state(record.event_id)
 
     @classmethod
     def _capture_container_thread_id_from_running_logs(

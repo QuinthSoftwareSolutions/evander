@@ -684,6 +684,85 @@ def test_logs_recover_codex_messages_from_session_jsonl(tmp_path: Path) -> None:
     assert log_path.read_text(encoding="utf-8") == f"session id: {thread_id}\n"
 
 
+def test_logs_show_active_codex_exec_command_from_session_jsonl(tmp_path: Path) -> None:
+    thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    runtime = FakeContainerRuntime()
+    runtime.logs["job-1"] = f"session id: {thread_id}\n"
+    client = _client(tmp_path, runtime)
+
+    created = client.post(
+        "/v1/jobs",
+        headers=_auth(),
+        json={
+            "session_id": "session-1",
+            "job_id": "job-1",
+            "image": "codex:latest",
+            "command": ["true"],
+        },
+    )
+    assert created.status_code == 201
+    session_dir = (
+        tmp_path
+        / "worker-root"
+        / "sessions"
+        / "session-1"
+        / "agent_home"
+        / ".config"
+        / "agent-sandbox"
+        / "codex"
+        / "sessions"
+        / "2026"
+        / "05"
+        / "05"
+    )
+    session_dir.mkdir(parents=True)
+    rollout = session_dir / f"rollout-2026-05-05T08-19-00-{thread_id}.jsonl"
+    rollout.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "session_meta", "payload": {"id": thread_id}},
+                {
+                    "timestamp": "2026-05-05T08:19:10Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "agent_message",
+                        "message": "I am running the bounded test command.",
+                    },
+                },
+                {
+                    "timestamp": "2026-05-05T08:19:20Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "call_id": "call-active",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": "timeout --preserve-status 120 dotnet test --no-restore",
+                                "workdir": "/home/agent/repos/repo",
+                            }
+                        ),
+                    },
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    response = client.get("/v1/jobs/job-1/logs", headers=_auth())
+
+    assert response.status_code == 200
+    assert f"session id: {thread_id}\n" in response.text
+    assert "I am running the bounded test command.\n" in response.text
+    assert "latest codex event: 2026-05-05T08:19:20Z\n" in response.text
+    assert (
+        "active tool call: exec_command timeout --preserve-status 120 dotnet test --no-restore "
+        "cwd=/home/agent/repos/repo\n"
+    ) in response.text
+
+
 def test_raw_logs_reconstruct_removed_codex_job_from_session_timestamps(
     tmp_path: Path,
 ) -> None:

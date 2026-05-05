@@ -4,7 +4,7 @@ import json
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
@@ -14,6 +14,7 @@ import pytest
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from agent_sandbox.execution import ExecutionStatusKind
 from agent_sandbox.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
+from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
 from agent_sandbox.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
@@ -25,6 +26,7 @@ from agent_sandbox.daemons.effect_orchestrator import (
     _await_agent_pending_target,
     _matching_outbound_edges,
     build_effect_orchestrator_worker,
+    EffectExecutionRecord,
     main,
 )
 from agent_sandbox.messaging.agent_prompt_queue import (
@@ -127,7 +129,9 @@ class _ContainerDispatchBackendStub:
         self.repository = SimpleNamespace(read_all=lambda: {})
         self.prepared_specs: list[object] = []
         self.started_specs: list[object] = []
+        self.stopped: list[str] = []
         self.destroyed: list[str] = []
+        self.config: object | None = None
         self.status = SimpleNamespace(
             status=ExecutionStatusKind.STOPPED,
             message=None,
@@ -150,6 +154,10 @@ class _ContainerDispatchBackendStub:
     def get_log_snapshot(self, execution_id: str, *, lines: int = 50):
         del execution_id, lines
         return self.logs
+
+    def stop(self, execution_id: str, *, timeout_seconds: int = 60):
+        del timeout_seconds
+        self.stopped.append(execution_id)
 
     def destroy(self, execution_id: str):
         self.destroyed.append(execution_id)
@@ -2070,6 +2078,99 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     assert final_records[0].status == "succeeded"
     assert published_outputs[0]["worker_status"] == "stopped"
     assert published_outputs[0]["thread_id"] == "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+
+
+def test_agent_prompt_container_reconciliation_times_out_running_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        container_worker_job_timeout_seconds=10,
+    )
+    backend = _ContainerDispatchBackendStub()
+    backend.config = config
+    execution_id = "agent-session-1-timeout"
+    started_at = datetime.now(timezone.utc) - timedelta(seconds=45)
+    backend.status = SimpleNamespace(
+        status=ExecutionStatusKind.RUNNING,
+        message=None,
+        metadata={},
+        started_at=started_at,
+    )
+    backend.logs = (
+        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
+        "checking repo\n"
+        "still waiting on dotnet test\n"
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_prompt.build_execution_backend",
+        lambda config, admin_service: backend,
+    )
+    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    record = EffectExecutionRecord(
+        execution_id="exec-timeout",
+        idempotency_key="event-1::effect-1",
+        event_id="event-1",
+        trace_id="trace-1",
+        source_node_id="trigger-1",
+        source_trigger_type="trigger:cron",
+        effect_id="effect-1",
+        effect_type="effect:agent:prompt",
+        status="waiting",
+        started_at=started_at,
+        finished_at=started_at,
+        resolved_config_hash="hash",
+        resolved_config={
+            "session_id": "session-1",
+            "directory_path": "root/team-a",
+            "vm_user": "agent",
+        },
+        input_payload={},
+        outputs={
+            "dispatch_id": "dispatch-effect-1-abc123",
+            "thread_id": "dispatch-effect-1-abc123",
+            "success": True,
+            "output_mode": "on_completion",
+            "execution_backend": "container_worker_vm",
+            "execution_id": execution_id,
+            "session_id": "session-1",
+        },
+    )
+    execution_store.put(record)
+    published_outputs: list[dict[str, object]] = []
+    delivery_updates: list[str] = []
+    worker = SimpleNamespace(
+        config=config,
+        execution_store=execution_store,
+        provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda session_id: config),
+        provider_factory=SimpleNamespace(admin_service=None),
+        _publish_completion_event_from_record=lambda record, outputs: (
+            published_outputs.append(outputs) or "effect-completed"
+        ),
+        _update_event_delivery_state=lambda event_id: delivery_updates.append(event_id),
+    )
+
+    reconciled = AgentPromptEffectProvider.reconcile_waiting(worker=worker)
+
+    assert reconciled == 1
+    assert backend.stopped == [execution_id]
+    assert backend.destroyed == [execution_id]
+    final_record = execution_store.get_execution("exec-timeout")
+    assert final_record is not None
+    assert final_record.status == "failed"
+    assert final_record.published_event_id is None
+    assert final_record.outputs["success"] is False
+    assert final_record.outputs["worker_status"] == "timeout"
+    assert "execution_id=agent-session-1-timeout" in str(final_record.error)
+    assert "elapsed_seconds=" in str(final_record.error)
+    assert "timeout_seconds=10.0" in str(final_record.error)
+    assert "still waiting on dotnet test" in str(final_record.error)
+    assert "still waiting on dotnet test" in final_record.outputs["logs"]
+    assert final_record.outputs["thread_id"] == "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    assert published_outputs == []
+    assert delivery_updates == ["event-1"]
 
 
 def test_agent_enqueue_prompt_queues_and_fails_when_immediate_resume_fails(
