@@ -81,199 +81,13 @@ resource sshPublicKeys_truman_worker_1_key_name_resource 'Microsoft.Compute/sshP
 resource networkSecurityGroups_nsg_agent_worker_subnet_name_resource 'Microsoft.Network/networkSecurityGroups@2025-05-01' = {
   name: networkSecurityGroups_nsg_agent_worker_subnet_name
   location: 'northeurope'
-  properties: {
-    securityRules: [
-      {
-        name: 'Allow-ControlPlane-WorkerDaemon-11888'
-        id: networkSecurityGroups_nsg_agent_worker_subnet_name_Allow_ControlPlane_WorkerDaemon_11888.id
-        type: 'Microsoft.Network/networkSecurityGroups/securityRules'
-        properties: {
-          protocol: 'TCP'
-          sourcePortRange: '*'
-          sourceAddressPrefix: '10.2.0.4/32'
-          destinationAddressPrefix: '*'
-          access: 'Allow'
-          priority: 200
-          direction: 'Inbound'
-          sourcePortRanges: []
-          destinationPortRanges: [
-            '11888'
-            '22'
-          ]
-          sourceAddressPrefixes: []
-          destinationAddressPrefixes: []
-        }
-      }
-      {
-        name: 'Deny_Internet'
-        id: networkSecurityGroups_nsg_agent_worker_subnet_name_Deny_Internet.id
-        type: 'Microsoft.Network/networkSecurityGroups/securityRules'
-        properties: {
-          protocol: '*'
-          sourcePortRange: '*'
-          destinationPortRange: '*'
-          sourceAddressPrefix: '*'
-          destinationAddressPrefix: 'Internet'
-          access: 'Deny'
-          priority: 210
-          direction: 'Outbound'
-          sourcePortRanges: []
-          destinationPortRanges: []
-          sourceAddressPrefixes: []
-          destinationAddressPrefixes: []
-        }
-      }
-      {
-        name: 'DenyAllInbound'
-        id: networkSecurityGroups_nsg_agent_worker_subnet_name_DenyAllInbound.id
-        type: 'Microsoft.Network/networkSecurityGroups/securityRules'
-        properties: {
-          protocol: '*'
-          sourcePortRange: '*'
-          destinationPortRange: '*'
-          sourceAddressPrefix: '*'
-          destinationAddressPrefix: '*'
-          access: 'Deny'
-          priority: 400
-          direction: 'Inbound'
-          sourcePortRanges: []
-          destinationPortRanges: []
-          sourceAddressPrefixes: []
-          destinationAddressPrefixes: []
-        }
-      }
-      {
-        name: 'AllowALB'
-        id: networkSecurityGroups_nsg_agent_worker_subnet_name_AllowALB.id
-        type: 'Microsoft.Network/networkSecurityGroups/securityRules'
-        properties: {
-          protocol: '*'
-          sourcePortRange: '*'
-          destinationPortRange: '*'
-          sourceAddressPrefix: 'AzureLoadBalancer'
-          destinationAddressPrefix: '*'
-          access: 'Allow'
-          priority: 300
-          direction: 'Inbound'
-          sourcePortRanges: []
-          destinationPortRanges: []
-          sourceAddressPrefixes: []
-          destinationAddressPrefixes: []
-        }
-      }
-    ]
-  }
+  properties: {}
 }
 
 resource networkSecurityGroups_truman_control_center_nsg_name_resource 'Microsoft.Network/networkSecurityGroups@2025-05-01' = {
   name: networkSecurityGroups_truman_control_center_nsg_name
   location: 'northeurope'
-  properties: {
-    securityRules: [
-      {
-        name: 'SSH'
-        id: networkSecurityGroups_truman_control_center_nsg_name_SSH.id
-        type: 'Microsoft.Network/networkSecurityGroups/securityRules'
-        properties: {
-          protocol: 'TCP'
-          sourcePortRange: '*'
-          destinationPortRange: '22'
-          sourceAddressPrefix: '90.224.191.157'
-          destinationAddressPrefix: '*'
-          access: 'Allow'
-          priority: 300
-          direction: 'Inbound'
-          sourcePortRanges: []
-          destinationPortRanges: []
-          sourceAddressPrefixes: []
-          destinationAddressPrefixes: []
-        }
-      }
-      {
-        name: 'HTTPS'
-        id: networkSecurityGroups_truman_control_center_nsg_name_HTTPS.id
-        type: 'Microsoft.Network/networkSecurityGroups/securityRules'
-        properties: {
-          protocol: 'TCP'
-          sourcePortRange: '*'
-          destinationPortRange: '443'
-          sourceAddressPrefix: '*'
-          destinationAddressPrefix: '*'
-          access: 'Allow'
-          priority: 310
-          direction: 'Inbound'
-          sourcePortRanges: []
-          destinationPortRanges: []
-          sourceAddressPrefixes: []
-          destinationAddressPrefixes: []
-        }
-      }
-      {
-        name: 'HTTP'
-        id: networkSecurityGroups_truman_control_center_nsg_name_HTTP.id
-        type: 'Microsoft.Network/networkSecurityGroups/securityRules'
-        properties: {
-          protocol: 'TCP'
-          sourcePortRange: '*'
-          destinationPortRange: '80'
-          sourceAddressPrefix: '*'
-          destinationAddressPrefix: '*'
-          access: 'Allow'
-          priority: 320
-          direction: 'Inbound'
-          sourcePortRanges: []
-          destinationPortRanges: []
-          sourceAddressPrefixes: []
-          destinationAddressPrefixes: []
-        }
-      }
-      {
-        name: 'WorkerPorts'
-        id: networkSecurityGroups_truman_control_center_nsg_name_WorkerPorts.id
-        type: 'Microsoft.Network/networkSecurityGroups/securityRules'
-        properties: {
-          protocol: 'TCP'
-          sourcePortRange: '*'
-          sourceAddressPrefix: '10.2.1.0/27'
-          destinationAddressPrefix: '*'
-          access: 'Allow'
-          priority: 330
-          direction: 'Inbound'
-          sourcePortRanges: []
-          destinationPortRanges: [
-            '22'
-            '8000'
-            '11434'
-            '11666'
-            '11777'
-            '8081'
-            '3142'
-          ]
-          sourceAddressPrefixes: []
-          destinationAddressPrefixes: []
-        }
-      }
-      {
-        name: 'DenyWorkerInbound'
-        id: networkSecurityGroups_truman_control_center_nsg_name_DenyWorkerInbound.id
-        type: 'Microsoft.Network/networkSecurityGroups/securityRules'
-        properties: {
-          protocol: '*'
-          sourcePortRange: '*'
-          destinationPortRange: '*'
-          sourceAddressPrefix: '10.2.1.0/27'
-          destinationAddressPrefix: '*'
-          access: 'Deny'
-          priority: 340
-          direction: 'Inbound'
-          sourcePortRanges: []
-          destinationPortRanges: []
-          sourceAddressPrefixes: []
-          destinationAddressPrefixes: []
-        }
-      }
-    ]
-  }
+  properties: {}
 }
 
 resource publicIPAddresses_truman_control_center_ip_name_resource 'Microsoft.Network/publicIPAddresses@2025-05-01' = {
@@ -521,8 +335,6 @@ resource networkInterfaces_truman_worker_1335_z1_name_resource 'Microsoft.Networ
     ipConfigurations: [
       {
         name: 'ipconfig1'
-        id: '${networkInterfaces_truman_worker_1335_z1_name_resource.id}/ipConfigurations/ipconfig1'
-        type: 'Microsoft.Network/networkInterfaces/ipConfigurations'
         properties: {
           privateIPAddress: '10.2.1.4'
           privateIPAllocationMethod: 'Dynamic'
@@ -754,34 +566,6 @@ resource virtualNetworks_truman_control_center_vnet_name_resource 'Microsoft.Net
       ]
     }
     privateEndpointVNetPolicies: 'Disabled'
-    subnets: [
-      {
-        name: 'default'
-        id: virtualNetworks_truman_control_center_vnet_name_default.id
-        properties: {
-          addressPrefix: '10.2.0.0/24'
-          delegations: []
-          privateEndpointNetworkPolicies: 'Disabled'
-          privateLinkServiceNetworkPolicies: 'Enabled'
-        }
-        type: 'Microsoft.Network/virtualNetworks/subnets'
-      }
-      {
-        name: 'agent-worker-subnet'
-        id: virtualNetworks_truman_control_center_vnet_name_agent_worker_subnet.id
-        properties: {
-          addressPrefix: '10.2.1.0/27'
-          networkSecurityGroup: {
-            id: networkSecurityGroups_nsg_agent_worker_subnet_name_resource.id
-          }
-          delegations: []
-          privateEndpointNetworkPolicies: 'Disabled'
-          privateLinkServiceNetworkPolicies: 'Enabled'
-          defaultOutboundAccess: false
-        }
-        type: 'Microsoft.Network/virtualNetworks/subnets'
-      }
-    ]
     virtualNetworkPeerings: []
     enableDdosProtection: false
   }
@@ -825,8 +609,6 @@ resource networkInterfaces_truman_control_center992_z1_name_resource 'Microsoft.
     ipConfigurations: [
       {
         name: 'ipconfig1'
-        id: '${networkInterfaces_truman_control_center992_z1_name_resource.id}/ipConfigurations/ipconfig1'
-        type: 'Microsoft.Network/networkInterfaces/ipConfigurations'
         properties: {
           privateIPAddress: '10.2.0.4'
           privateIPAllocationMethod: 'Dynamic'
