@@ -14,11 +14,22 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
     assert parsed["trigger"] == "none"
     assert parsed["pr"] == "none"
     assert parsed["variables"]["AGENT_SANDBOX_REPO_VERSION"] == "$(Build.SourceVersion)"
+    assert parsed["variables"]["CONTROL_PLANE_TARGET"] == "${{ parameters.controlPlaneTarget }}"
+    assert parsed["variables"]["WORKER_TARGET"] == "${{ parameters.workerTarget }}"
     assert "ANSIBLE_VAULT_PASSWORD" in text
     assert "ansible/inventory/azure.yml" in text
     assert "ansible/site.yml" in text
     assert "scripts/build_agent_sandbox_runner_image.sh" in text
     assert "ansible/worker.yml" in text
+    assert '${CONTROL_PLANE_TARGET:-all}" != "all"' in text
+    assert '${WORKER_TARGET:-all}" != "all"' in text
+
+    parameters = {parameter["name"]: parameter for parameter in parsed["parameters"]}
+    assert parameters["controlPlaneTarget"]["default"] == "all"
+    assert parameters["controlPlaneTarget"]["values"] == ["all", "truman-control-plane"]
+    assert parameters["workerTarget"]["default"] == "all"
+    assert parameters["workerTarget"]["values"] == ["all", "truman-worker-1"]
+
     stage_names = [stage["stage"] for stage in parsed["stages"]]
     assert stage_names == ["DeployControlPlane", "DeployWorkerVm"]
     assert parsed["stages"][1]["dependsOn"] == "DeployControlPlane"

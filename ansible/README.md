@@ -187,8 +187,10 @@ builds `dist/agent-sandbox-runner.tar`, then deploys the worker VM:
 
 The pipeline passes `$(Build.SourceVersion)` as `agent_sandbox_repo_version` so target hosts deploy
 the same revision that Azure Pipelines checked out. The default inventory is
-`ansible/inventory/azure.yml`; override the `inventoryPath`, `controlPlaneLimit`, and `workerLimit`
-parameters when deploying a different environment or a subset of hosts.
+`ansible/inventory/azure.yml`; override the `inventoryPath`, `controlPlaneTarget`, and
+`workerTarget` parameters when deploying a different environment or a subset of hosts. The target
+parameters are dropdowns with `all` as the default; selecting `all` runs the relevant playbook
+without an Ansible `--limit`.
 
 Set the secret Azure Pipelines variable `ANSIBLE_VAULT_PASSWORD` so the pipeline can read the
 encrypted Vault-backed variables. The selected self-hosted agent pool must have SSH reachability to

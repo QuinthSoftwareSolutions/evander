@@ -10,22 +10,28 @@ parameters:
     displayName: Ansible inventory path
     type: string
     default: ansible/inventory/azure.yml
-  - name: controlPlaneLimit
-    displayName: Optional control-plane host limit
+  - name: controlPlaneTarget
+    displayName: Control-plane deployment target
     type: string
-    default: ""
-  - name: workerLimit
-    displayName: Optional worker host limit
+    default: all
+    values:
+      - all
+      - truman-control-plane
+  - name: workerTarget
+    displayName: Worker deployment target
     type: string
-    default: ""
+    default: all
+    values:
+      - all
+      - truman-worker-1
 
 variables:
   AGENT_SANDBOX_REPO_VERSION: $(Build.SourceVersion)
   ANSIBLE_FORCE_COLOR: "true"
   ANSIBLE_INVENTORY: ${{ parameters.inventoryPath }}
-  CONTROL_PLANE_LIMIT: ${{ parameters.controlPlaneLimit }}
+  CONTROL_PLANE_TARGET: ${{ parameters.controlPlaneTarget }}
   PYTHONUNBUFFERED: "1"
-  WORKER_LIMIT: ${{ parameters.workerLimit }}
+  WORKER_TARGET: ${{ parameters.workerTarget }}
 
 stages:
   - stage: DeployControlPlane
@@ -59,8 +65,14 @@ stages:
                 - bash: |
                     set -euo pipefail
 
-                    if [ -z "${ANSIBLE_VAULT_PASSWORD:-}" ] || [ "$ANSIBLE_VAULT_PASSWORD" = '$(ANSIBLE_VAULT_PASSWORD)' ]; then
-                      echo "Set the secret pipeline variable ANSIBLE_VAULT_PASSWORD." >&2
+                    if [ "${ANSIBLE_VAULT_PASSWORD:-}" = '$(ANSIBLE_VAULT_PASSWORD)' ]; then
+                      echo "Azure Pipelines did not expand \$(ANSIBLE_VAULT_PASSWORD)." >&2
+                      echo "Define ANSIBLE_VAULT_PASSWORD on this YAML pipeline, or include and authorize the variable group that contains it." >&2
+                      exit 1
+                    fi
+                    if [ -z "${ANSIBLE_VAULT_PASSWORD:-}" ]; then
+                      echo "Azure Pipelines expanded ANSIBLE_VAULT_PASSWORD, but the value is empty." >&2
+                      echo "Set a non-empty secret value on this pipeline or in its linked variable group." >&2
                       exit 1
                     fi
 
@@ -70,8 +82,8 @@ stages:
                     trap 'rm -f "$vault_file"' EXIT
 
                     limit_args=()
-                    if [ -n "${CONTROL_PLANE_LIMIT:-}" ]; then
-                      limit_args=(--limit "$CONTROL_PLANE_LIMIT")
+                    if [ "${CONTROL_PLANE_TARGET:-all}" != "all" ]; then
+                      limit_args=(--limit "$CONTROL_PLANE_TARGET")
                     fi
 
                     ansible-playbook \
@@ -124,8 +136,14 @@ stages:
                 - bash: |
                     set -euo pipefail
 
-                    if [ -z "${ANSIBLE_VAULT_PASSWORD:-}" ] || [ "$ANSIBLE_VAULT_PASSWORD" = '$(ANSIBLE_VAULT_PASSWORD)' ]; then
-                      echo "Set the secret pipeline variable ANSIBLE_VAULT_PASSWORD." >&2
+                    if [ "${ANSIBLE_VAULT_PASSWORD:-}" = '$(ANSIBLE_VAULT_PASSWORD)' ]; then
+                      echo "Azure Pipelines did not expand \$(ANSIBLE_VAULT_PASSWORD)." >&2
+                      echo "Define ANSIBLE_VAULT_PASSWORD on this YAML pipeline, or include and authorize the variable group that contains it." >&2
+                      exit 1
+                    fi
+                    if [ -z "${ANSIBLE_VAULT_PASSWORD:-}" ]; then
+                      echo "Azure Pipelines expanded ANSIBLE_VAULT_PASSWORD, but the value is empty." >&2
+                      echo "Set a non-empty secret value on this pipeline or in its linked variable group." >&2
                       exit 1
                     fi
 
@@ -135,8 +153,8 @@ stages:
                     trap 'rm -f "$vault_file"' EXIT
 
                     limit_args=()
-                    if [ -n "${WORKER_LIMIT:-}" ]; then
-                      limit_args=(--limit "$WORKER_LIMIT")
+                    if [ "${WORKER_TARGET:-all}" != "all" ]; then
+                      limit_args=(--limit "$WORKER_TARGET")
                     fi
 
                     ansible-playbook \
