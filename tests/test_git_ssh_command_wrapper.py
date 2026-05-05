@@ -248,6 +248,90 @@ def test_git_ssh_wrapper_refreshes_shared_mirror_before_upload_pack(tmp_path: Pa
     assert git_shell_log.read_text(encoding="utf-8").strip() == f"git-upload-pack '{bare_repo}'"
 
 
+def test_git_ssh_wrapper_can_disable_shared_mirror_auto_refresh(tmp_path: Path) -> None:
+    sandbox_root = tmp_path / "sandbox"
+    git_root = sandbox_root / "git-remotes"
+    scripts_dir = sandbox_root / "scripts"
+    git_root.mkdir(parents=True)
+    scripts_dir.mkdir(parents=True)
+
+    repo_root = Path(__file__).resolve().parents[1]
+    for relative_path in (
+        "scripts/git_ssh_command_wrapper.sh",
+        "scripts/mirror_issue_repo.sh",
+        "scripts/create_git_remote.sh",
+        "scripts/resolve_repo_source.sh",
+        "scripts/lib/runtime_config.sh",
+        "scripts/lib/git_provider_auth.sh",
+    ):
+        _copy_script(repo_root, sandbox_root, relative_path)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": "Test User",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "Test User",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+            "AGENT_SANDBOX_GIT_ROOT": str(git_root),
+        }
+    )
+
+    source_repo = tmp_path / "source"
+    source_repo.mkdir()
+    _git(source_repo, "init")
+    _git(source_repo, "checkout", "-b", "main")
+    (source_repo / "README.md").write_text("v1\n", encoding="utf-8")
+    _git(source_repo, "add", "README.md", env=env)
+    _git(source_repo, "commit", "-m", "Initial commit", env=env)
+
+    create_remote_script = scripts_dir / "create_git_remote.sh"
+    subprocess.run(
+        [str(create_remote_script), "shared-repo"],
+        check=True,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    bare_repo = git_root / "shared-repo.git"
+    _git_dir(bare_repo, "fetch", str(source_repo), "refs/heads/main:refs/heads/main")
+    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSource", str(source_repo))
+    _git_dir(bare_repo, "config", "agent-sandbox.mirrorRemoteName", "origin")
+    _git_dir(bare_repo, "config", "agent-sandbox.mirrorSyncRemote", "1")
+    _git_dir(bare_repo, "config", "agent-sandbox.mirrorAutoRefresh", "0")
+    initial_sha = _git(source_repo, "rev-parse", "HEAD").stdout.strip()
+
+    (source_repo / "README.md").write_text("v2\n", encoding="utf-8")
+    _git(source_repo, "add", "README.md", env=env)
+    _git(source_repo, "commit", "-m", "Update commit", env=env)
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    git_shell_log = tmp_path / "git-shell.log"
+    fake_git_shell = fake_bin / "git-shell"
+    fake_git_shell.write_text(
+        f"#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$2\" > {git_shell_log}\n",
+        encoding="utf-8",
+    )
+    os.chmod(fake_git_shell, 0o755)
+
+    wrapper_script = scripts_dir / "git_ssh_command_wrapper.sh"
+    wrapper_env = env.copy()
+    wrapper_env.update(
+        {
+            "PATH": f"{fake_bin}:{wrapper_env['PATH']}",
+            "SSH_ORIGINAL_COMMAND": f"git-upload-pack '{bare_repo}'",
+        }
+    )
+    subprocess.run(
+        [str(wrapper_script)], check=True, text=True, capture_output=True, env=wrapper_env
+    )
+
+    assert _git_dir(bare_repo, "rev-parse", "refs/heads/main").stdout.strip() == initial_sha
+    assert git_shell_log.read_text(encoding="utf-8").strip() == f"git-upload-pack '{bare_repo}'"
+
+
 def test_git_ssh_wrapper_refreshes_remote_source_tracking_branches_before_upload_pack(
     tmp_path: Path,
 ) -> None:

@@ -345,6 +345,7 @@ def test_worker_git_access_role_sets_up_private_repo_checkout_before_repo_checko
     assert "scripts/create_git_remote.sh" in role
     assert "agent-sandbox.mirrorSource" in role
     assert "agent-sandbox.mirrorSyncRemote" in role
+    assert "agent-sandbox.mirrorAutoRefresh" in role
     assert "Publish requested control-plane revision to deployment repo mirror" in role
     assert '"--git-dir={{ agent_sandbox_worker_repo_mirror_path }}"' in role
     assert "fetch\n      - --force" in role

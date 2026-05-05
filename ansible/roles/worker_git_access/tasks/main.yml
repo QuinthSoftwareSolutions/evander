@@ -164,6 +164,8 @@
       value: "0"
     - key: agent-sandbox.mirrorForceLocal
       value: "0"
+    - key: agent-sandbox.mirrorAutoRefresh
+      value: "0"
   delegate_to: "{{ agent_sandbox_control_plane_host }}"
   become_user: "{{ agent_sandbox_git_user }}"
   changed_when: false

@@ -338,7 +338,8 @@ worker deploy checkout on the private control-plane Git path instead of requirin
 GitHub. The control-plane checkout must already contain the requested `agent_sandbox_repo_version`;
 deploy `site.yml` first, then run `worker.yml`. During the worker run, Ansible publishes that exact
 control-plane commit to the deployment mirror at `refs/heads/deploy/agent-sandbox` before the worker
-checkout task fetches from the mirror.
+checkout task fetches from the mirror. That deployment mirror disables the restricted SSH wrapper's
+normal auto-refresh path so the run-scoped deploy ref is not pruned during `git-upload-pack`.
 
 The worker `python_env` install uses the control-plane Nexus PyPI group through
 `agent_sandbox_python_install_env`, setting `UV_DEFAULT_INDEX`, `UV_INDEX_URL`, `UV_INSECURE_HOST`,

@@ -270,7 +270,7 @@ build_remote_tracking_refspecs() {
 auto_refresh_mirror() {
   local repo_real="$1"
   local original_command="$2"
-  local mirror_source mirror_remote_name mirror_sync_remote mirror_force_local source_mode resolved_repo_path
+  local mirror_source mirror_remote_name mirror_sync_remote mirror_force_local mirror_auto_refresh source_mode resolved_repo_path
   local default_base_branch local_default_ref remote_default_ref
   local local_ahead remote_ahead
   local sync_failed=0
@@ -292,6 +292,13 @@ auto_refresh_mirror() {
   if [[ -z "${mirror_source}" ]]; then
     return 0
   fi
+
+  mirror_auto_refresh="$(git --git-dir="${repo_real}" config --get agent-sandbox.mirrorAutoRefresh || true)"
+  case "${mirror_auto_refresh}" in
+    0|false|no|off)
+      return 0
+      ;;
+  esac
 
   mirror_remote_name="$(git --git-dir="${repo_real}" config --get agent-sandbox.mirrorRemoteName || true)"
   mirror_sync_remote="$(git --git-dir="${repo_real}" config --get agent-sandbox.mirrorSyncRemote || true)"
