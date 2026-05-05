@@ -466,6 +466,22 @@ stages:
                       chmod 600 "$key_file"
                     done
 
+                    if [ -z "${HOST_DOTNET_ROOT:-}" ]; then
+                      dotnet_path="$(command -v dotnet || true)"
+                      if [ -n "$dotnet_path" ]; then
+                        dotnet_real_path="$(readlink -f "$dotnet_path")"
+                        HOST_DOTNET_ROOT="$(dirname "$dotnet_real_path")"
+                        export HOST_DOTNET_ROOT
+                      fi
+                    fi
+                    if [ -z "${HOST_DOTNET_ROOT:-}" ] || [ ! -x "$HOST_DOTNET_ROOT/dotnet" ]; then
+                      echo "Could not resolve a local .NET SDK root for the worker toolchain." >&2
+                      echo "Install dotnet on the pipeline agent, set HOST_DOTNET_ROOT, or set HOST_DOTNET_ARCHIVE." >&2
+                      echo "Expected \$HOST_DOTNET_ROOT/dotnet to exist and be executable." >&2
+                      exit 1
+                    fi
+                    echo "Using HOST_DOTNET_ROOT=$HOST_DOTNET_ROOT"
+
                     vault_file="$PIPELINE_WORKSPACE/.ansible-vault-pass"
                     umask 077
                     printf '%s\n' "$ANSIBLE_VAULT_PASSWORD" > "$vault_file"

@@ -49,6 +49,9 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
     assert 'export HOST_CODEX_ROOT="$codex_prefix/node_modules/@openai/codex"' in text
     assert "Installed Codex package did not contain the expected executable" not in text
     assert "HOST_CODEX_NPM_PACKAGE: ${{ parameters.hostCodexNpmPackage }}" in text
+    assert 'dotnet_path="$(command -v dotnet || true)"' in text
+    assert 'HOST_DOTNET_ROOT="$(dirname "$dotnet_real_path")"' in text
+    assert "Expected \\$HOST_DOTNET_ROOT/dotnet to exist and be executable." in text
     assert "PIPELINE_WORKSPACE: $(Pipeline.Workspace)" in text
     assert text.count("AzureCLI@2") == 4
     assert "azureSubscription: ${{ parameters.azureServiceConnection }}" in text
