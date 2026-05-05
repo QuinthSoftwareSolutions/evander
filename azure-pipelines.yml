@@ -1,4 +1,6 @@
-trigger: none
+trigger:
+  - main
+  
 pr: none
 
 parameters:
