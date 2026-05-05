@@ -436,12 +436,6 @@ stages:
                     npm install --prefix "$codex_prefix" --no-audit --no-fund "$HOST_CODEX_NPM_PACKAGE"
 
                     export HOST_CODEX_ROOT="$codex_prefix/node_modules/@openai/codex"
-                    codex_binary="$HOST_CODEX_ROOT/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex/codex"
-                    if [ ! -x "$codex_binary" ]; then
-                      echo "Installed Codex package did not contain the expected executable: $codex_binary" >&2
-                      exit 1
-                    fi
-
                     ./scripts/build_agent_sandbox_runner_image.sh
                     test -s dist/agent-sandbox-runner.tar
                   displayName: Build container runner image archive

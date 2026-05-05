@@ -31,11 +31,20 @@ CALLER_HOME="$(getent passwd "${CALLER_USER}" | cut -d: -f6)"
 
 HOST_CODEX_ROOT="${HOST_CODEX_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.14.0/lib/node_modules/@openai/codex}"
 DEFAULT_CODEX_BINARY="${HOST_CODEX_ROOT}/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex/codex"
-HOST_CODEX_BINARY_PATH="${HOST_CODEX_BINARY_PATH:-${DEFAULT_CODEX_BINARY}}"
+HOST_CODEX_BINARY_PATH="${HOST_CODEX_BINARY_PATH:-}"
 RUNNER_IMAGE_NAME="${RUNNER_IMAGE_NAME:-agent-sandbox-runner:latest}"
 RUNNER_ARCHIVE_PATH="${RUNNER_ARCHIVE_PATH:-${ROOT_DIR}/dist/agent-sandbox-runner.tar}"
 RUNNER_BUILD_NETWORK="${RUNNER_BUILD_NETWORK:-}"
 DOCKER="${DOCKER:-docker}"
+
+if [[ -z "${HOST_CODEX_BINARY_PATH}" ]]; then
+  HOST_CODEX_BINARY_PATH="${DEFAULT_CODEX_BINARY}"
+  HOST_CODEX_NODE_MODULES="$(cd "${HOST_CODEX_ROOT}/../.." 2>/dev/null && pwd || true)"
+  HOISTED_CODEX_BINARY="${HOST_CODEX_NODE_MODULES}/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex/codex"
+  if [[ ! -x "${HOST_CODEX_BINARY_PATH}" && -x "${HOISTED_CODEX_BINARY}" ]]; then
+    HOST_CODEX_BINARY_PATH="${HOISTED_CODEX_BINARY}"
+  fi
+fi
 
 if [[ ! -x "${HOST_CODEX_BINARY_PATH}" ]]; then
   echo "Missing executable Codex binary: ${HOST_CODEX_BINARY_PATH}" >&2

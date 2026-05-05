@@ -47,6 +47,7 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
     assert "AGENT_SANDBOX_WORKER_SSH_KEY_FILE" in text
     assert "npm install --prefix \"$codex_prefix\" --no-audit --no-fund" in text
     assert 'export HOST_CODEX_ROOT="$codex_prefix/node_modules/@openai/codex"' in text
+    assert "Installed Codex package did not contain the expected executable" not in text
     assert "HOST_CODEX_NPM_PACKAGE: ${{ parameters.hostCodexNpmPackage }}" in text
     assert "PIPELINE_WORKSPACE: $(Pipeline.Workspace)" in text
     assert text.count("AzureCLI@2") == 4

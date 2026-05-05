@@ -38,6 +38,8 @@ def test_runner_build_script_builds_tag_and_saves_tarball() -> None:
     )
 
     assert "HOST_CODEX_BINARY_PATH" in script
+    assert "HOISTED_CODEX_BINARY" in script
+    assert 'HOST_CODEX_NODE_MODULES="$(cd "${HOST_CODEX_ROOT}/../.."' in script
     assert "RUNNER_BUILD_NETWORK" in script
     assert "agent-sandbox-runner:latest" in script
     assert "dist/agent-sandbox-runner.tar" in script
