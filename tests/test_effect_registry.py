@@ -34,6 +34,7 @@ from agent_sandbox.events.provider_models import (
     AgentCloneRepoEffectDefinition,
     AgentCopyFilesEffectDefinition,
     AgentCreateEffectDefinition,
+    AgentDestroyEffectDefinition,
     AgentEnqueuePromptEffectDefinition,
     AgentExecEffectDefinition,
     AgentPromptEffectDefinition,
@@ -259,6 +260,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:vm:start",
         "effect:vm:stop",
         "effect:agent:create",
+        "effect:agent:destroy",
         "effect:agent:clone-repo",
         "effect:agent:bootstrap-frontend",
         "effect:agent:copy-files",
@@ -271,6 +273,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:vm:copy-files",
         "effect:vm:delete-files",
         "effect:issue:update-state",
+        "effect:notification:send",
         "effect:session:update-metadata",
         "effect:git:promote-agent-branch",
         "effect:pr:create",
@@ -517,7 +520,6 @@ def test_agent_prompt_provider_emits_thread_id() -> None:
         prompt="continue",
         session_id="session-42",
         resume_thread_id="thread-123",
-        output_mode="on_completion",
     )
     admin_service = _AdminServiceStub(
         create_vm_calls=[],
@@ -536,7 +538,7 @@ def test_agent_prompt_provider_emits_thread_id() -> None:
     assert output["dispatch_id"].startswith("dispatch-effect-prompt-")
     assert output["thread_id"] == "thread-123"
     assert output["success"] is True
-    assert output["output_mode"] == "on_completion"
+    assert "output_mode" not in output
     assert admin_service.resume_calls[0]["target"] == "session-42"
     assert admin_service.resume_calls[0]["dispatch_id"] == output["dispatch_id"]
     assert admin_service.resume_calls[0]["resume_thread_id"] == "thread-123"
@@ -1100,7 +1102,6 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
             type="effect:agent:prompt",
             session_id="session-1",
             prompt="continue",
-            output_mode="on_completion",
         )
     ).execute()
 
@@ -1118,7 +1119,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert clone["pr_notes_ref"] == "refs/notes/agent-pr/84097828fc31"
     assert copied["copied_paths"] == ["/home/agent/repos/repo/AGENT_TASK.yaml"]
     assert prompted["execution_backend"] == "container_worker_vm"
-    assert prompted["output_mode"] == "on_completion"
+    assert "output_mode" not in prompted
     assert backend.prepared_sessions[0]["session_id"] == "session-1"
     assert mirror_resolver.resolved[0]["repo_source"] == "/tmp/repo"
     assert (
@@ -1365,6 +1366,122 @@ def test_agent_create_container_rejects_mssql_until_supported(
         ).execute()
 
     assert backend.prepared_sessions == []
+
+
+def test_agent_destroy_provider_destroys_vm_for_libvirt_session(tmp_path) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-libvirt",
+            vm_id="vm-libvirt",
+            vm_provider="libvirt",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    class DestroyAdminStub:
+        def __init__(self) -> None:
+            self.runtime = SimpleNamespace(
+                session_repository=session_repository,
+                provider_config=_ContainerResolverStub(config),
+            )
+            self.calls: list[str] = []
+
+        def destroy_vm(self, target: str):
+            self.calls.append(target)
+            return VmActionResult(
+                success=True,
+                vm_name=target,
+                action="destroy_vm",
+                message=f"Destroyed VM {target}",
+            )
+
+    admin_service = DestroyAdminStub()
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentDestroyEffectDefinition(
+            id="agent-destroy",
+            display_name="Destroy",
+            type="effect:agent:destroy",
+            session_id="session-libvirt",
+        )
+    ).execute()
+
+    assert admin_service.calls == ["vm-libvirt"]
+    assert output["success"] is True
+    assert output["execution_backend"] == "libvirt_vm"
+    assert output["session_id"] == "session-libvirt"
+    assert output["vm_name"] == "vm-libvirt"
+    assert output["status"] == "destroyed"
+
+
+def test_agent_destroy_provider_deletes_container_session(tmp_path) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="libvirt_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-container",
+            vm_id=None,
+            vm_provider="container_worker_vm",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    class DeleteAdminStub:
+        def __init__(self) -> None:
+            self.runtime = SimpleNamespace(
+                session_repository=session_repository,
+                provider_config=_ContainerResolverStub(config),
+            )
+            self.calls: list[tuple[str, str | None]] = []
+
+        def delete_admin_agent(self, agent_id: str, *, backend: str | None = None):
+            self.calls.append((agent_id, backend))
+            session_repository.delete_session(agent_id)
+            return {
+                "success": True,
+                "target_name": agent_id,
+                "status": "deleted",
+                "session_id": agent_id,
+                "message": "worker_session_deleted=1",
+            }
+
+    admin_service = DeleteAdminStub()
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentDestroyEffectDefinition(
+            id="agent-destroy",
+            display_name="Destroy",
+            type="effect:agent:destroy",
+            session_id="session-container",
+        )
+    ).execute()
+
+    assert admin_service.calls == [("session-container", "container_worker_vm")]
+    assert output["success"] is True
+    assert output["execution_backend"] == "container_worker_vm"
+    assert output["session_id"] == "session-container"
+    assert output["status"] == "deleted"
+    assert session_repository.get_session("session-container") is None
 
 
 def test_agent_exec_provider_delegates_libvirt_sessions_to_vm_exec(tmp_path) -> None:

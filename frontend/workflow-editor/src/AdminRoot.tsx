@@ -10,6 +10,7 @@ import { AgentsPage } from "./features/agents/AgentsPage";
 import { ConfigurationScreen } from "./features/configuration/ConfigurationScreen";
 import { IssuesPage } from "./features/issues/IssuesPage";
 import { SessionsScreen } from "./features/sessions/SessionsScreen";
+import { UsersPage } from "./features/users/UsersPage";
 import { VmsPage } from "./features/vms/VmsPage";
 import { WorkersScreen } from "./features/workers/WorkersScreen";
 import { ChatLauncher } from "./features/chat/ChatLauncher";
@@ -21,6 +22,8 @@ type AdminSession = {
   authenticated: boolean;
   username: string | null;
   display_name: string | null;
+  role: "admin" | "regular" | null;
+  can_manage_users: boolean;
   session_id: string | null;
   available_login_methods: string[];
   azure_sso_login_url: string | null;
@@ -32,6 +35,8 @@ type AdminSession = {
 type AdminState = {
   selected_directory_path: string;
   directory_scoped_config_enabled: boolean;
+  role: "admin" | "regular" | null;
+  can_manage_users: boolean;
   privileged_operations: {
     unlocked: boolean;
   };
@@ -61,6 +66,7 @@ type AdminTab =
   | "issues"
   | "sessions"
   | "configuration"
+  | "users"
   | "workers"
   | "workflow";
 
@@ -75,6 +81,7 @@ const TABS: ReadonlyArray<{ key: AdminTab; label: string; shortLabel: string; de
   { key: "issues", label: "Issues", shortLabel: "Issues", description: "Local issue intake and VM creation." },
   { key: "sessions", label: "Sessions", shortLabel: "Sessions", description: "Session state, tools, and wake schedules." },
   { key: "configuration", label: "Configuration", shortLabel: "Config", description: "Directory-scoped config and policy." },
+  { key: "users", label: "Users", shortLabel: "Users", description: "Azure SSO users and roles." },
   { key: "workers", label: "Workers", shortLabel: "Workers", description: "Background worker state, logs, and settings." },
   { key: "workflow", label: "Workflow", shortLabel: "Flow", description: "Workflow editor and runtime activity." },
 ];
@@ -1328,11 +1335,29 @@ export default function AdminRoot() {
 
   const activeTab = TABS.find((tab) => tab.key === selectedTab) ?? TABS[TABS.length - 1];
   const privilegeUnlocked = adminState?.privileged_operations.unlocked ?? session.privileged_operations.unlocked;
+  const currentUserRole = adminState?.role ?? session.role ?? null;
+  const canManageUsers = adminState?.can_manage_users ?? session.can_manage_users;
   const workflowFocus = selectedTab === "workflow";
+  const currentUserId = (
+    session.username?.trim()
+    || session.display_name?.trim()
+    || session.session_id?.trim()
+    || "anonymous"
+  );
+  const currentUserLabel = (
+    session.display_name?.trim()
+    || session.username?.trim()
+    || session.session_id?.trim()
+    || "anonymous"
+  );
   const adminUiState = {
     privilegedUnlocked: privilegeUnlocked,
     authBusy,
     directoryScopedConfigEnabled: adminState?.directory_scoped_config_enabled ?? false,
+    currentUserId,
+    currentUserLabel,
+    currentUserRole,
+    canManageUsers,
     selectedDirectoryPath,
     selectedDirectoryParentPath,
     directoryTree,
@@ -1458,6 +1483,8 @@ export default function AdminRoot() {
               <IssuesPage />
             ) : selectedTab === "configuration" ? (
               <ConfigurationScreen />
+            ) : selectedTab === "users" ? (
+              <UsersPage />
             ) : selectedTab === "workers" ? (
               <WorkersScreen />
             ) : selectedTab === "sessions" ? (

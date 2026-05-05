@@ -134,6 +134,16 @@ class ChatStore:
             self._write(payload)
             return thread_id
 
+    def start_new_thread(self, user_id: str) -> str:
+        normalized_user_id = str(user_id or "").strip() or "anonymous"
+        with self.lock:
+            payload = self._read()
+            thread_id = f"thread-{uuid4().hex[:16]}"
+            payload["users"][normalized_user_id] = thread_id
+            payload["threads"][thread_id] = self._new_thread(normalized_user_id)
+            self._write(payload)
+            return thread_id
+
     def append_message(
         self,
         *,
@@ -313,6 +323,33 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
             }
         )
 
+    async def start_new_session(request: Request) -> JSONResponse:
+        auth.require(request)
+        settings = service.read_assistant_settings()
+        if not bool(settings.get("enabled")):
+            return json_error("Assistant is disabled by admin settings.", status_code=403)
+        user_id = user_id_for_request(request)
+        thread_id = store.start_new_thread(user_id)
+        reset_context = getattr(service.vm_agent_admin, "reset_chat_assistant_thread_context", None)
+        if callable(reset_context):
+            reset_context(
+                user_id=user_id,
+                backend=str(
+                    getattr(service.config, "execution_backend", "libvirt_vm") or "libvirt_vm"
+                ),
+                assistant_scope="admin_chat",
+                thread_id=thread_id,
+            )
+        return JSONResponse(
+            {
+                "user_id": user_id,
+                "thread_id": thread_id,
+                "assistant_capability_mode": "read-only"
+                if bool(settings.get("read_only"))
+                else capability_mode(request),
+            }
+        )
+
     async def post_message(request: Request) -> JSONResponse:
         auth.require(request)
         try:
@@ -439,6 +476,7 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
 
     return [
         Route("/api/chat/session", start_or_get_session, methods=["GET", "POST"]),
+        Route("/api/chat/session/new", start_new_session, methods=["POST"]),
         Route("/api/chat/message", post_message, methods=["POST"]),
         Route("/api/chat/transcript/{thread_id}", get_transcript, methods=["GET"]),
         Route("/api/chat/stream/{thread_id}", stream_transcript, methods=["GET"]),

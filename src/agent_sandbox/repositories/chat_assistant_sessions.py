@@ -34,6 +34,7 @@ class JsonChatAssistantSessionRepository:
             return {
                 "session_id": session_id,
                 "agent_thread_id": agent_thread_id,
+                "thread_id": str(value.get("thread_id") or "").strip(),
             }
 
     def upsert_mapping(
@@ -44,6 +45,7 @@ class JsonChatAssistantSessionRepository:
         assistant_scope: str,
         session_id: str,
         agent_thread_id: str,
+        thread_id: str | None = None,
     ) -> dict[str, str]:
         key = self._compose_key(user_id=user_id, backend=backend, assistant_scope=assistant_scope)
         normalized = {
@@ -52,6 +54,7 @@ class JsonChatAssistantSessionRepository:
             "assistant_scope": assistant_scope,
             "session_id": str(session_id or "").strip(),
             "agent_thread_id": str(agent_thread_id or "").strip(),
+            "thread_id": str(thread_id or "").strip(),
         }
         with self._lock:
             payload = self._read_raw()
@@ -60,6 +63,7 @@ class JsonChatAssistantSessionRepository:
         return {
             "session_id": normalized["session_id"],
             "agent_thread_id": normalized["agent_thread_id"],
+            "thread_id": normalized["thread_id"],
         }
 
     def update_agent_thread_id_for_session(

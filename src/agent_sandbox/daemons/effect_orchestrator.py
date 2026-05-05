@@ -1053,11 +1053,13 @@ class EffectOrchestratorWorker:
         *,
         record: EffectExecutionRecord,
         outputs: dict[str, Any],
+        branch_port: str | None = None,
     ) -> str:
+        event_prefix = "effect" if branch_port is None else f"effect:{branch_port}"
         completion_event_id = _completion_event_id(
             parent_event_id=record.event_id,
             node_id=record.effect_id,
-            prefix="effect",
+            prefix=event_prefix,
         )
         completion_event = TriggerEvent(
             event_id=completion_event_id,
@@ -1071,9 +1073,15 @@ class EffectOrchestratorWorker:
                 completed_node_id=record.effect_id,
                 outputs=outputs,
                 reset_context=False,
+                branch_port=branch_port,
             ),
         )
-        self.event_queue.publish(completion_event, idempotency_key=record.idempotency_key)
+        idempotency_key = (
+            record.idempotency_key
+            if branch_port is None
+            else f"{record.idempotency_key}:{branch_port}"
+        )
+        self.event_queue.publish(completion_event, idempotency_key=idempotency_key)
         return completion_event_id
 
     def _publish_gate_completion_event_from_record(

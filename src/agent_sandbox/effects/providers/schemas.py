@@ -108,6 +108,22 @@ class AgentCreateEffectDefinition(EffectDefinition):
     directory_path: ConfigValue | None = None
 
 
+class AgentDestroyEffectDefinition(EffectDefinition):
+    type: Literal["effect:agent:destroy"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    execution_backend: ConfigValue | None = None
+    directory_path: ConfigValue | None = None
+
+    @model_validator(mode="after")
+    def validate_target_selector(self) -> "AgentDestroyEffectDefinition":
+        selectors = [self.target, self.session_id, self.vm_name]
+        if not any(value is not None for value in selectors):
+            raise ValueError("effect:agent:destroy requires target, session_id, or vm_name")
+        return self
+
+
 class AgentCloneRepoEffectDefinition(EffectDefinition):
     type: Literal["effect:agent:clone-repo"]
     target: ConfigValue | None = None
@@ -154,7 +170,6 @@ class AgentPromptEffectDefinition(EffectDefinition):
     model: ConfigValue | None = None
     vm_user: ConfigValue | None = None
     resume_thread_id: ConfigValue | None = None
-    output_mode: Literal["immediate", "on_completion"] = "immediate"
 
 
 class AgentEnqueuePromptEffectDefinition(EffectDefinition):
@@ -286,6 +301,23 @@ class IssueUpdateStateEffectDefinition(EffectDefinition):
     issue_id: ConfigValue
     state: ConfigValue
     sync_proxy_cache: ConfigValue | None = True
+
+
+class NotificationSendEffectDefinition(EffectDefinition):
+    type: Literal["effect:notification:send"]
+    communication_target_id: str
+    message: ConfigValue
+    severity: Literal["info", "success", "warning", "error"] = "info"
+    subject: ConfigValue | None = None
+    thread_id: ConfigValue | None = None
+
+    @field_validator("communication_target_id", mode="before")
+    @classmethod
+    def normalize_communication_target_id(cls, value: object) -> str:
+        text = str(value or "").strip().lower()
+        if not text:
+            raise ValueError("effect:notification:send requires communication_target_id")
+        return text
 
 
 class SessionUpdateMetadataEffectDefinition(EffectDefinition):

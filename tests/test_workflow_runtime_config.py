@@ -275,6 +275,46 @@ def test_load_config_composes_workflow_pack_ir(tmp_path: Path) -> None:
     assert len(config.edges) == 1
 
 
+def test_load_config_ignores_editor_workflow_graph_metadata(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "workflow_graphs": [
+                    {
+                        "id": "graph-cron",
+                        "name": "Cron graph",
+                        "description": "Editor-only graph metadata.",
+                        "directory_paths": ["root"],
+                        "user_ids": ["alice"],
+                        "node_ids": ["trigger-cron"],
+                    }
+                ],
+                "triggers": [
+                    {
+                        "id": "trigger-cron",
+                        "display_name": "Cron",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "effects": [],
+                "edges": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+    )
+
+    assert [trigger.id for trigger in config.triggers] == ["trigger-cron"]
+
+
 def test_load_config_merges_system_nodes_into_composed_workflow_pack_ir(
     tmp_path: Path,
 ) -> None:
@@ -445,3 +485,61 @@ def test_load_config_rejects_unknown_communication_target_ref(tmp_path: Path) ->
         load_trigger_orchestrator_worker_global_config(
             project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
         )
+
+
+def test_load_config_accepts_notification_effect_communication_target_ref(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    targets_dir = project_dir / "config" / "communication-targets"
+    targets_dir.mkdir(parents=True, exist_ok=True)
+    (targets_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "targets": [
+                    {
+                        "id": "teams-primary",
+                        "provider": "teams",
+                        "kind": "teams",
+                        "address": "team/channel",
+                        "policy": {"capabilities": ["notify"]},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "triggers": [
+                    {
+                        "id": "cron-1",
+                        "display_name": "Every minute",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "notify-1",
+                        "display_name": "Notify",
+                        "type": "effect:notification:send",
+                        "communication_target_id": "teams-primary",
+                        "message": "Done",
+                    }
+                ],
+                "edges": [{"source_id": "cron-1", "target_id": "notify-1"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+    )
+
+    assert [effect.type for effect in config.effects] == ["effect:notification:send"]

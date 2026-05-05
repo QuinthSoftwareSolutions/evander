@@ -299,6 +299,9 @@ sudo virsh net-info agent-sandbox
 
 If you expose Admin Web beyond localhost, set `config/admin-web.env` from Vault-backed variables,
 enable authentication, and prefer TLS plus ingress policy in front of the service.
+For Azure SSO deployments, `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS` is a first-run seed for
+`runtime/admin-web-users.json`; after the file exists, use the Admin Web Users tab for membership
+and role changes.
 
 ## Container Worker VMs
 

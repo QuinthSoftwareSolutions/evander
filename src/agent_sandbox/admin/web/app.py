@@ -22,6 +22,8 @@ from agent_sandbox.admin.web.shared import (
     json_error,
     request_has_privileged_operations,
 )
+from agent_sandbox.admin.web.user_store import AdminWebUserStore
+from agent_sandbox.admin.web.users import admin_user_routes
 from agent_sandbox.admin.web.vms_issues import vm_issue_routes
 from agent_sandbox.admin.web.workflow import workflow_routes, workflow_run_events
 from agent_sandbox.admin.web.workers_config import worker_config_routes
@@ -92,7 +94,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
 def create_app(service: AdminService) -> Starlette:
     dist_dir = _dist_dir()
-    auth = AdminWebAuth(AdminWebConfig.from_env())
+    admin_user_store = AdminWebUserStore(service.config.runtime_dir / "admin-web-users.json")
+    auth = AdminWebAuth(AdminWebConfig.from_env(), user_store=admin_user_store)
 
     def privileged_operations_unlocked_for_request(request: Request) -> bool:
         return request_has_privileged_operations(auth=auth, service=service, request=request)
@@ -120,6 +123,8 @@ def create_app(service: AdminService) -> Starlette:
                 "authenticated": True,
                 "username": auth.config.username,
                 "display_name": auth.config.username,
+                "role": "admin",
+                "can_manage_users": True,
                 "session_id": None,
                 "available_login_methods": ["password"]
                 if auth.config.auth_mode == "local_password"
@@ -191,6 +196,8 @@ def create_app(service: AdminService) -> Starlette:
                 "authenticated": not auth.config.auth_required,
                 "username": auth.config.username if not auth.config.auth_required else None,
                 "display_name": auth.config.username if not auth.config.auth_required else None,
+                "role": "admin" if not auth.config.auth_required else None,
+                "can_manage_users": not auth.config.auth_required,
                 "session_id": None,
                 "available_login_methods": (
                     []
@@ -210,12 +217,14 @@ def create_app(service: AdminService) -> Starlette:
         return response
 
     async def get_admin_state(request: Request) -> JSONResponse:
-        auth.require(request)
+        session = auth.require(request)
         assistant_settings = service.read_assistant_settings()
         return JSONResponse(
             {
                 "selected_directory_path": "root",
                 "directory_scoped_config_enabled": service.directory_scoped_config_enabled,
+                "role": session.get("role"),
+                "can_manage_users": bool(session.get("can_manage_users")),
                 "assistant": {
                     "enabled": bool(assistant_settings.get("enabled")),
                     "show_launcher_when_disabled": bool(
@@ -274,6 +283,7 @@ def create_app(service: AdminService) -> Starlette:
     routes.extend(vm_issue_routes(service, auth))
     routes.extend(session_approval_routes(service, auth))
     routes.extend(worker_config_routes(service, auth))
+    routes.extend(admin_user_routes(admin_user_store, auth))
     routes.extend(chat_routes(service, auth))
     if dist_dir.exists():
         routes.append(Mount("/", app=StaticFiles(directory=dist_dir, html=True)))
@@ -282,6 +292,7 @@ def create_app(service: AdminService) -> Starlette:
 
     app = Starlette(debug=False, routes=routes)
     app.state.auth = auth
+    app.state.admin_user_store = admin_user_store
     app.add_middleware(AuthMiddleware, auth=auth)
     return app
 

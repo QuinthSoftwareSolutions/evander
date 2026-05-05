@@ -26,6 +26,10 @@ export type AdminUiState = {
   privilegedUnlocked: boolean;
   authBusy: boolean;
   directoryScopedConfigEnabled: boolean;
+  currentUserId: string;
+  currentUserLabel: string;
+  currentUserRole: "admin" | "regular" | null;
+  canManageUsers: boolean;
   selectedDirectoryPath: string;
   selectedDirectoryParentPath: string | null;
   directoryTree: AdminResult<DirectoryTreeNode> | null;
@@ -43,6 +47,10 @@ const DEFAULT_ADMIN_UI_STATE: AdminUiState = {
   privilegedUnlocked: false,
   authBusy: false,
   directoryScopedConfigEnabled: false,
+  currentUserId: "anonymous",
+  currentUserLabel: "anonymous",
+  currentUserRole: null,
+  canManageUsers: false,
   selectedDirectoryPath: "root",
   selectedDirectoryParentPath: null,
   directoryTree: null,

@@ -430,6 +430,51 @@ def test_chat_assistant_session_resolution_is_backend_aware(
         "assistant-shared",
     ]
 
+    reset_libvirt = service.reset_chat_assistant_thread_context(
+        user_id="alice@example.com",
+        backend="libvirt_vm",
+        assistant_scope="admin_chat",
+        thread_id="thread-a-new",
+    )
+    assert reset_libvirt == {
+        "session_id": "assistant-shared",
+        "agent_thread_id": "",
+        "thread_id": "thread-a-new",
+    }
+    stale_updates = service.persist_chat_assistant_agent_thread_id(
+        session_id="assistant-shared",
+        agent_thread_id="thread-real-alice-stale",
+        backend="libvirt_vm",
+        assistant_scope="admin_chat",
+        thread_id="thread-a",
+    )
+    assert stale_updates == 0
+    fresh_libvirt = service.resolve_chat_assistant_session(
+        user_id="alice@example.com",
+        backend="libvirt_vm",
+        assistant_scope="admin_chat",
+        settings=settings,
+        thread_id="thread-a-new",
+        user_message_id="msg-a-new",
+    )
+    assert fresh_libvirt["agent_thread_id"] == ""
+    service.persist_chat_assistant_agent_thread_id(
+        session_id="assistant-shared",
+        agent_thread_id="thread-real-alice-2",
+        backend="libvirt_vm",
+        assistant_scope="admin_chat",
+        thread_id="thread-a-new",
+    )
+    continued_libvirt = service.resolve_chat_assistant_session(
+        user_id="alice@example.com",
+        backend="libvirt_vm",
+        assistant_scope="admin_chat",
+        settings=settings,
+        thread_id="thread-a-new",
+        user_message_id="msg-a-new-2",
+    )
+    assert continued_libvirt["agent_thread_id"] == "thread-real-alice-2"
+
     alice_container = service.resolve_chat_assistant_session(
         user_id="alice@example.com",
         backend="container_worker_vm",
@@ -485,6 +530,20 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     assert {
         value["thread_id"] for value in alice_session_reused.metadata["admin_chat_threads"].values()
     } == {"thread-c", "thread-c2"}
+    reset_container = service.reset_chat_assistant_thread_context(
+        user_id="alice@example.com",
+        backend="container_worker_vm",
+        assistant_scope="admin_chat",
+        thread_id="thread-c-new",
+    )
+    assert reset_container == {
+        "session_id": alice_container["session_id"],
+        "agent_thread_id": "",
+        "thread_id": "thread-c-new",
+    }
+    alice_session_reset = admin.runtime.session_repository.get_session(alice_container["session_id"])
+    assert alice_session_reset is not None
+    assert "agent_thread_id" not in alice_session_reset.metadata
     assert [item[0] for item in fake_container_backend.prepared] == [
         alice_container["session_id"],
         bob_container["session_id"],

@@ -14,6 +14,7 @@ from starlette.testclient import TestClient
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.app import _workflow_run_events, create_app
 from agent_sandbox.admin.web.shared import AdminWebConfig
+from agent_sandbox.admin.web.user_store import AdminWebUserStore
 from agent_sandbox.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
@@ -49,6 +50,66 @@ def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False
     return config_path
 
 
+def _set_azure_sso_env(
+    monkeypatch,
+    *,
+    allowed_users: str | None = "operator@example.com",
+    post_login_redirect: str | None = None,
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID", "tenant-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_ID", "client-123")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_CLIENT_SECRET", "secret-123")
+    monkeypatch.setenv(
+        "AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI",
+        "https://admin.example.test/api/auth/azure-sso/callback",
+    )
+    if allowed_users is None:
+        monkeypatch.delenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", raising=False)
+    else:
+        monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", allowed_users)
+    if post_login_redirect is not None:
+        monkeypatch.setenv(
+            "AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT", post_login_redirect
+        )
+
+
+def _admin_web_user_store(tmp_path: Path) -> AdminWebUserStore:
+    return AdminWebUserStore(tmp_path / "runtime" / "admin-web-users.json")
+
+
+def _complete_azure_login(
+    app,
+    client: TestClient,
+    *,
+    login: str = "operator@example.com",
+    display_name: str = "Operator",
+    tenant_id: str = "tenant-123",
+):
+    async def fake_exchange(*, code: str, code_verifier: str) -> dict[str, str]:
+        return {"id_token": "stub-token"}
+
+    async def fake_validate(id_token: str) -> dict[str, str]:
+        return {
+            "sub": "subject-1",
+            "name": display_name,
+            "preferred_username": login,
+            "tid": tenant_id,
+            "oid": "object-1",
+            "iss": f"https://login.microsoftonline.com/{tenant_id}/v2.0",
+        }
+
+    app.state.auth._exchange_azure_code_for_token = fake_exchange  # type: ignore[method-assign]
+    app.state.auth._validate_azure_id_token = fake_validate  # type: ignore[method-assign]
+    start = client.get("/api/auth/azure-sso/start", follow_redirects=False)
+    state = start.headers["location"].split("state=")[1].split("&", 1)[0]
+    return client.get(
+        f"/api/auth/azure-sso/callback?code=test-code&state={state}",
+        follow_redirects=False,
+    )
+
+
 def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
@@ -65,6 +126,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert payload["worker_id"] == "trigger-orchestrator"
     assert payload["config"]["triggers"] == []
     assert payload["layout"] == {"nodes": {}}
+    assert payload["graphs"] == []
     assert runs_payload["runs"] == []
     assert any(node["type"] == "effect:vm:exec" for node in catalog_payload["nodes"])
     vm_exec = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:exec")
@@ -104,10 +166,37 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "state",
         "sync_proxy_cache",
     ]
+    notification = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:notification:send"
+    )
+    assert [field["key"] for field in notification["fields"]] == [
+        "communication_target_id",
+        "message",
+        "severity",
+        "subject",
+        "thread_id",
+    ]
+    assert any(
+        field["key"] == "message" and field["bindable"] and field["multiline"]
+        for field in notification["fields"]
+    )
     agent_prompt = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:prompt"
     )
     assert any(field["key"] == "model" and field["bindable"] for field in agent_prompt["fields"])
+    assert all(field["key"] != "output_mode" for field in agent_prompt["fields"])
+    assert agent_prompt["output_ports"] == [
+        {
+            "key": "started",
+            "label": "Started",
+            "description": "Emits after the prompt has been dispatched.",
+        },
+        {
+            "key": "completed",
+            "label": "Completed",
+            "description": "Emits after the agent run has completed.",
+        },
+    ]
     agent_enqueue_prompt = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:enqueue-prompt"
     )
@@ -132,11 +221,6 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "stdin",
         "timeout_seconds",
         "check",
-    ]
-    output_mode = next(field for field in agent_prompt["fields"] if field["key"] == "output_mode")
-    assert output_mode["options"] == [
-        {"value": "immediate", "label": "Immediate"},
-        {"value": "on_completion", "label": "On completion"},
     ]
     ticket_created = next(
         node for node in catalog_payload["nodes"] if node["type"] == "trigger:ticket:created"
@@ -201,6 +285,16 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert execution_backend["options"] == [
         {"value": "libvirt_vm", "label": "Libvirt VM"},
         {"value": "container_worker_vm", "label": "Container worker VM"},
+    ]
+    agent_destroy = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:destroy"
+    )
+    assert [field["key"] for field in agent_destroy["fields"]] == [
+        "target",
+        "session_id",
+        "vm_name",
+        "execution_backend",
+        "directory_path",
     ]
     agent_clone_repo = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:clone-repo"
@@ -339,6 +433,16 @@ def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) 
                 "prompt-agent": {"x": 300, "y": 50},
             }
         },
+        "graphs": [
+            {
+                "id": "graph-cron-15m",
+                "name": "Scheduled prompt",
+                "description": "Prompts an agent on the cron schedule.",
+                "directory_paths": ["root"],
+                "user_ids": ["admin"],
+                "node_ids": ["cron-15m", "prompt-agent"],
+            }
+        ],
     }
 
     validate_response = client.post("/api/workflow-editor/validate", json=payload)
@@ -347,6 +451,9 @@ def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) 
     assert validate_response.status_code == 200
     assert save_response.status_code == 200
     assert save_response.json()["layout"]["nodes"]["prompt-agent"] == {"x": 300.0, "y": 50.0}
+    assert save_response.json()["graphs"][0]["name"] == "Scheduled prompt"
+    assert save_response.json()["graphs"][0]["directory_paths"] == ["root"]
+    assert save_response.json()["graphs"][0]["user_ids"] == ["admin"]
     assert isinstance(save_response.json().get("revision"), str)
     assert isinstance(save_response.json().get("saved_at"), str)
     assert (tmp_path / "config" / "trigger-orchestrator" / "layout.json").exists()
@@ -1027,6 +1134,8 @@ def test_admin_web_session_endpoint_reports_auth_disabled_by_default(tmp_path: P
     assert response.json()["auth_mode"] == "none"
     assert response.json()["auth_required"] is False
     assert response.json()["authenticated"] is True
+    assert response.json()["role"] == "admin"
+    assert response.json()["can_manage_users"] is True
 
 
 def test_admin_web_requires_login_when_password_configured(tmp_path: Path, monkeypatch) -> None:
@@ -1043,6 +1152,8 @@ def test_admin_web_requires_login_when_password_configured(tmp_path: Path, monke
     assert login.status_code == 200
     assert login.json()["auth_mode"] == "local_password"
     assert login.json()["authenticated"] is True
+    assert login.json()["role"] == "admin"
+    assert login.json()["can_manage_users"] is True
     assert authorized.status_code == 200
 
 
@@ -1079,6 +1190,16 @@ def test_admin_web_config_rejects_incomplete_azure_sso(monkeypatch) -> None:
         AdminWebConfig.from_env()
 
 
+def test_admin_web_config_treats_azure_allowed_users_as_bootstrap_input(monkeypatch) -> None:
+    _set_azure_sso_env(monkeypatch, allowed_users=None)
+
+    config = AdminWebConfig.from_env()
+
+    assert config.auth_mode == "azure_sso"
+    assert config.azure_sso is not None
+    assert config.azure_sso.bootstrap_users == frozenset()
+
+
 def test_admin_web_session_payload_reports_local_password_mode(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
@@ -1089,6 +1210,8 @@ def test_admin_web_session_payload_reports_local_password_mode(tmp_path: Path, m
     assert response.status_code == 200
     assert response.json()["auth_mode"] == "local_password"
     assert response.json()["authenticated"] is False
+    assert response.json()["role"] is None
+    assert response.json()["can_manage_users"] is False
     assert response.json()["available_login_methods"] == ["password"]
 
 
@@ -1110,8 +1233,65 @@ def test_admin_web_session_payload_reports_azure_sso_mode(tmp_path: Path, monkey
     assert response.status_code == 200
     assert response.json()["auth_mode"] == "azure_sso"
     assert response.json()["authenticated"] is False
+    assert response.json()["role"] is None
+    assert response.json()["can_manage_users"] is False
     assert response.json()["available_login_methods"] == ["azure_sso"]
     assert response.json()["azure_sso_login_url"] == "/api/auth/azure-sso/start"
+
+
+def test_admin_web_bootstraps_azure_users_from_env_on_first_startup(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _set_azure_sso_env(
+        monkeypatch,
+        allowed_users="Operator@Example.com,second@example.com, operator@example.com",
+    )
+
+    app = create_app(AdminService(write_config(tmp_path)))
+
+    users = app.state.admin_user_store.list_users()
+    assert [user.login for user in users] == ["operator@example.com", "second@example.com"]
+    assert {user.role for user in users} == {"admin"}
+
+
+def test_admin_web_does_not_rebootstrap_nonempty_azure_user_store(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    store = _admin_web_user_store(tmp_path)
+    store.upsert_user(login="existing@example.com", role="admin")
+    _set_azure_sso_env(monkeypatch, allowed_users="new@example.com")
+
+    app = create_app(AdminService(config_path))
+
+    assert [user.login for user in app.state.admin_user_store.list_users()] == [
+        "existing@example.com"
+    ]
+
+
+def test_admin_web_azure_login_uses_runtime_user_store_without_env_allowlist(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    _admin_web_user_store(tmp_path).upsert_user(
+        login="operator@example.com", role="admin", display_name="Runtime Operator"
+    )
+    _set_azure_sso_env(monkeypatch, allowed_users=None)
+    app = create_app(AdminService(config_path))
+    client = TestClient(app)
+
+    callback = _complete_azure_login(app, client)
+    session = client.get("/api/auth/session")
+    admin_state = client.get("/api/admin/state")
+
+    assert callback.status_code == 303
+    assert session.json()["authenticated"] is True
+    assert session.json()["role"] == "admin"
+    assert session.json()["can_manage_users"] is True
+    assert session.json()["display_name"] == "Runtime Operator"
+    assert admin_state.json()["role"] == "admin"
+    assert admin_state.json()["can_manage_users"] is True
+    assert app.state.admin_user_store.get_user("operator@example.com").last_login_at is not None
 
 
 def test_admin_web_azure_mode_requires_login(tmp_path: Path, monkeypatch) -> None:
@@ -1306,6 +1486,8 @@ def test_admin_web_azure_callback_accepts_allowlisted_user_and_sets_local_sessio
     assert session.json()["auth_mode"] == "azure_sso"
     assert session.json()["username"] == "operator@example.com"
     assert session.json()["display_name"] == "Operator"
+    assert session.json()["role"] == "admin"
+    assert session.json()["can_manage_users"] is True
 
 
 def test_admin_web_logout_clears_azure_local_session_cookie(tmp_path: Path, monkeypatch) -> None:
@@ -1349,6 +1531,93 @@ def test_admin_web_logout_clears_azure_local_session_cookie(tmp_path: Path, monk
     assert response.json()["auth_mode"] == "azure_sso"
 
 
+def test_admin_web_removed_azure_user_loses_existing_session(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _set_azure_sso_env(monkeypatch, allowed_users="operator@example.com,backup@example.com")
+    app = create_app(AdminService(write_config(tmp_path)))
+    client = TestClient(app)
+
+    callback = _complete_azure_login(app, client, login="operator@example.com")
+    before_removal = client.get("/api/workflow-editor/document")
+    app.state.admin_user_store.delete_user("operator@example.com")
+    session = client.get("/api/auth/session")
+    after_removal = client.get("/api/workflow-editor/document")
+
+    assert callback.status_code == 303
+    assert before_removal.status_code == 200
+    assert session.status_code == 200
+    assert session.json()["authenticated"] is False
+    assert session.json()["role"] is None
+    assert after_removal.status_code == 401
+
+
+def test_admin_web_user_api_manages_users_as_builtin_admin(tmp_path: Path) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    created = client.post(
+        "/api/admin/users",
+        json={"login": "Operator@Example.com", "role": "admin", "display_name": "Operator"},
+    )
+    updated = client.patch(
+        "/api/admin/users/operator@example.com",
+        json={"role": "regular", "display_name": "Ops User"},
+    )
+    listed = client.get("/api/admin/users")
+
+    assert created.status_code == 200
+    assert created.json()["user"]["login"] == "operator@example.com"
+    assert created.json()["user"]["role"] == "admin"
+    assert updated.status_code == 400
+    assert updated.json()["error"] == "Cannot demote the last admin user"
+    assert listed.status_code == 200
+    assert listed.json()["users"] == [created.json()["user"]]
+
+
+def test_admin_web_user_api_prevents_last_admin_delete_and_demotion(tmp_path: Path) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    client.post("/api/admin/users", json={"login": "admin@example.com", "role": "admin"})
+
+    demote = client.patch("/api/admin/users/admin@example.com", json={"role": "regular"})
+    delete = client.delete("/api/admin/users/admin@example.com")
+    create_second = client.post(
+        "/api/admin/users", json={"login": "regular@example.com", "role": "regular"}
+    )
+    delete_second = client.delete("/api/admin/users/regular@example.com")
+
+    assert demote.status_code == 400
+    assert demote.json()["error"] == "Cannot demote the last admin user"
+    assert delete.status_code == 400
+    assert delete.json()["error"] == "Cannot remove the last admin user"
+    assert create_second.status_code == 200
+    assert create_second.json()["user"]["role"] == "regular"
+    assert delete_second.status_code == 200
+
+
+def test_admin_web_user_api_rejects_regular_azure_user(tmp_path: Path, monkeypatch) -> None:
+    config_path = write_config(tmp_path)
+    store = _admin_web_user_store(tmp_path)
+    store.upsert_user(login="admin@example.com", role="admin")
+    store.upsert_user(login="regular@example.com", role="regular")
+    _set_azure_sso_env(monkeypatch, allowed_users=None)
+    app = create_app(AdminService(config_path))
+    client = TestClient(app)
+
+    callback = _complete_azure_login(
+        app, client, login="regular@example.com", display_name="Regular User"
+    )
+    allowed_api = client.get("/api/workflow-editor/document")
+    list_users = client.get("/api/admin/users")
+    create_user = client.post(
+        "/api/admin/users", json={"login": "other@example.com", "role": "regular"}
+    )
+
+    assert callback.status_code == 303
+    assert allowed_api.status_code == 200
+    assert list_users.status_code == 403
+    assert create_user.status_code == 403
+
+
 def test_admin_web_exposes_admin_domain_smoke_endpoints(tmp_path: Path) -> None:
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
@@ -1358,6 +1627,7 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(tmp_path: Path) -> None:
         "issues": client.get("/api/admin/issues"),
         "approvals": client.get("/api/admin/approvals"),
         "sessions": client.get("/api/admin/sessions"),
+        "users": client.get("/api/admin/users"),
         "workers": client.get("/api/workers"),
         "configuration": client.get("/api/configuration/state"),
     }
@@ -1372,6 +1642,8 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(tmp_path: Path) -> None:
     assert isinstance(responses["approvals"].json()["items"], list)
     assert responses["sessions"].status_code == 200
     assert isinstance(responses["sessions"].json()["items"], list)
+    assert responses["users"].status_code == 200
+    assert isinstance(responses["users"].json()["users"], list)
     assert responses["workers"].status_code == 200
     assert "workers" in responses["workers"].json()
     assert responses["configuration"].status_code == 200

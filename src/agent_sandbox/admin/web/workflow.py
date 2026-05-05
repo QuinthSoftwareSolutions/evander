@@ -123,6 +123,7 @@ def workflow_routes(service: AdminService) -> list[Route]:
             validation = service.validate_workflow_editor_document(
                 config=payload.get("config") if isinstance(payload.get("config"), dict) else {},
                 layout=payload.get("layout") if isinstance(payload.get("layout"), dict) else {},
+                graphs=payload.get("graphs") if isinstance(payload.get("graphs"), list) else None,
             )
         except ValueError as exc:
             return json_error(str(exc))
@@ -134,6 +135,7 @@ def workflow_routes(service: AdminService) -> list[Route]:
             save_result = service.save_workflow_editor_document(
                 config=payload.get("config") if isinstance(payload.get("config"), dict) else {},
                 layout=payload.get("layout") if isinstance(payload.get("layout"), dict) else {},
+                graphs=payload.get("graphs") if isinstance(payload.get("graphs"), list) else None,
             )
         except ValueError as exc:
             return json_error(str(exc))

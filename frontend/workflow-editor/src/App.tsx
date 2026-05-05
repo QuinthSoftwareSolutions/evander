@@ -12,11 +12,13 @@ import {
   type Node,
   type NodeChange,
   type NodeProps,
+  type Viewport,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
   type WorkflowConfig,
   type WorkflowEdge,
+  type WorkflowGraphMetadata,
   type WorkflowNodeActivityCounts,
   type WorkflowEditorCatalog,
   type WorkflowEditorDocument,
@@ -64,6 +66,14 @@ type NodeBounds = {
   centerY: number;
   bottom: number;
 };
+
+type WorkflowGraphLabel = {
+  graph: WorkflowGraphMetadata;
+  left: number;
+  top: number;
+};
+
+type WorkflowGraphView = "directory" | "private";
 
 const SYSTEM_BINDING_OPTIONS: ReadonlyArray<BindingOption> = [
   { value: "${{system.now.utc_timestamp}}", label: "[System] now.utc_timestamp" },
@@ -117,6 +127,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "gate:for": "Iterate over an array and execute the body branch for each item.",
   "effect:agent:prompt": "Send a prompt to an agent session.",
   "effect:agent:exec": "Run a shell command in an agent session.",
+  "effect:agent:destroy": "Destroy an agent session and its backend target.",
   "effect:vm:create": "Create a VM for the workflow.",
   "effect:vm:clone-repo": "Clone a repository into a target VM.",
   "effect:vm:bootstrap-python": "Bootstrap a Python checkout and environment in a VM.",
@@ -255,10 +266,6 @@ function emptyConfig(): WorkflowConfig {
   };
 }
 
-function emptyLayout(): WorkflowLayout {
-  return { nodes: {} };
-}
-
 function emptyCatalog(): WorkflowEditorCatalog {
   return { worker_id: "trigger-orchestrator", nodes: [] };
 }
@@ -278,6 +285,164 @@ function nodeCollections(config: WorkflowConfig) {
     effects: config.effects ?? [],
     queries: config.queries ?? [],
   };
+}
+
+function workflowNodes(config: WorkflowConfig): WorkflowNodeConfig[] {
+  const collections = nodeCollections(config);
+  return [
+    ...collections.triggers,
+    ...collections.gates,
+    ...collections.effects,
+    ...collections.queries,
+  ];
+}
+
+function workflowNodeIds(config: WorkflowConfig): string[] {
+  return workflowNodes(config).map((node) => node.id);
+}
+
+function workflowGraphKey(nodeIds: string[]): string {
+  return [...nodeIds].sort().join("\u0000");
+}
+
+function connectedWorkflowGraphNodeIds(config: WorkflowConfig): string[][] {
+  const orderedNodeIds = workflowNodeIds(config);
+  const nodeIdSet = new Set(orderedNodeIds);
+  const order = new Map(orderedNodeIds.map((nodeId, index) => [nodeId, index]));
+  const neighbors = new Map<string, Set<string>>();
+  orderedNodeIds.forEach((nodeId) => neighbors.set(nodeId, new Set()));
+  for (const edge of config.edges ?? []) {
+    if (!nodeIdSet.has(edge.source_id) || !nodeIdSet.has(edge.target_id)) continue;
+    neighbors.get(edge.source_id)?.add(edge.target_id);
+    neighbors.get(edge.target_id)?.add(edge.source_id);
+  }
+  const visited = new Set<string>();
+  const components: string[][] = [];
+  for (const nodeId of orderedNodeIds) {
+    if (visited.has(nodeId)) continue;
+    const stack = [nodeId];
+    const component: string[] = [];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      component.push(current);
+      const nextNodeIds = [...(neighbors.get(current) ?? [])]
+        .filter((candidate) => !visited.has(candidate))
+        .sort((left, right) => (order.get(right) ?? 0) - (order.get(left) ?? 0));
+      stack.push(...nextNodeIds);
+    }
+    components.push(component.sort((left, right) => (order.get(left) ?? 0) - (order.get(right) ?? 0)));
+  }
+  return components;
+}
+
+function slugifyGraphId(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "graph";
+}
+
+function defaultWorkflowGraphName(config: WorkflowConfig, component: string[], index: number): string {
+  const trigger = component
+    .map((nodeId) => nodeById(config, nodeId))
+    .find((node): node is WorkflowNodeConfig => Boolean(node && node.type.startsWith("trigger:")));
+  const fallbackNode = nodeById(config, component[0] ?? "");
+  return trigger?.display_name?.trim() || fallbackNode?.display_name?.trim() || `Graph ${index + 1}`;
+}
+
+function defaultWorkflowGraphId(config: WorkflowConfig, component: string[], index: number): string {
+  const trigger = component
+    .map((nodeId) => nodeById(config, nodeId))
+    .find((node): node is WorkflowNodeConfig => Boolean(node && node.type.startsWith("trigger:")));
+  return `graph-${slugifyGraphId(trigger?.id ?? component[0] ?? String(index + 1))}`;
+}
+
+function normalizeWorkflowGraphs(
+  config: WorkflowConfig,
+  graphs: ReadonlyArray<WorkflowGraphMetadata> = [],
+  defaultDirectoryPath = "root",
+  defaultUserId = "",
+): WorkflowGraphMetadata[] {
+  const components = connectedWorkflowGraphNodeIds(config);
+  const validNodeIds = new Set(workflowNodeIds(config));
+  const sanitizedGraphs = graphs
+    .map((graph) => ({
+      id: graph.id.trim(),
+      name: graph.name.trim(),
+      description: graph.description?.trim() || null,
+      directory_paths: Array.from(
+        new Set(
+          (Array.isArray(graph.directory_paths) ? graph.directory_paths : [])
+            .map((directoryPath) => directoryPath.trim())
+            .filter(Boolean),
+        ),
+      ),
+      user_ids: Array.from(
+        new Set(
+          (Array.isArray(graph.user_ids) ? graph.user_ids : [])
+            .map((userId) => userId.trim())
+            .filter(Boolean),
+        ),
+      ),
+      node_ids: Array.from(new Set((graph.node_ids ?? []).map((nodeId) => nodeId.trim()).filter((nodeId) => validNodeIds.has(nodeId)))),
+    }))
+    .filter((graph) => graph.id && graph.name && graph.node_ids.length > 0);
+  const exactGraphs = new Map(sanitizedGraphs.map((graph) => [workflowGraphKey(graph.node_ids), graph]));
+  const usedGraphIds = new Set<string>();
+  const usedResultIds = new Set<string>();
+  return components.map((component, index) => {
+    const componentKey = workflowGraphKey(component);
+    let graph = exactGraphs.get(componentKey);
+    if (!graph) {
+      graph = sanitizedGraphs
+        .filter((candidate) => !usedGraphIds.has(candidate.id))
+        .map((candidate) => ({
+          graph: candidate,
+          overlap: candidate.node_ids.filter((nodeId) => component.includes(nodeId)).length,
+        }))
+        .filter((candidate) => candidate.overlap > 0)
+        .sort((left, right) => right.overlap - left.overlap)[0]?.graph;
+    }
+    const baseId = graph?.id ?? defaultWorkflowGraphId(config, component, index);
+    let id = baseId;
+    let suffix = 2;
+    while (usedResultIds.has(id)) {
+      id = `${baseId}-${suffix}`;
+      suffix += 1;
+    }
+    usedResultIds.add(id);
+    if (graph) usedGraphIds.add(graph.id);
+    return {
+      id,
+      name: graph?.name ?? defaultWorkflowGraphName(config, component, index),
+      description: graph?.description ?? null,
+      directory_paths: graph?.directory_paths.length ? graph.directory_paths : [defaultDirectoryPath],
+      user_ids: graph?.user_ids ?? (defaultUserId.trim() ? [defaultUserId.trim()] : []),
+      node_ids: component,
+    };
+  });
+}
+
+function graphVisibleInDirectory(graph: WorkflowGraphMetadata, selectedDirectoryPath: string): boolean {
+  const selectedPath = selectedDirectoryPath.trim() || "root";
+  const directoryPaths = graph.directory_paths.length > 0 ? graph.directory_paths : ["root"];
+  return directoryPaths.includes(selectedPath);
+}
+
+function graphVisibleForUser(graph: WorkflowGraphMetadata, currentUserId: string): boolean {
+  const userId = currentUserId.trim();
+  if (!userId) return false;
+  return graph.user_ids.includes(userId);
+}
+
+function graphVisibleInView(
+  graph: WorkflowGraphMetadata,
+  view: WorkflowGraphView,
+  selectedDirectoryPath: string,
+  currentUserId: string,
+): boolean {
+  return view === "private"
+    ? graphVisibleForUser(graph, currentUserId)
+    : graphVisibleInDirectory(graph, selectedDirectoryPath);
 }
 
 function fallbackPosition(index: number): { x: number; y: number } {
@@ -537,6 +702,9 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   }
   if (kind === "effect" && type === "effect:agent:exec") {
     return { id, display_name: "Agent exec", type, command: "echo hello" };
+  }
+  if (kind === "effect" && type === "effect:agent:destroy") {
+    return { id, display_name: "Agent destroy", type, session_id: "session-id" };
   }
   if (kind === "effect" && type === "effect:vm:create") {
     return { id, display_name: "New VM effect", type };
@@ -799,6 +967,31 @@ function snapDraggedNodes(activeNode: Node, draggedNodes: Node<GraphNodeData>[],
       ...(bestY ? [{ orientation: "horizontal" as const, position: bestY.guide }] : []),
     ],
   };
+}
+
+function workflowGraphLabels(
+  graphs: ReadonlyArray<WorkflowGraphMetadata>,
+  nodes: ReadonlyArray<Node<GraphNodeData>>,
+  viewport: Viewport,
+): WorkflowGraphLabel[] {
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  return graphs.flatMap((graph) => {
+    const graphNodes = graph.node_ids
+      .map((nodeId) => nodesById.get(nodeId))
+      .filter((node): node is Node<GraphNodeData> => Boolean(node));
+    if (graphNodes.length === 0) return [];
+    const bounds = graphNodes.map((node) => nodeBounds(node));
+    const left = Math.min(...bounds.map((bound) => bound.left));
+    const top = Math.min(...bounds.map((bound) => bound.top));
+    const bottom = Math.max(...bounds.map((bound) => bound.bottom));
+    return [
+      {
+        graph,
+        left: left * viewport.zoom + viewport.x - 24,
+        top: ((top + bottom) / 2) * viewport.zoom + viewport.y,
+      },
+    ];
+  });
 }
 
 function formatRuntimeTimestamp(value: string | null | undefined): string {
@@ -1133,6 +1326,17 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
       stdout: { type: "string" },
       stderr: { type: "string" },
     },
+    "effect:agent:destroy": {
+      success: { type: "boolean" },
+      action: { type: "string" },
+      target: { type: "string" },
+      session_id: { type: "string" },
+      execution_backend: { type: "string" },
+      vm_name: { type: "string" },
+      target_name: { type: "string" },
+      status: { type: "string" },
+      message: { type: "string" },
+    },
     "effect:vm:exec": {
       success: { type: "boolean" },
       vm_name: { type: "string" },
@@ -1432,7 +1636,7 @@ function activeEffectTargetKey(values: Record<string, unknown>): EffectTargetKey
 }
 
 export default function App() {
-  const { privilegedUnlocked } = useAdminUi();
+  const { privilegedUnlocked, selectedDirectoryPath, currentUserId, currentUserLabel } = useAdminUi();
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const hasAutoFitRef = useRef(false);
   const copiedNodeRef = useRef<WorkflowNodeConfig | null>(null);
@@ -1442,10 +1646,17 @@ export default function App() {
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
   const [flowNodes, setFlowNodes] = useState<Node<GraphNodeData>[]>([]);
   const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
-  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<Node<GraphNodeData>, Edge> | null>(null);
+  const [canvasViewport, setCanvasViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [selectedGraphId, setSelectedGraphId] = useState<string | null>(null);
+  const [workflowGraphView, setWorkflowGraphView] = useState<WorkflowGraphView>("directory");
+  const [graphNameDraft, setGraphNameDraft] = useState("");
+  const [graphDescriptionDraft, setGraphDescriptionDraft] = useState("");
+  const [graphDirectoriesDraft, setGraphDirectoriesDraft] = useState("");
+  const [graphUsersDraft, setGraphUsersDraft] = useState("");
   const [inspectorNodeId, setInspectorNodeId] = useState("");
   const [inspectorDisplayName, setInspectorDisplayName] = useState("");
   const [inspectorKnownValues, setInspectorKnownValues] = useState<Record<string, unknown>>({});
@@ -1462,6 +1673,54 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => readStoredWorkflowSidebarWidth());
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const editLocked = !privilegedUnlocked;
+  const config = document?.config ?? emptyConfig();
+  const workflowGraphs = document?.graphs ?? [];
+  const visibleWorkflowGraphs = workflowGraphs.filter((graph) =>
+    graphVisibleInView(graph, workflowGraphView, selectedDirectoryPath, currentUserId),
+  );
+  const visibleGraphNodeIds = new Set(visibleWorkflowGraphs.flatMap((graph) => graph.node_ids));
+  const visibleGraphNodeIdKey = workflowGraphKey([...visibleGraphNodeIds]);
+  const visibleRuns = (runSnapshot?.runs ?? []).filter((run) =>
+    run.active_nodes.some((activity) => visibleGraphNodeIds.has(activity.node_id)),
+  );
+  const displayedFlowNodes = flowNodes.filter((node) => visibleGraphNodeIds.has(node.id));
+  const displayedFlowEdges = flowEdges.filter(
+    (edge) => visibleGraphNodeIds.has(edge.source) && visibleGraphNodeIds.has(edge.target),
+  );
+  const selectedNode = selectedNodeIds.length === 1 && selectedNodeId ? nodeById(config, selectedNodeId) : undefined;
+  const selectedCatalogEntry = selectedNode ? getCatalogEntry(catalog, selectedNode.type) : undefined;
+  const selectedEdge = selectedEdgeId
+    ? config.edges.find(
+        (edge) =>
+          edgeId(edge) === selectedEdgeId &&
+          visibleGraphNodeIds.has(edge.source_id) &&
+          visibleGraphNodeIds.has(edge.target_id),
+      )
+    : undefined;
+  const selectedGraph = selectedGraphId
+    ? visibleWorkflowGraphs.find((graph) => graph.id === selectedGraphId)
+    : undefined;
+  const graphLabels = workflowGraphLabels(visibleWorkflowGraphs, displayedFlowNodes, canvasViewport);
+  const graphViewContext =
+    workflowGraphView === "private"
+      ? `User: ${currentUserLabel}`
+      : `Directory: ${selectedDirectoryPath}`;
+  const selectedNodeBindingOptions = selectedNode ? upstreamBindingOptions(config, selectedNode.id) : [];
+  const hasCollapsedTargetUi =
+    selectedNode?.type === "effect:vm:copy-files" ||
+    selectedNode?.type === "effect:agent:prompt" ||
+    selectedNode?.type === "effect:agent:exec" ||
+    selectedNode?.type === "effect:agent:destroy" ||
+    selectedNode?.type === "effect:session:update-metadata" ||
+    selectedNode?.type === "query:session-context";
+  const effectTargetKey = activeEffectTargetKey(inspectorKnownValues);
+  const inspectorFields = (() => {
+    if (!selectedCatalogEntry) return [];
+    if (!hasCollapsedTargetUi) return selectedCatalogEntry.fields;
+    return selectedCatalogEntry.fields.filter((field) => !EFFECT_TARGET_KEYS.includes(field.key as EffectTargetKey));
+  })();
+  const effectTargetField = selectedCatalogEntry?.fields.find((field) => field.key === effectTargetKey)
+    ?? selectedCatalogEntry?.fields.find((field) => field.key === "target");
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1532,16 +1791,18 @@ export default function App() {
     ])
       .then(([payload, catalogPayload, runSnapshotPayload]) => {
         const normalizedConfig = normalizeDerivedNodeFields(normalizeWorkflowConfigShape(payload.config));
+        const normalizedGraphs = normalizeWorkflowGraphs(normalizedConfig, payload.graphs ?? [], selectedDirectoryPath);
+        const normalizedDocument = { ...payload, config: normalizedConfig, graphs: normalizedGraphs };
         setCatalog(catalogPayload);
         setRunSnapshot(runSnapshotPayload);
-        setDocument({ ...payload, config: normalizedConfig });
+        setDocument(normalizedDocument);
         setFlowNodes(buildNodes(normalizedConfig, payload.layout, catalogPayload, runSnapshotPayload.node_activity));
         setFlowEdges(buildEdges(normalizedConfig));
       })
       .catch((reason: unknown) => {
         setError(reason instanceof Error ? reason.message : String(reason));
       });
-  }, []);
+  }, [selectedDirectoryPath]);
 
   useEffect(() => {
     const stream = new EventSource("/api/workflow-editor/runs/stream");
@@ -1663,36 +1924,37 @@ export default function App() {
   }, [catalog, document, runSnapshot]);
 
   useEffect(() => {
-    if (!flowInstance || flowNodes.length === 0 || hasAutoFitRef.current) return;
+    hasAutoFitRef.current = false;
+  }, [selectedDirectoryPath, workflowGraphView, currentUserId]);
+
+  useEffect(() => {
+    if (!flowInstance || displayedFlowNodes.length === 0 || hasAutoFitRef.current) return;
     queueMicrotask(() => {
-      flowInstance.fitView({ padding: 0.2 });
+      void flowInstance.fitView({ padding: 0.2 }).finally(() => {
+        setCanvasViewport(flowInstance.getViewport());
+      });
       hasAutoFitRef.current = true;
     });
-  }, [flowInstance, flowNodes, flowEdges]);
+  }, [flowInstance, displayedFlowNodes, displayedFlowEdges]);
 
-  const config = document?.config ?? emptyConfig();
-  const layout = document?.layout ?? emptyLayout();
-  const visibleRuns = runSnapshot?.runs ?? [];
-  const selectedNode = selectedNodeIds.length === 1 && selectedNodeId ? nodeById(config, selectedNodeId) : undefined;
-  const selectedCatalogEntry = selectedNode ? getCatalogEntry(catalog, selectedNode.type) : undefined;
-  const selectedEdge = selectedEdgeId
-    ? config.edges.find((edge) => edgeId(edge) === selectedEdgeId)
-    : undefined;
-  const selectedNodeBindingOptions = selectedNode ? upstreamBindingOptions(config, selectedNode.id) : [];
-  const hasCollapsedTargetUi =
-    selectedNode?.type === "effect:vm:copy-files" ||
-    selectedNode?.type === "effect:agent:prompt" ||
-    selectedNode?.type === "effect:agent:exec" ||
-    selectedNode?.type === "effect:session:update-metadata" ||
-    selectedNode?.type === "query:session-context";
-  const effectTargetKey = activeEffectTargetKey(inspectorKnownValues);
-  const inspectorFields = (() => {
-    if (!selectedCatalogEntry) return [];
-    if (!hasCollapsedTargetUi) return selectedCatalogEntry.fields;
-    return selectedCatalogEntry.fields.filter((field) => !EFFECT_TARGET_KEYS.includes(field.key as EffectTargetKey));
-  })();
-  const effectTargetField = selectedCatalogEntry?.fields.find((field) => field.key === effectTargetKey)
-    ?? selectedCatalogEntry?.fields.find((field) => field.key === "target");
+  useEffect(() => {
+    if (!selectedGraph) {
+      setGraphNameDraft("");
+      setGraphDescriptionDraft("");
+      setGraphDirectoriesDraft("");
+      setGraphUsersDraft("");
+      return;
+    }
+    setGraphNameDraft(selectedGraph.name);
+    setGraphDescriptionDraft(selectedGraph.description ?? "");
+    setGraphDirectoriesDraft((selectedGraph.directory_paths.length ? selectedGraph.directory_paths : [selectedDirectoryPath]).join("\n"));
+    setGraphUsersDraft(selectedGraph.user_ids.join("\n"));
+  }, [selectedGraph, selectedDirectoryPath]);
+
+  useEffect(() => {
+    if (!selectedGraphId || visibleWorkflowGraphs.some((graph) => graph.id === selectedGraphId)) return;
+    setSelectedGraphId(null);
+  }, [selectedGraphId, visibleWorkflowGraphs]);
 
   useEffect(() => {
     if (!selectedNode) {
@@ -1757,22 +2019,35 @@ export default function App() {
   }, [selectedEdgeId]);
 
   useEffect(() => {
-    const nextSelectedNodeIds = flowNodes.filter((node) => node.selected).map((node) => node.id);
+    const nextSelectedNodeIds = flowNodes
+      .filter((node) => node.selected && visibleGraphNodeIds.has(node.id))
+      .map((node) => node.id);
     setSelectedNodeIds(nextSelectedNodeIds);
     setSelectedNodeId((currentSelectedNodeId) => {
       if (nextSelectedNodeIds.length === 0) return null;
       if (currentSelectedNodeId && nextSelectedNodeIds.includes(currentSelectedNodeId)) return currentSelectedNodeId;
       return nextSelectedNodeIds[nextSelectedNodeIds.length - 1] ?? null;
     });
-  }, [flowNodes]);
+  }, [flowNodes, visibleGraphNodeIdKey]);
 
-  function patchDocument(nextConfig: WorkflowConfig, nextLayout: WorkflowLayout) {
+  function patchDocument(
+    nextConfig: WorkflowConfig,
+    nextLayout: WorkflowLayout,
+    nextGraphs?: WorkflowGraphMetadata[],
+  ) {
     if (!document) return;
     const normalizedConfig = normalizeDerivedNodeFields(normalizeWorkflowConfigShape(nextConfig));
+    const normalizedGraphs = normalizeWorkflowGraphs(
+      normalizedConfig,
+      nextGraphs ?? document.graphs ?? [],
+      selectedDirectoryPath,
+      workflowGraphView === "private" ? currentUserId : "",
+    );
     const nextDocument = {
       ...document,
       config: normalizedConfig,
       layout: nextLayout,
+      graphs: normalizedGraphs,
     };
     setDocument(nextDocument);
     setSaveState("idle");
@@ -1803,7 +2078,8 @@ export default function App() {
     setFlowNodes((currentNodes) => {
       const draggedNodeIds = new Set(draggedNodes.map((node) => node.id));
       const typedDraggedNodes = draggedNodes as Node<GraphNodeData>[];
-      const { snappedNodes, guides } = snapDraggedNodes(activeNode, typedDraggedNodes, currentNodes);
+      const visibleCurrentNodes = currentNodes.filter((node) => visibleGraphNodeIds.has(node.id));
+      const { snappedNodes, guides } = snapDraggedNodes(activeNode, typedDraggedNodes, visibleCurrentNodes);
       setSnapGuides(guides);
       const snappedById = new Map(snappedNodes.map((node) => [node.id, node]));
       return currentNodes.map((node) => snappedById.get(node.id) ?? node);
@@ -1812,6 +2088,11 @@ export default function App() {
 
   function updateEdgeChanges(changes: Parameters<typeof applyEdgeChanges>[0]) {
     setFlowEdges((currentEdges) => applyEdgeChanges(changes, currentEdges));
+  }
+
+  function handleFlowInit(instance: ReactFlowInstance<Node<GraphNodeData>, Edge>) {
+    setFlowInstance(instance);
+    setCanvasViewport(instance.getViewport());
   }
 
   function deleteSelectedEdge() {
@@ -1947,6 +2228,70 @@ export default function App() {
     }
     setProgrammaticSelection([...selectedNodeSet], selectedNodeId);
     setSelectedEdgeId(null);
+  }
+
+  function selectWorkflowGraph(graph: WorkflowGraphMetadata) {
+    setSelectedGraphId(graph.id);
+    setProgrammaticSelection(graph.node_ids, graph.node_ids[0] ?? null);
+    setSelectedEdgeId(null);
+    setError(null);
+  }
+
+  function applyWorkflowGraphChanges() {
+    if (!document || !selectedGraph || editLocked) return;
+    const nextName = graphNameDraft.trim();
+    if (!nextName) {
+      setError("Graph name is required.");
+      return;
+    }
+    const nextDirectoryPaths = Array.from(
+      new Set(
+        graphDirectoriesDraft
+          .split("\n")
+          .map((directoryPath) => directoryPath.trim())
+          .filter(Boolean),
+      ),
+    );
+    if (nextDirectoryPaths.length === 0) {
+      setError("At least one graph directory is required.");
+      return;
+    }
+    const nextUserIds = Array.from(
+      new Set(
+        graphUsersDraft
+          .split("\n")
+          .map((userId) => userId.trim())
+          .filter(Boolean),
+      ),
+    );
+    const nextGraphs = document.graphs.map((graph) =>
+      graph.id === selectedGraph.id
+        ? {
+            ...graph,
+            name: nextName,
+            description: graphDescriptionDraft.trim() || null,
+            directory_paths: nextDirectoryPaths,
+            user_ids: nextUserIds,
+          }
+        : graph,
+    );
+    patchDocument(document.config, document.layout, nextGraphs);
+    setError(null);
+  }
+
+  function addCurrentUserToGraphDraft() {
+    const normalizedUserId = currentUserId.trim();
+    if (!normalizedUserId) return;
+    const nextUserIds = Array.from(
+      new Set([
+        ...graphUsersDraft
+          .split("\n")
+          .map((userId) => userId.trim())
+          .filter(Boolean),
+        normalizedUserId,
+      ]),
+    );
+    setGraphUsersDraft(nextUserIds.join("\n"));
   }
 
   function applyInspectorChanges() {
@@ -2087,17 +2432,18 @@ export default function App() {
 
   async function validateDocument() {
     if (!document) return;
-    const validation = await fetchJson<{ config: WorkflowConfig; layout: WorkflowLayout }>(
+    const validation = await fetchJson<{ config: WorkflowConfig; layout: WorkflowLayout; graphs: WorkflowGraphMetadata[] }>(
       "/api/workflow-editor/validate",
       {
         method: "POST",
         body: JSON.stringify({
           config: document.config,
           layout: document.layout,
+          graphs: document.graphs,
         }),
       },
     );
-    patchDocument(validation.config, validation.layout);
+    patchDocument(validation.config, validation.layout, validation.graphs);
   }
 
   async function saveDocument() {
@@ -2105,17 +2451,18 @@ export default function App() {
     setSaveState("saving");
     setError(null);
     try {
-      const saved = await fetchJson<{ config: WorkflowConfig; layout: WorkflowLayout }>(
+      const saved = await fetchJson<{ config: WorkflowConfig; layout: WorkflowLayout; graphs: WorkflowGraphMetadata[] }>(
         "/api/workflow-editor/document",
         {
           method: "PUT",
           body: JSON.stringify({
             config: document.config,
             layout: document.layout,
+            graphs: document.graphs,
           }),
         },
       );
-      patchDocument(saved.config, saved.layout);
+      patchDocument(saved.config, saved.layout, saved.graphs);
       setSaveState("saved");
     } catch (reason) {
       setSaveState("idle");
@@ -2748,6 +3095,107 @@ export default function App() {
               </div>
             </details>
 
+            <div className="sidebar-section workflow-graphs-section">
+              <div className="section-label">Graphs</div>
+              <div className="workflow-graph-view-toggle" role="group" aria-label="Workflow graph view">
+                <button
+                  type="button"
+                  className={workflowGraphView === "directory" ? "selected" : ""}
+                  onClick={() => setWorkflowGraphView("directory")}
+                >
+                  Directory
+                </button>
+                <button
+                  type="button"
+                  className={workflowGraphView === "private" ? "selected" : ""}
+                  onClick={() => setWorkflowGraphView("private")}
+                >
+                  Mine
+                </button>
+              </div>
+              <p className="runtime-summary">{graphViewContext}</p>
+              <div className="workflow-graph-list">
+                {visibleWorkflowGraphs.length === 0 ? (
+                  <p className="runtime-summary">
+                    {workflowGraphView === "private"
+                      ? "No private workflows associated with this user."
+                      : "No graphs associated with this directory."}
+                  </p>
+                ) : (
+                  visibleWorkflowGraphs.map((graph) => (
+                    <button
+                      type="button"
+                      key={graph.id}
+                      className={`workflow-graph-item${selectedGraphId === graph.id ? " selected" : ""}`}
+                      onClick={() => selectWorkflowGraph(graph)}
+                    >
+                      <span className="workflow-graph-name">{graph.name}</span>
+                      <span className="workflow-graph-meta">
+                        {graph.node_ids.length} {graph.node_ids.length === 1 ? "node" : "nodes"}
+                      </span>
+                    </button>
+                  ))
+                )}
+              </div>
+              {selectedGraph ? (
+                <div className="workflow-graph-editor">
+                  <label className="inspector-label">
+                    <span>Graph name</span>
+                    <input
+                      value={graphNameDraft}
+                      onChange={(event) => setGraphNameDraft(event.target.value)}
+                      disabled={editLocked}
+                    />
+                  </label>
+                  <label className="inspector-label">
+                    <span>Description</span>
+                    <textarea
+                      value={graphDescriptionDraft}
+                      rows={3}
+                      onChange={(event) => setGraphDescriptionDraft(event.target.value)}
+                      disabled={editLocked}
+                    />
+                  </label>
+                  <label className="inspector-label">
+                    <span>Directories</span>
+                    <textarea
+                      value={graphDirectoriesDraft}
+                      rows={3}
+                      placeholder={selectedDirectoryPath}
+                      onChange={(event) => setGraphDirectoriesDraft(event.target.value)}
+                      disabled={editLocked}
+                    />
+                  </label>
+                  <label className="inspector-label">
+                    <span>Private users</span>
+                    <textarea
+                      value={graphUsersDraft}
+                      rows={3}
+                      placeholder={currentUserId}
+                      onChange={(event) => setGraphUsersDraft(event.target.value)}
+                      disabled={editLocked}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="subtle-button"
+                    onClick={addCurrentUserToGraphDraft}
+                    disabled={editLocked || !currentUserId.trim()}
+                  >
+                    Add current user
+                  </button>
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={applyWorkflowGraphChanges}
+                    disabled={editLocked}
+                  >
+                    Apply graph details
+                  </button>
+                </div>
+              ) : null}
+            </div>
+
             <div className="sidebar-section">
               <div className="section-label">Create</div>
               {createEntriesByKind.map((group) => (
@@ -2876,10 +3324,11 @@ export default function App() {
 
           <main className="canvas-shell">
             <ReactFlow
-              nodes={flowNodes}
-              edges={flowEdges}
+              nodes={displayedFlowNodes}
+              edges={displayedFlowEdges}
               nodeTypes={nodeTypes}
-              onInit={setFlowInstance}
+              onInit={handleFlowInit}
+              onMove={(_, viewport) => setCanvasViewport(viewport)}
               onNodesChange={updateNodePositions}
               onEdgesChange={updateEdgeChanges}
               onNodeClick={(_, node) => {
@@ -2909,6 +3358,17 @@ export default function App() {
             >
               <Background gap={20} size={1} />
             </ReactFlow>
+            <div className="workflow-graph-label-layer" aria-hidden="true">
+              {graphLabels.map((label) => (
+                <div
+                  key={label.graph.id}
+                  className={`workflow-graph-canvas-label${selectedGraphId === label.graph.id ? " selected" : ""}`}
+                  style={{ left: `${label.left}px`, top: `${label.top}px` }}
+                >
+                  {label.graph.name}
+                </div>
+              ))}
+            </div>
             {flowInstance
               ? snapGuides.map((guide) => {
                   const viewport = flowInstance.getViewport();

@@ -905,16 +905,22 @@ class WorkerAdminFacade:
         *,
         config: dict[str, object],
         layout: dict[str, object] | None = None,
+        graphs: list[dict[str, object]] | None = None,
     ) -> WorkflowEditorValidationPayload:
-        return self._deps.validate_workflow_editor_document(config=config, layout=layout)
+        return self._deps.validate_workflow_editor_document(
+            config=config, layout=layout, graphs=graphs
+        )
 
     def save_workflow_editor_document(
         self,
         *,
         config: dict[str, object],
         layout: dict[str, object] | None = None,
+        graphs: list[dict[str, object]] | None = None,
     ) -> WorkflowEditorSavePayload:
-        return self._deps.save_workflow_editor_document(config=config, layout=layout)
+        return self._deps.save_workflow_editor_document(
+            config=config, layout=layout, graphs=graphs
+        )
 
     def read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
         return self._deps.read_workflow_run_snapshot()

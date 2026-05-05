@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 from agent_sandbox.events.models import EdgeDefinition, WorkflowNodeEnvelope
+from agent_sandbox.workflow.migrations import migrate_agent_prompt_lifecycle_ports
 
 
 class WorkflowNodeRetryPolicy(BaseModel):
@@ -38,10 +39,29 @@ class WorkflowIR(BaseModel):
     edges: list[EdgeDefinition] = Field(default_factory=list)
 
 
+class WorkflowPackGraph(BaseModel):
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    description: str | None = None
+    directory_paths: list[str] = Field(default_factory=lambda: ["root"])
+    user_ids: list[str] = Field(default_factory=list)
+    node_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("directory_paths", "user_ids", "node_ids", mode="before")
+    @classmethod
+    def _normalize_string_lists(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        return value
+
+
 class WorkflowPack(BaseModel):
     pack_id: str = Field(min_length=1)
     pack_version: str = Field(min_length=1)
     description: str | None = None
+    graphs: list[WorkflowPackGraph] = Field(default_factory=list)
     ir: WorkflowIR
 
 
@@ -74,6 +94,7 @@ def load_workflow_pack(project_dir: Path, pack_reference: str) -> WorkflowPack:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"workflow pack file {path} must contain a JSON object")
+    payload = migrate_agent_prompt_lifecycle_ports(payload)
 
     ir_payload = payload.get("ir")
     if isinstance(ir_payload, dict):
@@ -105,7 +126,7 @@ def compose_workflow_ir(
         edges.extend(pack.ir.edges)
 
     if inline_ir:
-        inline_payload = dict(inline_ir)
+        inline_payload = migrate_agent_prompt_lifecycle_ports(dict(inline_ir))
         inline_nodes = inline_payload.get("nodes")
         if isinstance(inline_nodes, list):
             normalized_inline_nodes: list[dict[str, Any]] = []

@@ -112,6 +112,12 @@ Troubleshooting checklist:
 - Operator pack files live at `config/workflow-packs/*.json` and include versioned IR (`pack_id`,
   `pack_version`, `ir.version`, `ir.nodes`, `ir.edges`). These live pack files are ignored by Git;
   checked-in starting points use `*-example.json`.
+- A pack can contain multiple connected graphs. Optional `graphs` entries name those connected
+  node sets with `id`, `name`, `description`, `directory_paths`, `user_ids`, and `node_ids`; the
+  runtime still executes from the IR, while the editor uses this metadata for directory-scoped and
+  private-user graph selection and labels. Saving from a filtered view keeps unchanged graph
+  metadata entries intact, so graphs outside the selected directory or private-user view are not
+  rewritten by the presentation filter.
 - To add a new domain workflow, add a new pack file and list it in `workflow_packs`. No core
   orchestrator Python code changes are required for that path.
 - `config/trigger-orchestrator/config.json` is operator-local too. Start from
@@ -183,7 +189,7 @@ Required local session settings:
 - `AGENT_SANDBOX_ADMIN_WEB_AZURE_REDIRECT_URI`
   or `AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL`
 - optional `AGENT_SANDBOX_ADMIN_WEB_AZURE_AUTHORITY_BASE_URL`
-- `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS`
+- optional first-run `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS`
 - optional `AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT`
 
 Azure SSO enabling sequence:
@@ -192,8 +198,16 @@ Azure SSO enabling sequence:
 2. Add the exact admin callback URI to the app registration.
 3. Allow OpenID scopes `openid profile email`.
 4. Set the trusted tenant id in `AGENT_SANDBOX_ADMIN_WEB_AZURE_TENANT_ID`.
-5. Add each permitted operator UPN/email-style login to `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS`.
+5. On first startup, add initial admin UPN/email-style logins to
+   `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS`.
 6. Restart `agent-sandbox-admin-web`.
+
+Azure SSO users are stored in `runtime/admin-web-users.json`, keyed by normalized login/email.
+When that file is missing or empty, `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS` seeds those
+users with the `admin` role. After that first bootstrap, the runtime store is the source of truth.
+Admins manage membership and the `admin` / `regular` role from the Admin Web Users tab. Removing an
+Azure user from the runtime store invalidates their existing local admin session on the next
+authenticated request.
 
 The admin backend performs the token exchange server-side, validates issuer/audience/tenant, then mints the same local signed session cookie used by the password flow. Privileged lock/unlock behavior remains tied to that local admin session rather than the upstream Azure token.
 
@@ -768,6 +782,10 @@ through `pending`, `leased`, `dispatched`, `completed`, `failed`, or `cancelled`
 6. `gate:await-agent`
 7. `post_pr_comment`, `post_pr_inline_comment`, or `submit_pr_review`
 8. `effect:vm:stop`
+
+Connect `effect:agent:prompt` to `gate:await-agent` through the prompt's `started`
+source port. Use the prompt's `completed` source port for downstream work that
+should wait for the agent run itself to finish.
 
 ### Guest repo preparation
 

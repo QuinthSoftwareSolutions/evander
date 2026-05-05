@@ -30,16 +30,22 @@ class WorkflowConfigAdminService:
         *,
         config: dict[str, object],
         layout: dict[str, object] | None = None,
+        graphs: list[dict[str, object]] | None = None,
     ):
-        return self._worker_admin.validate_workflow_editor_document(config=config, layout=layout)
+        return self._worker_admin.validate_workflow_editor_document(
+            config=config, layout=layout, graphs=graphs
+        )
 
     def save_workflow_editor_document(
         self,
         *,
         config: dict[str, object],
         layout: dict[str, object] | None = None,
+        graphs: list[dict[str, object]] | None = None,
     ):
-        return self._worker_admin.save_workflow_editor_document(config=config, layout=layout)
+        return self._worker_admin.save_workflow_editor_document(
+            config=config, layout=layout, graphs=graphs
+        )
 
     def read_workflow_run_snapshot(self):
         return self._worker_admin.read_workflow_run_snapshot()
