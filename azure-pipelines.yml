@@ -52,6 +52,10 @@ parameters:
     displayName: Host Codex npm package
     type: string
     default: "@openai/codex"
+  - name: dotnetSdkVersion
+    displayName: Worker .NET SDK version
+    type: string
+    default: "10.0.x"
 
 variables:
   AGENT_SANDBOX_REPO_VERSION: $(Build.SourceVersion)
@@ -443,6 +447,13 @@ stages:
                     HOST_CODEX_NPM_PACKAGE: ${{ parameters.hostCodexNpmPackage }}
                     PIPELINE_WORKSPACE: $(Pipeline.Workspace)
 
+                - task: UseDotNet@2
+                  displayName: Install worker .NET SDK
+                  inputs:
+                    packageType: sdk
+                    version: ${{ parameters.dotnetSdkVersion }}
+                    installationPath: $(Pipeline.Workspace)/dotnet
+
                 - bash: |
                     set -euo pipefail
 
@@ -503,6 +514,7 @@ stages:
                     AGENT_SANDBOX_CONTROL_PLANE_SSH_KEY_FILE: $(controlPlaneSshKey.secureFilePath)
                     AGENT_SANDBOX_WORKER_SSH_KEY_FILE: $(workerSshKey.secureFilePath)
                     ANSIBLE_VAULT_PASSWORD: $(ANSIBLE_VAULT_PASSWORD)
+                    HOST_DOTNET_ROOT: $(Pipeline.Workspace)/dotnet
                     PIPELINE_WORKSPACE: $(Pipeline.Workspace)
 
                 - task: AzureCLI@2

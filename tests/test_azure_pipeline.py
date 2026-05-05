@@ -40,6 +40,7 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
     assert parameters["controlPlaneSshNsgResourceGroup"]["default"] == "auto"
     assert parameters["controlPlaneSshNsgName"]["default"] == "auto"
     assert parameters["hostCodexNpmPackage"]["default"] == "@openai/codex"
+    assert parameters["dotnetSdkVersion"]["default"] == "10.0.x"
     assert "DownloadSecureFile@1" in text
     assert "controlPlaneSshKey.secureFilePath" in text
     assert "workerSshKey.secureFilePath" in text
@@ -52,6 +53,10 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
     assert 'dotnet_path="$(command -v dotnet || true)"' in text
     assert 'HOST_DOTNET_ROOT="$(dirname "$dotnet_real_path")"' in text
     assert "Expected \\$HOST_DOTNET_ROOT/dotnet to exist and be executable." in text
+    assert "UseDotNet@2" in text
+    assert "version: ${{ parameters.dotnetSdkVersion }}" in text
+    assert "installationPath: $(Pipeline.Workspace)/dotnet" in text
+    assert "HOST_DOTNET_ROOT: $(Pipeline.Workspace)/dotnet" in text
     assert "PIPELINE_WORKSPACE: $(Pipeline.Workspace)" in text
     assert text.count("AzureCLI@2") == 4
     assert "azureSubscription: ${{ parameters.azureServiceConnection }}" in text
@@ -73,6 +78,9 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
     worker_steps = parsed["stages"][1]["jobs"][0]["strategy"]["runOnce"]["deploy"]["steps"]
     worker_step_names = [step.get("displayName", "") for step in worker_steps]
     assert worker_step_names.index("Build container runner image archive") < worker_step_names.index(
+        "Deploy worker VM with Ansible"
+    )
+    assert worker_step_names.index("Install worker .NET SDK") < worker_step_names.index(
         "Deploy worker VM with Ansible"
     )
 

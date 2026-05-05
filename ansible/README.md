@@ -226,6 +226,10 @@ agents the pipeline installs the npm package named by `hostCodexNpmPackage` into
 `scripts/build_agent_sandbox_runner_image.sh`. The default package spec is `@openai/codex`; override
 it with a pinned package version when deployment reproducibility requires it.
 
+Before `ansible/worker.yml`, the worker stage also installs the SDK named by `dotnetSdkVersion` into
+`$(Pipeline.Workspace)/dotnet` and exports that path as `HOST_DOTNET_ROOT`. This avoids archiving the
+entire Microsoft-hosted agent dotnet installation, which may include many SDK/runtime versions.
+
 ## Re-Runs And Idempotency
 
 The playbook is intended to be safe to re-run:
