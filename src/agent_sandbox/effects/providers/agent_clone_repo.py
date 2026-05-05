@@ -9,6 +9,7 @@ from urllib.parse import unquote, urlparse
 
 from agent_sandbox.execution import ExecutionBackendKind, ExecutionSpec, ExecutionStatusKind
 from agent_sandbox.events.provider_models import AgentCloneRepoEffectDefinition
+from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
 from agent_sandbox.git_mirror import ContainerGitMirrorResolver
 
 from .agent_session import (
@@ -110,6 +111,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "guest_repo_name": result.guest_repo_name,
             "remote_url": result.remote_url,
             "canonical_repo_source": mirror.canonical_repo_source,
+            "pr_notes_ref": agent_pr_notes_ref_for_session(session_id),
             "execution_backend": "container_worker_vm",
             "vm_name": None,
         }
@@ -202,6 +204,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
     ) -> str:
         canonical_remote_url = repo_source.strip() if _is_remote_git_source(repo_source) else ""
         push_remote_url = _container_reachable_git_remote_url(remote_url)
+        pr_notes_ref = agent_pr_notes_ref_for_session(session_id)
         lines = [
             container_shell_preamble().rstrip(),
             f"cd {shlex.quote(target_dir)}",
@@ -210,6 +213,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             f"CANONICAL_REMOTE_URL={shlex.quote(canonical_remote_url)}",
             f"SESSION_ID={shlex.quote(session_id)}",
             f"BRANCH_SUFFIX={shlex.quote(session_id)}",
+            f"PR_NOTES_REF={shlex.quote(pr_notes_ref)}",
             'if [ -n "$PUSH_REMOTE_URL" ]; then',
             '  if git remote get-url agent >/dev/null 2>&1; then git remote set-url agent "$PUSH_REMOTE_URL"; else git remote add agent "$PUSH_REMOTE_URL"; fi',
             '  if [ -n "$CANONICAL_REMOTE_URL" ] && [ "$CANONICAL_REMOTE_URL" != "$PUSH_REMOTE_URL" ]; then',
@@ -226,6 +230,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             'git config user.email "truman@quinth.se"',
             'git config agent-sandbox.sessionId "$SESSION_ID"',
             'git config agent-sandbox.branchSuffix "$BRANCH_SUFFIX"',
+            'git config agent-sandbox.prNotesRef "$PR_NOTES_REF"',
         ]
         if clone_branch:
             lines.append(f"git config agent-sandbox.baseBranch {shlex.quote(clone_branch)}")
@@ -237,7 +242,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
         if push_remote_url:
             lines.extend(
                 [
-                    'git config alias.push-agent \'!f(){ session_id=${SESSION_ID:-$(git config --get agent-sandbox.sessionId || true)}; if [ -z "${session_id}" ]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; expected_issue_number=$(git config --get agent-sandbox.issueNumber || true); if [ -n "${expected_issue_number}" ]; then case "${session_id}" in issue-${expected_issue_number}|issue-${expected_issue_number}-*) ;; *) echo "SESSION_ID (${session_id}) does not match expected issue ${expected_issue_number}; refusing agent push." >&2; return 1 ;; esac; fi; suffix_source=${AGENT_BRANCH_SUFFIX:-$(git config --get agent-sandbox.branchSuffix || true)}; if [ -z "${suffix_source}" ]; then suffix_source=${HOSTNAME:-}; fi; suffix=$(printf "%s" "${suffix_source}" | tr "[:upper:]" "[:lower:]" | tr -cs "a-z0-9._-" "-" | sed "s/^-*//;s/-*$//"); if [ -z "${suffix}" ]; then echo "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." >&2; return 1; fi; repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" ensure-head; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${session_id}/${branch}-${suffix} refs/notes/agent-pr; }; f\'',
+                    'git config alias.push-agent \'!f(){ session_id=${SESSION_ID:-$(git config --get agent-sandbox.sessionId || true)}; if [ -z "${session_id}" ]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; expected_issue_number=$(git config --get agent-sandbox.issueNumber || true); if [ -n "${expected_issue_number}" ]; then case "${session_id}" in issue-${expected_issue_number}|issue-${expected_issue_number}-*) ;; *) echo "SESSION_ID (${session_id}) does not match expected issue ${expected_issue_number}; refusing agent push." >&2; return 1 ;; esac; fi; suffix_source=${AGENT_BRANCH_SUFFIX:-$(git config --get agent-sandbox.branchSuffix || true)}; if [ -z "${suffix_source}" ]; then suffix_source=${HOSTNAME:-}; fi; suffix=$(printf "%s" "${suffix_source}" | tr "[:upper:]" "[:lower:]" | tr -cs "a-z0-9._-" "-" | sed "s/^-*//;s/-*$//"); if [ -z "${suffix}" ]; then echo "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." >&2; return 1; fi; notes_ref=$(git config --get agent-sandbox.prNotesRef || true); if [ -z "${notes_ref}" ]; then notes_ref=refs/notes/agent-pr; fi; repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" ensure-head; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${session_id}/${branch}-${suffix} "${notes_ref}"; }; f\'',
                 ]
             )
         return "\n".join(lines) + "\n"
@@ -268,6 +273,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "target_dir": normalize_optional_string(getattr(result, "target_dir", None)),
             "guest_repo_name": normalize_optional_string(getattr(result, "guest_repo_name", None)),
             "remote_url": normalize_optional_string(getattr(result, "remote_url", None)),
+            "pr_notes_ref": agent_pr_notes_ref_for_session(session_id),
             "execution_backend": execution_backend,
             "vm_name": result.vm_name or vm_name,
         }

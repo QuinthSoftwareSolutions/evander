@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from starlette.testclient import TestClient
 
+from agent_sandbox.worker.service import WorkerDaemon
 from agent_sandbox.worker_daemon import (
     WorkerJobRecord,
     WorkerJobRequest,
@@ -664,6 +666,8 @@ def test_logs_recover_codex_messages_from_session_jsonl(tmp_path: Path) -> None:
     )
 
     response = client.get("/v1/jobs/job-1/logs", headers=_auth())
+    raw_response = client.get("/v1/jobs/job-1/logs?mode=raw", headers=_auth())
+    session_response = client.get("/v1/jobs/job-1/logs?mode=session", headers=_auth())
 
     assert response.status_code == 200
     assert response.text == (
@@ -671,9 +675,100 @@ def test_logs_recover_codex_messages_from_session_jsonl(tmp_path: Path) -> None:
         "I am checking the repo now.\n"
         "Done.\n"
     )
+    assert raw_response.status_code == 200
+    assert raw_response.text == f"session id: {thread_id}\n"
+    assert session_response.status_code == 200
+    assert session_response.text == "I am checking the repo now.\nDone.\n"
     assert response.text.count("I am checking the repo now.") == 1
     log_path = tmp_path / "worker-root" / "sessions" / "session-1" / "logs" / "job-1.log"
-    assert log_path.read_text(encoding="utf-8") == response.text
+    assert log_path.read_text(encoding="utf-8") == f"session id: {thread_id}\n"
+
+
+def test_raw_logs_reconstruct_removed_codex_job_from_session_timestamps(
+    tmp_path: Path,
+) -> None:
+    thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    started_at = datetime(2026, 5, 5, 8, 19, tzinfo=UTC)
+    finished_at = started_at + timedelta(minutes=1)
+
+    class MissingContainerRuntime(FakeContainerRuntime):
+        def get_logs(self, record: WorkerJobRecord) -> str:
+            raise subprocess.CalledProcessError(1, ["docker", "logs", record.job_id])
+
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=MissingContainerRuntime(),
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="codex:latest",
+        command=["true"],
+        container_name="agent-worker-job-1",
+        status="removed",
+        started_at=started_at,
+        finished_at=finished_at,
+        agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+    )
+    log_path = paths.logs / "job-1.log"
+    log_path.write_text(
+        f"session id: {thread_id}\n"
+        "message during this job\n"
+        "message after this job\n",
+        encoding="utf-8",
+    )
+    session_dir = (
+        paths.agent_home
+        / ".config"
+        / "agent-sandbox"
+        / "codex"
+        / "sessions"
+        / "2026"
+        / "05"
+        / "05"
+    )
+    session_dir.mkdir(parents=True)
+    rollout = session_dir / f"rollout-2026-05-05T08-19-00-{thread_id}.jsonl"
+    rollout.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {
+                    "timestamp": (started_at + timedelta(seconds=10)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "agent_message",
+                        "message": "message during this job",
+                    },
+                },
+                {
+                    "timestamp": (finished_at + timedelta(minutes=1)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "agent_message",
+                        "message": "message after this job",
+                    },
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert daemon.get_logs(record, mode="raw") == (
+        f"session id: {thread_id}\n"
+        "message during this job\n"
+    )
+    assert log_path.read_text(encoding="utf-8") == (
+        f"session id: {thread_id}\n"
+        "message during this job\n"
+    )
 
 
 def test_job_store_omits_secret_fields_and_rejects_raw_environment(tmp_path: Path) -> None:

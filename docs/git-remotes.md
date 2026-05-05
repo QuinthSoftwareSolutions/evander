@@ -220,10 +220,12 @@ top-level keys (`create_prs_automatically`, `create_prs_as_draft`) or
 
 ### PR body assembly from Git notes
 
-Host-side PR automation reads agent-authored markdown summaries from the dedicated notes ref
-`refs/notes/agent-pr` (the short ref name is `agent-pr` in `git notes --ref=agent-pr ...` commands).
-The automation fetches that notes ref before it calls `open_agent_pr.sh`, then tries to read the
-note attached to the pushed commit SHA only.
+Host-side PR automation reads agent-authored markdown summaries from the configured PR notes ref.
+New repo clones set `agent-sandbox.prNotesRef` to
+`refs/notes/agent-pr/<session-hash>`, where `<session-hash>` is the first 12 hex characters of
+`sha256(session_id)`. Older checkouts that do not have that config still use the legacy
+`refs/notes/agent-pr` ref. The automation fetches the selected notes ref before it calls
+`open_agent_pr.sh`, then tries to read the note attached to the pushed commit SHA only.
 
 Guest VMs should treat that tip note as the canonical full PR summary snapshot for the current
 branch, not as a per-commit delta log. The repo-clone path installs a `git agent-pr-note` helper
@@ -234,7 +236,7 @@ When a PR body is assembled, merge order is deterministic:
 
 1. optional fixed operator-controlled body (configured by `AGENT_SANDBOX_PR_FIXED_BODY_FILE`)
 2. separator + heading (`---` and `## Agent Summary`)
-3. appended agent summary markdown from the commit note in `refs/notes/agent-pr`
+3. appended agent summary markdown from the commit note in the configured PR notes ref
 
 For per-directory PR boilerplate, use the directory-scoped `pr_template` domain and migrate the
 legacy repo-level `config/pr-template.md` into root config with
@@ -307,8 +309,9 @@ When combining Git push automation with PR feedback handling:
 - **Provider reply API errors (GitHub/Azure DevOps):** keep the same `idempotency_key` on retry so successful-but-unconfirmed replies are deduped.
 - **Push worked but no host promotion/PR update:** inspect bare-repo hook output and `runtime/agent-events.log`.
 - **`AGENT_PR_NOTES fetch failed (non-fatal)` in `runtime/agent-events.log`:**
-  host could not fetch `refs/notes/agent-pr` from the bare remote during promotion.
-  Verify the guest push included `refs/notes/agent-pr` and the trusted clone can fetch that ref.
+  host could not fetch the selected PR notes ref from the bare remote during promotion.
+  Verify the guest push included `git config --get agent-sandbox.prNotesRef` and the trusted
+  clone can fetch that ref. For older checkouts, verify the legacy `refs/notes/agent-pr` ref.
 - **`AGENT_PR_NOTES read failed (non-fatal)` in `runtime/agent-events.log`:**
   notes ref was present but reading the note for the promoted commit failed.
   Re-attach the cached summary to the exact tip commit with `git agent-pr-note ensure-head`, then

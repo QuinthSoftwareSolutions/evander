@@ -1209,8 +1209,11 @@ environment variables:
   boilerplate that should always appear at the top of auto-created PR descriptions. This is a
   host-wide override; the directory-scoped `pr_template` domain is the primary per-directory
   surface for PR boilerplate.
-- `AGENT_SANDBOX_PR_NOTES_REF` (optional, default `refs/notes/agent-pr`): notes ref used to read
-  agent summary markdown from the promoted commit.
+- `AGENT_SANDBOX_PR_NOTES_REF` (optional): host-wide override for the notes ref used to read
+  agent summary markdown from the promoted commit. New repo clones configure
+  `agent-sandbox.prNotesRef` as `refs/notes/agent-pr/<session-hash>`, where
+  `<session-hash>` is the first 12 hex characters of `sha256(session_id)`. Older checkouts
+  still default to the legacy `refs/notes/agent-pr` ref.
 - `AGENT_SANDBOX_PR_BODY_MAX_BYTES` (optional, default `60000`): hard byte cap applied to the
   composed PR body before creating/updating the PR.
 
@@ -1239,7 +1242,8 @@ agent-sandbox-cli migrate-pr-template-to-root --config config/gateway.yaml
 
 On guest issue VMs, prefer `git agent-pr-note set` / `git agent-pr-note append` instead of raw
 `git notes add -f`. The helper keeps an additive branch-local summary cache and `git push-agent`
-reattaches that full summary to the current `HEAD` before it pushes `refs/notes/agent-pr`.
+reattaches that full summary to the current `HEAD` before it pushes the configured
+`agent-sandbox.prNotesRef` notes ref.
 
 Expected resulting PR body shape when both fixed boilerplate and note summary are present:
 

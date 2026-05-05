@@ -185,6 +185,7 @@ _TRIGGER_OUTPUT_SCHEMAS = {
         "repo_name": {"type": "string"},
         "session_id": {"type": "string"},
         "review_branch": {"type": "string"},
+        "notes_ref": {"type": "string"},
         "trusted_repo_path": {"type": "string"},
         "base_branch": {"type": "string"},
         "canonical_origin_url": {"type": "string"},
@@ -281,6 +282,7 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "target_dir": {"type": "string"},
         "guest_repo_name": {"type": "string"},
         "remote_url": {"type": "string"},
+        "pr_notes_ref": {"type": "string"},
     },
     "effect:vm:bootstrap-python": {
         "session_id": {"type": "string"},
@@ -322,6 +324,7 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "target_dir": {"type": "string"},
         "guest_repo_name": {"type": "string"},
         "remote_url": {"type": "string"},
+        "pr_notes_ref": {"type": "string"},
         "execution_backend": {"type": "string"},
         "vm_name": {"type": "string"},
     },

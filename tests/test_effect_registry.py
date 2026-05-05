@@ -421,6 +421,7 @@ def test_vm_clone_repo_provider_passes_through_repo_outputs() -> None:
         "target_dir": "/home/agent/RepoName",
         "guest_repo_name": "RepoName",
         "remote_url": "ssh://agent-sandbox-git-host/home/git/remotes/RepoName.git",
+        "pr_notes_ref": "refs/notes/agent-pr/92e76c732d82",
     }
     assert admin_service.clone_repo_into_vm_calls[0] == {
         "vm_name": "vm-42",
@@ -1114,6 +1115,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert clone["target_dir"] == "/home/agent/repos/repo"
     assert clone["remote_url"] == "ssh://agent-sandbox-git-host/git-remotes/repo.git"
     assert clone["canonical_repo_source"] == "https://example.test/org/repo.git"
+    assert clone["pr_notes_ref"] == "refs/notes/agent-pr/84097828fc31"
     assert copied["copied_paths"] == ["/home/agent/repos/repo/AGENT_TASK.yaml"]
     assert prompted["execution_backend"] == "container_worker_vm"
     assert prompted["output_mode"] == "on_completion"
@@ -1163,6 +1165,9 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert "cd /home/agent/repos/repo" in clone_config_command
     assert "config alias.agent-pr-note" in clone_config_command
     assert "config alias.push-agent" in clone_config_command
+    assert "git config agent-sandbox.prNotesRef" in clone_config_command
+    assert "refs/notes/agent-pr/" in clone_config_command
+    assert 'git config --get agent-sandbox.prNotesRef' in clone_config_command
     assert 'git config agent-sandbox.pushAgentAvailable "true"' in clone_config_command
     assert "CANONICAL_REMOTE_URL=https://example.test/org/repo.git" in clone_config_command
     assert "url.${PUSH_REMOTE_URL}.insteadOf" in clone_config_command
@@ -1205,6 +1210,7 @@ def test_agent_clone_container_uses_private_ssh_mirror_for_push_and_instead_of()
     assert 'git remote set-url origin "$CANONICAL_REMOTE_URL"' in command
     assert 'git config "url.${PUSH_REMOTE_URL}.insteadOf" "$CANONICAL_REMOTE_URL"' in command
     assert "config alias.push-agent" in command
+    assert "git config agent-sandbox.prNotesRef" in command
     assert 'git config agent-sandbox.pushAgentAvailable "true"' in command
 
 

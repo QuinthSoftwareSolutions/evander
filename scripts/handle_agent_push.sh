@@ -45,7 +45,15 @@ load_provider_config
 EVENT_LOG="${AGENT_SANDBOX_EVENT_LOG:-${ROOT_DIR}/runtime/agent-events.log}"
 NOTIFY_COMMAND="${AGENT_SANDBOX_NOTIFY_COMMAND:-}"
 AUTO_REMOTE_NAME="${AGENT_SANDBOX_AUTO_REMOTE_NAME:-agent-dropbox-auto}"
-PR_NOTES_REF="${AGENT_SANDBOX_PR_NOTES_REF:-refs/notes/agent-pr}"
+PR_NOTES_REF="${AGENT_SANDBOX_PR_NOTES_REF:-}"
+PR_NOTES_REF_OVERRIDE_SET=0
+if [[ -v AGENT_SANDBOX_PR_NOTES_REF ]]; then
+  PR_NOTES_REF_OVERRIDE_SET=1
+  if [[ -z "${PR_NOTES_REF}" ]]; then
+    PR_NOTES_REF="refs/notes/agent-pr"
+  fi
+fi
+PUSHED_AGENT_NOTES_REFS=()
 LOCAL_PR_NOTES_REF=""
 RUNTIME_DIR="${AGENT_SANDBOX_RUNTIME_DIR:-${ROOT_DIR}/runtime}"
 PR_BODY_DIR="${AGENT_SANDBOX_PR_BODY_DIR:-${ROOT_DIR}/runtime/pr-body}"
@@ -380,6 +388,63 @@ derive_local_notes_ref() {
   printf 'refs/notes/agent-pr-cache/%s\n' "${repo_name}"
 }
 
+derive_pr_notes_ref_for_session() {
+  local session_id="$1"
+  if [[ -z "${session_id}" ]]; then
+    printf 'refs/notes/agent-pr\n'
+    return
+  fi
+  PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}" python3 - "${session_id}" <<'PY'
+try:
+    from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
+except Exception:
+    import hashlib
+
+    def agent_pr_notes_ref_for_session(session_id: str) -> str:
+        session_hash = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:12]
+        return f"refs/notes/agent-pr/{session_hash}"
+
+import sys
+
+print(agent_pr_notes_ref_for_session(sys.argv[1]), end="")
+PY
+}
+
+is_agent_pr_notes_ref() {
+  local ref_name="$1"
+  [[ "${ref_name}" == refs/notes/agent-pr || "${ref_name}" == refs/notes/agent-pr/* ]]
+}
+
+select_pushed_notes_ref() {
+  local session_id="$1"
+  local derived_ref=""
+  local candidate
+  if (( PR_NOTES_REF_OVERRIDE_SET == 1 )); then
+    printf '%s\n' "${PR_NOTES_REF}"
+    return
+  fi
+  if [[ -n "${session_id}" ]]; then
+    derived_ref="$(derive_pr_notes_ref_for_session "${session_id}")"
+    for candidate in "${PUSHED_AGENT_NOTES_REFS[@]}"; do
+      if [[ "${candidate}" == "${derived_ref}" ]]; then
+        printf '%s\n' "${candidate}"
+        return
+      fi
+    done
+  fi
+  for candidate in "${PUSHED_AGENT_NOTES_REFS[@]}"; do
+    if [[ "${candidate}" == refs/notes/agent-pr ]]; then
+      printf '%s\n' "${candidate}"
+      return
+    fi
+  done
+  if [[ -n "${derived_ref}" ]]; then
+    printf '%s\n' "${derived_ref}"
+    return
+  fi
+  printf 'refs/notes/agent-pr\n'
+}
+
 ensure_remote() {
   local host_repo_path="$1"
   local remote_name="$2"
@@ -420,8 +485,10 @@ promote_branch() {
 process_agent_branch() {
   local agent_branch="$1"
   local new_sha="$2"
+  local pushed_notes_ref="${3:-}"
   local review_branch
   local session_id
+  local pr_notes_ref
   local note_body_file
   local resolved_template_body_file
   local resolved_sha
@@ -435,15 +502,20 @@ process_agent_branch() {
 
   review_branch="$(derive_review_branch "${agent_branch}")"
   session_id="$(extract_session_id "${agent_branch}" || true)"
+  if [[ -n "${pushed_notes_ref}" ]]; then
+    pr_notes_ref="${pushed_notes_ref}"
+  else
+    pr_notes_ref="$(select_pushed_notes_ref "${session_id:-}")"
+  fi
 
   ensure_remote "${TRUSTED_REPO_PATH}" "${AUTO_REMOTE_NAME}" "${BARE_REPO_PATH}"
   promote_branch "${TRUSTED_REPO_PATH}" "${AUTO_REMOTE_NAME}" "${agent_branch}" "${review_branch}"
 
   if ! git -C "${TRUSTED_REPO_PATH}" fetch "${AUTO_REMOTE_NAME}" \
-    "+${PR_NOTES_REF}:${LOCAL_PR_NOTES_REF}" >/dev/null 2>&1; then
+    "+${pr_notes_ref}:${LOCAL_PR_NOTES_REF}" >/dev/null 2>&1; then
     notify_event \
       "AGENT_PR_NOTES fetch failed (non-fatal)" \
-      "repo=$(basename "${TRUSTED_REPO_PATH}") notes_ref=${PR_NOTES_REF} local_notes_ref=${LOCAL_PR_NOTES_REF} branch=${review_branch} session_id=${session_id:-unknown}"
+      "repo=$(basename "${TRUSTED_REPO_PATH}") notes_ref=${pr_notes_ref} local_notes_ref=${LOCAL_PR_NOTES_REF} branch=${review_branch} session_id=${session_id:-unknown}"
   fi
 
   note_body_file=""
@@ -457,7 +529,7 @@ process_agent_branch() {
     else
       notify_event \
         "AGENT_PR_NOTES read failed (non-fatal)" \
-        "repo=$(basename "${TRUSTED_REPO_PATH}") sha=${resolved_sha} notes_ref=${PR_NOTES_REF} local_notes_ref=${LOCAL_PR_NOTES_REF} branch=${review_branch} session_id=${session_id:-unknown}"
+        "repo=$(basename "${TRUSTED_REPO_PATH}") sha=${resolved_sha} notes_ref=${pr_notes_ref} local_notes_ref=${LOCAL_PR_NOTES_REF} branch=${review_branch} session_id=${session_id:-unknown}"
     fi
   else
     notify_event \
@@ -563,9 +635,16 @@ HAS_AGENT_NOTES_UPDATE=0
 
 while read -r old_sha new_sha ref_name; do
   [[ -n "${ref_name}" ]] || continue
-
-  if [[ "${ref_name}" == refs/notes/agent-pr ]]; then
+  if is_agent_pr_notes_ref "${ref_name}"; then
     HAS_AGENT_NOTES_UPDATE=1
+    PUSHED_AGENT_NOTES_REFS+=("${ref_name}")
+  fi
+done < "${UPDATES_FILE}"
+
+while read -r old_sha new_sha ref_name; do
+  [[ -n "${ref_name}" ]] || continue
+
+  if is_agent_pr_notes_ref "${ref_name}"; then
     continue
   fi
 
@@ -582,9 +661,13 @@ while read -r old_sha new_sha ref_name; do
 done < "${UPDATES_FILE}"
 
 if (( HAS_AGENT_BRANCH_UPDATES == 0 )) && (( HAS_AGENT_NOTES_UPDATE == 1 )); then
+  pushed_notes_ref=""
+  if (( ${#PUSHED_AGENT_NOTES_REFS[@]} == 1 )); then
+    pushed_notes_ref="${PUSHED_AGENT_NOTES_REFS[0]}"
+  fi
   while read -r agent_branch current_sha; do
     [[ -n "${agent_branch}" && -n "${current_sha}" ]] || continue
-    process_agent_branch "${agent_branch}" "${current_sha}"
+    process_agent_branch "${agent_branch}" "${current_sha}" "${pushed_notes_ref}"
   done < <(
     git --git-dir="${BARE_REPO_PATH}" for-each-ref \
       --format='%(refname:lstrip=2) %(objectname)' refs/heads/agents

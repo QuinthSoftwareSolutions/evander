@@ -1994,7 +1994,7 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     class FakeContainerBackend:
         def __init__(self) -> None:
             self.inspected: list[str] = []
-            self.logged: list[tuple[str, int]] = []
+            self.logged: list[tuple[str, int, str | None]] = []
             self.stopped: list[str] = []
             self.destroyed: list[str] = []
 
@@ -2008,8 +2008,16 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
                 session_id="session-1",
             )
 
-        def get_log_snapshot(self, target: str, *, lines: int = 50) -> str:
-            self.logged.append((target, lines))
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.logged.append((target, lines, mode))
+            if mode == "session":
+                return "session transcript\n" if target == "exec-1" else ""
             return "line 2\n"
 
         def stop(self, target: str) -> ExecutionStatus:
@@ -2059,14 +2067,21 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     )
 
     assert log_response.status_code == 200
+    assert "session=session-1 log=codex_transcript" in log_response.json()["text"]
+    assert "session transcript" in log_response.json()["text"]
     assert "execution=exec-2" in log_response.json()["text"]
     assert "execution=exec-1" in log_response.json()["text"]
+    assert "log=raw" in log_response.json()["text"]
     assert stop_response.status_code == 200
     assert stop_response.json()["status"] == "stopped"
     assert destroy_response.status_code == 200
     assert destroy_response.json()["status"] == "destroyed"
     assert fake_backend.inspected == []
-    assert fake_backend.logged == [("exec-2", 2), ("exec-1", 2)]
+    assert fake_backend.logged == [
+        ("exec-1", 4, "session"),
+        ("exec-2", 2, "raw"),
+        ("exec-1", 2, "raw"),
+    ]
     assert fake_backend.stopped == ["exec-1"]
     assert fake_backend.destroyed == ["exec-1"]
 

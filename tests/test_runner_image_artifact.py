@@ -22,6 +22,10 @@ def test_runner_dockerfile_contains_minimal_runtime_contract() -> None:
     assert "python3-venv" in dockerfile
     assert "ripgrep" in dockerfile
     assert "openssh-client" in dockerfile
+    assert "libgssapi-krb5-2" in dockerfile
+    assert "libicu74" in dockerfile
+    assert "libssl3t64" in dockerfile
+    assert "zlib1g" in dockerfile
     assert "libnss3" in dockerfile
     assert "libgtk-3-0" in dockerfile
     assert "/home/agent/.agent-sandbox/session.env" in dockerfile

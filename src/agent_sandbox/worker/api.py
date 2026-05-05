@@ -125,7 +125,13 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         record = daemon.store.get(request.path_params["job_id"])
         if record is None:
             return JSONResponse({"error": "job not found"}, status_code=404)
-        text = daemon.get_logs(record)
+        try:
+            text = daemon.get_logs(
+                record,
+                mode=str(request.query_params.get("mode") or "augmented"),
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         return PlainTextResponse(text)
 
     async def get_artifacts(request: Request) -> JSONResponse:

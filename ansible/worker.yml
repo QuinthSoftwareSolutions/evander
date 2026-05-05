@@ -136,6 +136,8 @@
     - role: worker_package_cache_preflight
     - role: python_env
     - role: container_worker_runtime
+    - role: worker_dotnet_toolchain
     - role: worker_node_toolchain
+    - role: worker_playwright_toolchain
     - role: container_worker_service
     - role: container_worker_verification

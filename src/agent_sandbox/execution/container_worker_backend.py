@@ -177,10 +177,11 @@ class ContainerWorkerVmExecutionBackend:
         lines: int = 50,
         repo_name: str | None = None,
         vm_user: str = "agent",
+        mode: str | None = None,
     ) -> str:
         del repo_name, vm_user
         mapping = self._mapping_for_target(target)
-        text = self.client.logs(mapping.worker_job_id)
+        text = self.client.logs(mapping.worker_job_id, mode=mode)
         if lines <= 0:
             return text
         return "\n".join(text.splitlines()[-lines:]) + (

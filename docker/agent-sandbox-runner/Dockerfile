@@ -16,6 +16,9 @@ RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::T
       git \
       gzip \
       jq \
+      libgssapi-krb5-2 \
+      libicu74 \
+      libssl3t64 \
       less \
       openssh-client \
       procps \
@@ -26,6 +29,7 @@ RUN apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::T
       tar \
       unzip \
       xz-utils \
+      zlib1g \
       zip \
       fonts-liberation \
       libasound2t64 \

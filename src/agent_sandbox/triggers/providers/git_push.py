@@ -10,6 +10,10 @@ from typing import Any
 
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import GitPushTriggerDefinition
+from agent_sandbox.git_pr_notes import (
+    agent_pr_notes_ref_for_session,
+    is_agent_pr_notes_ref,
+)
 from agent_sandbox.triggers.providers.base import TriggerHookHandler, TriggerProviderBase
 
 
@@ -101,7 +105,7 @@ def build_git_push_payloads(
             )
         ]
 
-    if ref_name.strip() == "refs/notes/agent-pr":
+    if is_agent_pr_notes_ref(ref_name):
         return _build_note_push_payloads(
             normalized_repo=normalized_repo, old_rev=old_rev, new_rev=new_rev, ref_name=ref_name
         )
@@ -125,6 +129,7 @@ def _build_branch_payload(
     if session_id:
         payload["session_id"] = session_id
         payload["review_branch"] = _derive_review_branch(branch_name)
+        payload["notes_ref"] = agent_pr_notes_ref_for_session(session_id)
     payload.update(_load_repo_metadata(Path(normalized_repo)))
     return payload
 
@@ -179,6 +184,7 @@ def _build_note_push_payloads(
             ref_name=ref_name,
         )
         payload["event_hash"] = new_rev
+        payload["notes_ref"] = ref_name
         payload["note_target_commit_hash"] = tip_sha
         payload["note_ref_new_rev"] = new_rev
         payload["note_ref_old_rev"] = old_rev

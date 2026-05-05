@@ -368,6 +368,27 @@ def test_query_backlog_items_url_encodes_project_name() -> None:
     assert calls[0]["url"] == "https://dev.azure.com/example/My%20Project/_apis/wit/wiql"
 
 
+def test_query_backlog_items_batch_uses_fields_without_expand() -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(200, json={"workItems": [{"id": 101}]}),
+        httpx.Response(200, json={"value": []}),
+    ]
+
+    adapter._query_backlog_items_core(
+        _RecordingClient(calls, responses.copy()),
+        organization_url="https://dev.azure.com/example",
+        project="project-x",
+        auth_header="Basic secret",
+    )
+
+    batch_payload = calls[1]["json"]
+    assert isinstance(batch_payload, dict)
+    assert "fields" in batch_payload
+    assert "$expand" not in batch_payload
+
+
 def test_get_backlog_item_by_id_url_encodes_project_name(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = AzureDevOpsIssueAdapter(config_resolver=object())
     monkeypatch.setattr(

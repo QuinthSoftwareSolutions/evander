@@ -68,12 +68,17 @@ fallback packages are worker-level caches mounted read-only into containers:
 - `/opt/agent-sandbox/nuget-cache-ro`
 
 The worker playbook creates the cache directories under `agent_sandbox_worker_toolchain_cache_root`
-and wires them into the daemon with repeated `--readonly-mount` flags. It also seeds the Node cache
-from the Ansible control machine and verifies `node`, `npm`, and `npx` inside
-`agent-sandbox-runner:latest`. By default it reads `HOST_NODE_ROOT` or
-`~/.nvm/versions/node/v24.14.0`; set `agent_sandbox_worker_node_toolchain_archive_path` to copy a
-prebuilt tarball instead. Other caches remain operator-controlled and are not baked into the image.
-Secrets are not mounted. When `--container-user` is numeric, the worker daemon writes a per-session
+and wires them into the daemon with repeated `--readonly-mount` flags. It also seeds the .NET,
+Node, and Playwright caches from the Ansible control machine and verifies them inside
+`agent-sandbox-runner:latest`.
+By default dotnet reads `HOST_DOTNET_ROOT` or `/usr/lib/dotnet`; set
+`agent_sandbox_worker_dotnet_toolchain_archive_path` to copy a prebuilt tarball instead. By default
+Node reads `HOST_NODE_ROOT` or `~/.nvm/versions/node/v24.14.0`; set
+`agent_sandbox_worker_node_toolchain_archive_path` to copy a prebuilt tarball instead. By default
+Playwright reads `HOST_PLAYWRIGHT_NODE_MODULES` or the repo frontend `node_modules` plus
+`HOST_PLAYWRIGHT_BROWSERS` or `~/.cache/ms-playwright`; set the Playwright archive variables to copy
+prebuilt tarballs instead. NuGet fallback packages remain operator-controlled and are not baked into
+the image. Secrets are not mounted. When `--container-user` is numeric, the worker daemon writes a per-session
 `/etc/passwd` and `/etc/group` bind mount so tools such as OpenSSH can resolve the active uid
 without the runner image hard-coding a host-specific user id.
 

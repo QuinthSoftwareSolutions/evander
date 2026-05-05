@@ -64,10 +64,10 @@ def test_container_worker_client_health_create_get_stop_delete_and_logs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("WORKER_TOKEN", "secret-token")
-    seen: list[tuple[str, str]] = []
+    seen: list[tuple[str, str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen.append((request.method, request.url.path))
+        seen.append((request.method, request.url.path, str(request.url.query, "ascii")))
         if request.url.path == "/healthz":
             assert "authorization" not in request.headers
             return httpx.Response(200, json={"status": "ok"}, request=request)
@@ -101,13 +101,15 @@ def test_container_worker_client_health_create_get_stop_delete_and_logs(
     assert worker.stop("job-1").status == "running"
     assert worker.delete("job-1") == {"deleted": True, "job_id": "job-1"}
     assert worker.logs("job-1") == "hello\n"
+    assert worker.logs("job-1", mode="raw") == "hello\n"
     assert seen == [
-        ("GET", "/healthz"),
-        ("POST", "/v1/jobs"),
-        ("GET", "/v1/jobs/job-1"),
-        ("POST", "/v1/jobs/job-1/stop"),
-        ("DELETE", "/v1/jobs/job-1"),
-        ("GET", "/v1/jobs/job-1/logs"),
+        ("GET", "/healthz", ""),
+        ("POST", "/v1/jobs", ""),
+        ("GET", "/v1/jobs/job-1", ""),
+        ("POST", "/v1/jobs/job-1/stop", ""),
+        ("DELETE", "/v1/jobs/job-1", ""),
+        ("GET", "/v1/jobs/job-1/logs", ""),
+        ("GET", "/v1/jobs/job-1/logs", "mode=raw"),
     ]
 
 

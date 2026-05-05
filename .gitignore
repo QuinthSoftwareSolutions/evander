@@ -44,8 +44,12 @@ tasks/
 !ansible/roles/worker_git_access/tasks/main.yml
 !ansible/roles/worker_package_cache_preflight/tasks/
 !ansible/roles/worker_package_cache_preflight/tasks/main.yml
+!ansible/roles/worker_dotnet_toolchain/tasks/
+!ansible/roles/worker_dotnet_toolchain/tasks/main.yml
 !ansible/roles/worker_node_toolchain/tasks/
 !ansible/roles/worker_node_toolchain/tasks/main.yml
+!ansible/roles/worker_playwright_toolchain/tasks/
+!ansible/roles/worker_playwright_toolchain/tasks/main.yml
 frontend/workflow-editor/node_modules/
 frontend/workflow-editor/tsconfig.tsbuildinfo
 **/dist/*

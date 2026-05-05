@@ -54,6 +54,7 @@ def test_issue_vm_setup_configures_agent_remote_for_push_alias() -> None:
     assert "target_path.write_bytes(base64.b64decode(sys.argv[2]))" in clone_runtime
     assert "config alias.agent-pr-note" in clone_runtime
     assert 'config agent-sandbox.sessionId "${{SESSION_ID}}"' in clone_runtime
+    assert 'config agent-sandbox.prNotesRef "${{PR_NOTES_REF}}"' in clone_runtime
     assert 'config agent-sandbox.issueNumber "{issue_number}"' in clone_runtime
     assert 'config agent-sandbox.branchSuffix "${VM_NAME}"' in clone_runtime
     assert (
@@ -61,11 +62,11 @@ def test_issue_vm_setup_configures_agent_remote_for_push_alias() -> None:
         in guest_agents_template
     )
     assert "git push agent HEAD:refs/heads/agents/" in guest_agents_template
-    assert "refs/notes/agent-pr" in guest_agents_template
+    assert "agent-sandbox.prNotesRef" in guest_agents_template
     assert "`push-agent` refuses to run when `SESSION_ID` is missing" in guest_agents_template
     assert "suffix resolves empty" in guest_agents_template
     assert (
-        "HEAD:refs/heads/agents/${SESSION_ID}/$(git rev-parse --abbrev-ref HEAD)-${AGENT_BRANCH_SUFFIX:-${HOSTNAME}} refs/notes/agent-pr"
+        "HEAD:refs/heads/agents/${SESSION_ID}/$(git rev-parse --abbrev-ref HEAD)-${AGENT_BRANCH_SUFFIX:-${HOSTNAME}} $(git config --get agent-sandbox.prNotesRef || printf '%s' refs/notes/agent-pr)"
         in guest_agents_template
     )
 
@@ -76,5 +77,6 @@ def test_guest_agent_pr_note_helper_supports_additive_updates() -> None:
     assert "append (-m TEXT | -F FILE)" in helper
     assert "ensure-head" in helper
     assert "agent-sandbox/agent-pr-cache" in helper
-    assert "git notes --ref=agent-pr add -f -F" in helper
+    assert "git config --get agent-sandbox.prNotesRef" in helper
+    assert 'git notes --ref="$(pr_notes_ref)" add -f -F' in helper
     assert "Run 'git agent-pr-note set -m" in helper

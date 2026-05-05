@@ -10,8 +10,26 @@ Usage:
   agent-pr-note ensure-head
 
 Maintains an additive PR-summary note for the current branch and attaches the
-full summary to HEAD on refs/notes/agent-pr.
+full summary to HEAD on the configured agent-sandbox.prNotesRef notes ref.
 EOF
+}
+
+TEMP_FILES=()
+
+cleanup_temp_files() {
+  if (( ${#TEMP_FILES[@]} == 0 )); then
+    return
+  fi
+  rm -f "${TEMP_FILES[@]}"
+}
+
+trap cleanup_temp_files EXIT
+
+make_temp_file() {
+  local temp_file
+  temp_file="$(mktemp)"
+  TEMP_FILES+=("${temp_file}")
+  printf '%s\n' "${temp_file}"
 }
 
 die() {
@@ -42,8 +60,17 @@ cache_file_for_current_branch() {
   printf '%s/agent-sandbox/agent-pr-cache/%s.md\n' "${git_dir}" "${branch}"
 }
 
+pr_notes_ref() {
+  local notes_ref
+  notes_ref="$(git config --get agent-sandbox.prNotesRef 2>/dev/null || true)"
+  if [[ -z "${notes_ref}" ]]; then
+    notes_ref="refs/notes/agent-pr"
+  fi
+  printf '%s\n' "${notes_ref}"
+}
+
 read_head_note() {
-  git notes --ref=agent-pr show HEAD 2>/dev/null || true
+  git notes --ref="$(pr_notes_ref)" show HEAD 2>/dev/null || true
 }
 
 read_cached_or_head_note() {
@@ -65,7 +92,7 @@ write_current_note() {
   cache_file="$(cache_file_for_current_branch)"
   mkdir -p "$(dirname "${cache_file}")"
   cp "${content_file}" "${cache_file}"
-  git notes --ref=agent-pr add -f -F "${cache_file}" HEAD >/dev/null
+  git notes --ref="$(pr_notes_ref)" add -f -F "${cache_file}" HEAD >/dev/null
 }
 
 read_input_to_file() {
@@ -114,8 +141,7 @@ read_input_to_file() {
 
 command_set() {
   local input_file
-  input_file="$(mktemp)"
-  trap 'rm -f "${input_file}"' RETURN
+  input_file="$(make_temp_file)"
 
   read_input_to_file "${input_file}" "$@"
   write_current_note "${input_file}"
@@ -126,9 +152,8 @@ command_append() {
   local aggregate_file
   local existing
 
-  input_file="$(mktemp)"
-  aggregate_file="$(mktemp)"
-  trap 'rm -f "${input_file}" "${aggregate_file}"' RETURN
+  input_file="$(make_temp_file)"
+  aggregate_file="$(make_temp_file)"
 
   read_input_to_file "${input_file}" "$@"
   existing="$(read_cached_or_head_note)"
@@ -152,7 +177,7 @@ command_ensure_head() {
 
   cache_file="$(cache_file_for_current_branch)"
   if [[ -f "${cache_file}" ]]; then
-    git notes --ref=agent-pr add -f -F "${cache_file}" HEAD >/dev/null
+    git notes --ref="$(pr_notes_ref)" add -f -F "${cache_file}" HEAD >/dev/null
     return
   fi
 

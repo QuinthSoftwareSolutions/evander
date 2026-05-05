@@ -50,6 +50,7 @@ from agent_sandbox.directory_config import (
     validate_effective_domain_payload,
 )
 from agent_sandbox.directories import DirectoryService, DirectoryStore
+from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
 from agent_sandbox.host_config import DEFAULT_RUNTIME_DIR
 from agent_sandbox.bootstrap import resolve_runtime_dir
 from agent_sandbox.ownership import DirectoryOwnershipQueries
@@ -3581,6 +3582,7 @@ class AdminService:
             raise RuntimeError(f"Unable to resolve SSH access for {vm_name}")
 
         remote_url = f"ssh://{issue_setup.git_ssh_alias}{issue_setup.git_root}/{repo_name}.git"
+        pr_notes_ref = agent_pr_notes_ref_for_session(session_id)
         canonical_remote_url = (
             repo_source.strip() if repo_source and _is_remote_git_source(repo_source) else ""
         )
@@ -3612,6 +3614,7 @@ REMOTE_URL="{remote_url}"
 CANONICAL_REMOTE_URL="{canonical_remote_url}"
 SESSION_ID="{session_id}"
 VM_NAME="{vm_name}"
+PR_NOTES_REF="{pr_notes_ref}"
 AGENT_PR_NOTE_HELPER_B64="{agent_pr_note_helper_b64}"
 {clone_branch_line}\
 if [[ -e "${{TARGET_DIR}}" ]]; then
@@ -3629,6 +3632,7 @@ fi
 git -C "${{TARGET_DIR}}" config user.name "Truman Bot"
 git -C "${{TARGET_DIR}}" config user.email "truman@quinth.se"
 git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
+git -C "${{TARGET_DIR}}" config agent-sandbox.prNotesRef "${{PR_NOTES_REF}}"
 {issue_config_line}{branch_suffix_line}{base_branch_config_line}install -d -m 0755 "${{TARGET_DIR}}/.agent-sandbox/bin"
 python3 - "${{TARGET_DIR}}/.agent-sandbox/bin/agent-pr-note" "${{AGENT_PR_NOTE_HELPER_B64}}" <<'PY'
 import base64
@@ -3641,7 +3645,7 @@ target_path.write_bytes(base64.b64decode(sys.argv[2]))
 os.chmod(target_path, 0o755)
 PY
 git -C "${{TARGET_DIR}}" config alias.agent-pr-note '!f(){{ repo_root=$(git rev-parse --show-toplevel); "${{repo_root}}/.agent-sandbox/bin/agent-pr-note" "$@"; }}; f'
-git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_ID:-$(git config --get agent-sandbox.sessionId || true)}}; if [ -z "${{session_id}}" ]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; expected_issue_number=$(git config --get agent-sandbox.issueNumber || true); if [ -n "${{expected_issue_number}}" ]; then case "${{session_id}}" in issue-${{expected_issue_number}}|issue-${{expected_issue_number}}-*) ;; *) echo "SESSION_ID (${{session_id}}) does not match expected issue ${{expected_issue_number}}; refusing agent push." >&2; return 1 ;; esac; fi; suffix_source=${{AGENT_BRANCH_SUFFIX:-$(git config --get agent-sandbox.branchSuffix || true)}}; if [ -z "${{suffix_source}}" ]; then suffix_source=${{HOSTNAME:-}}; fi; suffix=$(printf "%s" "${{suffix_source}}" | tr "[:upper:]" "[:lower:]" | tr -cs "a-z0-9._-" "-" | sed "s/^-*//;s/-*$//"); if [ -z "${{suffix}}" ]; then echo "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." >&2; return 1; fi; repo_root=$(git rev-parse --show-toplevel); "${{repo_root}}/.agent-sandbox/bin/agent-pr-note" ensure-head; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${{session_id}}/${{branch}}-${{suffix}} refs/notes/agent-pr; }}; f'
+git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_ID:-$(git config --get agent-sandbox.sessionId || true)}}; if [ -z "${{session_id}}" ]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; expected_issue_number=$(git config --get agent-sandbox.issueNumber || true); if [ -n "${{expected_issue_number}}" ]; then case "${{session_id}}" in issue-${{expected_issue_number}}|issue-${{expected_issue_number}}-*) ;; *) echo "SESSION_ID (${{session_id}}) does not match expected issue ${{expected_issue_number}}; refusing agent push." >&2; return 1 ;; esac; fi; suffix_source=${{AGENT_BRANCH_SUFFIX:-$(git config --get agent-sandbox.branchSuffix || true)}}; if [ -z "${{suffix_source}}" ]; then suffix_source=${{HOSTNAME:-}}; fi; suffix=$(printf "%s" "${{suffix_source}}" | tr "[:upper:]" "[:lower:]" | tr -cs "a-z0-9._-" "-" | sed "s/^-*//;s/-*$//"); if [ -z "${{suffix}}" ]; then echo "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." >&2; return 1; fi; notes_ref=$(git config --get agent-sandbox.prNotesRef || true); if [ -z "${{notes_ref}}" ]; then notes_ref=refs/notes/agent-pr; fi; repo_root=$(git rev-parse --show-toplevel); "${{repo_root}}/.agent-sandbox/bin/agent-pr-note" ensure-head; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${{session_id}}/${{branch}}-${{suffix}} "${{notes_ref}}"; }}; f'
 """
         ssh_result = _run_subprocess(
             [
@@ -4716,11 +4720,26 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             if lines > 0:
                 per_execution_lines = max(1, lines // max(1, len(execution_records)))
             chunks: list[str] = []
+            for execution in reversed(execution_records):
+                try:
+                    transcript = worker_backend.get_log_snapshot(
+                        execution.execution_id,
+                        lines=lines,
+                        mode="session",
+                    ).rstrip()
+                except Exception:
+                    transcript = ""
+                if transcript:
+                    chunks.append(
+                        f"=== session={session_id} log=codex_transcript ===\n{transcript}"
+                    )
+                    break
             for execution in execution_records:
                 header_parts = [
                     f"execution={execution.execution_id}",
                     f"status={self._container_agent_status(execution.last_status)}",
                     f"worker_job={execution.worker_job_id}",
+                    "log=raw",
                 ]
                 if execution.started_at is not None:
                     header_parts.append(f"started={execution.started_at.isoformat()}")
@@ -4730,6 +4749,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                     text = worker_backend.get_log_snapshot(
                         execution.execution_id,
                         lines=per_execution_lines,
+                        mode="raw",
                     ).rstrip()
                 except Exception as exc:
                     text = f"[log unavailable: {exc}]"

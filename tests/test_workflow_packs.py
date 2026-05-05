@@ -108,6 +108,8 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
 
     default_effects = {effect["id"]: effect for effect in default.effects}
     container_effects = {effect["id"]: effect for effect in container.effects}
+    default_queries = {query["id"]: query for query in default.queries}
+    container_queries = {query["id"]: query for query in container.queries}
     assert default_effects["effect-vm-create-1"]["type"] == "effect:vm:create"
     assert container_effects["effect-agent-create-1"]["type"] == "effect:agent:create"
     assert container_effects["effect-agent-clone-repo-1"]["type"] == "effect:agent:clone-repo"
@@ -128,6 +130,14 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
     assert (
         container_effects["effect-agent-enqueue-prompt-2"]["config"]["output_mode"]
         == "on_completion"
+    )
+    assert (
+        default_queries["query-git-pr-note-1"]["config"]["notes_ref"]
+        == "${{trigger-git-push-1.notes_ref}}"
+    )
+    assert (
+        container_queries["query-git-pr-note-1"]["config"]["notes_ref"]
+        == "${{trigger-git-push-1.notes_ref}}"
     )
     assert not any(effect["type"].startswith("effect:vm:") for effect in container.effects)
 

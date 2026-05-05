@@ -1023,6 +1023,7 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
       repo_name: { type: "string" },
       session_id: { type: "string" },
       review_branch: { type: "string" },
+      notes_ref: { type: "string" },
       trusted_repo_path: { type: "string" },
       base_branch: { type: "string" },
       canonical_origin_url: { type: "string" },
@@ -1085,6 +1086,7 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
       target_dir: { type: "string" },
       guest_repo_name: { type: "string" },
       remote_url: { type: "string" },
+      pr_notes_ref: { type: "string" },
     },
     "effect:vm:bootstrap-python": {
       session_id: { type: "string" },

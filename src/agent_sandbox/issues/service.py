@@ -883,7 +883,6 @@ class AzureDevOpsIssueAdapter:
                     json={
                         "ids": chunk_ids,
                         "fields": select_fields,
-                        "$expand": "Relations",
                         "errorPolicy": "Omit",
                     },
                 )

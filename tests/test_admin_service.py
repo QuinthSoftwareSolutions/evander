@@ -4124,7 +4124,9 @@ def test_clone_repo_into_vm_installs_agent_push_and_pr_note_helpers(
     remote_script = captured_ssh_input[-1]
     assert "config alias.agent-pr-note" in remote_script
     assert 'agent-pr-note" ensure-head' in remote_script
-    assert "refs/notes/agent-pr" in remote_script
+    assert "config agent-sandbox.prNotesRef" in remote_script
+    assert 'git config --get agent-sandbox.prNotesRef' in remote_script
+    assert '"${notes_ref}"' in remote_script
     assert "config agent-sandbox.branchSuffix" in remote_script
 
 

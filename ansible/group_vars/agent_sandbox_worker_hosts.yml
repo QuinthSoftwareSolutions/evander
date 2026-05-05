@@ -24,7 +24,9 @@ agent_sandbox_worker_revision_guard_paths:
   - ansible/roles/worker_package_cache_preflight
   - ansible/roles/python_env
   - ansible/roles/container_worker_runtime
+  - ansible/roles/worker_dotnet_toolchain
   - ansible/roles/worker_node_toolchain
+  - ansible/roles/worker_playwright_toolchain
   - ansible/roles/container_worker_service
   - ansible/roles/container_worker_verification
   - pyproject.toml
@@ -119,14 +121,27 @@ agent_sandbox_runner_image_archive_path: "{{ playbook_dir }}/../dist/agent-sandb
 agent_sandbox_runner_image_remote_archive_path: "{{ agent_sandbox_worker_root }}/images/agent-sandbox-runner.tar"
 
 # Worker-level read-only caches mounted into every runner container. The playbook
-# creates these directories; operators can populate them out-of-band with seeded
-# .NET, Node/Playwright, browser, and NuGet package artifacts.
+# creates these directories and seeds the .NET, Node, and Playwright caches.
+# Operators can still populate NuGet fallback package artifacts out-of-band.
 agent_sandbox_worker_toolchain_cache_root: "{{ agent_sandbox_worker_root }}/toolchain-cache"
 agent_sandbox_worker_dotnet_cache_path: "{{ agent_sandbox_worker_toolchain_cache_root }}/dotnet"
 agent_sandbox_worker_node_cache_path: "{{ agent_sandbox_worker_toolchain_cache_root }}/node-v24.14.0"
 agent_sandbox_worker_playwright_runtime_cache_path: "{{ agent_sandbox_worker_toolchain_cache_root }}/playwright-runtime"
 agent_sandbox_worker_playwright_browsers_cache_path: "{{ agent_sandbox_worker_toolchain_cache_root }}/ms-playwright"
 agent_sandbox_worker_nuget_fallback_cache_path: "{{ agent_sandbox_worker_toolchain_cache_root }}/nuget-cache-ro"
+
+# Seed the worker-mounted .NET SDK from the Ansible control machine.
+# HOST_DOTNET_ROOT can override the default local dotnet path; set
+# agent_sandbox_worker_dotnet_toolchain_archive_path to an existing .tar.gz when
+# deploying from a prebuilt archive instead of a local dotnet directory.
+agent_sandbox_worker_dotnet_toolchain_enabled: true
+agent_sandbox_worker_dotnet_toolchain_local_path: >-
+  {{
+    lookup('env', 'HOST_DOTNET_ROOT')
+    | default('/usr/lib/dotnet', true)
+  }}
+agent_sandbox_worker_dotnet_toolchain_archive_path: "{{ lookup('env', 'HOST_DOTNET_ARCHIVE') | default('', true) }}"
+agent_sandbox_worker_dotnet_toolchain_remote_archive_path: "{{ agent_sandbox_worker_root }}/images/dotnet-toolchain.tar.gz"
 
 # Seed the worker-mounted Node/npm toolchain from the Ansible control machine.
 # HOST_NODE_ROOT can override the default local nvm path; set
@@ -141,6 +156,26 @@ agent_sandbox_worker_node_toolchain_local_path: >-
   }}
 agent_sandbox_worker_node_toolchain_archive_path: "{{ lookup('env', 'HOST_NODE_ARCHIVE') | default('', true) }}"
 agent_sandbox_worker_node_toolchain_remote_archive_path: "{{ agent_sandbox_worker_root }}/images/node-{{ agent_sandbox_worker_node_version }}.tar.gz"
+
+# Seed the worker-mounted Playwright runtime and browser cache from the Ansible
+# control machine. HOST_PLAYWRIGHT_NODE_MODULES should point at a node_modules
+# directory containing playwright and playwright-core; HOST_PLAYWRIGHT_BROWSERS
+# should point at the Playwright browser cache.
+agent_sandbox_worker_playwright_toolchain_enabled: true
+agent_sandbox_worker_playwright_node_modules_local_path: >-
+  {{
+    lookup('env', 'HOST_PLAYWRIGHT_NODE_MODULES')
+    | default(playbook_dir ~ '/../frontend/workflow-editor/node_modules', true)
+  }}
+agent_sandbox_worker_playwright_browsers_local_path: >-
+  {{
+    lookup('env', 'HOST_PLAYWRIGHT_BROWSERS')
+    | default(lookup('env', 'HOME') ~ '/.cache/ms-playwright', true)
+  }}
+agent_sandbox_worker_playwright_runtime_archive_path: "{{ lookup('env', 'HOST_PLAYWRIGHT_RUNTIME_ARCHIVE') | default('', true) }}"
+agent_sandbox_worker_playwright_browsers_archive_path: "{{ lookup('env', 'HOST_PLAYWRIGHT_BROWSERS_ARCHIVE') | default('', true) }}"
+agent_sandbox_worker_playwright_runtime_remote_archive_path: "{{ agent_sandbox_worker_root }}/images/playwright-runtime.tar.gz"
+agent_sandbox_worker_playwright_browsers_remote_archive_path: "{{ agent_sandbox_worker_root }}/images/playwright-browsers.tar.gz"
 agent_sandbox_worker_readonly_mounts:
   - "{{ agent_sandbox_worker_dotnet_cache_path }}:/opt/agent-sandbox/toolchains/dotnet"
   - "{{ agent_sandbox_worker_node_cache_path }}:/opt/agent-sandbox/toolchains/node-v24.14.0"

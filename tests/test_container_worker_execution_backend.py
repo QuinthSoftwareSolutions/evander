@@ -30,7 +30,7 @@ class FakeContainerWorkerClient:
         self.stopped: list[str] = []
         self.deleted: list[str] = []
         self.deleted_sessions: list[str] = []
-        self.logged: list[str] = []
+        self.logged: list[tuple[str, str | None]] = []
         self.prepared_sessions: list[WorkerSessionPrepareRequest] = []
         self.cloned_repos: list[tuple[str, WorkerRepoCloneRequest]] = []
         self.written_files: list[tuple[str, WorkerFileWriteRequest]] = []
@@ -66,8 +66,8 @@ class FakeContainerWorkerClient:
         self.deleted_sessions.append(session_id)
         return {"deleted": True, "session_id": session_id}
 
-    def logs(self, job_id: str) -> str:
-        self.logged.append(job_id)
+    def logs(self, job_id: str, *, mode: str | None = None) -> str:
+        self.logged.append((job_id, mode))
         return "one\ntwo\nthree\n"
 
     def prepare_session(self, request: WorkerSessionPrepareRequest) -> WorkerSessionRecord:
@@ -262,9 +262,10 @@ def test_stop_destroy_and_logs_call_expected_endpoints(tmp_path: Path) -> None:
 
     assert backend.stop("exec-1").status == ExecutionStatusKind.STOPPED
     assert backend.get_log_snapshot("exec-1", lines=2) == "two\nthree\n"
+    assert backend.get_log_snapshot("exec-1", lines=2, mode="raw") == "two\nthree\n"
     assert backend.destroy("exec-1").status == ExecutionStatusKind.DESTROYED
     assert client.stopped == ["exec-1"]
-    assert client.logged == ["exec-1"]
+    assert client.logged == [("exec-1", None), ("exec-1", "raw")]
     assert client.deleted == ["exec-1"]
 
 

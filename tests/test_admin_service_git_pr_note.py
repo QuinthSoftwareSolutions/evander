@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_sandbox.admin.service import AdminService
+from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
 
 
 def test_admin_service_git_pr_note_query_reads_note_from_cached_ref(
@@ -44,6 +45,46 @@ def test_admin_service_git_pr_note_query_reads_note_from_cached_ref(
     assert result["local_notes_ref"] == "refs/notes/agent-pr-cache/sample"
     assert result["remote_name"] == "agent-dropbox-auto"
     assert result["commit_sha"] == "a" * 40
+
+
+def test_admin_service_git_pr_note_query_fetches_configured_per_session_ref(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    service = AdminService(runtime_dir)
+    notes_ref = agent_pr_notes_ref_for_session("session-1")
+    fetch_refspecs: list[str] = []
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if cmd[:6] == ["git", "-C", "/repo", "remote", "get-url", "agent-dropbox-auto"]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="/git-remotes/sample.git\n", stderr=""
+            )
+        if cmd[:5] == ["git", "-C", "/repo", "fetch", "agent-dropbox-auto"]:
+            fetch_refspecs.append(cmd[-1])
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+        if cmd[:5] == ["git", "-C", "/repo", "rev-parse", "review/session-1/topic"]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout=f"{'a' * 40}\n", stderr=""
+            )
+        if cmd[:5] == ["git", "-C", "/repo", "notes", "--ref=refs/notes/agent-pr-cache/sample"]:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="Agent note body\n", stderr=""
+            )
+        return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="unexpected")
+
+    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+
+    result = service.git_pr_note_query(
+        host_repo_path="/repo",
+        local_branch="review/session-1/topic",
+        notes_ref=notes_ref,
+    )
+
+    assert fetch_refspecs == [f"+{notes_ref}:refs/notes/agent-pr-cache/sample"]
+    assert result["notes_ref"] == notes_ref
+    assert result["has_note"] is True
 
 
 def test_admin_service_git_pr_note_query_returns_has_note_false_when_note_missing(

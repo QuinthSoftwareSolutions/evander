@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from agent_sandbox.events.provider_models import VmCloneRepoEffectDefinition
+from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
 
 from .base import EffectProviderBase
 from .vm_targeting import VmTargetingMixin
@@ -51,6 +52,7 @@ class VmCloneRepoEffectProvider(VmTargetingMixin, EffectProviderBase):
                 getattr(result, "guest_repo_name", None)
             ),
             "remote_url": self._normalize_optional_string(getattr(result, "remote_url", None)),
+            "pr_notes_ref": agent_pr_notes_ref_for_session(session_id),
         }
 
     def _effect(self) -> VmCloneRepoEffectDefinition:

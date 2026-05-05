@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import uuid
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -152,38 +153,94 @@ class WorkerDaemon:
         self.store.put(record)
         logger.info("worker_job_removed job_id=%s session_id=%s", record.job_id, record.session_id)
 
-    def get_logs(self, record: WorkerJobRecord) -> str:
+    def get_logs(self, record: WorkerJobRecord, *, mode: str = "augmented") -> str:
+        selected_mode = str(mode or "augmented").strip().casefold()
+        if selected_mode not in {"augmented", "raw", "session"}:
+            raise ValueError("log mode must be one of: augmented, raw, session")
+        text = self._raw_logs(record)
+        if selected_mode == "raw":
+            return text
+        session_log = self._codex_session_log(
+            record,
+            text,
+            skip_existing=selected_mode == "augmented",
+        )
+        if selected_mode == "session":
+            return session_log
+        return self._append_codex_session_log(text, session_log)
+
+    def _raw_logs(self, record: WorkerJobRecord) -> str:
         log_path = self._log_path(record)
         try:
             text = self.container_runtime.get_logs(record)
         except subprocess.CalledProcessError:
             text = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
-        text = self._augment_codex_session_log(record, text)
+            reconstructed = self._reconstruct_codex_job_log(record, text)
+            if reconstructed is not None:
+                text = reconstructed
         log_path.write_text(text, encoding="utf-8")
         return text
 
-    def _augment_codex_session_log(self, record: WorkerJobRecord, text: str) -> str:
+    def _codex_session_log(
+        self,
+        record: WorkerJobRecord,
+        text: str,
+        *,
+        skip_existing: bool,
+    ) -> str:
         thread_ids = list(dict.fromkeys(_CODEX_SESSION_ID_LOG_PATTERN.findall(text)))
         if not thread_ids:
-            return text
+            return ""
         messages: list[str] = []
         seen: set[str] = set()
         agent_home = Path(record.agent_home_path)
         for thread_id in thread_ids:
             for message in self._codex_session_messages(agent_home, thread_id):
-                if message in seen or message in text:
+                if message in seen or (skip_existing and message in text):
                     continue
                 seen.add(message)
                 messages.append(message)
         if not messages:
+            return ""
+        return "\n".join(messages) + "\n"
+
+    @staticmethod
+    def _append_codex_session_log(text: str, session_log: str) -> str:
+        if not session_log:
             return text
         prefix = text
         if prefix and not prefix.endswith("\n"):
             prefix += "\n"
-        return prefix + "\n".join(messages) + "\n"
+        return prefix + session_log
+
+    def _reconstruct_codex_job_log(self, record: WorkerJobRecord, text: str) -> str | None:
+        thread_ids = list(dict.fromkeys(_CODEX_SESSION_ID_LOG_PATTERN.findall(text)))
+        if not thread_ids or record.started_at is None or record.finished_at is None:
+            return None
+        agent_home = Path(record.agent_home_path)
+        lines: list[str] = []
+        for thread_id in thread_ids:
+            if not lines:
+                lines.append(f"session id: {thread_id}")
+            for message in self._codex_session_messages(
+                agent_home,
+                thread_id,
+                started_at=record.started_at,
+                finished_at=record.finished_at,
+            ):
+                lines.append(message)
+        if not lines:
+            return None
+        return "\n".join(lines) + "\n"
 
     @staticmethod
-    def _codex_session_messages(agent_home: Path, thread_id: str) -> list[str]:
+    def _codex_session_messages(
+        agent_home: Path,
+        thread_id: str,
+        *,
+        started_at: datetime | None = None,
+        finished_at: datetime | None = None,
+    ) -> list[str]:
         messages: list[str] = []
         seen: set[str] = set()
         for path in _codex_session_jsonl_paths(agent_home, thread_id):
@@ -195,6 +252,10 @@ class WorkerDaemon:
                 try:
                     event = json.loads(raw_line)
                 except ValueError:
+                    continue
+                if not _codex_event_is_in_window(
+                    event, started_at=started_at, finished_at=finished_at
+                ):
                     continue
                 for message in _codex_messages_from_session_event(event):
                     if not message:
@@ -542,6 +603,44 @@ def _codex_session_jsonl_paths(agent_home: Path, thread_id: str) -> list[Path]:
         except OSError:
             continue
     return sorted(paths, key=lambda path: (path.stat().st_mtime, str(path)))
+
+
+def _codex_event_is_in_window(
+    event: object,
+    *,
+    started_at: datetime | None,
+    finished_at: datetime | None,
+) -> bool:
+    if started_at is None and finished_at is None:
+        return True
+    if not isinstance(event, dict):
+        return False
+    timestamp = _parse_codex_timestamp(event.get("timestamp"))
+    if timestamp is None:
+        return False
+    if started_at is not None and timestamp < _normalize_datetime(started_at):
+        return False
+    if finished_at is not None and timestamp > _normalize_datetime(finished_at):
+        return False
+    return True
+
+
+def _parse_codex_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return _normalize_datetime(datetime.fromisoformat(text))
+    except ValueError:
+        return None
+
+
+def _normalize_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _codex_messages_from_session_event(event: object) -> list[str]:

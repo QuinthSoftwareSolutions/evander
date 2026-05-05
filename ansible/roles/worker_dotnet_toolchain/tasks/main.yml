@@ -1,0 +1,194 @@
+---
+- name: Resolve worker dotnet toolchain source mode
+  ansible.builtin.set_fact:
+    agent_sandbox_worker_dotnet_toolchain_uses_archive: >-
+      {{
+        (agent_sandbox_worker_dotnet_toolchain_archive_path | default('') | string | trim | length) > 0
+      }}
+
+- name: Check local dotnet toolchain archive
+  ansible.builtin.stat:
+    path: "{{ agent_sandbox_worker_dotnet_toolchain_archive_path }}"
+  delegate_to: localhost
+  become: false
+  register: agent_sandbox_worker_dotnet_archive_stat
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - agent_sandbox_worker_dotnet_toolchain_uses_archive | bool
+
+- name: Assert local dotnet toolchain archive exists
+  ansible.builtin.assert:
+    that:
+      - agent_sandbox_worker_dotnet_archive_stat.stat.exists
+      - agent_sandbox_worker_dotnet_archive_stat.stat.isreg
+    fail_msg: >-
+      Missing local dotnet toolchain archive:
+      {{ agent_sandbox_worker_dotnet_toolchain_archive_path }}. Set
+      agent_sandbox_worker_dotnet_toolchain_archive_path to a tar.gz containing
+      the contents of a dotnet SDK root, or unset it and set
+      HOST_DOTNET_ROOT/agent_sandbox_worker_dotnet_toolchain_local_path.
+    success_msg: Local dotnet toolchain archive is present.
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - agent_sandbox_worker_dotnet_toolchain_uses_archive | bool
+
+- name: Check local dotnet toolchain directory
+  ansible.builtin.stat:
+    path: "{{ agent_sandbox_worker_dotnet_toolchain_local_path }}"
+  delegate_to: localhost
+  become: false
+  register: agent_sandbox_worker_dotnet_local_stat
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_toolchain_uses_archive | bool)
+
+- name: Check local dotnet launcher
+  ansible.builtin.stat:
+    path: "{{ agent_sandbox_worker_dotnet_toolchain_local_path }}/dotnet"
+  delegate_to: localhost
+  become: false
+  register: agent_sandbox_worker_dotnet_local_binary_stat
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_toolchain_uses_archive | bool)
+
+- name: Assert local dotnet toolchain directory includes dotnet
+  ansible.builtin.assert:
+    that:
+      - agent_sandbox_worker_dotnet_local_stat.stat.exists
+      - agent_sandbox_worker_dotnet_local_stat.stat.isdir
+      - agent_sandbox_worker_dotnet_local_binary_stat.stat.exists
+      - agent_sandbox_worker_dotnet_local_binary_stat.stat.executable
+    fail_msg: >-
+      Missing local dotnet toolchain at
+      {{ agent_sandbox_worker_dotnet_toolchain_local_path }}. Expected a dotnet
+      launcher at the root. Install dotnet locally, set HOST_DOTNET_ROOT, or
+      provide agent_sandbox_worker_dotnet_toolchain_archive_path.
+    success_msg: Local dotnet toolchain includes the dotnet launcher.
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_toolchain_uses_archive | bool)
+
+- name: Create local temporary dotnet toolchain archive directory
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: agent-sandbox-dotnet-toolchain
+  delegate_to: localhost
+  become: false
+  register: agent_sandbox_worker_dotnet_archive_tmp
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_toolchain_uses_archive | bool)
+
+- name: Pack local dotnet toolchain directory
+  ansible.builtin.command:
+    argv:
+      - tar
+      - -C
+      - "{{ agent_sandbox_worker_dotnet_toolchain_local_path }}"
+      - -czf
+      - "{{ agent_sandbox_worker_dotnet_archive_tmp.path }}/dotnet-toolchain.tar.gz"
+      - .
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_toolchain_uses_archive | bool)
+
+- name: Resolve dotnet toolchain archive to copy
+  ansible.builtin.set_fact:
+    agent_sandbox_worker_dotnet_toolchain_archive_to_copy: >-
+      {{
+        agent_sandbox_worker_dotnet_toolchain_archive_path
+        if (agent_sandbox_worker_dotnet_toolchain_uses_archive | bool)
+        else agent_sandbox_worker_dotnet_archive_tmp.path ~ '/dotnet-toolchain.tar.gz'
+      }}
+  when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
+
+- name: Copy dotnet toolchain archive to worker
+  ansible.builtin.copy:
+    src: "{{ agent_sandbox_worker_dotnet_toolchain_archive_to_copy }}"
+    dest: "{{ agent_sandbox_worker_dotnet_toolchain_remote_archive_path }}"
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0640"
+  when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
+
+- name: Reset worker dotnet toolchain cache
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_worker_dotnet_cache_path }}"
+    state: absent
+  when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
+
+- name: Recreate worker dotnet toolchain cache
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_worker_dotnet_cache_path }}"
+    state: directory
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0755"
+  when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
+
+- name: Unpack dotnet toolchain into worker cache
+  ansible.builtin.unarchive:
+    src: "{{ agent_sandbox_worker_dotnet_toolchain_remote_archive_path }}"
+    dest: "{{ agent_sandbox_worker_dotnet_cache_path }}"
+    remote_src: true
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+  when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
+
+- name: Verify worker dotnet toolchain on host cache
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -lc
+      - >-
+        export DOTNET_ROOT="{{ agent_sandbox_worker_dotnet_cache_path }}";
+        dotnet_cli_home="$(mktemp -d)";
+        trap 'rm -rf "$dotnet_cli_home"' EXIT;
+        export DOTNET_CLI_HOME="$dotnet_cli_home";
+        export DOTNET_CLI_TELEMETRY_OPTOUT=1;
+        export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1;
+        export PATH="$DOTNET_ROOT:$PATH";
+        dotnet --info
+  changed_when: false
+  when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
+
+- name: Verify dotnet is available inside runner container
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - none
+      - -v
+      - "{{ agent_sandbox_worker_dotnet_cache_path }}:/opt/agent-sandbox/toolchains/dotnet:ro"
+      - "{{ agent_sandbox_runner_image_name }}"
+      - bash
+      - -lc
+      - >-
+        export DOTNET_ROOT="/opt/agent-sandbox/toolchains/dotnet";
+        dotnet_cli_home="$(mktemp -d)";
+        trap 'rm -rf "$dotnet_cli_home"' EXIT;
+        export DOTNET_CLI_HOME="$dotnet_cli_home";
+        export DOTNET_CLI_TELEMETRY_OPTOUT=1;
+        export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1;
+        export PATH="$DOTNET_ROOT:$PATH";
+        dotnet --info
+  changed_when: false
+  when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
+
+- name: Remove temporary local dotnet toolchain archive directory
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_worker_dotnet_archive_tmp.path }}"
+    state: absent
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_toolchain_uses_archive | bool)
+    - agent_sandbox_worker_dotnet_archive_tmp.path is defined

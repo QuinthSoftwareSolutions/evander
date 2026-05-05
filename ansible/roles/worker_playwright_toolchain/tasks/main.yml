@@ -1,0 +1,311 @@
+---
+- name: Resolve worker Playwright runtime source mode
+  ansible.builtin.set_fact:
+    agent_sandbox_worker_playwright_runtime_uses_archive: >-
+      {{
+        (agent_sandbox_worker_playwright_runtime_archive_path | default('') | string | trim | length) > 0
+      }}
+    agent_sandbox_worker_playwright_browsers_uses_archive: >-
+      {{
+        (agent_sandbox_worker_playwright_browsers_archive_path | default('') | string | trim | length) > 0
+      }}
+
+- name: Check local Playwright runtime archive
+  ansible.builtin.stat:
+    path: "{{ agent_sandbox_worker_playwright_runtime_archive_path }}"
+  delegate_to: localhost
+  become: false
+  register: agent_sandbox_worker_playwright_runtime_archive_stat
+  when:
+    - agent_sandbox_worker_playwright_toolchain_enabled | bool
+    - agent_sandbox_worker_playwright_runtime_uses_archive | bool
+
+- name: Assert local Playwright runtime archive exists
+  ansible.builtin.assert:
+    that:
+      - agent_sandbox_worker_playwright_runtime_archive_stat.stat.exists
+      - agent_sandbox_worker_playwright_runtime_archive_stat.stat.isreg
+    fail_msg: >-
+      Missing local Playwright runtime archive:
+      {{ agent_sandbox_worker_playwright_runtime_archive_path }}. Set
+      agent_sandbox_worker_playwright_runtime_archive_path to a tar.gz containing
+      playwright and playwright-core directories at the archive root, or unset it
+      and set HOST_PLAYWRIGHT_NODE_MODULES.
+    success_msg: Local Playwright runtime archive is present.
+  when:
+    - agent_sandbox_worker_playwright_toolchain_enabled | bool
+    - agent_sandbox_worker_playwright_runtime_uses_archive | bool
+
+- name: Check local Playwright node_modules directory
+  ansible.builtin.stat:
+    path: "{{ agent_sandbox_worker_playwright_node_modules_local_path }}"
+  delegate_to: localhost
+  become: false
+  register: agent_sandbox_worker_playwright_node_modules_stat
+  when:
+    - agent_sandbox_worker_playwright_toolchain_enabled | bool
+    - not (agent_sandbox_worker_playwright_runtime_uses_archive | bool)
+
+- name: Check local Playwright packages
+  ansible.builtin.stat:
+    path: "{{ agent_sandbox_worker_playwright_node_modules_local_path }}/{{ item }}"
+  delegate_to: localhost
+  become: false
+  loop:
+    - playwright
+    - playwright-core
+  register: agent_sandbox_worker_playwright_package_stats
+  when:
+    - agent_sandbox_worker_playwright_toolchain_enabled | bool
+    - not (agent_sandbox_worker_playwright_runtime_uses_archive | bool)
+
+- name: Assert local Playwright runtime includes required packages
+  ansible.builtin.assert:
+    that:
+      - agent_sandbox_worker_playwright_node_modules_stat.stat.exists
+      - agent_sandbox_worker_playwright_node_modules_stat.stat.isdir
+      - >-
+        {{
+          agent_sandbox_worker_playwright_package_stats.results
+          | selectattr('stat.isdir')
+          | list
+          | length == 2
+        }}
+    fail_msg: >-
+      Missing Playwright packages under
+      {{ agent_sandbox_worker_playwright_node_modules_local_path }}. Expected
+      playwright and playwright-core directories. Run npm install in the frontend
+      workspace, set HOST_PLAYWRIGHT_NODE_MODULES, or provide
+      agent_sandbox_worker_playwright_runtime_archive_path.
+    success_msg: Local Playwright runtime includes playwright and playwright-core.
+  when:
+    - agent_sandbox_worker_playwright_toolchain_enabled | bool
+    - not (agent_sandbox_worker_playwright_runtime_uses_archive | bool)
+
+- name: Check local Playwright browsers archive
+  ansible.builtin.stat:
+    path: "{{ agent_sandbox_worker_playwright_browsers_archive_path }}"
+  delegate_to: localhost
+  become: false
+  register: agent_sandbox_worker_playwright_browsers_archive_stat
+  when:
+    - agent_sandbox_worker_playwright_toolchain_enabled | bool
+    - agent_sandbox_worker_playwright_browsers_uses_archive | bool
+
+- name: Assert local Playwright browsers archive exists
+  ansible.builtin.assert:
+    that:
+      - agent_sandbox_worker_playwright_browsers_archive_stat.stat.exists
+      - agent_sandbox_worker_playwright_browsers_archive_stat.stat.isreg
+    fail_msg: >-
+      Missing local Playwright browsers archive:
+      {{ agent_sandbox_worker_playwright_browsers_archive_path }}. Set
+      agent_sandbox_worker_playwright_browsers_archive_path to a tar.gz containing
+      the contents of a Playwright browser cache, or unset it and set
+      HOST_PLAYWRIGHT_BROWSERS.
+    success_msg: Local Playwright browsers archive is present.
+  when:
+    - agent_sandbox_worker_playwright_toolchain_enabled | bool
+    - agent_sandbox_worker_playwright_browsers_uses_archive | bool
+
+- name: Check local Playwright browser cache
+  ansible.builtin.stat:
+    path: "{{ agent_sandbox_worker_playwright_browsers_local_path }}"
+  delegate_to: localhost
+  become: false
+  register: agent_sandbox_worker_playwright_browsers_local_stat
+  when:
+    - agent_sandbox_worker_playwright_toolchain_enabled | bool
+    - not (agent_sandbox_worker_playwright_browsers_uses_archive | bool)
+
+- name: Assert local Playwright browser cache exists
+  ansible.builtin.assert:
+    that:
+      - agent_sandbox_worker_playwright_browsers_local_stat.stat.exists
+      - agent_sandbox_worker_playwright_browsers_local_stat.stat.isdir
+    fail_msg: >-
+      Missing Playwright browser cache at
+      {{ agent_sandbox_worker_playwright_browsers_local_path }}. Run
+      playwright install locally, set HOST_PLAYWRIGHT_BROWSERS, or provide
+      agent_sandbox_worker_playwright_browsers_archive_path.
+    success_msg: Local Playwright browser cache is present.
+  when:
+    - agent_sandbox_worker_playwright_toolchain_enabled | bool
+    - not (agent_sandbox_worker_playwright_browsers_uses_archive | bool)
+
+- name: Create local temporary Playwright archive directory
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: agent-sandbox-playwright-toolchain
+  delegate_to: localhost
+  become: false
+  register: agent_sandbox_worker_playwright_archive_tmp
+  when:
+    - agent_sandbox_worker_playwright_toolchain_enabled | bool
+    - >-
+      not (agent_sandbox_worker_playwright_runtime_uses_archive | bool)
+      or not (agent_sandbox_worker_playwright_browsers_uses_archive | bool)
+
+- name: Pack local Playwright runtime packages
+  ansible.builtin.command:
+    argv:
+      - tar
+      - -C
+      - "{{ agent_sandbox_worker_playwright_node_modules_local_path }}"
+      - -czf
+      - "{{ agent_sandbox_worker_playwright_archive_tmp.path }}/playwright-runtime.tar.gz"
+      - playwright
+      - playwright-core
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - agent_sandbox_worker_playwright_toolchain_enabled | bool
+    - not (agent_sandbox_worker_playwright_runtime_uses_archive | bool)
+
+- name: Pack local Playwright browser cache
+  ansible.builtin.command:
+    argv:
+      - tar
+      - -C
+      - "{{ agent_sandbox_worker_playwright_browsers_local_path }}"
+      - -czf
+      - "{{ agent_sandbox_worker_playwright_archive_tmp.path }}/playwright-browsers.tar.gz"
+      - .
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - agent_sandbox_worker_playwright_toolchain_enabled | bool
+    - not (agent_sandbox_worker_playwright_browsers_uses_archive | bool)
+
+- name: Resolve Playwright archives to copy
+  ansible.builtin.set_fact:
+    agent_sandbox_worker_playwright_runtime_archive_to_copy: >-
+      {{
+        agent_sandbox_worker_playwright_runtime_archive_path
+        if (agent_sandbox_worker_playwright_runtime_uses_archive | bool)
+        else agent_sandbox_worker_playwright_archive_tmp.path ~ '/playwright-runtime.tar.gz'
+      }}
+    agent_sandbox_worker_playwright_browsers_archive_to_copy: >-
+      {{
+        agent_sandbox_worker_playwright_browsers_archive_path
+        if (agent_sandbox_worker_playwright_browsers_uses_archive | bool)
+        else agent_sandbox_worker_playwright_archive_tmp.path ~ '/playwright-browsers.tar.gz'
+      }}
+  when: agent_sandbox_worker_playwright_toolchain_enabled | bool
+
+- name: Copy Playwright runtime archive to worker
+  ansible.builtin.copy:
+    src: "{{ agent_sandbox_worker_playwright_runtime_archive_to_copy }}"
+    dest: "{{ agent_sandbox_worker_playwright_runtime_remote_archive_path }}"
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0640"
+  when: agent_sandbox_worker_playwright_toolchain_enabled | bool
+
+- name: Copy Playwright browsers archive to worker
+  ansible.builtin.copy:
+    src: "{{ agent_sandbox_worker_playwright_browsers_archive_to_copy }}"
+    dest: "{{ agent_sandbox_worker_playwright_browsers_remote_archive_path }}"
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0640"
+  when: agent_sandbox_worker_playwright_toolchain_enabled | bool
+
+- name: Reset worker Playwright runtime cache
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_worker_playwright_runtime_cache_path }}"
+    state: absent
+  when: agent_sandbox_worker_playwright_toolchain_enabled | bool
+
+- name: Recreate worker Playwright runtime node_modules cache
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_worker_playwright_runtime_cache_path }}/node_modules"
+    state: directory
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0755"
+  when: agent_sandbox_worker_playwright_toolchain_enabled | bool
+
+- name: Unpack Playwright runtime into worker cache
+  ansible.builtin.unarchive:
+    src: "{{ agent_sandbox_worker_playwright_runtime_remote_archive_path }}"
+    dest: "{{ agent_sandbox_worker_playwright_runtime_cache_path }}/node_modules"
+    remote_src: true
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+  when: agent_sandbox_worker_playwright_toolchain_enabled | bool
+
+- name: Reset worker Playwright browser cache
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_worker_playwright_browsers_cache_path }}"
+    state: absent
+  when: agent_sandbox_worker_playwright_toolchain_enabled | bool
+
+- name: Recreate worker Playwright browser cache
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_worker_playwright_browsers_cache_path }}"
+    state: directory
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0755"
+  when: agent_sandbox_worker_playwright_toolchain_enabled | bool
+
+- name: Unpack Playwright browsers into worker cache
+  ansible.builtin.unarchive:
+    src: "{{ agent_sandbox_worker_playwright_browsers_remote_archive_path }}"
+    dest: "{{ agent_sandbox_worker_playwright_browsers_cache_path }}"
+    remote_src: true
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+  when: agent_sandbox_worker_playwright_toolchain_enabled | bool
+
+- name: Verify worker Playwright runtime on host cache
+  ansible.builtin.command:
+    argv:
+      - bash
+      - -lc
+      - >-
+        export PATH="{{ agent_sandbox_worker_node_cache_path }}/bin:$PATH";
+        export NODE_PATH="{{ agent_sandbox_worker_playwright_runtime_cache_path }}/node_modules";
+        export PLAYWRIGHT_BROWSERS_PATH="{{ agent_sandbox_worker_playwright_browsers_cache_path }}";
+        node -e 'const fs = require("fs"); const { chromium } = require("playwright"); const path = chromium.executablePath(); console.log(path); if (!fs.existsSync(path)) process.exit(3);'
+  changed_when: false
+  when: agent_sandbox_worker_playwright_toolchain_enabled | bool
+
+- name: Verify Playwright is available inside runner container
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network
+      - none
+      - -v
+      - "{{ agent_sandbox_worker_node_cache_path }}:/opt/agent-sandbox/toolchains/node-v24.14.0:ro"
+      - -v
+      - "{{ agent_sandbox_worker_playwright_runtime_cache_path }}:/opt/agent-sandbox/playwright-runtime:ro"
+      - -v
+      - "{{ agent_sandbox_worker_playwright_browsers_cache_path }}:/opt/agent-sandbox/ms-playwright:ro"
+      - "{{ agent_sandbox_runner_image_name }}"
+      - bash
+      - -lc
+      - >-
+        export PATH="/opt/agent-sandbox/toolchains/node-v24.14.0/bin:$PATH";
+        export NODE_PATH="/opt/agent-sandbox/playwright-runtime/node_modules";
+        export PLAYWRIGHT_BROWSERS_PATH="/opt/agent-sandbox/ms-playwright";
+        node -e 'const fs = require("fs"); const { chromium } = require("playwright"); const path = chromium.executablePath(); console.log(path); if (!fs.existsSync(path)) process.exit(3);'
+  changed_when: false
+  when: agent_sandbox_worker_playwright_toolchain_enabled | bool
+
+- name: Remove temporary local Playwright archive directory
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_worker_playwright_archive_tmp.path }}"
+    state: absent
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - agent_sandbox_worker_playwright_toolchain_enabled | bool
+    - agent_sandbox_worker_playwright_archive_tmp.path is defined

@@ -533,11 +533,13 @@ pointing at a markdown file. For per-directory boilerplate, use the root `pr_tem
 domain and migrate the legacy repo-level `config/pr-template.md` with
 `agent-sandbox-cli migrate-pr-template-to-root --config config/gateway.yaml`.
 Automation assembles PR descriptions in this order: fixed boilerplate, `## Agent Summary`
-heading, then the git note content from `refs/notes/agent-pr`.
+heading, then the git note content from the configured PR notes ref. New checkouts use
+`refs/notes/agent-pr/<session-hash>`, where `<session-hash>` is the first 12 hex characters of
+`sha256(session_id)`; older checkouts can still use `refs/notes/agent-pr`.
 
 Guest issue VMs install a `git agent-pr-note` helper so agents can maintain that note as an
 additive branch summary instead of overwriting it with per-commit deltas. `git push-agent`
-refreshes the cached summary onto the current `HEAD` and pushes `refs/notes/agent-pr`
+refreshes the cached summary onto the current `HEAD` and pushes the configured PR notes ref
 automatically.
 
 Example assembled PR body:

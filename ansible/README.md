@@ -344,11 +344,16 @@ The runner image is deployed from `dist/agent-sandbox-runner.tar`; the worker pl
 the worker and runs `docker load`. The same playbook creates worker-level read-only cache
 directories for .NET, Node/Playwright, Playwright browsers, and NuGet fallback packages under
 `agent_sandbox_worker_toolchain_cache_root`, then wires them into the daemon with repeated
-`--readonly-mount` flags. The Node cache is seeded from the Ansible control machine
+`--readonly-mount` flags. The .NET cache is seeded from the Ansible control machine
+(`HOST_DOTNET_ROOT`, `/usr/lib/dotnet`, or
+`agent_sandbox_worker_dotnet_toolchain_archive_path`) and verified by running `dotnet --info`
+inside `agent-sandbox-runner:latest`. The Node cache is seeded the same way
 (`HOST_NODE_ROOT`, `~/.nvm/versions/node/v24.14.0`, or
-`agent_sandbox_worker_node_toolchain_archive_path`) and verified by running `node`, `npm`, and `npx`
-inside `agent-sandbox-runner:latest`. Populate the other caches before relying on `dotnet=true` or
-`playwright=true` sessions. Docker `host` networking remains refused; choose a private Docker
+`agent_sandbox_worker_node_toolchain_archive_path`) and verified by running `node`, `npm`, and `npx`.
+The Playwright runtime and browser caches are seeded from `HOST_PLAYWRIGHT_NODE_MODULES` or the repo
+frontend `node_modules`, plus `HOST_PLAYWRIGHT_BROWSERS` or `~/.cache/ms-playwright`; archive
+variables can provide prebuilt tarballs. Populate the NuGet fallback cache before relying on fallback
+package restores. Docker `host` networking remains refused; choose a private Docker
 network/routing setup that can reach only the required control-plane relay and gateway endpoints
 plus the apt relay on `3142` and the Nexus package cache on `8081`. Worker outbound rules should still deny direct access to Ubuntu mirrors, `pypi.org`, and `registry.npmjs.org`; the control plane is the only host that needs upstream package internet access for these formats.
 If the host Docker bridge cannot reach apt mirrors while building the tarball, build it with
