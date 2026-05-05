@@ -345,6 +345,11 @@ def test_worker_git_access_role_sets_up_private_repo_checkout_before_repo_checko
     assert "scripts/create_git_remote.sh" in role
     assert "agent-sandbox.mirrorSource" in role
     assert "agent-sandbox.mirrorSyncRemote" in role
+    assert "Publish requested control-plane revision to deployment repo mirror" in role
+    assert '"--git-dir={{ agent_sandbox_worker_repo_mirror_path }}"' in role
+    assert "fetch\n      - --force" in role
+    assert "refs/heads/deploy/agent-sandbox" in role
+    assert "agent_sandbox_control_plane_repo_revision_check.stdout" in role
     assert "Use private control-plane mirror for worker repo checkout" in role
     assert "agent_sandbox_repo_url: \"{{ agent_sandbox_worker_repo_checkout_url }}\"" in role
     assert "Deploy the control plane first, then rerun ansible/worker.yml" in role

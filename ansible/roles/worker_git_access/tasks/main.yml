@@ -169,6 +169,21 @@
   changed_when: false
   when: agent_sandbox_worker_repo_checkout_via_control_plane_git | bool
 
+- name: Publish requested control-plane revision to deployment repo mirror
+  ansible.builtin.command:
+    argv:
+      - git
+      - "--git-dir={{ agent_sandbox_worker_repo_mirror_path }}"
+      - fetch
+      - --force
+      - "{{ agent_sandbox_control_plane_deploy_path }}"
+      - "{{ agent_sandbox_control_plane_repo_revision_check.stdout }}:refs/heads/deploy/agent-sandbox"
+  delegate_to: "{{ agent_sandbox_control_plane_host }}"
+  become_user: "{{ agent_sandbox_git_user }}"
+  register: agent_sandbox_worker_repo_mirror_fetch
+  changed_when: (agent_sandbox_worker_repo_mirror_fetch.stderr | trim | length) > 0
+  when: agent_sandbox_worker_repo_checkout_via_control_plane_git | bool
+
 - name: Use private control-plane mirror for worker repo checkout
   ansible.builtin.set_fact:
     agent_sandbox_repo_url: "{{ agent_sandbox_worker_repo_checkout_url }}"
