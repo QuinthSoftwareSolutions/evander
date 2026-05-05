@@ -3,7 +3,7 @@ pr: none
 
 parameters:
   - name: agentPoolName
-    displayName: Self-hosted agent pool
+    displayName: Agent pool
     type: string
     default: "Azure Pipelines"
   - name: inventoryPath
@@ -32,6 +32,22 @@ parameters:
     displayName: Worker SSH key secure file
     type: string
     default: truman-worker-1_key.pem
+  - name: azureServiceConnection
+    displayName: Azure Resource Manager service connection
+    type: string
+    default: truman-azure-rm
+  - name: controlPlanePublicIp
+    displayName: Control-plane public IP
+    type: string
+    default: 52.158.33.185
+  - name: controlPlaneSshNsgResourceGroup
+    displayName: Control-plane SSH NSG resource group
+    type: string
+    default: auto
+  - name: controlPlaneSshNsgName
+    displayName: Control-plane SSH NSG name
+    type: string
+    default: auto
 
 variables:
   AGENT_SANDBOX_REPO_VERSION: $(Build.SourceVersion)
@@ -63,6 +79,98 @@ stages:
                   displayName: Download control-plane SSH key
                   inputs:
                     secureFile: ${{ parameters.controlPlaneSshKeySecureFile }}
+
+                - task: AzureCLI@2
+                  name: allowControlPlaneSsh
+                  displayName: Temporarily allow control-plane SSH from build agent
+                  inputs:
+                    azureSubscription: ${{ parameters.azureServiceConnection }}
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+
+                      resolve_control_plane_nsg() {
+                        if [ "$CONTROL_PLANE_SSH_NSG_RESOURCE_GROUP" != "auto" ] || [ "$CONTROL_PLANE_SSH_NSG_NAME" != "auto" ]; then
+                          if [ "$CONTROL_PLANE_SSH_NSG_RESOURCE_GROUP" = "auto" ] || [ "$CONTROL_PLANE_SSH_NSG_NAME" = "auto" ]; then
+                            echo "Set both controlPlaneSshNsgResourceGroup and controlPlaneSshNsgName, or leave both as auto." >&2
+                            return 1
+                          fi
+                          resolved_nsg_resource_group="$CONTROL_PLANE_SSH_NSG_RESOURCE_GROUP"
+                          resolved_nsg_name="$CONTROL_PLANE_SSH_NSG_NAME"
+                          return 0
+                        fi
+
+                        public_ip_id="$(az network public-ip list --query "[?ipAddress=='${CONTROL_PLANE_PUBLIC_IP}'].id | [0]" -o tsv)"
+                        if [ -z "$public_ip_id" ]; then
+                          echo "Could not find an Azure public IP resource with address ${CONTROL_PLANE_PUBLIC_IP}." >&2
+                          return 1
+                        fi
+
+                        ip_config_id="$(az network public-ip show --ids "$public_ip_id" --query "ipConfiguration.id" -o tsv)"
+                        if [ -z "$ip_config_id" ]; then
+                          echo "Public IP ${CONTROL_PLANE_PUBLIC_IP} is not attached to a NIC IP configuration." >&2
+                          return 1
+                        fi
+
+                        nic_id="${ip_config_id%/ipConfigurations/*}"
+                        nsg_id="$(az network nic show --ids "$nic_id" --query "networkSecurityGroup.id" -o tsv)"
+                        if [ -z "$nsg_id" ]; then
+                          subnet_id="$(az network nic show --ids "$nic_id" --query "ipConfigurations[0].subnet.id" -o tsv)"
+                          if [ -n "$subnet_id" ]; then
+                            nsg_id="$(az network vnet subnet show --ids "$subnet_id" --query "networkSecurityGroup.id" -o tsv)"
+                          fi
+                        fi
+                        if [ -z "$nsg_id" ]; then
+                          echo "Could not resolve an NSG from public IP ${CONTROL_PLANE_PUBLIC_IP}; set controlPlaneSshNsgResourceGroup and controlPlaneSshNsgName explicitly." >&2
+                          return 1
+                        fi
+
+                        resolved_nsg_name="${nsg_id##*/}"
+                        nsg_rg_part="${nsg_id#*/resourceGroups/}"
+                        resolved_nsg_resource_group="${nsg_rg_part%%/*}"
+                      }
+
+                      first_available_priority() {
+                        local used_priorities
+                        used_priorities="$(az network nsg rule list \
+                          --resource-group "$resolved_nsg_resource_group" \
+                          --nsg-name "$resolved_nsg_name" \
+                          --query "[].priority" \
+                          -o tsv)"
+                        local priority
+                        for priority in $(seq 3000 4096); do
+                          if ! printf '%s\n' "$used_priorities" | grep -qx "$priority"; then
+                            printf '%s\n' "$priority"
+                            return 0
+                          fi
+                        done
+                        echo "No free NSG priority found in range 3000-4096." >&2
+                        return 1
+                      }
+
+                      resolve_control_plane_nsg
+                      agent_ip="$(curl -fsS https://api.ipify.org)"
+                      rule_name="Allow-AzurePipelines-SSH-Control-$(Build.BuildId)"
+                      priority="$(first_available_priority)"
+
+                      az network nsg rule create \
+                        --resource-group "$resolved_nsg_resource_group" \
+                        --nsg-name "$resolved_nsg_name" \
+                        --name "$rule_name" \
+                        --priority "$priority" \
+                        --direction Inbound \
+                        --access Allow \
+                        --protocol Tcp \
+                        --source-address-prefixes "$agent_ip/32" \
+                        --destination-port-ranges 22 \
+                        --description "Temporary SSH access for Azure Pipelines build $(Build.BuildId)"
+
+                      echo "Allowed ${agent_ip}/32 to ${resolved_nsg_resource_group}/${resolved_nsg_name} as ${rule_name}."
+                  env:
+                    CONTROL_PLANE_PUBLIC_IP: ${{ parameters.controlPlanePublicIp }}
+                    CONTROL_PLANE_SSH_NSG_NAME: ${{ parameters.controlPlaneSshNsgName }}
+                    CONTROL_PLANE_SSH_NSG_RESOURCE_GROUP: ${{ parameters.controlPlaneSshNsgResourceGroup }}
 
                 - bash: |
                     set -euo pipefail
@@ -118,6 +226,64 @@ stages:
                     ANSIBLE_VAULT_PASSWORD: $(ANSIBLE_VAULT_PASSWORD)
                     PIPELINE_WORKSPACE: $(Pipeline.Workspace)
 
+                - task: AzureCLI@2
+                  displayName: Remove temporary control-plane SSH rule
+                  condition: always()
+                  inputs:
+                    azureSubscription: ${{ parameters.azureServiceConnection }}
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set +e
+
+                      resolve_control_plane_nsg() {
+                        if [ "$CONTROL_PLANE_SSH_NSG_RESOURCE_GROUP" != "auto" ] && [ "$CONTROL_PLANE_SSH_NSG_NAME" != "auto" ]; then
+                          resolved_nsg_resource_group="$CONTROL_PLANE_SSH_NSG_RESOURCE_GROUP"
+                          resolved_nsg_name="$CONTROL_PLANE_SSH_NSG_NAME"
+                          return 0
+                        fi
+
+                        public_ip_id="$(az network public-ip list --query "[?ipAddress=='${CONTROL_PLANE_PUBLIC_IP}'].id | [0]" -o tsv)"
+                        [ -n "$public_ip_id" ] || return 0
+                        ip_config_id="$(az network public-ip show --ids "$public_ip_id" --query "ipConfiguration.id" -o tsv)"
+                        [ -n "$ip_config_id" ] || return 0
+                        nic_id="${ip_config_id%/ipConfigurations/*}"
+                        nsg_id="$(az network nic show --ids "$nic_id" --query "networkSecurityGroup.id" -o tsv)"
+                        if [ -z "$nsg_id" ]; then
+                          subnet_id="$(az network nic show --ids "$nic_id" --query "ipConfigurations[0].subnet.id" -o tsv)"
+                          if [ -n "$subnet_id" ]; then
+                            nsg_id="$(az network vnet subnet show --ids "$subnet_id" --query "networkSecurityGroup.id" -o tsv)"
+                          fi
+                        fi
+                        [ -n "$nsg_id" ] || return 0
+                        resolved_nsg_name="${nsg_id##*/}"
+                        nsg_rg_part="${nsg_id#*/resourceGroups/}"
+                        resolved_nsg_resource_group="${nsg_rg_part%%/*}"
+                      }
+
+                      resolve_control_plane_nsg
+                      if [ -z "${resolved_nsg_resource_group:-}" ] || [ -z "${resolved_nsg_name:-}" ]; then
+                        echo "Could not resolve the control-plane NSG for cleanup; no rule removed."
+                        exit 0
+                      fi
+
+                      rule_name="Allow-AzurePipelines-SSH-Control-$(Build.BuildId)"
+                      az network nsg rule delete \
+                        --resource-group "$resolved_nsg_resource_group" \
+                        --nsg-name "$resolved_nsg_name" \
+                        --name "$rule_name"
+                      delete_exit=$?
+                      if [ "$delete_exit" -eq 0 ]; then
+                        echo "Removed temporary SSH rule ${rule_name} from ${resolved_nsg_resource_group}/${resolved_nsg_name}."
+                      else
+                        echo "Temporary SSH rule ${rule_name} was not removed; it may not have been created."
+                      fi
+                      exit 0
+                  env:
+                    CONTROL_PLANE_PUBLIC_IP: ${{ parameters.controlPlanePublicIp }}
+                    CONTROL_PLANE_SSH_NSG_NAME: ${{ parameters.controlPlaneSshNsgName }}
+                    CONTROL_PLANE_SSH_NSG_RESOURCE_GROUP: ${{ parameters.controlPlaneSshNsgResourceGroup }}
+
   - stage: DeployWorkerVm
     displayName: Deploy worker VM
     dependsOn: DeployControlPlane
@@ -146,6 +312,98 @@ stages:
                   displayName: Download worker SSH key
                   inputs:
                     secureFile: ${{ parameters.workerSshKeySecureFile }}
+
+                - task: AzureCLI@2
+                  name: allowWorkerStageControlPlaneSsh
+                  displayName: Temporarily allow control-plane SSH from build agent
+                  inputs:
+                    azureSubscription: ${{ parameters.azureServiceConnection }}
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+
+                      resolve_control_plane_nsg() {
+                        if [ "$CONTROL_PLANE_SSH_NSG_RESOURCE_GROUP" != "auto" ] || [ "$CONTROL_PLANE_SSH_NSG_NAME" != "auto" ]; then
+                          if [ "$CONTROL_PLANE_SSH_NSG_RESOURCE_GROUP" = "auto" ] || [ "$CONTROL_PLANE_SSH_NSG_NAME" = "auto" ]; then
+                            echo "Set both controlPlaneSshNsgResourceGroup and controlPlaneSshNsgName, or leave both as auto." >&2
+                            return 1
+                          fi
+                          resolved_nsg_resource_group="$CONTROL_PLANE_SSH_NSG_RESOURCE_GROUP"
+                          resolved_nsg_name="$CONTROL_PLANE_SSH_NSG_NAME"
+                          return 0
+                        fi
+
+                        public_ip_id="$(az network public-ip list --query "[?ipAddress=='${CONTROL_PLANE_PUBLIC_IP}'].id | [0]" -o tsv)"
+                        if [ -z "$public_ip_id" ]; then
+                          echo "Could not find an Azure public IP resource with address ${CONTROL_PLANE_PUBLIC_IP}." >&2
+                          return 1
+                        fi
+
+                        ip_config_id="$(az network public-ip show --ids "$public_ip_id" --query "ipConfiguration.id" -o tsv)"
+                        if [ -z "$ip_config_id" ]; then
+                          echo "Public IP ${CONTROL_PLANE_PUBLIC_IP} is not attached to a NIC IP configuration." >&2
+                          return 1
+                        fi
+
+                        nic_id="${ip_config_id%/ipConfigurations/*}"
+                        nsg_id="$(az network nic show --ids "$nic_id" --query "networkSecurityGroup.id" -o tsv)"
+                        if [ -z "$nsg_id" ]; then
+                          subnet_id="$(az network nic show --ids "$nic_id" --query "ipConfigurations[0].subnet.id" -o tsv)"
+                          if [ -n "$subnet_id" ]; then
+                            nsg_id="$(az network vnet subnet show --ids "$subnet_id" --query "networkSecurityGroup.id" -o tsv)"
+                          fi
+                        fi
+                        if [ -z "$nsg_id" ]; then
+                          echo "Could not resolve an NSG from public IP ${CONTROL_PLANE_PUBLIC_IP}; set controlPlaneSshNsgResourceGroup and controlPlaneSshNsgName explicitly." >&2
+                          return 1
+                        fi
+
+                        resolved_nsg_name="${nsg_id##*/}"
+                        nsg_rg_part="${nsg_id#*/resourceGroups/}"
+                        resolved_nsg_resource_group="${nsg_rg_part%%/*}"
+                      }
+
+                      first_available_priority() {
+                        local used_priorities
+                        used_priorities="$(az network nsg rule list \
+                          --resource-group "$resolved_nsg_resource_group" \
+                          --nsg-name "$resolved_nsg_name" \
+                          --query "[].priority" \
+                          -o tsv)"
+                        local priority
+                        for priority in $(seq 3000 4096); do
+                          if ! printf '%s\n' "$used_priorities" | grep -qx "$priority"; then
+                            printf '%s\n' "$priority"
+                            return 0
+                          fi
+                        done
+                        echo "No free NSG priority found in range 3000-4096." >&2
+                        return 1
+                      }
+
+                      resolve_control_plane_nsg
+                      agent_ip="$(curl -fsS https://api.ipify.org)"
+                      rule_name="Allow-AzurePipelines-SSH-Worker-$(Build.BuildId)"
+                      priority="$(first_available_priority)"
+
+                      az network nsg rule create \
+                        --resource-group "$resolved_nsg_resource_group" \
+                        --nsg-name "$resolved_nsg_name" \
+                        --name "$rule_name" \
+                        --priority "$priority" \
+                        --direction Inbound \
+                        --access Allow \
+                        --protocol Tcp \
+                        --source-address-prefixes "$agent_ip/32" \
+                        --destination-port-ranges 22 \
+                        --description "Temporary SSH access for Azure Pipelines build $(Build.BuildId)"
+
+                      echo "Allowed ${agent_ip}/32 to ${resolved_nsg_resource_group}/${resolved_nsg_name} as ${rule_name}."
+                  env:
+                    CONTROL_PLANE_PUBLIC_IP: ${{ parameters.controlPlanePublicIp }}
+                    CONTROL_PLANE_SSH_NSG_NAME: ${{ parameters.controlPlaneSshNsgName }}
+                    CONTROL_PLANE_SSH_NSG_RESOURCE_GROUP: ${{ parameters.controlPlaneSshNsgResourceGroup }}
 
                 - bash: |
                     set -euo pipefail
@@ -211,3 +469,61 @@ stages:
                     AGENT_SANDBOX_WORKER_SSH_KEY_FILE: $(workerSshKey.secureFilePath)
                     ANSIBLE_VAULT_PASSWORD: $(ANSIBLE_VAULT_PASSWORD)
                     PIPELINE_WORKSPACE: $(Pipeline.Workspace)
+
+                - task: AzureCLI@2
+                  displayName: Remove temporary control-plane SSH rule
+                  condition: always()
+                  inputs:
+                    azureSubscription: ${{ parameters.azureServiceConnection }}
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set +e
+
+                      resolve_control_plane_nsg() {
+                        if [ "$CONTROL_PLANE_SSH_NSG_RESOURCE_GROUP" != "auto" ] && [ "$CONTROL_PLANE_SSH_NSG_NAME" != "auto" ]; then
+                          resolved_nsg_resource_group="$CONTROL_PLANE_SSH_NSG_RESOURCE_GROUP"
+                          resolved_nsg_name="$CONTROL_PLANE_SSH_NSG_NAME"
+                          return 0
+                        fi
+
+                        public_ip_id="$(az network public-ip list --query "[?ipAddress=='${CONTROL_PLANE_PUBLIC_IP}'].id | [0]" -o tsv)"
+                        [ -n "$public_ip_id" ] || return 0
+                        ip_config_id="$(az network public-ip show --ids "$public_ip_id" --query "ipConfiguration.id" -o tsv)"
+                        [ -n "$ip_config_id" ] || return 0
+                        nic_id="${ip_config_id%/ipConfigurations/*}"
+                        nsg_id="$(az network nic show --ids "$nic_id" --query "networkSecurityGroup.id" -o tsv)"
+                        if [ -z "$nsg_id" ]; then
+                          subnet_id="$(az network nic show --ids "$nic_id" --query "ipConfigurations[0].subnet.id" -o tsv)"
+                          if [ -n "$subnet_id" ]; then
+                            nsg_id="$(az network vnet subnet show --ids "$subnet_id" --query "networkSecurityGroup.id" -o tsv)"
+                          fi
+                        fi
+                        [ -n "$nsg_id" ] || return 0
+                        resolved_nsg_name="${nsg_id##*/}"
+                        nsg_rg_part="${nsg_id#*/resourceGroups/}"
+                        resolved_nsg_resource_group="${nsg_rg_part%%/*}"
+                      }
+
+                      resolve_control_plane_nsg
+                      if [ -z "${resolved_nsg_resource_group:-}" ] || [ -z "${resolved_nsg_name:-}" ]; then
+                        echo "Could not resolve the control-plane NSG for cleanup; no rule removed."
+                        exit 0
+                      fi
+
+                      rule_name="Allow-AzurePipelines-SSH-Worker-$(Build.BuildId)"
+                      az network nsg rule delete \
+                        --resource-group "$resolved_nsg_resource_group" \
+                        --nsg-name "$resolved_nsg_name" \
+                        --name "$rule_name"
+                      delete_exit=$?
+                      if [ "$delete_exit" -eq 0 ]; then
+                        echo "Removed temporary SSH rule ${rule_name} from ${resolved_nsg_resource_group}/${resolved_nsg_name}."
+                      else
+                        echo "Temporary SSH rule ${rule_name} was not removed; it may not have been created."
+                      fi
+                      exit 0
+                  env:
+                    CONTROL_PLANE_PUBLIC_IP: ${{ parameters.controlPlanePublicIp }}
+                    CONTROL_PLANE_SSH_NSG_NAME: ${{ parameters.controlPlaneSshNsgName }}
+                    CONTROL_PLANE_SSH_NSG_RESOURCE_GROUP: ${{ parameters.controlPlaneSshNsgResourceGroup }}

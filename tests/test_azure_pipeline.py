@@ -35,11 +35,27 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
         "truman-control-center_key.pem"
     )
     assert parameters["workerSshKeySecureFile"]["default"] == "truman-worker-1_key.pem"
+    assert parameters["azureServiceConnection"]["default"] == "truman-azure-rm"
+    assert parameters["controlPlanePublicIp"]["default"] == "52.158.33.185"
+    assert parameters["controlPlaneSshNsgResourceGroup"]["default"] == "auto"
+    assert parameters["controlPlaneSshNsgName"]["default"] == "auto"
     assert "DownloadSecureFile@1" in text
     assert "controlPlaneSshKey.secureFilePath" in text
     assert "workerSshKey.secureFilePath" in text
     assert "AGENT_SANDBOX_CONTROL_PLANE_SSH_KEY_FILE" in text
     assert "AGENT_SANDBOX_WORKER_SSH_KEY_FILE" in text
+    assert text.count("AzureCLI@2") == 4
+    assert "azureSubscription: ${{ parameters.azureServiceConnection }}" in text
+    assert "api.ipify.org" in text
+    assert "Allow-AzurePipelines-SSH-Control-$(Build.BuildId)" in text
+    assert "Allow-AzurePipelines-SSH-Worker-$(Build.BuildId)" in text
+    assert "--source-address-prefixes \"$agent_ip/32\"" in text
+    assert "--destination-port-ranges 22" in text
+    assert "condition: always()" in text
+    assert "controlPlaneSshNsgResourceGroup and controlPlaneSshNsgName" in text
+    assert "az network public-ip list" in text
+    assert "az network nsg rule create" in text
+    assert "az network nsg rule delete" in text
 
     stage_names = [stage["stage"] for stage in parsed["stages"]]
     assert stage_names == ["DeployControlPlane", "DeployWorkerVm"]

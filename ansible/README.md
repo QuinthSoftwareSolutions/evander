@@ -207,6 +207,15 @@ endpoint and the control plane must be able to reach the worker private IP. For 
 export the same environment variables before invoking `ansible-playbook`, or place the keys at the
 fallback `~/.ssh/truman-control-center_key.pem` and `~/.ssh/truman-worker-1_key.pem` paths.
 
+For Microsoft-hosted agents, the pipeline can temporarily allow the current build agent's public
+`/32` to reach SSH on the control-plane NSG. Set `azureServiceConnection` to an Azure Resource
+Manager service connection with permission to read public IP/NIC/NSG resources and edit NSG rules
+(`Network Contributor` on the NSG or containing resource group is sufficient). By default the NSG
+resource group/name parameters stay `auto`: the pipeline resolves the NSG from
+`controlPlanePublicIp`, adds a run-scoped `Allow-AzurePipelines-SSH-*` rule before Ansible, and
+removes it in an `always()` cleanup step. If discovery cannot find the NSG, set
+`controlPlaneSshNsgResourceGroup` and `controlPlaneSshNsgName` explicitly.
+
 The selected agent pool must have Python and Docker for the runner-image build. A self-hosted agent
 in the Azure VNet or on the control-plane host is usually the lowest-friction option for private
 worker access.
