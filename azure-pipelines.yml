@@ -5,7 +5,7 @@ parameters:
   - name: agentPoolName
     displayName: Self-hosted agent pool
     type: string
-    default: Default
+    default: "Azure Pipelines"
   - name: inventoryPath
     displayName: Ansible inventory path
     type: string
