@@ -46,6 +46,9 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
     assert "workerSshKey.secureFilePath" in text
     assert "AGENT_SANDBOX_CONTROL_PLANE_SSH_KEY_FILE" in text
     assert "AGENT_SANDBOX_WORKER_SSH_KEY_FILE" in text
+    assert "NodeTool@0" in text
+    assert "displayName: Install worker Node.js runtime" in text
+    assert "versionSpec: 24.14.0" in text
     assert "npm install --prefix \"$codex_prefix\" --no-audit --no-fund" in text
     assert 'export HOST_CODEX_ROOT="$codex_prefix/node_modules/@openai/codex"' in text
     assert "Installed Codex package did not contain the expected executable" not in text
@@ -57,6 +60,9 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
     assert "version: ${{ parameters.dotnetSdkVersion }}" in text
     assert "installationPath: $(Pipeline.Workspace)/dotnet" in text
     assert "HOST_DOTNET_ROOT: $(Pipeline.Workspace)/dotnet" in text
+    assert 'node_path="$(command -v node || true)"' in text
+    assert 'HOST_NODE_ROOT="$(dirname "$(dirname "$node_real_path")")"' in text
+    assert "Expected bin/node, bin/npm, and bin/npx under HOST_NODE_ROOT." in text
     assert "PIPELINE_WORKSPACE: $(Pipeline.Workspace)" in text
     assert text.count("AzureCLI@2") == 4
     assert "azureSubscription: ${{ parameters.azureServiceConnection }}" in text
@@ -77,6 +83,9 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
 
     worker_steps = parsed["stages"][1]["jobs"][0]["strategy"]["runOnce"]["deploy"]["steps"]
     worker_step_names = [step.get("displayName", "") for step in worker_steps]
+    assert worker_step_names.index("Install worker Node.js runtime") < worker_step_names.index(
+        "Build container runner image archive"
+    )
     assert worker_step_names.index("Build container runner image archive") < worker_step_names.index(
         "Deploy worker VM with Ansible"
     )

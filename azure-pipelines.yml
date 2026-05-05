@@ -425,6 +425,11 @@ stages:
                     ansible-playbook --version
                   displayName: Ensure Ansible is available
 
+                - task: NodeTool@0
+                  displayName: Install worker Node.js runtime
+                  inputs:
+                    versionSpec: 24.14.0
+
                 - bash: |
                     set -euo pipefail
 
@@ -492,6 +497,22 @@ stages:
                       exit 1
                     fi
                     echo "Using HOST_DOTNET_ROOT=$HOST_DOTNET_ROOT"
+
+                    if [ -z "${HOST_NODE_ROOT:-}" ]; then
+                      node_path="$(command -v node || true)"
+                      if [ -n "$node_path" ]; then
+                        node_real_path="$(readlink -f "$node_path")"
+                        HOST_NODE_ROOT="$(dirname "$(dirname "$node_real_path")")"
+                        export HOST_NODE_ROOT
+                      fi
+                    fi
+                    if [ -z "${HOST_NODE_ROOT:-}" ] || [ ! -x "$HOST_NODE_ROOT/bin/node" ] || [ ! -x "$HOST_NODE_ROOT/bin/npm" ] || [ ! -x "$HOST_NODE_ROOT/bin/npx" ]; then
+                      echo "Could not resolve a local Node runtime root for the worker toolchain." >&2
+                      echo "Install Node 24.14.0 on the pipeline agent, set HOST_NODE_ROOT, or set HOST_NODE_ARCHIVE." >&2
+                      echo "Expected bin/node, bin/npm, and bin/npx under HOST_NODE_ROOT." >&2
+                      exit 1
+                    fi
+                    echo "Using HOST_NODE_ROOT=$HOST_NODE_ROOT"
 
                     vault_file="$PIPELINE_WORKSPACE/.ansible-vault-pass"
                     umask 077
