@@ -4,6 +4,73 @@
     update_cache: true
     cache_valid_time: 3600
 
+- name: Install Azure CLI apt repository prerequisites
+  ansible.builtin.apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+    state: present
+  when: agent_sandbox_install_azure_cli | bool
+
+- name: Ensure Azure CLI apt keyring directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+  when: agent_sandbox_install_azure_cli | bool
+
+- name: Download Microsoft signing key for Azure CLI
+  ansible.builtin.get_url:
+    url: https://packages.microsoft.com/keys/microsoft.asc
+    dest: /etc/apt/keyrings/microsoft.asc
+    mode: "0644"
+  when: agent_sandbox_install_azure_cli | bool
+  register: agent_sandbox_azure_cli_key
+
+- name: Check Azure CLI apt keyring
+  ansible.builtin.stat:
+    path: /etc/apt/keyrings/microsoft.gpg
+  when: agent_sandbox_install_azure_cli | bool
+  register: agent_sandbox_azure_cli_keyring
+
+- name: Install Azure CLI apt keyring
+  ansible.builtin.command:
+    cmd: gpg --batch --yes --dearmor -o /etc/apt/keyrings/microsoft.gpg /etc/apt/keyrings/microsoft.asc
+  when:
+    - agent_sandbox_install_azure_cli | bool
+    - agent_sandbox_azure_cli_key.changed or not agent_sandbox_azure_cli_keyring.stat.exists
+  changed_when: true
+
+- name: Make Azure CLI apt keyring readable
+  ansible.builtin.file:
+    path: /etc/apt/keyrings/microsoft.gpg
+    mode: "0644"
+  when: agent_sandbox_install_azure_cli | bool
+
+- name: Configure Azure CLI apt repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/azure-cli.sources
+    mode: "0644"
+    content: |
+      Types: deb
+      URIs: https://packages.microsoft.com/repos/azure-cli/
+      Suites: {{ ansible_distribution_release }}
+      Components: main
+      Architectures: {{ agent_sandbox_azure_cli_deb_architecture }}
+      Signed-by: /etc/apt/keyrings/microsoft.gpg
+  when: agent_sandbox_install_azure_cli | bool
+  register: agent_sandbox_azure_cli_repo
+
+- name: Install Azure CLI
+  ansible.builtin.apt:
+    name: azure-cli
+    state: present
+    update_cache: "{{ agent_sandbox_azure_cli_repo.changed | default(false) }}"
+  when: agent_sandbox_install_azure_cli | bool
+
 - name: Install host prerequisite packages
   ansible.builtin.apt:
     name: "{{ agent_sandbox_host_packages }}"
