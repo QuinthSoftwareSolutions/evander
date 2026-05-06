@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 AGENT_PROMPT_COMPLETED_PORT = "completed"
+AGENT_ENQUEUE_PROMPT_EFFECT_TYPE = "effect:agent:enqueue-prompt"
 AGENT_PROMPT_EFFECT_TYPE = "effect:agent:prompt"
 AGENT_PROMPT_STARTED_PORT = "started"
 
@@ -73,7 +74,7 @@ def _migrate_ir(ir_payload: dict[str, Any]) -> None:
 
 def _migrate_prompt_node(node: dict[str, Any]) -> tuple[str | None, str]:
     node_type = str(node.get("type") or "").strip()
-    if node_type != AGENT_PROMPT_EFFECT_TYPE:
+    if node_type not in {AGENT_PROMPT_EFFECT_TYPE, AGENT_ENQUEUE_PROMPT_EFFECT_TYPE}:
         return None, AGENT_PROMPT_STARTED_PORT
 
     output_mode: Any = None

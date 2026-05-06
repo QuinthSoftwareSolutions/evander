@@ -210,6 +210,18 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "resume_thread_id",
         "queue_key",
     ]
+    assert agent_enqueue_prompt["output_ports"] == [
+        {
+            "key": "started",
+            "label": "Started",
+            "description": "Emits after the queued prompt has been dispatched.",
+        },
+        {
+            "key": "completed",
+            "label": "Completed",
+            "description": "Emits after the dispatched agent run has completed.",
+        },
+    ]
     bash_script = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:bash:script"
     )

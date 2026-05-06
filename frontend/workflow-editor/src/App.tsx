@@ -1324,6 +1324,18 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
       success: { type: "boolean" },
       output_mode: { type: "string" },
     },
+    "effect:agent:enqueue-prompt": {
+      dispatch_id: { type: "string" },
+      thread_id: { type: "string" },
+      success: { type: "boolean" },
+      queued: { type: "boolean" },
+      queue_key: { type: "string" },
+      coalesced_count: { type: "integer" },
+      vm_name: { type: "string" },
+      session_id: { type: "string" },
+      execution_backend: { type: "string" },
+      execution_id: { type: "string" },
+    },
     "effect:agent:exec": {
       success: { type: "boolean" },
       vm_name: { type: "string" },

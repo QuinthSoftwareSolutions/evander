@@ -8,6 +8,14 @@ from agent_sandbox.execution import ExecutionBackendKind, ExecutionSpec, Executi
 from agent_sandbox.messaging.agent_prompt_enqueue import enqueue_agent_prompt
 from agent_sandbox.messaging.agent_prompt_queue import QueuedAgentPromptRecord
 from agent_sandbox.events.provider_models import AgentEnqueuePromptEffectDefinition
+from agent_sandbox.orchestration.effect_extensions import (
+    list_vm_summaries_for_agent_reconciliation,
+)
+from agent_sandbox.workflow.migrations import (
+    AGENT_PROMPT_COMPLETED_PORT,
+    AGENT_PROMPT_STARTED_PORT,
+)
+from agent_sandbox.workflow.validation import NodeCapability
 
 from .agent_prompt import AgentPromptEffectProvider
 from .agent_session import (
@@ -32,6 +40,17 @@ _ACTIVE_CONTAINER_STATUSES = {
 
 
 class AgentEnqueuePromptEffectProvider(EffectProviderBase):
+    capability = NodeCapability(
+        min_inbound=1,
+        max_inbound=1,
+        allowed_source_ports=frozenset(
+            {
+                AGENT_PROMPT_STARTED_PORT,
+                AGENT_PROMPT_COMPLETED_PORT,
+            }
+        ),
+    )
+
     @classmethod
     def lifecycle_hooks(cls) -> tuple[type[AgentEnqueuePromptQueueDispatchHook], ...]:
         return (AgentEnqueuePromptQueueDispatchHook,)
@@ -269,16 +288,24 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
 
     @classmethod
     def on_execution_started(cls, **kwargs: Any) -> bool:
+        record = kwargs.get("record")
         outputs = kwargs.get("outputs")
-        if not isinstance(outputs, Mapping):
+        if record is None or not isinstance(outputs, Mapping):
             return False
         if outputs.get("queued") is True or outputs.get("success") is False:
             return False
-        return (
-            str(outputs.get("execution_backend") or "").strip()
-            == ExecutionBackendKind.CONTAINER_WORKER_VM.value
-            and str(outputs.get("output_mode") or "").strip() == "on_completion"
-            and bool(str(outputs.get("dispatch_id") or "").strip())
+        return bool(str(outputs.get("dispatch_id") or "").strip())
+
+    @classmethod
+    def on_execution_waiting(cls, **kwargs: Any) -> None:
+        worker = kwargs.get("worker")
+        record = kwargs.get("record")
+        if worker is None or record is None:
+            return
+        worker._publish_completion_event_from_record(
+            record=record,
+            outputs=dict(record.outputs),
+            branch_port=AGENT_PROMPT_STARTED_PORT,
         )
 
     @classmethod
@@ -311,18 +338,40 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         if worker is None:
             return 0
         completed = 0
+        vm_records: list[Any] = []
         for record in worker.execution_store.read_all().values():
             if record.effect_type != cls.node_type() or record.status != "waiting":
                 continue
             if (
                 str(record.outputs.get("execution_backend") or "").strip()
-                != ExecutionBackendKind.CONTAINER_WORKER_VM.value
+                == ExecutionBackendKind.CONTAINER_WORKER_VM.value
             ):
+                completed += AgentPromptEffectProvider._reconcile_container_waiting_record(
+                    worker=worker,
+                    record=record,
+                )
                 continue
-            completed += AgentPromptEffectProvider._reconcile_container_waiting_record(
-                worker=worker,
-                record=record,
-            )
+            vm_records.append(record)
+        if vm_records:
+            try:
+                summaries = list_vm_summaries_for_agent_reconciliation(worker)
+            except Exception:
+                summaries = []
+            for record in vm_records:
+                queue_record = (
+                    AgentPromptEffectProvider._build_completion_queue_record_for_waiting_record(
+                        record=record,
+                        summaries=summaries,
+                    )
+                )
+                if queue_record is None:
+                    continue
+                AgentPromptEffectProvider._finalize_waiting_record(
+                    worker=worker,
+                    record=record,
+                    queue_record=queue_record,
+                )
+                completed += 1
         return completed
 
     @classmethod

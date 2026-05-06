@@ -182,6 +182,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
     container_edges = {
         (edge["source_id"], edge["target_id"]): edge for edge in container.edges
     }
+    default_edges = {(edge["source_id"], edge["target_id"]): edge for edge in default.edges}
     default_queries = {query["id"]: query for query in default.queries}
     container_queries = {query["id"]: query for query in container.queries}
     assert default_effects["effect-vm-create-1"]["type"] == "effect:vm:create"
@@ -205,6 +206,18 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
     assert (
         container_edges[("effect-agent-prompt-4", "query-issue-get-1")]["source_port"]
         == "completed"
+    )
+    assert (
+        default_edges[("effect-agent-enqueue-prompt-1", "effect-session-update-metadata-3")][
+            "source_port"
+        ]
+        == "started"
+    )
+    assert (
+        container_edges[("effect-agent-enqueue-prompt-1", "effect-session-update-metadata-3")][
+            "source_port"
+        ]
+        == "started"
     )
     assert (
         default_queries["query-git-pr-note-1"]["config"]["notes_ref"]

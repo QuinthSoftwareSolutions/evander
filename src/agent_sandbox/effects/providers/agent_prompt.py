@@ -17,6 +17,7 @@ from agent_sandbox.events.provider_models import AgentPromptEffectDefinition
 from agent_sandbox.triggers.queue import TriggerQueueRecord
 from agent_sandbox.orchestration.effect_extensions import list_vm_summaries_for_agent_reconciliation
 from agent_sandbox.workflow.migrations import (
+    AGENT_ENQUEUE_PROMPT_EFFECT_TYPE,
     AGENT_PROMPT_COMPLETED_PORT,
     AGENT_PROMPT_STARTED_PORT,
 )
@@ -698,7 +699,9 @@ class AgentPromptEffectProvider(EffectProviderBase):
             },
         }
         branch_port = (
-            AGENT_PROMPT_COMPLETED_PORT if record.effect_type == cls.node_type() else None
+            AGENT_PROMPT_COMPLETED_PORT
+            if record.effect_type in {cls.node_type(), AGENT_ENQUEUE_PROMPT_EFFECT_TYPE}
+            else None
         )
         published_event_id = worker._publish_completion_event_from_record(
             record=record,

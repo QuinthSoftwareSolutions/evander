@@ -130,6 +130,7 @@
       },
       {
         "source_id": "effect-agent-enqueue-prompt-1",
+        "source_port": "started",
         "target_id": "effect-session-update-metadata-3"
       },
       {

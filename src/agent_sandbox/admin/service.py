@@ -1207,6 +1207,18 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("resume_thread_id", "Resume thread ID", "string", bindable=True),
             _field("queue_key", "Queue key", "string", bindable=True),
         ],
+        output_ports=[
+            _port(
+                AGENT_PROMPT_STARTED_PORT,
+                "Started",
+                description="Emits after the queued prompt has been dispatched.",
+            ),
+            _port(
+                AGENT_PROMPT_COMPLETED_PORT,
+                "Completed",
+                description="Emits after the dispatched agent run has completed.",
+            ),
+        ],
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="effect",
