@@ -125,6 +125,7 @@ from agent_sandbox.workflow.graph import (
     build_inbound_edge_index,
     merge_declared_output_intersection,
 )
+from agent_sandbox.services import normalize_teams_target
 
 _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("ado", "ADO Worker", "agent-sandbox-ado-worker.service"),
@@ -2897,6 +2898,94 @@ def _normalize_allowed_script_names(value: list[str]) -> list[str]:
     return normalized
 
 
+def _normalize_plain_string_list(value: object, *, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{field_name} must be a list of strings")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        candidate = str(item).strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+    return normalized
+
+
+def _normalize_teams_channel_allowlist(value: object, *, field_name: str) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for target in _normalize_plain_string_list(value, field_name=field_name):
+        normalized_target = normalize_teams_target(target)
+        if normalized_target in seen:
+            continue
+        seen.add(normalized_target)
+        normalized.append(normalized_target)
+    return normalized
+
+
+def _session_policy_update_from_payload(
+    session: SessionManifest, payload: Mapping[str, Any]
+) -> dict[str, Any]:
+    allowed_fields = {
+        "allowed_script_names",
+        "discord_channel_allowlist",
+        "discord_channels",
+        "teams_channel_allowlist",
+        "teams_channels",
+        "metadata",
+    }
+    unsupported = sorted(set(payload) - allowed_fields)
+    if unsupported:
+        raise ValueError("Unsupported session policy fields: " + ", ".join(unsupported))
+
+    update: dict[str, Any] = {}
+    if "allowed_script_names" in payload:
+        update["allowed_script_names"] = _normalize_allowed_script_names(
+            _normalize_plain_string_list(
+                payload.get("allowed_script_names"), field_name="allowed_script_names"
+            )
+        )
+
+    discord_field = (
+        "discord_channel_allowlist"
+        if "discord_channel_allowlist" in payload
+        else "discord_channels"
+        if "discord_channels" in payload
+        else None
+    )
+    if discord_field is not None:
+        update["discord_channel_allowlist"] = _normalize_plain_string_list(
+            payload.get(discord_field),
+            field_name=discord_field,
+        )
+
+    teams_field = (
+        "teams_channel_allowlist"
+        if "teams_channel_allowlist" in payload
+        else "teams_channels"
+        if "teams_channels" in payload
+        else None
+    )
+    if teams_field is not None:
+        update["teams_channel_allowlist"] = _normalize_teams_channel_allowlist(
+            payload.get(teams_field),
+            field_name=teams_field,
+        )
+
+    if "metadata" in payload:
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, Mapping):
+            raise ValueError("metadata must be a JSON object")
+        update["metadata"] = dict(metadata)
+
+    return update
+
+
 def _deep_merge_mapping(base: Mapping[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:
     merged: dict[str, Any] = dict(base)
     for key, value in update.items():
@@ -3934,6 +4023,11 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
     ) -> SessionActionResult:
         return self.operations_admin.set_session_allowed_script_names(target, allowed_script_names)
 
+    def update_session_policy(
+        self, target: str, payload: dict[str, object]
+    ) -> SessionActionResult:
+        return self.operations_admin.update_session_policy(target, payload)
+
     def set_session_model(self, target: str, model: str) -> SessionActionResult:
         return self.operations_admin.set_session_model(target, model)
 
@@ -4180,8 +4274,11 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             ],
             "allowed_script_names": list(session.allowed_script_names),
             "discord_channels": list(session.discord_channel_allowlist),
+            "discord_channel_allowlist": list(session.discord_channel_allowlist),
+            "teams_channel_allowlist": list(session.teams_channel_allowlist),
             "email_mailboxes": list(session.email_mailbox_allowlist),
             "email_folders": list(session.email_folder_allowlist),
+            "metadata": dict(session.metadata),
             "labels": labels,
         }
 
@@ -4704,6 +4801,10 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             "allowed_tools",
             "allowed_script_names",
             "discord_channels",
+            "discord_channel_allowlist",
+            "teams_channels",
+            "teams_channel_allowlist",
+            "metadata",
             "email_mailboxes",
             "email_folders",
             "labels",
@@ -4732,14 +4833,20 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             update["allowed_tools"] = _normalize_allowed_tools(
                 self._agent_string_list(body, "allowed_tools") or []
             )
-        if "allowed_script_names" in body:
-            update["allowed_script_names"] = _normalize_allowed_script_names(
-                self._agent_string_list(body, "allowed_script_names") or []
+        session_policy_fields = {
+            key: body[key]
+            for key in (
+                "allowed_script_names",
+                "discord_channels",
+                "discord_channel_allowlist",
+                "teams_channels",
+                "teams_channel_allowlist",
+                "metadata",
             )
-        if "discord_channels" in body:
-            update["discord_channel_allowlist"] = (
-                self._agent_string_list(body, "discord_channels") or []
-            )
+            if key in body
+        }
+        if session_policy_fields:
+            update.update(_session_policy_update_from_payload(session, session_policy_fields))
         if "email_mailboxes" in body:
             update["email_mailbox_allowlist"] = (
                 self._agent_string_list(body, "email_mailboxes") or []
@@ -4747,7 +4854,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         if "email_folders" in body:
             update["email_folder_allowlist"] = self._agent_string_list(body, "email_folders") or []
         if "labels" in body:
-            metadata = dict(session.metadata)
+            metadata = dict(update["metadata"] if "metadata" in update else session.metadata)
             labels = _normalize_session_labels(body.get("labels"))
             if labels:
                 metadata["labels"] = labels

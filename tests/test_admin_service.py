@@ -3146,6 +3146,43 @@ def test_set_session_allowed_script_names_updates_manifest(tmp_path: Path) -> No
     assert updated.allowed_script_names == ["deploy-review", "collect-logs"]
 
 
+def test_update_session_policy_updates_allowlists_and_metadata(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-13302-session",
+            vm_id="vm-13302",
+            allowed_tools=[ToolName.CLAIM_NEXT_ISSUE],
+            allowed_script_names=["old-script"],
+            discord_channel_allowlist=["old-discord"],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            metadata={"agent_thread_id": "old-thread", "keep": "value"},
+        ),
+    )
+
+    result = service.update_session_policy(
+        "13302",
+        {
+            "allowed_script_names": [" deploy-review ", "deploy-review", "collect-logs"],
+            "discord_channel_allowlist": [" chan-a ", "chan-a", "chan-b"],
+            "teams_channel_allowlist": [" team-b/channel-2 ", "chat:chat-1"],
+            "metadata": {"keep": "new-value"},
+        },
+    )
+
+    updated = service.runtime.session_repository.get_session("issue-13302-session")
+    assert result.success is True
+    assert result.session_id == "issue-13302-session"
+    assert updated is not None
+    assert updated.allowed_script_names == ["deploy-review", "collect-logs"]
+    assert updated.discord_channel_allowlist == ["chan-a", "chan-b"]
+    assert updated.teams_channel_allowlist == ["team-b/channel-2", "chat:chat-1"]
+    assert updated.metadata == {"keep": "new-value"}
+
+
 def test_set_session_model_updates_manifest(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(

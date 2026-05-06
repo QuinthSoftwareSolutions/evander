@@ -2674,10 +2674,11 @@ def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
             allowed_tools=[ToolName.APPROVAL_SUBMIT],
             allowed_script_names=["old-script"],
             discord_channel_allowlist=["old-channel"],
+            teams_channel_allowlist=["old-team/channel"],
             email_mailbox_allowlist=["old-mailbox"],
             email_folder_allowlist=["old-folder"],
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-            metadata={"labels": {"old": "label"}, "keep": "value"},
+            metadata={"labels": {"old": "label"}, "keep": "value", "agent_thread_id": "old-thread"},
         )
     )
     client = TestClient(create_app(service))
@@ -2690,6 +2691,8 @@ def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
             "allowed_tools": ["run_script"],
             "allowed_script_names": ["new-script"],
             "discord_channels": ["new-channel"],
+            "teams_channel_allowlist": ["team-a/channel-1", "chat:chat-1"],
+            "metadata": {"keep": "new-value"},
             "email_mailboxes": ["new-mailbox"],
             "email_folders": ["new-folder"],
             "labels": {"new": "label"},
@@ -2708,9 +2711,10 @@ def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
     assert updated.allowed_tools == [ToolName.RUN_SCRIPT]
     assert updated.allowed_script_names == ["new-script"]
     assert updated.discord_channel_allowlist == ["new-channel"]
+    assert updated.teams_channel_allowlist == ["team-a/channel-1", "chat:chat-1"]
     assert updated.email_mailbox_allowlist == ["new-mailbox"]
     assert updated.email_folder_allowlist == ["new-folder"]
-    assert updated.metadata == {"labels": {"new": "label"}, "keep": "value"}
+    assert updated.metadata == {"labels": {"new": "label"}, "keep": "new-value"}
     assert updated.expires_at > datetime.now(timezone.utc) + timedelta(hours=3)
 
 

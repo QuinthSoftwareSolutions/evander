@@ -332,6 +332,26 @@ def session_approval_routes(service: AdminService, _auth: AdminWebAuth) -> list[
             }
         )
 
+    async def update_session_policy(request: Request) -> JSONResponse:
+        session_id = request.path_params.get("session_id", "")
+        try:
+            payload = await request.json()
+        except Exception:
+            return json_error("Request body must be valid JSON.")
+        if not isinstance(payload, dict):
+            return json_error("Request body must be a JSON object.")
+        try:
+            result = service.update_session_policy(session_id, payload)
+            summary = _get_session_summary(session_id)
+        except ValueError as exc:
+            return json_error(str(exc), status_code=404 if "Unknown" in str(exc) else 400)
+        return JSONResponse(
+            {
+                **result.model_dump(mode="json"),
+                "session": _session_payload(summary),
+            }
+        )
+
     async def list_wake_schedules(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
         try:
@@ -415,6 +435,7 @@ def session_approval_routes(service: AdminService, _auth: AdminWebAuth) -> list[
         Route("/api/admin/sessions/catalog", sessions_catalog, methods=["GET"]),
         Route("/api/admin/sessions", list_sessions, methods=["GET"]),
         Route("/api/admin/sessions/{session_id:str}", get_session_detail, methods=["GET"]),
+        Route("/api/admin/sessions/{session_id:str}", update_session_policy, methods=["PATCH"]),
         Route("/api/admin/sessions/{session_id:str}/renew", renew_session, methods=["POST"]),
         Route("/api/admin/sessions/{session_id:str}/revoke", revoke_session, methods=["POST"]),
         Route("/api/admin/sessions/{session_id:str}", delete_session, methods=["DELETE"]),

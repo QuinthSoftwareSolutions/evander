@@ -58,6 +58,7 @@ type AgentPolicyFormState = {
   allowedTools: string;
   allowedScriptNames: string;
   discordChannels: string;
+  teamsChannels: string;
   emailMailboxes: string;
   emailFolders: string;
 };
@@ -99,6 +100,7 @@ function emptyPolicyForm(): AgentPolicyFormState {
     allowedTools: "",
     allowedScriptNames: "",
     discordChannels: "",
+    teamsChannels: "",
     emailMailboxes: "",
     emailFolders: "",
   };
@@ -272,6 +274,9 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
     allowed_tools: hostStringList(rawPolicy, "allowed_tools"),
     allowed_script_names: hostStringList(rawPolicy, "allowed_script_names"),
     discord_channels: hostStringList(rawPolicy, "discord_channels"),
+    discord_channel_allowlist: hostStringList(rawPolicy, "discord_channel_allowlist"),
+    teams_channel_allowlist: hostStringList(rawPolicy, "teams_channel_allowlist"),
+    metadata: hostRecord(rawPolicy, "metadata") ?? {},
     email_mailboxes: hostStringList(rawPolicy, "email_mailboxes"),
     email_folders: hostStringList(rawPolicy, "email_folders"),
     labels: Object.fromEntries(recordEntries(hostRecord(rawPolicy, "labels"))),
@@ -287,7 +292,8 @@ function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
     labels: formatLabels(labels),
     allowedTools: formatList(policy?.allowed_tools),
     allowedScriptNames: formatList(policy?.allowed_script_names),
-    discordChannels: formatList(policy?.discord_channels),
+    discordChannels: formatList(policy?.discord_channel_allowlist.length ? policy.discord_channel_allowlist : policy?.discord_channels),
+    teamsChannels: formatList(policy?.teams_channel_allowlist),
     emailMailboxes: formatList(policy?.email_mailboxes),
     emailFolders: formatList(policy?.email_folders),
   };
@@ -335,6 +341,7 @@ function buildPolicyPayload(form: AgentPolicyFormState): AgentPolicyUpdateReques
     allowed_tools: parseList(form.allowedTools),
     allowed_script_names: parseList(form.allowedScriptNames),
     discord_channels: parseList(form.discordChannels),
+    teams_channel_allowlist: parseList(form.teamsChannels),
     email_mailboxes: parseList(form.emailMailboxes),
     email_folders: parseList(form.emailFolders),
   };
@@ -1301,6 +1308,15 @@ export function AgentsPage() {
                       rows={4}
                       value={editForm.discordChannels}
                       onChange={(event) => setEditForm((current) => ({ ...current, discordChannels: event.target.value }))}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Teams targets</span>
+                    <textarea
+                      rows={4}
+                      value={editForm.teamsChannels}
+                      onChange={(event) => setEditForm((current) => ({ ...current, teamsChannels: event.target.value }))}
+                      placeholder="team-id/channel-id or chat:<chat-id>"
                     />
                   </label>
                   <label className="field-stack">

@@ -12,6 +12,8 @@ type SessionRecord = {
   directory_path: string;
   allowed_tools: string[];
   allowed_script_names: string[];
+  discord_channel_allowlist: string[];
+  teams_channel_allowlist: string[];
   expires_at: string;
   created_at: string;
   metadata: Record<string, unknown>;
@@ -65,6 +67,12 @@ type SessionMutationResponse = {
 type ToolOption = SessionCatalogResponse["tool_options"][number];
 
 type TabKey = "active" | "expired";
+type SessionPolicyDraft = {
+  allowedScriptNames: string;
+  discordChannelAllowlist: string;
+  teamsChannelAllowlist: string;
+  metadataJson: string;
+};
 
 const POLL_INTERVAL_MS = 10000;
 const TOOL_DESCRIPTION_FALLBACK = "Allow the session to invoke this MCP tool when the agent needs it.";
@@ -134,6 +142,47 @@ function toDatetimeLocalValue(value: string | null | undefined): string {
 
 function sortTools(values: string[]): string[] {
   return [...values].sort((left, right) => left.localeCompare(right));
+}
+
+function parseList(value: string): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of value.split(/[\n,]/)) {
+    const normalized = item.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function formatList(value: unknown): string {
+  if (!Array.isArray(value)) return "";
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).join("\n");
+}
+
+function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
+  return {
+    allowedScriptNames: formatList(session.allowed_script_names),
+    discordChannelAllowlist: formatList(session.discord_channel_allowlist),
+    teamsChannelAllowlist: formatList(session.teams_channel_allowlist),
+    metadataJson: JSON.stringify(session.metadata ?? {}, null, 2),
+  };
+}
+
+function parseJsonObject(value: string, label: string): Record<string, unknown> {
+  const trimmed = value.trim();
+  if (!trimmed) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    throw new Error(`${label} must be valid JSON.`);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${label} must be a JSON object.`);
+  }
+  return parsed as Record<string, unknown>;
 }
 
 function describeTool(tool: ToolOption): string {
@@ -355,6 +404,14 @@ export function SessionsScreen() {
   const [toolsDraft, setToolsDraft] = useState<string[]>([]);
   const [toolsDirty, setToolsDirty] = useState(false);
   const [toolsBoundSessionId, setToolsBoundSessionId] = useState("");
+  const [policyDraft, setPolicyDraft] = useState<SessionPolicyDraft>({
+    allowedScriptNames: "",
+    discordChannelAllowlist: "",
+    teamsChannelAllowlist: "",
+    metadataJson: "{}",
+  });
+  const [policyDirty, setPolicyDirty] = useState(false);
+  const [policyBoundSessionId, setPolicyBoundSessionId] = useState("");
   const [wakePrompt, setWakePrompt] = useState("");
   const [wakeCron, setWakeCron] = useState("");
   const [wakeResumeAt, setWakeResumeAt] = useState("");
@@ -367,6 +424,7 @@ export function SessionsScreen() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [modelStatus, setModelStatus] = useState<string | null>(null);
   const [toolsStatus, setToolsStatus] = useState<string | null>(null);
+  const [policyStatus, setPolicyStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
   async function refreshSessions(): Promise<SessionListResponse> {
@@ -452,6 +510,14 @@ export function SessionsScreen() {
           setToolsBoundSessionId(sessionId);
         } else if (!toolsDirty) {
           setToolsDraft(sortTools(payload.session.allowed_tools));
+        }
+        if (policyBoundSessionId !== sessionId) {
+          setPolicyDraft(policyDraftFromSession(payload.session));
+          setPolicyDirty(false);
+          setPolicyStatus(null);
+          setPolicyBoundSessionId(sessionId);
+        } else if (!policyDirty) {
+          setPolicyDraft(policyDraftFromSession(payload.session));
         }
         if (!editingWakeRequestId || !payload.wake_schedules.some((item) => item.request_id === editingWakeRequestId)) {
           const firstSchedule = payload.wake_schedules[0];
@@ -628,6 +694,12 @@ export function SessionsScreen() {
     });
   }
 
+  function updatePolicyDraft(update: Partial<SessionPolicyDraft>) {
+    setPolicyDraft((current) => ({ ...current, ...update }));
+    setPolicyDirty(true);
+    setPolicyStatus(null);
+  }
+
   async function saveTools() {
     if (!selectedSession) return;
     setBusy("tools");
@@ -655,7 +727,7 @@ export function SessionsScreen() {
   }
 
   async function saveSessionSettings() {
-    if (!selectedSession || (!modelDirty && !toolsDirty)) return;
+    if (!selectedSession || (!modelDirty && !toolsDirty && !policyDirty)) return;
     if (modelDirty && !modelDraft.trim()) {
       setModelStatus("Model is required.");
       return;
@@ -691,12 +763,32 @@ export function SessionsScreen() {
         setToolsBoundSessionId(selectedSession.session_id);
       }
 
+      if (policyDirty) {
+        const payload = await fetchJson<SessionMutationResponse>(
+          `/api/admin/sessions/${encodeURIComponent(selectedSession.session_id)}`,
+          {
+            method: "PATCH",
+            body: JSON.stringify({
+              allowed_script_names: parseList(policyDraft.allowedScriptNames),
+              discord_channel_allowlist: parseList(policyDraft.discordChannelAllowlist),
+              teams_channel_allowlist: parseList(policyDraft.teamsChannelAllowlist),
+              metadata: parseJsonObject(policyDraft.metadataJson, "Metadata"),
+            }),
+          },
+        );
+        setStatus(payload.message);
+        setPolicyStatus("Saved.");
+        setPolicyDirty(false);
+        setPolicyBoundSessionId(selectedSession.session_id);
+      }
+
       setError(null);
       await refreshSessions();
       await refreshSelectedSessionDetail(selectedSession.session_id);
     } catch (reason) {
       if (modelDirty) setModelStatus(null);
       if (toolsDirty) setToolsStatus(null);
+      if (policyDirty) setPolicyStatus(null);
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(null);
@@ -908,8 +1000,8 @@ export function SessionsScreen() {
             <div className="feature-grid">
               <article className="panel">
                 <div className="panel-header">
-                  <h3>Model and tools</h3>
-                  <span className="panel-meta">{modelDirty || toolsDirty ? "Unsaved changes" : "In sync"}</span>
+                  <h3>Model and access</h3>
+                  <span className="panel-meta">{modelDirty || toolsDirty || policyDirty ? "Unsaved changes" : "In sync"}</span>
                 </div>
                 <div className="panel-body session-tools-panel">
                   <label className="field-stack">
@@ -972,12 +1064,50 @@ export function SessionsScreen() {
                     </div>
                   </div>
                   {toolsStatus ? <div className="success-box">{toolsStatus}</div> : null}
+                  <label className="field-stack">
+                    <span>Allowed scripts</span>
+                    <textarea
+                      rows={4}
+                      value={policyDraft.allowedScriptNames}
+                      onChange={(event) => updatePolicyDraft({ allowedScriptNames: event.target.value })}
+                      disabled={mutationLocked}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Discord channel allowlist</span>
+                    <textarea
+                      rows={4}
+                      value={policyDraft.discordChannelAllowlist}
+                      onChange={(event) => updatePolicyDraft({ discordChannelAllowlist: event.target.value })}
+                      disabled={mutationLocked}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Teams target allowlist</span>
+                    <textarea
+                      rows={4}
+                      value={policyDraft.teamsChannelAllowlist}
+                      onChange={(event) => updatePolicyDraft({ teamsChannelAllowlist: event.target.value })}
+                      placeholder="team-id/channel-id or chat:<chat-id>"
+                      disabled={mutationLocked}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Metadata JSON</span>
+                    <textarea
+                      rows={8}
+                      value={policyDraft.metadataJson}
+                      onChange={(event) => updatePolicyDraft({ metadataJson: event.target.value })}
+                      disabled={mutationLocked}
+                    />
+                  </label>
+                  {policyStatus ? <div className="success-box">{policyStatus}</div> : null}
                   <div className="feature-toolbar-actions session-panel-actions">
                     <button
                       type="button"
                       className="primary"
                       onClick={() => void saveSessionSettings()}
-                      disabled={busy === "settings" || mutationLocked || (!modelDirty && !toolsDirty)}
+                      disabled={busy === "settings" || mutationLocked || (!modelDirty && !toolsDirty && !policyDirty)}
                     >
                       {busy === "settings" ? "Saving..." : "Save changes"}
                     </button>

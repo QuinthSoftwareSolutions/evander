@@ -196,6 +196,9 @@ class OperationsAdminService:
     def set_session_allowed_script_names(self, target: str, allowed_script_names: list[str]):
         return self._session_admin.set_session_allowed_script_names(target, allowed_script_names)
 
+    def update_session_policy(self, target: str, payload: dict[str, object]):
+        return self._session_admin.update_session_policy(target, payload)
+
     def set_session_model(self, target: str, model: str):
         return self._session_admin.set_session_model(target, model)
 

@@ -602,6 +602,23 @@ class SessionAdminFacade:
             message=f"Updated allowed script names for session {session_id}",
         )
 
+    def update_session_policy(
+        self, target: str, payload: dict[str, Any]
+    ) -> SessionActionResult:
+        session_id, manifest = admin_service_module._resolve_session_target(
+            target, self._sessions_by_id()
+        )
+        update = admin_service_module._session_policy_update_from_payload(manifest, payload)
+        if update:
+            manifest = manifest.model_copy(update=update)
+            self._session_repository().upsert_session(manifest)
+        return SessionActionResult(
+            success=True,
+            session_id=session_id,
+            action="update_session_policy",
+            message=f"Updated policy for session {session_id}",
+        )
+
     def set_session_model(self, target: str, model: str) -> SessionActionResult:
         session_id, manifest = admin_service_module._resolve_session_target(
             target, self._sessions_by_id()

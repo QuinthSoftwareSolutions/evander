@@ -221,6 +221,48 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert revoke_response.json()["action"] == "revoke_session"
 
 
+def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-14085-session",
+            vm_id="vm-14085",
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            allowed_script_names=["old-script"],
+            discord_channel_allowlist=["old-discord"],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+            metadata={"agent_thread_id": "old-thread", "keep": "value"},
+        ),
+    )
+    client = TestClient(create_app(service))
+
+    response = client.patch(
+        "/api/admin/sessions/issue-14085-session",
+        json={
+            "allowed_script_names": ["seed-demo", " seed-demo ", "collect-logs"],
+            "discord_channel_allowlist": ["chan-a", "chan-b"],
+            "teams_channel_allowlist": ["team-b/channel-2", "chat:chat-1"],
+            "metadata": {"keep": "new-value"},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["action"] == "update_session_policy"
+    assert response.json()["session"]["allowed_script_names"] == [
+        "seed-demo",
+        "collect-logs",
+    ]
+    assert response.json()["session"]["discord_channel_allowlist"] == ["chan-a", "chan-b"]
+    assert response.json()["session"]["teams_channel_allowlist"] == [
+        "team-b/channel-2",
+        "chat:chat-1",
+    ]
+    updated = service.runtime.session_repository.get_session("issue-14085-session")
+    assert updated is not None
+    assert updated.metadata == {"keep": "new-value"}
+
+
 def test_admin_web_rejects_blank_session_model(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(

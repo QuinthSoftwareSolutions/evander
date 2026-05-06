@@ -102,6 +102,9 @@ export type AgentPolicyUpdateRequest = {
   allowed_tools?: string[];
   allowed_script_names?: string[];
   discord_channels?: string[];
+  discord_channel_allowlist?: string[];
+  teams_channel_allowlist?: string[];
+  metadata?: Record<string, unknown>;
   email_mailboxes?: string[];
   email_folders?: string[];
 };
@@ -113,6 +116,9 @@ export type AgentSessionPolicy = {
   allowed_tools: string[];
   allowed_script_names: string[];
   discord_channels: string[];
+  discord_channel_allowlist: string[];
+  teams_channel_allowlist: string[];
+  metadata: Record<string, unknown>;
   email_mailboxes: string[];
   email_folders: string[];
   labels: Record<string, string>;
