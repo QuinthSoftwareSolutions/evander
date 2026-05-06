@@ -399,6 +399,73 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     ]
 
 
+def test_admin_web_skills_api_and_catalog_options(tmp_path: Path) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    create_response = client.post(
+        "/api/admin/skills",
+        json={"name": "demo.skill", "content": "# Demo\n", "replace": False},
+    )
+
+    assert create_response.status_code == 201
+    assert create_response.json()["skill"]["name"] == "demo.skill"
+    duplicate_response = client.post(
+        "/api/admin/skills",
+        json={"name": "demo.skill", "content": "# Duplicate\n"},
+    )
+    assert duplicate_response.status_code == 409
+
+    list_response = client.get("/api/admin/skills")
+    assert list_response.status_code == 200
+    assert [item["name"] for item in list_response.json()["items"]] == ["demo.skill"]
+    detail_response = client.get("/api/admin/skills/demo.skill")
+    assert detail_response.status_code == 200
+    assert detail_response.json()["skill"]["content"] == "# Demo\n"
+
+    replace_response = client.post(
+        "/api/admin/skills",
+        json={"name": "demo.skill", "content": "# Updated\n", "replace": True},
+    )
+    assert replace_response.status_code == 201
+    assert client.get("/api/admin/skills/demo.skill").json()["skill"]["content"] == "# Updated\n"
+
+    catalog_payload = client.get("/api/workflow-editor/catalog").json()
+    vm_create = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:create"
+    )
+    agent_create = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:create"
+    )
+    for node in (vm_create, agent_create):
+        codex_skills = next(field for field in node["fields"] if field["key"] == "codex_skills")
+        assert codex_skills["kind"] == "string_list"
+        assert codex_skills["options"] == [{"value": "demo.skill", "label": "demo.skill"}]
+
+    delete_response = client.delete("/api/admin/skills/demo.skill")
+    assert delete_response.status_code == 200
+    assert client.get("/api/admin/skills/demo.skill").status_code == 404
+
+
+def test_admin_web_skills_api_rejects_json_errors(tmp_path: Path) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    assert client.post("/api/admin/skills", json=[]).status_code == 400
+    assert (
+        client.post(
+            "/api/admin/skills",
+            json={"name": "../escape", "content": "# Demo\n"},
+        ).status_code
+        == 400
+    )
+    assert (
+        client.post(
+            "/api/admin/skills",
+            json={"name": "empty", "content": "  \n"},
+        ).status_code
+        == 400
+    )
+
+
 def test_admin_web_exposes_workflow_run_stream(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
 
@@ -2374,6 +2441,7 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(
     tmp_path: Path, monkeypatch
 ) -> None:
     service = AdminService(write_config(tmp_path))
+    service.create_skill({"name": "exampleindustry-app-demo", "content": "# Demo\n"})
     captured: dict[str, object] = {}
 
     def create_vm(self, **payload):

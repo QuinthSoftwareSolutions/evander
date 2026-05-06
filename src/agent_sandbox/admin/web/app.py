@@ -22,6 +22,7 @@ from agent_sandbox.admin.web.shared import (
     json_error,
     request_has_privileged_operations,
 )
+from agent_sandbox.admin.web.skills import skill_routes
 from agent_sandbox.admin.web.user_store import AdminWebUserStore
 from agent_sandbox.admin.web.users import admin_user_routes
 from agent_sandbox.admin.web.vms_issues import vm_issue_routes
@@ -280,6 +281,7 @@ def create_app(service: AdminService) -> Starlette:
     ]
     routes.extend(workflow_routes(service))
     routes.extend(agent_routes(service, auth))
+    routes.extend(skill_routes(service, auth))
     routes.extend(vm_issue_routes(service, auth))
     routes.extend(session_approval_routes(service, auth))
     routes.extend(worker_config_routes(service, auth))

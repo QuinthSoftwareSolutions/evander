@@ -48,6 +48,10 @@ class VmCreateEffectProvider(EffectProviderBase):
         directory_path = self._normalize_optional_string(payload.get("directory_path")) or str(
             context.metadata.get("directory_path") or "root"
         )
+        codex_skills = self._as_string_list(payload.get("codex_skills"))
+        skill_validator = getattr(context.admin_service, "validate_managed_codex_skills", None)
+        if callable(skill_validator):
+            codex_skills = skill_validator(codex_skills)
 
         result = context.vm_creator.create_vm(
             provider=self._normalize_optional_string(payload.get("provider")),
@@ -67,7 +71,7 @@ class VmCreateEffectProvider(EffectProviderBase):
             mssql=bool(payload.get("mssql", False)),
             mssql_init_root=self._normalize_optional_string(payload.get("mssql_init_root")),
             playwright=bool(payload.get("playwright", False)),
-            codex_skills=self._as_string_list(payload.get("codex_skills")),
+            codex_skills=codex_skills,
             directory_path=directory_path,
         )
 

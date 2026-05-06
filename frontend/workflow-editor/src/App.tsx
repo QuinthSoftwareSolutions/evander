@@ -3057,6 +3057,48 @@ export default function App() {
     if (field.kind === "string_list") {
       const listValue = inspectorStringListDrafts[field.key]
         ?? (Array.isArray(value) ? value.map((item) => String(item)).join("\n") : "");
+      const selectedValues = new Set(
+        listValue
+          .split("\n")
+          .map((item) => item.trim())
+          .filter(Boolean),
+      );
+      if (field.options.length > 0) {
+        return (
+          <div key={field.key} className="inspector-field">
+            <div className="field-toolbar">
+              <div className="field-header">
+                <span>{field.label}</span>
+              </div>
+            </div>
+            {field.description ? <p className="field-description">{field.description}</p> : null}
+            <div className="option-checkbox-list">
+              {field.options.map((option) => {
+                const checked = selectedValues.has(option.value);
+                return (
+                  <label key={option.value} className="checkbox-row option-checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(event) => {
+                        const nextValues = new Set(selectedValues);
+                        if (event.target.checked) {
+                          nextValues.add(option.value);
+                        } else {
+                          nextValues.delete(option.value);
+                        }
+                        updateStringListField(field.key, Array.from(nextValues).join("\n"));
+                      }}
+                      disabled={isDisabled}
+                    />
+                    <span>{option.label}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        );
+      }
       return (
         <label key={field.key} className="inspector-field">
           <div className="field-toolbar">

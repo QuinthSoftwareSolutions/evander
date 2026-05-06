@@ -1,6 +1,7 @@
 export type AdminView =
   | "workflow"
   | "agents"
+  | "skills"
   | "vms"
   | "issues"
   | "sessions"
@@ -139,6 +140,29 @@ export type AgentActionResponse = {
   message: string;
   status?: string | null;
   session_id?: string | null;
+};
+
+export type SkillLibraryItem = {
+  name: string;
+  size_bytes: number;
+  updated_at: string;
+};
+
+export type SkillLibraryDetail = SkillLibraryItem & {
+  content: string;
+};
+
+export type SkillListResponse = {
+  items: SkillLibraryItem[];
+};
+
+export type SkillResponse = {
+  skill: SkillLibraryDetail;
+};
+
+export type SkillMutationResponse = {
+  skill: SkillLibraryItem;
+  deleted?: boolean;
 };
 
 export type VmRecord = {

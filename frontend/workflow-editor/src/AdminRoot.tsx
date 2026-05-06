@@ -10,6 +10,7 @@ import { AgentsPage } from "./features/agents/AgentsPage";
 import { ConfigurationScreen } from "./features/configuration/ConfigurationScreen";
 import { IssuesPage } from "./features/issues/IssuesPage";
 import { SessionsScreen } from "./features/sessions/SessionsScreen";
+import { SkillsPage } from "./features/skills/SkillsPage";
 import { UsersPage } from "./features/users/UsersPage";
 import { VmsPage } from "./features/vms/VmsPage";
 import { WorkersScreen } from "./features/workers/WorkersScreen";
@@ -62,6 +63,7 @@ type DirectoryMutationResult = AdminResult<unknown>;
 
 type AdminTab =
   | "agents"
+  | "skills"
   | "vms"
   | "issues"
   | "sessions"
@@ -77,6 +79,7 @@ const THEME_STORAGE_KEY = "admin-web:theme";
 
 const TABS: ReadonlyArray<{ key: AdminTab; label: string; shortLabel: string; description: string }> = [
   { key: "agents", label: "Agents", shortLabel: "Agents", description: "Active and historical execution targets." },
+  { key: "skills", label: "Skills", shortLabel: "Skills", description: "Managed Codex skill library." },
   { key: "vms", label: "VMs", shortLabel: "VMs", description: "VM host lifecycle and machine details." },
   { key: "issues", label: "Issues", shortLabel: "Issues", description: "Local issue intake and VM creation." },
   { key: "sessions", label: "Sessions", shortLabel: "Sessions", description: "Session state, tools, and wake schedules." },
@@ -1479,6 +1482,8 @@ export default function AdminRoot() {
               <VmsPage />
             ) : selectedTab === "agents" ? (
               <AgentsPage />
+            ) : selectedTab === "skills" ? (
+              <SkillsPage />
             ) : selectedTab === "issues" ? (
               <IssuesPage />
             ) : selectedTab === "configuration" ? (

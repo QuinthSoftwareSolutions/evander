@@ -58,6 +58,12 @@ from agent_sandbox.policy_config import EffectivePolicyConfig
 from agent_sandbox.daemons.pr_feedback_worker import PrFeedbackStore
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.repositories.session_manifests import as_session_manifest_repository
+from agent_sandbox.repositories.skills_library import (
+    SkillLibraryEntry,
+    SkillLibraryMetadata,
+    SkillLibraryRepository,
+    normalize_skill_names,
+)
 from agent_sandbox.issues.service import IssueService
 from agent_sandbox.vm.defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 from agent_sandbox.models import (
@@ -3027,6 +3033,7 @@ class AdminService:
             legacy_config_path=self.legacy_config_path,
         )
         self.runtime = build_runtime(self.config)
+        self.skill_library = SkillLibraryRepository(self.config.runtime_dir)
         self.agent_control_store = AgentControlStore(self.config.host_agent_control_state_path)
         self.local_issue_store = JsonStore(
             self.config.runtime_dir / "local-issues.json", LocalIssueRecord
@@ -4455,6 +4462,9 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             vm_name = self._agent_optional_string(payload, "vm_name")
             if not vm_name:
                 raise ValueError("vm_name is required for libvirt_vm agents")
+            codex_skills = self.validate_managed_codex_skills(
+                self._agent_string_list(payload, "codex_skills")
+            )
             result = self.create_vm(
                 provider=self._agent_optional_string(payload, "provider"),
                 vm_name=vm_name,
@@ -4473,7 +4483,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 mssql=bool(payload.get("mssql", False)),
                 mssql_init_root=self._agent_optional_string(payload, "mssql_init_root"),
                 playwright=bool(payload.get("playwright", False)),
-                codex_skills=self._agent_string_list(payload, "codex_skills"),
+                codex_skills=codex_skills,
                 directory_path=self._agent_optional_string(payload, "directory_path") or "root",
             )
             session_id = self._agent_optional_string(payload, "session_id")
@@ -4499,6 +4509,9 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             raise ValueError(
                 "create_admin_agent with container_worker_vm does not support MSSQL yet"
             )
+        codex_skill_files = self.resolve_container_codex_skill_files(
+            self._agent_string_list(payload, "codex_skills")
+        )
         target_name = self._agent_optional_string(payload, "target_name") or session_id
         directory_path = self._normalize_directory_path(
             self._agent_optional_string(payload, "directory_path")
@@ -4557,14 +4570,17 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
 
         backend.write_files(
             session_id=session_id,
-            files=build_container_session_files(
-                config=backend.config,
-                session_id=session_id,
-                model=model,
-                dotnet=bool(payload.get("dotnet", False)),
-                nuget=bool(payload.get("nuget", False)),
-                playwright=bool(payload.get("playwright", False)),
-            ),
+            files=[
+                *build_container_session_files(
+                    config=backend.config,
+                    session_id=session_id,
+                    model=model,
+                    dotnet=bool(payload.get("dotnet", False)),
+                    nuget=bool(payload.get("nuget", False)),
+                    playwright=bool(payload.get("playwright", False)),
+                ),
+                *codex_skill_files,
+            ],
         )
         session_repository.upsert_session(manifest)
         return {
@@ -5680,6 +5696,42 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
     def read_workflow_editor_catalog(self) -> WorkflowEditorCatalogPayload:
         return self.workflow_config_admin.read_workflow_editor_catalog()
 
+    def list_skills(self) -> list[SkillLibraryMetadata]:
+        return self.skill_library.list_skills()
+
+    def create_skill(self, payload: Mapping[str, Any]) -> SkillLibraryMetadata:
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise ValueError("Skill name is required.")
+        if "content" not in payload:
+            raise ValueError("Skill content is required.")
+        return self.skill_library.create_skill(
+            name=name,
+            content=payload.get("content"),
+            replace=bool(payload.get("replace", False)),
+        )
+
+    def get_skill(self, name: str) -> SkillLibraryEntry:
+        return self.skill_library.get_skill(name)
+
+    def delete_skill(self, name: str) -> SkillLibraryMetadata:
+        return self.skill_library.delete_skill(name)
+
+    def validate_managed_codex_skills(
+        self, skill_names: list[str] | tuple[str, ...] | None
+    ) -> list[str]:
+        names = normalize_skill_names(skill_names)
+        for name in names:
+            if not self.skill_library.has_skill(name):
+                raise ValueError(f"Unknown Codex skill: {name}")
+        return names
+
+    def resolve_container_codex_skill_files(
+        self, skill_names: list[str] | tuple[str, ...] | None
+    ) -> list[dict[str, Any]]:
+        names = self.validate_managed_codex_skills(skill_names)
+        return self.skill_library.container_file_specs(names)
+
     def validate_workflow_editor_document(
         self,
         *,
@@ -6361,7 +6413,19 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         )
 
     def _read_workflow_editor_catalog(self) -> WorkflowEditorCatalogPayload:
-        return WorkflowEditorCatalogPayload(nodes=list(_WORKFLOW_EDITOR_NODE_CATALOG))
+        skill_options = [_field_option(skill.name) for skill in self.skill_library.list_skills()]
+        nodes: list[WorkflowEditorNodeCatalogEntry] = []
+        for entry in _WORKFLOW_EDITOR_NODE_CATALOG:
+            node = entry.model_copy(deep=True)
+            if node.type in {"effect:vm:create", "effect:agent:create"}:
+                node.fields = [
+                    field.model_copy(update={"options": skill_options})
+                    if field.key == "codex_skills"
+                    else field
+                    for field in node.fields
+                ]
+            nodes.append(node)
+        return WorkflowEditorCatalogPayload(nodes=nodes)
 
     def _validate_workflow_editor_document(
         self,
