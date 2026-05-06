@@ -145,6 +145,8 @@ def test_worker_azure_inventory_uses_truman_control_plane_identity() -> None:
 
     assert 'agent_sandbox_deploy_path: "/opt/truman"' in azure
     assert 'agent_sandbox_run_user: "truman"' in azure
+    assert "agent_sandbox_install_azure_cli: true" in azure
+    assert "agent_sandbox_install_azure_cli: false" in worker_defaults
     assert "agent_sandbox_git_user" in worker_defaults
     assert "hostvars[agent_sandbox_control_plane_host].agent_sandbox_run_user" in worker_defaults
     assert "hostvars[agent_sandbox_control_plane_host].agent_sandbox_deploy_path" in worker_defaults

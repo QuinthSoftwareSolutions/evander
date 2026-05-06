@@ -6,6 +6,7 @@ agent_sandbox_run_user: "agent-worker"
 agent_sandbox_manage_run_user: true
 agent_sandbox_run_user_supplementary_groups:
   - docker
+agent_sandbox_install_azure_cli: false
 
 agent_sandbox_repo_managed_tracked_config_paths: []
 agent_sandbox_repo_managed_untracked_config_paths:
