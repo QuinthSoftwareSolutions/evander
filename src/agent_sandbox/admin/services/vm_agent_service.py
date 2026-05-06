@@ -617,15 +617,34 @@ class VmAgentAdminService:
             assistant_scope=scope,
         )
         if existing is not None:
-            stored_agent_thread_id = (
-                self._stored_chat_assistant_thread_id(existing["session_id"])
-                if normalized_backend == ExecutionBackendKind.CONTAINER_WORKER_VM.value
-                else ""
+            existing_chat_thread_id = str(existing.get("thread_id") or "").strip()
+            requested_chat_thread_id = str(thread_id or "").strip()
+            chat_thread_changed = (
+                bool(existing_chat_thread_id)
+                and bool(requested_chat_thread_id)
+                and existing_chat_thread_id != requested_chat_thread_id
             )
-            existing_agent_thread_id = existing.get("agent_thread_id") or ""
-            if _is_synthetic_chat_assistant_thread_id(existing_agent_thread_id):
-                existing_agent_thread_id = ""
-            agent_thread_id = stored_agent_thread_id or existing_agent_thread_id
+            if chat_thread_changed:
+                agent_thread_id = ""
+                self._assistant_session_repo.upsert_mapping(
+                    user_id=mapping_user_id,
+                    backend=normalized_backend,
+                    assistant_scope=scope,
+                    session_id=existing["session_id"],
+                    agent_thread_id="",
+                    thread_id=requested_chat_thread_id,
+                )
+                self._clear_stored_chat_assistant_thread_id(existing["session_id"])
+            else:
+                stored_agent_thread_id = (
+                    self._stored_chat_assistant_thread_id(existing["session_id"])
+                    if normalized_backend == ExecutionBackendKind.CONTAINER_WORKER_VM.value
+                    else ""
+                )
+                existing_agent_thread_id = existing.get("agent_thread_id") or ""
+                if _is_synthetic_chat_assistant_thread_id(existing_agent_thread_id):
+                    existing_agent_thread_id = ""
+                agent_thread_id = stored_agent_thread_id or existing_agent_thread_id
             self._ensure_chat_assistant_manifest(
                 session_id=existing["session_id"],
                 backend=normalized_backend,
@@ -854,6 +873,17 @@ class VmAgentAdminService:
         if _is_synthetic_chat_assistant_thread_id(agent_thread_id):
             return ""
         return agent_thread_id
+
+    def _clear_stored_chat_assistant_thread_id(self, session_id: str) -> None:
+        repository = self._session_repository()
+        session = repository.get_session(session_id)
+        if session is None:
+            return
+        metadata = dict(getattr(session, "metadata", {}) or {})
+        if "agent_thread_id" not in metadata:
+            return
+        metadata.pop("agent_thread_id", None)
+        repository.upsert_session(session.model_copy(update={"metadata": metadata}))
 
     def _ensure_chat_assistant_manifest(
         self,
