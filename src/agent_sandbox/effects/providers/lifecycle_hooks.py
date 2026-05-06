@@ -348,6 +348,8 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         vm_user = str(getattr(record, "vm_user", None) or "agent")
         session_id = str(getattr(record, "session_id", None) or "").strip() or None
         thread_id = str(getattr(result, "thread_id", "") or "").strip()
+        resume_thread_id = str(getattr(record, "resume_thread_id", None) or "").strip()
+        effective_thread_id = thread_id or resume_thread_id
         resolved_config = {
             "target": record.target,
             "vm_name": record.vm_name,
@@ -361,7 +363,6 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         }
         outputs = {
             "dispatch_id": dispatch_id,
-            "thread_id": thread_id or record.resume_thread_id or dispatch_id,
             "success": True,
             "queued": False,
             "dispatched_from_queue": True,
@@ -370,6 +371,8 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "execution_backend": ExecutionBackendKind.LIBVIRT_VM.value,
             "queue_key": queue_key,
         }
+        if effective_thread_id:
+            outputs["thread_id"] = effective_thread_id
         execution_record = EffectExecutionRecord(
             execution_id=(
                 f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}"

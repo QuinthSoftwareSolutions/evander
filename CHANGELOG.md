@@ -5,6 +5,18 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-06 - Queued Prompt Thread ID Handling
+
+Touched areas: `src/agent_sandbox/effects/providers/lifecycle_hooks.py`,
+effect orchestrator tests.
+
+- Stopped queued libvirt `effect:agent:enqueue-prompt` dispatch from publishing
+  synthetic dispatch IDs as Codex `thread_id` outputs when `resume_agent`
+  succeeds without returning a real thread id. The queued dispatch path now
+  omits `thread_id` in that case, allowing downstream fallback bindings to keep
+  using existing session metadata instead of persisting a non-existent Codex
+  thread.
+
 ## 2026-05-06 - Azure PR Review Publish Failure Handling
 
 Touched areas: `src/agent_sandbox/services.py`, PR publish tests.
