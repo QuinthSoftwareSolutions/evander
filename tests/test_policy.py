@@ -557,6 +557,22 @@ def test_require_tool_list_all_feedback_requires_stream_metadata(tmp_path: Path)
         engine.require_tool("s1", ToolName.LIST_ALL_FEEDBACK)
 
 
+def test_require_tool_for_pr_query_tools_does_not_require_feedback_streams(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.LIST_PULL_REQUESTS, ToolName.GET_PULL_REQUEST],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    assert engine.require_tool("s1", ToolName.LIST_PULL_REQUESTS).session_id == "s1"
+    assert engine.require_tool("s1", ToolName.GET_PULL_REQUEST).session_id == "s1"
+
+
 def test_require_pr_feedback_stream_enforces_allowlist(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     session = SessionManifest(

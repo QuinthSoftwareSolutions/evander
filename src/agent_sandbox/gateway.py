@@ -2643,12 +2643,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         )
         args = request.model_dump(mode="json")
         try:
-            session = context.policy.require_tool(request.session_id, ToolName.LIST_PULL_REQUESTS)
-            context.policy.require_pr_feedback_repo(
-                session,
-                provider=request.provider,
-                repo=request.repo,
-            )
+            context.policy.require_tool(request.session_id, ToolName.LIST_PULL_REQUESTS)
             response = context.pr_query_service_for_session(request.session_id).list_pull_requests(
                 provider=request.provider,
                 repo=request.repo,
@@ -2709,12 +2704,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         )
         args = request.model_dump(mode="json")
         try:
-            session = context.policy.require_tool(request.session_id, ToolName.GET_PULL_REQUEST)
-            context.policy.require_pr_feedback_repo(
-                session,
-                provider=request.provider,
-                repo=request.repo,
-            )
+            context.policy.require_tool(request.session_id, ToolName.GET_PULL_REQUEST)
             response = context.pr_query_service_for_session(request.session_id).get_pull_request(
                 provider=request.provider,
                 repo=request.repo,

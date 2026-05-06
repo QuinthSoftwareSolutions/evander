@@ -20,7 +20,13 @@ from agent_sandbox.gateway import (
     create_server,
 )
 from agent_sandbox.admin.web.chat import ChatStore
-from agent_sandbox.models import DiscordCommandEnvelope, SessionManifest, ToolName
+from agent_sandbox.models import (
+    DiscordCommandEnvelope,
+    ListPullRequestsResponse,
+    PullRequestItem,
+    SessionManifest,
+    ToolName,
+)
 from agent_sandbox.policy import PolicyError
 from agent_sandbox.runtime import build_runtime
 
@@ -514,11 +520,6 @@ def test_list_pull_requests_enforces_tool_policy_and_validation(
             session_id="session-1",
             allowed_tools=[],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
-            metadata={
-                "pr_feedback_streams": [
-                    {"provider": "azure_devops", "repo": "repo-1", "pr_id": "17"}
-                ]
-            },
         ),
     )
     server = create_server(context)
@@ -536,11 +537,6 @@ def test_list_pull_requests_enforces_tool_policy_and_validation(
             session_id="session-1",
             allowed_tools=[ToolName.LIST_PULL_REQUESTS],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
-            metadata={
-                "pr_feedback_streams": [
-                    {"provider": "azure_devops", "repo": "repo-1", "pr_id": "17"}
-                ]
-            },
         ),
     )
     with pytest.raises(ToolError, match="greater than or equal to 1"):
@@ -550,6 +546,57 @@ def test_list_pull_requests_enforces_tool_policy_and_validation(
                 {"session_id": "session-1", "provider": "azure_devops", "repo": "repo-1", "top": 0},
             )
         )
+
+
+def test_list_pull_requests_does_not_require_feedback_stream_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "ado-token")
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.LIST_PULL_REQUESTS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    class FakePrQueryService:
+        def list_pull_requests(self, **kwargs: object) -> ListPullRequestsResponse:
+            assert kwargs["provider"] == "azure_devops"
+            assert kwargs["repo"] == "repo-1"
+            return ListPullRequestsResponse(
+                pull_requests=[
+                    PullRequestItem(
+                        provider="azure_devops",
+                        repo="repo-1",
+                        pr_id="17",
+                        title="Fix race",
+                        status="active",
+                    )
+                ]
+            )
+
+    context.pr_query_service = FakePrQueryService()
+    server = create_server(context)
+
+    result = _call_tool(
+        server,
+        "list_pull_requests",
+        {"session_id": "session-1", "provider": "azure_devops", "repo": "repo-1"},
+    )
+
+    assert result["pull_requests"][0]["pr_id"] == "17"
 
 
 def test_get_pull_request_enforces_tool_policy(
@@ -615,11 +662,6 @@ def test_get_pull_request_allows_repo_scoped_pr_lookup(
             session_id="session-1",
             allowed_tools=[ToolName.GET_PULL_REQUEST],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
-            metadata={
-                "pr_feedback_streams": [
-                    {"provider": "azure_devops", "repo": "repo-1", "pr_id": "17"}
-                ]
-            },
         ),
     )
     server = create_server(context)
