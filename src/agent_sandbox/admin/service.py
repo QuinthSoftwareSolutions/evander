@@ -3227,6 +3227,10 @@ class AdminService:
     def directory_scoped_config_enabled(self) -> bool:
         return self.config.enable_directory_scoped_config
 
+    def effective_execution_backend(self, directory_path: str | None = None) -> str:
+        resolved_config = self.runtime.provider_config.resolve_for_directory(directory_path)
+        return str(resolved_config.execution_backend or "libvirt_vm")
+
     def _execution_backend(self):
         backend = getattr(self, "_execution_backend_instance", None)
         if backend is None:

@@ -949,6 +949,7 @@ def worker_config_routes(service: AdminService, auth: AdminWebAuth) -> list[Base
         payload = {
             "directory_scoped_config_enabled": service.directory_scoped_config_enabled,
             "selected_directory_path": selected_path,
+            "execution_backend": service.effective_execution_backend(selected_path),
             "selected_directory": {
                 "path": selected_path,
                 "parent_path": _parent_directory_path(selected_path),

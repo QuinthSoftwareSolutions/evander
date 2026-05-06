@@ -36,6 +36,7 @@ type AdminSession = {
 type AdminState = {
   selected_directory_path: string;
   directory_scoped_config_enabled: boolean;
+  execution_backend: AdminExecutionBackend;
   role: "admin" | "regular" | null;
   can_manage_users: boolean;
   privileged_operations: {
@@ -50,6 +51,7 @@ type AdminState = {
 type DirectoryStateResponse = {
   directory_scoped_config_enabled: boolean;
   selected_directory_path: string;
+  execution_backend: AdminExecutionBackend;
   selected_directory: {
     path: string;
     parent_path: string | null;
@@ -72,12 +74,20 @@ type AdminTab =
   | "workers"
   | "workflow";
 
+type AdminExecutionBackend = "libvirt_vm" | "container_worker_vm";
+type AdminTabDefinition = {
+  key: AdminTab;
+  label: string;
+  shortLabel: string;
+  description: string;
+};
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const WORKFLOW_SIDEBAR_STORAGE_KEY = "admin-web:workflow:sections-collapsed";
 const DIRECTORY_STORAGE_KEY = "admin-web:selected-directory";
 const THEME_STORAGE_KEY = "admin-web:theme";
 
-const TABS: ReadonlyArray<{ key: AdminTab; label: string; shortLabel: string; description: string }> = [
+const TABS: ReadonlyArray<AdminTabDefinition> = [
   { key: "agents", label: "Agents", shortLabel: "Agents", description: "Active and historical execution targets." },
   { key: "skills", label: "Skills", shortLabel: "Skills", description: "Managed Codex skill library." },
   { key: "vms", label: "VMs", shortLabel: "VMs", description: "VM host lifecycle and machine details." },
@@ -88,6 +98,12 @@ const TABS: ReadonlyArray<{ key: AdminTab; label: string; shortLabel: string; de
   { key: "workers", label: "Workers", shortLabel: "Workers", description: "Background worker state, logs, and settings." },
   { key: "workflow", label: "Workflow", shortLabel: "Flow", description: "Workflow editor and runtime activity." },
 ];
+
+function tabsForExecutionBackend(
+  executionBackend: AdminExecutionBackend | null,
+): ReadonlyArray<AdminTabDefinition> {
+  return TABS.filter((tab) => tab.key !== "vms" || executionBackend === "libvirt_vm");
+}
 
 const LOGIN_BACKGROUND_NODES = [
   { x: 0.08, y: 0.2, radius: 3.1, hue: "#7ce8ff", phase: 0.2 },
@@ -1073,6 +1089,7 @@ export default function AdminRoot() {
     if (typeof window === "undefined") return true;
     return window.localStorage.getItem(WORKFLOW_SIDEBAR_STORAGE_KEY) !== "false";
   });
+  const adminExecutionBackend = adminState?.execution_backend ?? null;
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -1133,7 +1150,10 @@ export default function AdminRoot() {
     let cancelled = false;
     async function loadAdminState() {
       try {
-        const response = await fetch(`${API_BASE}/api/admin/state`, { credentials: "same-origin" });
+        const response = await fetch(
+          `${API_BASE}/api/admin/state?directory_path=${encodeURIComponent(selectedDirectoryPath)}`,
+          { credentials: "same-origin" },
+        );
         const payload = (await response.json()) as AdminState & { error?: string };
         if (!response.ok) {
           throw new Error(payload.error ?? "Unable to load admin state.");
@@ -1155,6 +1175,19 @@ export default function AdminRoot() {
       cancelled = true;
     };
   }, [session]);
+
+  useEffect(() => {
+    if (adminExecutionBackend === null) {
+      return;
+    }
+    const visibleTabs = tabsForExecutionBackend(adminExecutionBackend);
+    if (visibleTabs.some((tab) => tab.key === selectedTab)) {
+      return;
+    }
+    const fallbackTab = visibleTabs[0]?.key ?? "workflow";
+    window.location.hash = fallbackTab;
+    setSelectedTab(fallbackTab);
+  }, [adminExecutionBackend, selectedTab]);
 
   useEffect(() => {
     window.localStorage.setItem(WORKFLOW_SIDEBAR_STORAGE_KEY, String(workflowSidebarCollapsed));
@@ -1190,6 +1223,7 @@ export default function AdminRoot() {
               ...current,
               selected_directory_path: payload.selected_directory_path,
               directory_scoped_config_enabled: payload.directory_scoped_config_enabled,
+              execution_backend: payload.execution_backend,
             }
           : current,
       );
@@ -1203,7 +1237,10 @@ export default function AdminRoot() {
 
   async function refreshAdminState() {
     try {
-      const response = await fetch(`${API_BASE}/api/admin/state`, { credentials: "same-origin" });
+      const response = await fetch(
+        `${API_BASE}/api/admin/state?directory_path=${encodeURIComponent(selectedDirectoryPath)}`,
+        { credentials: "same-origin" },
+      );
       const payload = (await response.json()) as AdminState & { error?: string };
       if (!response.ok) {
         throw new Error(payload.error ?? "Unable to load admin state.");
@@ -1336,11 +1373,15 @@ export default function AdminRoot() {
     );
   }
 
-  const activeTab = TABS.find((tab) => tab.key === selectedTab) ?? TABS[TABS.length - 1];
+  const visibleTabs = tabsForExecutionBackend(adminExecutionBackend);
+  const renderedTab = visibleTabs.some((tab) => tab.key === selectedTab)
+    ? selectedTab
+    : visibleTabs[0]?.key ?? "workflow";
+  const activeTab = visibleTabs.find((tab) => tab.key === renderedTab) ?? TABS[TABS.length - 1];
   const privilegeUnlocked = adminState?.privileged_operations.unlocked ?? session.privileged_operations.unlocked;
   const currentUserRole = adminState?.role ?? session.role ?? null;
   const canManageUsers = adminState?.can_manage_users ?? session.can_manage_users;
-  const workflowFocus = selectedTab === "workflow";
+  const workflowFocus = renderedTab === "workflow";
   const currentUserId = (
     session.username?.trim()
     || session.display_name?.trim()
@@ -1458,10 +1499,10 @@ export default function AdminRoot() {
               </div>
               <p>Operational views for machines, policy, reviews, and workflow state.</p>
             </div>
-            {TABS.map((tab) => (
+            {visibleTabs.map((tab) => (
               <button
                 key={tab.key}
-                className={`admin-shell-tab ${tab.key === selectedTab ? "active" : ""}`}
+                className={`admin-shell-tab ${tab.key === renderedTab ? "active" : ""}`}
                 onClick={() => {
                   window.location.hash = tab.key;
                   setSelectedTab(tab.key);
@@ -1474,25 +1515,25 @@ export default function AdminRoot() {
           </nav>
           <main className="admin-shell-main">
             {sessionError ? <div className="admin-shell-alert">{sessionError}</div> : null}
-            {selectedTab === "workflow" ? (
+            {renderedTab === "workflow" ? (
               <div className="admin-workflow-panel">
                 <WorkflowEditorApp />
               </div>
-            ) : selectedTab === "vms" ? (
+            ) : renderedTab === "vms" ? (
               <VmsPage />
-            ) : selectedTab === "agents" ? (
+            ) : renderedTab === "agents" ? (
               <AgentsPage />
-            ) : selectedTab === "skills" ? (
+            ) : renderedTab === "skills" ? (
               <SkillsPage />
-            ) : selectedTab === "issues" ? (
+            ) : renderedTab === "issues" ? (
               <IssuesPage />
-            ) : selectedTab === "configuration" ? (
+            ) : renderedTab === "configuration" ? (
               <ConfigurationScreen />
-            ) : selectedTab === "users" ? (
+            ) : renderedTab === "users" ? (
               <UsersPage />
-            ) : selectedTab === "workers" ? (
+            ) : renderedTab === "workers" ? (
               <WorkersScreen />
-            ) : selectedTab === "sessions" ? (
+            ) : renderedTab === "sessions" ? (
               <SessionsScreen />
             ) : (
               <PlaceholderView title={activeTab.label} description={activeTab.description} />

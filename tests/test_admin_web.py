@@ -36,7 +36,12 @@ from agent_sandbox.models import (
 from agent_sandbox.worker.models import WorkerSessionRecord
 
 
-def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False) -> Path:
+def write_config(
+    tmp_path: Path,
+    *,
+    enable_directory_scoped_config: bool = False,
+    execution_backend: str = "libvirt_vm",
+) -> Path:
     runtime_dir = tmp_path / "runtime"
     config_path = tmp_path / "gateway.yaml"
     lines = [
@@ -50,6 +55,8 @@ def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False
     ]
     if enable_directory_scoped_config:
         lines.append("enable_directory_scoped_config: true")
+    if execution_backend != "libvirt_vm":
+        lines.append(f'execution_backend: "{execution_backend}"')
     config_path.write_text("\n".join(lines), encoding="utf-8")
     return config_path
 
@@ -1391,6 +1398,46 @@ def test_admin_web_azure_login_uses_runtime_user_store_without_env_allowlist(
     assert admin_state.json()["role"] == "admin"
     assert admin_state.json()["can_manage_users"] is True
     assert app.state.admin_user_store.get_user("operator@example.com").last_login_at is not None
+
+
+def test_admin_web_state_exposes_effective_execution_backend(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    client = TestClient(create_app(service))
+
+    root_state = client.get("/api/admin/state")
+    create_directory = client.post(
+        "/api/configuration/directories",
+        json={"parent_path": "root", "name": "ops"},
+    )
+    write_backend = client.put(
+        "/api/configuration/domains/providers?directory_path=root/ops",
+        json={"config": {"execution_backend": "container_worker_vm"}},
+    )
+    ops_state = client.get("/api/admin/state?directory_path=root/ops")
+    ops_configuration = client.get("/api/configuration/state?directory_path=root/ops")
+
+    assert root_state.status_code == 200
+    assert root_state.json()["execution_backend"] == "libvirt_vm"
+    assert create_directory.status_code == 200
+    assert write_backend.status_code == 200
+    assert ops_state.status_code == 200
+    assert ops_state.json()["selected_directory_path"] == "root/ops"
+    assert ops_state.json()["execution_backend"] == "container_worker_vm"
+    assert ops_configuration.status_code == 200
+    assert ops_configuration.json()["execution_backend"] == "container_worker_vm"
+
+
+def test_admin_web_state_uses_root_execution_backend(tmp_path: Path) -> None:
+    client = TestClient(
+        create_app(
+            AdminService(write_config(tmp_path, execution_backend="container_worker_vm"))
+        )
+    )
+
+    response = client.get("/api/admin/state")
+
+    assert response.status_code == 200
+    assert response.json()["execution_backend"] == "container_worker_vm"
 
 
 def test_admin_web_azure_mode_requires_login(tmp_path: Path, monkeypatch) -> None:

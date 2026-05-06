@@ -220,10 +220,20 @@ def create_app(service: AdminService) -> Starlette:
     async def get_admin_state(request: Request) -> JSONResponse:
         session = auth.require(request)
         assistant_settings = service.read_assistant_settings()
+        requested_directory_path = (
+            str(request.query_params.get("directory_path") or "root").strip() or "root"
+        )
+        try:
+            selected_directory_path = service._normalize_directory_reference(
+                requested_directory_path
+            )
+        except ValueError:
+            selected_directory_path = "root"
         return JSONResponse(
             {
-                "selected_directory_path": "root",
+                "selected_directory_path": selected_directory_path,
                 "directory_scoped_config_enabled": service.directory_scoped_config_enabled,
+                "execution_backend": service.effective_execution_backend(selected_directory_path),
                 "role": session.get("role"),
                 "can_manage_users": bool(session.get("can_manage_users")),
                 "assistant": {
