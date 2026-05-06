@@ -1342,6 +1342,14 @@ select {
   width: 100%;
 }
 
+.create-group-actions button[draggable="true"] {
+  cursor: grab;
+}
+
+.create-group-actions button[draggable="true"]:active {
+  cursor: grabbing;
+}
+
 .inspector-label {
   display: block;
   margin-bottom: 0.75rem;
