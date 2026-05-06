@@ -77,6 +77,25 @@ def test_ansible_apt_cache_relay_role_is_control_plane_only() -> None:
     assert (role / "tasks" / "main.yml").exists()
 
 
+def test_ansible_host_prereqs_can_install_azure_cli_for_control_plane() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    azure = (repo / "ansible" / "group_vars" / "azure.yml").read_text(encoding="utf-8")
+    tasks = (repo / "ansible" / "roles" / "host_prereqs" / "tasks" / "main.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "agent_sandbox_install_azure_cli: false" in defaults
+    assert "agent_sandbox_azure_cli_deb_architecture" in defaults
+    assert "agent_sandbox_install_azure_cli: true" in azure
+    assert "Download Microsoft signing key for Azure CLI" in tasks
+    assert "https://packages.microsoft.com/repos/azure-cli/" in tasks
+    assert "name: azure-cli" in tasks
+    assert "when: agent_sandbox_install_azure_cli | bool" in tasks
+
+
 def test_ansible_nexus_package_cache_tasks_are_not_ignored_by_git() -> None:
     repo = Path(__file__).resolve().parents[1]
     role_task_path = "ansible/roles/package_cache_nexus/tasks/main.yml"

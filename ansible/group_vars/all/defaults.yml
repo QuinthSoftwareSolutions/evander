@@ -71,6 +71,17 @@ agent_sandbox_common_host_packages:
   - python3-venv
   - nodejs
   - npm
+agent_sandbox_install_azure_cli: false
+agent_sandbox_azure_cli_deb_architecture: >-
+  {{
+    'amd64'
+    if ansible_architecture == 'x86_64'
+    else (
+      'arm64'
+      if ansible_architecture in ['aarch64', 'arm64']
+      else ansible_architecture
+    )
+  }}
 agent_sandbox_local_vm_host_packages:
   - nftables
   - qemu-system-x86

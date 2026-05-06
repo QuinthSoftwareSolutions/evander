@@ -119,6 +119,25 @@ def test_azure_deploy_repo_matches_pipeline_source_of_truth() -> None:
         "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/Truman"
     )
     assert "agent-orchestrator.git" not in azure_vars["agent_sandbox_repo_url"]
+    assert azure_vars["agent_sandbox_install_azure_cli"] is True
+    assert azure_vars["agent_sandbox_example_app_repo_source"] == (
+        "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/ExampleIndustryAPP"
+    )
+    assert azure_vars["agent_sandbox_example_app_repo_cache_key"] == (
+        "{{ agent_sandbox_example_app_repo_source | hash('sha256') }}"
+    )
+    assert azure_vars["agent_sandbox_example_app_deploy_demo_script_path"] == (
+        "{{ agent_sandbox_runtime_dir }}/repo-cache/"
+        "{{ agent_sandbox_example_app_repo_cache_key }}-worktree/"
+        "Scripts/Azure/Environment/deploy-demo-environment.sh"
+    )
+    assert azure_vars["agent_sandbox_shared_secrets_env"][
+        "EXAMPLE_APP_DEPLOY_DEMO_SCRIPT_PATH"
+    ] == "{{ agent_sandbox_example_app_deploy_demo_script_path }}"
+    assert (
+        azure_vars["agent_sandbox_shared_secrets_env"]["AZURE_DEVOPS_DEPLOY_PAT"]
+        == "{{ vault_azure_devops_pat }}"
+    )
 
 
 def test_azure_inventory_uses_pipeline_supplied_ssh_key_paths() -> None:

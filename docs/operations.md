@@ -1014,6 +1014,10 @@ sudo journalctl -u agent-sandbox-trigger-orchestrator.service -f
   `provision_exampleindustry_app_demo_environment.sh`.
 - That wrapper lives in this repo under `scripts/` and delegates to the host script named by
   `EXAMPLE_APP_DEPLOY_DEMO_SCRIPT_PATH`.
+- The effect-orchestrator service account must also be able to run `az` and must have a non-interactive
+  Azure CLI account context before the wrapper can create Azure resources. On Azure control-plane
+  deployments, Ansible installs Azure CLI when `agent_sandbox_install_azure_cli` is enabled, but
+  Azure authentication is still an operator-owned prerequisite.
 - The wrapper reserves stdout for a final JSON payload and sends deploy progress logs to stderr, so
   the orchestrator can capture the result blob without parsing human-oriented progress output.
 - The wrapper emits a `session_metadata_patch` object that appends two relay targets under
