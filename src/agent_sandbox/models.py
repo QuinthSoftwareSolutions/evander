@@ -1141,6 +1141,8 @@ class AdoCurrentIterationBacklogRequest(BaseModel):
 
 
 class AdoCurrentIterationBacklogResponse(BaseModel):
+    project: str | None = None
+    team: str | None = None
     iteration_path: str
     items: list[AdoBacklogQueryItem] = Field(default_factory=list)
     count: int = 0

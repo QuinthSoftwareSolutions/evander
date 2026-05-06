@@ -389,6 +389,138 @@ def test_query_backlog_items_batch_uses_fields_without_expand() -> None:
     assert "$expand" not in batch_payload
 
 
+def test_list_current_iteration_uses_project_default_team_when_team_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "My Project", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(200, json={"defaultTeam": {"name": "TechForce"}}),
+        httpx.Response(200, json={"value": [{"path": "My Project\\Sprint 1"}]}),
+        httpx.Response(
+            200,
+            json={
+                "field": {"referenceName": "System.AreaPath"},
+                "values": [{"value": "My Project\\TechForce", "includeChildren": True}],
+            },
+        ),
+        httpx.Response(200, json={"workItems": []}),
+    ]
+    monkeypatch.setattr(
+        "agent_sandbox.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses.copy()),
+    )
+
+    result = adapter.list_current_iteration_backlog_items(directory_path="root/team-a")
+
+    assert calls[0]["url"] == "https://dev.azure.com/example/_apis/projects/My%20Project"
+    assert calls[0]["params"] == {"includeCapabilities": "true", "api-version": "7.1-preview.4"}
+    assert (
+        calls[1]["url"]
+        == "https://dev.azure.com/example/My%20Project/TechForce/_apis/work/teamsettings/iterations"
+    )
+    assert (
+        calls[2]["url"]
+        == "https://dev.azure.com/example/My%20Project/TechForce/_apis/work/teamsettings/teamfieldvalues"
+    )
+    assert result["iteration_path"] == "My Project\\Sprint 1"
+    assert result["team"] == "TechForce"
+
+
+def test_list_current_iteration_explicit_team_skips_project_default_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "My Project", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(200, json={"value": [{"path": "My Project\\Sprint 1"}]}),
+        httpx.Response(
+            200,
+            json={
+                "field": {"referenceName": "System.AreaPath"},
+                "values": [{"value": "My Project\\Platform", "includeChildren": True}],
+            },
+        ),
+        httpx.Response(200, json={"workItems": []}),
+    ]
+    monkeypatch.setattr(
+        "agent_sandbox.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses.copy()),
+    )
+
+    adapter.list_current_iteration_backlog_items(
+        directory_path="root/team-a",
+        team="Platform Team",
+    )
+
+    assert len(calls) == 3
+    assert (
+        calls[0]["url"]
+        == "https://dev.azure.com/example/My%20Project/Platform%20Team/_apis/work/teamsettings/iterations"
+    )
+    assert (
+        calls[1]["url"]
+        == "https://dev.azure.com/example/My%20Project/Platform%20Team/_apis/work/teamsettings/teamfieldvalues"
+    )
+
+
+def test_list_current_iteration_scopes_wiql_to_team_field_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "My Project", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(200, json={"value": [{"path": "My Project\\Sprint 1"}]}),
+        httpx.Response(
+            200,
+            json={
+                "field": {"referenceName": "System.AreaPath"},
+                "values": [
+                    {"value": "My Project\\TechForce", "includeChildren": True},
+                    {"value": "My Project\\Shared Intake", "includeChildren": False},
+                ],
+            },
+        ),
+        httpx.Response(200, json={"workItems": []}),
+    ]
+    monkeypatch.setattr(
+        "agent_sandbox.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses.copy()),
+    )
+
+    adapter.list_current_iteration_backlog_items(
+        directory_path="root/team-a",
+        team="TechForce",
+        area_path="My Project\\TechForce",
+    )
+
+    wiql_payload = calls[2]["json"]
+    assert isinstance(wiql_payload, dict)
+    query = wiql_payload["query"]
+    assert isinstance(query, str)
+    assert "[System.IterationPath] UNDER 'My Project\\Sprint 1'" in query
+    assert "[System.AreaPath] UNDER 'My Project\\TechForce'" in query
+    assert (
+        "([System.AreaPath] UNDER 'My Project\\TechForce' "
+        "OR [System.AreaPath] = 'My Project\\Shared Intake')"
+    ) in query
+
+
 def test_get_backlog_item_by_id_url_encodes_project_name(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = AzureDevOpsIssueAdapter(config_resolver=object())
     monkeypatch.setattr(
