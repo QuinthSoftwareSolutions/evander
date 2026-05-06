@@ -535,6 +535,7 @@ def test_list_ado_current_iteration_backlog_items_maps_request_and_shape(
             return {
                 "provider": "azure_devops",
                 "project": "example-project",
+                "team": "Platform Team",
                 "iteration_path": "Project\\Sprint 12",
                 "items": [
                     {
@@ -587,6 +588,8 @@ def test_list_ado_current_iteration_backlog_items_maps_request_and_shape(
         "skip": 5,
     }
     assert result == {
+        "project": "example-project",
+        "team": "Platform Team",
         "iteration_path": "Project\\Sprint 12",
         "items": [
             {

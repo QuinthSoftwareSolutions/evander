@@ -2116,6 +2116,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             response_model = AdoCurrentIterationBacklogResponse.model_validate(
                 {
+                    "project": remote_payload.get("project"),
+                    "team": remote_payload.get("team"),
                     "iteration_path": remote_payload.get("iteration_path") or "",
                     "items": remote_payload.get("items") or [],
                     "count": remote_payload.get("count", 0),
@@ -2127,8 +2129,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 ToolName.LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS,
                 args,
                 {
-                    "project": request_model.project,
-                    "team": request_model.team,
+                    "project": payload.get("project") or request_model.project,
+                    "requested_team": request_model.team,
+                    "team": payload.get("team") or request_model.team,
                     "iteration_path": payload.get("iteration_path"),
                     "count": payload.get("count", 0),
                     "directory_path": session.directory_path,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
 import os
 import re
 from datetime import UTC, datetime
@@ -21,6 +22,13 @@ def _format_ado_html_field(value: str | None) -> str | None:
     if looks_like_html(value):
         return value
     return render_markdownish_text_to_html(value)
+
+
+@dataclass(frozen=True)
+class _AdoTeamFieldValue:
+    field_reference_name: str
+    value: str
+    include_children: bool
 
 
 class IssueProviderAdapter(Protocol):
@@ -252,12 +260,32 @@ class AzureDevOpsIssueAdapter:
         quoted = ", ".join(cls._wiql_quote(item) for item in normalized)
         return f"[{field_name}] IN ({quoted})"
 
+    @staticmethod
+    def _is_safe_wiql_field_reference(value: str) -> bool:
+        return bool(re.fullmatch(r"[A-Za-z0-9_.]+", value))
+
+    @classmethod
+    def _wiql_team_field_clause(cls, values: list[_AdoTeamFieldValue]) -> str | None:
+        clauses: list[str] = []
+        for item in values:
+            field_reference_name = item.field_reference_name.strip()
+            if not cls._is_safe_wiql_field_reference(field_reference_name):
+                continue
+            operator = "UNDER" if item.include_children else "="
+            clauses.append(
+                f"[{field_reference_name}] {operator} {cls._wiql_quote(item.value)}"
+            )
+        if not clauses:
+            return None
+        return "(" + " OR ".join(clauses) + ")"
+
     def _build_backlog_wiql_query(
         self,
         *,
         project: str,
         iteration: str | None = None,
         area_path: str | None = None,
+        team_field_values: list[_AdoTeamFieldValue] | None = None,
         states: list[str] | None = None,
         types: list[str] | None = None,
         tags_any: list[str] | None = None,
@@ -268,6 +296,9 @@ class AzureDevOpsIssueAdapter:
             where_clauses.append(f"[System.IterationPath] UNDER {self._wiql_quote(iteration)}")
         if area_path:
             where_clauses.append(f"[System.AreaPath] UNDER {self._wiql_quote(area_path)}")
+        team_field_clause = self._wiql_team_field_clause(team_field_values or [])
+        if team_field_clause:
+            where_clauses.append(team_field_clause)
         state_clause = self._wiql_in_clause("System.State", states or [])
         if state_clause:
             where_clauses.append(state_clause)
@@ -744,12 +775,19 @@ class AzureDevOpsIssueAdapter:
             )
         auth_header = self._auth_header(pat)
         with httpx.Client(timeout=self.timeout_seconds) as client:
-            _, iteration_path = self._resolve_current_iteration_path(
+            normalized_team, iteration_path = self._resolve_current_iteration_path(
                 client,
                 organization_url=organization_url,
                 project=normalized_project,
                 auth_header=auth_header,
                 team=team,
+            )
+            team_field_values = self._resolve_team_field_values(
+                client,
+                organization_url=organization_url,
+                project=normalized_project,
+                auth_header=auth_header,
+                team=normalized_team,
             )
             query_result = self._query_backlog_items_core(
                 client,
@@ -758,6 +796,7 @@ class AzureDevOpsIssueAdapter:
                 auth_header=auth_header,
                 iteration=iteration_path,
                 area_path=area_path,
+                team_field_values=team_field_values,
                 states=states,
                 types=types,
                 tags_any=tags_any,
@@ -768,6 +807,7 @@ class AzureDevOpsIssueAdapter:
         return {
             "provider": self.provider_name,
             "project": normalized_project,
+            "team": normalized_team,
             "iteration_path": iteration_path,
             "items": query_result.get("items") or [],
             "count": int(query_result.get("count") or 0),
@@ -789,7 +829,17 @@ class AzureDevOpsIssueAdapter:
         auth_header: str,
         team: str | None = None,
     ) -> tuple[str, str]:
-        normalized_team = self._normalize_ado_team_name(team) or project
+        normalized_team = self._normalize_ado_team_name(team)
+        if normalized_team is None:
+            normalized_team = (
+                self._resolve_project_default_team_name(
+                    client,
+                    organization_url=organization_url,
+                    project=project,
+                    auth_header=auth_header,
+                )
+                or project
+            )
         iterations_url = (
             f"{organization_url}/{quote(project, safe='')}/{quote(normalized_team, safe='')}"
             "/_apis/work/teamsettings/iterations"
@@ -815,6 +865,85 @@ class AzureDevOpsIssueAdapter:
             )
         return normalized_team, iteration_path
 
+    def _resolve_project_default_team_name(
+        self,
+        client: httpx.Client,
+        *,
+        organization_url: str,
+        project: str,
+        auth_header: str,
+    ) -> str | None:
+        project_url = f"{organization_url}/_apis/projects/{quote(project, safe='')}"
+        response = client.get(
+            project_url,
+            params={"includeCapabilities": "true", "api-version": "7.1-preview.4"},
+            headers={"Authorization": auth_header},
+        )
+        if response.is_error:
+            self._raise_ado_http_error(action="resolve default team", response=response)
+        payload = response.json()
+        default_team = payload.get("defaultTeam") if isinstance(payload, dict) else None
+        if not isinstance(default_team, dict):
+            return None
+        return self._normalize_ado_team_name(
+            default_team.get("name")
+        ) or self._normalize_ado_team_name(
+            default_team.get("id"),
+        )
+
+    def _resolve_team_field_values(
+        self,
+        client: httpx.Client,
+        *,
+        organization_url: str,
+        project: str,
+        auth_header: str,
+        team: str,
+    ) -> list[_AdoTeamFieldValue]:
+        team_field_values_url = (
+            f"{organization_url}/{quote(project, safe='')}/{quote(team, safe='')}"
+            "/_apis/work/teamsettings/teamfieldvalues"
+        )
+        response = client.get(
+            team_field_values_url,
+            params={"api-version": "7.1"},
+            headers={"Authorization": auth_header},
+        )
+        if response.is_error:
+            self._raise_ado_http_error(action="resolve team field values", response=response)
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return []
+        field = payload.get("field") if isinstance(payload.get("field"), dict) else {}
+        field_reference_name = str(field.get("referenceName") or "").strip()
+        if not field_reference_name:
+            return []
+        raw_values = payload.get("values") if isinstance(payload.get("values"), list) else []
+        if not raw_values:
+            default_value = str(payload.get("defaultValue") or "").strip()
+            raw_values = [{"value": default_value, "includeChildren": False}]
+        values: list[_AdoTeamFieldValue] = []
+        seen: set[tuple[str, str, bool]] = set()
+        for raw_value in raw_values:
+            if not isinstance(raw_value, dict):
+                continue
+            value = str(raw_value.get("value") or "").strip()
+            if not value:
+                continue
+            include_children = bool(raw_value.get("includeChildren"))
+            key = (field_reference_name.casefold(), value.casefold(), include_children)
+            if key in seen:
+                continue
+            seen.add(key)
+            values.append(
+                _AdoTeamFieldValue(
+                    field_reference_name=field_reference_name,
+                    value=value,
+                    include_children=include_children,
+                )
+            )
+        return values
+
     def _query_backlog_items_core(
         self,
         client: httpx.Client,
@@ -824,6 +953,7 @@ class AzureDevOpsIssueAdapter:
         auth_header: str,
         iteration: str | None = None,
         area_path: str | None = None,
+        team_field_values: list[_AdoTeamFieldValue] | None = None,
         states: list[str] | None = None,
         types: list[str] | None = None,
         tags_any: list[str] | None = None,
@@ -837,6 +967,7 @@ class AzureDevOpsIssueAdapter:
             project=project,
             iteration=iteration,
             area_path=area_path,
+            team_field_values=team_field_values,
             states=states,
             types=types,
             tags_any=tags_any,

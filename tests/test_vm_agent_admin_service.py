@@ -416,7 +416,7 @@ def test_chat_assistant_session_resolution_is_backend_aware(
         backend="libvirt_vm",
         assistant_scope="admin_chat",
         settings=settings,
-        thread_id="thread-a2",
+        thread_id="thread-a",
         user_message_id="msg-a2",
     )
 
@@ -517,7 +517,7 @@ def test_chat_assistant_session_resolution_is_backend_aware(
         backend="container_worker_vm",
         assistant_scope="admin_chat",
         settings={**settings, "read_only": True},
-        thread_id="thread-c2",
+        thread_id="thread-c",
         user_message_id="msg-c2",
     )
 
@@ -529,17 +529,49 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     assert alice_session_reused is not None
     assert {
         value["thread_id"] for value in alice_session_reused.metadata["admin_chat_threads"].values()
-    } == {"thread-c", "thread-c2"}
+    } == {"thread-c"}
+    alice_container_new_thread = service.resolve_chat_assistant_session(
+        user_id="alice@example.com",
+        backend="container_worker_vm",
+        assistant_scope="admin_chat",
+        settings={**settings, "read_only": True},
+        thread_id="thread-c-new",
+        user_message_id="msg-c-new",
+    )
+    assert alice_container_new_thread["session_id"] == alice_container["session_id"]
+    assert alice_container_new_thread["agent_thread_id"] == ""
+    alice_session_new_thread = admin.runtime.session_repository.get_session(
+        alice_container["session_id"]
+    )
+    assert alice_session_new_thread is not None
+    assert "agent_thread_id" not in alice_session_new_thread.metadata
+    assert service._assistant_session_repo.get_mapping(
+        user_id="alice@example.com",
+        backend="container_worker_vm",
+        assistant_scope="admin_chat",
+    ) == {
+        "session_id": alice_container["session_id"],
+        "agent_thread_id": "",
+        "thread_id": "thread-c-new",
+    }
+    stale_container_updates = service.persist_chat_assistant_agent_thread_id(
+        session_id=alice_container["session_id"],
+        agent_thread_id="thread-real-alice-stale",
+        backend="container_worker_vm",
+        assistant_scope="admin_chat",
+        thread_id="thread-c",
+    )
+    assert stale_container_updates == 0
     reset_container = service.reset_chat_assistant_thread_context(
         user_id="alice@example.com",
         backend="container_worker_vm",
         assistant_scope="admin_chat",
-        thread_id="thread-c-new",
+        thread_id="thread-c-explicit-reset",
     )
     assert reset_container == {
         "session_id": alice_container["session_id"],
         "agent_thread_id": "",
-        "thread_id": "thread-c-new",
+        "thread_id": "thread-c-explicit-reset",
     }
     alice_session_reset = admin.runtime.session_repository.get_session(alice_container["session_id"])
     assert alice_session_reset is not None
@@ -547,6 +579,7 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     assert [item[0] for item in fake_container_backend.prepared] == [
         alice_container["session_id"],
         bob_container["session_id"],
+        alice_container["session_id"],
         alice_container["session_id"],
     ]
     assert all(
