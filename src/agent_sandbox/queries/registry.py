@@ -88,6 +88,7 @@ class QueryProviderFactory:
         )
         runtime_context = QueryRuntimeContext(
             provider_config=query_provider_config_blob(resolved_config),
+            provider_config_resolver=self.provider_config_resolver,
             vm_inventory=self._provider_runtime_ports.vm_inventory
             or self._provider_runtime_ports.gate_vm_inventory,
             git_pr_note_reader=self._provider_runtime_ports.git_pr_note_reader,

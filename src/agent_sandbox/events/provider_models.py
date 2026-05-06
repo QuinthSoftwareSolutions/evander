@@ -34,6 +34,7 @@ from agent_sandbox.events.provider_types import (
     validate_pr_feedback_provider,
 )
 from agent_sandbox.queries.providers.schemas import (
+    AdoWorkItemsQueryDefinition,
     GitPrNoteQueryDefinition,
     IssueGetQueryDefinition,
     SessionContextQueryDefinition,

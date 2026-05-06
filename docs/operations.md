@@ -787,9 +787,9 @@ through `pending`, `leased`, `dispatched`, `completed`, `failed`, or `cancelled`
 7. `post_pr_comment`, `post_pr_inline_comment`, or `submit_pr_review`
 8. `effect:vm:stop`
 
-Connect `effect:agent:prompt` to `gate:await-agent` through the prompt's `started`
-source port. Use the prompt's `completed` source port for downstream work that
-should wait for the agent run itself to finish.
+Connect `effect:agent:prompt` or `effect:agent:enqueue-prompt` to `gate:await-agent`
+through the prompt's `started` source port. Use the prompt's `completed` source
+port for downstream work that should wait for the agent run itself to finish.
 
 ### Guest repo preparation
 

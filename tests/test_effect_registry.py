@@ -46,6 +46,7 @@ from agent_sandbox.events.provider_models import (
 )
 from agent_sandbox.models import SessionManifest, ToolName, VmActionResult
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from agent_sandbox.repositories.skills_library import SkillLibraryRepository
 
 
 class _ResolverStub:
@@ -758,9 +759,7 @@ def test_codex_json_log_filter_handles_current_exec_event_stream() -> None:
     )
 
     assert completed.stdout == (
-        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
-        "I am checking the repo now.\n"
-        "Done.\n"
+        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\nI am checking the repo now.\nDone.\n"
     )
 
 
@@ -1186,7 +1185,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert "config alias.push-agent" in clone_config_command
     assert "git config agent-sandbox.prNotesRef" in clone_config_command
     assert "refs/notes/agent-pr/" in clone_config_command
-    assert 'git config --get agent-sandbox.prNotesRef' in clone_config_command
+    assert "git config --get agent-sandbox.prNotesRef" in clone_config_command
     assert 'git config agent-sandbox.pushAgentAvailable "true"' in clone_config_command
     assert "CANONICAL_REMOTE_URL=https://example.test/org/repo.git" in clone_config_command
     assert "url.${PUSH_REMOTE_URL}.insteadOf" in clone_config_command
@@ -1362,6 +1361,98 @@ def test_agent_create_container_rejects_mssql_until_supported(
                 execution_backend="container_worker_vm",
                 session_id="session-1",
                 mssql=True,
+            )
+        ).execute()
+
+    assert backend.prepared_sessions == []
+
+
+def test_agent_create_container_writes_managed_codex_skills(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    SkillLibraryRepository(tmp_path).create_skill(
+        name="managed.skill",
+        content="# Managed\n",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create",
+            display_name="Create",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-1",
+            codex_skills=["managed.skill"],
+        )
+    ).execute()
+
+    bootstrap_files = backend.written_files[0]["files"]
+    skill_file = next(
+        entry
+        for entry in bootstrap_files
+        if entry["destination_path"]
+        == "/home/agent/.config/agent-sandbox/codex/skills/managed.skill/SKILL.md"
+    )
+    assert skill_file["content"] == "# Managed\n"
+
+
+def test_agent_create_container_rejects_unknown_codex_skill_before_prepare(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    with pytest.raises(LookupError, match="Unknown skill: missing.skill"):
+        factory.build(
+            AgentCreateEffectDefinition(
+                id="agent-create",
+                display_name="Create",
+                type="effect:agent:create",
+                execution_backend="container_worker_vm",
+                session_id="session-1",
+                codex_skills=["missing.skill"],
             )
         ).execute()
 

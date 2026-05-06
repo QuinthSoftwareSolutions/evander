@@ -17,6 +17,10 @@ from agent_sandbox.repositories.session_manifests import (
     SessionManifestRepository,
     as_session_manifest_repository,
 )
+from agent_sandbox.repositories.skills_library import (
+    SkillLibraryRepository,
+    normalize_skill_names,
+)
 from agent_sandbox.vm.power_state import normalize_power_state
 
 
@@ -47,6 +51,20 @@ def session_vm_provider_id(
 
 def _runtime_session_repository(runtime: Any) -> SessionManifestRepository:
     return as_session_manifest_repository(getattr(runtime, "session_repository"))
+
+
+def _managed_codex_skills_root(deps: Any, skill_names: list[str] | None) -> Path | None:
+    names = normalize_skill_names(skill_names)
+    if not names:
+        return None
+    runtime_config = getattr(getattr(deps, "runtime", None), "config", None)
+    runtime_dir = getattr(runtime_config, "runtime_dir", None)
+    if runtime_dir is None:
+        return None
+    repository = SkillLibraryRepository(Path(runtime_dir))
+    if all(repository.has_skill(name) for name in names):
+        return repository.skills_root
+    return None
 
 
 class AzureVmControlClientProtocol(Protocol):
@@ -893,6 +911,9 @@ def _libvirt_create_vm(
     run_env.update(vm_defaults.guest_environment())
     if manifest.model:
         run_env["AGENT_MODEL"] = manifest.model
+    managed_skills_root = _managed_codex_skills_root(deps, normalized_codex_skills)
+    if managed_skills_root is not None:
+        run_env["HOST_REPO_CODEX_SKILLS_DIR"] = str(managed_skills_root)
 
     try:
         helper = deps.get_privileged_helper() if deps.get_use_privileged_helper() else None
@@ -942,6 +963,7 @@ def _libvirt_create_vm(
                 "VM_WAIT_IP_TIMEOUT_SECONDS",
                 "VM_WAIT_SSH_TIMEOUT_SECONDS",
                 "MSSQL_SA_PASSWORD",
+                "HOST_REPO_CODEX_SKILLS_DIR",
             )
             launch_step = admin_service_module._sudo_env_command(
                 [str(setup_script), *setup_args], run_env, allowed_env_keys

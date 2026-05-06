@@ -20,6 +20,7 @@ from .agent_session import (
     selected_execution_backend,
 )
 from .base import EffectProviderBase
+from .codex_skills import container_codex_skill_files, managed_codex_skill_names
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,9 @@ class AgentCreateEffectProvider(EffectProviderBase):
             raise ValueError(f"Unsupported execution_backend: {execution_backend}")
         return self._execute_container(payload, config=config, directory_path=directory_path)
 
-    def _execute_libvirt(self, payload: dict[str, Any], *, execution_backend: str) -> dict[str, Any]:
+    def _execute_libvirt(
+        self, payload: dict[str, Any], *, execution_backend: str
+    ) -> dict[str, Any]:
         context = self._context()
         if context.vm_creator is None:
             raise RuntimeError("effect:agent:create vm_creator is not available")
@@ -81,6 +84,11 @@ class AgentCreateEffectProvider(EffectProviderBase):
         if not vm_name:
             raise ValueError("effect:agent:create with libvirt_vm requires vm_name")
         session_id = normalize_optional_string(payload.get("session_id"))
+        codex_skills = managed_codex_skill_names(
+            context=context,
+            config=context.resolved_config,
+            skill_names=as_string_list(payload.get("codex_skills")),
+        )
         result = context.vm_creator.create_vm(
             provider=normalize_optional_string(payload.get("provider")),
             vm_name=vm_name,
@@ -99,7 +107,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             mssql=bool(payload.get("mssql", False)),
             mssql_init_root=normalize_optional_string(payload.get("mssql_init_root")),
             playwright=bool(payload.get("playwright", False)),
-            codex_skills=as_string_list(payload.get("codex_skills")),
+            codex_skills=codex_skills,
             directory_path=normalize_optional_string(payload.get("directory_path"))
             or str(context.metadata.get("directory_path") or "root"),
         )
@@ -128,6 +136,11 @@ class AgentCreateEffectProvider(EffectProviderBase):
             raise ValueError(
                 "effect:agent:create with container_worker_vm does not support MSSQL yet"
             )
+        codex_skill_files = container_codex_skill_files(
+            context=context,
+            config=config,
+            skill_names=as_string_list(payload.get("codex_skills")),
+        )
         labels = as_string_mapping(payload.get("labels")) or {}
         model = normalize_optional_string(payload.get("model"))
         metadata = {
@@ -177,14 +190,17 @@ class AgentCreateEffectProvider(EffectProviderBase):
         )
         backend.write_files(
             session_id=session_id,
-            files=build_container_session_files(
-                config=config,
-                session_id=session_id,
-                model=model,
-                dotnet=bool(payload.get("dotnet", False)),
-                nuget=bool(payload.get("nuget", False)),
-                playwright=bool(payload.get("playwright", False)),
-            ),
+            files=[
+                *build_container_session_files(
+                    config=config,
+                    session_id=session_id,
+                    model=model,
+                    dotnet=bool(payload.get("dotnet", False)),
+                    nuget=bool(payload.get("nuget", False)),
+                    playwright=bool(payload.get("playwright", False)),
+                ),
+                *codex_skill_files,
+            ],
         )
         return {
             "success": True,

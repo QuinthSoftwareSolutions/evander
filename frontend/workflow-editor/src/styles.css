@@ -1342,6 +1342,14 @@ select {
   width: 100%;
 }
 
+.create-group-actions button[draggable="true"] {
+  cursor: grab;
+}
+
+.create-group-actions button[draggable="true"]:active {
+  cursor: grabbing;
+}
+
 .inspector-label {
   display: block;
   margin-bottom: 0.75rem;
@@ -1454,6 +1462,19 @@ select {
 
 .checkbox-row input {
   width: auto;
+}
+
+.option-checkbox-list {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.65rem 0.7rem;
+  border: 1px solid rgba(91, 67, 37, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 248, 236, 0.48);
+}
+
+.option-checkbox-row {
+  font-size: 0.86rem;
 }
 
 .object-list-item {
@@ -1708,7 +1729,7 @@ select {
   transform: translate(-100%, -50%);
   color: rgba(48, 74, 73, 0.42);
   font-family: "Avenir Next Condensed", "Franklin Gothic Medium", sans-serif;
-  font-size: clamp(1.5rem, 2.4vw, 2.5rem);
+  font-size: clamp(1.5rem, 2.0vw, 2.3rem);
   font-weight: 800;
   line-height: 0.95;
   overflow-wrap: anywhere;
@@ -3129,6 +3150,22 @@ select {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.6rem 1rem;
+}
+
+.skill-checkbox-grid {
+  padding: 0.75rem;
+  border: 1px solid rgba(42, 76, 90, 0.12);
+  border-radius: 10px;
+  background: rgba(244, 248, 246, 0.76);
+}
+
+.skills-detail-grid {
+  grid-template-columns: minmax(18rem, 0.8fr) minmax(22rem, 1.2fr);
+}
+
+.skill-editor {
+  min-height: 26rem;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
 .history-card {

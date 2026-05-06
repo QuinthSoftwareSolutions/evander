@@ -55,6 +55,14 @@
         "target_id": "effect-pr-create-1"
       },
       {
+        "source_id": "effect-pr-create-1",
+        "target_id": "gate-filter-8"
+      },
+      {
+        "source_id": "gate-filter-8",
+        "target_id": "effect-agent-enqueue-prompt-3"
+      },
+      {
         "source_id": "effect-git-promote-agent-branch-1",
         "target_id": "query-session-context-1"
       },
@@ -130,6 +138,7 @@
       },
       {
         "source_id": "effect-agent-enqueue-prompt-1",
+        "source_port": "started",
         "target_id": "effect-session-update-metadata-3"
       },
       {
@@ -716,6 +725,53 @@
       },
       {
         "config": {
+          "when": {
+            "all": [
+              {
+                "equals": false,
+                "left": "${{effect-pr-create-1.success}}"
+              }
+            ]
+          }
+        },
+        "display_name": "Filter PR preflight failures",
+        "id": "gate-filter-8",
+        "outputs": {
+          "destination_ahead_count": {
+            "type": "integer"
+          },
+          "destination_commit": {
+            "type": "string"
+          },
+          "local_ahead_count": {
+            "type": "integer"
+          },
+          "local_branch": {
+            "type": "string"
+          },
+          "local_commit": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "origin_branch": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "gate:filter"
+      },
+      {
+        "config": {
           "items": "${{query-issue-get-1.metadata.steps}}"
         },
         "display_name": "For each step",
@@ -933,6 +989,19 @@
         "display_name": "Create PR",
         "id": "effect-pr-create-1",
         "type": "effect:pr:create"
+      },
+      {
+        "config": {
+          "model": "gpt-5.4",
+          "prompt": "Your latest push was accepted into the agent branch, but the PR destination branch could not be updated because ${{effect-pr-create-1.origin_branch}} has commits that are not in your promoted branch.\n\nPlease fetch and merge the destination branch into your current work branch, resolve any conflicts, commit the merge if needed, update your PR summary with git agent-pr-note, and run git push-agent again.\n\nSuggested commands:\n\n```bash\ngit fetch origin ${{effect-pr-create-1.origin_branch}}\ngit merge origin/${{effect-pr-create-1.origin_branch}}\n# resolve conflicts, then:\ngit status\ngit add <resolved files>\ngit commit\ngit agent-pr-note append \"Merged ${{effect-pr-create-1.origin_branch}} and resolved promotion conflict.\"\ngit push-agent\n```",
+          "queue_key": "pr-create-preflight:${{trigger-git-push-1.session_id}}:${{effect-pr-create-1.origin_branch}}",
+          "resume_thread_id": "${{query-session-context-1.metadata.agent_thread_id ?? null}}",
+          "target": "${{trigger-git-push-1.session_id}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Prompt agent to merge PR destination",
+        "id": "effect-agent-enqueue-prompt-3",
+        "type": "effect:agent:enqueue-prompt"
       },
       {
         "config": {

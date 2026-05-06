@@ -18,12 +18,23 @@ from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
 from agent_sandbox.models import SessionManifest, ToolName, VmActionResult, VmSummary
 from agent_sandbox.repositories.chat_assistant_sessions import JsonChatAssistantSessionRepository
 from agent_sandbox.repositories.session_manifests import as_session_manifest_repository
+from agent_sandbox.repositories.skills_library import SkillLibraryRepository, normalize_skill_names
 from agent_sandbox.runtime import allowed_tools_for_capability_profile
 from agent_sandbox.execution import ExecutionBackendKind
 from agent_sandbox.vm.provider import VmProviderRegistry
 
 _ASSISTANT_AGENTS_DESTINATION_PATH = "/home/agent/AGENTS.md"
 _ASSISTANT_AGENTS_TEMPLATE_NAME = "chat-assistant-AGENTS.md"
+
+
+def _managed_codex_skills_root(runtime_dir: Path, skill_names: list[str] | None) -> Path | None:
+    names = normalize_skill_names(skill_names)
+    if not names:
+        return None
+    repository = SkillLibraryRepository(runtime_dir)
+    if all(repository.has_skill(name) for name in names):
+        return repository.skills_root
+    return None
 
 
 def _safe_chat_assistant_identifier(value: str) -> str:
@@ -1946,6 +1957,15 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             run_env.update(vm_defaults.guest_environment())
             if manifest.model:
                 run_env["AGENT_MODEL"] = manifest.model
+            normalized_codex_skills = [
+                item.strip() for item in (codex_skills or []) if item and item.strip()
+            ]
+            managed_skills_root = _managed_codex_skills_root(
+                self._deps.config.runtime_dir,
+                normalized_codex_skills,
+            )
+            if managed_skills_root is not None:
+                run_env["HOST_REPO_CODEX_SKILLS_DIR"] = str(managed_skills_root)
             run_env.update(
                 {
                     "AGENT_SANDBOX_GIT_ROOT": issue_setup.git_root,
@@ -1981,9 +2001,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                     setup_args.extend(["--mssql-init-root", mssql_init_root])
             if playwright:
                 setup_args.append("--playwright")
-            for skill_name in [
-                item.strip() for item in (codex_skills or []) if item and item.strip()
-            ]:
+            for skill_name in normalized_codex_skills:
                 setup_args.extend(["--codex-skill", skill_name])
             setup_args.extend([resolved_vm_name, resolved_session_id, vm_user])
             if helper is not None:
@@ -2025,6 +2043,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                     "AGENT_POST_EXEC_VERIFICATION_PROMPT",
                     "ENABLE_GUEST_HEARTBEAT",
                     "GUEST_HEARTBEAT_PROMPT",
+                    "HOST_REPO_CODEX_SKILLS_DIR",
                 )
                 launch_step = _admin_service._sudo_env_command(
                     [str(setup_script), *setup_args],

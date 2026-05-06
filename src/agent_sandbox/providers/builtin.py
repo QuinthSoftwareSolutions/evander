@@ -39,6 +39,7 @@ from agent_sandbox.gates.providers.filter_gate import FilterGateProvider
 from agent_sandbox.gates.providers.for_gate import ForGateProvider
 from agent_sandbox.gates.providers.map_gate import MapGateProvider
 from agent_sandbox.gates.providers.merge_gate import MergeGateProvider
+from agent_sandbox.queries.providers.ado_work_items import AdoWorkItemsQueryProvider
 from agent_sandbox.queries.providers.git_pr_note import GitPrNoteQueryProvider
 from agent_sandbox.queries.providers.issue_get import IssueGetQueryProvider
 from agent_sandbox.queries.providers.session_context import SessionContextQueryProvider
@@ -117,6 +118,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:git:pr-note": GitPrNoteQueryProvider,
             "query:session-context": SessionContextQueryProvider,
             "query:issue:get": IssueGetQueryProvider,
+            "query:ado:work-items": AdoWorkItemsQueryProvider,
         },
         node_definition_resolvers={
             **trigger_node_schema_resolvers(),

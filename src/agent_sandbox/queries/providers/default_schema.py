@@ -5,6 +5,7 @@ from collections.abc import Callable
 from pydantic import BaseModel
 
 from agent_sandbox.queries.providers.schemas import (
+    AdoWorkItemsQueryDefinition,
     GitPrNoteQueryDefinition,
     IssueGetQueryDefinition,
     SessionContextQueryDefinition,
@@ -18,6 +19,7 @@ _QUERY_MODEL_BY_TYPE = {
     "query:git:pr-note": GitPrNoteQueryDefinition,
     "query:session-context": SessionContextQueryDefinition,
     "query:issue:get": IssueGetQueryDefinition,
+    "query:ado:work-items": AdoWorkItemsQueryDefinition,
 }
 
 

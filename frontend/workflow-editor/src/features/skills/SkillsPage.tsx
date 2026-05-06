@@ -1,0 +1,333 @@
+import { FormEvent, useEffect, useMemo, useState } from "react";
+
+import { fetchJson, formatTimestamp } from "../admin/api";
+import type {
+  SkillLibraryDetail,
+  SkillLibraryItem,
+  SkillListResponse,
+  SkillMutationResponse,
+  SkillResponse,
+} from "../admin/types";
+
+async function loadSkills(): Promise<SkillLibraryItem[]> {
+  const payload = await fetchJson<SkillListResponse>("/api/admin/skills");
+  return payload.items;
+}
+
+async function loadSkill(name: string): Promise<SkillLibraryDetail> {
+  const payload = await fetchJson<SkillResponse>(
+    `/api/admin/skills/${encodeURIComponent(name)}`,
+  );
+  return payload.skill;
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value)) return "0 B";
+  if (value < 1024) return `${value} B`;
+  return `${(value / 1024).toFixed(1)} KB`;
+}
+
+function skillNameFromFileName(fileName: string): string {
+  return fileName.replace(/\.md$/i, "").trim();
+}
+
+export function SkillsPage() {
+  const [items, setItems] = useState<SkillLibraryItem[]>([]);
+  const [selectedName, setSelectedName] = useState<string | null>(null);
+  const [selectedSkill, setSelectedSkill] = useState<SkillLibraryDetail | null>(null);
+  const [uploadName, setUploadName] = useState("");
+  const [uploadContent, setUploadContent] = useState("");
+  const [uploadFileName, setUploadFileName] = useState("");
+  const [editContent, setEditContent] = useState("");
+  const [replaceExisting, setReplaceExisting] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+
+  const selectedSummary = useMemo(
+    () => items.find((item) => item.name === selectedName) ?? null,
+    [items, selectedName],
+  );
+
+  async function refreshSkills(nextSelectedName?: string | null) {
+    const nextItems = await loadSkills();
+    setItems(nextItems);
+    setSelectedName((current) => {
+      if (nextSelectedName !== undefined) return nextSelectedName;
+      if (current && nextItems.some((item) => item.name === current)) return current;
+      return nextItems[0]?.name ?? null;
+    });
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const nextItems = await loadSkills();
+        if (cancelled) return;
+        setItems(nextItems);
+        setSelectedName((current) =>
+          current && nextItems.some((item) => item.name === current)
+            ? current
+            : nextItems[0]?.name ?? null,
+        );
+        setError(null);
+      } catch (reason: unknown) {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    void refresh();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!selectedName) {
+      setSelectedSkill(null);
+      setEditContent("");
+      return;
+    }
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const detail = await loadSkill(selectedName);
+        if (cancelled) return;
+        setSelectedSkill(detail);
+        setEditContent(detail.content);
+        setError(null);
+      } catch (reason: unknown) {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+      }
+    };
+    void refresh();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedName]);
+
+  async function handleFileChange(file: File | null) {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".md")) {
+      setError("Only Markdown files are accepted.");
+      return;
+    }
+    setUploadFileName(file.name);
+    setUploadContent(await file.text());
+    setUploadName((current) => current || skillNameFromFileName(file.name));
+    setError(null);
+  }
+
+  async function handleUpload(event: FormEvent) {
+    event.preventDefault();
+    setBusy("upload");
+    try {
+      const payload = await fetchJson<SkillMutationResponse>("/api/admin/skills", {
+        method: "POST",
+        body: JSON.stringify({
+          name: uploadName.trim(),
+          content: uploadContent,
+          replace: replaceExisting,
+        }),
+      });
+      setStatus(`Saved ${payload.skill.name}.`);
+      setUploadContent("");
+      setUploadFileName("");
+      setReplaceExisting(false);
+      await refreshSkills(payload.skill.name);
+      setError(null);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setStatus(null);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleReplace() {
+    if (!selectedSkill) return;
+    setBusy("replace");
+    try {
+      const payload = await fetchJson<SkillMutationResponse>("/api/admin/skills", {
+        method: "POST",
+        body: JSON.stringify({
+          name: selectedSkill.name,
+          content: editContent,
+          replace: true,
+        }),
+      });
+      setStatus(`Saved ${payload.skill.name}.`);
+      await refreshSkills(payload.skill.name);
+      setError(null);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setStatus(null);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleDelete() {
+    if (!selectedSkill) return;
+    if (!window.confirm(`Delete ${selectedSkill.name}?`)) return;
+    setBusy("delete");
+    try {
+      const deletedName = selectedSkill.name;
+      await fetchJson<SkillMutationResponse>(
+        `/api/admin/skills/${encodeURIComponent(deletedName)}`,
+        { method: "DELETE" },
+      );
+      setStatus(`Deleted ${deletedName}.`);
+      await refreshSkills(null);
+      setError(null);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setStatus(null);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="feature-page skills-page">
+      <section className="feature-sidebar">
+        <div className="feature-sidebar-header">
+          <div>
+            <div className="eyebrow">Managed library</div>
+            <h1>Skills</h1>
+          </div>
+          <div className="inline-actions compact-actions">
+            <button type="button" onClick={() => void refreshSkills()} disabled={loading || busy !== null}>
+              Refresh
+            </button>
+          </div>
+        </div>
+        <div className="feature-list skill-list">
+          {items.map((item) => (
+            <button
+              key={item.name}
+              type="button"
+              className={`feature-list-item skill-list-item${selectedName === item.name ? " selected" : ""}`}
+              onClick={() => setSelectedName(item.name)}
+            >
+              <div className="feature-list-title-row">
+                <strong>{item.name}</strong>
+                <span className="status-pill">{formatBytes(item.size_bytes)}</span>
+              </div>
+              <div className="feature-list-meta">{formatTimestamp(item.updated_at)}</div>
+            </button>
+          ))}
+          {!loading && items.length === 0 ? <div className="empty-state">No skills found.</div> : null}
+        </div>
+      </section>
+
+      <section className="feature-content">
+        <div className="feature-toolbar">
+          <div>
+            <h2>{selectedSkill?.name ?? "Managed skills"}</h2>
+            <p className="muted-text">
+              {selectedSummary
+                ? `${formatBytes(selectedSummary.size_bytes)} / ${formatTimestamp(selectedSummary.updated_at)}`
+                : "Global Codex skills available to agent creation flows."}
+            </p>
+          </div>
+        </div>
+
+        {error ? <div className="callout warning-callout">{error}</div> : null}
+        {status ? <div className="callout">{status}</div> : null}
+
+        <div className="detail-grid skills-detail-grid">
+          <article className="panel">
+            <div className="panel-header">
+              <h3>Upload</h3>
+              <span className="panel-meta">{uploadFileName || "Markdown"}</span>
+            </div>
+            <form className="form-grid" onSubmit={(event) => void handleUpload(event)}>
+              <label className="field-stack">
+                <span>Name</span>
+                <input
+                  value={uploadName}
+                  onChange={(event) => setUploadName(event.target.value)}
+                  placeholder="skill-name"
+                />
+              </label>
+              <label className="field-stack">
+                <span>File</span>
+                <input
+                  type="file"
+                  accept=".md,text/markdown"
+                  onChange={(event) => void handleFileChange(event.target.files?.[0] ?? null)}
+                />
+              </label>
+              <label className="checkbox-row field-span-2">
+                <input
+                  type="checkbox"
+                  checked={replaceExisting}
+                  onChange={(event) => setReplaceExisting(event.target.checked)}
+                />
+                <span>Replace existing</span>
+              </label>
+              <label className="field-stack field-span-2">
+                <span>Content</span>
+                <textarea
+                  rows={10}
+                  value={uploadContent}
+                  onChange={(event) => setUploadContent(event.target.value)}
+                />
+              </label>
+              <div className="inline-actions compact-actions field-span-2">
+                <button
+                  className="primary"
+                  type="submit"
+                  disabled={busy !== null || !uploadName.trim() || !uploadContent.trim()}
+                >
+                  {busy === "upload" ? "Saving..." : "Save"}
+                </button>
+              </div>
+            </form>
+          </article>
+
+          <article className="panel">
+            <div className="panel-header">
+              <h3>Edit</h3>
+              <span className="panel-meta">{selectedSkill?.name ?? "None selected"}</span>
+            </div>
+            {selectedSkill ? (
+              <div className="field-stack">
+                <textarea
+                  className="skill-editor"
+                  rows={18}
+                  value={editContent}
+                  onChange={(event) => setEditContent(event.target.value)}
+                />
+                <div className="inline-actions compact-actions">
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={() => void handleReplace()}
+                    disabled={busy !== null || !editContent.trim()}
+                  >
+                    {busy === "replace" ? "Saving..." : "Replace"}
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() => void handleDelete()}
+                    disabled={busy !== null}
+                  >
+                    {busy === "delete" ? "Deleting..." : "Delete"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="empty-state">Select a skill to preview or edit.</div>
+            )}
+          </article>
+        </div>
+      </section>
+    </div>
+  );
+}

@@ -19,7 +19,11 @@ from agent_sandbox.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
 )
-from agent_sandbox.execution.models import ExecutionBackendKind, ExecutionStatus, ExecutionStatusKind
+from agent_sandbox.execution.models import (
+    ExecutionBackendKind,
+    ExecutionStatus,
+    ExecutionStatusKind,
+)
 from agent_sandbox.models import (
     ApprovalRequest,
     LocalIssueRecord,
@@ -70,9 +74,7 @@ def _set_azure_sso_env(
     else:
         monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS", allowed_users)
     if post_login_redirect is not None:
-        monkeypatch.setenv(
-            "AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT", post_login_redirect
-        )
+        monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AZURE_POST_LOGIN_REDIRECT", post_login_redirect)
 
 
 def _admin_web_user_store(tmp_path: Path) -> AdminWebUserStore:
@@ -210,6 +212,18 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "resume_thread_id",
         "queue_key",
     ]
+    assert agent_enqueue_prompt["output_ports"] == [
+        {
+            "key": "started",
+            "label": "Started",
+            "description": "Emits after the queued prompt has been dispatched.",
+        },
+        {
+            "key": "completed",
+            "label": "Completed",
+            "description": "Emits after the dispatched agent run has completed.",
+        },
+    ]
     bash_script = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:bash:script"
     )
@@ -250,6 +264,24 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     ]
     issue_get = next(node for node in catalog_payload["nodes"] if node["type"] == "query:issue:get")
     assert [field["key"] for field in issue_get["fields"]] == ["issue_id"]
+    ado_work_items = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "query:ado:work-items"
+    )
+    assert [field["key"] for field in ado_work_items["fields"]] == [
+        "directory_path",
+        "project",
+        "wiql",
+        "current_iteration",
+        "team",
+        "iteration",
+        "area_path",
+        "states",
+        "types",
+        "tags_any",
+        "text_search",
+        "top",
+        "skip",
+    ]
     vm_create = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:create"
     )
@@ -385,6 +417,73 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "codex_skills",
         "directory_path",
     ]
+
+
+def test_admin_web_skills_api_and_catalog_options(tmp_path: Path) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    create_response = client.post(
+        "/api/admin/skills",
+        json={"name": "demo.skill", "content": "# Demo\n", "replace": False},
+    )
+
+    assert create_response.status_code == 201
+    assert create_response.json()["skill"]["name"] == "demo.skill"
+    duplicate_response = client.post(
+        "/api/admin/skills",
+        json={"name": "demo.skill", "content": "# Duplicate\n"},
+    )
+    assert duplicate_response.status_code == 409
+
+    list_response = client.get("/api/admin/skills")
+    assert list_response.status_code == 200
+    assert [item["name"] for item in list_response.json()["items"]] == ["demo.skill"]
+    detail_response = client.get("/api/admin/skills/demo.skill")
+    assert detail_response.status_code == 200
+    assert detail_response.json()["skill"]["content"] == "# Demo\n"
+
+    replace_response = client.post(
+        "/api/admin/skills",
+        json={"name": "demo.skill", "content": "# Updated\n", "replace": True},
+    )
+    assert replace_response.status_code == 201
+    assert client.get("/api/admin/skills/demo.skill").json()["skill"]["content"] == "# Updated\n"
+
+    catalog_payload = client.get("/api/workflow-editor/catalog").json()
+    vm_create = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:create"
+    )
+    agent_create = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:create"
+    )
+    for node in (vm_create, agent_create):
+        codex_skills = next(field for field in node["fields"] if field["key"] == "codex_skills")
+        assert codex_skills["kind"] == "string_list"
+        assert codex_skills["options"] == [{"value": "demo.skill", "label": "demo.skill"}]
+
+    delete_response = client.delete("/api/admin/skills/demo.skill")
+    assert delete_response.status_code == 200
+    assert client.get("/api/admin/skills/demo.skill").status_code == 404
+
+
+def test_admin_web_skills_api_rejects_json_errors(tmp_path: Path) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    assert client.post("/api/admin/skills", json=[]).status_code == 400
+    assert (
+        client.post(
+            "/api/admin/skills",
+            json={"name": "../escape", "content": "# Demo\n"},
+        ).status_code
+        == 400
+    )
+    assert (
+        client.post(
+            "/api/admin/skills",
+            json={"name": "empty", "content": "  \n"},
+        ).status_code
+        == 400
+    )
 
 
 def test_admin_web_exposes_workflow_run_stream(tmp_path: Path) -> None:
@@ -1531,9 +1630,7 @@ def test_admin_web_logout_clears_azure_local_session_cookie(tmp_path: Path, monk
     assert response.json()["auth_mode"] == "azure_sso"
 
 
-def test_admin_web_removed_azure_user_loses_existing_session(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_admin_web_removed_azure_user_loses_existing_session(tmp_path: Path, monkeypatch) -> None:
     _set_azure_sso_env(monkeypatch, allowed_users="operator@example.com,backup@example.com")
     app = create_app(AdminService(write_config(tmp_path)))
     client = TestClient(app)
@@ -1676,7 +1773,9 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     communications = next(tab for tab in payload["tabs"] if tab["key"] == "communications")
     assert communications["title"] == "Communications"
     assert any(section["title"] == "Discord" for section in communications["sections"])
-    assistant = next(section for section in communications["sections"] if section["title"] == "Assistant")
+    assistant = next(
+        section for section in communications["sections"] if section["title"] == "Assistant"
+    )
     assistant_fields = {field["field_name"]: field for field in assistant["fields"]}
     assert assistant_fields["enabled"]["scope"] == "global"
     assert assistant_fields["show_launcher_when_disabled"]["kind"] == "bool"
@@ -2328,9 +2427,7 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
 
     client = TestClient(create_app(service))
 
-    log_response = client.get(
-        "/api/admin/agents/session-1/log?backend=container_worker_vm&lines=4"
-    )
+    log_response = client.get("/api/admin/agents/session-1/log?backend=container_worker_vm&lines=4")
     stop_response = client.post(
         "/api/admin/agents/session-1/actions/stop?backend=container_worker_vm", json={}
     )
@@ -2358,10 +2455,9 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     assert fake_backend.destroyed == ["exec-1"]
 
 
-def test_admin_web_agents_create_vm_uses_agent_crud_payload(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))
+    service.create_skill({"name": "exampleindustry-app-demo", "content": "# Demo\n"})
     captured: dict[str, object] = {}
 
     def create_vm(self, **payload):
@@ -2427,9 +2523,7 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(
     }
 
 
-def test_admin_web_agents_create_container_session_and_list_it(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_admin_web_agents_create_container_session_and_list_it(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     created = service.create_directory_child("root", "team-a")
     assert created.ok is True and created.data is not None
@@ -2514,9 +2608,9 @@ def test_admin_web_agents_create_container_session_and_list_it(
 
     assert list_response.status_code == 200
     payload = list_response.json()
-    assert [(item["agent_id"], item["target_name"], item["status"]) for item in payload["items"]] == [
-        ("container-session", "container-target", "prepared")
-    ]
+    assert [
+        (item["agent_id"], item["target_name"], item["status"]) for item in payload["items"]
+    ] == [("container-session", "container-target", "prepared")]
     assert payload["items"][0]["capabilities"]["logs"] is False
 
 
@@ -2729,14 +2823,10 @@ def test_admin_web_agents_delete_container_session_uses_persisted_worker_url(
     )
     client = TestClient(create_app(service))
 
-    response = client.delete(
-        "/api/admin/agents/container-session?backend=container_worker_vm"
-    )
+    response = client.delete("/api/admin/agents/container-session?backend=container_worker_vm")
 
     assert response.status_code == 200
-    assert backend_kwargs == [
-        {"directory_path": "root", "worker_url": "http://worker.test"}
-    ]
+    assert backend_kwargs == [{"directory_path": "root", "worker_url": "http://worker.test"}]
     assert fake_backend.deleted_sessions == ["container-session"]
     assert service.runtime.session_repository.get_session("container-session") is None
     assert repository.read_all() == {}
@@ -2788,9 +2878,7 @@ def test_admin_web_vm_agent_action_uses_existing_vm_path(tmp_path: Path, monkeyp
     monkeypatch.setattr(service, "start_vm", MethodType(start_vm, service))
 
     client = TestClient(create_app(service))
-    response = client.post(
-        "/api/admin/agents/vm-1/actions/start?backend=libvirt_vm", json={}
-    )
+    response = client.post("/api/admin/agents/vm-1/actions/start?backend=libvirt_vm", json={})
 
     assert response.status_code == 200
     assert response.json()["backend"] == "libvirt_vm"

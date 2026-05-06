@@ -1821,6 +1821,191 @@ def test_agent_prompt_on_completion_releases_downstream_effect_without_await_gat
     )
 
 
+def test_agent_enqueue_prompt_started_port_releases_downstream_after_dispatch(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Enqueue",
+                    "type": "effect:agent:enqueue-prompt",
+                    "session_id": "session-42",
+                    "prompt": "Continue main task",
+                },
+                {
+                    "id": "effect-2",
+                    "display_name": "Store metadata",
+                    "type": "effect:session:update-metadata",
+                    "target": "session-42",
+                    "metadata": {"thread_id": "${{effect-1.thread_id}}"},
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+                _edge("effect-1", "effect-2", source_port="started"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory(
+        {
+            "effect-1": {
+                "dispatch_id": "dispatch-effect-1-abc123",
+                "thread_id": "thread-1",
+                "success": True,
+                "queued": False,
+            },
+            "effect-2": {"success": True},
+        }
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-enqueue-started",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-enqueue-started",
+        )
+    )
+
+    for _ in range(4):
+        worker.run_once()
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    by_effect = {item["effect_id"]: item for item in effect_payload.values()}
+    assert by_effect["effect-1"]["status"] == "waiting"
+    assert by_effect["effect-2"]["status"] == "succeeded"
+    assert by_effect["effect-2"]["resolved_config"]["metadata"] == {"thread_id": "thread-1"}
+
+
+def test_agent_enqueue_prompt_completed_port_waits_for_agent_completion(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Enqueue",
+                    "type": "effect:agent:enqueue-prompt",
+                    "session_id": "session-42",
+                    "prompt": "Continue main task",
+                },
+                {
+                    "id": "effect-2",
+                    "display_name": "Post completion",
+                    "type": "effect:session:update-metadata",
+                    "target": "session-42",
+                    "metadata": {"completed": True},
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+                _edge("effect-1", "effect-2", source_port="completed"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory(
+        {
+            "effect-1": {
+                "dispatch_id": "dispatch-effect-1-abc123",
+                "thread_id": "thread-1",
+                "success": True,
+                "queued": False,
+            },
+            "effect-2": {"success": True},
+        }
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-enqueue-completed-start",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-enqueue-completed",
+        )
+    )
+
+    for _ in range(4):
+        worker.run_once()
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    by_effect = {item["effect_id"]: item for item in effect_payload.values()}
+    assert by_effect["effect-1"]["status"] == "waiting"
+    assert "effect-2" not in by_effect
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-enqueue-completed-finish",
+            trigger_id="__await-agent-completion__",
+            trigger_type="trigger:agent:run:completed",
+            occurred_at=datetime(2026, 4, 4, 12, 5, tzinfo=timezone.utc),
+            payload={
+                "dispatch_id": "dispatch-effect-1-abc123",
+                "vm_name": "vm-issue-42",
+                "session_ids": ["session-42"],
+                "agent_state": "idle",
+                "previous_agent_state": "running",
+                "scope": {
+                    "directory_path": "root",
+                    "vm_name": "vm-issue-42",
+                    "session_id": "session-42",
+                    "vm_user": "agent",
+                },
+                "vm": {"vm_name": "vm-issue-42"},
+            },
+            trace_id="trace-enqueue-completed",
+        )
+    )
+
+    for _ in range(6):
+        worker.run_once()
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    by_effect = {item["effect_id"]: item for item in effect_payload.values()}
+    assert by_effect["effect-1"]["status"] == "succeeded"
+    assert by_effect["effect-2"]["status"] == "succeeded"
+
+
 def test_agent_enqueue_prompt_queues_when_target_agent_is_running(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1969,6 +2154,80 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
         else {}
     )
     assert queued_payload == {}
+    waiting_records = list(worker.execution_store.read_all().values())
+    assert len(waiting_records) == 1
+    assert waiting_records[0].status == "waiting"
+    assert waiting_records[0].effect_type == "effect:agent:enqueue-prompt"
+    assert waiting_records[0].outputs["thread_id"] == "thread-queued"
+
+
+def test_agent_enqueue_prompt_dispatch_does_not_publish_dispatch_id_as_thread_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Enqueue",
+                    "type": "effect:agent:enqueue-prompt",
+                    "vm_name": "vm-1",
+                    "prompt": "hello",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    resume_calls: list[dict[str, object]] = []
+    worker.queued_agent_prompt_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="vm-1",
+            target="vm-1",
+            vm_name="vm-1",
+            session_id=None,
+            prompt="hello",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            effect_id="effect-1",
+        )
+    )
+    worker.agent_run_status_port = _AgentRunStatusPortStub(
+        [
+            VmSummary(
+                vm_name="vm-1",
+                libvirt_state="running",
+                agent_state="idle",
+                session_ids=[],
+            )
+        ]
+    )
+    worker.agent_prompt_dispatch_port = _AgentPromptDispatchPortStub(
+        resume_calls,
+        type("Result", (), {"success": True, "thread_id": ""})(),
+    )
+
+    worker._run_post_completion_dispatch_hooks()
+
+    waiting_records = list(worker.execution_store.read_all().values())
+    assert len(waiting_records) == 1
+    outputs = waiting_records[0].outputs
+    assert str(outputs["dispatch_id"]).startswith("dispatch-effect-1-")
+    assert "thread_id" not in outputs
 
 
 def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_completion(
@@ -2017,7 +2276,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
         lambda config, admin_service: backend,
     )
     execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
-    published_outputs: list[dict[str, object]] = []
+    published_events: list[tuple[str | None, dict[str, object]]] = []
     worker = SimpleNamespace(
         config=config,
         execution_store=execution_store,
@@ -2030,7 +2289,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
             )
         ),
         _publish_completion_event_from_record=lambda record, outputs, branch_port=None: (
-            published_outputs.append(outputs) or "effect-completed"
+            published_events.append((branch_port, outputs)) or "effect-completed"
         ),
         _update_event_delivery_state=lambda event_id: None,
     )
@@ -2047,6 +2306,7 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     assert waiting_records[0].effect_type == "effect:agent:enqueue-prompt"
     execution_id = str(waiting_records[0].outputs["execution_id"])
     assert execution_id == backend.started_specs[0].target_name
+    assert published_events[0][0] == "started"
 
     backend.status = SimpleNamespace(
         status=ExecutionStatusKind.RUNNING,
@@ -2077,8 +2337,9 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     assert backend.destroyed == [execution_id]
     final_records = list(execution_store.read_all().values())
     assert final_records[0].status == "succeeded"
-    assert published_outputs[0]["worker_status"] == "stopped"
-    assert published_outputs[0]["thread_id"] == "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    assert published_events[-1][0] == "completed"
+    assert published_events[-1][1]["worker_status"] == "stopped"
+    assert published_events[-1][1]["thread_id"] == "019de31a-8393-71d2-8990-e5f4fb0a4df2"
 
 
 def test_agent_prompt_container_reconciliation_times_out_running_job(

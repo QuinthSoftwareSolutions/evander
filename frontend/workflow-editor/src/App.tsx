@@ -1,4 +1,12 @@
-import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type DragEvent as ReactDragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import {
   applyEdgeChanges,
   applyNodeChanges,
@@ -23,6 +31,7 @@ import {
   type WorkflowEditorCatalog,
   type WorkflowEditorDocument,
   type WorkflowEditorFieldDefinition,
+  type WorkflowEditorNodeCatalogEntry,
   type WorkflowEditorNodePortDefinition,
   type WorkflowLayout,
   type WorkflowNodeConfig,
@@ -155,6 +164,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "query:git:pr-note": "Read pull-request note context from a host checkout.",
   "query:session-context": "Read session context and metadata.",
   "query:issue:get": "Read a local issue record by id.",
+  "query:ado:work-items": "Query Azure DevOps work items.",
 };
 
 const RUNTIME_POLL_INTERVAL_MS = 5000;
@@ -169,11 +179,17 @@ const WORKFLOW_SIDEBAR_MAX_WIDTH = 760;
 const WORKFLOW_SIDEBAR_CANVAS_MIN_WIDTH = 420;
 const WORKFLOW_SIDEBAR_RESIZE_STEP = 32;
 const WORKFLOW_COMPACT_BREAKPOINT = 980;
+const NODE_TYPE_DRAG_DATA_MIME = "application/x-agent-sandbox-workflow-node-type";
 
 type SidebarResizeState = {
   pointerId: number;
   startX: number;
   startWidth: number;
+};
+
+type NodeTypeDragPayload = {
+  kind: WorkflowNodeKind;
+  type: string;
 };
 
 function readStoredWorkflowSidebarWidth(): number {
@@ -815,6 +831,15 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       issue_id: "issue-1",
     };
   }
+  if (kind === "query" && type === "query:ado:work-items") {
+    return {
+      id,
+      display_name: "ADO work items",
+      type,
+      top: 50,
+      skip: 0,
+    };
+  }
   return { id, display_name: "New node", type };
 }
 
@@ -1324,6 +1349,18 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
       success: { type: "boolean" },
       output_mode: { type: "string" },
     },
+    "effect:agent:enqueue-prompt": {
+      dispatch_id: { type: "string" },
+      thread_id: { type: "string" },
+      success: { type: "boolean" },
+      queued: { type: "boolean" },
+      queue_key: { type: "string" },
+      coalesced_count: { type: "integer" },
+      vm_name: { type: "string" },
+      session_id: { type: "string" },
+      execution_backend: { type: "string" },
+      execution_id: { type: "string" },
+    },
     "effect:agent:exec": {
       success: { type: "boolean" },
       vm_name: { type: "string" },
@@ -1451,6 +1488,15 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
       comments: { type: "array" },
       created_at: { type: "string" },
       updated_at: { type: "string" },
+    },
+    "query:ado:work-items": {
+      provider: { type: "string" },
+      project: { type: "string" },
+      team: { type: "string" },
+      iteration_path: { type: "string" },
+      items: { type: "array" },
+      count: { type: "integer" },
+      paging: { type: "object" },
     },
   };
   Object.assign(schema, staticSchemas[node.type] ?? {});
@@ -1646,9 +1692,38 @@ function activeEffectTargetKey(values: Record<string, unknown>): EffectTargetKey
   return "target";
 }
 
+function compareNodeCatalogEntries(
+  left: WorkflowEditorNodeCatalogEntry,
+  right: WorkflowEditorNodeCatalogEntry,
+): number {
+  return (
+    left.label.localeCompare(right.label, undefined, { sensitivity: "base", numeric: true }) ||
+    left.type.localeCompare(right.type, undefined, { sensitivity: "base", numeric: true })
+  );
+}
+
+function isWorkflowNodeKind(value: unknown): value is WorkflowNodeKind {
+  return value === "trigger" || value === "gate" || value === "effect" || value === "query";
+}
+
+function parseNodeTypeDragPayload(dataTransfer: DataTransfer): NodeTypeDragPayload | null {
+  const raw = dataTransfer.getData(NODE_TYPE_DRAG_DATA_MIME);
+  if (!raw) return null;
+  try {
+    const payload = JSON.parse(raw) as Partial<NodeTypeDragPayload>;
+    if (!isWorkflowNodeKind(payload.kind) || typeof payload.type !== "string" || !payload.type.trim()) {
+      return null;
+    }
+    return { kind: payload.kind, type: payload.type };
+  } catch {
+    return null;
+  }
+}
+
 export default function App() {
   const { privilegedUnlocked, selectedDirectoryPath, currentUserId, currentUserLabel } = useAdminUi();
   const appShellRef = useRef<HTMLDivElement | null>(null);
+  const canvasShellRef = useRef<HTMLElement | null>(null);
   const hasAutoFitRef = useRef(false);
   const initialGraphDirectoryPathRef = useRef(selectedDirectoryPath);
   const copiedSelectionRef = useRef<CopiedWorkflowSelection | null>(null);
@@ -2129,6 +2204,71 @@ export default function App() {
     setCanvasViewport(instance.getViewport());
   }
 
+  function flowPositionFromScreenPoint(clientX: number, clientY: number): { x: number; y: number } | null {
+    if (flowInstance) {
+      return flowInstance.screenToFlowPosition({ x: clientX, y: clientY });
+    }
+    const canvasRect = canvasShellRef.current?.getBoundingClientRect();
+    if (!canvasRect) return null;
+    const zoom = canvasViewport.zoom || 1;
+    return {
+      x: (clientX - canvasRect.left - canvasViewport.x) / zoom,
+      y: (clientY - canvasRect.top - canvasViewport.y) / zoom,
+    };
+  }
+
+  function nodePositionCenteredOnFlowPoint(flowPosition: { x: number; y: number }): { x: number; y: number } {
+    return {
+      x: flowPosition.x - FALLBACK_NODE_WIDTH / 2,
+      y: flowPosition.y - FALLBACK_NODE_HEIGHT / 2,
+    };
+  }
+
+  function nodePositionFromScreenPoint(clientX: number, clientY: number): { x: number; y: number } | null {
+    const flowPosition = flowPositionFromScreenPoint(clientX, clientY);
+    return flowPosition ? nodePositionCenteredOnFlowPoint(flowPosition) : null;
+  }
+
+  function nodePositionAtCanvasCenter(): { x: number; y: number } | null {
+    const canvasRect = canvasShellRef.current?.getBoundingClientRect();
+    if (!canvasRect) return null;
+    return nodePositionFromScreenPoint(
+      canvasRect.left + canvasRect.width / 2,
+      canvasRect.top + canvasRect.height / 2,
+    );
+  }
+
+  function startNodeTypeDrag(
+    event: ReactDragEvent<HTMLButtonElement>,
+    entry: WorkflowEditorNodeCatalogEntry,
+  ) {
+    if (editLocked) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData(
+      NODE_TYPE_DRAG_DATA_MIME,
+      JSON.stringify({ kind: entry.kind, type: entry.type } satisfies NodeTypeDragPayload),
+    );
+    event.dataTransfer.setData("text/plain", entry.type);
+  }
+
+  function handleNodeTypeDragOver(event: ReactDragEvent<HTMLElement>) {
+    if (editLocked || !Array.from(event.dataTransfer.types).includes(NODE_TYPE_DRAG_DATA_MIME)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleNodeTypeDrop(event: ReactDragEvent<HTMLElement>) {
+    if (editLocked) return;
+    const payload = parseNodeTypeDragPayload(event.dataTransfer);
+    if (!payload) return;
+    event.preventDefault();
+    event.stopPropagation();
+    addNode(payload.kind, payload.type, nodePositionFromScreenPoint(event.clientX, event.clientY));
+  }
+
   function deleteSelectedEdge() {
     if (!document || !selectedEdgeId || editLocked) return;
     const nextConfig = cloneConfig(document.config);
@@ -2276,7 +2416,7 @@ export default function App() {
     setSaveState("idle");
   }
 
-  function addNode(kind: WorkflowNodeKind, type: string) {
+  function addNode(kind: WorkflowNodeKind, type: string, requestedPosition?: { x: number; y: number } | null) {
     if (!document || editLocked) return;
     const nextConfig = cloneConfig(document.config);
     nextConfig.triggers ??= [];
@@ -2286,13 +2426,14 @@ export default function App() {
     const node = createDefaultNode(kind, type, generateNodeId(nextConfig, kind, type));
     nextConfig[kindCollectionKey(kind)].push(node);
     const nextLayout = cloneLayout(document.layout);
-    nextLayout.nodes[node.id] = fallbackPosition(
+    const nextNodeIndex =
       nextConfig.triggers.length +
         nextConfig.gates.length +
         nextConfig.effects.length +
         nextConfig.queries.length -
-        1,
-    );
+        1;
+    nextLayout.nodes[node.id] =
+      requestedPosition ?? nodePositionAtCanvasCenter() ?? fallbackPosition(nextNodeIndex);
     patchDocument(nextConfig, nextLayout, undefined, [node.id]);
     setProgrammaticSelection([node.id], node.id);
     setSelectedEdgeId(null);
@@ -2935,6 +3076,48 @@ export default function App() {
     if (field.kind === "string_list") {
       const listValue = inspectorStringListDrafts[field.key]
         ?? (Array.isArray(value) ? value.map((item) => String(item)).join("\n") : "");
+      const selectedValues = new Set(
+        listValue
+          .split("\n")
+          .map((item) => item.trim())
+          .filter(Boolean),
+      );
+      if (field.options.length > 0) {
+        return (
+          <div key={field.key} className="inspector-field">
+            <div className="field-toolbar">
+              <div className="field-header">
+                <span>{field.label}</span>
+              </div>
+            </div>
+            {field.description ? <p className="field-description">{field.description}</p> : null}
+            <div className="option-checkbox-list">
+              {field.options.map((option) => {
+                const checked = selectedValues.has(option.value);
+                return (
+                  <label key={option.value} className="checkbox-row option-checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(event) => {
+                        const nextValues = new Set(selectedValues);
+                        if (event.target.checked) {
+                          nextValues.add(option.value);
+                        } else {
+                          nextValues.delete(option.value);
+                        }
+                        updateStringListField(field.key, Array.from(nextValues).join("\n"));
+                      }}
+                      disabled={isDisabled}
+                    />
+                    <span>{option.label}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        );
+      }
       return (
         <label key={field.key} className="inspector-field">
           <div className="field-toolbar">
@@ -3102,7 +3285,9 @@ export default function App() {
 
   const createEntriesByKind = NODE_GROUPS.map((group) => ({
     ...group,
-    entries: catalog.nodes.filter((entry) => entry.kind === group.kind),
+    entries: catalog.nodes
+      .filter((entry) => entry.kind === group.kind)
+      .sort(compareNodeCatalogEntries),
   }));
   const appShellStyle = {
     "--workflow-sidebar-width": `${sidebarWidth}px`,
@@ -3301,7 +3486,13 @@ export default function App() {
                   <div className="create-group-actions">
                     {group.entries.map((entry) => (
                       <Tooltip key={entry.type} content={nodeTypeDescription(entry.type, entry.kind)} inline={false}>
-                        <button onClick={() => addNode(entry.kind, entry.type)} disabled={editLocked}>
+                        <button
+                          type="button"
+                          draggable={!editLocked}
+                          onDragStart={(event) => startNodeTypeDrag(event, entry)}
+                          onClick={() => addNode(entry.kind, entry.type)}
+                          disabled={editLocked}
+                        >
                           {entry.label}
                         </button>
                       </Tooltip>
@@ -3413,7 +3604,12 @@ export default function App() {
             onKeyDown={handleSidebarResizeKeyDown}
           />
 
-          <main className="canvas-shell">
+          <main
+            className="canvas-shell"
+            ref={canvasShellRef}
+            onDragOver={handleNodeTypeDragOver}
+            onDrop={handleNodeTypeDrop}
+          >
             <ReactFlow
               nodes={displayedFlowNodes}
               edges={displayedFlowEdges}

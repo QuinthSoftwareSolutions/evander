@@ -14,6 +14,8 @@ import type {
   AgentRecord,
   AgentPolicyUpdateRequest,
   AgentSessionPolicy,
+  SkillLibraryItem,
+  SkillListResponse,
 } from "../admin/types";
 
 type ActionLogEntry = {
@@ -46,7 +48,7 @@ type AgentCreateFormState = {
   mssql: boolean;
   mssqlInitRoot: string;
   playwright: boolean;
-  codexSkills: string;
+  codexSkills: string[];
 };
 
 type AgentPolicyFormState = {
@@ -85,7 +87,7 @@ function emptyCreateForm(directoryPath: string): AgentCreateFormState {
     mssql: false,
     mssqlInitRoot: "",
     playwright: false,
-    codexSkills: "",
+    codexSkills: [],
   };
 }
 
@@ -164,6 +166,11 @@ async function loadAgentList(
     backend,
   });
   return fetchJson<AgentListResponse>(`/api/admin/agents?${query.toString()}`);
+}
+
+async function loadSkillList(): Promise<SkillLibraryItem[]> {
+  const payload = await fetchJson<SkillListResponse>("/api/admin/skills");
+  return payload.items;
 }
 
 async function loadAgentLog(agent: AgentRecord | null): Promise<string> {
@@ -311,9 +318,12 @@ function buildCreatePayload(form: AgentCreateFormState): AgentCreateRequest {
     payload.mssql = form.mssql;
     payload.mssql_init_root = form.mssql ? optionalText(form.mssqlInitRoot) : null;
     payload.playwright = form.playwright;
-    payload.codex_skills = parseList(form.codexSkills);
+    payload.codex_skills = form.codexSkills;
   } else {
     payload.target_name = optionalText(form.targetName);
+  }
+  if (form.backend === "container_worker_vm") {
+    payload.codex_skills = form.codexSkills;
   }
   return payload;
 }
@@ -464,6 +474,7 @@ export function AgentsPage() {
   const [createForm, setCreateForm] = useState<AgentCreateFormState>(() =>
     emptyCreateForm(selectedDirectoryPath),
   );
+  const [skillOptions, setSkillOptions] = useState<SkillLibraryItem[]>([]);
   const [showEditForm, setShowEditForm] = useState(false);
   const [editForm, setEditForm] = useState<AgentPolicyFormState>(() => emptyPolicyForm());
   const [inlineValidation, setInlineValidation] = useState("");
@@ -491,6 +502,22 @@ export function AgentsPage() {
       setCreateForm(emptyCreateForm(selectedDirectoryPath));
     }
   }, [selectedDirectoryPath, showCreateForm]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const skills = await loadSkillList();
+        if (!cancelled) setSkillOptions(skills);
+      } catch (reason: unknown) {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+      }
+    };
+    void refresh();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const filteredItems = useMemo(() => {
     return [...items]
@@ -628,6 +655,18 @@ export function AgentsPage() {
   function ttlIsInvalid(value: string): boolean {
     const trimmed = value.trim();
     return Boolean(trimmed) && optionalNumber(trimmed) == null;
+  }
+
+  function toggleCreateSkill(skillName: string, selected: boolean) {
+    setCreateForm((current) => {
+      const selectedSkills = new Set(current.codexSkills);
+      if (selected) {
+        selectedSkills.add(skillName);
+      } else {
+        selectedSkills.delete(skillName);
+      }
+      return { ...current, codexSkills: Array.from(selectedSkills) };
+    });
   }
 
   async function handleCreateAgent() {
@@ -1172,16 +1211,24 @@ export function AgentsPage() {
                           disabled={!createForm.mssql}
                         />
                       </label>
-                      <label className="field-stack">
-                        <span>Codex skills</span>
-                        <textarea
-                          rows={3}
-                          value={createForm.codexSkills}
-                          onChange={(event) => setCreateForm((current) => ({ ...current, codexSkills: event.target.value }))}
-                        />
-                      </label>
                     </>
                   ) : null}
+                  <div className="field-stack field-span-2">
+                    <span>Codex skills</span>
+                    <div className="checkbox-grid skill-checkbox-grid">
+                      {skillOptions.map((skill) => (
+                        <label key={skill.name} className="checkbox-row agent-checkbox-row">
+                          <input
+                            type="checkbox"
+                            checked={createForm.codexSkills.includes(skill.name)}
+                            onChange={(event) => toggleCreateSkill(skill.name, event.target.checked)}
+                          />
+                          <span>{skill.name}</span>
+                        </label>
+                      ))}
+                      {skillOptions.length === 0 ? <div className="empty-state">No managed skills.</div> : null}
+                    </div>
+                  </div>
                 </div>
                 <div className="inline-actions compact-actions">
                   <button className="primary" type="button" disabled={!privilegedUnlocked || busyAction === "create-agent"} onClick={() => void handleCreateAgent()}>

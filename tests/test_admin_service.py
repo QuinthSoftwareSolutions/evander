@@ -339,6 +339,7 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
         },
     )
     assert write_result.ok is True
+    service.create_skill({"name": "demo.skill", "content": "# Demo\n"})
     captured: list[tuple[str, str, str, dict[str, object]]] = []
     written_paths: list[str] = []
 
@@ -390,6 +391,7 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
             "dotnet": True,
             "nuget": True,
             "playwright": True,
+            "codex_skills": ["demo.skill"],
         }
     )
 
@@ -412,6 +414,7 @@ def test_create_container_agent_uses_directory_scoped_worker_provider_config(
     assert "/home/agent/.profile" in written_paths
     assert "/home/agent/.codex/config.toml" in written_paths
     assert "/home/agent/.nuget/NuGet/NuGet.Config" in written_paths
+    assert "/home/agent/.config/agent-sandbox/codex/skills/demo.skill/SKILL.md" in written_paths
     manifest = service.runtime.session_repository.get_session("container-session")
     assert manifest is not None
     assert manifest.metadata["worker_url"] == "http://team-worker.test:11888"
@@ -429,6 +432,26 @@ def test_create_container_agent_rejects_mssql(tmp_path: Path) -> None:
                 "backend": "container_worker_vm",
                 "session_id": "container-session",
                 "mssql": True,
+            }
+        )
+
+
+def test_create_container_agent_rejects_unknown_codex_skill_before_prepare(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    def fail_prepare(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("container session should not be prepared")
+
+    monkeypatch.setattr(ContainerWorkerClient, "prepare_session", fail_prepare)
+
+    with pytest.raises(ValueError, match="Unknown Codex skill: missing.skill"):
+        service.create_admin_agent(
+            {
+                "backend": "container_worker_vm",
+                "session_id": "container-session",
+                "codex_skills": ["missing.skill"],
             }
         )
 
@@ -2309,7 +2332,13 @@ def test_workflow_editor_reads_and_saves_named_graphs_inside_single_pack(
         for graph in document.graphs
     ] == [
         ("graph-ticket", "Ticket intake", ["root"], ["alice"], ["trigger-ticket", "effect-ticket"]),
-        ("graph-cron", "Scheduled cleanup", ["root/team-a"], ["bob"], ["trigger-cron", "effect-cron"]),
+        (
+            "graph-cron",
+            "Scheduled cleanup",
+            ["root/team-a"],
+            ["bob"],
+            ["trigger-cron", "effect-cron"],
+        ),
     ]
 
     edited_graphs = [graph.model_dump(mode="json") for graph in document.graphs]
@@ -4289,7 +4318,7 @@ def test_clone_repo_into_vm_installs_agent_push_and_pr_note_helpers(
     assert "config alias.agent-pr-note" in remote_script
     assert 'agent-pr-note" ensure-head' in remote_script
     assert "config agent-sandbox.prNotesRef" in remote_script
-    assert 'git config --get agent-sandbox.prNotesRef' in remote_script
+    assert "git config --get agent-sandbox.prNotesRef" in remote_script
     assert '"${notes_ref}"' in remote_script
     assert "config agent-sandbox.branchSuffix" in remote_script
 
@@ -4595,6 +4624,40 @@ def test_create_vm_passes_codex_skills_to_setup_script(tmp_path: Path, monkeypat
         "lab-vm",
         "lab-session",
     ]
+
+
+def test_create_vm_uses_runtime_skill_library_for_managed_codex_skills(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.create_skill({"name": "managed.skill", "content": "# Managed\n"})
+    captured_runs: list[tuple[list[str], dict[str, str] | None]] = []
+
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+    )
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured_runs.append((cmd, kwargs.get("env")))
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+
+    result = service.create_vm(
+        vm_name="lab-vm",
+        session_id="lab-session",
+        codex_skills=["managed.skill"],
+    )
+
+    assert result.success is True
+    setup_env = next(
+        env for cmd, env in captured_runs if any(part.endswith("setup_vm.sh") for part in cmd)
+    )
+    assert setup_env is not None
+    assert setup_env["HOST_REPO_CODEX_SKILLS_DIR"] == str(service.config.runtime_dir / "skills")
 
 
 def test_bootstrap_frontend_in_vm_requires_install_roots(tmp_path: Path) -> None:

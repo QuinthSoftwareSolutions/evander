@@ -16,6 +16,7 @@ from agent_sandbox.orchestration.effect_extensions import (
     list_vm_summaries_for_agent_reconciliation,
     resolve_agent_prompt_dispatch_port,
 )
+from agent_sandbox.workflow.migrations import AGENT_PROMPT_STARTED_PORT
 
 
 class ProviderCompletionLifecycleHook(EffectLifecycleHookBase):
@@ -101,6 +102,13 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                     record=record,
                     result=result,
                     queue_key=queue_key,
+                )
+                self._record_libvirt_waiting_execution(
+                    worker=worker,
+                    record=record,
+                    queue_key=queue_key,
+                    dispatch_id=dispatch_id,
+                    result=result,
                 )
                 queue_store.delete(queue_key)
                 dispatched += 1
@@ -301,7 +309,126 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             record_execution(execution_record)
         except Exception:
             return False
+        self._publish_started_event_for_waiting_record(
+            worker=worker,
+            execution_record=execution_record,
+        )
         return True
+
+    def _record_libvirt_waiting_execution(
+        self,
+        *,
+        worker: Any,
+        record: Any,
+        queue_key: str,
+        dispatch_id: str,
+        result: Any,
+    ) -> bool:
+        execution_store = getattr(worker, "execution_store", None)
+        record_execution = getattr(execution_store, "record_execution", None)
+        if not callable(record_execution):
+            return False
+
+        from agent_sandbox.daemons.effect_orchestrator import EffectExecutionRecord
+
+        event_id = f"queued-agent-prompt:{queue_key}:{dispatch_id}"
+        idempotency_key = f"{event_id}::{record.effect_id}"
+        find_by_idempotency_key = getattr(
+            execution_store,
+            "find_execution_by_idempotency_key",
+            None,
+        )
+        if (
+            callable(find_by_idempotency_key)
+            and find_by_idempotency_key(idempotency_key) is not None
+        ):
+            return True
+
+        now = datetime.now(UTC)
+        vm_user = str(getattr(record, "vm_user", None) or "agent")
+        session_id = str(getattr(record, "session_id", None) or "").strip() or None
+        thread_id = str(getattr(result, "thread_id", "") or "").strip()
+        resume_thread_id = str(getattr(record, "resume_thread_id", None) or "").strip()
+        effective_thread_id = thread_id or resume_thread_id
+        resolved_config = {
+            "target": record.target,
+            "vm_name": record.vm_name,
+            "session_id": session_id,
+            "prompt": record.prompt,
+            "model": record.model,
+            "vm_user": vm_user,
+            "resume_thread_id": record.resume_thread_id,
+            "execution_backend": ExecutionBackendKind.LIBVIRT_VM.value,
+            "queue_key": queue_key,
+        }
+        outputs = {
+            "dispatch_id": dispatch_id,
+            "success": True,
+            "queued": False,
+            "dispatched_from_queue": True,
+            "vm_name": record.vm_name,
+            "session_id": session_id,
+            "execution_backend": ExecutionBackendKind.LIBVIRT_VM.value,
+            "queue_key": queue_key,
+        }
+        if effective_thread_id:
+            outputs["thread_id"] = effective_thread_id
+        execution_record = EffectExecutionRecord(
+            execution_id=(
+                f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}"
+            ),
+            idempotency_key=idempotency_key,
+            event_id=event_id,
+            trace_id=f"queued-agent-prompt:{queue_key}",
+            source_node_id=record.effect_id,
+            source_trigger_type="effect:agent:enqueue-prompt",
+            effect_id=record.effect_id,
+            effect_type="effect:agent:enqueue-prompt",
+            status="waiting",
+            started_at=now,
+            finished_at=now,
+            resolved_config_hash=self._json_sha256(resolved_config),
+            resolved_config=resolved_config,
+            input_payload={
+                "target": record.target,
+                "vm_name": record.vm_name,
+                "session_id": session_id,
+                "prompt": record.prompt,
+                "model": record.model,
+                "vm_user": vm_user,
+                "resume_thread_id": record.resume_thread_id,
+                "queue_key": queue_key,
+            },
+            outputs=outputs,
+            config_revision=getattr(worker, "_last_graph_revision", None),
+        )
+        try:
+            record_execution(execution_record)
+        except Exception:
+            return False
+        self._publish_started_event_for_waiting_record(
+            worker=worker,
+            execution_record=execution_record,
+        )
+        return True
+
+    def _publish_started_event_for_waiting_record(
+        self,
+        *,
+        worker: Any,
+        execution_record: Any,
+    ) -> None:
+        publish = getattr(worker, "_publish_completion_event_from_record", None)
+        if not callable(publish):
+            return
+        try:
+            publish(
+                record=execution_record,
+                outputs=dict(execution_record.outputs),
+                branch_port=AGENT_PROMPT_STARTED_PORT,
+            )
+        except Exception:
+            return
 
     @staticmethod
     def _json_sha256(value: Any) -> str:

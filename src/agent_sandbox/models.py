@@ -993,6 +993,7 @@ class AdoBacklogCreateResponse(BaseModel):
 
 class AdoBacklogQueryRequest(BaseModel):
     project: str | None = None
+    wiql: str | None = None
     iteration: str | None = None
     area_path: str | None = None
     states: list[str] = Field(default_factory=list)
@@ -1002,7 +1003,7 @@ class AdoBacklogQueryRequest(BaseModel):
     top: int = Field(default=50, ge=1, le=200)
     skip: int = Field(default=0, ge=0)
 
-    @field_validator("project", "iteration", "area_path", "text_search", mode="before")
+    @field_validator("project", "wiql", "iteration", "area_path", "text_search", mode="before")
     @classmethod
     def trim_optional_strings(cls, value: object) -> str | None:
         if value is None:

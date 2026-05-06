@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 import time
 from dataclasses import dataclass
@@ -45,6 +46,7 @@ from agent_sandbox.email.providers import (
 from agent_sandbox.repositories.records import DiscordRecordsRepository, TeamsRecordsRepository
 from agent_sandbox.text_formatting import render_markdownish_text_to_html
 
+_LOGGER = logging.getLogger(__name__)
 _IGNORED_FEEDBACK_RETENTION = timedelta(days=90)
 _GRAPH_TEAMS_REACTION_TYPE_BY_VALUE = {
     "like": "like",
@@ -2342,6 +2344,7 @@ class AzureDevOpsPrPublishProvider:
         pr_id: str,
         body_text: str,
         thread_context: dict[str, Any] | None = None,
+        error_context: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "comments": [
@@ -2360,7 +2363,11 @@ class AzureDevOpsPrPublishProvider:
             auth=("", self.pat),
             json=payload,
         )
-        response.raise_for_status()
+        _raise_azure_devops_pr_publish_error(
+            response,
+            action="post PR thread comment",
+            context=error_context,
+        )
         response_payload = response.json()
         thread_id = str(response_payload.get("id", "")).strip() or None
         comments = (
@@ -2397,6 +2404,7 @@ class AzureDevOpsPrPublishProvider:
                 repo=repo,
                 pr_id=pr_id,
                 body_text=normalized_body,
+                error_context="top-level PR comment",
             )
         return {
             "status": "posted",
@@ -2426,14 +2434,53 @@ class AzureDevOpsPrPublishProvider:
         summary_thread_id: str | None = None
         summary_comment_id: str | None = None
         summary_comment_url: str | None = None
+        inline_comment_ids: list[str] = []
+        inline_comment_urls: list[str] = []
+        inline_published_feedback_ids: list[str] = []
 
         with httpx.Client(timeout=self.timeout_seconds) as client:
+            total_inline_comments = len(normalized_comments)
+            for index, comment in enumerate(normalized_comments, start=1):
+                thread_context = _azure_devops_thread_context_for_review_comment(comment)
+                error_context = _azure_devops_inline_comment_error_context(
+                    comment,
+                    index=index,
+                    total=total_inline_comments,
+                )
+                try:
+                    comment_result = self._post_thread_comment(
+                        client=client,
+                        repo=repo,
+                        pr_id=pr_id,
+                        body_text=comment["body_text"],
+                        thread_context=thread_context,
+                        error_context=error_context,
+                    )
+                except httpx.HTTPStatusError as exc:
+                    posted_count = len(inline_comment_ids)
+                    message = (
+                        f"{exc}; Azure DevOps submit_review stopped at {error_context}. "
+                        f"Posted {posted_count} of {total_inline_comments} inline comment(s); "
+                        "summary comment was not posted."
+                    )
+                    raise httpx.HTTPStatusError(
+                        message,
+                        request=exc.request,
+                        response=exc.response,
+                    ) from exc
+                if comment_result["comment_id"] is not None:
+                    inline_comment_ids.append(comment_result["comment_id"])
+                if comment_result["comment_url"]:
+                    inline_comment_urls.append(comment_result["comment_url"])
+                inline_published_feedback_ids.extend(comment_result["published_feedback_ids"])
+
             if normalized_body:
                 summary_result = self._post_thread_comment(
                     client=client,
                     repo=repo,
                     pr_id=pr_id,
                     body_text=normalized_body,
+                    error_context="review summary comment",
                 )
                 summary_thread_id = summary_result["thread_id"]
                 summary_comment_id = summary_result["comment_id"]
@@ -2444,20 +2491,9 @@ class AzureDevOpsPrPublishProvider:
                     comment_urls.append(summary_comment_url)
                 published_feedback_ids.extend(summary_result["published_feedback_ids"])
 
-            for comment in normalized_comments:
-                thread_context = _azure_devops_thread_context_for_review_comment(comment)
-                comment_result = self._post_thread_comment(
-                    client=client,
-                    repo=repo,
-                    pr_id=pr_id,
-                    body_text=comment["body_text"],
-                    thread_context=thread_context,
-                )
-                if comment_result["comment_id"] is not None:
-                    comment_ids.append(comment_result["comment_id"])
-                if comment_result["comment_url"]:
-                    comment_urls.append(comment_result["comment_url"])
-                published_feedback_ids.extend(comment_result["published_feedback_ids"])
+            comment_ids.extend(inline_comment_ids)
+            comment_urls.extend(inline_comment_urls)
+            published_feedback_ids.extend(inline_published_feedback_ids)
 
         review_url = summary_comment_url or (comment_urls[0] if comment_urls else None)
         return {
@@ -2489,6 +2525,100 @@ def _azure_devops_thread_context_for_review_comment(comment: dict[str, Any]) -> 
     thread_context[f"{position_prefix}Start"] = {"line": start_line}
     thread_context[f"{position_prefix}End"] = {"line": line}
     return thread_context
+
+
+def _azure_devops_inline_comment_error_context(
+    comment: dict[str, Any],
+    *,
+    index: int,
+    total: int,
+) -> str:
+    parts = [f"inline comment {index}/{total}", f"path={comment['path']}"]
+    line = comment.get("line")
+    if line is not None:
+        parts.append(f"line={line}")
+    start_line = comment.get("start_line")
+    if start_line is not None and start_line != line:
+        parts.append(f"start_line={start_line}")
+    side = str(comment.get("side") or "").strip()
+    if side:
+        parts.append(f"side={side}")
+    return " ".join(parts)
+
+
+def _raise_azure_devops_pr_publish_error(
+    response: httpx.Response,
+    *,
+    action: str,
+    context: str | None = None,
+) -> None:
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        details = _azure_devops_error_details(response)
+        context_suffix = f" ({context})" if context else ""
+        detail_suffix = f": {details}" if details else ""
+        message = (
+            f"Azure DevOps {action} failed{context_suffix} "
+            f"(status {response.status_code}) for url {response.url}{detail_suffix}"
+        )
+        _LOGGER.warning(
+            "Azure DevOps PR publish failed: action=%s status=%s url=%s context=%s error=%s",
+            action,
+            response.status_code,
+            response.url,
+            context,
+            details or str(exc),
+        )
+        raise httpx.HTTPStatusError(
+            message,
+            request=exc.request,
+            response=exc.response,
+        ) from exc
+
+
+def _azure_devops_error_details(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        text = response.text.strip()
+        return text[:1000] if text else ""
+
+    if not isinstance(payload, dict):
+        return ""
+
+    error = payload.get("error")
+    if isinstance(error, dict):
+        parts: list[str] = []
+        code = str(error.get("code") or "").strip()
+        message = str(error.get("message") or "").strip()
+        if code:
+            parts.append(f"code={code}")
+        if message:
+            parts.append(f"message={message}")
+        if parts:
+            return ", ".join(parts)
+
+    parts = []
+    message = str(payload.get("message") or "").strip()
+    type_key = str(payload.get("typeKey") or "").strip()
+    type_name = str(payload.get("typeName") or "").strip()
+    error_code = str(payload.get("errorCode") or "").strip()
+    event_id = str(payload.get("eventId") or "").strip()
+    if message:
+        parts.append(f"message={message}")
+    if type_key:
+        parts.append(f"typeKey={type_key}")
+    elif type_name:
+        parts.append(f"typeName={type_name}")
+    if error_code:
+        parts.append(f"errorCode={error_code}")
+    if event_id:
+        parts.append(f"eventId={event_id}")
+    if parts:
+        return ", ".join(parts)
+    text = response.text.strip()
+    return text[:1000] if text else ""
 
 
 class PrPublishService:

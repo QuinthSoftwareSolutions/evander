@@ -1,8 +1,51 @@
 # Changelog
 
-This project does not currently use release tags. This changelog is reconstructed
-from the current `main` history through `0680fb85` on 2026-05-04, using
-non-merge commit messages and changed-file clusters as the source material.
+This project does not currently use release tags. The historical sections below
+were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
+using non-merge commit messages and changed-file clusters as the source
+material. Newer entries are added incrementally as changes land.
+
+## 2026-05-06 - Queued Prompt Thread ID Handling
+
+Touched areas: `src/agent_sandbox/effects/providers/lifecycle_hooks.py`,
+effect orchestrator tests.
+
+- Stopped queued libvirt `effect:agent:enqueue-prompt` dispatch from publishing
+  synthetic dispatch IDs as Codex `thread_id` outputs when `resume_agent`
+  succeeds without returning a real thread id. The queued dispatch path now
+  omits `thread_id` in that case, allowing downstream fallback bindings to keep
+  using existing session metadata instead of persisting a non-existent Codex
+  thread.
+
+## 2026-05-06 - Azure PR Review Publish Failure Handling
+
+Touched areas: `src/agent_sandbox/services.py`, PR publish tests.
+
+- Changed Azure DevOps `submit_pr_review` publishing to post inline comments
+  before the summary comment, so invalid inline anchors no longer leave behind a
+  successful summary thread when the inline comments fail. Azure PR publish
+  errors now include extracted provider response details plus the failed inline
+  comment index/path/line and are logged with the same context for diagnostics.
+
+## 2026-05-06 - Workflow Editor Node Creation UX
+
+Touched areas: `frontend/workflow-editor/`.
+
+- Improved workflow node creation in the Admin Web workflow editor by sorting
+  node type lists alphabetically, allowing drag-and-drop from the create list to
+  the canvas, and placing click-created nodes at the current canvas center
+  (`8c137cd1`).
+
+## 2026-05-06 - Agent Prompt Lifecycle Ports
+
+Touched areas: `src/agent_sandbox/effects/`, `src/agent_sandbox/workflow/`,
+`frontend/workflow-editor/`, workflow pack config, orchestration tests.
+
+- Added named `started` and `completed` lifecycle ports to
+  `effect:agent:enqueue-prompt`, matching the existing `effect:agent:prompt`
+  contract. The runtime now emits `started` after dispatch and `completed` when
+  the queued agent run reconciles; legacy unported enqueue edges migrate to
+  `started` (`095e0604`).
 
 ## 2026-05-03 to 2026-05-04 - Worker Isolation, Package Cache, and Private Git
 

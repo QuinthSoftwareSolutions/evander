@@ -60,3 +60,20 @@ def test_migrate_agent_prompt_lifecycle_ports_handles_workflow_ir_nodes() -> Non
     prompt_node = migrated["ir"]["nodes"][0]
     assert "output_mode" not in prompt_node["config"]
     assert migrated["ir"]["edges"][0]["source_port"] == "completed"
+
+
+def test_migrate_agent_enqueue_prompt_edges_to_started_port() -> None:
+    payload = {
+        "effects": [
+            {
+                "id": "enqueue",
+                "type": "effect:agent:enqueue-prompt",
+                "prompt": "continue",
+            }
+        ],
+        "edges": [{"source_id": "enqueue", "target_id": "target"}],
+    }
+
+    migrated = migrate_agent_prompt_lifecycle_ports(payload)
+
+    assert migrated["edges"][0]["source_port"] == "started"

@@ -389,6 +389,31 @@ def test_query_backlog_items_batch_uses_fields_without_expand() -> None:
     assert "$expand" not in batch_payload
 
 
+def test_query_backlog_items_can_use_explicit_wiql() -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(200, json={"workItems": [{"id": 101}]}),
+        httpx.Response(200, json={"value": []}),
+    ]
+
+    adapter._query_backlog_items_core(
+        _RecordingClient(calls, responses.copy()),
+        organization_url="https://dev.azure.com/example",
+        project="project-x",
+        auth_header="Basic secret",
+        wiql="SELECT [System.Id] FROM WorkItems WHERE [System.State] = 'Active'",
+        states=["New"],
+        types=["Bug"],
+    )
+
+    wiql_payload = calls[0]["json"]
+    assert isinstance(wiql_payload, dict)
+    assert wiql_payload == {
+        "query": "SELECT [System.Id] FROM WorkItems WHERE [System.State] = 'Active'"
+    }
+
+
 def test_list_current_iteration_uses_project_default_team_when_team_omitted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
