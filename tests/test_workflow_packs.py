@@ -179,6 +179,8 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
 
     default_effects = {effect["id"]: effect for effect in default.effects}
     container_effects = {effect["id"]: effect for effect in container.effects}
+    default_gates = {gate["id"]: gate for gate in default.gates}
+    container_gates = {gate["id"]: gate for gate in container.gates}
     container_edges = {
         (edge["source_id"], edge["target_id"]): edge for edge in container.edges
     }
@@ -226,6 +228,24 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
     assert (
         container_queries["query-git-pr-note-1"]["config"]["notes_ref"]
         == "${{trigger-git-push-1.notes_ref}}"
+    )
+    assert default_gates["gate-filter-8"]["config"]["when"] == {
+        "all": [{"equals": False, "left": "${{effect-pr-create-1.success}}"}]
+    }
+    assert container_gates["gate-filter-8"]["config"]["when"] == {
+        "all": [{"equals": False, "left": "${{effect-pr-create-1.success}}"}]
+    }
+    assert (
+        default_edges[("effect-pr-create-1", "gate-filter-8")]["target_id"]
+        == "gate-filter-8"
+    )
+    assert (
+        container_edges[("gate-filter-8", "effect-agent-enqueue-prompt-3")]["target_id"]
+        == "effect-agent-enqueue-prompt-3"
+    )
+    assert (
+        container_effects["effect-agent-enqueue-prompt-3"]["config"]["target"]
+        == "${{trigger-git-push-1.session_id}}"
     )
     assert not any(effect["type"].startswith("effect:vm:") for effect in container.effects)
 

@@ -271,7 +271,13 @@ Type-specific keys:
 | `effect:vm:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:issue:update-state` | `issue_id`, `state` | `sync_proxy_cache`, `outputs` |
 | `effect:notification:send` | `communication_target_id`, `message` | `severity`, `subject`, `thread_id`, `outputs` |
-| `effect:pr:create` | `host_repo_path` | `local_branch`, `origin_branch`, `provider`, `base_branch`, `session_id`, `work_item_id`, `title`, `body`, `body_file`, `draft`, `fill`, `outputs` |
+| `effect:pr:create` | `host_repo_path` | `local_branch`, `origin_branch`, `canonical_origin_url`, `provider`, `base_branch`, `session_id`, `work_item_id`, `title`, `body`, `body_file`, `draft`, `fill`, `outputs` |
+
+`effect:pr:create` preflights the destination branch before pushing. If the
+destination branch exists and its tip is not contained in the local branch, the
+effect returns `success: false` with `reason: destination_branch_ahead` and does
+not push. Use a downstream `gate:filter` on `success == false` when an agent
+should be prompted to fetch and merge the destination branch.
 
 `effect:agent:prompt` and `effect:agent:enqueue-prompt` have two named outgoing
 ports: `started` emits after the prompt is dispatched, and `completed` emits

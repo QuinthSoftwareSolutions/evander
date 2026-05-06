@@ -35,6 +35,9 @@ case "${args[0]:-}" in
     ;;
   push)
     ;;
+  ls-remote)
+    exit 2
+    ;;
   symbolic-ref)
     echo "origin/main"
     ;;
@@ -142,6 +145,9 @@ case "${{args[0]:-}}" in
     ;;
   push)
     ;;
+  ls-remote)
+    exit 2
+    ;;
   symbolic-ref)
     echo "origin/main"
     ;;
@@ -195,6 +201,101 @@ esac
     )
 
 
+def test_open_agent_pr_preflight_reports_destination_branch_ahead(tmp_path: Path) -> None:
+    script = Path(__file__).resolve().parents[1] / "scripts/open_agent_pr.sh"
+    host_repo = tmp_path / "repo"
+    host_repo.mkdir()
+    (host_repo / ".git").mkdir()
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    git_log = tmp_path / "git.log"
+
+    (fake_bin / "git").write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "{git_log}"
+args=("$@")
+if [[ "${{args[0]}}" == "-C" ]]; then
+  args=("${{args[@]:2}}")
+fi
+while [[ "${{args[0]:-}}" == "-c" ]]; do
+  args=("${{args[@]:2}}")
+done
+case "${{args[0]:-}}" in
+  rev-parse)
+    if [[ "${{args[-1]}}" == "refs/remotes/origin/feature/issue-1^{{commit}}" ]]; then
+      echo "remote-tip"
+    elif [[ "${{args[-1]}}" == "review/issue-1/work^{{commit}}" ]]; then
+      echo "local-tip"
+    fi
+    ;;
+  remote)
+    echo "https://github.com/example/repo.git"
+    ;;
+  ls-remote)
+    echo "remote-tip\\trefs/heads/feature/issue-1"
+    ;;
+  fetch)
+    ;;
+  merge-base)
+    exit 1
+    ;;
+  rev-list)
+    echo "3 2"
+    ;;
+  push)
+    echo "push should not run" >&2
+    exit 1
+    ;;
+  *)
+    echo "unexpected git invocation: $*" >&2
+    exit 1
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    os.chmod(fake_bin / "git", 0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    result = subprocess.run(
+        [
+            str(script),
+            "--create-pr",
+            "--base",
+            "main",
+            "--session-id",
+            "issue-1-session",
+            str(host_repo),
+            "review/issue-1/work",
+            "feature/issue-1",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    lines = [line for line in result.stdout.splitlines() if line.startswith("AGENT_PR_RESULT ")]
+    assert lines, result.stdout
+    payload = json.loads(lines[-1].split(" ", 1)[1])
+    assert payload["success"] is False
+    assert payload["preflight_success"] is False
+    assert payload["reason"] == "destination_branch_ahead"
+    assert payload["origin_branch"] == "feature/issue-1"
+    assert payload["local_branch"] == "review/issue-1/work"
+    assert payload["destination_commit"] == "remote-tip"
+    assert payload["local_commit"] == "local-tip"
+    assert payload["destination_ahead_count"] == 3
+    assert payload["local_ahead_count"] == 2
+    assert not any(
+        command.startswith("push ") for command in git_log.read_text(encoding="utf-8").splitlines()
+    )
+
+
 def test_open_agent_pr_refreshes_review_branch_before_force_with_lease_push(tmp_path: Path) -> None:
     script = Path(__file__).resolve().parents[1] / "scripts/open_agent_pr.sh"
     host_repo = tmp_path / "repo"
@@ -228,7 +329,12 @@ case "${{args[0]:-}}" in
     ;;
   fetch)
     ;;
+  merge-base)
+    ;;
   push)
+    ;;
+  ls-remote)
+    exit 2
     ;;
   symbolic-ref)
     echo "origin/main"
@@ -318,6 +424,9 @@ case "${{args[0]:-}}" in
   rev-parse)
     ;;
   push)
+    ;;
+  ls-remote)
+    exit 2
     ;;
   symbolic-ref)
     echo "origin/main"
@@ -418,7 +527,12 @@ case "${{args[0]:-}}" in
     ;;
   fetch)
     ;;
+  merge-base)
+    ;;
   push)
+    ;;
+  ls-remote)
+    exit 2
     ;;
   symbolic-ref)
     echo "origin/main"
@@ -516,6 +630,9 @@ case "${args[0]:-}" in
     echo "https://dev.azure.com/example-org/example-project/_git/example-repo"
     ;;
   push)
+    ;;
+  ls-remote)
+    exit 2
     ;;
   symbolic-ref)
     echo "origin/main"
@@ -660,6 +777,9 @@ case "${args[0]:-}" in
     echo "https://dev.azure.com/example-org/example-project/_git/example-repo"
     ;;
   push)
+    ;;
+  ls-remote)
+    exit 2
     ;;
   symbolic-ref)
     echo "origin/main"
@@ -953,6 +1073,9 @@ case "${args[0]:-}" in
     echo "https://dev.azure.com/example-org/example-project/_git/example-repo"
     ;;
   push)
+    ;;
+  ls-remote)
+    exit 2
     ;;
   symbolic-ref)
     echo "origin/main"

@@ -1407,6 +1407,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("host_repo_path", "Host repo path", "string", required=True, bindable=True),
             _field("local_branch", "Local branch", "string", bindable=True),
             _field("origin_branch", "Origin branch", "string", bindable=True),
+            _field("canonical_origin_url", "Canonical origin URL", "string", bindable=True),
             _field("provider", "Provider", "string", bindable=True),
             _field("project", "Project", "string", bindable=True),
             _field("base_branch", "Base branch", "string", bindable=True),

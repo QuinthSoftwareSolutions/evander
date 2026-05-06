@@ -306,6 +306,134 @@ refresh_remote_branch_tracking_ref() {
   fi
 }
 
+emit_preflight_result() {
+  local reason="$1"
+  local message="$2"
+  local destination_commit="${3:-}"
+  local local_commit="${4:-}"
+  local destination_ahead_count="${5:-0}"
+  local local_ahead_count="${6:-0}"
+  local destination_ref="refs/heads/${ORIGIN_BRANCH}"
+  local destination_tracking_ref="refs/remotes/${PR_REMOTE_NAME}/${ORIGIN_BRANCH}"
+
+  REASON="${reason}" \
+  MESSAGE="${message}" \
+  LOCAL_BRANCH_VALUE="${LOCAL_BRANCH}" \
+  ORIGIN_BRANCH_VALUE="${ORIGIN_BRANCH}" \
+  BASE_BRANCH_VALUE="${BASE_BRANCH}" \
+  SESSION_ID_VALUE="${SESSION_ID}" \
+  WORK_ITEM_ID_VALUE="${WORK_ITEM_ID}" \
+  PR_REMOTE_NAME_VALUE="${PR_REMOTE_NAME}" \
+  DESTINATION_REF_VALUE="${destination_ref}" \
+  DESTINATION_TRACKING_REF_VALUE="${destination_tracking_ref}" \
+  DESTINATION_COMMIT_VALUE="${destination_commit}" \
+  LOCAL_COMMIT_VALUE="${local_commit}" \
+  DESTINATION_AHEAD_COUNT_VALUE="${destination_ahead_count}" \
+  LOCAL_AHEAD_COUNT_VALUE="${local_ahead_count}" \
+  python3 - <<'PY'
+import json
+import os
+
+def int_value(name: str) -> int:
+    try:
+        return int(os.environ.get(name, "0") or "0")
+    except ValueError:
+        return 0
+
+payload = {
+    "success": False,
+    "action": "pr_create",
+    "preflight_success": False,
+    "reason": os.environ["REASON"],
+    "message": os.environ["MESSAGE"],
+    "local_branch": os.environ["LOCAL_BRANCH_VALUE"],
+    "origin_branch": os.environ["ORIGIN_BRANCH_VALUE"],
+    "base_branch": os.environ["BASE_BRANCH_VALUE"],
+    "session_id": os.environ["SESSION_ID_VALUE"],
+    "work_item_id": os.environ["WORK_ITEM_ID_VALUE"],
+    "remote_name": os.environ["PR_REMOTE_NAME_VALUE"],
+    "destination_ref": os.environ["DESTINATION_REF_VALUE"],
+    "destination_tracking_ref": os.environ["DESTINATION_TRACKING_REF_VALUE"],
+    "destination_commit": os.environ["DESTINATION_COMMIT_VALUE"],
+    "local_commit": os.environ["LOCAL_COMMIT_VALUE"],
+    "destination_ahead_count": int_value("DESTINATION_AHEAD_COUNT_VALUE"),
+    "local_ahead_count": int_value("LOCAL_AHEAD_COUNT_VALUE"),
+}
+print(f"AGENT_PR_RESULT {json.dumps(payload, sort_keys=True)}")
+PY
+}
+
+preflight_destination_branch() {
+  local repo_path="$1"
+  local remote_name="$2"
+  local branch_name="$3"
+  local ls_output fetch_output merge_base_status counts destination_ahead_count local_ahead_count
+  local destination_tracking_ref="refs/remotes/${remote_name}/${branch_name}"
+  local destination_commit=""
+  local local_commit=""
+
+  if ls_output="$(git_with_push_auth "${repo_path}" ls-remote --exit-code "${remote_name}" "refs/heads/${branch_name}" 2>&1)"; then
+    :
+  else
+    local ls_status=$?
+    if [[ "${ls_status}" -eq 2 ]]; then
+      return 0
+    fi
+    emit_preflight_result \
+      "preflight_failed" \
+      "Could not verify destination branch ${remote_name}/${branch_name}: ${ls_output}" \
+      "" \
+      "$(git -C "${repo_path}" rev-parse --verify "${LOCAL_BRANCH}^{commit}" 2>/dev/null || true)" \
+      0 \
+      0
+    exit 0
+  fi
+
+  if ! fetch_output="$(git_with_push_auth "${repo_path}" fetch "${remote_name}" "+refs/heads/${branch_name}:${destination_tracking_ref}" 2>&1)"; then
+    emit_preflight_result \
+      "preflight_failed" \
+      "Could not refresh destination branch ${remote_name}/${branch_name}: ${fetch_output}" \
+      "" \
+      "$(git -C "${repo_path}" rev-parse --verify "${LOCAL_BRANCH}^{commit}" 2>/dev/null || true)" \
+      0 \
+      0
+    exit 0
+  fi
+
+  destination_commit="$(git -C "${repo_path}" rev-parse --verify "${destination_tracking_ref}^{commit}" 2>/dev/null || true)"
+  local_commit="$(git -C "${repo_path}" rev-parse --verify "${LOCAL_BRANCH}^{commit}" 2>/dev/null || true)"
+
+  if git -C "${repo_path}" merge-base --is-ancestor "${destination_tracking_ref}" "${LOCAL_BRANCH}" >/dev/null 2>&1; then
+    return 0
+  else
+    merge_base_status=$?
+  fi
+  if [[ "${merge_base_status}" -ne 1 ]]; then
+    emit_preflight_result \
+      "preflight_failed" \
+      "Could not compare ${LOCAL_BRANCH} with ${remote_name}/${branch_name}." \
+      "${destination_commit}" \
+      "${local_commit}" \
+      0 \
+      0
+    exit 0
+  fi
+
+  counts="$(git -C "${repo_path}" rev-list --left-right --count "${destination_tracking_ref}...${LOCAL_BRANCH}" 2>/dev/null || true)"
+  destination_ahead_count="$(printf '%s\n' "${counts}" | awk '{print $1}')"
+  local_ahead_count="$(printf '%s\n' "${counts}" | awk '{print $2}')"
+  destination_ahead_count="${destination_ahead_count:-0}"
+  local_ahead_count="${local_ahead_count:-0}"
+  emit_preflight_result \
+    "destination_branch_ahead" \
+    "Destination branch ${remote_name}/${branch_name} has commits that are not contained in ${LOCAL_BRANCH}; merge the destination branch before pushing." \
+    "${destination_commit}" \
+    "${local_commit}" \
+    "${destination_ahead_count}" \
+    "${local_ahead_count}"
+  exit 0
+}
+
 resolve_create_prs_as_draft() {
   local session_id="$1"
   local draft_override="${2:-}"
@@ -652,6 +780,8 @@ fi
 if [[ "${PR_REMOTE_NAME}" != "origin" ]]; then
   ensure_remote_url "${HOST_REPO_PATH}" "${PR_REMOTE_NAME}" "${PUSH_REMOTE_URL}"
 fi
+
+preflight_destination_branch "${HOST_REPO_PATH}" "${PR_REMOTE_NAME}" "${ORIGIN_BRANCH}"
 
 PUSH_ARGS=()
 if [[ "${ORIGIN_BRANCH}" == review/* ]]; then
