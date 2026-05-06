@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-06 - Azure PR Review Publish Failure Handling
+
+Touched areas: `src/agent_sandbox/services.py`, PR publish tests.
+
+- Changed Azure DevOps `submit_pr_review` publishing to post inline comments
+  before the summary comment, so invalid inline anchors no longer leave behind a
+  successful summary thread when the inline comments fail. Azure PR publish
+  errors now include extracted provider response details plus the failed inline
+  comment index/path/line and are logged with the same context for diagnostics.
+
 ## 2026-05-06 - Workflow Editor Node Creation UX
 
 Touched areas: `frontend/workflow-editor/`.

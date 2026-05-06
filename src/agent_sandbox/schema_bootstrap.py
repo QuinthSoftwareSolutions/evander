@@ -540,6 +540,15 @@ _QUERY_OUTPUT_SCHEMAS = {
         "created_at": {"type": "string"},
         "updated_at": {"type": "string"},
     },
+    "query:ado:work-items": {
+        "provider": {"type": "string"},
+        "project": {"type": "string"},
+        "team": {"type": "string"},
+        "iteration_path": {"type": "string"},
+        "items": {"type": "array"},
+        "count": {"type": "integer"},
+        "paging": {"type": "object"},
+    },
 }
 
 

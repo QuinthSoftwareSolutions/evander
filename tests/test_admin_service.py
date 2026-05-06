@@ -2332,7 +2332,13 @@ def test_workflow_editor_reads_and_saves_named_graphs_inside_single_pack(
         for graph in document.graphs
     ] == [
         ("graph-ticket", "Ticket intake", ["root"], ["alice"], ["trigger-ticket", "effect-ticket"]),
-        ("graph-cron", "Scheduled cleanup", ["root/team-a"], ["bob"], ["trigger-cron", "effect-cron"]),
+        (
+            "graph-cron",
+            "Scheduled cleanup",
+            ["root/team-a"],
+            ["bob"],
+            ["trigger-cron", "effect-cron"],
+        ),
     ]
 
     edited_graphs = [graph.model_dump(mode="json") for graph in document.graphs]
@@ -4312,7 +4318,7 @@ def test_clone_repo_into_vm_installs_agent_push_and_pr_note_helpers(
     assert "config alias.agent-pr-note" in remote_script
     assert 'agent-pr-note" ensure-head' in remote_script
     assert "config agent-sandbox.prNotesRef" in remote_script
-    assert 'git config --get agent-sandbox.prNotesRef' in remote_script
+    assert "git config --get agent-sandbox.prNotesRef" in remote_script
     assert '"${notes_ref}"' in remote_script
     assert "config agent-sandbox.branchSuffix" in remote_script
 

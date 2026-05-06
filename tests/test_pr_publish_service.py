@@ -394,6 +394,116 @@ def test_azure_publish_provider_submits_review_and_inline_comments(
         "azure_devops:thread_comment:45:11",
     ]
     assert len(requests) == 2
+    payloads = [json.loads(request.content.decode("utf-8")) for request in requests]
+    assert payloads[0]["comments"][0]["content"] == "Fix this line"
+    assert payloads[1]["comments"][0]["content"] == "Summary"
+
+
+def test_azure_publish_provider_failed_inline_comment_does_not_post_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload["comments"][0]["content"] != "Summary"
+        return httpx.Response(
+            400,
+            json={
+                "message": "The pull request thread position is invalid.",
+                "typeKey": "GitPullRequestCommentPositionDoesNotExistException",
+                "errorCode": 0,
+                "eventId": 3000,
+            },
+            request=request,
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrPublishProvider(
+        organization_url="https://dev.azure.com/example",
+        project="proj",
+        pat="secret",
+    )
+
+    caplog.set_level("WARNING", logger="agent_sandbox.services")
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        provider.submit_review(
+            repo="repo1",
+            pr_id="17",
+            body_text="Summary",
+            comments=[
+                {"path": "src/app.py", "line": 17, "body": "Fix this line"},
+                {"path": "src/other.py", "line": 23, "body": "Fix this too"},
+            ],
+        )
+
+    assert len(requests) == 1
+    error_text = str(exc_info.value)
+    assert "inline comment 1/2 path=src/app.py line=17" in error_text
+    assert "The pull request thread position is invalid." in error_text
+    assert "GitPullRequestCommentPositionDoesNotExistException" in error_text
+    assert "Posted 0 of 2 inline comment(s); summary comment was not posted." in error_text
+    assert "The pull request thread position is invalid." in caplog.text
+
+
+def test_azure_publish_provider_reports_failed_inline_after_partial_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        payload = json.loads(request.content.decode("utf-8"))
+        content = payload["comments"][0]["content"]
+        if content == "First finding":
+            return httpx.Response(
+                201,
+                json={
+                    "id": 45,
+                    "comments": [{"id": 11}],
+                    "_links": {"web": {"href": "https://ado.test/threads/45"}},
+                },
+                request=request,
+            )
+        assert content == "Second finding"
+        return httpx.Response(
+            400,
+            json={"message": "Specified pull request thread position does not exist."},
+            request=request,
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrPublishProvider(
+        organization_url="https://dev.azure.com/example",
+        project="proj",
+        pat="secret",
+    )
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        provider.submit_review(
+            repo="repo1",
+            pr_id="17",
+            body_text="Summary",
+            comments=[
+                {"path": "src/app.py", "line": 17, "body": "First finding"},
+                {"path": "src/other.py", "line": 23, "body": "Second finding"},
+            ],
+        )
+
+    assert len(requests) == 2
+    posted_contents = [
+        json.loads(request.content.decode("utf-8"))["comments"][0]["content"]
+        for request in requests
+    ]
+    assert posted_contents == [
+        "First finding",
+        "Second finding",
+    ]
+    error_text = str(exc_info.value)
+    assert "inline comment 2/2 path=src/other.py line=23" in error_text
+    assert "Posted 1 of 2 inline comment(s); summary comment was not posted." in error_text
 
 
 def test_azure_publish_provider_maps_left_side_inline_comment(

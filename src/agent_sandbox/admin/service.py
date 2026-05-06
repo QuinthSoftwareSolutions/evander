@@ -1457,6 +1457,39 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("issue_id", "Issue ID", "string", required=True, bindable=True),
         ],
     ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:ado:work-items",
+        label="ADO work items",
+        fields=[
+            _field("directory_path", "Directory path", "string", bindable=True),
+            _field("project", "Project", "string", bindable=True),
+            _field(
+                "wiql",
+                "WIQL",
+                "string",
+                bindable=True,
+                multiline=True,
+                description="Explicit WIQL query. When set, filter fields are not applied.",
+            ),
+            _field(
+                "current_iteration",
+                "Current iteration",
+                "boolean",
+                bindable=True,
+                description="Resolve the team's current iteration before querying.",
+            ),
+            _field("team", "Team", "string", bindable=True),
+            _field("iteration", "Iteration path", "string", bindable=True),
+            _field("area_path", "Area path", "string", bindable=True),
+            _field("states", "States", "string_list"),
+            _field("types", "Types", "string_list"),
+            _field("tags_any", "Tags any", "string_list"),
+            _field("text_search", "Text search", "string", bindable=True),
+            _field("top", "Top", "number", bindable=True),
+            _field("skip", "Skip", "number", bindable=True),
+        ],
+    ),
 )
 
 
@@ -4213,8 +4246,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                     worker_url=self._container_worker_url_for_target(record=record),
                 ).inspect(record.execution_id)
                 record = (
-                    self._container_worker_execution_repository().get(record.execution_id)
-                    or record
+                    self._container_worker_execution_repository().get(record.execution_id) or record
                 )
             except Exception:
                 pass
@@ -4327,9 +4359,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         active_count = sum(
             1
             for record in execution_records
-            if self._agent_status_is_active(
-                self._container_agent_status(record.last_status)
-            )
+            if self._agent_status_is_active(self._container_agent_status(record.last_status))
         )
         host: dict[str, Any] = {
             "kind": "container_worker_session",
@@ -4368,9 +4398,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             started_at=None,
             finished_at=None,
             updated_at=(
-                latest_execution.updated_at
-                if latest_execution is not None
-                else session.created_at
+                latest_execution.updated_at if latest_execution is not None else session.created_at
             ),
             host=host,
             capabilities={
@@ -4418,9 +4446,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             return records
 
         container_records_by_session: dict[str, list[Any]] = {}
-        for container_record in (
-            self._container_worker_execution_repository().read_all().values()
-        ):
+        for container_record in self._container_worker_execution_repository().read_all().values():
             session_id = str(container_record.session_id or "").strip()
             if not session_id:
                 continue
@@ -4679,14 +4705,10 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         }
         unsupported = sorted(set(body) - allowed_fields)
         if unsupported:
-            raise ValueError(
-                "Unsupported agent policy fields: " + ", ".join(unsupported)
-            )
+            raise ValueError("Unsupported agent policy fields: " + ", ".join(unsupported))
         session: SessionManifest | None
         if selected_backend == "container_worker_vm":
-            session, record = self._resolve_container_agent_session(
-                agent_id, require_session=True
-            )
+            session, record = self._resolve_container_agent_session(agent_id, require_session=True)
             del record
             target_name = self._container_session_target_name(session)
         else:
@@ -4710,17 +4732,15 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 self._agent_string_list(body, "allowed_script_names") or []
             )
         if "discord_channels" in body:
-            update["discord_channel_allowlist"] = self._agent_string_list(
-                body, "discord_channels"
-            ) or []
+            update["discord_channel_allowlist"] = (
+                self._agent_string_list(body, "discord_channels") or []
+            )
         if "email_mailboxes" in body:
-            update["email_mailbox_allowlist"] = self._agent_string_list(
-                body, "email_mailboxes"
-            ) or []
+            update["email_mailbox_allowlist"] = (
+                self._agent_string_list(body, "email_mailboxes") or []
+            )
         if "email_folders" in body:
-            update["email_folder_allowlist"] = self._agent_string_list(
-                body, "email_folders"
-            ) or []
+            update["email_folder_allowlist"] = self._agent_string_list(body, "email_folders") or []
         if "labels" in body:
             metadata = dict(session.metadata)
             labels = _normalize_session_labels(body.get("labels"))
@@ -4784,9 +4804,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 "session_id": matches[0].session_id if len(matches) == 1 else None,
             }
 
-        session, record = self._resolve_container_agent_session(
-            agent_id, require_session=False
-        )
+        session, record = self._resolve_container_agent_session(agent_id, require_session=False)
         session_id = (
             str(getattr(session, "session_id", "") or "").strip()
             if session is not None
@@ -4822,9 +4840,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 container_repository.delete(execution_id)
                 removed_mappings += 1
         removed_session = self.runtime.session_repository.delete_session(session_id)
-        removed_approvals = _prune_approvals_for_sessions(
-            self.runtime, session_ids={session_id}
-        )
+        removed_approvals = _prune_approvals_for_sessions(self.runtime, session_ids={session_id})
         return {
             "success": True,
             "agent_id": agent_id,
@@ -4860,18 +4876,14 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 vm_user=vm_user,
             )
         if selected_backend == "container_worker_vm":
-            session, record = self._resolve_container_agent_session(
-                agent_id, require_session=False
-            )
+            session, record = self._resolve_container_agent_session(agent_id, require_session=False)
             session_id = (
                 str(session.session_id).strip()
                 if session is not None
                 else str(getattr(record, "session_id", "") or "").strip()
             )
             execution_records = (
-                self._container_execution_records_for_session(session_id)
-                if session_id
-                else []
+                self._container_execution_records_for_session(session_id) if session_id else []
             )
             worker_backend = self._container_worker_backend(
                 directory_path=(
@@ -4988,9 +5000,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 "remote_url": result.remote_url,
             }
         if selected_backend == "container_worker_vm":
-            session, record = self._resolve_container_agent_session(
-                agent_id, require_session=False
-            )
+            session, record = self._resolve_container_agent_session(agent_id, require_session=False)
             is_session_target = session is not None and record is None
             session_id = (
                 str(session.session_id).strip()
@@ -4998,9 +5008,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 else str(getattr(record, "session_id", "") or "").strip()
             )
             execution_records = (
-                self._container_execution_records_for_session(session_id)
-                if session_id
-                else []
+                self._container_execution_records_for_session(session_id) if session_id else []
             )
             worker_backend = self._container_worker_backend(
                 directory_path=(
@@ -5028,8 +5036,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                             f"No active container executions for session {session.session_id}"
                         )
                     statuses = [
-                        worker_backend.stop(candidate.execution_id)
-                        for candidate in active_records
+                        worker_backend.stop(candidate.execution_id) for candidate in active_records
                     ]
                     status = statuses[-1]
                     message = (
@@ -5884,9 +5891,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             journal_path=worker_config.workflow_event_journal_path,
         )
         normalized_backend = str(backend or self.config.execution_backend).strip() or "libvirt_vm"
-        normalized_capability_mode = (
-            str(assistant_capability_mode or "").strip() or "read-only"
-        )
+        normalized_capability_mode = str(assistant_capability_mode or "").strip() or "read-only"
         if normalized_capability_mode != "full-access":
             normalized_capability_mode = "read-only"
         event_id = f"chat:{user_message_id}"
@@ -6097,9 +6102,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 if not directory_path:
                     continue
                 try:
-                    normalized_directory_path = DirectoryPath(
-                        segments=directory_path
-                    ).as_posix()
+                    normalized_directory_path = DirectoryPath(segments=directory_path).as_posix()
                 except ValueError as exc:
                     if strict:
                         raise ValueError(
@@ -6153,7 +6156,9 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                     raise ValueError(f"Duplicate workflow graph id: {graph.id}")
                 continue
             seen_graph_ids.add(graph.id)
-            unknown_node_ids = sorted(node_id for node_id in graph.node_ids if node_id not in node_ids)
+            unknown_node_ids = sorted(
+                node_id for node_id in graph.node_ids if node_id not in node_ids
+            )
             if unknown_node_ids:
                 if strict:
                     unknown_list = ", ".join(unknown_node_ids)
@@ -6191,7 +6196,8 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                     (
                         graph
                         for graph in unmatched_graphs
-                        if graph.id not in used_graph_ids and component_key.intersection(graph.node_ids)
+                        if graph.id not in used_graph_ids
+                        and component_key.intersection(graph.node_ids)
                     ),
                     key=lambda graph: len(component_key.intersection(graph.node_ids)),
                     default=None,
@@ -7349,7 +7355,9 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         if not normalized_trigger_id:
             raise ValueError("trigger_id is required")
         if _is_system_managed_workflow_node_id(normalized_trigger_id):
-            raise ValueError(f"Trigger is system-managed and cannot be mutated: {normalized_trigger_id}")
+            raise ValueError(
+                f"Trigger is system-managed and cannot be mutated: {normalized_trigger_id}"
+            )
         normalized_payload = dict(payload)
         payload_trigger_id = str(normalized_payload.get("id", "")).strip()
         if payload_trigger_id and payload_trigger_id != normalized_trigger_id:
@@ -7390,7 +7398,9 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         if not normalized_trigger_id:
             raise ValueError("trigger_id is required")
         if _is_system_managed_workflow_node_id(normalized_trigger_id):
-            raise ValueError(f"Trigger is system-managed and cannot be mutated: {normalized_trigger_id}")
+            raise ValueError(
+                f"Trigger is system-managed and cannot be mutated: {normalized_trigger_id}"
+            )
         current = self.trigger_repository.read_document()
         config = dict(current.config)
         triggers_raw = config.get("triggers", [])
@@ -7424,7 +7434,9 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         if not normalized_effect_id:
             raise ValueError("effect_id is required")
         if _is_system_managed_workflow_node_id(normalized_effect_id):
-            raise ValueError(f"Effect is system-managed and cannot be mutated: {normalized_effect_id}")
+            raise ValueError(
+                f"Effect is system-managed and cannot be mutated: {normalized_effect_id}"
+            )
         normalized_payload = dict(payload)
         normalized_source_id = str(normalized_payload.pop("source_id", "")).strip()
         payload_effect_id = str(normalized_payload.get("id", "")).strip()
@@ -7482,7 +7494,9 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         if not normalized_effect_id:
             raise ValueError("effect_id is required")
         if _is_system_managed_workflow_node_id(normalized_effect_id):
-            raise ValueError(f"Effect is system-managed and cannot be mutated: {normalized_effect_id}")
+            raise ValueError(
+                f"Effect is system-managed and cannot be mutated: {normalized_effect_id}"
+            )
         current = self._read_worker_global_config("trigger-orchestrator")
         config = dict(current.config)
         effects_raw = config.get("effects", [])

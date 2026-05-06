@@ -3,8 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.events.provider_models import (
+    AdoWorkItemsQueryDefinition,
     GitPrNoteQueryDefinition,
     IssueGetQueryDefinition,
     SessionContextQueryDefinition,
@@ -61,6 +64,7 @@ def test_default_registry_includes_known_query_types() -> None:
         "query:git:pr-note",
         "query:session-context",
         "query:issue:get",
+        "query:ado:work-items",
     }
 
 
@@ -219,3 +223,125 @@ def test_issue_get_query_provider_returns_current_issue_payload(tmp_path: Path) 
 
     assert admin_service.issue_calls == [{"issue_id": "root:issue-42"}]
     assert output["metadata"]["steps"] == ["analyze", "implement"]
+
+
+def test_ado_work_items_query_provider_uses_wiql_and_directory_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    query = AdoWorkItemsQueryDefinition(
+        id="query-ado",
+        display_name="ADO work items",
+        type="query:ado:work-items",
+        directory_path="root/team-a",
+        project="example-project",
+        wiql="SELECT [System.Id] FROM WorkItems WHERE [System.State] = 'Active'",
+        top=25,
+        skip=5,
+    )
+    captured: dict[str, object] = {}
+
+    class StubIssueService:
+        def __init__(self, provider_config_resolver: object) -> None:
+            captured["provider_config_resolver"] = provider_config_resolver
+
+        def query_remote_backlog_items(self, **kwargs: object) -> dict[str, object]:
+            captured["request"] = kwargs
+            return {
+                "provider": "azure_devops",
+                "project": "example-project",
+                "items": [{"id": "101", "title": "Fix deploy"}],
+                "count": 1,
+                "paging": {
+                    "skip": 5,
+                    "top": 25,
+                    "returned_count": 1,
+                    "total_matches": 1,
+                    "has_more": False,
+                    "next_skip": None,
+                },
+            }
+
+    monkeypatch.setattr(
+        "agent_sandbox.queries.providers.ado_work_items.IssueService", StubIssueService
+    )
+    resolver = _ResolverStub()
+    factory = QueryProviderFactory(
+        provider_config_resolver=resolver,
+        admin_service=_AdminServiceStub(vms=[]),
+    )
+    provider = factory.build(query)
+    output = provider.execute()
+
+    assert captured["provider_config_resolver"] is resolver
+    assert captured["request"] == {
+        "provider": "azure_devops",
+        "directory_path": "root/team-a",
+        "project": "example-project",
+        "wiql": "SELECT [System.Id] FROM WorkItems WHERE [System.State] = 'Active'",
+        "iteration": None,
+        "area_path": None,
+        "states": [],
+        "types": [],
+        "tags_any": [],
+        "text_search": None,
+        "top": 25,
+        "skip": 5,
+    }
+    assert output["items"][0]["id"] == "101"
+
+
+def test_ado_work_items_query_provider_can_query_current_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    query = AdoWorkItemsQueryDefinition(
+        id="query-ado-current",
+        display_name="ADO current iteration",
+        type="query:ado:work-items",
+        current_iteration=True,
+        team="Platform Team",
+        states=["Active"],
+        types=["Task"],
+    )
+    captured: dict[str, object] = {}
+
+    class StubIssueService:
+        def __init__(self, provider_config_resolver: object) -> None:
+            captured["provider_config_resolver"] = provider_config_resolver
+
+        def list_remote_current_iteration_backlog_items(
+            self, **kwargs: object
+        ) -> dict[str, object]:
+            captured["request"] = kwargs
+            return {
+                "provider": "azure_devops",
+                "project": "example-project",
+                "team": "Platform Team",
+                "iteration_path": "Project\\Sprint 12",
+                "items": [],
+                "count": 0,
+            }
+
+    monkeypatch.setattr(
+        "agent_sandbox.queries.providers.ado_work_items.IssueService", StubIssueService
+    )
+    factory = QueryProviderFactory(
+        provider_config_resolver=_ResolverStub(),
+        admin_service=_AdminServiceStub(vms=[]),
+    )
+    provider = factory.build(query)
+    output = provider.execute()
+
+    assert captured["request"] == {
+        "provider": "azure_devops",
+        "directory_path": "root",
+        "project": None,
+        "team": "Platform Team",
+        "area_path": None,
+        "states": ["Active"],
+        "types": ["Task"],
+        "tags_any": [],
+        "text_search": None,
+        "top": 50,
+        "skip": 0,
+    }
+    assert output["iteration_path"] == "Project\\Sprint 12"

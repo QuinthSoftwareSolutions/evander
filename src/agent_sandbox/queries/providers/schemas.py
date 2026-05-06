@@ -38,3 +38,20 @@ class SessionContextQueryDefinition(QueryDefinition):
 class IssueGetQueryDefinition(QueryDefinition):
     type: Literal["query:issue:get"]
     issue_id: ConfigValue
+
+
+class AdoWorkItemsQueryDefinition(QueryDefinition):
+    type: Literal["query:ado:work-items"]
+    directory_path: ConfigValue | None = None
+    project: ConfigValue | None = None
+    wiql: ConfigValue | None = None
+    current_iteration: ConfigValue | None = None
+    team: ConfigValue | None = None
+    iteration: ConfigValue | None = None
+    area_path: ConfigValue | None = None
+    states: ConfigValue | None = None
+    types: ConfigValue | None = None
+    tags_any: ConfigValue | None = None
+    text_search: ConfigValue | None = None
+    top: ConfigValue | None = None
+    skip: ConfigValue | None = None

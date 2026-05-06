@@ -1729,7 +1729,7 @@ select {
   transform: translate(-100%, -50%);
   color: rgba(48, 74, 73, 0.42);
   font-family: "Avenir Next Condensed", "Franklin Gothic Medium", sans-serif;
-  font-size: clamp(1.5rem, 2.4vw, 2.5rem);
+  font-size: clamp(1.5rem, 2.0vw, 2.3rem);
   font-weight: 800;
   line-height: 0.95;
   overflow-wrap: anywhere;

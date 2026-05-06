@@ -80,6 +80,7 @@ class IssueProviderAdapter(Protocol):
         *,
         directory_path: str,
         project: str | None = None,
+        wiql: str | None = None,
         iteration: str | None = None,
         area_path: str | None = None,
         states: list[str] | None = None,
@@ -723,6 +724,7 @@ class AzureDevOpsIssueAdapter:
         *,
         directory_path: str,
         project: str | None = None,
+        wiql: str | None = None,
         iteration: str | None = None,
         area_path: str | None = None,
         states: list[str] | None = None,
@@ -743,6 +745,7 @@ class AzureDevOpsIssueAdapter:
                 organization_url=organization_url,
                 project=normalized_project,
                 auth_header=auth_header,
+                wiql=wiql,
                 iteration=iteration,
                 area_path=area_path,
                 states=states,
@@ -951,6 +954,7 @@ class AzureDevOpsIssueAdapter:
         organization_url: str,
         project: str,
         auth_header: str,
+        wiql: str | None = None,
         iteration: str | None = None,
         area_path: str | None = None,
         team_field_values: list[_AdoTeamFieldValue] | None = None,
@@ -963,16 +967,18 @@ class AzureDevOpsIssueAdapter:
     ) -> dict[str, Any]:
         normalized_top = max(1, min(int(top), 200))
         normalized_skip = max(0, int(skip))
-        wiql = self._build_backlog_wiql_query(
-            project=project,
-            iteration=iteration,
-            area_path=area_path,
-            team_field_values=team_field_values,
-            states=states,
-            types=types,
-            tags_any=tags_any,
-            text_search=text_search,
-        )
+        normalized_wiql = str(wiql or "").strip()
+        if not normalized_wiql:
+            normalized_wiql = self._build_backlog_wiql_query(
+                project=project,
+                iteration=iteration,
+                area_path=area_path,
+                team_field_values=team_field_values,
+                states=states,
+                types=types,
+                tags_any=tags_any,
+                text_search=text_search,
+            )
         wiql_url = f"{organization_url}/{quote(project, safe='')}/_apis/wit/wiql"
         select_fields = [
             "System.Id",
@@ -989,7 +995,7 @@ class AzureDevOpsIssueAdapter:
             wiql_url,
             params={"api-version": "7.1"},
             headers={"Authorization": auth_header, "Content-Type": "application/json"},
-            json={"query": wiql},
+            json={"query": normalized_wiql},
         )
         if wiql_response.is_error:
             self._raise_ado_http_error(action="query backlog items", response=wiql_response)
@@ -1302,6 +1308,7 @@ class IssueService:
         provider: str,
         directory_path: str,
         project: str | None = None,
+        wiql: str | None = None,
         iteration: str | None = None,
         area_path: str | None = None,
         states: list[str] | None = None,
@@ -1317,6 +1324,7 @@ class IssueService:
         return adapter.query_backlog_items(
             directory_path=directory_path,
             project=project,
+            wiql=wiql,
             iteration=iteration,
             area_path=area_path,
             states=states,

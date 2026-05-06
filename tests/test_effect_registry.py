@@ -759,9 +759,7 @@ def test_codex_json_log_filter_handles_current_exec_event_stream() -> None:
     )
 
     assert completed.stdout == (
-        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\n"
-        "I am checking the repo now.\n"
-        "Done.\n"
+        "session id: 019de31a-8393-71d2-8990-e5f4fb0a4df2\nI am checking the repo now.\nDone.\n"
     )
 
 
@@ -1187,7 +1185,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert "config alias.push-agent" in clone_config_command
     assert "git config agent-sandbox.prNotesRef" in clone_config_command
     assert "refs/notes/agent-pr/" in clone_config_command
-    assert 'git config --get agent-sandbox.prNotesRef' in clone_config_command
+    assert "git config --get agent-sandbox.prNotesRef" in clone_config_command
     assert 'git config agent-sandbox.pushAgentAvailable "true"' in clone_config_command
     assert "CANONICAL_REMOTE_URL=https://example.test/org/repo.git" in clone_config_command
     assert "url.${PUSH_REMOTE_URL}.insteadOf" in clone_config_command

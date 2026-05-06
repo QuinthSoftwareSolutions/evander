@@ -164,6 +164,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "query:git:pr-note": "Read pull-request note context from a host checkout.",
   "query:session-context": "Read session context and metadata.",
   "query:issue:get": "Read a local issue record by id.",
+  "query:ado:work-items": "Query Azure DevOps work items.",
 };
 
 const RUNTIME_POLL_INTERVAL_MS = 5000;
@@ -830,6 +831,15 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       issue_id: "issue-1",
     };
   }
+  if (kind === "query" && type === "query:ado:work-items") {
+    return {
+      id,
+      display_name: "ADO work items",
+      type,
+      top: 50,
+      skip: 0,
+    };
+  }
   return { id, display_name: "New node", type };
 }
 
@@ -1478,6 +1488,15 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
       comments: { type: "array" },
       created_at: { type: "string" },
       updated_at: { type: "string" },
+    },
+    "query:ado:work-items": {
+      provider: { type: "string" },
+      project: { type: "string" },
+      team: { type: "string" },
+      iteration_path: { type: "string" },
+      items: { type: "array" },
+      count: { type: "integer" },
+      paging: { type: "object" },
     },
   };
   Object.assign(schema, staticSchemas[node.type] ?? {});

@@ -4,6 +4,7 @@ from importlib import import_module
 from typing import Any
 
 __all__ = [
+    "AdoWorkItemsQueryProvider",
     "IssueGetQueryProvider",
     "QueryProviderBase",
     "QueryRuntimeContext",
@@ -11,6 +12,7 @@ __all__ = [
 ]
 
 _EXPORT_MODULES = {
+    "AdoWorkItemsQueryProvider": ".ado_work_items",
     "IssueGetQueryProvider": ".issue_get",
     "QueryProviderBase": ".base",
     "QueryRuntimeContext": ".base",

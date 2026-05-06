@@ -118,6 +118,7 @@ class ProviderRuntimePorts:
 @dataclass(frozen=True)
 class ProviderRuntimeBase:
     provider_config: Mapping[str, Any] = field(default_factory=dict)
+    provider_config_resolver: Any | None = None
     resolved_config: Any | None = None
     env: Mapping[str, str] = field(default_factory=lambda: dict(os.environ))
     secret_resolver: Callable[[str], str | None] | None = None

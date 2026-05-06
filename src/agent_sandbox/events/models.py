@@ -227,6 +227,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "query:git:pr-note": provider_models.GitPrNoteQueryDefinition,
         "query:session-context": provider_models.SessionContextQueryDefinition,
         "query:issue:get": provider_models.IssueGetQueryDefinition,
+        "query:ado:work-items": provider_models.AdoWorkItemsQueryDefinition,
     }
     return {
         node_type: (lambda node, model=model: _materialize_with_model(model, node))
