@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import mimetypes
 import random
 import time
 from dataclasses import dataclass
@@ -67,6 +69,16 @@ _GRAPH_TEAMS_REACTION_TYPE_BY_VALUE = {
     "angry": "angry",
     "mad": "angry",
 }
+_ATTACHMENT_SECRET_KEYS = {
+    "authorization",
+    "token",
+    "access_token",
+    "content",
+    "contentBytes",
+    "content_bytes",
+    "content_base64",
+    "data",
+}
 
 
 @dataclass
@@ -127,6 +139,87 @@ def _teams_message_to_html(message: str) -> str:
     return rendered or "<p></p>"
 
 
+def _sanitize_attachment_metadata(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    return {key: value for key, value in raw.items() if key not in _ATTACHMENT_SECRET_KEYS}
+
+
+def _sanitize_message_payload_attachments(raw: Any) -> Any:
+    if not isinstance(raw, dict):
+        return raw
+    payload = dict(raw)
+    if isinstance(payload.get("attachments"), list):
+        payload["attachments"] = [
+            _sanitize_attachment_metadata(item)
+            for item in payload["attachments"]
+            if isinstance(item, dict)
+        ]
+    if isinstance(payload.get("hostedContents"), list):
+        payload["hostedContents"] = [
+            _sanitize_attachment_metadata(item)
+            for item in payload["hostedContents"]
+            if isinstance(item, dict)
+        ]
+    if isinstance(payload.get("replies"), list):
+        payload["replies"] = [
+            _sanitize_message_payload_attachments(item)
+            for item in payload["replies"]
+            if isinstance(item, dict)
+        ]
+    return payload
+
+
+def _teams_payload_attachments(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    attachments: list[dict[str, Any]] = []
+    for raw in payload.get("attachments") or []:
+        if not isinstance(raw, dict):
+            continue
+        item = _sanitize_attachment_metadata(raw)
+        item.setdefault("attachment_kind", "graph_attachment")
+        attachments.append(item)
+    for raw in payload.get("hostedContents") or []:
+        if not isinstance(raw, dict):
+            continue
+        item = _sanitize_attachment_metadata(raw)
+        item.setdefault("attachment_kind", "hosted_content")
+        item.setdefault("name", item.get("id") or item.get("temporaryId") or "hosted-content")
+        attachments.append(item)
+    return attachments
+
+
+def _artifact_filename(artifact: dict[str, Any], *, index: int) -> str:
+    filename = str(artifact.get("filename") or artifact.get("name") or "").strip()
+    return filename or f"attachment-{index + 1}"
+
+
+def _artifact_content_type(artifact: dict[str, Any], filename: str) -> str:
+    return str(
+        artifact.get("mime_type")
+        or artifact.get("content_type")
+        or artifact.get("contentType")
+        or mimetypes.guess_type(filename)[0]
+        or "application/octet-stream"
+    )
+
+
+def _artifact_bytes(artifact: dict[str, Any]) -> bytes:
+    path = artifact.get("path")
+    if path:
+        return Path(str(path)).read_bytes()
+    data = artifact.get("content") or artifact.get("content_bytes") or artifact.get("bytes")
+    if isinstance(data, bytes):
+        return data
+    if isinstance(data, str):
+        if artifact.get("encoding") == "base64" or artifact.get("content_base64"):
+            return base64.b64decode(str(artifact.get("content_base64") or data))
+        return data.encode("utf-8")
+    content_base64 = artifact.get("content_base64")
+    if isinstance(content_base64, str):
+        return base64.b64decode(content_base64)
+    raise ValueError("Artifact payload must include a readable path or inline content bytes.")
+
+
 class EmailService:
     def __init__(self, provider: EmailProvider) -> None:
         self.provider = provider
@@ -180,6 +273,22 @@ class DiscordService(Protocol):
 
     def post_status(self, message: str, channel_id: str, session_id: str) -> dict[str, Any]: ...
 
+    def list_attachments(
+        self, message_id: str, *, channel_id: str | None = None
+    ) -> list[dict[str, Any]]: ...
+
+    def download_attachment(
+        self, message_id: str, attachment_id: str, *, channel_id: str | None = None
+    ) -> dict[str, Any]: ...
+
+    def post_file(
+        self,
+        message: str,
+        channel_id: str,
+        session_id: str,
+        artifacts: list[dict[str, Any]],
+    ) -> dict[str, Any]: ...
+
     def add_reaction(
         self,
         channel_id: str,
@@ -203,6 +312,23 @@ class TeamsService(Protocol):
         message: str,
         channel_target: str,
         session_id: str,
+        thread_id: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def list_attachments(
+        self, message_id: str, *, channel_target: str | None = None
+    ) -> list[dict[str, Any]]: ...
+
+    def download_attachment(
+        self, message_id: str, attachment_id: str, *, channel_target: str | None = None
+    ) -> dict[str, Any]: ...
+
+    def post_file(
+        self,
+        message: str,
+        channel_target: str,
+        session_id: str,
+        artifacts: list[dict[str, Any]],
         thread_id: str | None = None,
     ) -> dict[str, Any]: ...
 
@@ -268,6 +394,45 @@ class StubDiscordService:
             "channel_id": channel_id,
             "session_id": session_id,
             "message_preview": message[:120],
+        }
+
+    def list_attachments(
+        self, message_id: str, *, channel_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        command = self.command_store.get(message_id)
+        if command is None:
+            return []
+        if channel_id is not None and command.channel_id != channel_id:
+            return []
+        message = command.metadata.get("message")
+        raw_attachments = command.metadata.get("attachments")
+        if raw_attachments is None and isinstance(message, dict):
+            raw_attachments = message.get("attachments")
+        return [_sanitize_attachment_metadata(item) for item in raw_attachments or []]
+
+    def download_attachment(
+        self, message_id: str, attachment_id: str, *, channel_id: str | None = None
+    ) -> dict[str, Any]:
+        for attachment in self.list_attachments(message_id, channel_id=channel_id):
+            if str(attachment.get("id") or attachment.get("attachment_id") or "") == attachment_id:
+                content = attachment.get("content") or attachment.get("content_base64")
+                if isinstance(content, str):
+                    return {**attachment, "content": content}
+        raise ValueError(f"Unknown Discord attachment: {attachment_id}")
+
+    def post_file(
+        self,
+        message: str,
+        channel_id: str,
+        session_id: str,
+        artifacts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "status": "stubbed",
+            "channel_id": channel_id,
+            "session_id": session_id,
+            "message_preview": message[:120],
+            "artifact_count": len(artifacts),
         }
 
     def add_reaction(
@@ -407,6 +572,9 @@ class DiscordBotApiService:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+        files: Any = None,
+        headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         start_time = time.monotonic()
         attempt = 0
@@ -416,9 +584,11 @@ class DiscordBotApiService:
                 response = client.request(
                     method,
                     url,
-                    headers=self._headers(),
+                    headers=headers or self._headers(),
                     params=params,
                     json=json,
+                    data=data,
+                    files=files,
                     timeout=self.timeout_seconds,
                 )
                 response.raise_for_status()
@@ -462,6 +632,13 @@ class DiscordBotApiService:
                     params={"limit": self.poll_limit},
                 )
                 for payload in response.json():
+                    attachments = [
+                        _sanitize_attachment_metadata(item)
+                        for item in payload.get("attachments") or []
+                        if isinstance(item, dict)
+                    ]
+                    safe_payload = dict(payload)
+                    safe_payload["attachments"] = attachments
                     envelope = DiscordCommandEnvelope(
                         command_id=payload["id"],
                         author_id=payload["author"]["id"],
@@ -472,7 +649,8 @@ class DiscordBotApiService:
                             "guild_id": payload.get("guild_id"),
                             "channel_id": channel_id,
                             "author_id": payload["author"]["id"],
-                            "message": payload,
+                            "attachments": attachments,
+                            "message": safe_payload,
                         },
                     )
                     envelopes[envelope.command_id] = envelope
@@ -491,6 +669,134 @@ class DiscordBotApiService:
             if _parse_snowflake(command.command_id, field_name="command_id") > since_snowflake
         ]
 
+    def _require_allowed_channel_id(self, channel_id: str) -> None:
+        allowed = set(self._allowed_channel_ids())
+        if allowed and channel_id not in allowed:
+            raise ValueError(f"Discord channel is not allowlisted: {channel_id}")
+
+    def _find_message_attachment(
+        self,
+        message_id: str,
+        attachment_id: str | None = None,
+        *,
+        channel_id: str | None = None,
+    ) -> tuple[DiscordCommandEnvelope, list[dict[str, Any]], dict[str, Any] | None]:
+        command = self.command_store.get(message_id)
+        if command is None:
+            raise ValueError(f"Unknown Discord message_id: {message_id}")
+        if channel_id is not None and command.channel_id != channel_id:
+            raise ValueError("Discord message does not belong to the requested channel.")
+        self._require_allowed_channel_id(command.channel_id)
+        message = command.metadata.get("message")
+        raw_attachments = command.metadata.get("attachments")
+        if raw_attachments is None and isinstance(message, dict):
+            raw_attachments = message.get("attachments")
+        attachments = [
+            _sanitize_attachment_metadata(item)
+            for item in raw_attachments or []
+            if isinstance(item, dict)
+        ]
+        if attachment_id is None:
+            return command, attachments, None
+        for attachment in attachments:
+            if str(attachment.get("id") or attachment.get("attachment_id") or "") == attachment_id:
+                return command, attachments, attachment
+        raise ValueError(f"Unknown Discord attachment: {attachment_id}")
+
+    def list_attachments(
+        self, message_id: str, *, channel_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        _, attachments, _ = self._find_message_attachment(message_id, channel_id=channel_id)
+        return attachments
+
+    def download_attachment(
+        self, message_id: str, attachment_id: str, *, channel_id: str | None = None
+    ) -> dict[str, Any]:
+        _, _, attachment = self._find_message_attachment(
+            message_id,
+            attachment_id,
+            channel_id=channel_id,
+        )
+        assert attachment is not None
+        download_url = str(attachment.get("url") or "").strip()
+        if not download_url:
+            raise ValueError(f"Discord attachment {attachment_id} does not include a download URL")
+        headers = {"Authorization": f"Bot {self.token}"}
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = self._request_with_retries(client, "GET", download_url, headers=headers)
+            content_type = response.headers.get("content-type") or attachment.get("content_type")
+            return {
+                **attachment,
+                "filename": attachment.get("filename") or attachment.get("name") or attachment_id,
+                "mime_type": content_type,
+                "content": response.content,
+            }
+
+    def post_file(
+        self,
+        message: str,
+        channel_id: str,
+        session_id: str,
+        artifacts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        self._require_allowed_channel_id(channel_id)
+        files: list[tuple[str, tuple[str, bytes, str]]] = []
+        for index, artifact in enumerate(artifacts):
+            filename = _artifact_filename(artifact, index=index)
+            files.append(
+                (
+                    f"files[{index}]",
+                    (
+                        filename,
+                        _artifact_bytes(artifact),
+                        _artifact_content_type(artifact, filename),
+                    ),
+                )
+            )
+        payload = {"content": message}
+        headers = {"Authorization": f"Bot {self.token}"}
+        with httpx.Client(timeout=None) as client:
+            response = self._request_with_retries(
+                client,
+                "POST",
+                f"{self.api_base_url}/channels/{channel_id}/messages",
+                data={"payload_json": json.dumps(payload)},
+                files=files,
+                headers=headers,
+            )
+            response_payload = response.json()
+        response_attachments = [
+            _sanitize_attachment_metadata(item)
+            for item in response_payload.get("attachments") or []
+            if isinstance(item, dict)
+        ]
+        safe_response_payload = dict(response_payload)
+        safe_response_payload["attachments"] = response_attachments
+
+        envelope = DiscordCommandEnvelope(
+            command_id=response_payload["id"],
+            author_id=response_payload["author"]["id"],
+            channel_id=channel_id,
+            content=response_payload.get("content", ""),
+            metadata={
+                "source": "discord_bot_api_status",
+                "guild_id": response_payload.get("guild_id"),
+                "channel_id": channel_id,
+                "author_id": response_payload["author"]["id"],
+                "session_id": session_id,
+                "attachments": response_attachments,
+                "message": safe_response_payload,
+            },
+        )
+        self.command_store.put(envelope.command_id, envelope)
+        return {
+            "status": "posted",
+            "channel_id": channel_id,
+            "session_id": session_id,
+            "message_id": response_payload["id"],
+            "artifact_count": len(artifacts),
+        }
+
     def post_status(self, message: str, channel_id: str, session_id: str) -> dict[str, Any]:
         with httpx.Client(timeout=None) as client:
             response = self._request_with_retries(
@@ -500,6 +806,13 @@ class DiscordBotApiService:
                 json={"content": message},
             )
             payload = response.json()
+        attachments = [
+            _sanitize_attachment_metadata(item)
+            for item in payload.get("attachments") or []
+            if isinstance(item, dict)
+        ]
+        safe_payload = dict(payload)
+        safe_payload["attachments"] = attachments
 
         envelope = DiscordCommandEnvelope(
             command_id=payload["id"],
@@ -512,7 +825,8 @@ class DiscordBotApiService:
                 "channel_id": channel_id,
                 "author_id": payload["author"]["id"],
                 "session_id": session_id,
-                "message": payload,
+                "attachments": attachments,
+                "message": safe_payload,
             },
         )
         self.command_store.put(envelope.command_id, envelope)
@@ -787,6 +1101,59 @@ class StubTeamsService:
             result["channel_id"] = target.channel_id
         return result
 
+    def list_attachments(
+        self, message_id: str, *, channel_target: str | None = None
+    ) -> list[dict[str, Any]]:
+        record = self.message_store.get(message_id)
+        if record is None:
+            record = next(
+                (
+                    message
+                    for message in self.message_store.read_all().values()
+                    if message.message_id == message_id
+                ),
+                None,
+            )
+        if record is None:
+            return []
+        if channel_target is not None:
+            requested_target = normalize_teams_target(channel_target)
+            actual_target = teams_target_from_message(
+                team_id=record.team_id,
+                channel_id=record.channel_id,
+                chat_id=record.chat_id,
+                metadata=record.metadata,
+            )
+            if requested_target != actual_target:
+                return []
+        raw_attachments = record.metadata.get("attachments")
+        if raw_attachments is None and isinstance(record.metadata.get("message"), dict):
+            raw_attachments = record.metadata["message"].get("attachments")
+        return [_sanitize_attachment_metadata(item) for item in raw_attachments or []]
+
+    def download_attachment(
+        self, message_id: str, attachment_id: str, *, channel_target: str | None = None
+    ) -> dict[str, Any]:
+        for attachment in self.list_attachments(message_id, channel_target=channel_target):
+            if str(attachment.get("id") or attachment.get("attachment_id") or "") == attachment_id:
+                content = attachment.get("content") or attachment.get("content_base64")
+                if isinstance(content, str):
+                    return {**attachment, "content": content}
+        raise ValueError(f"Unknown Teams attachment: {attachment_id}")
+
+    def post_file(
+        self,
+        message: str,
+        channel_target: str,
+        session_id: str,
+        artifacts: list[dict[str, Any]],
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        target = parse_teams_target(channel_target)
+        result = self.post_status(message, target.normalized, session_id, thread_id=thread_id)
+        result["artifact_count"] = len(artifacts)
+        return result
+
     def add_reaction(
         self,
         channel_target: str,
@@ -963,6 +1330,8 @@ class GraphTeamsService:
         cursor = f"{target.normalized}/{message_id}"
         body = payload.get("body") or {}
         author_id = self._author_id(payload)
+        attachments = _teams_payload_attachments(payload)
+        safe_payload = _sanitize_message_payload_attachments(payload)
         metadata = {
             "source": source,
             "target": target.normalized,
@@ -975,7 +1344,8 @@ class GraphTeamsService:
             "reply_to_id": resolved_reply_to_id,
             "web_url": str(payload.get("webUrl") or "").strip() or None,
             "content_type": str(body.get("contentType") or "").strip() or None,
-            "message": payload,
+            "attachments": attachments,
+            "message": safe_payload,
         }
         if session_id is not None:
             metadata["session_id"] = session_id
@@ -1207,6 +1577,198 @@ class GraphTeamsService:
         if known_session_id:
             merged_metadata["session_id"] = known_session_id
         return fetched.model_copy(update={"metadata": merged_metadata})
+
+    def _require_allowed_target(self, channel_target: str) -> TeamsTarget:
+        normalized = normalize_teams_target(channel_target)
+        allowed = set(self._allowed_channel_targets())
+        if allowed and normalized not in allowed:
+            raise ValueError(f"Teams target is not allowlisted: {normalized}")
+        return parse_teams_target(normalized)
+
+    def _find_message_record(
+        self, message_id: str, *, channel_target: str | None = None
+    ) -> tuple[TeamsMessageEnvelope, TeamsTarget]:
+        requested_target = self._require_allowed_target(channel_target) if channel_target else None
+        record = self.message_store.get(message_id)
+        if record is None:
+            record = next(
+                (
+                    message
+                    for message in self.message_store.read_all().values()
+                    if message.message_id == message_id
+                ),
+                None,
+            )
+        if record is None:
+            raise ValueError(f"Unknown Teams message_id: {message_id}")
+        actual_target = parse_teams_target(
+            teams_target_from_message(
+                team_id=record.team_id,
+                channel_id=record.channel_id,
+                chat_id=record.chat_id,
+                metadata=record.metadata,
+            )
+        )
+        if requested_target is not None and requested_target.normalized != actual_target.normalized:
+            raise ValueError("Teams message does not belong to the requested target.")
+        self._require_allowed_target(actual_target.normalized)
+        return record, actual_target
+
+    def list_attachments(
+        self, message_id: str, *, channel_target: str | None = None
+    ) -> list[dict[str, Any]]:
+        record, _ = self._find_message_record(message_id, channel_target=channel_target)
+        raw_attachments = record.metadata.get("attachments")
+        if raw_attachments is None and isinstance(record.metadata.get("message"), dict):
+            raw_attachments = _teams_payload_attachments(record.metadata["message"])
+        return [
+            _sanitize_attachment_metadata(item)
+            for item in raw_attachments or []
+            if isinstance(item, dict)
+        ]
+
+    def _teams_message_url(
+        self, target: TeamsTarget, message_id: str, *, thread_id: str | None = None
+    ) -> str:
+        if target.kind == "chat":
+            return (
+                f"{self.api_base_url}/chats/{quote(target.chat_id or '', safe='')}/messages/"
+                f"{quote(message_id, safe='')}"
+            )
+        root_url = (
+            f"{self.api_base_url}/teams/{quote(target.team_id or '', safe='')}/channels/"
+            f"{quote(target.channel_id or '', safe='')}/messages"
+        )
+        if thread_id and thread_id != message_id:
+            return f"{root_url}/{quote(thread_id, safe='')}/replies/{quote(message_id, safe='')}"
+        return f"{root_url}/{quote(message_id, safe='')}"
+
+    def download_attachment(
+        self, message_id: str, attachment_id: str, *, channel_target: str | None = None
+    ) -> dict[str, Any]:
+        record, target = self._find_message_record(message_id, channel_target=channel_target)
+        attachment = next(
+            (
+                item
+                for item in self.list_attachments(message_id, channel_target=target.normalized)
+                if str(item.get("id") or item.get("attachment_id") or "") == attachment_id
+            ),
+            None,
+        )
+        if attachment is None:
+            raise ValueError(f"Unknown Teams attachment: {attachment_id}")
+
+        content_url = str(
+            attachment.get("contentUrl") or attachment.get("content_url") or ""
+        ).strip()
+        if attachment.get("attachment_kind") == "hosted_content" or not content_url:
+            url = (
+                f"{self._teams_message_url(target, record.message_id, thread_id=record.thread_id)}"
+                f"/hostedContents/{quote(attachment_id, safe='')}/$value"
+            )
+        else:
+            url = content_url
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = self._request_with_retries(client, "GET", url)
+            content_type = response.headers.get("content-type") or attachment.get("contentType")
+        return {
+            **attachment,
+            "filename": attachment.get("name") or attachment.get("filename") or attachment_id,
+            "mime_type": content_type,
+            "content": response.content,
+        }
+
+    def _post_file_url(self, target: TeamsTarget, thread_id: str | None) -> str:
+        if target.kind == "chat":
+            if thread_id:
+                raise ValueError("Teams chat targets do not support thread replies.")
+            return f"{self.api_base_url}/chats/{quote(target.chat_id or '', safe='')}/messages"
+        encoded_team_id = quote(target.team_id or "", safe="")
+        encoded_channel_id = quote(target.channel_id or "", safe="")
+        if not thread_id:
+            return (
+                f"{self.api_base_url}/teams/{encoded_team_id}/channels/"
+                f"{encoded_channel_id}/messages"
+            )
+        return (
+            f"{self.api_base_url}/teams/{encoded_team_id}/channels/{encoded_channel_id}/messages/"
+            f"{quote(thread_id, safe='')}/replies"
+        )
+
+    def _teams_file_message_payload(
+        self, message: str, artifacts: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        hosted_contents: list[dict[str, Any]] = []
+        attachments: list[dict[str, Any]] = []
+        for index, artifact in enumerate(artifacts):
+            temporary_id = str(index + 1)
+            filename = _artifact_filename(artifact, index=index)
+            content_type = _artifact_content_type(artifact, filename)
+            hosted_contents.append(
+                {
+                    "@microsoft.graph.temporaryId": temporary_id,
+                    "contentBytes": base64.b64encode(_artifact_bytes(artifact)).decode("ascii"),
+                    "contentType": content_type,
+                }
+            )
+            attachments.append(
+                {
+                    "id": temporary_id,
+                    "name": filename,
+                    "contentType": "reference",
+                    "contentUrl": f"../hostedContents/{temporary_id}/$value",
+                }
+            )
+        return {
+            "body": {"content": _teams_message_to_html(message), "contentType": "html"},
+            "attachments": attachments,
+            "hostedContents": hosted_contents,
+        }
+
+    def post_file(
+        self,
+        message: str,
+        channel_target: str,
+        session_id: str,
+        artifacts: list[dict[str, Any]],
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        target = self._require_allowed_target(channel_target)
+        normalized_thread_id = str(thread_id or "").strip() or None
+        url = self._post_file_url(target, normalized_thread_id)
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = self._request_with_retries(
+                client,
+                "POST",
+                url,
+                json=self._teams_file_message_payload(message, artifacts),
+            )
+            payload = response.json()
+
+        envelope = self._to_envelope(
+            payload,
+            target=target,
+            source="teams_graph_api_status",
+            session_id=session_id,
+            reply_to_id=normalized_thread_id,
+        )
+        self.message_store.put(envelope.cursor, envelope)
+        result = {
+            "status": "posted",
+            "channel_target": target.normalized,
+            "thread_id": envelope.thread_id,
+            "reply_to_message_id": normalized_thread_id,
+            "session_id": session_id,
+            "message_id": envelope.message_id,
+            "web_url": envelope.metadata.get("web_url"),
+            "artifact_count": len(artifacts),
+        }
+        if target.kind == "chat":
+            result["chat_id"] = target.chat_id
+        else:
+            result["team_id"] = target.team_id
+            result["channel_id"] = target.channel_id
+        return result
 
     def post_status(
         self,

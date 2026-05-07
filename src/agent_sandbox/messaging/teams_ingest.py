@@ -30,6 +30,16 @@ from agent_sandbox.services import GraphTeamsService, normalize_teams_target, pa
 from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage
 
 logger = logging.getLogger(__name__)
+_ATTACHMENT_SECRET_KEYS = {
+    "authorization",
+    "token",
+    "access_token",
+    "content",
+    "contentBytes",
+    "content_bytes",
+    "content_base64",
+    "data",
+}
 
 
 @dataclass(frozen=True)
@@ -271,6 +281,16 @@ class TeamsIngestWorker:
 
     def _normalize_message(self, envelope: TeamsMessageEnvelope) -> TeamsInboxMessage:
         metadata = dict(envelope.metadata)
+        metadata["attachments"] = _sanitize_teams_attachments(metadata.get("attachments"))
+        if isinstance(metadata.get("message"), dict):
+            safe_message = dict(metadata["message"])
+            safe_message["attachments"] = _sanitize_teams_attachments(
+                safe_message.get("attachments")
+            )
+            safe_message["hostedContents"] = _sanitize_teams_attachments(
+                safe_message.get("hostedContents")
+            )
+            metadata["message"] = safe_message
         raw_message = metadata.get("message")
         author_name = (
             _extract_teams_author_name(raw_message)
@@ -316,6 +336,19 @@ class TeamsIngestWorker:
         if known is None:
             return False
         return str(known.metadata.get("source") or "").strip() == "teams_graph_api_status"
+
+
+def _sanitize_teams_attachments(raw_attachments: object) -> list[dict[str, Any]]:
+    if not isinstance(raw_attachments, list):
+        return []
+    sanitized: list[dict[str, Any]] = []
+    for raw in raw_attachments:
+        if not isinstance(raw, dict):
+            continue
+        sanitized.append(
+            {key: value for key, value in raw.items() if key not in _ATTACHMENT_SECRET_KEYS}
+        )
+    return sanitized
 
 
 def _worker_global_config_path(project_dir: Path) -> Path:
