@@ -26,7 +26,7 @@ def make_config(tmp_path: Path, **overrides: object) -> GatewayConfig:
     return GatewayConfig.model_validate(payload)
 
 
-def test_openai_balance_uses_resolved_directory_api_key_env(
+def test_openai_costs_use_resolved_directory_api_key_env(
     tmp_path: Path, monkeypatch
 ) -> None:
     config = make_config(tmp_path, enable_directory_scoped_config=True)
@@ -45,7 +45,24 @@ def test_openai_balance_uses_resolved_directory_api_key_env(
         requests.append(request)
         return httpx.Response(
             200,
-            json={"object": "credit_summary", "total_available": 4.25},
+            json={
+                "object": "page",
+                "data": [
+                    {
+                        "object": "bucket",
+                        "results": [
+                            {
+                                "object": "organization.costs.result",
+                                "amount": {"value": 3.25, "currency": "usd"},
+                            },
+                            {
+                                "object": "organization.costs.result",
+                                "amount": {"value": 1.0, "currency": "usd"},
+                            },
+                        ],
+                    },
+                ],
+            },
             request=request,
         )
 
@@ -58,15 +75,18 @@ def test_openai_balance_uses_resolved_directory_api_key_env(
     status = service.fetch_status(team.path)
 
     assert status.status == "ok"
-    assert status.balance_usd == 4.25
-    assert status.low_balance is True
+    assert status.cost_usd == 4.25
+    assert status.period_days == 30
+    assert status.source == "organization_costs"
     assert status.api_key_env == "TEAM_A_OPENAI_TOKEN"
-    assert requests[0].url == "https://api.openai.com/dashboard/billing/credit_grants"
+    assert requests[0].url.path == "/v1/organization/costs"
+    assert requests[0].url.params["bucket_width"] == "1d"
+    assert requests[0].url.params["limit"] == "31"
     assert requests[0].headers["authorization"] == "Bearer team-a-secret"
     assert "team-a-secret" not in status.model_dump_json()
 
 
-def test_openai_balance_does_not_call_upstream_when_key_is_missing(
+def test_openai_costs_do_not_call_upstream_when_key_is_missing(
     tmp_path: Path, monkeypatch
 ) -> None:
     config = make_config(tmp_path)
@@ -80,12 +100,11 @@ def test_openai_balance_does_not_call_upstream_when_key_is_missing(
     status = service.fetch_status("root")
 
     assert status.status == "not_configured"
-    assert status.balance_usd is None
-    assert status.low_balance is False
+    assert status.cost_usd is None
     assert status.api_key_env == "OPENAI_API_KEY"
 
 
-def test_openai_balance_reports_unsupported_non_openai_base_url(
+def test_openai_costs_report_unsupported_non_openai_base_url(
     tmp_path: Path, monkeypatch
 ) -> None:
     config = make_config(tmp_path, openai_api_base_url="https://models.example.test/v1")
@@ -97,3 +116,27 @@ def test_openai_balance_reports_unsupported_non_openai_base_url(
 
     assert status.status == "unavailable"
     assert "api.openai.com" in (status.message or "")
+
+
+def test_openai_costs_report_missing_usage_scope(tmp_path: Path, monkeypatch) -> None:
+    config = make_config(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            json={
+                "error": (
+                    "You have insufficient permissions for this operation. "
+                    "Missing scopes: api.usage.read."
+                )
+            },
+            request=request,
+        )
+
+    service = OpenAIBillingService(config, transport=httpx.MockTransport(handler))
+
+    status = service.fetch_status("root")
+
+    assert status.status == "unavailable"
+    assert "api.usage.read" in (status.message or "")

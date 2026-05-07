@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Callable, Literal
 
 import httpx
@@ -11,25 +11,24 @@ from pydantic import BaseModel
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.provider_config import ProviderConfigResolver
 
-OPENAI_LOW_BALANCE_THRESHOLD_USD = 5.0
-OPENAI_CREDIT_GRANTS_PATH = "/dashboard/billing/credit_grants"
-OPENAI_CREDIT_GRANTS_DASHBOARD_URL = (
-    "https://platform.openai.com/settings/organization/billing/credit-grants"
-)
+OPENAI_COST_LOOKBACK_DAYS = 30
+OPENAI_COSTS_PATH = "/organization/costs"
+OPENAI_USAGE_DASHBOARD_URL = "https://platform.openai.com/usage"
 
 
-class OpenAIBalanceStatus(BaseModel):
+class OpenAICostStatus(BaseModel):
     provider: Literal["openai"] = "openai"
     status: Literal["ok", "not_configured", "unavailable", "error"]
-    balance_usd: float | None = None
+    cost_usd: float | None = None
     currency: str | None = "usd"
-    low_balance_threshold_usd: float = OPENAI_LOW_BALANCE_THRESHOLD_USD
-    low_balance: bool = False
+    period_days: int = OPENAI_COST_LOOKBACK_DAYS
+    period_start: datetime | None = None
+    period_end: datetime | None = None
     api_key_env: str
     checked_at: datetime
     source: str | None = None
     message: str | None = None
-    dashboard_url: str = OPENAI_CREDIT_GRANTS_DASHBOARD_URL
+    dashboard_url: str = OPENAI_USAGE_DASHBOARD_URL
 
 
 class OpenAIBillingService:
@@ -47,17 +46,17 @@ class OpenAIBillingService:
         self.transport = transport
         self.cache_ttl_seconds = cache_ttl_seconds
         self._clock = clock or time.time
-        self._cache: dict[str, tuple[float, OpenAIBalanceStatus]] = {}
+        self._cache: dict[str, tuple[float, OpenAICostStatus]] = {}
 
     def fetch_status(
         self, directory_path: str | None = None, *, force_refresh: bool = False
-    ) -> OpenAIBalanceStatus:
+    ) -> OpenAICostStatus:
         resolved_config = self.provider_config_resolver.resolve_for_directory(directory_path)
         api_key_env = resolved_config.openai_api_key_env
         checked_at = datetime.now(UTC)
         api_key = os.environ.get(api_key_env)
         if not api_key:
-            return OpenAIBalanceStatus(
+            return OpenAICostStatus(
                 status="not_configured",
                 api_key_env=api_key_env,
                 checked_at=checked_at,
@@ -74,7 +73,7 @@ class OpenAIBillingService:
         ):
             return cached[1]
 
-        status = self._fetch_credit_grants_status(
+        status = self._fetch_cost_status(
             resolved_config=resolved_config,
             api_key=api_key,
             checked_at=checked_at,
@@ -82,20 +81,22 @@ class OpenAIBillingService:
         self._cache[cache_key] = (now, status)
         return status
 
-    def _fetch_credit_grants_status(
+    def _fetch_cost_status(
         self, *, resolved_config: GatewayConfig, api_key: str, checked_at: datetime
-    ) -> OpenAIBalanceStatus:
+    ) -> OpenAICostStatus:
         api_key_env = resolved_config.openai_api_key_env
         try:
-            url = _credit_grants_url(resolved_config.openai_api_base_url)
+            url = _costs_url(resolved_config.openai_api_base_url)
         except ValueError as exc:
-            return OpenAIBalanceStatus(
+            return OpenAICostStatus(
                 status="unavailable",
                 api_key_env=api_key_env,
                 checked_at=checked_at,
                 message=str(exc),
             )
 
+        period_end = checked_at
+        period_start = period_end - timedelta(days=OPENAI_COST_LOOKBACK_DAYS)
         try:
             with httpx.Client(
                 timeout=min(resolved_config.openai_relay_timeout_seconds, 30.0),
@@ -103,79 +104,81 @@ class OpenAIBillingService:
             ) as client:
                 response = client.get(
                     url,
+                    params={
+                        "start_time": int(period_start.timestamp()),
+                        "end_time": int(period_end.timestamp()),
+                        "bucket_width": "1d",
+                        "limit": OPENAI_COST_LOOKBACK_DAYS + 1,
+                    },
                     headers={
                         "authorization": f"Bearer {api_key}",
                         "accept": "application/json",
                     },
                 )
         except httpx.HTTPError as exc:
-            return OpenAIBalanceStatus(
+            return OpenAICostStatus(
                 status="error",
                 api_key_env=api_key_env,
                 checked_at=checked_at,
-                message=f"OpenAI balance check failed: {exc.__class__.__name__}.",
+                message=f"OpenAI cost check failed: {exc.__class__.__name__}.",
             )
 
         if response.status_code in {401, 403}:
-            return OpenAIBalanceStatus(
+            return OpenAICostStatus(
                 status="unavailable",
                 api_key_env=api_key_env,
                 checked_at=checked_at,
                 message=(
-                    "OpenAI rejected the billing request; the configured key may not "
-                    "have billing access."
+                    "OpenAI Costs API rejected the key. Grant organization usage/cost "
+                    "access, including api.usage.read for restricted keys."
                 ),
             )
         if response.status_code == 404:
-            return OpenAIBalanceStatus(
+            return OpenAICostStatus(
                 status="unavailable",
                 api_key_env=api_key_env,
                 checked_at=checked_at,
-                message="OpenAI credit-grants balance endpoint is unavailable.",
+                message="OpenAI Costs API endpoint is unavailable.",
             )
         if response.status_code >= 400:
-            return OpenAIBalanceStatus(
+            return OpenAICostStatus(
                 status="error",
                 api_key_env=api_key_env,
                 checked_at=checked_at,
-                message=f"OpenAI balance check failed with HTTP {response.status_code}.",
+                message=f"OpenAI cost check failed with HTTP {response.status_code}.",
             )
 
         try:
             payload = response.json()
         except ValueError:
-            return OpenAIBalanceStatus(
+            return OpenAICostStatus(
                 status="error",
                 api_key_env=api_key_env,
                 checked_at=checked_at,
-                message="OpenAI balance response was not valid JSON.",
+                message="OpenAI cost response was not valid JSON.",
             )
-        balance = _extract_total_available(payload)
-        if balance is None:
-            return OpenAIBalanceStatus(
+        cost_total = _extract_cost_total(payload)
+        if cost_total is None:
+            return OpenAICostStatus(
                 status="unavailable",
                 api_key_env=api_key_env,
                 checked_at=checked_at,
-                message="OpenAI balance response did not include total_available.",
+                message="OpenAI cost response did not include bucket amount values.",
             )
-        low_balance = balance < OPENAI_LOW_BALANCE_THRESHOLD_USD
-        return OpenAIBalanceStatus(
+        cost, currency = cost_total
+        return OpenAICostStatus(
             status="ok",
-            balance_usd=balance,
-            currency="usd",
-            low_balance=low_balance,
+            cost_usd=cost,
+            currency=currency,
+            period_start=period_start,
+            period_end=period_end,
             api_key_env=api_key_env,
             checked_at=checked_at,
-            source="credit_grants",
-            message=(
-                f"OpenAI balance is below ${OPENAI_LOW_BALANCE_THRESHOLD_USD:.0f}."
-                if low_balance
-                else None
-            ),
+            source="organization_costs",
         )
 
 
-def _credit_grants_url(openai_api_base_url: str) -> str:
+def _costs_url(openai_api_base_url: str) -> str:
     base = httpx.URL(openai_api_base_url)
     if base.scheme not in {"http", "https"} or not base.host:
         raise ValueError("OpenAI API base URL is not an HTTP URL.")
@@ -183,20 +186,38 @@ def _credit_grants_url(openai_api_base_url: str) -> str:
     if base.port is not None:
         origin = f"{origin}:{base.port}"
     if base.host.lower() != "api.openai.com":
-        raise ValueError("OpenAI balance checks are only supported for api.openai.com.")
-    return f"{origin}{OPENAI_CREDIT_GRANTS_PATH}"
+        raise ValueError("OpenAI Costs API checks are only supported for api.openai.com.")
+    version_path = base.path.rstrip("/") or "/v1"
+    if version_path == "/":
+        version_path = "/v1"
+    return f"{origin}{version_path}{OPENAI_COSTS_PATH}"
 
 
-def _extract_total_available(payload: object) -> float | None:
+def _extract_cost_total(payload: object) -> tuple[float, str] | None:
     if not isinstance(payload, dict):
         return None
-    for key in ("total_available", "balance", "credit_balance"):
-        value = payload.get(key)
-        if isinstance(value, int | float):
-            return float(value)
-    amount = payload.get("amount_available")
-    if isinstance(amount, dict):
-        value = amount.get("value")
-        if isinstance(value, int | float):
-            return float(value)
-    return None
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return None
+    total = 0.0
+    currency = "usd"
+    for bucket in data:
+        if not isinstance(bucket, dict):
+            return None
+        results = bucket.get("results", [])
+        if not isinstance(results, list):
+            return None
+        for result in results:
+            if not isinstance(result, dict):
+                return None
+            amount = result.get("amount")
+            if not isinstance(amount, dict):
+                return None
+            value = amount.get("value")
+            if not isinstance(value, int | float):
+                return None
+            result_currency = amount.get("currency")
+            if isinstance(result_currency, str) and result_currency:
+                currency = result_currency
+            total += float(value)
+    return total, currency

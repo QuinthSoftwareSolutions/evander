@@ -85,7 +85,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if not self._auth.config.auth_required:
             return await call_next(request)
-        if path == "/healthz" or path.startswith("/api/auth/"):
+        if (
+            path == "/healthz"
+            or path == "/api/admin/deployment-status"
+            or path.startswith("/api/auth/")
+        ):
             return await call_next(request)
         if path.startswith("/api/"):
             if self._auth.read_session(request) is None:
@@ -243,11 +247,15 @@ def create_app(service: AdminService) -> Starlette:
                         assistant_settings.get("show_launcher_when_disabled")
                     ),
                 },
+                "deployment": service.read_deployment_status().model_dump(mode="json"),
                 "privileged_operations": {
                     "unlocked": privileged_operations_unlocked_for_request(request)
                 },
             }
         )
+
+    async def get_deployment_status(_: Request) -> JSONResponse:
+        return JSONResponse(service.read_deployment_status().model_dump(mode="json"))
 
     async def unlock_privileged_operations(request: Request) -> JSONResponse:
         auth.require(request)
@@ -287,6 +295,7 @@ def create_app(service: AdminService) -> Starlette:
         Route("/api/auth/session", get_session, methods=["GET"]),
         Route("/api/auth/logout", logout, methods=["POST"]),
         Route("/api/admin/state", get_admin_state, methods=["GET"]),
+        Route("/api/admin/deployment-status", get_deployment_status, methods=["GET"]),
         Route("/api/admin/privileged/unlock", unlock_privileged_operations, methods=["POST"]),
         Route("/api/admin/privileged/lock", lock_privileged_operations, methods=["POST"]),
     ]

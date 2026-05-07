@@ -54,6 +54,26 @@ def test_ansible_site_uses_repo_native_bootstrap_order() -> None:
     assert site.index("- role: apt_cache_relay") < site.index("- role: repo_checkout")
 
 
+def test_ansible_site_announces_control_plane_deployment_status() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    site = (repo / "ansible" / "site.yml").read_text(encoding="utf-8")
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "agent_sandbox_deployment_status_path" in defaults
+    assert "deployment-status.json" in defaults
+    assert "agent_sandbox_deployment_status_message" in defaults
+    assert "agent_sandbox_deployment_status_ttl_seconds" in defaults
+    assert "Check whether an existing runtime directory is present" in site
+    assert "Announce deployment in control-plane runtime" in site
+    assert '"source": "ansible"' in site
+    assert "Clear deployment status runtime flag" in site
+    assert site.index("Announce deployment in control-plane runtime") < site.index(
+        "- role: host_prereqs"
+    )
+
+
 def test_ansible_nexus_package_cache_role_is_control_plane_only() -> None:
     repo = Path(__file__).resolve().parents[1]
     site = (repo / "ansible" / "site.yml").read_text(encoding="utf-8")

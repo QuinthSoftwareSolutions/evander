@@ -426,6 +426,76 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     ]
 
 
+def test_admin_web_exposes_deployment_status_from_runtime(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    status_path = service.config.runtime_dir / "deployment-status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "active": True,
+                "message": "Control plane update in progress.",
+                "source": "ansible",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "ttl_seconds": 3600,
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/deployment-status")
+    state_response = client.get("/api/admin/state")
+
+    assert response.status_code == 200
+    assert response.json()["active"] is True
+    assert response.json()["message"] == "Control plane update in progress."
+    assert state_response.status_code == 200
+    assert state_response.json()["deployment"]["active"] is True
+
+
+def test_admin_web_deployment_status_is_public_when_auth_required(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "secret")
+    service = AdminService(write_config(tmp_path))
+    (service.config.runtime_dir / "deployment-status.json").write_text(
+        json.dumps({"active": True, "message": "Deploying", "ttl_seconds": 3600}),
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(service))
+
+    public_response = client.get("/api/admin/deployment-status")
+    protected_response = client.get("/api/admin/state")
+
+    assert public_response.status_code == 200
+    assert public_response.json()["active"] is True
+    assert protected_response.status_code == 401
+
+
+def test_admin_web_ignores_stale_deployment_status(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    stale_started_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    (service.config.runtime_dir / "deployment-status.json").write_text(
+        json.dumps(
+            {
+                "active": True,
+                "message": "Deploying",
+                "started_at": stale_started_at.isoformat(),
+                "ttl_seconds": 60,
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/deployment-status")
+
+    assert response.status_code == 200
+    assert response.json()["active"] is False
+    assert response.json()["stale"] is True
+
+
 def test_admin_web_skills_api_and_catalog_options(tmp_path: Path) -> None:
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
@@ -1540,22 +1610,22 @@ def test_admin_web_state_uses_root_execution_backend(tmp_path: Path) -> None:
     assert response.json()["execution_backend"] == "container_worker_vm"
 
 
-def test_admin_web_openai_balance_endpoint_reports_missing_key(
+def test_admin_web_openai_costs_endpoint_reports_missing_key(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
-    response = client.get("/api/admin/providers/openai/balance")
+    response = client.get("/api/admin/providers/openai/costs")
 
     assert response.status_code == 200
-    payload = response.json()["balance"]
+    payload = response.json()["costs"]
     assert payload["status"] == "not_configured"
     assert payload["api_key_env"] == "OPENAI_API_KEY"
-    assert payload["balance_usd"] is None
+    assert payload["cost_usd"] is None
 
 
-def test_admin_web_openai_balance_endpoint_passes_selected_directory(
+def test_admin_web_openai_costs_endpoint_passes_selected_directory(
     tmp_path: Path, monkeypatch
 ) -> None:
     calls: list[dict[str, object]] = []
@@ -1574,15 +1644,16 @@ def test_admin_web_openai_balance_endpoint_passes_selected_directory(
                     return {
                         "provider": "openai",
                         "status": "ok",
-                        "balance_usd": 12.5,
+                        "cost_usd": 12.5,
                         "currency": "usd",
-                        "low_balance_threshold_usd": 5.0,
-                        "low_balance": False,
+                        "period_days": 30,
+                        "period_start": "2026-04-07T00:00:00Z",
+                        "period_end": "2026-05-07T00:00:00Z",
                         "api_key_env": "TEAM_OPENAI_API_KEY",
                         "checked_at": "2026-05-07T00:00:00Z",
-                        "source": "credit_grants",
+                        "source": "organization_costs",
                         "message": None,
-                        "dashboard_url": "https://platform.openai.com/settings/organization/billing/credit-grants",
+                        "dashboard_url": "https://platform.openai.com/usage",
                     }
 
             return Status()
@@ -1594,11 +1665,11 @@ def test_admin_web_openai_balance_endpoint_passes_selected_directory(
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
     response = client.get(
-        "/api/admin/providers/openai/balance?directory_path=root/team-a&refresh=true"
+        "/api/admin/providers/openai/costs?directory_path=root/team-a&refresh=true"
     )
 
     assert response.status_code == 200
-    assert response.json()["balance"]["api_key_env"] == "TEAM_OPENAI_API_KEY"
+    assert response.json()["costs"]["api_key_env"] == "TEAM_OPENAI_API_KEY"
     assert calls == [{"directory_path": "root/team-a", "force_refresh": True}]
 
 

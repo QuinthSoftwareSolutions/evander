@@ -47,15 +47,27 @@ type AdminState = {
     enabled: boolean;
     show_launcher_when_disabled: boolean;
   };
+  deployment?: DeploymentStatus;
 };
 
-type OpenAIBalanceStatus = {
+type DeploymentStatus = {
+  active: boolean;
+  message: string | null;
+  source: string | null;
+  started_at: string | null;
+  updated_at: string | null;
+  ttl_seconds: number;
+  stale: boolean;
+};
+
+type OpenAICostStatus = {
   provider: "openai";
   status: "ok" | "not_configured" | "unavailable" | "error";
-  balance_usd: number | null;
+  cost_usd: number | null;
   currency: string | null;
-  low_balance_threshold_usd: number;
-  low_balance: boolean;
+  period_days: number;
+  period_start: string | null;
+  period_end: string | null;
   api_key_env: string;
   checked_at: string;
   source: string | null;
@@ -63,8 +75,8 @@ type OpenAIBalanceStatus = {
   dashboard_url: string;
 };
 
-type OpenAIBalanceResponse = {
-  balance: OpenAIBalanceStatus;
+type OpenAICostResponse = {
+  costs: OpenAICostStatus;
 };
 
 type DirectoryStateResponse = {
@@ -661,65 +673,98 @@ function formatOpenAICheckedAt(value: string | null | undefined): string {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function openAIBalanceLabel(balance: OpenAIBalanceStatus | null, loading: boolean, error: string | null): string {
-  if (loading && balance === null) {
+function formatDeploymentStartedAt(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function DeploymentStatusBanner({ status }: { status: DeploymentStatus | null }) {
+  if (!status?.active) {
+    return null;
+  }
+  const startedAt = formatDeploymentStartedAt(status.started_at ?? status.updated_at);
+  return (
+    <div className="admin-deployment-banner" role="status" aria-live="polite">
+      <div className="admin-deployment-banner-icon" aria-hidden="true">
+        !
+      </div>
+      <div className="admin-deployment-banner-copy">
+        <strong>{status.message || "Control plane update in progress."}</strong>
+        {startedAt ? <span>Started {startedAt}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+function openAICostLabel(costs: OpenAICostStatus | null, loading: boolean, error: string | null): string {
+  if (loading && costs === null) {
     return "Checking";
   }
   if (error) {
     return "Check failed";
   }
-  if (!balance) {
+  if (!costs) {
     return "Not checked";
   }
-  if (balance.status === "ok") {
-    return formatOpenAIMoney(balance.balance_usd, balance.currency);
+  if (costs.status === "ok") {
+    return formatOpenAIMoney(costs.cost_usd, costs.currency);
   }
-  if (balance.status === "not_configured") {
+  if (costs.status === "not_configured") {
     return "No key";
   }
   return "Unavailable";
 }
 
-function OpenAIBalanceBadge({
-  balance,
+function OpenAICostBadge({
+  costs,
   loading,
   error,
   directoryPath,
   onRefresh,
 }: {
-  balance: OpenAIBalanceStatus | null;
+  costs: OpenAICostStatus | null;
   loading: boolean;
   error: string | null;
   directoryPath: string;
   onRefresh: () => void;
 }) {
-  const low = Boolean(balance?.status === "ok" && balance.low_balance);
-  const unavailable = Boolean(error || (balance && balance.status !== "ok" && balance.status !== "not_configured"));
-  const statusClass = low ? " low" : unavailable ? " unavailable" : "";
+  const unavailable = Boolean(error || (costs && costs.status !== "ok" && costs.status !== "not_configured"));
+  const statusClass = unavailable ? " unavailable" : "";
   const detailText =
     error ||
-    balance?.message ||
-    (balance
-      ? `Effective for ${directoryPath}; key env: ${balance.api_key_env}`
-      : `Effective for ${directoryPath}; balance has not been checked.`);
+    costs?.message ||
+    (costs
+      ? `Effective for ${directoryPath}; key env: ${costs.api_key_env}`
+      : `Effective for ${directoryPath}; costs have not been checked.`);
+  const metaText =
+    costs?.status === "ok"
+      ? `${directoryPath} · ${costs.period_days}d · Checked ${formatOpenAICheckedAt(costs.checked_at)}`
+      : error || costs?.message || `${directoryPath} · ${costs?.api_key_env ?? "OPENAI_API_KEY"}`;
   return (
     <div className={`openai-balance-badge${statusClass}`} title={detailText}>
       <div className="openai-balance-copy">
-        <span className="section-label">OpenAI balance</span>
-        <strong>{openAIBalanceLabel(balance, loading, error)}</strong>
-        <span className="openai-balance-meta">
-          {balance?.status === "ok"
-            ? `${directoryPath} · Checked ${formatOpenAICheckedAt(balance.checked_at)}`
-            : `${directoryPath} · ${balance?.api_key_env ?? "OPENAI_API_KEY"}`}
-        </span>
+        <span className="section-label">OpenAI costs</span>
+        <strong>{openAICostLabel(costs, loading, error)}</strong>
+        <span className="openai-balance-meta">{metaText}</span>
       </div>
-      <Tooltip content="Refresh OpenAI balance.">
+      <Tooltip content="Refresh OpenAI costs.">
         <button
           type="button"
           className="openai-balance-refresh"
           onClick={onRefresh}
           disabled={loading}
-          aria-label="Refresh OpenAI balance"
+          aria-label="Refresh OpenAI costs"
         >
           {loading ? "..." : <RefreshIcon />}
         </button>
@@ -1100,6 +1145,7 @@ function LoginScreen({
   session,
   theme,
   onToggleTheme,
+  deploymentStatus,
   error,
   loading,
   onSubmit,
@@ -1108,6 +1154,7 @@ function LoginScreen({
   session: AdminSession;
   theme: AdminTheme;
   onToggleTheme: () => void;
+  deploymentStatus: DeploymentStatus | null;
   error: string | null;
   loading: boolean;
   onSubmit: (username: string, password: string) => Promise<void>;
@@ -1140,6 +1187,7 @@ function LoginScreen({
           {theme === "dark" ? "Light mode" : "Dark mode"}
         </button>
       </div>
+      <DeploymentStatusBanner status={deploymentStatus} />
       <div className="admin-login-card">
         <h1>Admin Sign In</h1>
         <p>
@@ -1189,9 +1237,10 @@ export default function AdminRoot() {
   const [authBusy, setAuthBusy] = useState(false);
   const [selectedTab, setSelectedTab] = useState<AdminTab>(() => currentTab());
   const [adminState, setAdminState] = useState<AdminState | null>(null);
-  const [openaiBalance, setOpenaiBalance] = useState<OpenAIBalanceStatus | null>(null);
-  const [openaiBalanceLoading, setOpenaiBalanceLoading] = useState(false);
-  const [openaiBalanceError, setOpenaiBalanceError] = useState<string | null>(null);
+  const [deploymentStatus, setDeploymentStatus] = useState<DeploymentStatus | null>(null);
+  const [openaiCosts, setOpenaiCosts] = useState<OpenAICostStatus | null>(null);
+  const [openaiCostsLoading, setOpenaiCostsLoading] = useState(false);
+  const [openaiCostsError, setOpenaiCostsError] = useState<string | null>(null);
   const [selectedDirectoryPath, setSelectedDirectoryPath] = useState<string>(() => {
     if (typeof window === "undefined") return "root";
     return window.localStorage.getItem(DIRECTORY_STORAGE_KEY) || "root";
@@ -1260,6 +1309,30 @@ export default function AdminRoot() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    async function loadDeploymentStatus() {
+      try {
+        const payload = await fetchJson<DeploymentStatus>("/api/admin/deployment-status");
+        if (!cancelled) {
+          setDeploymentStatus(payload);
+        }
+      } catch {
+        if (!cancelled) {
+          setDeploymentStatus(null);
+        }
+      }
+    }
+    void loadDeploymentStatus();
+    const intervalId = window.setInterval(() => {
+      void loadDeploymentStatus();
+    }, 10_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
+  useEffect(() => {
     if (session === null || (session.auth_required && !session.authenticated)) {
       return;
     }
@@ -1276,6 +1349,9 @@ export default function AdminRoot() {
         }
         if (!cancelled) {
           setAdminState(payload);
+          if (payload.deployment) {
+            setDeploymentStatus(payload.deployment);
+          }
           if (!window.localStorage.getItem(DIRECTORY_STORAGE_KEY)) {
             setSelectedDirectoryPath(payload.selected_directory_path || "root");
           }
@@ -1362,6 +1438,9 @@ export default function AdminRoot() {
         throw new Error(payload.error ?? "Unable to load admin state.");
       }
       setAdminState(payload);
+      if (payload.deployment) {
+        setDeploymentStatus(payload.deployment);
+      }
       if (!window.localStorage.getItem(DIRECTORY_STORAGE_KEY)) {
         setSelectedDirectoryPath(payload.selected_directory_path || "root");
       }
@@ -1371,22 +1450,22 @@ export default function AdminRoot() {
     }
   }
 
-  async function loadOpenAIBalance(forceRefresh = false) {
-    setOpenaiBalanceLoading(true);
-    setOpenaiBalanceError(null);
+  async function loadOpenAICosts(forceRefresh = false) {
+    setOpenaiCostsLoading(true);
+    setOpenaiCostsError(null);
     try {
       const query = new URLSearchParams({ directory_path: selectedDirectoryPath });
       if (forceRefresh) {
         query.set("refresh", "true");
       }
-      const payload = await fetchJson<OpenAIBalanceResponse>(
-        `/api/admin/providers/openai/balance?${query.toString()}`,
+      const payload = await fetchJson<OpenAICostResponse>(
+        `/api/admin/providers/openai/costs?${query.toString()}`,
       );
-      setOpenaiBalance(payload.balance);
+      setOpenaiCosts(payload.costs);
     } catch (error) {
-      setOpenaiBalanceError(error instanceof Error ? error.message : "Unable to load OpenAI balance.");
+      setOpenaiCostsError(error instanceof Error ? error.message : "Unable to load OpenAI costs.");
     } finally {
-      setOpenaiBalanceLoading(false);
+      setOpenaiCostsLoading(false);
     }
   }
 
@@ -1399,10 +1478,10 @@ export default function AdminRoot() {
 
   useEffect(() => {
     if (session === null || (session.auth_required && !session.authenticated)) {
-      setOpenaiBalance(null);
+      setOpenaiCosts(null);
       return;
     }
-    void loadOpenAIBalance(false);
+    void loadOpenAICosts(false);
   }, [session, selectedDirectoryPath]);
 
   async function signIn(username: string, password: string) {
@@ -1421,8 +1500,8 @@ export default function AdminRoot() {
       }
       setSession(payload);
       setAdminState(null);
-      setOpenaiBalance(null);
-      setOpenaiBalanceError(null);
+      setOpenaiCosts(null);
+      setOpenaiCostsError(null);
     } catch (error) {
       setSessionError(error instanceof Error ? error.message : "Sign in failed.");
     } finally {
@@ -1440,8 +1519,8 @@ export default function AdminRoot() {
       const payload = (await response.json()) as AdminSession;
       setSession(payload);
       setAdminState(null);
-      setOpenaiBalance(null);
-      setOpenaiBalanceError(null);
+      setOpenaiCosts(null);
+      setOpenaiCostsError(null);
     } finally {
       setAuthBusy(false);
     }
@@ -1505,10 +1584,13 @@ export default function AdminRoot() {
             {theme === "dark" ? "Light mode" : "Dark mode"}
           </button>
         </div>
-        <div className="admin-login-card">
-          <div className="eyebrow">Agent Sandbox</div>
-          <h1>Loading admin shell</h1>
-          <p>{sessionError ?? "Checking authentication and bootstrapping the UI."}</p>
+        <div className="admin-login-stage">
+          <DeploymentStatusBanner status={deploymentStatus} />
+          <div className="admin-login-card">
+            <div className="eyebrow">Agent Sandbox</div>
+            <h1>Loading admin shell</h1>
+            <p>{sessionError ?? "Checking authentication and bootstrapping the UI."}</p>
+          </div>
         </div>
       </div>
     );
@@ -1516,7 +1598,7 @@ export default function AdminRoot() {
 
   if (session.auth_required && !session.authenticated) {
     return (
-      <LoginScreen session={session} theme={theme} onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))} error={sessionError} loading={authBusy} onSubmit={signIn} onAzureSignIn={startAzureSignIn} />
+      <LoginScreen session={session} theme={theme} onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))} deploymentStatus={deploymentStatus} error={sessionError} loading={authBusy} onSubmit={signIn} onAzureSignIn={startAzureSignIn} />
     );
   }
 
@@ -1599,12 +1681,12 @@ export default function AdminRoot() {
               </button>
             </div>
             <div className="admin-shell-info-group">
-              <OpenAIBalanceBadge
-                balance={openaiBalance}
-                loading={openaiBalanceLoading}
-                error={openaiBalanceError}
+              <OpenAICostBadge
+                costs={openaiCosts}
+                loading={openaiCostsLoading}
+                error={openaiCostsError}
                 directoryPath={selectedDirectoryPath}
-                onRefresh={() => void loadOpenAIBalance(true)}
+                onRefresh={() => void loadOpenAICosts(true)}
               />
               <div className="admin-directory-context">
                 <span className="section-label">Directory</span>
@@ -1668,12 +1750,8 @@ export default function AdminRoot() {
             ))}
           </nav>
           <main className="admin-shell-main">
+            <DeploymentStatusBanner status={deploymentStatus} />
             {sessionError ? <div className="admin-shell-alert">{sessionError}</div> : null}
-            {openaiBalance?.status === "ok" && openaiBalance.low_balance ? (
-              <div className="admin-shell-alert openai-balance-alert">
-                OpenAI balance is below {formatOpenAIMoney(openaiBalance.low_balance_threshold_usd, openaiBalance.currency)}.
-              </div>
-            ) : null}
             {renderedTab === "workflow" ? (
               <div className="admin-workflow-panel">
                 <WorkflowEditorApp />

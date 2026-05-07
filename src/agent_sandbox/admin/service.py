@@ -419,6 +419,16 @@ class WorkflowRunClearPayload(BaseModel):
     await_agent_records_removed: int = 0
 
 
+class DeploymentStatusPayload(BaseModel):
+    active: bool = False
+    message: str | None = None
+    source: str | None = None
+    started_at: datetime | None = None
+    updated_at: datetime | None = None
+    ttl_seconds: int = Field(default=21600, ge=60, le=86400)
+    stale: bool = False
+
+
 class WorkflowRunResumePayload(BaseModel):
     worker_id: str = "trigger-orchestrator"
     event_id: str
@@ -3321,6 +3331,27 @@ class AdminService:
     def effective_execution_backend(self, directory_path: str | None = None) -> str:
         resolved_config = self.runtime.provider_config.resolve_for_directory(directory_path)
         return str(resolved_config.execution_backend or "libvirt_vm")
+
+    def read_deployment_status(self) -> DeploymentStatusPayload:
+        payload_path = self.config.runtime_dir / "deployment-status.json"
+        raw = _read_json_object(payload_path)
+        if not raw:
+            return DeploymentStatusPayload()
+        try:
+            status = DeploymentStatusPayload.model_validate(raw)
+        except ValidationError:
+            return DeploymentStatusPayload()
+        if not status.active:
+            return status
+        checked_at = status.updated_at or status.started_at
+        is_stale = False
+        if checked_at is not None:
+            is_stale = (_utc_now() - checked_at).total_seconds() > status.ttl_seconds
+        if is_stale:
+            return status.model_copy(update={"active": False, "stale": True})
+        if not status.message:
+            return status.model_copy(update={"message": "Control plane update in progress."})
+        return status
 
     def _execution_backend(self):
         backend = getattr(self, "_execution_backend_instance", None)

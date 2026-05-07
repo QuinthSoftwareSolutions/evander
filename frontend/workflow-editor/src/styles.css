@@ -488,6 +488,65 @@ body {
   color: #6f2d22;
 }
 
+.admin-deployment-banner {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  width: 100%;
+  margin-bottom: 1rem;
+  padding: 0.8rem 1rem;
+  border: 1px solid rgba(170, 111, 38, 0.28);
+  border-radius: 8px;
+  background: rgba(255, 241, 204, 0.96);
+  color: #5d3a08;
+  box-shadow: 0 12px 28px rgba(91, 64, 18, 0.12);
+}
+
+.admin-login-stage > .admin-deployment-banner {
+  position: relative;
+  top: auto;
+  z-index: 2;
+  width: min(100%, 34rem);
+  margin: 0 auto 1rem;
+}
+
+.admin-deployment-banner-icon {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #8b5a11;
+  color: #fff8e8;
+  font-weight: 800;
+}
+
+.admin-deployment-banner-copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.1rem;
+}
+
+.admin-deployment-banner-copy strong,
+.admin-deployment-banner-copy span {
+  overflow-wrap: anywhere;
+}
+
+.admin-deployment-banner-copy strong {
+  font-size: 0.98rem;
+  line-height: 1.25;
+}
+
+.admin-deployment-banner-copy span {
+  color: rgba(93, 58, 8, 0.78);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
 .openai-balance-alert {
   border-color: rgba(167, 51, 36, 0.38);
   background: rgba(250, 218, 210, 0.96);
@@ -4119,6 +4178,22 @@ select {
 
 :root[data-theme="dark"] .problem-meta {
   color: #ffc6bc;
+}
+
+:root[data-theme="dark"] .admin-deployment-banner {
+  border-color: rgba(217, 169, 78, 0.34);
+  background: #2f240f;
+  color: #f5d78d;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.24);
+}
+
+:root[data-theme="dark"] .admin-deployment-banner-icon {
+  background: #d4a34d;
+  color: #1f1605;
+}
+
+:root[data-theme="dark"] .admin-deployment-banner-copy span {
+  color: rgba(245, 215, 141, 0.76);
 }
 
 :root[data-theme="dark"] .problem-meta span {

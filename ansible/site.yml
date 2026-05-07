@@ -37,6 +37,28 @@
           {{ agent_sandbox_deploy_path }}/runtime.
         success_msg: Runtime directory matches the repo-native systemd layout.
 
+    - name: Check whether an existing runtime directory is present
+      ansible.builtin.stat:
+        path: "{{ agent_sandbox_runtime_dir }}"
+      register: agent_sandbox_existing_runtime_dir
+
+    - name: Announce deployment in control-plane runtime
+      ansible.builtin.copy:
+        dest: "{{ agent_sandbox_deployment_status_path }}"
+        mode: "0644"
+        content: |
+          {
+            "active": true,
+            "message": {{ agent_sandbox_deployment_status_message | to_json }},
+            "source": "ansible",
+            "started_at": {{ now(utc=true).isoformat().replace('+00:00', 'Z') | to_json }},
+            "updated_at": {{ now(utc=true).isoformat().replace('+00:00', 'Z') | to_json }},
+            "ttl_seconds": {{ agent_sandbox_deployment_status_ttl_seconds | int }}
+          }
+      when:
+        - agent_sandbox_existing_runtime_dir.stat.exists | default(false)
+        - agent_sandbox_existing_runtime_dir.stat.isdir | default(false)
+
   roles:
     - role: host_prereqs
     - role: apt_cache_relay
@@ -50,3 +72,12 @@
     - role: service_runtime
     - role: package_cache_nexus
     - role: verification
+
+  post_tasks:
+    - name: Clear deployment status runtime flag
+      ansible.builtin.file:
+        path: "{{ agent_sandbox_deployment_status_path }}"
+        state: absent
+      when:
+        - agent_sandbox_existing_runtime_dir.stat.exists | default(false)
+        - agent_sandbox_existing_runtime_dir.stat.isdir | default(false)

@@ -32,20 +32,23 @@ the base Ubuntu cloud image.
 
 The playbook follows the repo-native bootstrap order:
 
-1. Install Ubuntu packages, Node/npm, and `uv`
-2. Install and configure the apt-cacher-ng relay when enabled
-3. Clone or update the repo
-4. Create `.venv` and install the package
-5. Run `agent-sandbox-cli init-state --runtime-dir runtime`
-6. Render managed config under `config/` and optional `secrets.env`
-7. Run `scripts/install_systemd_units.sh`
-8. Build the Admin Web frontend bundle with `npm ci && npm run build`
-9. Run `scripts/create_libvirt_network.sh` in the `full` profile
-10. Run `scripts/apply_firewall.sh` when the `full` profile firewall service is enabled
-11. Run `scripts/create_base_vm.sh` in the `full` profile
-12. Enable and start only the selected repo-native services
-13. Install and configure the Nexus PyPI/npm package cache when enabled
-14. Verify unit state, enabled firewall, full-profile VM host state, package-cache health, and repo-aware status
+1. On existing installs, write `runtime/deployment-status.json` so Admin Web can show that an
+   update is in progress
+2. Install Ubuntu packages, Node/npm, and `uv`
+3. Install and configure the apt-cacher-ng relay when enabled
+4. Clone or update the repo
+5. Create `.venv` and install the package
+6. Run `agent-sandbox-cli init-state --runtime-dir runtime`
+7. Render managed config under `config/` and optional `secrets.env`
+8. Run `scripts/install_systemd_units.sh`
+9. Build the Admin Web frontend bundle with `npm ci && npm run build`
+10. Run `scripts/create_libvirt_network.sh` in the `full` profile
+11. Run `scripts/apply_firewall.sh` when the `full` profile firewall service is enabled
+12. Run `scripts/create_base_vm.sh` in the `full` profile
+13. Enable and start only the selected repo-native services
+14. Install and configure the Nexus PyPI/npm package cache when enabled
+15. Verify unit state, enabled firewall, full-profile VM host state, package-cache health, and repo-aware status
+16. Clear the Admin Web deployment-status flag after a successful run
 
 VM/session launch is intentionally not part of initial deployment. After the host is prepared, use
 the existing operator flow to create a session manifest and launch a VM.
@@ -62,6 +65,9 @@ Core required variables:
 Core defaults:
 
 - `agent_sandbox_runtime_dir`: `{{ agent_sandbox_deploy_path }}/runtime`
+- `agent_sandbox_deployment_status_path`: `{{ agent_sandbox_runtime_dir }}/deployment-status.json`
+- `agent_sandbox_deployment_status_message`: banner text shown by Admin Web during deployment
+- `agent_sandbox_deployment_status_ttl_seconds`: stale-file cutoff for the Admin Web deployment banner
 - `agent_sandbox_service_profile`: `full`
 - `agent_sandbox_run_user_supplementary_groups`: `libvirt`, `kvm` for `full`; empty for
   `control_plane_only`
