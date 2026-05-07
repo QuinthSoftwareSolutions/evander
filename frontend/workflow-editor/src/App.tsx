@@ -33,12 +33,15 @@ import {
   type WorkflowEditorFieldDefinition,
   type WorkflowEditorNodeCatalogEntry,
   type WorkflowEditorNodePortDefinition,
+  type WorkflowEditorSave,
+  type WorkflowEditorValidation,
   type WorkflowLayout,
   type WorkflowNodeConfig,
   type WorkflowNodeKind,
   type WorkflowRunNodeActivity,
   type WorkflowRunSnapshot,
   type WorkflowRunSummary,
+  type WorkflowValidationDiagnostic,
 } from "./types";
 import { useAdminUi } from "./features/admin/AdminContext";
 import { Tooltip } from "./features/admin/Tooltip";
@@ -53,6 +56,8 @@ type GraphNodeData = {
   activeRunCount: number;
   dominantStatus: string | null;
   statusLabel: string | null;
+  diagnosticCount: number;
+  hasDiagnostics: boolean;
 };
 
 type SaveState = "idle" | "saving" | "saved";
@@ -109,6 +114,7 @@ const SYSTEM_BINDING_OPTIONS: ReadonlyArray<BindingOption> = [
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const BINDING_EXACT_RE = /^\$\{\{([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}$/;
+const BINDING_REFERENCE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
 const EFFECT_TARGET_KEYS = ["target", "session_id", "vm_name"] as const;
 type EffectTargetKey = (typeof EFFECT_TARGET_KEYS)[number];
 
@@ -221,7 +227,7 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
     <div
       className={`node-card node-${nodeData.kind}${selected ? " selected" : ""}${
         nodeData.dominantStatus ? ` runtime-${nodeData.dominantStatus}` : ""
-      }`}
+      }${nodeData.hasDiagnostics ? " invalid" : ""}`}
     >
       {nodeData.inputPorts.length > 0 ? (
         <div className="workflow-port-stack port-stack-input">
@@ -246,11 +252,18 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
           <Tooltip content={`${kindDescription} ${typeDescription}`}>
             <div className="node-kind">{nodeData.kind}</div>
           </Tooltip>
-          {nodeData.activeRunCount > 0 && nodeData.statusLabel ? (
-            <div className={`node-runtime-badge status-${nodeData.dominantStatus ?? "active"}`}>
-              {nodeData.statusLabel}
-            </div>
-          ) : null}
+          <div className="node-badges">
+            {nodeData.hasDiagnostics ? (
+              <Tooltip content={`${nodeData.diagnosticCount} workflow binding problem${nodeData.diagnosticCount === 1 ? "" : "s"}`}>
+                <div className="node-diagnostic-badge">{nodeData.diagnosticCount}</div>
+              </Tooltip>
+            ) : null}
+            {nodeData.activeRunCount > 0 && nodeData.statusLabel ? (
+              <div className={`node-runtime-badge status-${nodeData.dominantStatus ?? "active"}`}>
+                {nodeData.statusLabel}
+              </div>
+            ) : null}
+          </div>
         </div>
         <Tooltip content={typeDescription}>
           <div className="node-title">{nodeData.displayName}</div>
@@ -522,6 +535,7 @@ function buildNodes(
   layout: WorkflowLayout,
   catalog: WorkflowEditorCatalog,
   nodeActivity: Record<string, WorkflowNodeActivityCounts> = {},
+  diagnostics: WorkflowValidationDiagnostic[] = [],
   currentPositions: Record<string, { x: number; y: number }> = {},
   selectedNodeIds: string[] = [],
 ): Node<GraphNodeData>[] {
@@ -537,6 +551,7 @@ function buildNodes(
     const position = currentPositions[node.id] ?? layout.nodes[node.id] ?? fallbackPosition(index);
     const activity = nodeActivity[node.id];
     const catalogEntry = getCatalogEntry(catalog, node.type);
+    const diagnosticCount = diagnostics.filter((diagnostic) => diagnostic.node_id === node.id).length;
     return {
       id: node.id,
       type: "workflowNode",
@@ -552,6 +567,8 @@ function buildNodes(
         activeRunCount: Object.values(activity ?? {}).reduce((total, value) => total + value, 0),
         dominantStatus: dominantNodeStatus(activity),
         statusLabel: nodeStatusLabel(activity),
+        diagnosticCount,
+        hasDiagnostics: diagnosticCount > 0,
       },
     };
   });
@@ -1079,7 +1096,7 @@ function directUpstreamNodeIds(config: WorkflowConfig, targetId: string): string
 function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: WorkflowConfig): Record<string, unknown> {
   if (!node) return {};
   const schema: Record<string, unknown> = {};
-  const derivedOnlyTypes = new Set(["gate:filter", "gate:merge", "gate:await-agent"]);
+  const derivedOnlyTypes = new Set(["gate:filter", "gate:merge", "gate:await-agent", "gate:for"]);
   const staticSchemas: Record<string, Record<string, unknown>> = {
     "trigger:ticket:created": {
       ticket: {
@@ -1300,6 +1317,12 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
         },
       },
       ip_address: { type: "string" },
+    },
+    "gate:for": {
+      current_element: { type: "object" },
+      current_index: { type: "integer" },
+      item_count: { type: "integer" },
+      is_done: { type: "boolean" },
     },
     "effect:vm:create": {
       session_id: { type: "string" },
@@ -1551,6 +1574,8 @@ function normalizeDerivedNodeFields(config: WorkflowConfig): WorkflowConfig {
     } else if (gate.type === "gate:await-agent") {
       delete gate.completion_trigger_id;
       gate.outputs = declaredOutputsForNode(agentRunCompletedSchemaNode(), nextConfig);
+    } else if (gate.type === "gate:for") {
+      gate.outputs = declaredOutputsForNode(gate, nextConfig);
     } else if (gate.type === "gate:merge") {
       gate.outputs = mergeDeclaredOutputIntersection(
         upstreamIds.map((nodeId) => declaredOutputsForNode(nodeById(nextConfig, nodeId), nextConfig)),
@@ -1620,6 +1645,339 @@ function flattenOutputPaths(prefix: string, schema: unknown): string[] {
     }
   }
   return paths;
+}
+
+type ParsedBindingReference = {
+  nodeId: string;
+  outputPath: string;
+};
+
+type ParsedBindingExpression = {
+  primary: ParsedBindingReference;
+  fallback?: ParsedBindingReference | ParsedBindingExpression | unknown;
+  hasFallback: boolean;
+};
+
+class BindingParseError extends Error {
+  readonly code: "malformed_binding" | "malformed_binding_fallback";
+
+  constructor(code: "malformed_binding" | "malformed_binding_fallback", message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+function validateWorkflowBindingDiagnostics(config: WorkflowConfig): WorkflowValidationDiagnostic[] {
+  const diagnostics: WorkflowValidationDiagnostic[] = [];
+  const nodes = workflowNodes(config);
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const allNodeIds = new Set(nodes.map((node) => node.id));
+
+  for (const node of nodes) {
+    const declaredOutputs = new Map(
+      collectAncestorNodeIds(config, node.id)
+        .map((upstreamNodeId) => [upstreamNodeId, declaredOutputsForNode(nodesById.get(upstreamNodeId), config)] as const),
+    );
+    for (const [fieldPath, value] of walkEditableNodeConfigValues(node)) {
+      diagnostics.push(
+        ...validateBindingValue({
+          value,
+          fieldPath,
+          node,
+          declaredOutputs,
+          allNodeIds,
+        }),
+      );
+    }
+  }
+  return diagnostics;
+}
+
+function walkEditableNodeConfigValues(node: WorkflowNodeConfig): Array<[string, unknown]> {
+  const values: Array<[string, unknown]> = [];
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "id" || key === "display_name" || key === "type") continue;
+    walkConfigValue(value, key, values);
+  }
+  return values;
+}
+
+function walkConfigValue(value: unknown, path: string, values: Array<[string, unknown]>) {
+  if (isRecord(value)) {
+    if (Object.keys(value).length === 0) {
+      values.push([path, value]);
+      return;
+    }
+    for (const [key, childValue] of Object.entries(value)) {
+      walkConfigValue(childValue, `${path}.${key}`, values);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      values.push([path, value]);
+      return;
+    }
+    value.forEach((childValue, index) => {
+      walkConfigValue(childValue, `${path}[${index}]`, values);
+    });
+    return;
+  }
+  values.push([path, value]);
+}
+
+function validateBindingValue({
+  value,
+  fieldPath,
+  node,
+  declaredOutputs,
+  allNodeIds,
+}: {
+  value: unknown;
+  fieldPath: string;
+  node: WorkflowNodeConfig;
+  declaredOutputs: Map<string, Record<string, unknown>>;
+  allNodeIds: Set<string>;
+}): WorkflowValidationDiagnostic[] {
+  if (typeof value !== "string" || !value.includes("${{")) return [];
+
+  const diagnostics: WorkflowValidationDiagnostic[] = [];
+  let index = 0;
+  while (true) {
+    const start = value.indexOf("${{", index);
+    if (start === -1) return diagnostics;
+    const end = value.indexOf("}}", start + 3);
+    if (end === -1) {
+      diagnostics.push({
+        code: "malformed_binding",
+        message: `${fieldPath} contains malformed output reference`,
+        node_id: node.id,
+        node_type: node.type,
+        field_path: fieldPath,
+        reference: value.slice(start),
+      });
+      return diagnostics;
+    }
+
+    const sourceText = value.slice(start, end + 2);
+    const expressionText = value.slice(start + 3, end);
+    try {
+      const expression = parseBindingExpression(expressionText, sourceText);
+      diagnostics.push(
+        ...validateBindingExpression({
+          expression,
+          fieldPath,
+          node,
+          declaredOutputs,
+          allNodeIds,
+        }),
+      );
+    } catch (error) {
+      const parseError = error instanceof BindingParseError
+        ? error
+        : new BindingParseError("malformed_binding", "Malformed output reference");
+      diagnostics.push({
+        code: parseError.code,
+        message: parseError.code === "malformed_binding_fallback"
+          ? `${fieldPath} has malformed fallback syntax`
+          : `${fieldPath} contains malformed output reference`,
+        node_id: node.id,
+        node_type: node.type,
+        field_path: fieldPath,
+        reference: sourceText,
+      });
+    }
+    index = end + 2;
+  }
+}
+
+function validateBindingExpression({
+  expression,
+  fieldPath,
+  node,
+  declaredOutputs,
+  allNodeIds,
+}: {
+  expression: ParsedBindingExpression;
+  fieldPath: string;
+  node: WorkflowNodeConfig;
+  declaredOutputs: Map<string, Record<string, unknown>>;
+  allNodeIds: Set<string>;
+}): WorkflowValidationDiagnostic[] {
+  const diagnostics = validateBindingReference({
+    reference: expression.primary,
+    fieldPath,
+    node,
+    declaredOutputs,
+    allNodeIds,
+  });
+  if (!expression.hasFallback) return diagnostics;
+  const fallback = expression.fallback;
+  if (isParsedBindingExpression(fallback)) {
+    diagnostics.push(
+      ...validateBindingExpression({
+        expression: fallback,
+        fieldPath,
+        node,
+        declaredOutputs,
+        allNodeIds,
+      }),
+    );
+  } else if (isParsedBindingReference(fallback)) {
+    diagnostics.push(
+      ...validateBindingReference({
+        reference: fallback,
+        fieldPath,
+        node,
+        declaredOutputs,
+        allNodeIds,
+      }),
+    );
+  }
+  return diagnostics;
+}
+
+function validateBindingReference({
+  reference,
+  fieldPath,
+  node,
+  declaredOutputs,
+  allNodeIds,
+}: {
+  reference: ParsedBindingReference;
+  fieldPath: string;
+  node: WorkflowNodeConfig;
+  declaredOutputs: Map<string, Record<string, unknown>>;
+  allNodeIds: Set<string>;
+}): WorkflowValidationDiagnostic[] {
+  const resolved = resolveAvailableBindingReference(reference, declaredOutputs, allNodeIds);
+  const outputRef = `${resolved.nodeId}.${resolved.outputPath}`;
+  if (resolved.nodeId === "system") return [];
+  if (!declaredOutputs.has(resolved.nodeId)) {
+    const relation = allNodeIds.has(resolved.nodeId) ? "non-upstream" : "deleted";
+    return [{
+      code: "invalid_binding_node",
+      message: `${fieldPath} references ${relation} node ${resolved.nodeId}`,
+      node_id: node.id,
+      node_type: node.type,
+      field_path: fieldPath,
+      reference: outputRef,
+    }];
+  }
+
+  const outputName = resolved.outputPath.split(".", 1)[0] ?? "";
+  if (!(outputName in (declaredOutputs.get(resolved.nodeId) ?? {}))) {
+    return [{
+      code: "missing_binding_output",
+      message: `${fieldPath} references missing output ${outputRef}`,
+      node_id: node.id,
+      node_type: node.type,
+      field_path: fieldPath,
+      reference: outputRef,
+    }];
+  }
+  return [];
+}
+
+function resolveAvailableBindingReference(
+  reference: ParsedBindingReference,
+  declaredOutputs: Map<string, Record<string, unknown>>,
+  allNodeIds: Set<string>,
+): ParsedBindingReference {
+  const segments = `${reference.nodeId}.${reference.outputPath}`.split(".").filter(Boolean);
+  for (let index = segments.length - 1; index > 0; index -= 1) {
+    const candidateNodeId = segments.slice(0, index).join(".");
+    const candidateOutputPath = segments.slice(index).join(".");
+    if (candidateNodeId === "system" || declaredOutputs.has(candidateNodeId) || allNodeIds.has(candidateNodeId)) {
+      return { nodeId: candidateNodeId, outputPath: candidateOutputPath };
+    }
+  }
+  return reference;
+}
+
+function parseBindingExpression(expression: string, sourceText: string): ParsedBindingExpression {
+  const text = expression.trim();
+  if (!text) {
+    throw new BindingParseError("malformed_binding", "Binding expression is empty");
+  }
+  const [primaryText, fallbackText] = splitFallbackExpression(text);
+  const primary = parseBindingReference(primaryText, sourceText);
+  if (fallbackText === null) return { primary, hasFallback: false };
+  return {
+    primary,
+    fallback: parseFallbackValue(fallbackText, sourceText),
+    hasFallback: true,
+  };
+}
+
+function splitFallbackExpression(expression: string): [string, string | null] {
+  let inString = false;
+  let quoteChar = "";
+  let escape = false;
+  for (let index = 0; index < expression.length; index += 1) {
+    const char = expression[index];
+    if (inString) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (char === "\\") {
+        escape = true;
+        continue;
+      }
+      if (char === quoteChar) {
+        inString = false;
+        quoteChar = "";
+      }
+      continue;
+    }
+    if (char === "\"" || char === "'") {
+      inString = true;
+      quoteChar = char;
+      continue;
+    }
+    if (expression.slice(index, index + 2) === "??") {
+      return [expression.slice(0, index).trim(), expression.slice(index + 2).trim()];
+    }
+  }
+  return [expression.trim(), null];
+}
+
+function parseBindingReference(reference: string, sourceText: string): ParsedBindingReference {
+  if (!BINDING_REFERENCE_RE.test(reference)) {
+    throw new BindingParseError("malformed_binding", `Malformed output reference in ${sourceText}`);
+  }
+  const separator = reference.indexOf(".");
+  return {
+    nodeId: reference.slice(0, separator),
+    outputPath: reference.slice(separator + 1),
+  };
+}
+
+function parseFallbackValue(value: string, sourceText: string): ParsedBindingReference | ParsedBindingExpression | unknown {
+  if (!value) {
+    throw new BindingParseError("malformed_binding_fallback", `Malformed fallback in ${sourceText}`);
+  }
+  const [_fallbackPrimary, nestedFallbackText] = splitFallbackExpression(value);
+  if (nestedFallbackText !== null) {
+    return parseBindingExpression(value, sourceText);
+  }
+  if (BINDING_REFERENCE_RE.test(value)) {
+    return parseBindingReference(value, sourceText);
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw new BindingParseError("malformed_binding_fallback", `Malformed fallback in ${sourceText}`);
+  }
+}
+
+function isParsedBindingReference(value: unknown): value is ParsedBindingReference {
+  return isRecord(value) && typeof value.nodeId === "string" && typeof value.outputPath === "string";
+}
+
+function isParsedBindingExpression(value: unknown): value is ParsedBindingExpression {
+  return isRecord(value) && isParsedBindingReference(value.primary) && typeof value.hasFallback === "boolean";
 }
 
 function fieldValueMode(field: WorkflowEditorFieldDefinition, value: unknown): "literal" | "bind" | "template" {
@@ -1731,6 +2089,7 @@ export default function App() {
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
+  const [validationDiagnostics, setValidationDiagnostics] = useState<WorkflowValidationDiagnostic[]>([]);
   const [flowNodes, setFlowNodes] = useState<Node<GraphNodeData>[]>([]);
   const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<Node<GraphNodeData>, Edge> | null>(null);
@@ -1776,6 +2135,9 @@ export default function App() {
   );
   const selectedNode = selectedNodeIds.length === 1 && selectedNodeId ? nodeById(config, selectedNodeId) : undefined;
   const selectedCatalogEntry = selectedNode ? getCatalogEntry(catalog, selectedNode.type) : undefined;
+  const selectedNodeDiagnostics = selectedNode
+    ? validationDiagnostics.filter((diagnostic) => diagnostic.node_id === selectedNode.id)
+    : [];
   const selectedEdge = selectedEdgeId
     ? config.edges.find(
         (edge) =>
@@ -1886,10 +2248,12 @@ export default function App() {
           initialGraphDirectoryPathRef.current,
         );
         const normalizedDocument = { ...payload, config: normalizedConfig, graphs: normalizedGraphs };
+        const nextDiagnostics = validateWorkflowBindingDiagnostics(normalizedConfig);
         setCatalog(catalogPayload);
         setRunSnapshot(runSnapshotPayload);
+        setValidationDiagnostics(nextDiagnostics);
         setDocument(normalizedDocument);
-        setFlowNodes(buildNodes(normalizedConfig, payload.layout, catalogPayload, runSnapshotPayload.node_activity));
+        setFlowNodes(buildNodes(normalizedConfig, payload.layout, catalogPayload, runSnapshotPayload.node_activity, nextDiagnostics));
         setFlowEdges(buildEdges(normalizedConfig));
       })
       .catch((reason: unknown) => {
@@ -2013,12 +2377,13 @@ export default function App() {
         document.layout,
         catalog,
         runSnapshot?.node_activity ?? {},
+        validationDiagnostics,
         currentPositionsFromNodes(currentNodes),
         currentNodes.filter((node) => node.selected).map((node) => node.id),
       );
     });
     setFlowEdges(buildEdges(document.config));
-  }, [catalog, document, runSnapshot]);
+  }, [catalog, document, runSnapshot, validationDiagnostics]);
 
   useEffect(() => {
     hasAutoFitRef.current = false;
@@ -2132,6 +2497,7 @@ export default function App() {
     nextLayout: WorkflowLayout,
     nextGraphs?: WorkflowGraphMetadata[],
     selectedNodeIdsAfterPatch?: string[],
+    diagnosticsOverride?: WorkflowValidationDiagnostic[],
   ) {
     if (!document) return;
     const normalizedConfig = normalizeDerivedNodeFields(normalizeWorkflowConfigShape(nextConfig));
@@ -2147,13 +2513,16 @@ export default function App() {
       layout: nextLayout,
       graphs: normalizedGraphs,
     };
+    const nextDiagnostics = diagnosticsOverride ?? validateWorkflowBindingDiagnostics(normalizedConfig);
     setDocument(nextDocument);
+    setValidationDiagnostics(nextDiagnostics);
     setFlowNodes((currentNodes) =>
       buildNodes(
         normalizedConfig,
         nextLayout,
         catalog,
         runSnapshot?.node_activity ?? {},
+        nextDiagnostics,
         currentPositionsFromNodes(currentNodes),
         selectedNodeIdsAfterPatch ?? currentNodes.filter((node) => node.selected).map((node) => node.id),
       ),
@@ -2664,7 +3033,7 @@ export default function App() {
 
   async function validateDocument() {
     if (!document) return;
-    const validation = await fetchJson<{ config: WorkflowConfig; layout: WorkflowLayout; graphs: WorkflowGraphMetadata[] }>(
+    const validation = await fetchJson<WorkflowEditorValidation>(
       "/api/workflow-editor/validate",
       {
         method: "POST",
@@ -2675,7 +3044,7 @@ export default function App() {
         }),
       },
     );
-    patchDocument(validation.config, validation.layout, validation.graphs);
+    patchDocument(validation.config, validation.layout, validation.graphs, undefined, validation.validation_diagnostics);
   }
 
   async function saveDocument() {
@@ -2683,7 +3052,7 @@ export default function App() {
     setSaveState("saving");
     setError(null);
     try {
-      const saved = await fetchJson<{ config: WorkflowConfig; layout: WorkflowLayout; graphs: WorkflowGraphMetadata[] }>(
+      const saved = await fetchJson<WorkflowEditorSave>(
         "/api/workflow-editor/document",
         {
           method: "PUT",
@@ -2694,7 +3063,7 @@ export default function App() {
           }),
         },
       );
-      patchDocument(saved.config, saved.layout, saved.graphs);
+      patchDocument(saved.config, saved.layout, saved.graphs, undefined, saved.validation_diagnostics);
       setSaveState("saved");
     } catch (reason) {
       setSaveState("idle");
@@ -3540,6 +3909,25 @@ export default function App() {
                   <div>{selectedNode.type}</div>
                   <div>{selectedNode.id}</div>
                 </div>
+                {selectedNodeDiagnostics.length > 0 ? (
+                  <div className="problems-panel">
+                    <div className="problems-heading">
+                      <span>Problems</span>
+                      <span>{selectedNodeDiagnostics.length}</span>
+                    </div>
+                    <div className="problems-list">
+                      {selectedNodeDiagnostics.map((diagnostic, index) => (
+                        <div className="problem-item" key={`${diagnostic.code}-${diagnostic.field_path ?? ""}-${diagnostic.reference ?? ""}-${index}`}>
+                          <div className="problem-message">{diagnostic.message}</div>
+                          <div className="problem-meta">
+                            {diagnostic.field_path ? <span>{diagnostic.field_path}</span> : null}
+                            {diagnostic.reference ? <span>{diagnostic.reference}</span> : null}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 <button onClick={selectDownstreamBranch}>Select downstream branch</button>
                 <label className="inspector-label">
                   <span>Node id</span>

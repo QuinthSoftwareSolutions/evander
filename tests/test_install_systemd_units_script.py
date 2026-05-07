@@ -106,6 +106,7 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "EnvironmentFile=-__PROJECT_DIR__/config/gateway.env" in gateway
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in gateway
     assert "EnvironmentFile=-__PROJECT_DIR__/config/admin-web.env" in admin_web
+    assert "EnvironmentFile=-__PROJECT_DIR__/config/openai-relay.env" in admin_web
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in admin_web
     assert (
         "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-admin-web --runtime-dir __PROJECT_DIR__/runtime --host ${ADMIN_WEB_HOST} --port ${ADMIN_WEB_PORT}"

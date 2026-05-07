@@ -27,7 +27,7 @@ manager environment or optional repo-root `secrets.env`.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `OPENAI_API_KEY` | `config/openai-relay.env.example` | `src/agent_sandbox/relays/openai.py` (looked up using config key `openai_api_key_env`, defaulting to `OPENAI_API_KEY`). |
+| `OPENAI_API_KEY` | `config/openai-relay.env.example` | `src/agent_sandbox/relays/openai.py` and the Admin Web selected-directory balance display (looked up using config key `openai_api_key_env`, defaulting to `OPENAI_API_KEY`). |
 
 ## `config/nuget-relay.env.example`
 

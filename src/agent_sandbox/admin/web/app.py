@@ -14,6 +14,7 @@ from starlette.staticfiles import StaticFiles
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.agents import agent_routes
 from agent_sandbox.admin.web.chat import chat_routes
+from agent_sandbox.admin.web.provider_status import provider_status_routes
 from agent_sandbox.admin.web.sessions_approvals import session_approval_routes
 from agent_sandbox.admin.web.shared import (
     AZURE_SSO_START_PATH,
@@ -297,6 +298,7 @@ def create_app(service: AdminService) -> Starlette:
     routes.extend(worker_config_routes(service, auth))
     routes.extend(admin_user_routes(admin_user_store, auth))
     routes.extend(chat_routes(service, auth))
+    routes.extend(provider_status_routes(service, auth))
     if dist_dir.exists():
         routes.append(Mount("/", app=StaticFiles(directory=dist_dir, html=True)))
     else:

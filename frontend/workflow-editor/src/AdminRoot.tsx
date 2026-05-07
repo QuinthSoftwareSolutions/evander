@@ -15,6 +15,7 @@ import { UsersPage } from "./features/users/UsersPage";
 import { VmsPage } from "./features/vms/VmsPage";
 import { WorkersScreen } from "./features/workers/WorkersScreen";
 import { ChatLauncher } from "./features/chat/ChatLauncher";
+import { RefreshIcon } from "./features/admin/PageActionIcons";
 import { Tooltip } from "./features/admin/Tooltip";
 
 type AdminSession = {
@@ -46,6 +47,24 @@ type AdminState = {
     enabled: boolean;
     show_launcher_when_disabled: boolean;
   };
+};
+
+type OpenAIBalanceStatus = {
+  provider: "openai";
+  status: "ok" | "not_configured" | "unavailable" | "error";
+  balance_usd: number | null;
+  currency: string | null;
+  low_balance_threshold_usd: number;
+  low_balance: boolean;
+  api_key_env: string;
+  checked_at: string;
+  source: string | null;
+  message: string | null;
+  dashboard_url: string;
+};
+
+type OpenAIBalanceResponse = {
+  balance: OpenAIBalanceStatus;
 };
 
 type DirectoryStateResponse = {
@@ -615,6 +634,100 @@ function PlaceholderView({ title, description }: { title: string; description: s
   );
 }
 
+function formatOpenAIMoney(value: number | null, currency: string | null): string {
+  if (value === null || Number.isNaN(value)) {
+    return "n/a";
+  }
+  const normalizedCurrency = (currency || "usd").toUpperCase();
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: normalizedCurrency,
+      maximumFractionDigits: 2,
+    }).format(value);
+  } catch {
+    return `${normalizedCurrency} ${value.toFixed(2)}`;
+  }
+}
+
+function formatOpenAICheckedAt(value: string | null | undefined): string {
+  if (!value) {
+    return "Not checked";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function openAIBalanceLabel(balance: OpenAIBalanceStatus | null, loading: boolean, error: string | null): string {
+  if (loading && balance === null) {
+    return "Checking";
+  }
+  if (error) {
+    return "Check failed";
+  }
+  if (!balance) {
+    return "Not checked";
+  }
+  if (balance.status === "ok") {
+    return formatOpenAIMoney(balance.balance_usd, balance.currency);
+  }
+  if (balance.status === "not_configured") {
+    return "No key";
+  }
+  return "Unavailable";
+}
+
+function OpenAIBalanceBadge({
+  balance,
+  loading,
+  error,
+  directoryPath,
+  onRefresh,
+}: {
+  balance: OpenAIBalanceStatus | null;
+  loading: boolean;
+  error: string | null;
+  directoryPath: string;
+  onRefresh: () => void;
+}) {
+  const low = Boolean(balance?.status === "ok" && balance.low_balance);
+  const unavailable = Boolean(error || (balance && balance.status !== "ok" && balance.status !== "not_configured"));
+  const statusClass = low ? " low" : unavailable ? " unavailable" : "";
+  const detailText =
+    error ||
+    balance?.message ||
+    (balance
+      ? `Effective for ${directoryPath}; key env: ${balance.api_key_env}`
+      : `Effective for ${directoryPath}; balance has not been checked.`);
+  return (
+    <div className={`openai-balance-badge${statusClass}`} title={detailText}>
+      <div className="openai-balance-copy">
+        <span className="section-label">OpenAI balance</span>
+        <strong>{openAIBalanceLabel(balance, loading, error)}</strong>
+        <span className="openai-balance-meta">
+          {balance?.status === "ok"
+            ? `${directoryPath} · Checked ${formatOpenAICheckedAt(balance.checked_at)}`
+            : `${directoryPath} · ${balance?.api_key_env ?? "OPENAI_API_KEY"}`}
+        </span>
+      </div>
+      <Tooltip content="Refresh OpenAI balance.">
+        <button
+          type="button"
+          className="openai-balance-refresh"
+          onClick={onRefresh}
+          disabled={loading}
+          aria-label="Refresh OpenAI balance"
+        >
+          {loading ? "..." : <RefreshIcon />}
+        </button>
+      </Tooltip>
+    </div>
+  );
+}
+
 function expandedDirectoryAncestors(path: string): string[] {
   const normalized = path.trim() || "root";
   if (normalized === "root") {
@@ -1076,6 +1189,9 @@ export default function AdminRoot() {
   const [authBusy, setAuthBusy] = useState(false);
   const [selectedTab, setSelectedTab] = useState<AdminTab>(() => currentTab());
   const [adminState, setAdminState] = useState<AdminState | null>(null);
+  const [openaiBalance, setOpenaiBalance] = useState<OpenAIBalanceStatus | null>(null);
+  const [openaiBalanceLoading, setOpenaiBalanceLoading] = useState(false);
+  const [openaiBalanceError, setOpenaiBalanceError] = useState<string | null>(null);
   const [selectedDirectoryPath, setSelectedDirectoryPath] = useState<string>(() => {
     if (typeof window === "undefined") return "root";
     return window.localStorage.getItem(DIRECTORY_STORAGE_KEY) || "root";
@@ -1255,11 +1371,38 @@ export default function AdminRoot() {
     }
   }
 
+  async function loadOpenAIBalance(forceRefresh = false) {
+    setOpenaiBalanceLoading(true);
+    setOpenaiBalanceError(null);
+    try {
+      const query = new URLSearchParams({ directory_path: selectedDirectoryPath });
+      if (forceRefresh) {
+        query.set("refresh", "true");
+      }
+      const payload = await fetchJson<OpenAIBalanceResponse>(
+        `/api/admin/providers/openai/balance?${query.toString()}`,
+      );
+      setOpenaiBalance(payload.balance);
+    } catch (error) {
+      setOpenaiBalanceError(error instanceof Error ? error.message : "Unable to load OpenAI balance.");
+    } finally {
+      setOpenaiBalanceLoading(false);
+    }
+  }
+
   useEffect(() => {
     if (session === null || (session.auth_required && !session.authenticated)) {
       return;
     }
     void loadDirectoryState(selectedDirectoryPath);
+  }, [session, selectedDirectoryPath]);
+
+  useEffect(() => {
+    if (session === null || (session.auth_required && !session.authenticated)) {
+      setOpenaiBalance(null);
+      return;
+    }
+    void loadOpenAIBalance(false);
   }, [session, selectedDirectoryPath]);
 
   async function signIn(username: string, password: string) {
@@ -1278,6 +1421,8 @@ export default function AdminRoot() {
       }
       setSession(payload);
       setAdminState(null);
+      setOpenaiBalance(null);
+      setOpenaiBalanceError(null);
     } catch (error) {
       setSessionError(error instanceof Error ? error.message : "Sign in failed.");
     } finally {
@@ -1295,6 +1440,8 @@ export default function AdminRoot() {
       const payload = (await response.json()) as AdminSession;
       setSession(payload);
       setAdminState(null);
+      setOpenaiBalance(null);
+      setOpenaiBalanceError(null);
     } finally {
       setAuthBusy(false);
     }
@@ -1452,6 +1599,13 @@ export default function AdminRoot() {
               </button>
             </div>
             <div className="admin-shell-info-group">
+              <OpenAIBalanceBadge
+                balance={openaiBalance}
+                loading={openaiBalanceLoading}
+                error={openaiBalanceError}
+                directoryPath={selectedDirectoryPath}
+                onRefresh={() => void loadOpenAIBalance(true)}
+              />
               <div className="admin-directory-context">
                 <span className="section-label">Directory</span>
                 <strong>{selectedDirectoryPath}</strong>
@@ -1515,6 +1669,11 @@ export default function AdminRoot() {
           </nav>
           <main className="admin-shell-main">
             {sessionError ? <div className="admin-shell-alert">{sessionError}</div> : null}
+            {openaiBalance?.status === "ok" && openaiBalance.low_balance ? (
+              <div className="admin-shell-alert openai-balance-alert">
+                OpenAI balance is below {formatOpenAIMoney(openaiBalance.low_balance_threshold_usd, openaiBalance.currency)}.
+              </div>
+            ) : null}
             {renderedTab === "workflow" ? (
               <div className="admin-workflow-panel">
                 <WorkflowEditorApp />

@@ -190,6 +190,80 @@ body {
   min-width: 13rem;
 }
 
+.openai-balance-badge {
+  display: grid;
+  grid-template-columns: minmax(8.5rem, 1fr) auto;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 14rem;
+  min-height: 3.3rem;
+  padding: 0.48rem 0.55rem 0.48rem 0.75rem;
+  border: 1px solid rgba(32, 104, 118, 0.18);
+  border-radius: 8px;
+  background: rgba(225, 240, 235, 0.86);
+  color: #173241;
+  box-shadow: 0 10px 24px rgba(17, 43, 58, 0.1);
+}
+
+.openai-balance-badge.low {
+  border-color: rgba(167, 51, 36, 0.42);
+  background: rgba(250, 218, 210, 0.96);
+  color: #74291f;
+  box-shadow: 0 14px 30px rgba(117, 37, 28, 0.18);
+}
+
+.openai-balance-badge.unavailable {
+  border-color: rgba(156, 111, 33, 0.28);
+  background: rgba(247, 232, 194, 0.94);
+  color: #6e4d15;
+}
+
+.openai-balance-copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.08rem;
+}
+
+.openai-balance-copy strong {
+  font-size: 1.05rem;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.openai-balance-meta {
+  color: #526a73;
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+.openai-balance-badge.low .openai-balance-meta,
+.openai-balance-badge.unavailable .openai-balance-meta {
+  color: currentColor;
+  opacity: 0.78;
+}
+
+.openai-balance-refresh {
+  display: grid;
+  place-items: center;
+  width: 2.15rem;
+  height: 2.15rem;
+  border: 1px solid rgba(22, 52, 69, 0.16);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.45);
+  color: currentColor;
+  cursor: pointer;
+}
+
+.openai-balance-refresh svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.openai-balance-refresh:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
 .admin-directory-context strong {
   color: #173241;
   font-size: 0.95rem;
@@ -412,6 +486,13 @@ body {
   border-radius: 16px;
   background: rgba(249, 223, 216, 0.9);
   color: #6f2d22;
+}
+
+.openai-balance-alert {
+  border-color: rgba(167, 51, 36, 0.38);
+  background: rgba(250, 218, 210, 0.96);
+  color: #74291f;
+  font-weight: 700;
 }
 
 .modal-backdrop {
@@ -1263,6 +1344,10 @@ select {
     width: 100%;
   }
 
+  .openai-balance-badge {
+    width: 100%;
+  }
+
   .admin-shell-nav {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1543,6 +1628,60 @@ select {
   line-height: 1.45;
 }
 
+.problems-panel {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0.85rem 0 0.95rem;
+  padding: 0.75rem;
+  border: 1px solid rgba(178, 59, 26, 0.22);
+  border-radius: 8px;
+  background: #fff0eb;
+  color: #7a3218;
+}
+
+.problems-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.problems-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.problem-item {
+  display: grid;
+  gap: 0.28rem;
+  min-width: 0;
+}
+
+.problem-message {
+  font-size: 0.86rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.problem-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  font-family: "SFMono-Regular", "Consolas", monospace;
+  font-size: 0.72rem;
+  color: #8a3b1b;
+}
+
+.problem-meta span {
+  padding: 0.14rem 0.35rem;
+  border-radius: 6px;
+  background: rgba(178, 59, 26, 0.08);
+  overflow-wrap: anywhere;
+}
+
 .runtime-summary {
   font-size: 0.87rem;
   color: #6a5740;
@@ -1675,14 +1814,31 @@ select {
   overflow-wrap: anywhere;
 }
 
+.node-badges {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
 .runtime-run-state,
-.node-runtime-badge {
+.node-runtime-badge,
+.node-diagnostic-badge {
   padding: 0.2rem 0.5rem;
   border-radius: 999px;
   font-family: "Avenir Next Condensed", "Franklin Gothic Medium", sans-serif;
   font-size: 0.72rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.node-diagnostic-badge {
+  min-width: 1.5rem;
+  text-align: center;
+  background: #ffe3dc;
+  color: #9a3412;
+  border: 1px solid rgba(178, 59, 26, 0.22);
 }
 
 .runtime-run-meta {
@@ -1813,6 +1969,15 @@ select {
 
 .node-card.selected {
   outline: 2px solid #1c7f74;
+}
+
+.node-card.invalid {
+  border-color: rgba(178, 59, 26, 0.72);
+  box-shadow: 0 0 0 3px rgba(178, 59, 26, 0.18), 0 14px 36px rgba(48, 38, 25, 0.14);
+}
+
+.node-card.invalid.selected {
+  outline-color: #b23b1a;
 }
 
 .workflow-handle {
@@ -3687,7 +3852,8 @@ select {
 :root[data-theme="dark"] .admin-shell-alert,
 :root[data-theme="dark"] .directory-modal-summary,
 :root[data-theme="dark"] .directory-tree-button,
-:root[data-theme="dark"] .admin-directory-context {
+:root[data-theme="dark"] .admin-directory-context,
+:root[data-theme="dark"] .openai-balance-badge {
   border-color: rgba(125, 170, 190, 0.16);
   color: #d7e3ea;
 }
@@ -3718,6 +3884,32 @@ select {
 :root[data-theme="dark"] .admin-directory-context {
   background: transparent;
   box-shadow: none;
+}
+
+:root[data-theme="dark"] .openai-balance-badge {
+  background: rgba(18, 40, 45, 0.72);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .openai-balance-badge.low {
+  border-color: rgba(214, 91, 74, 0.44);
+  background: #321816;
+  color: #ffb6aa;
+}
+
+:root[data-theme="dark"] .openai-balance-badge.unavailable {
+  border-color: rgba(190, 150, 65, 0.38);
+  background: #2d2412;
+  color: #f0d183;
+}
+
+:root[data-theme="dark"] .openai-balance-meta {
+  color: #9fb4bf;
+}
+
+:root[data-theme="dark"] .openai-balance-refresh {
+  border-color: rgba(125, 170, 190, 0.18);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 :root[data-theme="dark"] .admin-identity {
@@ -3912,15 +4104,25 @@ select {
 }
 
 :root[data-theme="dark"] .admin-shell-alert,
+:root[data-theme="dark"] .openai-balance-alert,
 :root[data-theme="dark"] .admin-login-error,
 :root[data-theme="dark"] .error-box,
 :root[data-theme="dark"] .runtime-run-error,
+:root[data-theme="dark"] .problems-panel,
 :root[data-theme="dark"] .error-callout,
 :root[data-theme="dark"] .state-denied,
 :root[data-theme="dark"] .state-expired {
   background: #321816;
   border-color: rgba(183, 98, 84, 0.34);
   color: #ffb6aa;
+}
+
+:root[data-theme="dark"] .problem-meta {
+  color: #ffc6bc;
+}
+
+:root[data-theme="dark"] .problem-meta span {
+  background: rgba(255, 182, 170, 0.1);
 }
 
 :root[data-theme="dark"] .success-callout,
@@ -4193,6 +4395,15 @@ select {
 
 :root[data-theme="dark"] .node-card.selected {
   outline-color: #68b1c6;
+}
+
+:root[data-theme="dark"] .node-card.invalid {
+  border-color: rgba(239, 109, 74, 0.78);
+  box-shadow: 0 0 0 3px rgba(239, 109, 74, 0.22), 0 14px 36px rgba(0, 0, 0, 0.28);
+}
+
+:root[data-theme="dark"] .node-card.invalid.selected {
+  outline-color: #ef6d4a;
 }
 
 :root[data-theme="dark"] .node-trigger {

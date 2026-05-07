@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from agent_sandbox.workflow.binding import BindingResolutionError, _parse_binding_expression
+from agent_sandbox.workflow.contracts import effective_node_output_schema
 from agent_sandbox.workflow.graph import build_inbound_edge_index, would_form_cycle
 
 
@@ -24,6 +26,8 @@ class WorkflowValidationDiagnostic(BaseModel):
     message: str
     node_id: str | None = None
     node_type: str | None = None
+    field_path: str | None = None
+    reference: str | None = None
 
 
 def validate_workflow_graph(
@@ -141,3 +145,293 @@ def validate_workflow_graph(
                 )
     errors.extend(capability_errors)
     return errors
+
+
+def validate_workflow_binding_diagnostics(
+    config: Mapping[str, Any],
+) -> list[WorkflowValidationDiagnostic]:
+    """Return advisory diagnostics for `${{node.output}}` config bindings."""
+
+    nodes = list(_iter_workflow_nodes(config))
+    nodes_by_id = {node_id: node for node_id, node in nodes}
+    all_node_ids = set(nodes_by_id)
+    edges = config.get("edges", [])
+    edge_list = edges if isinstance(edges, list) else []
+
+    diagnostics: list[WorkflowValidationDiagnostic] = []
+    for node_id, node in nodes:
+        node_type = str(node.get("type") or "").strip()
+        ancestor_ids = _collect_ancestor_node_ids(edge_list, node_id)
+        declared_outputs = {
+            ancestor_id: effective_node_output_schema(nodes_by_id[ancestor_id])
+            for ancestor_id in ancestor_ids
+            if ancestor_id in nodes_by_id
+        }
+        for field_path, value in _walk_node_config_values(node):
+            diagnostics.extend(
+                _validate_binding_value(
+                    value=value,
+                    field_path=field_path,
+                    node_id=node_id,
+                    node_type=node_type,
+                    declared_outputs=declared_outputs,
+                    all_node_ids=all_node_ids,
+                )
+            )
+    return diagnostics
+
+
+def _iter_workflow_nodes(config: Mapping[str, Any]) -> Iterable[tuple[str, Mapping[str, Any]]]:
+    for collection_name in ("triggers", "gates", "effects", "queries"):
+        entries = config.get(collection_name, [])
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            node_id = str(entry.get("id") or "").strip()
+            if not node_id:
+                continue
+            yield node_id, entry
+
+
+def _collect_ancestor_node_ids(edges: list[Any], node_id: str) -> tuple[str, ...]:
+    inbound_by_target: dict[str, list[str]] = {}
+    for edge in edges:
+        if not isinstance(edge, Mapping):
+            continue
+        source_id = str(edge.get("source_id") or "").strip()
+        target_id = str(edge.get("target_id") or "").strip()
+        if not source_id or not target_id:
+            continue
+        inbound_by_target.setdefault(target_id, []).append(source_id)
+
+    ordered: list[str] = []
+    queue = list(inbound_by_target.get(node_id, ()))
+    seen: set[str] = set()
+    while queue:
+        current = queue.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        ordered.append(current)
+        queue.extend(inbound_by_target.get(current, ()))
+    return tuple(ordered)
+
+
+def _walk_node_config_values(node: Mapping[str, Any]) -> Iterable[tuple[str, Any]]:
+    for key, value in node.items():
+        if key in {"id", "display_name", "type"}:
+            continue
+        if key == "config" and isinstance(value, Mapping):
+            for config_key, config_value in value.items():
+                yield from _walk_config_value(config_value, path=str(config_key))
+            continue
+        yield from _walk_config_value(value, path=str(key))
+
+
+def _walk_config_value(value: Any, *, path: str) -> Iterable[tuple[str, Any]]:
+    if isinstance(value, Mapping):
+        if not value:
+            yield path, value
+            return
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            yield from _walk_config_value(child, path=child_path)
+        return
+    if isinstance(value, list):
+        if not value:
+            yield path, value
+            return
+        for index, child in enumerate(value):
+            yield from _walk_config_value(child, path=f"{path}[{index}]")
+        return
+    yield path, value
+
+
+def _validate_binding_value(
+    *,
+    value: Any,
+    field_path: str,
+    node_id: str,
+    node_type: str,
+    declared_outputs: Mapping[str, Mapping[str, Any]],
+    all_node_ids: set[str],
+) -> list[WorkflowValidationDiagnostic]:
+    if not isinstance(value, str) or "${{" not in value:
+        return []
+
+    diagnostics: list[WorkflowValidationDiagnostic] = []
+    index = 0
+    while True:
+        start = value.find("${{", index)
+        if start == -1:
+            return diagnostics
+        end = value.find("}}", start + 3)
+        if end == -1:
+            reference = value[start:]
+            diagnostics.append(
+                WorkflowValidationDiagnostic(
+                    code="malformed_binding",
+                    message=f"{field_path} contains malformed output reference",
+                    node_id=node_id,
+                    node_type=node_type,
+                    field_path=field_path,
+                    reference=reference,
+                )
+            )
+            return diagnostics
+        source_text = value[start : end + 2]
+        expression_text = value[start + 3 : end]
+        try:
+            expression = _parse_binding_expression(expression_text, source_text=source_text)
+        except BindingResolutionError:
+            fallback_hint = "??" in expression_text
+            diagnostics.append(
+                WorkflowValidationDiagnostic(
+                    code="malformed_binding_fallback" if fallback_hint else "malformed_binding",
+                    message=(
+                        f"{field_path} has malformed fallback syntax"
+                        if fallback_hint
+                        else f"{field_path} contains malformed output reference"
+                    ),
+                    node_id=node_id,
+                    node_type=node_type,
+                    field_path=field_path,
+                    reference=source_text,
+                )
+            )
+            index = end + 2
+            continue
+        diagnostics.extend(
+            _validate_binding_expression(
+                expression=expression,
+                field_path=field_path,
+                node_id=node_id,
+                node_type=node_type,
+                declared_outputs=declared_outputs,
+                all_node_ids=all_node_ids,
+            )
+        )
+        index = end + 2
+
+
+def _validate_binding_expression(
+    *,
+    expression: Any,
+    field_path: str,
+    node_id: str,
+    node_type: str,
+    declared_outputs: Mapping[str, Mapping[str, Any]],
+    all_node_ids: set[str],
+) -> list[WorkflowValidationDiagnostic]:
+    diagnostics = _validate_binding_reference(
+        reference=expression.primary,
+        field_path=field_path,
+        node_id=node_id,
+        node_type=node_type,
+        declared_outputs=declared_outputs,
+        all_node_ids=all_node_ids,
+    )
+    if not bool(getattr(expression, "has_fallback", False)):
+        return diagnostics
+    fallback = expression.fallback
+    if _is_binding_expression(fallback):
+        diagnostics.extend(
+            _validate_binding_expression(
+                expression=fallback,
+                field_path=field_path,
+                node_id=node_id,
+                node_type=node_type,
+                declared_outputs=declared_outputs,
+                all_node_ids=all_node_ids,
+            )
+        )
+    elif _is_binding_reference(fallback):
+        diagnostics.extend(
+            _validate_binding_reference(
+                reference=fallback,
+                field_path=field_path,
+                node_id=node_id,
+                node_type=node_type,
+                declared_outputs=declared_outputs,
+                all_node_ids=all_node_ids,
+            )
+        )
+    return diagnostics
+
+
+def _validate_binding_reference(
+    *,
+    reference: Any,
+    field_path: str,
+    node_id: str,
+    node_type: str,
+    declared_outputs: Mapping[str, Mapping[str, Any]],
+    all_node_ids: set[str],
+) -> list[WorkflowValidationDiagnostic]:
+    resolved_node_id, output_path = _resolve_available_reference(
+        reference_node_id=str(reference.node_id),
+        output_path=str(reference.output_path),
+        declared_outputs=declared_outputs,
+        all_node_ids=all_node_ids,
+    )
+    output_ref = f"{resolved_node_id}.{output_path}"
+    if resolved_node_id == "system":
+        return []
+
+    if resolved_node_id not in declared_outputs:
+        relation = "non-upstream" if resolved_node_id in all_node_ids else "deleted"
+        return [
+            WorkflowValidationDiagnostic(
+                code="invalid_binding_node",
+                message=f"{field_path} references {relation} node {resolved_node_id}",
+                node_id=node_id,
+                node_type=node_type,
+                field_path=field_path,
+                reference=output_ref,
+            )
+        ]
+
+    output_name = output_path.split(".", 1)[0]
+    if output_name not in declared_outputs.get(resolved_node_id, {}):
+        return [
+            WorkflowValidationDiagnostic(
+                code="missing_binding_output",
+                message=f"{field_path} references missing output {output_ref}",
+                node_id=node_id,
+                node_type=node_type,
+                field_path=field_path,
+                reference=output_ref,
+            )
+        ]
+    return []
+
+
+def _resolve_available_reference(
+    *,
+    reference_node_id: str,
+    output_path: str,
+    declared_outputs: Mapping[str, Mapping[str, Any]],
+    all_node_ids: set[str],
+) -> tuple[str, str]:
+    full_reference = f"{reference_node_id}.{output_path}"
+    segments = tuple(segment for segment in full_reference.split(".") if segment)
+    for index in range(len(segments) - 1, 0, -1):
+        candidate_node_id = ".".join(segments[:index])
+        candidate_output_path = ".".join(segments[index:])
+        if (
+            candidate_node_id == "system"
+            or candidate_node_id in declared_outputs
+            or candidate_node_id in all_node_ids
+        ):
+            return candidate_node_id, candidate_output_path
+    return reference_node_id, output_path
+
+
+def _is_binding_expression(value: Any) -> bool:
+    return hasattr(value, "primary") and hasattr(value, "has_fallback")
+
+
+def _is_binding_reference(value: Any) -> bool:
+    return hasattr(value, "node_id") and hasattr(value, "output_path")

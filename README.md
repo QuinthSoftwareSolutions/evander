@@ -817,12 +817,15 @@ Response:
 
 ## Relay Environment Configuration
 
-- `OPENAI_API_KEY` is required on the host for `agent-sandbox-openai-relay`.
+- `OPENAI_API_KEY` is required on the host for `agent-sandbox-openai-relay` and the
+  Admin Web selected-directory balance display.
 - `AZURE_ARTIFACTS_PAT` is required on the host only when the NuGet relay must reach private
   Azure Artifacts feeds.
 - Keep both values in host-only shell environment or systemd env files such as:
-  - `config/openai-relay.env`
+  - `config/openai-relay.env` (loaded by both the relay and Admin Web units)
   - `config/nuget-relay.env`
+- Directory-specific OpenAI key env vars named by `openai_api_key_env` should be available to
+  Admin Web as well, usually through `secrets.env` or the service manager environment.
 - Do not place either value in guest images, cloud-init, session manifests, or guest shell
   profiles.
 

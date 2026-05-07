@@ -1097,11 +1097,14 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
    service user.
 3. Ensure the needed service env vars are available. The rendered units will load optional
    per-service `config/*.env` files and optional repo-root `secrets.env`.
-4. Ensure `OPENAI_API_KEY` is available for the OpenAI relay and `AZURE_ARTIFACTS_PAT` when the
-   NuGet relay needs private Azure Artifacts access. The HTTP target relay is auth-transparent and
-   exists to enforce destination allowlisting for approved external web endpoints. In the APP demo
-   workflow, guests authenticate to APP interactively or with guest-managed bearer tokens/cookies
-   through that relay path.
+4. Ensure `OPENAI_API_KEY` is available for the OpenAI relay and Admin Web balance display, and
+   `AZURE_ARTIFACTS_PAT` when the NuGet relay needs private Azure Artifacts access. The Admin Web
+   unit also loads `config/openai-relay.env` so the selected-directory OpenAI balance card can
+   inspect the same default key as the relay. Additional directory-specific key env vars should be
+   supplied through `secrets.env` or the service manager environment. The HTTP target relay is
+   auth-transparent and exists to enforce destination allowlisting for approved external web
+   endpoints. In the APP demo workflow, guests authenticate to APP interactively or with
+   guest-managed bearer tokens/cookies through that relay path.
 5. For private PR feedback polling, ensure the service environment exposes `GITHUB_TOKEN`
    and/or `AZURE_DEVOPS_PR_PAT` and ensure the effective `root` provider config sets the correct
    `azure_devops_organization_url`, `azure_devops_project`, and `azure_devops_pr_pat_env`.

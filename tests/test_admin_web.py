@@ -602,6 +602,106 @@ def test_admin_web_saves_disconnected_workflow_editor_document(tmp_path: Path) -
     assert save_response.json()["config"]["edges"] == []
 
 
+def _workflow_binding_validation_payload(tmp_path: Path, prompt: str) -> dict[str, object]:
+    return {
+        "config": {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "trigger-ticket-created-main",
+                    "display_name": "Ticket created",
+                    "type": "trigger:ticket:created",
+                    "directories": ["root"],
+                }
+            ],
+            "effects": [
+                {
+                    "id": "prompt-agent",
+                    "display_name": "Prompt agent",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": prompt,
+                }
+            ],
+            "edges": [
+                {"source_id": "trigger-ticket-created-main", "target_id": "prompt-agent"}
+            ],
+        },
+        "layout": {
+            "nodes": {
+                "trigger-ticket-created-main": {"x": 100, "y": 50},
+                "prompt-agent": {"x": 300, "y": 50},
+            }
+        },
+    }
+
+
+def test_admin_web_validate_reports_deleted_binding_node_without_rejecting_save(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = _workflow_binding_validation_payload(
+        tmp_path,
+        "Review ${{deleted-ticket-node.ticket.title}}",
+    )
+
+    validate_response = client.post("/api/workflow-editor/validate", json=payload)
+    save_response = client.put("/api/workflow-editor/document", json=payload)
+
+    assert validate_response.status_code == 200
+    assert save_response.status_code == 200
+    diagnostics = validate_response.json()["validation_diagnostics"]
+    assert {
+        "code": "invalid_binding_node",
+        "node_id": "prompt-agent",
+        "node_type": "effect:agent:prompt",
+        "field_path": "prompt",
+        "reference": "deleted-ticket-node.ticket.title",
+        "message": "prompt references deleted node deleted-ticket-node",
+    } in diagnostics
+    assert save_response.json()["validation_diagnostics"] == diagnostics
+
+
+def test_admin_web_validate_reports_missing_binding_output(tmp_path: Path) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = _workflow_binding_validation_payload(
+        tmp_path,
+        "Review ${{trigger-ticket-created-main.missing_output}}",
+    )
+
+    response = client.post("/api/workflow-editor/validate", json=payload)
+
+    assert response.status_code == 200
+    assert {
+        "code": "missing_binding_output",
+        "node_id": "prompt-agent",
+        "node_type": "effect:agent:prompt",
+        "field_path": "prompt",
+        "reference": "trigger-ticket-created-main.missing_output",
+        "message": "prompt references missing output trigger-ticket-created-main.missing_output",
+    } in response.json()["validation_diagnostics"]
+
+
+def test_admin_web_validate_reports_malformed_binding_fallback(tmp_path: Path) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = _workflow_binding_validation_payload(
+        tmp_path,
+        "Review ${{trigger-ticket-created-main.ticket ?? {}}}",
+    )
+
+    response = client.post("/api/workflow-editor/validate", json=payload)
+
+    assert response.status_code == 200
+    assert {
+        "code": "malformed_binding_fallback",
+        "node_id": "prompt-agent",
+        "node_type": "effect:agent:prompt",
+        "field_path": "prompt",
+        "reference": "${{trigger-ticket-created-main.ticket ?? {}}",
+        "message": "prompt has malformed fallback syntax",
+    } in response.json()["validation_diagnostics"]
+
+
 def test_admin_web_exposes_active_workflow_runs(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -1438,6 +1538,68 @@ def test_admin_web_state_uses_root_execution_backend(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.json()["execution_backend"] == "container_worker_vm"
+
+
+def test_admin_web_openai_balance_endpoint_reports_missing_key(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    response = client.get("/api/admin/providers/openai/balance")
+
+    assert response.status_code == 200
+    payload = response.json()["balance"]
+    assert payload["status"] == "not_configured"
+    assert payload["api_key_env"] == "OPENAI_API_KEY"
+    assert payload["balance_usd"] is None
+
+
+def test_admin_web_openai_balance_endpoint_passes_selected_directory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeOpenAIBillingService:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def fetch_status(
+            self, directory_path: str | None = None, *, force_refresh: bool = False
+        ) -> object:
+            calls.append({"directory_path": directory_path, "force_refresh": force_refresh})
+
+            class Status:
+                def model_dump(self, *, mode: str = "json") -> dict[str, object]:
+                    return {
+                        "provider": "openai",
+                        "status": "ok",
+                        "balance_usd": 12.5,
+                        "currency": "usd",
+                        "low_balance_threshold_usd": 5.0,
+                        "low_balance": False,
+                        "api_key_env": "TEAM_OPENAI_API_KEY",
+                        "checked_at": "2026-05-07T00:00:00Z",
+                        "source": "credit_grants",
+                        "message": None,
+                        "dashboard_url": "https://platform.openai.com/settings/organization/billing/credit-grants",
+                    }
+
+            return Status()
+
+    monkeypatch.setattr(
+        "agent_sandbox.admin.web.provider_status.OpenAIBillingService",
+        FakeOpenAIBillingService,
+    )
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    response = client.get(
+        "/api/admin/providers/openai/balance?directory_path=root/team-a&refresh=true"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["balance"]["api_key_env"] == "TEAM_OPENAI_API_KEY"
+    assert calls == [{"directory_path": "root/team-a", "force_refresh": True}]
 
 
 def test_admin_web_azure_mode_requires_login(tmp_path: Path, monkeypatch) -> None:

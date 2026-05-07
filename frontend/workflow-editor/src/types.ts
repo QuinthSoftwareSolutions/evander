@@ -55,12 +55,30 @@ export type WorkflowEditorDocument = {
   config: WorkflowConfig;
   layout: WorkflowLayout;
   graphs: WorkflowGraphMetadata[];
+  validation_diagnostics?: WorkflowValidationDiagnostic[];
 };
 
 export type WorkflowEditorValidation = {
   config: WorkflowConfig;
   layout: WorkflowLayout;
   graphs: WorkflowGraphMetadata[];
+  validation_diagnostics: WorkflowValidationDiagnostic[];
+};
+
+export type WorkflowEditorSave = {
+  config: WorkflowConfig;
+  layout: WorkflowLayout;
+  graphs: WorkflowGraphMetadata[];
+  validation_diagnostics: WorkflowValidationDiagnostic[];
+};
+
+export type WorkflowValidationDiagnostic = {
+  code: string;
+  message: string;
+  node_id?: string | null;
+  node_type?: string | null;
+  field_path?: string | null;
+  reference?: string | null;
 };
 
 export type WorkflowEditorFieldOption = {

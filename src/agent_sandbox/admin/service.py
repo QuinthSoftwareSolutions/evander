@@ -125,6 +125,7 @@ from agent_sandbox.workflow.graph import (
     build_inbound_edge_index,
     merge_declared_output_intersection,
 )
+from agent_sandbox.workflow.validation import validate_workflow_binding_diagnostics
 from agent_sandbox.services import normalize_teams_target
 
 _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
@@ -368,6 +369,7 @@ class WorkflowEditorSavePayload(BaseModel):
     config: dict[str, object]
     layout: dict[str, object]
     graphs: list[WorkflowEditorGraphMetadata] = Field(default_factory=list)
+    validation_diagnostics: list[dict[str, object]] = Field(default_factory=list)
     saved_at: datetime | None = None
     revision: str | None = None
 
@@ -6580,12 +6582,21 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             graphs=graph_source,
             strict=graphs is not None,
         )
+        binding_diagnostics = validate_workflow_binding_diagnostics(editable_normalized_config)
         return WorkflowEditorValidationPayload(
             config=editable_normalized_config,
             layout=normalized_layout,
             graphs=normalized_graphs,
             validation_diagnostics=[
-                {"code": "domain_validation", "message": message} for message in diagnostics
+                {
+                    **diagnostic.model_dump(mode="json", exclude_none=True),
+                    "code": "domain_validation",
+                }
+                for diagnostic in diagnostics
+            ]
+            + [
+                diagnostic.model_dump(mode="json", exclude_none=True)
+                for diagnostic in binding_diagnostics
             ],
         )
 
@@ -6652,6 +6663,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             config=validation.config,
             layout=validation.layout,
             graphs=validation.graphs,
+            validation_diagnostics=validation.validation_diagnostics,
             saved_at=saved_at,
             revision=revision,
         )
