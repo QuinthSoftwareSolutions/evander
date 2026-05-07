@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -11,13 +12,22 @@ if TYPE_CHECKING:
 
 from .cursor_store import EmailSyncCursor
 from .http_utils import ProviderRequestError, request_with_retries
-from .providers import EmailDraft, EmailMessageDetail, EmailMessageSummary
+from .providers import (
+    EmailAttachmentContent,
+    EmailAttachmentMetadata,
+    EmailDraft,
+    EmailDraftAttachment,
+    EmailMessageDetail,
+    EmailMessageSummary,
+)
 
 
 class GraphEmailProvider:
     provider_name = "graph"
     _fallback_lookback_days = 7
     _dedupe_window_size = 512
+    _large_attachment_threshold_bytes = 3 * 1024 * 1024
+    _upload_chunk_size = 4 * 1024 * 1024
 
     def __init__(
         self,
@@ -64,7 +74,14 @@ class GraphEmailProvider:
                 url=self._url(f"messages/{message_id}"),
                 headers=self._headers(),
                 params={
-                    "$select": "id,subject,body,from,toRecipients,isRead,receivedDateTime,conversationId,parentFolderId"
+                    "$select": (
+                        "id,subject,body,from,toRecipients,isRead,receivedDateTime,"
+                        "conversationId,parentFolderId,hasAttachments"
+                    ),
+                    "$expand": (
+                        "attachments($select=id,name,contentType,size,isInline,contentId,"
+                        "lastModifiedDateTime)"
+                    ),
                 },
             )
             payload = response.json()
@@ -78,12 +95,28 @@ class GraphEmailProvider:
         subject: str | None,
         body: str,
         recipients: list[str],
+        attachments: list[EmailDraftAttachment] | None = None,
     ) -> EmailDraft:
+        attachment_items = attachments or []
+        small_attachments = [
+            item
+            for item in attachment_items
+            if len(item.content) < self._large_attachment_threshold_bytes
+        ]
+        large_attachments = [
+            item
+            for item in attachment_items
+            if len(item.content) >= self._large_attachment_threshold_bytes
+        ]
         json_payload = {
             "subject": subject or "",
             "body": {"contentType": "text", "content": body},
             "toRecipients": [{"emailAddress": {"address": address}} for address in recipients],
         }
+        if small_attachments:
+            json_payload["attachments"] = [
+                self._draft_attachment_payload(attachment) for attachment in small_attachments
+            ]
         if thread_or_message_id:
             json_payload["conversationId"] = thread_or_message_id
 
@@ -98,6 +131,13 @@ class GraphEmailProvider:
                 json=json_payload,
             )
             payload = response.json()
+            draft_message_id = str(payload.get("id") or "")
+            if large_attachments and not draft_message_id:
+                raise ValueError("Graph did not return a draft id for large attachment upload")
+            for attachment in large_attachments:
+                self._upload_large_attachment(
+                    client=client, message_id=draft_message_id, attachment=attachment
+                )
 
         now = datetime.now(UTC)
         conversation_id = payload.get("conversationId") or thread_or_message_id
@@ -113,7 +153,52 @@ class GraphEmailProvider:
             metadata={
                 "graph_conversation_id": conversation_id,
                 "graph_message_id": payload.get("id"),
+                "attachment_count": len(attachment_items),
+                "large_attachment_count": len(large_attachments),
             },
+        )
+
+    def list_attachments(
+        self, mailbox_id: str, message_id: str
+    ) -> list[EmailAttachmentMetadata]:
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = request_with_retries(
+                client=client,
+                provider=self.provider_name,
+                operation="list_attachments",
+                method="GET",
+                url=self._url(f"messages/{message_id}/attachments"),
+                headers=self._headers(),
+                params={
+                    "$select": "id,name,contentType,size,isInline,contentId,lastModifiedDateTime"
+                },
+            )
+            payload = response.json()
+        return [self._attachment_metadata(item) for item in payload.get("value", [])]
+
+    def download_attachment(
+        self, mailbox_id: str, message_id: str, attachment_id: str
+    ) -> EmailAttachmentContent:
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = request_with_retries(
+                client=client,
+                provider=self.provider_name,
+                operation="download_attachment",
+                method="GET",
+                url=self._url(f"messages/{message_id}/attachments/{attachment_id}"),
+                headers=self._headers(),
+            )
+            payload = response.json()
+
+        odata_type = str(payload.get("@odata.type", ""))
+        if "fileAttachment" not in odata_type:
+            raise ValueError(f"Graph attachment {attachment_id} is not a fileAttachment")
+        content_bytes = str(payload.get("contentBytes", ""))
+        if not content_bytes:
+            raise ValueError(f"Graph attachment {attachment_id} did not include contentBytes")
+        metadata = self._attachment_metadata(payload)
+        return EmailAttachmentContent(
+            **metadata.model_dump(), content=base64.b64decode(content_bytes)
         )
 
     def _url(self, path: str) -> str:
@@ -176,7 +261,76 @@ class GraphEmailProvider:
             **summary.model_dump(),
             subject=str(payload.get("subject", "")),
             body_text=str(body.get("content", "")),
+            attachments=[
+                self._attachment_metadata(item)
+                for item in ((payload.get("attachments") or {}).get("value", []))
+            ],
         )
+
+    @staticmethod
+    def _attachment_metadata(payload: dict[str, Any]) -> EmailAttachmentMetadata:
+        return EmailAttachmentMetadata(
+            attachment_id=str(payload.get("id", "")),
+            filename=str(payload.get("name", "")),
+            mime_type=str(payload.get("contentType", "")) or None,
+            byte_count=payload.get("size"),
+            inline=bool(payload.get("isInline", False)),
+            content_id=payload.get("contentId"),
+            metadata={
+                "graph_attachment_type": payload.get("@odata.type"),
+                "graph_last_modified": payload.get("lastModifiedDateTime"),
+            },
+        )
+
+    @staticmethod
+    def _draft_attachment_payload(attachment: EmailDraftAttachment) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "name": attachment.filename,
+            "contentType": attachment.mime_type or "application/octet-stream",
+            "contentBytes": base64.b64encode(attachment.content).decode("ascii"),
+            "isInline": attachment.inline,
+        }
+        if attachment.content_id:
+            payload["contentId"] = attachment.content_id
+        return payload
+
+    def _upload_large_attachment(
+        self, *, client: httpx.Client, message_id: str, attachment: EmailDraftAttachment
+    ) -> None:
+        response = request_with_retries(
+            client=client,
+            provider=self.provider_name,
+            operation="create_attachment_upload_session",
+            method="POST",
+            url=self._url(f"messages/{message_id}/attachments/createUploadSession"),
+            headers=self._headers(),
+            json={
+                "AttachmentItem": {
+                    "attachmentType": "file",
+                    "name": attachment.filename,
+                    "size": len(attachment.content),
+                    "contentType": attachment.mime_type or "application/octet-stream",
+                    "isInline": attachment.inline,
+                }
+            },
+        )
+        upload_url = str(response.json().get("uploadUrl", ""))
+        if not upload_url:
+            raise ValueError("Graph attachment upload session did not include uploadUrl")
+        for start in range(0, len(attachment.content), self._upload_chunk_size):
+            chunk = attachment.content[start : start + self._upload_chunk_size]
+            end = start + len(chunk) - 1
+            upload_response = client.request(
+                "PUT",
+                upload_url,
+                content=chunk,
+                headers={
+                    "Content-Length": str(len(chunk)),
+                    "Content-Range": f"bytes {start}-{end}/{len(attachment.content)}",
+                },
+            )
+            upload_response.raise_for_status()
 
     def _list_incremental(
         self,
@@ -239,7 +393,10 @@ class GraphEmailProvider:
             url=self._url(f"mailFolders/{graph_folder_id}/messages/delta"),
             headers=self._headers(),
             params={
-                "$select": "id,subject,bodyPreview,from,toRecipients,isRead,receivedDateTime,conversationId,parentFolderId",
+                "$select": (
+                    "id,subject,bodyPreview,from,toRecipients,isRead,receivedDateTime,"
+                    "conversationId,parentFolderId"
+                ),
                 "$filter": f"isRead eq false and receivedDateTime ge {since}",
                 "$orderby": "receivedDateTime DESC",
                 "$top": max(1, limit * 2),
