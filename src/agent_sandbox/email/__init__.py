@@ -2,7 +2,10 @@ from .cursor_store import DurableCursorStore, EmailSyncCursor
 from .gmail_provider import GmailEmailProvider
 from .graph_provider import GraphEmailProvider
 from .providers import (
+    EmailAttachmentContent,
+    EmailAttachmentMetadata,
     EmailDraft,
+    EmailDraftAttachment,
     EmailMessageDetail,
     EmailMessageSummary,
     EmailProvider,
@@ -11,7 +14,10 @@ from .providers import (
 )
 
 __all__ = [
+    "EmailAttachmentContent",
+    "EmailAttachmentMetadata",
     "EmailDraft",
+    "EmailDraftAttachment",
     "EmailMessageDetail",
     "EmailMessageSummary",
     "EmailProvider",

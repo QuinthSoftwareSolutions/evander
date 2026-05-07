@@ -34,7 +34,6 @@ from agent_sandbox.admin.web.chat import ChatStore, admin_chat_store_path
 from agent_sandbox.directory_config import DIRECTORY_CONFIG_DOMAIN_FILENAMES
 from agent_sandbox.messaging.agent_prompt_store import AgentPromptRecord
 from agent_sandbox.messaging.agent_prompt_tokens import (
-    AgentPromptTokenError,
     encode_agent_prompt_response_token_from_claims,
     hash_agent_prompt_response_token,
     issue_agent_prompt_response_token,
@@ -42,6 +41,7 @@ from agent_sandbox.messaging.agent_prompt_tokens import (
 )
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.email.http_utils import ProviderRequestError
+from agent_sandbox.email.providers import EmailDraftAttachment
 from agent_sandbox.issues.service import IssueService
 from agent_sandbox.models import (
     AdoBacklogCreateRequest,
@@ -714,6 +714,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
             if isinstance(raw, CommunicationAttachmentRef):
                 refs.append(raw)
                 continue
+            if hasattr(raw, "model_dump"):
+                raw = raw.model_dump()
             if not isinstance(raw, dict):
                 continue
             attachment_id = str(
@@ -853,11 +855,28 @@ def create_server(context: RuntimeContext) -> FastMCP:
             session = context.policy.require_tool(request.session_id, tool_name)
             mailbox_id = str(request.mailbox_id or "").strip()
             context.policy.require_email_mailbox(session, mailbox_id)
-            message = context.email_service_for_session(request.session_id).get_message(
+            service = context.email_service_for_session(request.session_id)
+            message = service.get_message(
                 mailbox_id=mailbox_id,
                 message_id=request.message_id,
             )
             context.policy.require_email_folder_for_mailbox(session, mailbox_id, message.folder)
+            if hasattr(service, "list_attachments"):
+                return _coerce_attachment_refs(
+                    provider,
+                    request.message_id,
+                    service.list_attachments(
+                        mailbox_id=mailbox_id, message_id=request.message_id
+                    ),
+                    mailbox_id=mailbox_id,
+                )
+            if getattr(message, "attachments", None):
+                return _coerce_attachment_refs(
+                    provider,
+                    request.message_id,
+                    message.attachments,
+                    mailbox_id=mailbox_id,
+                )
             return _attachments_from_metadata(
                 provider,
                 request.message_id,
@@ -891,6 +910,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raw = service.download_attachment(**kwargs)
             if isinstance(raw, bytes):
                 return raw, ref.filename, ref.mime_type
+            if hasattr(raw, "model_dump"):
+                raw = raw.model_dump()
             if isinstance(raw, dict):
                 data = raw.get("content") or raw.get("content_bytes") or raw.get("bytes")
                 if isinstance(data, str):
@@ -4866,8 +4887,21 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     artifacts,
                 )
             else:
+                draft_attachments = [
+                    EmailDraftAttachment(
+                        filename=str(artifact["filename"]),
+                        content=Path(str(artifact["path"])).read_bytes(),
+                        mime_type=artifact.get("mime_type"),
+                    )
+                    for artifact in artifacts
+                ]
                 draft = service.create_draft(
-                    mailbox_id, thread_or_message_id, subject, body, normalized_recipients
+                    mailbox_id,
+                    thread_or_message_id,
+                    subject,
+                    body,
+                    normalized_recipients,
+                    attachments=draft_attachments,
                 )
             result = (
                 draft.model_dump(mode="json")

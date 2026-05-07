@@ -4,6 +4,7 @@ import base64
 import os
 from datetime import UTC, datetime
 from email.message import EmailMessage as MimeMessage
+from email.utils import make_msgid
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -13,7 +14,14 @@ if TYPE_CHECKING:
 
 from .cursor_store import EmailSyncCursor
 from .http_utils import ProviderRequestError, request_with_retries
-from .providers import EmailDraft, EmailMessageDetail, EmailMessageSummary
+from .providers import (
+    EmailAttachmentContent,
+    EmailAttachmentMetadata,
+    EmailDraft,
+    EmailDraftAttachment,
+    EmailMessageDetail,
+    EmailMessageSummary,
+)
 
 
 class GmailEmailProvider:
@@ -68,12 +76,12 @@ class GmailEmailProvider:
         subject: str | None,
         body: str,
         recipients: list[str],
+        attachments: list[EmailDraftAttachment] | None = None,
     ) -> EmailDraft:
-        mime = MimeMessage()
-        mime["From"] = self.account_identifier
-        mime["To"] = ", ".join(recipients)
-        mime["Subject"] = subject or ""
-        mime.set_content(body)
+        attachment_items = attachments or []
+        mime = self._build_mime_message(
+            subject=subject, body=body, recipients=recipients, attachments=attachment_items
+        )
         raw_message = base64.urlsafe_b64encode(mime.as_bytes()).decode("utf-8")
 
         payload: dict[str, Any] = {"message": {"raw": raw_message}}
@@ -101,6 +109,7 @@ class GmailEmailProvider:
         metadata = {
             "gmail_thread_id": thread_id,
             "gmail_message_id": message_payload.get("id"),
+            "attachment_count": len(attachment_items),
         }
 
         return EmailDraft(
@@ -114,6 +123,38 @@ class GmailEmailProvider:
             created_at=now,
             metadata=metadata,
         )
+
+    def list_attachments(
+        self, mailbox_id: str, message_id: str
+    ) -> list[EmailAttachmentMetadata]:
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            payload = self._fetch_message(client, message_id=message_id, format_name="full")
+        return self._extract_attachments(payload.get("payload", {}))
+
+    def download_attachment(
+        self, mailbox_id: str, message_id: str, attachment_id: str
+    ) -> EmailAttachmentContent:
+        attachments = self.list_attachments(mailbox_id=mailbox_id, message_id=message_id)
+        metadata = next((item for item in attachments if item.attachment_id == attachment_id), None)
+        if metadata is None:
+            raise KeyError(f"Unknown attachment for Gmail message {message_id}: {attachment_id}")
+
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = request_with_retries(
+                client=client,
+                provider=self.provider_name,
+                operation="download_attachment",
+                method="GET",
+                url=self._url(f"messages/{message_id}/attachments/{attachment_id}"),
+                headers=self._headers(),
+            )
+            payload = response.json()
+
+        raw_data = str(payload.get("data", ""))
+        if not raw_data:
+            raise ValueError(f"Gmail attachment {attachment_id} did not include body data")
+        content = self._decode_base64url(raw_data)
+        return EmailAttachmentContent(**metadata.model_dump(), content=content)
 
     def _url(self, path: str) -> str:
         return f"{self.api_base_url}/users/{self.account_identifier}/{path}"
@@ -341,7 +382,88 @@ class GmailEmailProvider:
             **summary.model_dump(),
             subject=headers.get("subject", ""),
             body_text=self._extract_body_text(payload.get("payload", {})),
+            attachments=self._extract_attachments(payload.get("payload", {})),
         )
+
+    def _build_mime_message(
+        self,
+        *,
+        subject: str | None,
+        body: str,
+        recipients: list[str],
+        attachments: list[EmailDraftAttachment],
+    ) -> MimeMessage:
+        mime = MimeMessage()
+        mime["From"] = self.account_identifier
+        mime["To"] = ", ".join(recipients)
+        mime["Subject"] = subject or ""
+        mime.set_content(body)
+        for attachment in attachments:
+            maintype, subtype = self._split_mime_type(attachment.mime_type)
+            params: dict[str, Any] = {
+                "maintype": maintype,
+                "subtype": subtype,
+                "filename": attachment.filename,
+            }
+            if attachment.inline:
+                params["disposition"] = "inline"
+            mime.add_attachment(attachment.content, **params)
+            if attachment.content_id:
+                part = list(mime.iter_attachments())[-1]
+                part["Content-ID"] = (
+                    attachment.content_id
+                    if attachment.content_id.startswith("<")
+                    else f"<{attachment.content_id}>"
+                )
+            elif attachment.inline:
+                part = list(mime.iter_attachments())[-1]
+                part["Content-ID"] = make_msgid()
+        return mime
+
+    @staticmethod
+    def _split_mime_type(mime_type: str | None) -> tuple[str, str]:
+        if mime_type and "/" in mime_type:
+            maintype, subtype = mime_type.split("/", 1)
+            return maintype or "application", subtype or "octet-stream"
+        return "application", "octet-stream"
+
+    @staticmethod
+    def _extract_attachments(payload: dict[str, Any]) -> list[EmailAttachmentMetadata]:
+        attachments: list[EmailAttachmentMetadata] = []
+        GmailEmailProvider._collect_attachments(payload, attachments)
+        return attachments
+
+    @staticmethod
+    def _collect_attachments(
+        payload: dict[str, Any], attachments: list[EmailAttachmentMetadata]
+    ) -> None:
+        body = payload.get("body") or {}
+        attachment_id = str(body.get("attachmentId", "")).strip()
+        filename = str(payload.get("filename", "")).strip()
+        if attachment_id and filename:
+            headers = {
+                str(item.get("name", "")).lower(): str(item.get("value", ""))
+                for item in payload.get("headers", [])
+            }
+            disposition = headers.get("content-disposition", "").casefold()
+            attachments.append(
+                EmailAttachmentMetadata(
+                    attachment_id=attachment_id,
+                    filename=filename,
+                    mime_type=str(payload.get("mimeType", "")) or None,
+                    byte_count=body.get("size"),
+                    inline="inline" in disposition,
+                    content_id=headers.get("content-id"),
+                    metadata={"gmail_part_id": payload.get("partId")},
+                )
+            )
+        for part in payload.get("parts", []) or []:
+            GmailEmailProvider._collect_attachments(part, attachments)
+
+    @staticmethod
+    def _decode_base64url(data: str) -> bytes:
+        padding = "=" * (-len(data) % 4)
+        return base64.urlsafe_b64decode(data + padding)
 
     @staticmethod
     def _extract_body_text(payload: dict[str, Any]) -> str:
@@ -349,7 +471,7 @@ class GmailEmailProvider:
         data = body.get("data")
         if data:
             try:
-                return base64.urlsafe_b64decode(data + "==").decode("utf-8")
+                return GmailEmailProvider._decode_base64url(data).decode("utf-8")
             except Exception:
                 return ""
         for part in payload.get("parts", []):

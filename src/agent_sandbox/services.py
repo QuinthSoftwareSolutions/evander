@@ -15,8 +15,6 @@ import httpx
 from agent_sandbox.models import (
     DiscordCommandEnvelope,
     DiscordMessageEnvelope,
-    DraftMessage,
-    EmailMessage,
     HasPendingDiscordMessagesResponse,
     HasPendingFeedbackResponse,
     GetPullRequestResponse,
@@ -38,7 +36,10 @@ from agent_sandbox.daemons.pr_feedback_worker import (
     _stream_key,
 )
 from agent_sandbox.email.providers import (
+    EmailAttachmentContent,
+    EmailAttachmentMetadata,
     EmailDraft,
+    EmailDraftAttachment,
     EmailMessageDetail,
     EmailMessageSummary,
     EmailProvider,
@@ -136,6 +137,18 @@ class EmailService:
     def get_message(self, mailbox_id: str, message_id: str) -> EmailMessageDetail:
         return self.provider.get_message(mailbox_id=mailbox_id, message_id=message_id)
 
+    def list_attachments(
+        self, mailbox_id: str, message_id: str
+    ) -> list[EmailAttachmentMetadata]:
+        return self.provider.list_attachments(mailbox_id=mailbox_id, message_id=message_id)
+
+    def download_attachment(
+        self, mailbox_id: str, message_id: str, attachment_id: str
+    ) -> EmailAttachmentContent:
+        return self.provider.download_attachment(
+            mailbox_id=mailbox_id, message_id=message_id, attachment_id=attachment_id
+        )
+
     def create_draft(
         self,
         mailbox_id: str,
@@ -143,6 +156,7 @@ class EmailService:
         subject: str | None,
         body: str,
         recipients: list[str],
+        attachments: list[EmailDraftAttachment] | None = None,
     ) -> EmailDraft:
         return self.provider.create_draft(
             mailbox_id=mailbox_id,
@@ -150,6 +164,7 @@ class EmailService:
             subject=subject,
             body=body,
             recipients=recipients,
+            attachments=attachments,
         )
 
     def send_from_draft(self, request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
