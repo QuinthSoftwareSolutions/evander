@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
+import json
 import logging
+import mimetypes
 import os
 from datetime import datetime, timezone
 from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any, Literal
+from hashlib import sha256
 from uuid import uuid4
 
 import httpx
@@ -49,6 +53,14 @@ from agent_sandbox.models import (
     AdoBacklogQueryRequest,
     AdoBacklogQueryResponse,
     AuditEvent,
+    CommunicationAttachmentRef,
+    CommunicationDownloadAttachmentRequest,
+    CommunicationDownloadAttachmentResponse,
+    CommunicationFileArtifact,
+    CommunicationListAttachmentsRequest,
+    CommunicationListAttachmentsResponse,
+    CommunicationSendMessageWithAttachmentsRequest,
+    CommunicationSendMessageWithAttachmentsResponse,
     DiscordCommandEnvelope,
     GetPullRequestRequest,
     HasPendingDiscordMessagesRequest,
@@ -627,6 +639,318 @@ def create_server(context: RuntimeContext) -> FastMCP:
             error,
             error_class,
         )
+
+
+    def _communication_artifact_dir() -> Path:
+        path = context.config.runtime_dir / "communication-artifacts"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _artifact_metadata_path(artifact_id: str) -> Path:
+        return _communication_artifact_dir() / f"{artifact_id}.json"
+
+    def _artifact_blob_path(artifact_id: str) -> Path:
+        return _communication_artifact_dir() / f"{artifact_id}.bin"
+
+    def _safe_artifact_id(value: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized or any(part in normalized for part in ("/", "\\", "..")):
+            raise ToolError("artifact_id must be an opaque staged artifact ID")
+        return normalized
+
+    def _load_artifacts(artifact_ids: list[str]) -> list[CommunicationFileArtifact]:
+        artifacts: list[CommunicationFileArtifact] = []
+        for artifact_id in artifact_ids:
+            safe_id = _safe_artifact_id(artifact_id)
+            metadata_path = _artifact_metadata_path(safe_id)
+            blob_path = _artifact_blob_path(safe_id)
+            if not metadata_path.is_file() or not blob_path.is_file():
+                raise ToolError(f"Unknown staged artifact_id: {safe_id}")
+            artifacts.append(
+                CommunicationFileArtifact.model_validate(
+                    json.loads(metadata_path.read_text(encoding="utf-8"))
+                )
+            )
+        return artifacts
+
+    def _artifact_payloads(artifact_ids: list[str]) -> list[dict[str, Any]]:
+        payloads: list[dict[str, Any]] = []
+        for artifact in _load_artifacts(artifact_ids):
+            payloads.append(
+                {
+                    **artifact.model_dump(mode="json"),
+                    "path": str(_artifact_blob_path(artifact.artifact_id)),
+                }
+            )
+        return payloads
+
+    def _artifact_audit_summaries(artifact_ids: list[str]) -> list[dict[str, Any]]:
+        return [
+            {
+                "provider": artifact.provider,
+                "message_id": artifact.source_message_id,
+                "attachment_id": artifact.source_attachment_id,
+                "artifact_id": artifact.artifact_id,
+                "byte_count": artifact.byte_count,
+                "mime_type": artifact.mime_type,
+                "filename": artifact.filename,
+            }
+            for artifact in _load_artifacts(artifact_ids)
+        ]
+
+    def _coerce_attachment_refs(
+        provider: str,
+        message_id: str,
+        raw_attachments: Any,
+        *,
+        mailbox_id: str | None = None,
+        channel_id: str | None = None,
+        channel_target: str | None = None,
+    ) -> list[CommunicationAttachmentRef]:
+        if raw_attachments is None:
+            return []
+        refs: list[CommunicationAttachmentRef] = []
+        for index, raw in enumerate(raw_attachments if isinstance(raw_attachments, list) else []):
+            if isinstance(raw, CommunicationAttachmentRef):
+                refs.append(raw)
+                continue
+            if not isinstance(raw, dict):
+                continue
+            attachment_id = str(
+                raw.get("attachment_id")
+                or raw.get("id")
+                or raw.get("content_id")
+                or raw.get("name")
+                or index
+            ).strip()
+            filename = str(raw.get("filename") or raw.get("name") or attachment_id).strip()
+            if not attachment_id or not filename:
+                continue
+            byte_count_raw = raw.get("byte_count", raw.get("size", raw.get("contentSize")))
+            byte_count = None
+            if byte_count_raw is not None:
+                try:
+                    byte_count = int(byte_count_raw)
+                except (TypeError, ValueError):
+                    byte_count = None
+            mime_type = raw.get("mime_type") or raw.get("content_type") or raw.get("contentType")
+            safe_metadata = {
+                key: value
+                for key, value in raw.items()
+                if key
+                not in {
+                    "url",
+                    "proxy_url",
+                    "download_url",
+                    "web_url",
+                    "content",
+                    "content_bytes",
+                    "content_base64",
+                    "data",
+                    "authorization",
+                    "token",
+                    "access_token",
+                }
+            }
+            refs.append(
+                CommunicationAttachmentRef(
+                    provider=provider,
+                    message_id=message_id,
+                    attachment_id=attachment_id,
+                    filename=filename,
+                    mime_type=str(mime_type).strip() if mime_type else None,
+                    byte_count=byte_count,
+                    mailbox_id=mailbox_id,
+                    channel_id=channel_id,
+                    channel_target=channel_target,
+                    metadata=safe_metadata,
+                )
+            )
+        return refs
+
+    def _attachments_from_metadata(
+        provider: str,
+        message_id: str,
+        metadata: dict[str, Any],
+        *,
+        mailbox_id: str | None = None,
+        channel_id: str | None = None,
+        channel_target: str | None = None,
+    ) -> list[CommunicationAttachmentRef]:
+        raw_attachments = metadata.get("attachments")
+        if raw_attachments is None and isinstance(metadata.get("message"), dict):
+            raw_attachments = metadata["message"].get("attachments")
+        return _coerce_attachment_refs(
+            provider,
+            message_id,
+            raw_attachments,
+            mailbox_id=mailbox_id,
+            channel_id=channel_id,
+            channel_target=channel_target,
+        )
+
+    def _resolve_communication_attachments(
+        request: CommunicationListAttachmentsRequest,
+        *,
+        tool_name: ToolName = ToolName.COMMUNICATION_LIST_ATTACHMENTS,
+    ) -> list[CommunicationAttachmentRef]:
+        provider = request.provider.strip().lower()
+        if provider == "discord":
+            session = context.policy.require_tool(request.session_id, tool_name)
+            channel_id = str(request.channel_id or "").strip()
+            if channel_id:
+                context.policy.require_discord_channel(session, channel_id)
+            service = context.discord_service_for_session(request.session_id)
+            if hasattr(service, "list_attachments"):
+                return _coerce_attachment_refs(
+                    provider,
+                    request.message_id,
+                    service.list_attachments(request.message_id, channel_id=channel_id or None),
+                    channel_id=channel_id or None,
+                )
+            record = context.discord_commands.get(request.message_id)
+            if record is None:
+                raise ToolError(f"Unknown Discord message_id: {request.message_id}")
+            context.policy.require_discord_channel(session, channel_id or record.channel_id)
+            return _attachments_from_metadata(
+                provider,
+                request.message_id,
+                record.metadata,
+                channel_id=channel_id or record.channel_id,
+            )
+        if provider == "teams":
+            session = context.policy.require_tool(request.session_id, tool_name)
+            target = context.policy.require_teams_channel_target(
+                session, str(request.channel_target or "").strip()
+            )
+            service = context.teams_service_for_session(request.session_id)
+            if hasattr(service, "list_attachments"):
+                return _coerce_attachment_refs(
+                    provider,
+                    request.message_id,
+                    service.list_attachments(request.message_id, channel_target=target),
+                    channel_target=target,
+                )
+            record = context.teams_messages.get(request.message_id)
+            if record is None:
+                record = next(
+                    (
+                        message
+                        for message in context.teams_messages.read_all().values()
+                        if message.message_id == request.message_id
+                    ),
+                    None,
+                )
+            if record is None:
+                raise ToolError(f"Unknown Teams message_id: {request.message_id}")
+            return _attachments_from_metadata(
+                provider,
+                request.message_id,
+                record.metadata,
+                channel_target=target,
+            )
+        if provider == "email":
+            session = context.policy.require_tool(request.session_id, tool_name)
+            mailbox_id = str(request.mailbox_id or "").strip()
+            context.policy.require_email_mailbox(session, mailbox_id)
+            message = context.email_service_for_session(request.session_id).get_message(
+                mailbox_id=mailbox_id,
+                message_id=request.message_id,
+            )
+            context.policy.require_email_folder_for_mailbox(session, mailbox_id, message.folder)
+            return _attachments_from_metadata(
+                provider,
+                request.message_id,
+                message.metadata,
+                mailbox_id=mailbox_id,
+            )
+        raise ToolError("provider must be one of: discord, teams, email")
+
+    def _provider_download_attachment(
+        request: CommunicationDownloadAttachmentRequest,
+        ref: CommunicationAttachmentRef,
+    ) -> tuple[bytes, str, str | None]:
+        provider = request.provider.strip().lower()
+        service: Any
+        kwargs: dict[str, Any] = {
+            "message_id": request.message_id,
+            "attachment_id": request.attachment_id,
+        }
+        if provider == "discord":
+            service = context.discord_service_for_session(request.session_id)
+            kwargs["channel_id"] = request.channel_id
+        elif provider == "teams":
+            service = context.teams_service_for_session(request.session_id)
+            kwargs["channel_target"] = request.channel_target
+        elif provider == "email":
+            service = context.email_service_for_session(request.session_id)
+            kwargs["mailbox_id"] = request.mailbox_id
+        else:
+            raise ToolError("provider must be one of: discord, teams, email")
+        if hasattr(service, "download_attachment"):
+            raw = service.download_attachment(**kwargs)
+            if isinstance(raw, bytes):
+                return raw, ref.filename, ref.mime_type
+            if isinstance(raw, dict):
+                data = raw.get("content") or raw.get("content_bytes") or raw.get("bytes")
+                if isinstance(data, str):
+                    if raw.get("encoding") == "base64" or raw.get("content_base64"):
+                        data_bytes = base64.b64decode(raw.get("content_base64") or data)
+                    else:
+                        data_bytes = data.encode("utf-8")
+                elif isinstance(data, bytes):
+                    data_bytes = data
+                else:
+                    data_bytes = base64.b64decode(str(raw.get("content_base64") or ""))
+                return (
+                    data_bytes,
+                    str(raw.get("filename") or ref.filename),
+                    str(
+                        raw.get("mime_type")
+                        or raw.get("content_type")
+                        or ref.mime_type
+                        or ""
+                    )
+                    or None,
+                )
+        raw_payload = ref.metadata.get("content_base64") or ref.metadata.get("content")
+        if isinstance(raw_payload, str) and raw_payload:
+            try:
+                return base64.b64decode(raw_payload), ref.filename, ref.mime_type
+            except Exception:
+                return raw_payload.encode("utf-8"), ref.filename, ref.mime_type
+        raise ToolError(
+            "Attachment content is not available from the configured provider adapter"
+        )
+
+    def _stage_communication_artifact(
+        request: CommunicationDownloadAttachmentRequest,
+        ref: CommunicationAttachmentRef,
+        content: bytes,
+        *,
+        filename: str,
+        mime_type: str | None,
+    ) -> CommunicationFileArtifact:
+        digest = sha256(content).hexdigest()
+        artifact_id = f"comm_{uuid4().hex}"
+        _artifact_blob_path(artifact_id).write_bytes(content)
+        resolved_mime = mime_type or mimetypes.guess_type(filename)[0]
+        artifact = CommunicationFileArtifact(
+            artifact_id=artifact_id,
+            provider=request.provider.strip().lower(),
+            source_message_id=request.message_id,
+            source_attachment_id=request.attachment_id,
+            filename=filename,
+            mime_type=resolved_mime,
+            byte_count=len(content),
+            sha256=digest,
+            metadata={"storage": "host_artifact_store"},
+        )
+        _artifact_metadata_path(artifact_id).write_text(
+            json.dumps(artifact.model_dump(mode="json"), sort_keys=True),
+            encoding="utf-8",
+        )
+        return artifact
 
     def _admin_service() -> AdminService:
         return AdminService(context.config.runtime_dir)
@@ -4230,6 +4554,409 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 str(exc),
                 decision="error",
                 error_class="unexpected_error",
+            )
+            raise
+
+
+    @server.tool()
+    def communication_list_attachments(
+        session_id: str,
+        provider: str,
+        message_id: str,
+        mailbox_id: str | None = None,
+        channel_id: str | None = None,
+        channel_target: str | None = None,
+    ) -> dict[str, Any]:
+        request = CommunicationListAttachmentsRequest(
+            session_id=session_id,
+            provider=provider,
+            message_id=message_id,
+            mailbox_id=mailbox_id,
+            channel_id=channel_id,
+            channel_target=channel_target,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            attachments = _resolve_communication_attachments(request)
+            response = CommunicationListAttachmentsResponse(
+                provider=request.provider.strip().lower(),
+                message_id=request.message_id,
+                attachments=attachments,
+            )
+            result = response.model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.COMMUNICATION_LIST_ATTACHMENTS,
+                args,
+                {
+                    "provider": response.provider,
+                    "message_id": response.message_id,
+                    "count": len(response.attachments),
+                    "attachments": [
+                        {
+                            "attachment_id": item.attachment_id,
+                            "filename": item.filename,
+                            "mime_type": item.mime_type,
+                            "byte_count": item.byte_count,
+                        }
+                        for item in response.attachments
+                    ],
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.COMMUNICATION_LIST_ATTACHMENTS, args, str(exc))
+            raise
+        except (httpx.HTTPError, ProviderRequestError) as exc:
+            audit_failure(
+                session_id,
+                ToolName.COMMUNICATION_LIST_ATTACHMENTS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.COMMUNICATION_LIST_ATTACHMENTS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def communication_download_attachment(
+        session_id: str,
+        provider: str,
+        message_id: str,
+        attachment_id: str,
+        mailbox_id: str | None = None,
+        channel_id: str | None = None,
+        channel_target: str | None = None,
+    ) -> dict[str, Any]:
+        request = CommunicationDownloadAttachmentRequest(
+            session_id=session_id,
+            provider=provider,
+            message_id=message_id,
+            attachment_id=attachment_id,
+            mailbox_id=mailbox_id,
+            channel_id=channel_id,
+            channel_target=channel_target,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            list_request = CommunicationListAttachmentsRequest(
+                session_id=session_id,
+                provider=provider,
+                message_id=message_id,
+                mailbox_id=mailbox_id,
+                channel_id=channel_id,
+                channel_target=channel_target,
+            )
+            attachments = _resolve_communication_attachments(
+                list_request,
+                tool_name=ToolName.COMMUNICATION_DOWNLOAD_ATTACHMENT,
+            )
+            ref = next((item for item in attachments if item.attachment_id == attachment_id), None)
+            if ref is None:
+                raise ToolError(f"Unknown attachment_id for message: {attachment_id}")
+            content, filename, mime_type = _provider_download_attachment(request, ref)
+            artifact = _stage_communication_artifact(
+                request,
+                ref,
+                content,
+                filename=filename,
+                mime_type=mime_type,
+            )
+            response = CommunicationDownloadAttachmentResponse(artifact=artifact)
+            result = response.model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.COMMUNICATION_DOWNLOAD_ATTACHMENT,
+                args,
+                {
+                    "provider": artifact.provider,
+                    "message_id": message_id,
+                    "attachment_id": attachment_id,
+                    "artifact_id": artifact.artifact_id,
+                    "byte_count": artifact.byte_count,
+                    "mime_type": artifact.mime_type,
+                    "filename": artifact.filename,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.COMMUNICATION_DOWNLOAD_ATTACHMENT, args, str(exc))
+            raise
+        except (httpx.HTTPError, ProviderRequestError) as exc:
+            audit_failure(
+                session_id,
+                ToolName.COMMUNICATION_DOWNLOAD_ATTACHMENT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.COMMUNICATION_DOWNLOAD_ATTACHMENT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def discord_post_file(
+        session_id: str,
+        channel_id: str,
+        message: str,
+        artifact_ids: list[str],
+    ) -> dict[str, Any]:
+        request = CommunicationSendMessageWithAttachmentsRequest(
+            session_id=session_id,
+            provider="discord",
+            channel_id=channel_id,
+            message=message,
+            artifact_ids=artifact_ids,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            session = context.policy.require_tool(session_id, ToolName.DISCORD_POST_FILE)
+            context.policy.require_discord_channel(session, channel_id)
+            artifacts = _artifact_payloads(artifact_ids)
+            service = context.discord_service_for_session(session_id)
+            if not hasattr(service, "post_file"):
+                raise ToolError("Configured Discord adapter does not support file posts")
+            result = service.post_file(message, channel_id, session_id, artifacts)
+            response = CommunicationSendMessageWithAttachmentsResponse(
+                provider="discord",
+                status=str(result.get("status", "posted")),
+                message_id=result.get("message_id"),
+                artifact_ids=artifact_ids,
+                result=result,
+            )
+            audit_success(
+                session_id,
+                ToolName.DISCORD_POST_FILE,
+                args,
+                {
+                    "provider": "discord",
+                    "message_id": response.message_id,
+                    "artifacts": _artifact_audit_summaries(artifact_ids),
+                },
+            )
+            return response.model_dump(mode="json")
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.DISCORD_POST_FILE, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.DISCORD_POST_FILE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def teams_post_file(
+        session_id: str,
+        channel_target: str,
+        message: str,
+        artifact_ids: list[str],
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        request = CommunicationSendMessageWithAttachmentsRequest(
+            session_id=session_id,
+            provider="teams",
+            channel_target=channel_target,
+            message=message,
+            artifact_ids=artifact_ids,
+            thread_id=thread_id,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            session = context.policy.require_tool(session_id, ToolName.TEAMS_POST_FILE)
+            target = context.policy.require_teams_channel_target(session, channel_target)
+            artifacts = _artifact_payloads(artifact_ids)
+            service = context.teams_service_for_session(session_id)
+            if not hasattr(service, "post_file"):
+                raise ToolError("Configured Teams adapter does not support file posts")
+            result = service.post_file(message, target, session_id, artifacts, thread_id=thread_id)
+            response = CommunicationSendMessageWithAttachmentsResponse(
+                provider="teams",
+                status=str(result.get("status", "posted")),
+                message_id=result.get("message_id"),
+                artifact_ids=artifact_ids,
+                result=result,
+            )
+            audit_success(
+                session_id,
+                ToolName.TEAMS_POST_FILE,
+                args,
+                {
+                    "provider": "teams",
+                    "message_id": response.message_id,
+                    "artifacts": _artifact_audit_summaries(artifact_ids),
+                },
+            )
+            return response.model_dump(mode="json")
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.TEAMS_POST_FILE, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.TEAMS_POST_FILE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def email_create_draft_with_attachments(
+        session_id: str,
+        body: str,
+        mailbox_id: str,
+        artifact_ids: list[str],
+        thread_or_message_id: str | None = None,
+        subject: str | None = None,
+        recipients: list[str] | None = None,
+    ) -> dict[str, Any]:
+        request = CommunicationSendMessageWithAttachmentsRequest(
+            session_id=session_id,
+            provider="email",
+            mailbox_id=mailbox_id,
+            message=body,
+            artifact_ids=artifact_ids,
+            thread_id=thread_or_message_id,
+            subject=subject,
+            recipients=recipients or [],
+        )
+        args = request.model_dump(mode="json")
+        try:
+            session = context.policy.require_tool(
+                session_id, ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS
+            )
+            context.policy.require_email_mailbox(session, mailbox_id)
+            context.policy.require_email_folder_for_mailbox(session, mailbox_id, "drafts")
+            normalized_recipients = recipients or []
+            context.policy.require_draft_recipients(session, normalized_recipients)
+            artifacts = _artifact_payloads(artifact_ids)
+            service = context.email_service_for_session(session_id)
+            if hasattr(service, "create_draft_with_attachments"):
+                draft = service.create_draft_with_attachments(
+                    mailbox_id,
+                    thread_or_message_id,
+                    subject,
+                    body,
+                    normalized_recipients,
+                    artifacts,
+                )
+            else:
+                draft = service.create_draft(
+                    mailbox_id, thread_or_message_id, subject, body, normalized_recipients
+                )
+            result = (
+                draft.model_dump(mode="json")
+                if hasattr(draft, "model_dump")
+                else dict(draft)
+            )
+            result["artifact_ids"] = artifact_ids
+            audit_success(
+                session_id,
+                ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS,
+                args,
+                {
+                    "provider": "email",
+                    "draft_id": result.get("draft_id"),
+                    "artifacts": _artifact_audit_summaries(artifact_ids),
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(
+                session_id, ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS, args, str(exc)
+            )
+            raise
+        except (httpx.HTTPError, ProviderRequestError) as exc:
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def email_send_approved_with_attachments(
+        session_id: str,
+        request_id: str,
+        payload: dict[str, Any],
+        artifact_ids: list[str],
+    ) -> dict[str, Any]:
+        args = {
+            "session_id": session_id,
+            "request_id": request_id,
+            "payload": payload,
+            "artifact_ids": artifact_ids,
+        }
+        try:
+            session = context.policy.require_tool(
+                session_id, ToolName.EMAIL_SEND_APPROVED_WITH_ATTACHMENTS
+            )
+            context.policy.require_email_send_enabled(session)
+            context.policy.require_email_mailbox(session, str(payload.get("mailbox_id", "")))
+            recipients = draft_recipients_from_payload(payload)
+            context.policy.require_draft_recipients(session, recipients)
+            approval = context.policy.require_approved(request_id, payload)
+            if approval.session_id != session_id:
+                raise PolicyError(
+                    f"Approval request {request_id} does not belong to session {session_id}"
+                )
+            artifacts = _artifact_payloads(artifact_ids)
+            send_payload = {**payload, "artifact_ids": artifact_ids, "attachments": artifacts}
+            result = context.email_service.send_from_draft(
+                request_id=request_id, payload=send_payload
+            )
+            audit_success(
+                session_id,
+                ToolName.EMAIL_SEND_APPROVED_WITH_ATTACHMENTS,
+                args,
+                {
+                    "provider": "email",
+                    "artifacts": _artifact_audit_summaries(artifact_ids),
+                    **result,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(
+                session_id, ToolName.EMAIL_SEND_APPROVED_WITH_ATTACHMENTS, args, str(exc)
             )
             raise
 
