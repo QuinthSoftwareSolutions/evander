@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 import httpx
@@ -101,7 +102,12 @@ from agent_sandbox.models import (
 )
 from agent_sandbox.policy import PolicyError
 from agent_sandbox.runtime import RuntimeContext, build_runtime
-from agent_sandbox.services import normalize_pr_feedback_provider
+from agent_sandbox.services import (
+    normalize_pr_feedback_provider,
+    normalize_teams_target,
+    parse_teams_target,
+    teams_target_from_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -822,6 +828,159 @@ def create_server(context: RuntimeContext) -> FastMCP:
             channel_target=channel_target,
         )
 
+    def _clean_teams_channel_input(value: str | None) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        if "://" in raw:
+            parsed = urlparse(raw)
+            path_parts = [part for part in parsed.path.split("/") if part]
+            if "channel" in path_parts:
+                index = path_parts.index("channel")
+                if index + 1 < len(path_parts):
+                    return unquote(path_parts[index + 1]).strip()
+        cleaned = unquote(raw).strip().strip("/")
+        if cleaned.startswith("chat:"):
+            return cleaned
+        if "/" in cleaned:
+            _team_id, _separator, channel_id = cleaned.partition("/")
+            return channel_id.strip()
+        return cleaned
+
+    def _teams_message_records_for_id(message_id: str) -> list[TeamsMessageEnvelope]:
+        records: list[TeamsMessageEnvelope] = []
+        direct = context.teams_messages.get(message_id)
+        if direct is not None:
+            records.append(direct)
+        seen_cursors = {record.cursor for record in records}
+        for record in context.teams_messages.read_all().values():
+            if record.message_id != message_id or record.cursor in seen_cursors:
+                continue
+            records.append(record)
+            seen_cursors.add(record.cursor)
+        return records
+
+    def _teams_target_for_message_record(record: TeamsMessageEnvelope) -> str:
+        return teams_target_from_message(
+            team_id=record.team_id,
+            channel_id=record.channel_id,
+            chat_id=record.chat_id,
+            metadata=record.metadata,
+        )
+
+    def _teams_target_channel_id(target: str) -> str | None:
+        parsed = parse_teams_target(target)
+        return parsed.channel_id if parsed.kind == "channel" else None
+
+    def _select_allowlisted_teams_target(
+        session: Any,
+        candidates: list[str],
+        *,
+        message_id: str,
+    ) -> str:
+        normalized: list[str] = []
+        for candidate in candidates:
+            try:
+                normalized.append(context.policy.require_teams_channel_target(session, candidate))
+            except PolicyError:
+                continue
+            except ValueError:
+                continue
+        unique = sorted(set(normalized))
+        if len(unique) == 1:
+            return unique[0]
+        if not unique:
+            raise PolicyError(
+                f"Teams target is not allowlisted for session {session.session_id}"
+            )
+        raise PolicyError(
+            f"Teams message {message_id} matches multiple allowlisted targets; "
+            "pass channel_target"
+        )
+
+    def _resolve_teams_target_from_message(
+        session: Any,
+        *,
+        message_id: str,
+        channel_id: str | None = None,
+    ) -> str:
+        requested_channel_id = _clean_teams_channel_input(channel_id)
+        candidates: list[str] = []
+        for record in _teams_message_records_for_id(message_id):
+            try:
+                target = _teams_target_for_message_record(record)
+            except ValueError:
+                continue
+            if requested_channel_id and _teams_target_channel_id(target) != requested_channel_id:
+                continue
+            candidates.append(target)
+        if candidates:
+            return _select_allowlisted_teams_target(
+                session,
+                candidates,
+                message_id=message_id,
+            )
+
+        if requested_channel_id:
+            for target in session.teams_channel_allowlist:
+                try:
+                    normalized = normalize_teams_target(target)
+                except ValueError:
+                    continue
+                if _teams_target_channel_id(normalized) == requested_channel_id:
+                    candidates.append(normalized)
+            if candidates:
+                return _select_allowlisted_teams_target(
+                    session,
+                    candidates,
+                    message_id=message_id,
+                )
+
+        raise PolicyError(
+            "Teams channel_target or an allowlisted stored Teams message is required "
+            f"for message {message_id}"
+        )
+
+    def _resolve_teams_attachment_target(
+        session: Any,
+        request: CommunicationListAttachmentsRequest,
+    ) -> str:
+        raw_target = str(request.channel_target or "").strip()
+        if raw_target:
+            cleaned_target = unquote(raw_target).strip().strip("/")
+            try:
+                target = context.policy.require_teams_channel_target(session, cleaned_target)
+                requested_channel_id = _clean_teams_channel_input(request.channel_id)
+                if (
+                    requested_channel_id
+                    and _teams_target_channel_id(target) != requested_channel_id
+                ):
+                    raise PolicyError(
+                        "Teams channel_id does not match the requested channel_target"
+                    )
+                return target
+            except PolicyError as exc:
+                channel_id = _clean_teams_channel_input(raw_target)
+                if channel_id and (
+                    channel_id != cleaned_target
+                    or ("/" not in cleaned_target and not cleaned_target.startswith("chat:"))
+                ):
+                    return _resolve_teams_target_from_message(
+                        session,
+                        message_id=request.message_id,
+                        channel_id=channel_id,
+                    )
+                raise exc
+
+        requested_channel_id = _clean_teams_channel_input(request.channel_id)
+        if requested_channel_id:
+            return _resolve_teams_target_from_message(
+                session,
+                message_id=request.message_id,
+                channel_id=requested_channel_id,
+            )
+        return _resolve_teams_target_from_message(session, message_id=request.message_id)
+
     def _resolve_communication_attachments(
         request: CommunicationListAttachmentsRequest,
         *,
@@ -858,15 +1017,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
         if provider == "teams":
             session = context.policy.require_tool(request.session_id, tool_name)
             context.policy.require_communication_file_receive_enabled(session)
-            target = context.policy.require_communication_file_scope(
-                session, provider=provider, channel_target=str(request.channel_target or "").strip()
-            )
+            target = _resolve_teams_attachment_target(session, request)
             service = context.teams_service_for_session(request.session_id)
             if hasattr(service, "list_attachments"):
                 return _coerce_attachment_refs(
                     provider,
                     request.message_id,
                     service.list_attachments(request.message_id, channel_target=target),
+                    channel_id=_teams_target_channel_id(target),
                     channel_target=target,
                 )
             record = context.teams_messages.get(request.message_id)
@@ -885,6 +1043,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 provider,
                 request.message_id,
                 record.metadata,
+                channel_id=_teams_target_channel_id(target),
                 channel_target=target,
             )
         if provider == "email":
@@ -939,7 +1098,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             kwargs["channel_id"] = request.channel_id
         elif provider == "teams":
             service = context.teams_service_for_session(request.session_id)
-            kwargs["channel_target"] = request.channel_target
+            kwargs["channel_target"] = ref.channel_target or request.channel_target
         elif provider == "email":
             service = context.email_service_for_session(request.session_id)
             kwargs["mailbox_id"] = request.mailbox_id
@@ -992,7 +1151,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         mime_type: str | None,
     ) -> CommunicationFileArtifact:
         store = _communication_artifact_store()
-        source_channel = request.channel_id or request.channel_target
+        source_channel = ref.channel_target or request.channel_id or request.channel_target
         record = store.stage(
             provider=request.provider,
             session_id=request.session_id,

@@ -1316,6 +1316,37 @@ class GraphTeamsService:
             and parsed_url.netloc.lower() == parsed_api_base.netloc.lower()
         )
 
+    @staticmethod
+    def _is_sharepoint_content_url(url: str) -> bool:
+        parsed_url = urlparse(url)
+        host = parsed_url.netloc.lower()
+        return any(
+            host.endswith(suffix)
+            for suffix in (
+                ".sharepoint.com",
+                ".sharepoint.us",
+                ".sharepoint.de",
+                ".sharepoint.cn",
+                ".sharepoint-df.com",
+            )
+        )
+
+    def _graph_share_content_url(self, url: str) -> str:
+        encoded = base64.urlsafe_b64encode(url.encode("utf-8")).decode("ascii").rstrip("=")
+        return f"{self.api_base_url}/shares/u!{encoded}/driveItem/content"
+
+    def _download_graph_content_url(self, client: httpx.Client, url: str) -> httpx.Response:
+        response = client.request("GET", url, headers=self._headers(), timeout=self.timeout_seconds)
+        if response.is_redirect:
+            redirect_url = str(response.headers.get("location") or "").strip()
+            if not redirect_url:
+                response.raise_for_status()
+            redirected = client.request("GET", redirect_url, timeout=self.timeout_seconds)
+            redirected.raise_for_status()
+            return redirected
+        response.raise_for_status()
+        return response
+
     def _download_attachment_content_url(
         self,
         client: httpx.Client,
@@ -1325,7 +1356,9 @@ class GraphTeamsService:
         if parsed_url.scheme.lower() not in {"http", "https"} or not parsed_url.netloc:
             raise ValueError("Teams attachment contentUrl must be an absolute http(s) URL.")
         if self._is_graph_api_origin(url):
-            return self._request_with_retries(client, "GET", url)
+            return self._download_graph_content_url(client, url)
+        if self._is_sharepoint_content_url(url):
+            return self._download_graph_content_url(client, self._graph_share_content_url(url))
         response = client.request("GET", url, timeout=self.timeout_seconds)
         response.raise_for_status()
         return response

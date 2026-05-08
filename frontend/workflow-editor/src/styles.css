@@ -2835,6 +2835,36 @@ select {
   background: rgba(255, 250, 241, 0.76);
 }
 
+.config-field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.config-field-label strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.config-field-tooltip-trigger {
+  align-items: center;
+}
+
+.config-field-tooltip-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+  border: 1px solid rgba(80, 94, 57, 0.36);
+  border-radius: 999px;
+  color: #496032;
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
 .config-toggle-row,
 .checkbox-row {
   display: flex;
@@ -4384,6 +4414,11 @@ select {
   border-color: rgba(128, 106, 66, 0.18);
   background: rgba(29, 26, 21, 0.9);
   box-shadow: 0 14px 38px rgba(0, 0, 0, 0.2);
+}
+
+:root[data-theme="dark"] .config-field-tooltip-icon {
+  border-color: rgba(138, 166, 184, 0.4);
+  color: #a9c5d4;
 }
 
 :root[data-theme="dark"] .issue-path-value,

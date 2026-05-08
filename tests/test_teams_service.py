@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1080,6 +1081,143 @@ def test_graph_teams_attachment_download_does_not_send_token_to_external_content
     assert downloaded["content"] == b"document"
     assert downloaded["mime_type"] == "text/plain"
     assert requests[0].headers.get("Authorization") is None
+
+
+def test_graph_teams_attachment_download_uses_graph_for_sharepoint_content_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+    sharepoint_url = (
+        "https://example.invalid/sites/dev46/Delade dokument/Truman/Picture.png"
+    )
+    encoded_share = (
+        base64.urlsafe_b64encode(sharepoint_url.encode("utf-8")).decode("ascii").rstrip("=")
+    )
+    graph_download_url = (
+        f"https://graph.microsoft.com/v1.0/shares/u!{encoded_share}/driveItem/content"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert str(request.url) == graph_download_url
+        assert request.headers["Authorization"] == "Bearer graph-token"
+        return httpx.Response(
+            200,
+            content=b"png-bytes",
+            headers={"content-type": "image/png"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    store.put(
+        "team-a/channel-1/msg-1",
+        TeamsMessageEnvelope(
+            cursor="team-a/channel-1/msg-1",
+            message_id="msg-1",
+            author_id="user-a",
+            team_id="team-a",
+            channel_id="channel-1",
+            content="file",
+            metadata={
+                "target": "team-a/channel-1",
+                "attachments": [
+                    {
+                        "id": "att-1",
+                        "name": "Picture.png",
+                        "contentType": "reference",
+                        "contentUrl": sharepoint_url,
+                    }
+                ],
+            },
+        ),
+    )
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    downloaded = service.download_attachment("msg-1", "att-1", channel_target="team-a/channel-1")
+
+    assert downloaded["content"] == b"png-bytes"
+    assert downloaded["mime_type"] == "image/png"
+    assert len(requests) == 1
+
+
+def test_graph_teams_attachment_download_follows_graph_redirect_without_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+    sharepoint_url = "https://example.invalid/sites/dev46/Docs/Picture.png"
+    encoded_share = (
+        base64.urlsafe_b64encode(sharepoint_url.encode("utf-8")).decode("ascii").rstrip("=")
+    )
+    graph_download_url = (
+        f"https://graph.microsoft.com/v1.0/shares/u!{encoded_share}/driveItem/content"
+    )
+    redirected_url = "https://files.example.test/preauthorized/Picture.png"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if str(request.url) == graph_download_url:
+            assert request.headers["Authorization"] == "Bearer graph-token"
+            return httpx.Response(302, headers={"location": redirected_url}, request=request)
+        if str(request.url) == redirected_url:
+            assert request.headers.get("Authorization") is None
+            return httpx.Response(
+                200,
+                content=b"png-bytes",
+                headers={"content-type": "image/png"},
+                request=request,
+            )
+        raise AssertionError(f"Unexpected URL: {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    store.put(
+        "team-a/channel-1/msg-1",
+        TeamsMessageEnvelope(
+            cursor="team-a/channel-1/msg-1",
+            message_id="msg-1",
+            author_id="user-a",
+            team_id="team-a",
+            channel_id="channel-1",
+            content="file",
+            metadata={
+                "target": "team-a/channel-1",
+                "attachments": [
+                    {
+                        "id": "att-1",
+                        "name": "Picture.png",
+                        "contentType": "reference",
+                        "contentUrl": sharepoint_url,
+                    }
+                ],
+            },
+        ),
+    )
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    downloaded = service.download_attachment("msg-1", "att-1", channel_target="team-a/channel-1")
+
+    assert downloaded["content"] == b"png-bytes"
+    assert downloaded["mime_type"] == "image/png"
+    assert [str(request.url) for request in requests] == [graph_download_url, redirected_url]
 
 
 def test_graph_teams_attachment_listing_enforces_channel_allowlist(tmp_path: Path) -> None:

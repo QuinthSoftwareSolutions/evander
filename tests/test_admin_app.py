@@ -81,6 +81,8 @@ def test_config_field_kind_supports_issue_setup_fields() -> None:
     assert admin_app._config_field_kind("git_root") == ("text", ())
     assert admin_app._config_field_kind("default_model") == ("text", ())
     assert admin_app._config_field_kind("enable_guest_heartbeat") == ("bool", ())
+    assert admin_app._config_field_kind("approved_issue_cap") == ("int", ())
+    assert admin_app._config_field_kind("originator_roles") == ("string_list", ())
 
 
 def test_config_field_kind_supports_ado_worker_global_fields() -> None:

@@ -21,6 +21,8 @@ class FakeTeamsService:
         self.last_before_cursor: str | None = None
         self.last_limit: int | None = None
         self.last_channel_target: str | None = None
+        self.last_list_attachments_channel_target: str | None = None
+        self.last_download_attachment_channel_target: str | None = None
         self.post_calls: list[tuple[str, str, str, str | None]] = []
         self.reaction_calls: list[tuple[str, str, str, str]] = []
         self.reaction_error_by_message_id: dict[str, Exception] = {}
@@ -105,6 +107,43 @@ class FakeTeamsService:
             "reaction": reaction,
             "session_id": session_id,
         }
+
+    def list_attachments(
+        self,
+        message_id: str,
+        *,
+        channel_target: str | None = None,
+    ) -> list[dict[str, object]]:
+        self.last_list_attachments_channel_target = channel_target
+        for message in self.messages:
+            if message.message_id != message_id:
+                continue
+            if channel_target is not None and not (
+                message.metadata.get("target") == channel_target
+                or f"{message.team_id}/{message.channel_id}" == channel_target
+                or (message.chat_id is not None and f"chat:{message.chat_id}" == channel_target)
+            ):
+                continue
+            return list(message.metadata.get("attachments") or [])
+        return []
+
+    def download_attachment(
+        self,
+        message_id: str,
+        attachment_id: str,
+        *,
+        channel_target: str | None = None,
+    ) -> dict[str, object]:
+        self.last_download_attachment_channel_target = channel_target
+        for attachment in self.list_attachments(message_id, channel_target=channel_target):
+            if str(attachment.get("id") or attachment.get("attachment_id") or "") == attachment_id:
+                return {
+                    **attachment,
+                    "filename": attachment.get("name") or attachment_id,
+                    "mime_type": attachment.get("contentType") or "text/plain",
+                    "content": b"attachment-bytes",
+                }
+        raise ValueError(f"Unknown Teams attachment: {attachment_id}")
 
 
 def make_context(tmp_path: Path, **kwargs: object):
@@ -733,6 +772,124 @@ def test_teams_get_messages_repeated_reads_with_cursor_do_not_retry_reactions(
         and event["result"].get("error_class") == "reaction_side_effect_error"
     ]
     assert reaction_failure_events == []
+
+
+def test_communication_download_attachment_accepts_plain_teams_channel_id(
+    tmp_path: Path,
+) -> None:
+    context = make_context(tmp_path)
+    channel_id = "19:111a1418d1de40a8a06df882e00cf24a@thread.skype"
+    channel_target = f"team-a/{channel_id}"
+    message = TeamsMessageEnvelope(
+        cursor=f"{channel_target}/msg-1",
+        message_id="msg-1",
+        author_id="user-1",
+        team_id="team-a",
+        channel_id=channel_id,
+        thread_id="msg-1",
+        content="file attached",
+        metadata={
+            "source": "teams_graph_api",
+            "target": channel_target,
+            "team_id": "team-a",
+            "channel_id": channel_id,
+            "attachments": [
+                {
+                    "id": "att-1",
+                    "name": "Picture.png",
+                    "contentType": "image/png",
+                }
+            ],
+        },
+    )
+    context.teams_messages.put(message.cursor, message)
+    fake_teams = FakeTeamsService([message])
+    context.teams_service = fake_teams
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.COMMUNICATION_DOWNLOAD_ATTACHMENT],
+            teams_channel_allowlist=[channel_target],
+            communication_file_receive_enabled=True,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "communication_download_attachment",
+        {
+            "session_id": "session-1",
+            "provider": "teams",
+            "message_id": "msg-1",
+            "attachment_id": "att-1",
+            "channel_id": "19%3A111a1418d1de40a8a06df882e00cf24a%40thread.skype",
+        },
+    )
+
+    assert fake_teams.last_list_attachments_channel_target == channel_target
+    assert fake_teams.last_download_attachment_channel_target == channel_target
+    assert result["artifact"]["source_channel"] == channel_target
+    assert result["artifact"]["filename"] == "Picture.png"
+
+
+def test_communication_download_attachment_uses_normalized_teams_target(
+    tmp_path: Path,
+) -> None:
+    context = make_context(tmp_path)
+    channel_target = "team-a/channel-1"
+    message = TeamsMessageEnvelope(
+        cursor=f"{channel_target}/msg-1",
+        message_id="msg-1",
+        author_id="user-1",
+        team_id="team-a",
+        channel_id="channel-1",
+        thread_id="msg-1",
+        content="file attached",
+        metadata={
+            "source": "teams_graph_api",
+            "target": channel_target,
+            "team_id": "team-a",
+            "channel_id": "channel-1",
+            "attachments": [
+                {
+                    "id": "att-1",
+                    "name": "report.txt",
+                    "contentType": "text/plain",
+                }
+            ],
+        },
+    )
+    context.teams_messages.put(message.cursor, message)
+    fake_teams = FakeTeamsService([message])
+    context.teams_service = fake_teams
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.COMMUNICATION_DOWNLOAD_ATTACHMENT],
+            teams_channel_allowlist=[channel_target],
+            communication_file_receive_enabled=True,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "communication_download_attachment",
+        {
+            "session_id": "session-1",
+            "provider": "teams",
+            "message_id": "msg-1",
+            "attachment_id": "att-1",
+            "channel_target": channel_target,
+        },
+    )
+
+    assert fake_teams.last_list_attachments_channel_target == channel_target
+    assert fake_teams.last_download_attachment_channel_target == channel_target
+    assert result["artifact"]["source_channel"] == channel_target
 
 
 def test_teams_post_status_posts_to_allowlisted_channel_and_thread(tmp_path: Path) -> None:

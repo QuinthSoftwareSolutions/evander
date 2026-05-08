@@ -2022,6 +2022,7 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     )
     assistant_fields = {field["field_name"]: field for field in assistant["fields"]}
     assert assistant_fields["enabled"]["scope"] == "global"
+    assert "admin web assistant launcher" in assistant_fields["enabled"]["tooltip"]
     assert assistant_fields["show_launcher_when_disabled"]["kind"] == "bool"
     assert assistant_fields["default_profile"]["kind"] == "literal"
     assert assistant_fields["default_profile"]["label"] == "assistant capability profile"
@@ -2033,6 +2034,20 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     ]
     assert "allowed_mcp_tool_profile" not in assistant_fields
     assert assistant_fields["custom_system_instructions"]["kind"] == "multiline_text"
+    provider_fields = {
+        field["field_name"]: field
+        for tab in payload["tabs"]
+        if tab["key"] == "providers"
+        for section in tab["sections"]
+        for field in section["fields"]
+    }
+    assert "container worker service" in provider_fields["container_worker_base_url"]["tooltip"]
+    assert "Value: one of" in provider_fields["execution_backend"]["tooltip"]
+    for tab in payload["tabs"]:
+        for section in tab["sections"]:
+            for field in section["fields"]:
+                assert field["tooltip"], f"{tab['key']}.{field['field_name']} is missing a tooltip"
+                assert "Value:" in field["tooltip"]
     access_policy = next(tab for tab in payload["tabs"] if tab["key"] == "access_policy")
     communication_files = next(
         section

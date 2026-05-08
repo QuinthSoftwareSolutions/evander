@@ -14,6 +14,7 @@ from agent_sandbox.admin.service import (
     COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
     AdminService,
 )
+from agent_sandbox.admin.config_tooltips import CONFIG_FIELD_TOOLTIPS
 from agent_sandbox.admin.web.shared import AdminWebAuth, request_has_privileged_operations
 from agent_sandbox.config import (
     AdoWorkerGlobalConfig,
@@ -27,11 +28,13 @@ from agent_sandbox.config import (
 )
 from agent_sandbox.directory_config import (
     AdoWorkerDirectoryConfig,
+    AutomationDirectoryConfig,
     DIRECTORY_CONFIG_DOMAIN_FILENAMES,
     DIRECTORY_CONFIG_DOMAIN_FIELDS,
     IssueSetupDirectoryConfig,
     PrTemplateDirectoryConfig,
 )
+from agent_sandbox.vm.defaults_config import EffectiveVmDefaultsConfig
 
 _DISCORD_CONFIG_FIELDS: tuple[tuple[str, str], ...] = (
     ("providers", "discord_backend"),
@@ -69,6 +72,26 @@ _ASSISTANT_SETTINGS_FIELDS: tuple[tuple[str, str], ...] = (
 )
 _ASSISTANT_SETTINGS_FIELD_LABELS: dict[str, str] = {
     "default_profile": "assistant capability profile",
+}
+_SOURCE_DOMAIN_CONFIG_FIELD_TOOLTIPS: dict[tuple[str, str], str] = {
+    (_ASSISTANT_SETTINGS_DOMAIN, "enabled"): (
+        "Enables the admin web assistant launcher and chat endpoints."
+    ),
+    (_ASSISTANT_SETTINGS_DOMAIN, "show_launcher_when_disabled"): (
+        "Keeps the assistant launcher visible even when the assistant itself is disabled."
+    ),
+    (_ASSISTANT_SETTINGS_DOMAIN, "read_only"): (
+        "Forces assistant requests into read-only mode when enabled."
+    ),
+    (_ASSISTANT_SETTINGS_DOMAIN, "default_model"): (
+        "Default model used for admin web assistant conversations when no request-specific model is selected."
+    ),
+    (_ASSISTANT_SETTINGS_DOMAIN, "default_profile"): (
+        "Default assistant capability profile used to decide which admin actions the assistant may request."
+    ),
+    (_ASSISTANT_SETTINGS_DOMAIN, "custom_system_instructions"): (
+        "Additional system instructions appended to the admin web assistant guide."
+    ),
 }
 _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] = {
     "communications": (
@@ -552,6 +575,43 @@ def _field_kind(
     return ("json", ())
 
 
+def _field_value_hint(kind: str, options: tuple[str, ...]) -> str:
+    if kind == "bool":
+        return "Value: boolean true or false."
+    if kind == "int":
+        return "Value: whole number."
+    if kind == "float":
+        return "Value: number; decimals are allowed."
+    if kind == "literal":
+        rendered_options = ", ".join(
+            "default" if option == "" else option for option in options
+        )
+        return f"Value: one of {rendered_options}."
+    if kind == "multiline_text":
+        return "Value: free-form multi-line text."
+    if kind == "string_list":
+        return "Value: one string per line; blank lines are ignored."
+    if kind == "json":
+        return "Value: valid JSON matching this setting's schema."
+    return "Value: text."
+
+
+def _directory_config_field_tooltip(
+    source_domain: str,
+    field_name: str,
+    *,
+    label: str,
+    kind: str,
+    options: tuple[str, ...],
+) -> str:
+    description = (
+        _SOURCE_DOMAIN_CONFIG_FIELD_TOOLTIPS.get((source_domain, field_name))
+        or CONFIG_FIELD_TOOLTIPS.get(field_name)
+        or f"Configures {label}."
+    )
+    return f"{description} {_field_value_hint(kind, options)}"
+
+
 def _worker_config_schema(worker_id: str) -> dict[str, Any] | None:
     model = _WORKER_GLOBAL_CONFIG_MODELS.get(worker_id)
     if model is None:
@@ -641,24 +701,29 @@ def _directory_config_field_metadata(
             TeamsMeetingIngestWorkerGlobalConfig.model_fields,
             TriggerOrchestratorWorkerGlobalConfig.model_fields,
             AdoWorkerDirectoryConfig.model_fields,
+            AutomationDirectoryConfig.model_fields,
             IssueSetupDirectoryConfig.model_fields,
             PrTemplateDirectoryConfig.model_fields,
             AssistantSettingsConfig.model_fields,
+            EffectiveVmDefaultsConfig.model_fields,
         ),
     )
+    label = (
+        _ASSISTANT_SETTINGS_FIELD_LABELS.get(field_name)
+        if source_domain == _ASSISTANT_SETTINGS_DOMAIN
+        else None
+    ) or _config_field_display_name(field_name, prefixes=prefixes)
     return {
         "source_domain": source_domain,
         "field_name": field_name,
-        "label": (
-            _ASSISTANT_SETTINGS_FIELD_LABELS.get(field_name)
-            if source_domain == _ASSISTANT_SETTINGS_DOMAIN
-            else None
-        )
-        or _config_field_display_name(field_name, prefixes=prefixes),
+        "label": label,
         "kind": kind,
         "options": list(options),
         "scope": "global" if source_domain == _ASSISTANT_SETTINGS_DOMAIN else "directory",
         "root_starts_editable": tab_key == "pr_template" and field_name == "pr_template_markdown",
+        "tooltip": _directory_config_field_tooltip(
+            source_domain, field_name, label=label, kind=kind, options=options
+        ),
     }
 
 

@@ -16,6 +16,7 @@ type ConfigurationField = {
   options: string[];
   scope?: "directory" | "global";
   root_starts_editable: boolean;
+  tooltip: string;
 };
 
 type ConfigurationSection = {
@@ -593,7 +594,17 @@ export function ConfigurationScreen() {
                     return (
                       <div key={field.field_name} className="config-field-card">
                         <div className="feature-list-title-row">
-                          <strong>{field.label}</strong>
+                          <div className="config-field-label">
+                            <strong>{field.label}</strong>
+                            <Tooltip
+                              content={field.tooltip}
+                              focusable
+                              ariaLabel={`${field.label} setting help`}
+                              triggerClassName="config-field-tooltip-trigger"
+                            >
+                              <span className="config-field-tooltip-icon" aria-hidden="true">i</span>
+                            </Tooltip>
+                          </div>
                           <Tooltip content={fieldIsGlobal ? "Runtime-global admin setting." : `Underlying config domain: ${field.source_domain}.`}>
                             <span className="panel-meta">{field.source_domain}</span>
                           </Tooltip>
