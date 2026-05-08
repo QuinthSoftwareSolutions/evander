@@ -71,6 +71,11 @@ from agent_sandbox.models import (
     CommunicationDownloadAttachmentRequest,
     CommunicationDownloadAttachmentResponse,
     CommunicationFileArtifact,
+    DownloadInlineMediaRequest,
+    DownloadInlineMediaResponse,
+    InlineMediaRef,
+    ListInlineMediaRequest,
+    ListInlineMediaResponse,
     CommunicationListAttachmentsRequest,
     CommunicationListAttachmentsResponse,
     CommunicationSendMessageWithAttachmentsRequest,
@@ -1301,6 +1306,266 @@ def create_server(context: RuntimeContext) -> FastMCP:
             source_mailbox=request.mailbox_id,
             metadata={
                 "attachment_ref": ref.model_dump(mode="json"),
+            },
+        )
+        return _artifact_to_model(record)
+
+    _INLINE_MEDIA_SOURCE_KINDS = {"pr_feedback", "ado_backlog", "communication"}
+    _INLINE_IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/gif"}
+    _INLINE_MEDIA_SECRET_FIELDS = {
+        "authorization",
+        "token",
+        "access_token",
+        "content",
+        "content_bytes",
+        "content_base64",
+        "data",
+        "bytes",
+    }
+
+    def _normalize_inline_media_source_kind(value: str) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized not in _INLINE_MEDIA_SOURCE_KINDS:
+            raise ToolError("source_kind must be one of: pr_feedback, ado_backlog, communication")
+        return normalized
+
+    def _inline_media_id(raw: dict[str, Any], *, fallback: str) -> str:
+        return str(
+            raw.get("media_id")
+            or raw.get("attachment_id")
+            or raw.get("id")
+            or raw.get("content_id")
+            or raw.get("url")
+            or raw.get("filename")
+            or raw.get("name")
+            or fallback
+        ).strip()
+
+    def _inline_media_refs_from_raw(
+        *,
+        source_kind: str,
+        provider: str,
+        resource_id: str,
+        raw_media: object,
+        comment_id: str | None = None,
+    ) -> list[tuple[InlineMediaRef, dict[str, Any]]]:
+        if raw_media is None:
+            return []
+        raw_items = raw_media if isinstance(raw_media, list) else [raw_media]
+        refs: list[tuple[InlineMediaRef, dict[str, Any]]] = []
+        for index, raw_item in enumerate(raw_items):
+            if isinstance(raw_item, InlineMediaRef):
+                refs.append((raw_item, raw_item.model_dump(mode="json")))
+                continue
+            if hasattr(raw_item, "model_dump"):
+                raw_item = raw_item.model_dump()
+            if not isinstance(raw_item, dict):
+                continue
+            raw_comment_id = raw_item.get("comment_id") or comment_id
+            media_id = _inline_media_id(raw_item, fallback=str(index))
+            filename = str(
+                raw_item.get("filename")
+                or raw_item.get("name")
+                or raw_item.get("title")
+                or f"inline-media-{index}"
+            ).strip()
+            if not media_id or not filename:
+                continue
+            byte_count_raw = raw_item.get("byte_count", raw_item.get("size", raw_item.get("contentSize")))
+            byte_count: int | None = None
+            if byte_count_raw is not None:
+                try:
+                    byte_count = int(byte_count_raw)
+                except (TypeError, ValueError):
+                    byte_count = None
+            mime_type = raw_item.get("mime_type") or raw_item.get("content_type") or raw_item.get("contentType")
+            safe_metadata = {
+                str(key): value
+                for key, value in raw_item.items()
+                if str(key) not in _INLINE_MEDIA_SECRET_FIELDS
+            }
+            ref = InlineMediaRef(
+                source_kind=source_kind,
+                provider=provider,
+                resource_id=resource_id,
+                comment_id=str(raw_comment_id).strip() if raw_comment_id else None,
+                media_id=media_id,
+                filename=filename,
+                mime_type=str(mime_type).strip() if mime_type else None,
+                byte_count=byte_count,
+                url=str(raw_item.get("url") or raw_item.get("download_url") or raw_item.get("web_url") or "").strip() or None,
+                metadata=safe_metadata,
+            )
+            refs.append((ref, raw_item))
+        return refs
+
+    def _inline_media_from_feedback(
+        request: ListInlineMediaRequest,
+        *,
+        tool_name: ToolName = ToolName.LIST_INLINE_MEDIA,
+    ) -> list[tuple[InlineMediaRef, dict[str, Any]]]:
+        session = context.policy.require_tool(request.session_id, tool_name)
+        context.policy.require_communication_file_receive_enabled(session)
+        allowed_streams = {
+            (stream["provider"], stream["repo"], stream["pr_id"])
+            for stream in context.policy.require_pr_feedback_streams(session)
+        }
+        raw_feedback = context.pr_feedback_service.store.read_raw().get("feedback", {})
+        if not isinstance(raw_feedback, dict):
+            return []
+        raw_item = raw_feedback.get(request.resource_id)
+        if not isinstance(raw_item, dict):
+            raise ToolError(f"Unknown PR feedback resource_id: {request.resource_id}")
+        key = (str(raw_item.get("provider") or ""), str(raw_item.get("repo") or ""), str(raw_item.get("pr_id") or ""))
+        if key not in allowed_streams:
+            raise PolicyError("PR feedback stream is not allowlisted for this session")
+        provider = str(raw_item.get("provider") or request.provider).strip().lower()
+        media: list[tuple[InlineMediaRef, dict[str, Any]]] = []
+        media.extend(
+            _inline_media_refs_from_raw(
+                source_kind="pr_feedback",
+                provider=provider,
+                resource_id=request.resource_id,
+                raw_media=raw_item.get("inline_media"),
+                comment_id=str(raw_item.get("comment_id") or "").strip() or None,
+            )
+        )
+        metadata = raw_item.get("metadata") if isinstance(raw_item.get("metadata"), dict) else {}
+        media.extend(
+            _inline_media_refs_from_raw(
+                source_kind="pr_feedback",
+                provider=provider,
+                resource_id=request.resource_id,
+                raw_media=metadata.get("inline_media") or metadata.get("images"),
+                comment_id=str(raw_item.get("comment_id") or "").strip() or None,
+            )
+        )
+        return media
+
+    def _inline_media_from_ado_backlog(
+        request: ListInlineMediaRequest,
+        *,
+        tool_name: ToolName = ToolName.LIST_INLINE_MEDIA,
+    ) -> list[tuple[InlineMediaRef, dict[str, Any]]]:
+        session = context.policy.require_tool(request.session_id, tool_name)
+        context.policy.require_communication_file_receive_enabled(session)
+        issue_service = IssueService(context.provider_config)
+        payload = issue_service.get_remote_backlog_item_by_id(
+            provider=request.provider.strip().lower(),
+            directory_path=session.directory_path or "root",
+            backlog_item_id=request.resource_id,
+            project=request.project,
+            include_comments=True,
+            include_relations=True,
+            include_updates=False,
+        )
+        response = AdoBacklogGetResponse.model_validate(payload)
+        media: list[tuple[InlineMediaRef, dict[str, Any]]] = []
+        media.extend(
+            _inline_media_refs_from_raw(
+                source_kind="ado_backlog",
+                provider=response.provider,
+                resource_id=response.id,
+                raw_media=response.inline_media or response.metadata.get("inline_media"),
+            )
+        )
+        for comment in response.comments:
+            if not isinstance(comment, dict):
+                continue
+            comment_id = str(comment.get("comment_id") or comment.get("id") or "").strip() or None
+            if request.comment_id and comment_id != request.comment_id:
+                continue
+            media.extend(
+                _inline_media_refs_from_raw(
+                    source_kind="ado_backlog",
+                    provider=response.provider,
+                    resource_id=response.id,
+                    raw_media=comment.get("inline_media") or comment.get("images"),
+                    comment_id=comment_id,
+                )
+            )
+        return media
+
+    def _inline_media_from_communication(
+        request: ListInlineMediaRequest,
+        *,
+        tool_name: ToolName = ToolName.LIST_INLINE_MEDIA,
+    ) -> list[tuple[InlineMediaRef, dict[str, Any]]]:
+        list_request = CommunicationListAttachmentsRequest(
+            session_id=request.session_id,
+            provider=request.provider,
+            message_id=request.resource_id,
+            mailbox_id=request.mailbox_id,
+            channel_id=request.channel_id,
+            channel_target=request.channel_target,
+        )
+        attachments = _resolve_communication_attachments(list_request, tool_name=tool_name)
+        pairs: list[tuple[InlineMediaRef, dict[str, Any]]] = []
+        for item in attachments:
+            raw = item.model_dump(mode="json")
+            ref = InlineMediaRef(
+                source_kind="communication",
+                provider=item.provider,
+                resource_id=item.message_id,
+                media_id=item.attachment_id,
+                filename=item.filename,
+                mime_type=item.mime_type,
+                byte_count=item.byte_count,
+                url=str(item.metadata.get("url") or item.metadata.get("download_url") or "").strip() or None,
+                metadata=item.metadata,
+            )
+            pairs.append((ref, raw))
+        return pairs
+
+    def _resolve_inline_media(
+        request: ListInlineMediaRequest,
+        *,
+        tool_name: ToolName = ToolName.LIST_INLINE_MEDIA,
+    ) -> list[tuple[InlineMediaRef, dict[str, Any]]]:
+        source_kind = _normalize_inline_media_source_kind(request.source_kind)
+        if source_kind == "pr_feedback":
+            return _inline_media_from_feedback(request, tool_name=tool_name)
+        if source_kind == "ado_backlog":
+            return _inline_media_from_ado_backlog(request, tool_name=tool_name)
+        return _inline_media_from_communication(request, tool_name=tool_name)
+
+    def _download_inline_media_bytes(ref: InlineMediaRef, raw: dict[str, Any]) -> tuple[bytes, str, str | None]:
+        if raw.get("content_base64"):
+            return base64.b64decode(str(raw["content_base64"])), ref.filename, ref.mime_type
+        data = raw.get("content") or raw.get("content_bytes") or raw.get("bytes")
+        if isinstance(data, bytes):
+            return data, ref.filename, ref.mime_type
+        if isinstance(data, str) and data:
+            if raw.get("encoding") == "base64":
+                return base64.b64decode(data), ref.filename, ref.mime_type
+            return data.encode("utf-8"), ref.filename, ref.mime_type
+        if ref.url:
+            with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+                response = client.get(ref.url)
+                response.raise_for_status()
+                mime_type = response.headers.get("content-type", "").split(";", 1)[0].strip() or ref.mime_type
+                return response.content, ref.filename, mime_type
+        raise ToolError("Inline media content is not available from the configured provider metadata")
+
+    def _stage_inline_media_artifact(
+        request: DownloadInlineMediaRequest,
+        ref: InlineMediaRef,
+        content: bytes,
+        *,
+        filename: str,
+        mime_type: str | None,
+    ) -> CommunicationFileArtifact:
+        record = _communication_artifact_store().stage(
+            provider=ref.provider,
+            session_id=request.session_id,
+            content=content,
+            original_filename=filename,
+            mime_type=mime_type,
+            source_message_id=ref.resource_id,
+            source_attachment_id=ref.media_id,
+            metadata={
+                "source_kind": ref.source_kind,
+                "inline_media_ref": ref.model_dump(mode="json"),
             },
         )
         return _artifact_to_model(record)
@@ -5064,6 +5329,169 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 decision="error",
                 error_class="unexpected_error",
             )
+            raise
+
+
+    @server.tool()
+    def list_inline_media(
+        session_id: str,
+        source_kind: str,
+        provider: str,
+        resource_id: str,
+        comment_id: str | None = None,
+        project: str | None = None,
+        mailbox_id: str | None = None,
+        channel_id: str | None = None,
+        channel_target: str | None = None,
+    ) -> dict[str, Any]:
+        request = ListInlineMediaRequest(
+            session_id=session_id,
+            source_kind=source_kind,
+            provider=provider,
+            resource_id=resource_id,
+            comment_id=comment_id,
+            project=project,
+            mailbox_id=mailbox_id,
+            channel_id=channel_id,
+            channel_target=channel_target,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            media = [ref for ref, _raw in _resolve_inline_media(request)]
+            response = ListInlineMediaResponse(
+                source_kind=_normalize_inline_media_source_kind(source_kind),
+                provider=provider.strip().lower(),
+                resource_id=resource_id,
+                media=media,
+            )
+            result = response.model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.LIST_INLINE_MEDIA,
+                args,
+                {"source_kind": response.source_kind, "provider": response.provider, "resource_id": resource_id, "count": len(media)},
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.LIST_INLINE_MEDIA, args, str(exc))
+            raise
+        except (httpx.HTTPError, ProviderRequestError) as exc:
+            audit_failure(session_id, ToolName.LIST_INLINE_MEDIA, args, str(exc), decision="error", error_class="adapter_http_error")
+            raise
+        except Exception as exc:
+            audit_failure(session_id, ToolName.LIST_INLINE_MEDIA, args, str(exc), decision="error", error_class="unexpected_error")
+            raise
+
+    @server.tool()
+    def download_inline_media(
+        session_id: str,
+        source_kind: str,
+        provider: str,
+        resource_id: str,
+        media_id: str,
+        comment_id: str | None = None,
+        project: str | None = None,
+        mailbox_id: str | None = None,
+        channel_id: str | None = None,
+        channel_target: str | None = None,
+    ) -> dict[str, Any]:
+        request = DownloadInlineMediaRequest(
+            session_id=session_id,
+            source_kind=source_kind,
+            provider=provider,
+            resource_id=resource_id,
+            media_id=media_id,
+            comment_id=comment_id,
+            project=project,
+            mailbox_id=mailbox_id,
+            channel_id=channel_id,
+            channel_target=channel_target,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            list_request = ListInlineMediaRequest(
+                session_id=session_id,
+                source_kind=source_kind,
+                provider=provider,
+                resource_id=resource_id,
+                comment_id=comment_id,
+                project=project,
+                mailbox_id=mailbox_id,
+                channel_id=channel_id,
+                channel_target=channel_target,
+            )
+            matches = _resolve_inline_media(list_request, tool_name=ToolName.DOWNLOAD_INLINE_MEDIA)
+            selected = next((item for item in matches if item[0].media_id == media_id), None)
+            if selected is None:
+                raise ToolError(f"Unknown inline media_id for resource: {media_id}")
+            ref, raw = selected
+            if ref.source_kind == "communication":
+                attachment_request = CommunicationDownloadAttachmentRequest(
+                    session_id=session_id,
+                    provider=provider,
+                    message_id=resource_id,
+                    attachment_id=media_id,
+                    mailbox_id=mailbox_id,
+                    channel_id=channel_id,
+                    channel_target=channel_target,
+                )
+                attachment_ref = CommunicationAttachmentRef(
+                    provider=ref.provider,
+                    message_id=ref.resource_id,
+                    attachment_id=ref.media_id,
+                    filename=ref.filename,
+                    mime_type=ref.mime_type,
+                    byte_count=ref.byte_count,
+                    mailbox_id=mailbox_id,
+                    channel_id=channel_id,
+                    channel_target=channel_target,
+                    metadata=ref.metadata,
+                )
+                content, filename, mime_type = _provider_download_attachment(attachment_request, attachment_ref)
+            else:
+                content, filename, mime_type = _download_inline_media_bytes(ref, raw)
+            normalized_mime = str(mime_type or "").strip().lower()
+            if normalized_mime not in _INLINE_IMAGE_MIME_TYPES:
+                raise PolicyError("Inline media downloads are limited to image/png, image/jpeg, and image/gif")
+            session = context.policy.get_session(session_id)
+            context.policy.require_communication_file_content(
+                session,
+                filename=filename,
+                mime_type=mime_type,
+                byte_count=len(content),
+            )
+            artifact = _stage_inline_media_artifact(
+                request,
+                ref,
+                content,
+                filename=filename,
+                mime_type=mime_type,
+            )
+            response = DownloadInlineMediaResponse(artifact=artifact)
+            result = response.model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.DOWNLOAD_INLINE_MEDIA,
+                {**args, "filename": filename, "mime_type": mime_type, "byte_count": len(content)},
+                {
+                    "source_kind": ref.source_kind,
+                    "provider": ref.provider,
+                    "resource_id": ref.resource_id,
+                    "media_id": ref.media_id,
+                    "artifact_id": artifact.artifact_id,
+                    "byte_count": artifact.byte_count,
+                    "mime_type": artifact.mime_type,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.DOWNLOAD_INLINE_MEDIA, args, str(exc))
+            raise
+        except (httpx.HTTPError, ProviderRequestError) as exc:
+            audit_failure(session_id, ToolName.DOWNLOAD_INLINE_MEDIA, args, str(exc), decision="error", error_class="adapter_http_error")
+            raise
+        except Exception as exc:
+            audit_failure(session_id, ToolName.DOWNLOAD_INLINE_MEDIA, args, str(exc), decision="error", error_class="unexpected_error")
             raise
 
 

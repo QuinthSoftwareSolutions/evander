@@ -12,7 +12,7 @@ from typing import Any, Protocol
 from urllib.parse import unquote
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agent_sandbox.audit import AuditEventType, AuditLogger
 from agent_sandbox.config import GatewayConfig
@@ -40,6 +40,8 @@ class FeedbackEnvelope(BaseModel):
     created_at: datetime
     in_reply_to: str | None = None
     resolved: bool | None = None
+    inline_media: list[dict[str, Any]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True)
