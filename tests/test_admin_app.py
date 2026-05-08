@@ -326,7 +326,14 @@ def test_directory_config_tab_sections_match_expected_groupings() -> None:
     assert ("providers", "container_worker_base_url") in provider_sections["Container worker"]
     assert ("providers", "nuget_azure_pat_env") in provider_sections["NuGet"]
     assert ("providers", "openai_api_key_env") in provider_sections["OpenAI"]
-    assert ("providers", "retell_phonebook") in provider_sections["Retell"]
+    assert set(provider_sections["Retell"]) == {
+        ("providers", "retell_api_base_url"),
+        ("providers", "retell_api_key_env"),
+        ("providers", "retell_from_number"),
+        ("providers", "retell_default_agent_id"),
+        ("providers", "retell_request_timeout_seconds"),
+        ("providers", "retell_phonebook"),
+    }
 
     assert ("issue_setup", "git_root") in issue_setup_sections["Git transport"]
     assert ("issue_setup", "issue_setup_azure_devops_pr_pat_env") in issue_setup_sections[

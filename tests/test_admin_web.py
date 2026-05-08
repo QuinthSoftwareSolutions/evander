@@ -2273,7 +2273,14 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         field["field_name"] for field in container_worker["fields"]
     }
     retell = next(section for section in providers["sections"] if section["title"] == "Retell")
-    assert "retell_phonebook" in {field["field_name"] for field in retell["fields"]}
+    assert {field["field_name"] for field in retell["fields"]} == {
+        "retell_api_base_url",
+        "retell_api_key_env",
+        "retell_from_number",
+        "retell_default_agent_id",
+        "retell_request_timeout_seconds",
+        "retell_phonebook",
+    }
     assert "communications" in payload["tab_snapshots"]
     assert payload["selected_directory"]["path"] == "root"
 
