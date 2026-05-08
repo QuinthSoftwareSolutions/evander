@@ -23,6 +23,11 @@ manager environment or optional repo-root `secrets.env`.
 |---|---|---|
 | `AZURE_DEVOPS_PR_PAT` | `config/gateway.env.example` | `src/agent_sandbox/runtime.py` / `src/agent_sandbox/gateway.py` when PR reply providers use the default `azure_devops_pr_pat_env`. |
 
+Retell phone-call tools also require the configured `retell_api_key_env` value, which defaults to
+`RETELL_API_KEY`, to exist in the host process environment. For systemd deployments, put the actual
+secret value in repo-root `secrets.env` or the service manager environment rather than
+`config/gateway.env`.
+
 ## `config/openai-relay.env.example`
 
 | Parameter | Found in | Consumed by |
@@ -481,6 +486,7 @@ root directory-scoped config and host environment:
 | `AGENT_POST_EXEC_VERIFICATION_PROMPT` | `runtime/directory-config/root/issue-setup.json` | `create_issue_vm(...)` (post-exec resume prompt metadata). |
 | `AGENT_SANDBOX_AZURE_DEVOPS_PR_PAT_ENV` | `runtime/directory-config/root/providers.json` or host shell | `scripts/open_agent_pr.sh`, `scripts/resolve_repo_source.sh`, and `scripts/git_ssh_command_wrapper.sh` (alternate env var name for Azure DevOps PAT). |
 | `AZURE_DEVOPS_PR_PAT` | host shell or `secrets.env` | `scripts/open_agent_pr.sh`, `scripts/resolve_repo_source.sh`, and `scripts/git_ssh_command_wrapper.sh` when Azure DevOps remotes are accessed over HTTPS. |
+| `RETELL_API_KEY` | host shell or `secrets.env` | `src/agent_sandbox/retell_phone.py` / `src/agent_sandbox/gateway.py` when Retell phone-call tools use the default `retell_api_key_env`. |
 | `AGENT_SANDBOX_PR_NOTES_REF` | host shell | `scripts/handle_agent_push.sh` (PR notes ref). |
 | `AGENT_SANDBOX_PR_FIXED_BODY_FILE` | host shell | `scripts/handle_agent_push.sh` (host-wide override that prepends markdown to PR body). |
 | `AGENT_SANDBOX_PR_BODY_MAX_BYTES` | host shell | `scripts/handle_agent_push.sh` (body truncation limit). |
@@ -525,6 +531,7 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `gateway_url` | legacy gateway YAML | `src/agent_sandbox/cli.py` health checks / external endpoint references. |
 | `execution_backend`, `container_worker_base_url`, `container_worker_token_env`, `container_worker_default_image`, `container_worker_job_timeout_seconds`, `container_worker_request_timeout_seconds`, `container_worker_workspace_persistence` | root `providers.json` | `src/agent_sandbox/execution/container_worker_backend.py` and portable `effect:agent:*` container worker routing. |
 | `container_worker_guest_openai_base_url`, `container_worker_guest_gateway_url`, `container_worker_guest_nuget_relay_base_url`, `container_worker_guest_pypi_index_url`, `container_worker_guest_npm_registry_url` | root `providers.json` | Container session bootstrap files under `/home/agent` for Codex, MCP gateway, NuGet restore traffic, and Nexus-backed PyPI/npm restores. |
+| `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds`, `retell_phonebook` | root or directory `providers.json` | `src/agent_sandbox/retell_phone.py` and `src/agent_sandbox/gateway.py` for host-side Retell phone calls and webhook verification. |
 | `redacted_keys` | legacy gateway YAML (optional) | `src/agent_sandbox/gateway.py` request/response redaction in logs. |
 
 ### OpenAI relay keys
@@ -535,6 +542,17 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `openai_api_base_url` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` upstream URL base. |
 | `openai_api_key_env` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` env-var name lookup for API key. |
 | `openai_relay_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` upstream request timeout. |
+
+### Retell phone-call keys
+
+| Key | Found in | Consumed by |
+|---|---|---|
+| `retell_api_base_url` | provider config overlays | `src/agent_sandbox/retell_phone.py` create-call, get-call, and webhook signature configuration. |
+| `retell_api_key_env` | provider config overlays | Host env-var name lookup for the Retell API key; default `RETELL_API_KEY`. |
+| `retell_from_number` | provider config overlays | Outbound Retell caller number used only by the host-side create-call request. |
+| `retell_default_agent_id` | provider config overlays | Default Retell `override_agent_id` when a phonebook contact does not set `agent_id`. |
+| `retell_request_timeout_seconds` | provider config overlays | HTTP timeout in seconds for Retell create-call and get-call requests. |
+| `retell_phonebook` | provider config overlays | Directory-scoped alias map. Each alias contains `display_name`, `phone_number`, and optional `agent_id`. |
 
 ### HTTP target relay keys
 
@@ -641,7 +659,7 @@ Supported directory config domains:
 | Domain file | Purpose | YAML fields allowed |
 |---|---|---|
 | `policy.json` | Session/policy defaults and operator restrictions | `approval_ttl_seconds`, `default_session_ttl_seconds`, Discord/email allowlists, `email_send_enabled`, `pr_reply_require_approval`, `redacted_keys` |
-| `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, HTTP target relay, NuGet, GitHub, Azure DevOps, Teams, container worker |
+| `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, HTTP target relay, NuGet, GitHub, Azure DevOps, Teams, container worker, Retell |
 | `email.json` | Mailbox provider definitions and email provider runtime settings | `email_mailboxes`, `email_provider_timeout_seconds` |
 | `heartbeat.json` | Directory-scoped wake prompt behavior | `host_heartbeat_pr_resume_prompt`, `discord_resume_prompt` |
 | `ado-worker.json` | Azure DevOps backlog worker setup/bootstrap behavior | `ado_area_filters`, `ado_team_filters`, `ado_project_or_solution`, `ado_prewarm_target`, `ado_repo_source`, `create_prs_automatically`, `create_prs_as_draft`, `ado_bootstrap_*`, `ado_mssql_sa_password_env`, frontend bootstrap fields |

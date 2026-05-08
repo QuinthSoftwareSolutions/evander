@@ -167,6 +167,17 @@ def test_create_server_registers_schedule_resume_tool(tmp_path) -> None:
     assert any(tool.name == "list_pull_requests" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "get_pull_request" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "assistant_read_config" for tool in server._tool_manager.list_tools())
+    assert any(tool.name == "make_phone_call" for tool in server._tool_manager.list_tools())
+    assert any(tool.name == "get_phone_call_result" for tool in server._tool_manager.list_tools())
+    make_phone_call_tool = next(
+        tool for tool in server._tool_manager.list_tools() if tool.name == "make_phone_call"
+    )
+    make_phone_call_fields = set(make_phone_call_tool.parameters["properties"])
+    assert {"contact", "prompt", "session_id", "request_id", "metadata"}.issubset(
+        make_phone_call_fields
+    )
+    assert "phone_number" not in make_phone_call_fields
+    assert "to_number" not in make_phone_call_fields
 
 
 def test_request_pr_review_schema_advertises_allowed_provider_values(tmp_path: Path) -> None:
@@ -497,6 +508,186 @@ def test_run_script_enforces_tool_policy_and_script_allowlist(tmp_path: Path) ->
                 "run_script",
                 {"session_id": "session-1", "script_name": "collect-logs", "parameters": []},
             )
+        )
+
+
+def test_make_phone_call_enforces_policy_contact_alias_and_audit_redaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RETELL_API_KEY", "retell-secret")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "POST":
+            return httpx.Response(
+                201,
+                json={
+                    "call_id": "call-1",
+                    "call_status": "registered",
+                    "from_number": "+15550000001",
+                    "to_number": "+15550000002",
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "call_id": "call-1",
+                "call_status": "ended",
+                "to_number": "+15550000002",
+                "transcript": "Agent: done",
+                "metadata": {"customer_phone": "+15550000003", "safe": "ok"},
+                "disconnection_reason": "agent_hangup",
+            },
+        )
+
+    real_client = httpx.Client
+
+    def fake_client(*_args: object, **_kwargs: object) -> httpx.Client:
+        return real_client(transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr("agent_sandbox.retell_phone.httpx.Client", fake_client)
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+            retell_api_base_url="https://retell.test",
+            retell_from_number="+15550000001",
+            retell_default_agent_id="agent-default",
+            retell_phonebook={
+                "ops": {
+                    "display_name": "Ops Duty",
+                    "phone_number": "+15550000002",
+                }
+            },
+        )
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="Tool make_phone_call is not allowed"):
+        _call_tool(
+            server,
+            "make_phone_call",
+            {
+                "session_id": "session-1",
+                "contact": "ops",
+                "prompt": "Ask whether the shipment arrived.",
+            },
+        )
+
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.MAKE_PHONE_CALL],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    with pytest.raises(ToolError, match="Unknown Retell phonebook contact alias"):
+        _call_tool(
+            server,
+            "make_phone_call",
+            {
+                "session_id": "session-1",
+                "contact": "raw-number",
+                "prompt": "Ask whether the shipment arrived.",
+            },
+        )
+
+    registered = _call_tool(
+        server,
+        "make_phone_call",
+        {
+            "session_id": "session-1",
+            "contact": "ops",
+            "prompt": "Ask whether the shipment arrived.",
+            "request_id": "phone-1",
+            "metadata": {"safe": "visible", "phone": "+15550000004"},
+        },
+    )
+    result = _call_tool(
+        server,
+        "get_phone_call_result",
+        {"session_id": "session-1", "request_id": "phone-1"},
+    )
+
+    assert registered == {
+        "request_id": "phone-1",
+        "call_id": "call-1",
+        "contact": "ops",
+        "status": "registered",
+    }
+    assert result["status"] == "ended"
+    assert result["transcript"] == "Agent: done"
+    assert result["metadata"]["metadata"]["customer_phone"] == "<redacted>"
+    create_payload = json.loads(requests[0].content.decode("utf-8"))
+    assert create_payload["to_number"] == "+15550000002"
+    assert create_payload["retell_llm_dynamic_variables"] == {
+        "agent_question": "Ask whether the shipment arrived."
+    }
+    assert "+15550000001" not in json.dumps(result)
+    assert "+15550000002" not in json.dumps(result)
+    audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert "Ask whether the shipment arrived." not in audit_text
+    assert "+15550000001" not in audit_text
+    assert "+15550000002" not in audit_text
+    assert "+15550000004" not in audit_text
+
+
+def test_get_phone_call_result_denies_cross_session_reads(tmp_path: Path) -> None:
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+            retell_api_base_url="https://retell.test",
+            retell_from_number="+15550000001",
+            retell_default_agent_id="agent-default",
+            retell_phonebook={
+                "ops": {
+                    "display_name": "Ops Duty",
+                    "phone_number": "+15550000002",
+                }
+            },
+        )
+    )
+    context.retell_phone_call_store.prepare_call(
+        session_id="session-1",
+        directory_path="root",
+        contact_alias="ops",
+        contact_display_name="Ops Duty",
+        prompt_metadata={"sha256": "prompt-sha", "length": 8},
+        request_id="phone-1",
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-2",
+            allowed_tools=[ToolName.MAKE_PHONE_CALL],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="outside this session scope"):
+        _call_tool(
+            server,
+            "get_phone_call_result",
+            {"session_id": "session-2", "request_id": "phone-1"},
         )
 
 

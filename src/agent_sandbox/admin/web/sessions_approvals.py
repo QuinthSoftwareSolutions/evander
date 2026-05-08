@@ -15,6 +15,12 @@ from agent_sandbox.admin.web.shared import AdminWebAuth, json_error
 from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionSummary, ToolName
 
 
+_TOOL_DESCRIPTIONS: dict[ToolName, str] = {
+    ToolName.MAKE_PHONE_CALL: (
+        "Start and read Retell phone calls to directory-configured contact aliases."
+    ),
+}
+
 
 _SESSION_POLICY_FIELD_KINDS: dict[str, str] = {
     "communication_file_receive_enabled": "bool",
@@ -224,6 +230,7 @@ def session_approval_routes(service: AdminService, _auth: AdminWebAuth) -> list[
                     {
                         "value": tool.value,
                         "label": tool.value.replace("_", " "),
+                        "description": _TOOL_DESCRIPTIONS.get(tool, ""),
                     }
                     for tool in ToolName
                 ],

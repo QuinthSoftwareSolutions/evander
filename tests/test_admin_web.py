@@ -2272,6 +2272,8 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assert "container_worker_base_url" in {
         field["field_name"] for field in container_worker["fields"]
     }
+    retell = next(section for section in providers["sections"] if section["title"] == "Retell")
+    assert "retell_phonebook" in {field["field_name"] for field in retell["fields"]}
     assert "communications" in payload["tab_snapshots"]
     assert payload["selected_directory"]["path"] == "root"
 

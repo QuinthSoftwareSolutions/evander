@@ -319,12 +319,14 @@ def test_directory_config_tab_sections_match_expected_groupings() -> None:
         "HTTP target relay",
         "NuGet",
         "OpenAI",
+        "Retell",
         "State",
     }
     assert ("providers", "execution_backend") in provider_sections["Container worker"]
     assert ("providers", "container_worker_base_url") in provider_sections["Container worker"]
     assert ("providers", "nuget_azure_pat_env") in provider_sections["NuGet"]
     assert ("providers", "openai_api_key_env") in provider_sections["OpenAI"]
+    assert ("providers", "retell_phonebook") in provider_sections["Retell"]
 
     assert ("issue_setup", "git_root") in issue_setup_sections["Git transport"]
     assert ("issue_setup", "issue_setup_azure_devops_pr_pat_env") in issue_setup_sections[

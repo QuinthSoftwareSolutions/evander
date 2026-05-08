@@ -262,6 +262,23 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Name of the host environment variable that holds the upstream OpenAI API key."
     ),
     "openai_relay_timeout_seconds": ("Upstream request timeout in seconds for the OpenAI relay."),
+    "retell_api_base_url": ("Base URL for Retell API requests made by the host gateway."),
+    "retell_api_key_env": (
+        "Name of the host environment variable that holds the Retell API key."
+    ),
+    "retell_from_number": (
+        "Retell-owned outbound caller number used by make_phone_call. Stored host-side only."
+    ),
+    "retell_default_agent_id": (
+        "Default Retell agent id used as override_agent_id unless a phonebook contact sets agent_id."
+    ),
+    "retell_request_timeout_seconds": (
+        "HTTP timeout in seconds for host-side Retell create-call and get-call requests."
+    ),
+    "retell_phonebook": (
+        "Directory-scoped contact aliases for Retell calls. Each alias maps to display_name, "
+        "phone_number, and optional agent_id."
+    ),
     "http_target_relay_timeout_seconds": (
         "Upstream request timeout in seconds for the generic HTTP target relay."
     ),

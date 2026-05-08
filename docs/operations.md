@@ -545,6 +545,72 @@ Example MCP call:
   - Grant `respond_to_agent` only to responder sessions.
   - Keep `directory_path` boundaries narrow so prompt routing cannot cross unrelated teams.
 
+## Host-Side Retell Phone Calls
+
+Use this only when agents should call configured contact aliases. The gateway owns the Retell API
+key, phonebook, API requests, webhook verification, and transcript store. Guests never receive raw
+phone numbers or Retell credentials.
+
+- Gateway tool names:
+  - `make_phone_call`
+  - `get_phone_call_result`
+- Policy gating:
+  - Add `make_phone_call` to the session manifest `allowed_tools`.
+  - `get_phone_call_result` uses the same `make_phone_call` permission and only returns calls owned
+    by the same session and directory path.
+- Required effective provider config:
+  - `retell_api_base_url` (default `https://api.retellai.com`)
+  - `retell_api_key_env` (default `RETELL_API_KEY`)
+  - `retell_from_number`
+  - `retell_default_agent_id` or per-contact `agent_id`
+  - `retell_phonebook`, mapping contact alias to `display_name`, `phone_number`, and optional
+    `agent_id`
+- Required host secret:
+  - Set the configured `retell_api_key_env` value in the gateway host environment. For systemd,
+    repo-root `secrets.env` is already loaded by `agent-sandbox-gateway.service`.
+- Runtime state:
+  - `runtime/retell-phone-calls-store.json`
+- Webhook endpoint:
+  - `POST /retell/webhook`
+  - Verifies `X-Retell-Signature` with the configured Retell API key against the raw request body.
+  - Handles `call_ended`, `call_analyzed`, and `transcript_updated`.
+
+Example directory-scoped `providers.json` overlay:
+
+```json
+{
+  "retell_api_key_env": "RETELL_API_KEY",
+  "retell_from_number": "+15551230000",
+  "retell_default_agent_id": "agent_123",
+  "retell_phonebook": {
+    "ops_duty": {
+      "display_name": "Ops Duty",
+      "phone_number": "+15551230001"
+    }
+  }
+}
+```
+
+Example call sequence from an agent:
+
+```json
+{"session_id":"session-1","contact":"ops_duty","prompt":"Ask whether the deployment window is still approved.","request_id":"deploy-window-1"}
+```
+
+Then poll:
+
+```json
+{"session_id":"session-1","request_id":"deploy-window-1"}
+```
+
+Audit/result behavior:
+
+- Tool audit redacts `prompt` through the existing `redacted_keys` policy.
+- Agent-facing results include contact alias/display name, status, timestamps, disconnection
+  reason, transcript fields, call analysis, and sanitized Retell metadata.
+- Agent-facing responses and audit results do not include `from_number`, `to_number`, configured
+  phonebook numbers, or Retell credentials.
+
 ### Required provider config and environment
 
 - Configure Azure DevOps work-item connectivity in effective provider config:
@@ -1520,6 +1586,8 @@ decision-complete runbook covering:
 - Keep email OAuth tokens in host env files/shell context only (for example,
   `config/gateway.env` consumed by systemd); never embed them in guest images, cloud-init, or
   session manifests.
+- Keep Retell API keys in repo-root `secrets.env`, the service manager environment, or another
+  host-only secret source; provider config should contain only the env-var name.
 - Rotate Discord and email credentials independently from VM lifecycle.
 - Keep Discord bot tokens only in host environment files or shell context; do not write them into
   guest images, cloud-init, or session manifests.

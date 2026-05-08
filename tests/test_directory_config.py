@@ -211,6 +211,45 @@ def test_directory_config_store_validates_delegated_teams_provider_fields(tmp_pa
     assert resolution.validation_errors == []
 
 
+def test_directory_config_store_allows_retell_provider_fields(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    config_store.write(
+        team.path,
+        domain="providers",
+        payload={
+            "retell_api_base_url": "https://retell.test",
+            "retell_api_key_env": "TEAM_RETELL_API_KEY",
+            "retell_from_number": "+15550000001",
+            "retell_default_agent_id": "agent-default",
+            "retell_request_timeout_seconds": 12.5,
+            "retell_phonebook": {
+                "ops": {
+                    "display_name": "Ops Duty",
+                    "phone_number": "+15550000002",
+                }
+            },
+        },
+    )
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert resolution.effective_config["retell_api_base_url"] == "https://retell.test"
+    assert resolution.effective_config["retell_api_key_env"] == "TEAM_RETELL_API_KEY"
+    assert resolution.effective_config["retell_phonebook"]["ops"]["display_name"] == "Ops Duty"
+    assert resolution.validation_errors == []
+
+
 def test_directory_config_store_prunes_legacy_openai_costs_provider_key_on_read(
     tmp_path: Path,
 ) -> None:

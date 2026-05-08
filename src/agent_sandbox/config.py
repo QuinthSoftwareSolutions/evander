@@ -52,6 +52,20 @@ class MailboxConfig(BaseModel):
     folder_allowlist_defaults: list[str] = Field(default_factory=lambda: ["inbox", "drafts"])
 
 
+class RetellPhonebookContact(BaseModel):
+    display_name: str = Field(min_length=1)
+    phone_number: str = Field(min_length=1)
+    agent_id: str | None = None
+
+    @field_validator("display_name", "phone_number", "agent_id", mode="before")
+    @classmethod
+    def normalize_strings(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+
 AssistantCapabilityProfileName = Literal[
     "", "read-only", "operator-limited", "full-admin"
 ]
@@ -163,6 +177,12 @@ class GatewayConfig(BaseModel):
     teams_delegated_credential_store_path: Path = Path(
         "/var/lib/agent-sandbox/teams-delegated-credentials.json"
     )
+    retell_api_base_url: str = "https://api.retellai.com"
+    retell_api_key_env: str = Field(default="RETELL_API_KEY", min_length=1)
+    retell_from_number: str | None = None
+    retell_default_agent_id: str | None = None
+    retell_request_timeout_seconds: float = Field(default=30.0, gt=0)
+    retell_phonebook: dict[str, RetellPhonebookContact] = Field(default_factory=dict)
     discord_inbox_routes: dict[str, list[str]] = Field(default_factory=dict)
     bind_network_cidr: IPvAnyNetwork = "192.168.250.0/24"
     gateway_url: str = "http://192.168.250.1:8000/mcp"
@@ -291,6 +311,7 @@ class GatewayConfig(BaseModel):
         "openai_api_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",
+        "retell_api_base_url",
         mode="before",
     )
     @classmethod
@@ -315,6 +336,7 @@ class GatewayConfig(BaseModel):
         "openai_api_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",
+        "retell_api_base_url",
     )
     @classmethod
     def validate_http_url_fields(cls, value: str | None, info) -> str | None:
@@ -327,6 +349,29 @@ class GatewayConfig(BaseModel):
                 f"{info.field_name} must be a valid http(s) URL, got {value!r}"
             ) from exc
         return value
+
+    @field_validator("retell_from_number", "retell_default_agent_id", mode="before")
+    @classmethod
+    def normalize_retell_optional_strings(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("retell_phonebook", mode="before")
+    @classmethod
+    def normalize_retell_phonebook_aliases(cls, value: object) -> object:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("retell_phonebook must be an object")
+        normalized: dict[str, object] = {}
+        for raw_alias, contact in value.items():
+            alias = str(raw_alias).strip()
+            if not alias:
+                raise ValueError("retell_phonebook aliases must be non-empty")
+            normalized[alias] = contact
+        return normalized
 
     @field_validator("teams_delegated_identity_id", mode="before")
     @classmethod

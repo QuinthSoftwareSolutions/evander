@@ -86,6 +86,8 @@ from agent_sandbox.models import (
     ListUnreadDiscordMessagesRequest,
     ListPullRequestsRequest,
     ListUnreadFeedbackRequest,
+    MakePhoneCallRequest,
+    MakePhoneCallResponse,
     PendingAgentPrompt,
     PostPrCommentRequest,
     PostPrFeedbackReplyRequest,
@@ -94,6 +96,7 @@ from agent_sandbox.models import (
     PromptAgentResponse,
     RunScriptRequest,
     RunScriptResponse,
+    GetPhoneCallResultRequest,
     RequestPrReviewRequest,
     RespondToAgentRequest,
     RespondToAgentResponse,
@@ -105,6 +108,12 @@ from agent_sandbox.models import (
     ToolName,
 )
 from agent_sandbox.policy import PolicyError
+from agent_sandbox.retell_phone import (
+    RetellWebhookSignatureError,
+    retell_api_key_from_config,
+    sanitize_retell_metadata,
+    verify_retell_webhook_signature,
+)
 from agent_sandbox.runtime import RuntimeContext, build_runtime
 from agent_sandbox.services import (
     normalize_pr_feedback_provider,
@@ -4446,6 +4455,162 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
+    def make_phone_call(
+        contact: str,
+        prompt: str,
+        session_id: str | None = None,
+        request_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Start a host-side Retell phone call to a configured contact alias."""
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        safe_metadata = sanitize_retell_metadata(metadata or {})
+        args = {
+            "session_id": resolved_session_id,
+            "contact": contact,
+            "prompt": prompt,
+            "request_id": request_id,
+            "metadata": safe_metadata,
+        }
+        try:
+            request = MakePhoneCallRequest(
+                session_id=resolved_session_id,
+                contact=contact,
+                prompt=prompt,
+                request_id=request_id.strip() if isinstance(request_id, str) else None,
+                metadata=safe_metadata,
+            )
+            args = request.model_dump(mode="json")
+            session = context.policy.require_tool(
+                resolved_session_id,
+                ToolName.MAKE_PHONE_CALL,
+            )
+            record = context.retell_phone_call_service_for_session(
+                resolved_session_id
+            ).make_phone_call(
+                session=session,
+                contact=request.contact,
+                prompt=request.prompt,
+                request_id=request.request_id,
+                metadata=request.metadata,
+            )
+            result = MakePhoneCallResponse(
+                request_id=record.request_id,
+                call_id=record.call_id,
+                contact=record.contact_alias,
+                status=record.status or "registered",
+            ).model_dump(mode="json")
+            audit_success(
+                resolved_session_id,
+                ToolName.MAKE_PHONE_CALL,
+                args,
+                {
+                    "request_id": result["request_id"],
+                    "call_id": result.get("call_id"),
+                    "contact": result["contact"],
+                    "status": result["status"],
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(resolved_session_id, ToolName.MAKE_PHONE_CALL, args, str(exc))
+            raise
+        except (ValueError, ProviderRequestError) as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.MAKE_PHONE_CALL,
+                args,
+                str(exc),
+                decision="error",
+                error_class="validation_error",
+            )
+            raise ToolError(str(exc)) from exc
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.MAKE_PHONE_CALL,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def get_phone_call_result(
+        session_id: str | None = None,
+        request_id: str | None = None,
+        call_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Read a Retell phone call result owned by this session."""
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {
+            "session_id": resolved_session_id,
+            "request_id": request_id,
+            "call_id": call_id,
+        }
+        try:
+            request = GetPhoneCallResultRequest(
+                session_id=resolved_session_id,
+                request_id=request_id,
+                call_id=call_id,
+            )
+            args = request.model_dump(mode="json")
+            session = context.policy.require_tool(
+                resolved_session_id,
+                ToolName.MAKE_PHONE_CALL,
+            )
+            result = context.retell_phone_call_service_for_session(
+                resolved_session_id
+            ).get_phone_call_result(
+                session=session,
+                request_id=request.request_id,
+                call_id=request.call_id,
+            )
+            audit_success(
+                resolved_session_id,
+                ToolName.MAKE_PHONE_CALL,
+                args,
+                {
+                    "request_id": result.get("request_id"),
+                    "call_id": result.get("call_id"),
+                    "contact": result.get("contact"),
+                    "status": result.get("status"),
+                    "has_transcript": bool(result.get("transcript")),
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(resolved_session_id, ToolName.MAKE_PHONE_CALL, args, str(exc))
+            raise
+        except (ValueError, ProviderRequestError) as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.MAKE_PHONE_CALL,
+                args,
+                str(exc),
+                decision="error",
+                error_class="validation_error",
+            )
+            raise ToolError(str(exc)) from exc
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.MAKE_PHONE_CALL,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
     def teams_post_status(
         session_id: str,
         channel_target: str,
@@ -5700,6 +5865,50 @@ def create_app(context: RuntimeContext) -> Starlette:
     server = create_server(context)
     mcp_app = server.streamable_http_app()
 
+    async def retell_webhook(request: Request) -> PlainTextResponse | JSONResponse:
+        raw_body = await request.body()
+        try:
+            payload = json.loads(raw_body.decode("utf-8") or "{}")
+            if not isinstance(payload, dict):
+                raise ValueError("Retell webhook payload must be an object")
+            call = payload.get("call")
+            if call is not None and not isinstance(call, dict):
+                raise ValueError("Retell webhook call payload must be an object")
+            call_id = str((call or {}).get("call_id") or "").strip()
+            record = (
+                context.retell_phone_call_store.get_by_call_id(call_id) if call_id else None
+            )
+            signature_config = (
+                context.provider_config.resolve_for_directory(record.directory_path)
+                if record is not None
+                else context.provider_config.resolve_for_directory("root")
+            )
+            verify_retell_webhook_signature(
+                raw_body=raw_body,
+                signature_header=request.headers.get("x-retell-signature"),
+                api_key=retell_api_key_from_config(signature_config),
+            )
+        except RetellWebhookSignatureError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=401)
+        except json.JSONDecodeError:
+            return JSONResponse(
+                {"error": "Retell webhook payload must be valid JSON"},
+                status_code=400,
+            )
+        except ValueError as exc:
+            message = str(exc)
+            status_code = 503 if "API key is missing" in message else 400
+            return JSONResponse({"error": message}, status_code=status_code)
+
+        event = str(payload.get("event") or "").strip()
+        if event in {"call_ended", "call_analyzed", "transcript_updated"} and call_id and call:
+            context.retell_phone_call_store.update_from_retell_call(
+                call_id,
+                call,
+                event=event,
+            )
+        return PlainTextResponse("", status_code=204)
+
     async def copilot_auth_token(request: Request) -> PlainTextResponse | JSONResponse:
         session_id: str | None = None
         vm_id: str | None = None
@@ -5769,6 +5978,7 @@ def create_app(context: RuntimeContext) -> Starlette:
     app = Starlette(
         debug=False,
         routes=[
+            Route("/retell/webhook", retell_webhook, methods=["POST"]),
             Route("/copilot-auth/token", copilot_auth_token, methods=["GET"]),
             Mount("/", app=mcp_app),
         ],

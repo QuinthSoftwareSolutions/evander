@@ -7,7 +7,7 @@ from starlette.testclient import TestClient
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.app import create_app
-from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionManifest, ToolName
+from agent_sandbox.models import ApprovalRequest, SessionManifest, ToolName
 
 
 def write_config(tmp_path: Path) -> Path:
@@ -205,11 +205,14 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     catalog_tool_values = {item["value"] for item in catalog_payload["tool_options"]}
     assert {
         "add_message_reaction",
+        "make_phone_call",
         "post_pr_inline_comment",
         "teams_meeting_get_events",
         "teams_meeting_speak",
         "teams_meeting_stop",
     }.issubset(catalog_tool_values)
+    tool_options = {item["value"]: item for item in catalog_payload["tool_options"]}
+    assert "Retell phone calls" in tool_options["make_phone_call"]["description"]
     assert list_response.status_code == 200
     assert list_response.json()["items"][0]["session_id"] == "issue-14085-session"
     assert list_response.json()["active_items"][0]["session_id"] == "issue-14085-session"

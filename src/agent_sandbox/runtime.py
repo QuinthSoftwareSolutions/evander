@@ -25,6 +25,7 @@ from agent_sandbox.policy import PolicyEngine
 from agent_sandbox.policy_config import PolicyConfigResolver
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.host_config import HostConfig
+from agent_sandbox.retell_phone import RetellPhoneCallService, RetellPhoneCallStore
 from agent_sandbox.reviews.request_service import (
     ReviewRequestService,
     _build_review_request_service,
@@ -144,6 +145,7 @@ class RuntimeContext:
     wake_store: WakeRequestRepository
     agent_prompt_store: AgentPromptStore
     script_run_request_store: ScriptRunRequestRepository
+    retell_phone_call_store: RetellPhoneCallStore
     teams_meeting_store: TeamsMeetingStore
     teams_meeting_bridge_client: TeamsMeetingBridgeClient
 
@@ -207,6 +209,13 @@ class RuntimeContext:
             return self.review_request_service
         return _build_review_request_service(resolved_config, self.session_repository)
 
+    def retell_phone_call_service_for_session(self, session_id: str) -> RetellPhoneCallService:
+        resolved_config = self.resolve_provider_config_for_session(session_id)
+        return RetellPhoneCallService(
+            config=resolved_config,
+            store=self.retell_phone_call_store,
+        )
+
     def teams_service_for_session(self, session_id: str) -> TeamsService:
         if not isinstance(self.teams_service, (StubTeamsService, GraphTeamsService)):
             return self.teams_service
@@ -260,6 +269,9 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
     script_run_request_store = ScriptRunRequestStore(
         config.runtime_dir / "script-run-requests-store.json"
     )
+    retell_phone_call_store = RetellPhoneCallStore(
+        config.runtime_dir / "retell-phone-calls-store.json"
+    )
     teams_meeting_store = TeamsMeetingStore(config.teams_meeting_store_path)
     teams_meeting_bridge_client = build_teams_meeting_bridge_client(config)
     root_provider_config = provider_config.resolve_for_directory("root")
@@ -306,6 +318,7 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         wake_store=wake_store,
         agent_prompt_store=agent_prompt_store,
         script_run_request_store=script_run_request_store,
+        retell_phone_call_store=retell_phone_call_store,
         teams_meeting_store=teams_meeting_store,
         teams_meeting_bridge_client=teams_meeting_bridge_client,
     )

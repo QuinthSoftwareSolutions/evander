@@ -62,6 +62,7 @@ class ToolName(str, Enum):
     TEAMS_MEETING_SPEAK = "teams_meeting_speak"
     TEAMS_MEETING_STOP = "teams_meeting_stop"
     ADD_MESSAGE_REACTION = "add_message_reaction"
+    MAKE_PHONE_CALL = "make_phone_call"
     EMAIL_LIST_UNREAD = "email_list_unread"
     EMAIL_GET_MESSAGE = "email_get_message"
     EMAIL_CREATE_DRAFT = "email_create_draft"
@@ -1482,6 +1483,56 @@ class SubmitPrReviewResponse(BaseModel):
     review_url: str | None = None
     comment_ids: list[str] = Field(default_factory=list)
     idempotency_key: str | None = None
+
+
+class MakePhoneCallRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    contact: str = Field(min_length=1)
+    prompt: str = Field(min_length=1)
+    request_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("session_id", "contact", "prompt", "request_id", mode="before")
+    @classmethod
+    def normalize_phone_call_strings(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def normalize_phone_call_metadata(cls, value: object) -> object:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("metadata must be an object")
+        return value
+
+
+class MakePhoneCallResponse(BaseModel):
+    request_id: str = Field(min_length=1)
+    call_id: str | None = None
+    contact: str = Field(min_length=1)
+    status: str = Field(min_length=1)
+
+
+class GetPhoneCallResultRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    request_id: str | None = None
+    call_id: str | None = None
+
+    @field_validator("session_id", "request_id", "call_id", mode="before")
+    @classmethod
+    def normalize_phone_call_result_strings(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.request_id and not self.call_id:
+            raise ValueError("request_id or call_id is required")
 
 
 class ScheduleResumeRequest(BaseModel):

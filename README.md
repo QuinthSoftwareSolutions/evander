@@ -815,6 +815,20 @@ Response:
   - grant `respond_to_agent` only to sessions that need to answer prompts;
   - avoid broad cross-team sharing by keeping sessions in narrow `directory_path` scopes.
 
+## Retell Phone Call Tools
+
+- `make_phone_call` starts an outbound Retell call to a configured contact alias. Agents pass
+  `contact` and `prompt`; they never pass raw phone numbers.
+- `get_phone_call_result` reads the call state/transcript by `request_id` or `call_id`.
+- Both tools are gated by the single `make_phone_call` session permission.
+- Configure Retell under directory-scoped `providers.json` with `retell_api_key_env`,
+  `retell_from_number`, `retell_default_agent_id`, and `retell_phonebook`.
+- Put the actual Retell API key in the gateway host environment; the systemd gateway unit already
+  loads repo-root `secrets.env`.
+- The gateway webhook endpoint is `POST /retell/webhook`; it verifies `X-Retell-Signature` and
+  persists supported call updates in `runtime/retell-phone-calls-store.json`.
+- Agent-facing results and audit summaries omit configured phone numbers and Retell credentials.
+
 ## Relay Environment Configuration
 
 - `OPENAI_API_KEY` is required on the host for `agent-sandbox-openai-relay`.
