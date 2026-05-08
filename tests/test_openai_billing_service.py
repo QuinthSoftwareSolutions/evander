@@ -127,6 +127,43 @@ def test_openai_costs_prefer_dedicated_admin_key_env(
     assert "costs-admin-secret" not in status.model_dump_json()
 
 
+def test_openai_costs_accept_string_amount_values(tmp_path: Path, monkeypatch) -> None:
+    config = make_config(tmp_path)
+    monkeypatch.setenv("OPENAI_ADMIN_API_KEY", "costs-admin-secret")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "object": "page",
+                "data": [
+                    {
+                        "object": "bucket",
+                        "results": [
+                            {
+                                "object": "organization.costs.result",
+                                "amount": {"value": "2.25", "currency": "usd"},
+                            },
+                            {
+                                "object": "organization.costs.result",
+                                "amount": {"value": "0.75", "currency": "usd"},
+                            },
+                        ],
+                    },
+                ],
+            },
+            request=request,
+        )
+
+    service = OpenAIBillingService(config, transport=httpx.MockTransport(handler))
+
+    status = service.fetch_status("root")
+
+    assert status.status == "ok"
+    assert status.cost_usd == 3.0
+    assert status.currency == "usd"
+
+
 def test_openai_costs_do_not_call_upstream_when_key_is_missing(
     tmp_path: Path, monkeypatch
 ) -> None:

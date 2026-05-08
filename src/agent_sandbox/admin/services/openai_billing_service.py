@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import time
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Callable, Literal
 
 import httpx
@@ -283,11 +284,27 @@ def _extract_cost_total(payload: object) -> tuple[float, str] | None:
             amount = result.get("amount")
             if not isinstance(amount, dict):
                 return None
-            value = amount.get("value")
-            if not isinstance(value, int | float):
+            value = _amount_value_as_float(amount.get("value"))
+            if value is None:
                 return None
             result_currency = amount.get("currency")
             if isinstance(result_currency, str) and result_currency:
                 currency = result_currency
-            total += float(value)
+            total += value
     return total, currency
+
+
+def _amount_value_as_float(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        try:
+            return float(Decimal(normalized))
+        except InvalidOperation:
+            return None
+    return None
