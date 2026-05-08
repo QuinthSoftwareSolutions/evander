@@ -124,6 +124,9 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "HOST_DOTNET_TOOLS_ARCHIVE" in text
     assert "agent_sandbox_worker_dotnet_ef_version" in text
     assert "HOST_DOTNET_EF_VERSION" in text
+    assert "agent_sandbox_worker_dotnet_restore_support_archive_path" in text
+    assert "HOST_DOTNET_RESTORE_SUPPORT_ARCHIVE" in text
+    assert "Microsoft.Extensions.FileSystemGlobbing" in text
     assert "agent_sandbox_worker_node_toolchain_enabled: true" in text
     assert "agent_sandbox_worker_node_toolchain_local_path" in text
     assert "HOST_NODE_ROOT" in text
@@ -302,18 +305,28 @@ def test_worker_dotnet_toolchain_role_seeds_and_verifies_runner_dotnet_cache() -
     assert "Pack local dotnet toolchain directory" in role
     assert "Install dotnet EF tool into local staging directory" in role
     assert "Pack local dotnet tools directory" in role
+    assert "Restore local dotnet restore support package into staging directory" in role
+    assert "Pack local dotnet restore support packages" in role
     assert "Copy dotnet toolchain archive to worker" in role
     assert "Copy dotnet tools archive to worker" in role
+    assert "Copy dotnet restore support archive to worker" in role
     assert "Unpack dotnet toolchain into worker cache" in role
     assert "Unpack dotnet tools into worker cache" in role
+    assert "Unpack dotnet restore support packages into worker NuGet fallback cache" in role
     assert "Verify worker dotnet toolchain on host cache" in role
-    assert "Verify dotnet and EF tooling are available inside runner container" in role
+    assert "Verify dotnet, EF tooling, and restore support inside runner container" in role
     assert "agent_sandbox_runner_image_name" in role
     assert "/opt/agent-sandbox/toolchains/dotnet" in role
     assert "/opt/agent-sandbox/toolchains/dotnet-tools" in role
+    assert "/opt/agent-sandbox/nuget-cache-ro:ro" in role
     assert "dotnet --info" in role
     assert "dotnet ef --version" in role
     assert "dotnet-ef --version" in role
+    assert "dotnet restore \"$smoke_dir/restore-smoke.csproj\"" in role
+    assert "agent_sandbox_worker_dotnet_restore_support_package_id" in role
+    assert "DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE" in role
+    assert "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE" in role
+    assert "DOTNET_NOLOGO" in role
 
 
 def test_worker_playwright_toolchain_role_seeds_and_verifies_runner_playwright_cache() -> None:

@@ -1172,6 +1172,13 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         "AGENT_SANDBOX_DOTNET_TOOLS_ROOT"
         in bootstrap_by_path["/home/agent/.profile"]["content"]
     )
+    assert "DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE" in bootstrap_by_path[
+        "/home/agent/.profile"
+    ]["content"]
+    assert "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE" in bootstrap_by_path[
+        "/home/agent/.profile"
+    ]["content"]
+    assert "DOTNET_NOLOGO" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "AGENT_SANDBOX_NODE_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "PLAYWRIGHT_BROWSERS_PATH" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "/home/agent/.nuget/NuGet/NuGet.Config" in bootstrap_by_path
@@ -1181,6 +1188,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert "https://www.nuget.org" not in nuget_config
     assert "http://nuget.test:11666/nuget/nuget-org/v3/index.json" in nuget_config
     assert "http://nuget.test:11666/nuget/azure/v3/index.json" in nuget_config
+    assert 'allowInsecureConnections="true"' in nuget_config
     assert backend.written_files[1]["files"][0]["destination_path"].endswith("agent-pr-note")
     assert backend.written_files[2]["files"][0]["content"] == "task"
     clone_config_command = str(backend.started_specs[0].command)

@@ -888,6 +888,11 @@ def _container_profile_content(*, dotnet: bool, playwright: bool) -> str:
                 'export DOTNET_ROOT="/opt/agent-sandbox/toolchains/dotnet"',
                 'export AGENT_SANDBOX_DOTNET_TOOLS_ROOT="/opt/agent-sandbox/toolchains/dotnet-tools"',
                 'export DOTNET_CLI_HOME="$HOME/.dotnet-cli"',
+                'export DOTNET_CLI_TELEMETRY_OPTOUT="1"',
+                'export DOTNET_SKIP_FIRST_TIME_EXPERIENCE="1"',
+                'export DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE="1"',
+                'export DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE="1"',
+                'export DOTNET_NOLOGO="1"',
                 'export PATH="$DOTNET_ROOT:$HOME/.dotnet/tools:$AGENT_SANDBOX_DOTNET_TOOLS_ROOT:$PATH"',
             ]
         )

@@ -78,12 +78,17 @@ role also installs `dotnet-ef` into a separate shared tools cache and verifies
 `dotnet ef --version` in the runner container; set `HOST_DOTNET_EF_VERSION` to pin a different
 version, or set `HOST_DOTNET_TOOLS_ARCHIVE` /
 `agent_sandbox_worker_dotnet_tools_archive_path` to copy a prebuilt dotnet tool-path tarball.
+The same role seeds `Microsoft.Extensions.FileSystemGlobbing` into the worker NuGet fallback cache
+and runs an offline `dotnet restore` smoke test inside the runner. Use
+`HOST_DOTNET_RESTORE_SUPPORT_ARCHIVE` /
+`agent_sandbox_worker_dotnet_restore_support_archive_path` when deploys must use a prebuilt NuGet
+global-packages tarball instead of restoring that support package from the Ansible control machine.
 Node reads `HOST_NODE_ROOT` or `~/.nvm/versions/node/v24.14.0`; set
 `agent_sandbox_worker_node_toolchain_archive_path` to copy a prebuilt tarball instead. By default
 Playwright reads `HOST_PLAYWRIGHT_NODE_MODULES` or the repo frontend `node_modules` plus
 `HOST_PLAYWRIGHT_BROWSERS` or `~/.cache/ms-playwright`; set the Playwright archive variables to copy
-prebuilt tarballs instead. NuGet fallback packages remain operator-controlled and are not baked into
-the image. Secrets are not mounted. When `--container-user` is numeric, the worker daemon writes a per-session
+prebuilt tarballs instead. Project-specific NuGet fallback packages remain operator-controlled and
+are not baked into the image. Secrets are not mounted. When `--container-user` is numeric, the worker daemon writes a per-session
 `/etc/passwd` and `/etc/group` bind mount so tools such as OpenSSH can resolve the active uid
 without the runner image hard-coding a host-specific user id.
 

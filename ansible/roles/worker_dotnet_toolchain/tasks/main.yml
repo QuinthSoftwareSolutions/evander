@@ -9,6 +9,10 @@
       {{
         (agent_sandbox_worker_dotnet_tools_archive_path | default('') | string | trim | length) > 0
       }}
+    agent_sandbox_worker_dotnet_restore_support_uses_archive: >-
+      {{
+        (agent_sandbox_worker_dotnet_restore_support_archive_path | default('') | string | trim | length) > 0
+      }}
 
 - name: Check local dotnet toolchain archive
   ansible.builtin.stat:
@@ -45,6 +49,34 @@
   when:
     - agent_sandbox_worker_dotnet_toolchain_enabled | bool
     - agent_sandbox_worker_dotnet_tools_uses_archive | bool
+
+- name: Check local dotnet restore support archive
+  ansible.builtin.stat:
+    path: "{{ agent_sandbox_worker_dotnet_restore_support_archive_path }}"
+  delegate_to: localhost
+  become: false
+  register: agent_sandbox_worker_dotnet_restore_support_archive_stat
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - agent_sandbox_worker_dotnet_restore_support_uses_archive | bool
+
+- name: Assert local dotnet restore support archive exists
+  ansible.builtin.assert:
+    that:
+      - agent_sandbox_worker_dotnet_restore_support_archive_stat.stat.exists
+      - agent_sandbox_worker_dotnet_restore_support_archive_stat.stat.isreg
+    fail_msg: >-
+      Missing local dotnet restore support archive:
+      {{ agent_sandbox_worker_dotnet_restore_support_archive_path }}. Set
+      agent_sandbox_worker_dotnet_restore_support_archive_path to a tar.gz
+      containing the contents of a NuGet global packages folder, or unset it so
+      the playbook restores {{ agent_sandbox_worker_dotnet_restore_support_package_id }}
+      locally with the SDK from
+      HOST_DOTNET_ROOT/agent_sandbox_worker_dotnet_toolchain_local_path.
+    success_msg: Local dotnet restore support archive is present.
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - agent_sandbox_worker_dotnet_restore_support_uses_archive | bool
 
 - name: Assert local dotnet tools archive exists
   ansible.builtin.assert:
@@ -127,6 +159,34 @@
     - agent_sandbox_worker_dotnet_toolchain_enabled | bool
     - not (agent_sandbox_worker_dotnet_tools_uses_archive | bool)
 
+- name: Check local dotnet launcher for restore support package staging
+  ansible.builtin.stat:
+    path: "{{ agent_sandbox_worker_dotnet_toolchain_local_path }}/dotnet"
+  delegate_to: localhost
+  become: false
+  register: agent_sandbox_worker_dotnet_restore_support_local_binary_stat
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_restore_support_uses_archive | bool)
+
+- name: Assert local dotnet launcher is available for restore support package staging
+  ansible.builtin.assert:
+    that:
+      - agent_sandbox_worker_dotnet_restore_support_local_binary_stat.stat.exists
+      - agent_sandbox_worker_dotnet_restore_support_local_binary_stat.stat.executable
+    fail_msg: >-
+      Missing local dotnet launcher at
+      {{ agent_sandbox_worker_dotnet_toolchain_local_path }}/dotnet. The worker
+      deploy uses that local SDK to restore
+      {{ agent_sandbox_worker_dotnet_restore_support_package_id }}
+      into the shared NuGet fallback cache. Set HOST_DOTNET_ROOT, or provide
+      agent_sandbox_worker_dotnet_restore_support_archive_path/HOST_DOTNET_RESTORE_SUPPORT_ARCHIVE
+      with a prebuilt NuGet global-packages archive.
+    success_msg: Local dotnet launcher can stage restore support packages.
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_restore_support_uses_archive | bool)
+
 - name: Create local temporary dotnet toolchain archive directory
   ansible.builtin.tempfile:
     state: directory
@@ -203,6 +263,9 @@
     DOTNET_CLI_HOME: "{{ agent_sandbox_worker_dotnet_tools_archive_tmp.path }}/cli-home"
     DOTNET_CLI_TELEMETRY_OPTOUT: "1"
     DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+    DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE: "1"
+    DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: "1"
+    DOTNET_NOLOGO: "1"
     NUGET_PACKAGES: "{{ agent_sandbox_worker_dotnet_tools_archive_tmp.path }}/nuget-packages"
   delegate_to: localhost
   become: false
@@ -221,6 +284,9 @@
     DOTNET_CLI_HOME: "{{ agent_sandbox_worker_dotnet_tools_archive_tmp.path }}/cli-home"
     DOTNET_CLI_TELEMETRY_OPTOUT: "1"
     DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+    DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE: "1"
+    DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: "1"
+    DOTNET_NOLOGO: "1"
     PATH: "{{ agent_sandbox_worker_dotnet_toolchain_local_path }}:{{ lookup('env', 'PATH') }}"
   delegate_to: localhost
   become: false
@@ -245,6 +311,118 @@
     - agent_sandbox_worker_dotnet_toolchain_enabled | bool
     - not (agent_sandbox_worker_dotnet_tools_uses_archive | bool)
 
+- name: Create local temporary dotnet restore support archive directory
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: agent-sandbox-dotnet-restore-support
+  delegate_to: localhost
+  become: false
+  register: agent_sandbox_worker_dotnet_restore_support_tmp
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_restore_support_uses_archive | bool)
+
+- name: Create local dotnet restore support staging directories
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_worker_dotnet_restore_support_tmp.path }}/{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - project
+    - cli-home
+    - http-cache
+    - nuget-packages
+  delegate_to: localhost
+  become: false
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_restore_support_uses_archive | bool)
+
+- name: Write local dotnet restore support NuGet config
+  ansible.builtin.copy:
+    dest: "{{ agent_sandbox_worker_dotnet_restore_support_tmp.path }}/NuGet.Config"
+    mode: "0644"
+    content: |
+      <?xml version="1.0" encoding="utf-8"?>
+      <configuration>
+        <config>
+          <add key="globalPackagesFolder" value="{{ agent_sandbox_worker_dotnet_restore_support_tmp.path }}/nuget-packages" />
+          <add key="httpCacheFolder" value="{{ agent_sandbox_worker_dotnet_restore_support_tmp.path }}/http-cache" />
+        </config>
+        <packageSources>
+          <clear />
+          <add key="nuget-org" value="https://api.nuget.org/v3/index.json" />
+        </packageSources>
+      </configuration>
+  delegate_to: localhost
+  become: false
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_restore_support_uses_archive | bool)
+
+- name: Write local dotnet restore support project
+  ansible.builtin.copy:
+    dest: "{{ agent_sandbox_worker_dotnet_restore_support_tmp.path }}/project/restore-support.csproj"
+    mode: "0644"
+    content: |
+      <Project Sdk="Microsoft.NET.Sdk">
+        <PropertyGroup>
+          <TargetFramework>net10.0</TargetFramework>
+        </PropertyGroup>
+        <ItemGroup>
+          <PackageReference Include="{{ agent_sandbox_worker_dotnet_restore_support_package_id }}" Version="{{ agent_sandbox_worker_dotnet_restore_support_package_version }}" />
+        </ItemGroup>
+      </Project>
+  delegate_to: localhost
+  become: false
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_restore_support_uses_archive | bool)
+
+- name: Restore local dotnet restore support package into staging directory
+  ansible.builtin.command:
+    argv:
+      - "{{ agent_sandbox_worker_dotnet_toolchain_local_path }}/dotnet"
+      - restore
+      - "{{ agent_sandbox_worker_dotnet_restore_support_tmp.path }}/project/restore-support.csproj"
+      - --configfile
+      - "{{ agent_sandbox_worker_dotnet_restore_support_tmp.path }}/NuGet.Config"
+      - -p:NuGetAudit=false
+      - -v
+      - minimal
+  environment:
+    DOTNET_ROOT: "{{ agent_sandbox_worker_dotnet_toolchain_local_path }}"
+    DOTNET_CLI_HOME: "{{ agent_sandbox_worker_dotnet_restore_support_tmp.path }}/cli-home"
+    DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+    DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+    DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE: "1"
+    DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: "1"
+    DOTNET_NOLOGO: "1"
+    NUGET_PACKAGES: "{{ agent_sandbox_worker_dotnet_restore_support_tmp.path }}/nuget-packages"
+    NUGET_HTTP_CACHE_PATH: "{{ agent_sandbox_worker_dotnet_restore_support_tmp.path }}/http-cache"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_restore_support_uses_archive | bool)
+
+- name: Pack local dotnet restore support packages
+  ansible.builtin.command:
+    argv:
+      - tar
+      - -C
+      - "{{ agent_sandbox_worker_dotnet_restore_support_tmp.path }}/nuget-packages"
+      - -czf
+      - "{{ agent_sandbox_worker_dotnet_restore_support_tmp.path }}/dotnet-restore-support.tar.gz"
+      - .
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_restore_support_uses_archive | bool)
+
 - name: Resolve dotnet toolchain archive to copy
   ansible.builtin.set_fact:
     agent_sandbox_worker_dotnet_toolchain_archive_to_copy: >-
@@ -258,6 +436,12 @@
         agent_sandbox_worker_dotnet_tools_archive_path
         if (agent_sandbox_worker_dotnet_tools_uses_archive | bool)
         else agent_sandbox_worker_dotnet_tools_archive_tmp.path ~ '/dotnet-tools.tar.gz'
+      }}
+    agent_sandbox_worker_dotnet_restore_support_archive_to_copy: >-
+      {{
+        agent_sandbox_worker_dotnet_restore_support_archive_path
+        if (agent_sandbox_worker_dotnet_restore_support_uses_archive | bool)
+        else agent_sandbox_worker_dotnet_restore_support_tmp.path ~ '/dotnet-restore-support.tar.gz'
       }}
   when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
 
@@ -274,6 +458,15 @@
   ansible.builtin.copy:
     src: "{{ agent_sandbox_worker_dotnet_tools_archive_to_copy }}"
     dest: "{{ agent_sandbox_worker_dotnet_tools_remote_archive_path }}"
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0640"
+  when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
+
+- name: Copy dotnet restore support archive to worker
+  ansible.builtin.copy:
+    src: "{{ agent_sandbox_worker_dotnet_restore_support_archive_to_copy }}"
+    dest: "{{ agent_sandbox_worker_dotnet_restore_support_remote_archive_path }}"
     owner: "{{ agent_sandbox_run_user }}"
     group: "{{ agent_sandbox_run_user }}"
     mode: "0640"
@@ -327,18 +520,31 @@
     group: "{{ agent_sandbox_run_user }}"
   when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
 
+- name: Unpack dotnet restore support packages into worker NuGet fallback cache
+  ansible.builtin.unarchive:
+    src: "{{ agent_sandbox_worker_dotnet_restore_support_remote_archive_path }}"
+    dest: "{{ agent_sandbox_worker_nuget_fallback_cache_path }}"
+    remote_src: true
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+  when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
+
 - name: Verify worker dotnet toolchain on host cache
   ansible.builtin.command:
     argv:
       - bash
       - -lc
-      - >-
+      - |
+        set -euo pipefail
         export DOTNET_ROOT="{{ agent_sandbox_worker_dotnet_cache_path }}";
         dotnet_cli_home="$(mktemp -d)";
         trap 'rm -rf "$dotnet_cli_home"' EXIT;
         export DOTNET_CLI_HOME="$dotnet_cli_home";
         export DOTNET_CLI_TELEMETRY_OPTOUT=1;
         export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1;
+        export DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE=1;
+        export DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=1;
+        export DOTNET_NOLOGO=1;
         export PATH="$DOTNET_ROOT:{{ agent_sandbox_worker_dotnet_tools_cache_path }}:$PATH";
         dotnet --info;
         dotnet ef --version;
@@ -346,7 +552,7 @@
   changed_when: false
   when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
 
-- name: Verify dotnet and EF tooling are available inside runner container
+- name: Verify dotnet, EF tooling, and restore support inside runner container
   ansible.builtin.command:
     argv:
       - docker
@@ -358,20 +564,57 @@
       - "{{ agent_sandbox_worker_dotnet_cache_path }}:/opt/agent-sandbox/toolchains/dotnet:ro"
       - -v
       - "{{ agent_sandbox_worker_dotnet_tools_cache_path }}:/opt/agent-sandbox/toolchains/dotnet-tools:ro"
+      - -v
+      - "{{ agent_sandbox_worker_nuget_fallback_cache_path }}:/opt/agent-sandbox/nuget-cache-ro:ro"
       - "{{ agent_sandbox_runner_image_name }}"
       - bash
       - -lc
-      - >-
+      - |
+        set -euo pipefail
         export DOTNET_ROOT="/opt/agent-sandbox/toolchains/dotnet";
         dotnet_cli_home="$(mktemp -d)";
-        trap 'rm -rf "$dotnet_cli_home"' EXIT;
+        smoke_dir="$(mktemp -d)";
+        trap 'rm -rf "$dotnet_cli_home" "$smoke_dir"' EXIT;
         export DOTNET_CLI_HOME="$dotnet_cli_home";
         export DOTNET_CLI_TELEMETRY_OPTOUT=1;
         export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1;
+        export DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE=1;
+        export DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=1;
+        export DOTNET_NOLOGO=1;
+        export NUGET_PACKAGES="$smoke_dir/packages-local";
+        export NUGET_HTTP_CACHE_PATH="$smoke_dir/http-cache";
         export PATH="$DOTNET_ROOT:/opt/agent-sandbox/toolchains/dotnet-tools:$PATH";
+        mkdir -p "$smoke_dir/packages-local" "$smoke_dir/http-cache";
+        cat > "$smoke_dir/NuGet.Config" <<'XML'
+        <?xml version="1.0" encoding="utf-8"?>
+        <configuration>
+          <packageSources>
+            <clear />
+          </packageSources>
+          <fallbackPackageFolders>
+            <add key="shared-readonly" value="/opt/agent-sandbox/nuget-cache-ro" />
+          </fallbackPackageFolders>
+        </configuration>
+        XML
+        cat > "$smoke_dir/restore-smoke.csproj" <<'XML'
+        <Project Sdk="Microsoft.NET.Sdk">
+          <PropertyGroup>
+            <TargetFramework>net10.0</TargetFramework>
+          </PropertyGroup>
+          <ItemGroup>
+            <PackageReference Include="{{ agent_sandbox_worker_dotnet_restore_support_package_id }}" Version="{{ agent_sandbox_worker_dotnet_restore_support_package_version }}" />
+          </ItemGroup>
+        </Project>
+        XML
         dotnet --info;
         dotnet ef --version;
-        dotnet-ef --version
+        dotnet-ef --version;
+        dotnet restore "$smoke_dir/restore-smoke.csproj" \
+          --configfile "$smoke_dir/NuGet.Config" \
+          --packages "$smoke_dir/packages-local" \
+          --no-cache \
+          -p:NuGetAudit=false \
+          -v minimal
   changed_when: false
   when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
 
@@ -398,3 +641,15 @@
     - agent_sandbox_worker_dotnet_toolchain_enabled | bool
     - not (agent_sandbox_worker_dotnet_tools_uses_archive | bool)
     - agent_sandbox_worker_dotnet_tools_archive_tmp.path is defined
+
+- name: Remove temporary local dotnet restore support archive directory
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_worker_dotnet_restore_support_tmp.path }}"
+    state: absent
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_restore_support_uses_archive | bool)
+    - agent_sandbox_worker_dotnet_restore_support_tmp.path is defined
