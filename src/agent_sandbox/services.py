@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Iterator, Literal, Protocol
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import quote, unquote, urlparse, urlunparse
 
 import httpx
 from agent_sandbox.models import (
@@ -146,6 +146,67 @@ def _sanitize_attachment_metadata(raw: Any) -> dict[str, Any]:
     return {key: value for key, value in raw.items() if key not in _ATTACHMENT_SECRET_KEYS}
 
 
+def _teams_attachment_id(item: dict[str, Any]) -> str:
+    return str(
+        item.get("attachment_id")
+        or item.get("id")
+        or item.get("hosted_content_id")
+        or item.get("temporaryId")
+        or item.get("@microsoft.graph.temporaryId")
+        or ""
+    ).strip()
+
+
+def _teams_hosted_content_id_from_url(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    parsed = urlparse(text)
+    path = parsed.path or text
+    parts = [unquote(part) for part in path.split("/") if part and part != ".."]
+    for index, part in enumerate(parts):
+        if part.lower() == "hostedcontents" and index + 1 < len(parts):
+            hosted_content_id = parts[index + 1].strip()
+            return hosted_content_id or None
+    return None
+
+
+def _teams_content_type_extension(value: Any) -> str:
+    content_type = str(value or "").split(";", 1)[0].strip().lower()
+    if not content_type:
+        return ""
+    extension = mimetypes.guess_extension(content_type) or ""
+    return ".jpg" if extension == ".jpe" else extension
+
+
+def _teams_hosted_content_filename(item: dict[str, Any]) -> str:
+    existing = str(item.get("filename") or item.get("name") or "").strip()
+    if existing:
+        return existing
+    hosted_content_id = _teams_attachment_id(item) or "hosted-content"
+    extension = _teams_content_type_extension(item.get("contentType") or item.get("content_type"))
+    return f"hosted-content-{hosted_content_id}{extension}"
+
+
+def _teams_hosted_content_attachment(raw: Any) -> dict[str, Any]:
+    item = _sanitize_attachment_metadata(raw)
+    if not item:
+        return {}
+    content_url = item.get("contentUrl") or item.get("content_url")
+    hosted_content_id = _teams_hosted_content_id_from_url(content_url) or _teams_attachment_id(item)
+    if hosted_content_id:
+        original_id = str(item.get("id") or "").strip()
+        if original_id and original_id != hosted_content_id:
+            item.setdefault("graph_attachment_id", original_id)
+        item["id"] = hosted_content_id
+        item.setdefault("attachment_id", hosted_content_id)
+        item.setdefault("hosted_content_id", hosted_content_id)
+    item["attachment_kind"] = "hosted_content"
+    item.setdefault("name", _teams_hosted_content_filename(item))
+    item.setdefault("filename", item["name"])
+    return item
+
+
 def _sanitize_message_payload_attachments(raw: Any) -> Any:
     if not isinstance(raw, dict):
         return raw
@@ -177,14 +238,15 @@ def _teams_payload_attachments(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(raw, dict):
             continue
         item = _sanitize_attachment_metadata(raw)
-        item.setdefault("attachment_kind", "graph_attachment")
+        if _teams_hosted_content_id_from_url(item.get("contentUrl") or item.get("content_url")):
+            item = _teams_hosted_content_attachment(item)
+        else:
+            item.setdefault("attachment_kind", "graph_attachment")
         attachments.append(item)
     for raw in payload.get("hostedContents") or []:
         if not isinstance(raw, dict):
             continue
-        item = _sanitize_attachment_metadata(raw)
-        item.setdefault("attachment_kind", "hosted_content")
-        item.setdefault("name", item.get("id") or item.get("temporaryId") or "hosted-content")
+        item = _teams_hosted_content_attachment(raw)
         attachments.append(item)
     return attachments
 
@@ -211,6 +273,50 @@ def _artifact_is_inline_teams_image(content_type: str) -> bool:
         "image/gif",
         "image/webp",
     }
+
+
+def _quote_teams_reference_content_url(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    parsed = urlparse(text)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return None
+    return urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            quote(unquote(parsed.path), safe="/:@"),
+            quote(unquote(parsed.params), safe="=;&:@"),
+            quote(unquote(parsed.query), safe="=&?/:@%+,$;()-_.*!~'"),
+            quote(unquote(parsed.fragment), safe="=&?/:@%+,$;()-_.*!~'"),
+        )
+    )
+
+
+def _artifact_teams_reference_content_url(artifact: dict[str, Any]) -> str | None:
+    candidates: list[Any] = [
+        artifact.get("contentUrl"),
+        artifact.get("content_url"),
+    ]
+    metadata = artifact.get("metadata")
+    if isinstance(metadata, dict):
+        candidates.extend([metadata.get("contentUrl"), metadata.get("content_url")])
+        attachment_ref = metadata.get("attachment_ref")
+        if isinstance(attachment_ref, dict):
+            candidates.extend(
+                [attachment_ref.get("contentUrl"), attachment_ref.get("content_url")]
+            )
+            ref_metadata = attachment_ref.get("metadata")
+            if isinstance(ref_metadata, dict):
+                candidates.extend(
+                    [ref_metadata.get("contentUrl"), ref_metadata.get("content_url")]
+                )
+    for candidate in candidates:
+        normalized = _quote_teams_reference_content_url(candidate)
+        if normalized:
+            return normalized
+    return None
 
 
 def _artifact_bytes(artifact: dict[str, Any]) -> bytes:
@@ -1682,7 +1788,10 @@ class GraphTeamsService:
     def list_attachments(
         self, message_id: str, *, channel_target: str | None = None
     ) -> list[dict[str, Any]]:
-        record, _ = self._find_message_record(message_id, channel_target=channel_target)
+        record, target = self._find_message_record(message_id, channel_target=channel_target)
+        return self._list_attachments_for_record(record, target, include_remote_hosted=True)
+
+    def _stored_attachment_candidates(self, record: TeamsMessageEnvelope) -> list[dict[str, Any]]:
         raw_attachments = record.metadata.get("attachments")
         if raw_attachments is None and isinstance(record.metadata.get("message"), dict):
             raw_attachments = _teams_payload_attachments(record.metadata["message"])
@@ -1691,6 +1800,85 @@ class GraphTeamsService:
             for item in raw_attachments or []
             if isinstance(item, dict)
         ]
+
+    def _record_has_hosted_content_hint(self, record: TeamsMessageEnvelope) -> bool:
+        values = [record.content]
+        raw_message = record.metadata.get("message")
+        if isinstance(raw_message, dict):
+            body = raw_message.get("body")
+            if isinstance(body, dict):
+                values.append(str(body.get("content") or ""))
+            values.append(str(raw_message.get("content") or ""))
+        for attachment in self._stored_attachment_candidates(record):
+            values.append(str(attachment.get("contentUrl") or attachment.get("content_url") or ""))
+        return "hostedcontents/" in " ".join(values).lower()
+
+    def _merge_attachment_lists(
+        self,
+        stored_attachments: list[dict[str, Any]],
+        hosted_attachments: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        indexes: dict[str, int] = {}
+        for attachment in [*stored_attachments, *hosted_attachments]:
+            attachment_id = _teams_attachment_id(attachment)
+            if attachment_id and attachment_id in indexes:
+                existing = dict(merged[indexes[attachment_id]])
+                for key, value in attachment.items():
+                    if existing.get(key) in (None, "") and value not in (None, ""):
+                        existing[key] = value
+                merged[indexes[attachment_id]] = existing
+                continue
+            if attachment_id:
+                indexes[attachment_id] = len(merged)
+            merged.append(attachment)
+        return merged
+
+    def _list_hosted_content_attachments(
+        self,
+        record: TeamsMessageEnvelope,
+        target: TeamsTarget,
+    ) -> list[dict[str, Any]]:
+        url = (
+            f"{self._teams_message_url(target, record.message_id, thread_id=record.thread_id)}"
+            "/hostedContents"
+        )
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = self._request_with_retries(client, "GET", url)
+        payload = response.json()
+        return [
+            _teams_hosted_content_attachment(item)
+            for item in payload.get("value", [])
+            if isinstance(item, dict)
+        ]
+
+    def _cache_record_attachments(
+        self,
+        record: TeamsMessageEnvelope,
+        attachments: list[dict[str, Any]],
+    ) -> TeamsMessageEnvelope:
+        metadata = dict(record.metadata)
+        metadata["attachments"] = attachments
+        updated = record.model_copy(update={"metadata": metadata})
+        self.message_store.put(updated.cursor, updated)
+        return updated
+
+    def _list_attachments_for_record(
+        self,
+        record: TeamsMessageEnvelope,
+        target: TeamsTarget,
+        *,
+        include_remote_hosted: bool,
+    ) -> list[dict[str, Any]]:
+        stored_attachments = self._stored_attachment_candidates(record)
+        if not include_remote_hosted or not self._record_has_hosted_content_hint(record):
+            return stored_attachments
+        hosted_attachments = self._list_hosted_content_attachments(record, target)
+        if not hosted_attachments:
+            return stored_attachments
+        merged = self._merge_attachment_lists(stored_attachments, hosted_attachments)
+        self._cache_record_attachments(record, merged)
+        return merged
 
     def _teams_message_url(
         self, target: TeamsTarget, message_id: str, *, thread_id: str | None = None
@@ -1712,24 +1900,48 @@ class GraphTeamsService:
         self, message_id: str, attachment_id: str, *, channel_target: str | None = None
     ) -> dict[str, Any]:
         record, target = self._find_message_record(message_id, channel_target=channel_target)
+        attachments = self._list_attachments_for_record(
+            record,
+            target,
+            include_remote_hosted=False,
+        )
         attachment = next(
             (
                 item
-                for item in self.list_attachments(message_id, channel_target=target.normalized)
-                if str(item.get("id") or item.get("attachment_id") or "") == attachment_id
+                for item in attachments
+                if _teams_attachment_id(item) == attachment_id
             ),
             None,
         )
+        if attachment is None and self._record_has_hosted_content_hint(record):
+            attachments = self._list_attachments_for_record(
+                record,
+                target,
+                include_remote_hosted=True,
+            )
+            attachment = next(
+                (
+                    item
+                    for item in attachments
+                    if _teams_attachment_id(item) == attachment_id
+                ),
+                None,
+            )
         if attachment is None:
             raise ValueError(f"Unknown Teams attachment: {attachment_id}")
 
         content_url = str(
             attachment.get("contentUrl") or attachment.get("content_url") or ""
         ).strip()
-        if attachment.get("attachment_kind") == "hosted_content" or not content_url:
+        hosted_content_id = str(attachment.get("hosted_content_id") or attachment_id).strip()
+        if (
+            attachment.get("attachment_kind") == "hosted_content"
+            or _teams_hosted_content_id_from_url(content_url)
+            or not content_url
+        ):
             url = (
                 f"{self._teams_message_url(target, record.message_id, thread_id=record.thread_id)}"
-                f"/hostedContents/{quote(attachment_id, safe='')}/$value"
+                f"/hostedContents/{quote(hosted_content_id, safe='')}/$value"
             )
         else:
             url = content_url
@@ -1740,9 +1952,12 @@ class GraphTeamsService:
                 else self._download_attachment_content_url(client, url)
             )
             content_type = response.headers.get("content-type") or attachment.get("contentType")
+        filename = str(attachment.get("name") or attachment.get("filename") or attachment_id)
+        if attachment.get("attachment_kind") == "hosted_content" and not Path(filename).suffix:
+            filename = f"{filename}{_teams_content_type_extension(content_type)}"
         return {
             **attachment,
-            "filename": attachment.get("name") or attachment.get("filename") or attachment_id,
+            "filename": filename,
             "mime_type": content_type,
             "content": response.content,
         }
@@ -1770,29 +1985,48 @@ class GraphTeamsService:
         hosted_contents: list[dict[str, Any]] = []
         attachments: list[dict[str, Any]] = []
         inline_images: list[tuple[str, str]] = []
+        attachment_references: list[str] = []
         for index, artifact in enumerate(artifacts):
             temporary_id = str(index + 1)
             filename = _artifact_filename(artifact, index=index)
             content_type = _artifact_content_type(artifact, filename)
-            hosted_content_url = f"../hostedContents/{temporary_id}/$value"
-            hosted_contents.append(
-                {
-                    "@microsoft.graph.temporaryId": temporary_id,
-                    "contentBytes": base64.b64encode(_artifact_bytes(artifact)).decode("ascii"),
-                    "contentType": content_type,
-                }
-            )
+            if _artifact_is_inline_teams_image(content_type):
+                hosted_content_url = f"../hostedContents/{temporary_id}/$value"
+                hosted_contents.append(
+                    {
+                        "@microsoft.graph.temporaryId": temporary_id,
+                        "contentBytes": base64.b64encode(_artifact_bytes(artifact)).decode(
+                            "ascii"
+                        ),
+                        "contentType": content_type,
+                    }
+                )
+                inline_images.append((filename, hosted_content_url))
+                continue
+
+            reference_content_url = _artifact_teams_reference_content_url(artifact)
+            if not reference_content_url:
+                raise ValueError(
+                    "Teams file attachments require a SharePoint/OneDrive contentUrl; "
+                    "staged bytes can only be sent as inline image hosted content."
+                )
             attachments.append(
                 {
                     "id": temporary_id,
                     "name": filename,
                     "contentType": "reference",
-                    "contentUrl": hosted_content_url,
+                    "contentUrl": reference_content_url,
                 }
             )
-            if _artifact_is_inline_teams_image(content_type):
-                inline_images.append((filename, hosted_content_url))
+            attachment_references.append(temporary_id)
+
         body_html = _teams_message_to_html(message)
+        for attachment_id in attachment_references:
+            body_html += (
+                '<p><attachment id="'
+                f'{html.escape(attachment_id, quote=True)}'
+                '"></attachment></p>'
+            )
         for filename, hosted_content_url in inline_images:
             body_html += (
                 '<p><img src="'
@@ -1801,11 +2035,14 @@ class GraphTeamsService:
                 f'{html.escape(filename, quote=True)}'
                 '"></p>'
             )
-        return {
+        payload: dict[str, Any] = {
             "body": {"content": body_html, "contentType": "html"},
-            "attachments": attachments,
-            "hostedContents": hosted_contents,
         }
+        if attachments:
+            payload["attachments"] = attachments
+        if hosted_contents:
+            payload["hostedContents"] = hosted_contents
+        return payload
 
     def post_file(
         self,

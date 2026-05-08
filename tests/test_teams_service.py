@@ -969,7 +969,10 @@ def test_graph_teams_service_preserves_attachment_metadata_and_downloads_hosted_
                         {
                             "id": "msg-1",
                             "createdDateTime": "2026-03-30T11:00:00Z",
-                            "body": {"content": "hello", "contentType": "text"},
+                            "body": {
+                                "content": '<p>hello <img src="../hostedContents/hosted-1/$value"></p>',
+                                "contentType": "html",
+                            },
                             "from": {"user": {"id": "user-1"}},
                             "attachments": [
                                 {
@@ -978,12 +981,12 @@ def test_graph_teams_service_preserves_attachment_metadata_and_downloads_hosted_
                                     "contentType": "reference",
                                     "contentUrl": "https://graph.microsoft.com/download/file-1",
                                     "contentBytes": "must-not-store",
-                                }
-                            ],
-                            "hostedContents": [
+                                },
                                 {
-                                    "id": "hosted-1",
+                                    "id": "graph-hosted-1",
+                                    "name": "inline.png",
                                     "contentType": "image/png",
+                                    "contentUrl": "../hostedContents/hosted-1/$value",
                                     "contentBytes": "must-not-store",
                                 }
                             ],
@@ -1018,12 +1021,98 @@ def test_graph_teams_service_preserves_attachment_metadata_and_downloads_hosted_
     attachments = messages[0].metadata["attachments"]
     assert [item["id"] for item in attachments] == ["file-1", "hosted-1"]
     assert "contentBytes" not in attachments[0]
+    assert "contentBytes" not in attachments[1]
+    assert attachments[1]["attachment_kind"] == "hosted_content"
+    assert attachments[1]["graph_attachment_id"] == "graph-hosted-1"
     assert "contentBytes" not in messages[0].metadata["message"]["attachments"][0]
     downloaded = service.download_attachment(
         "msg-1", "hosted-1", channel_target="team-a/channel-1"
     )
     assert downloaded["content"] == b"png-bytes"
     assert downloaded["mime_type"] == "image/png"
+    assert downloaded["filename"] == "inline.png"
+
+
+def test_graph_teams_service_lists_hosted_content_on_demand_for_inline_images(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/teams/team-a/channels/channel-1/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-1",
+                            "createdDateTime": "2026-03-30T11:00:00Z",
+                            "body": {
+                                "content": '<p>inline <img src="../hostedContents/hosted-1/$value"></p>',
+                                "contentType": "html",
+                            },
+                            "from": {"user": {"id": "user-1"}},
+                            "attachments": [],
+                        }
+                    ]
+                },
+                request=request,
+            )
+        if request.url.path.endswith("/messages/msg-1/hostedContents"):
+            return httpx.Response(
+                200,
+                json={"value": [{"id": "hosted-1", "contentType": "image/png"}]},
+                request=request,
+            )
+        if request.url.path.endswith("/messages/msg-1/hostedContents/hosted-1/$value"):
+            return httpx.Response(
+                200,
+                content=b"png-bytes",
+                headers={"content-type": "image/png"},
+                request=request,
+            )
+        raise AssertionError(f"Unexpected URL: {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    messages = service.get_messages()
+
+    assert messages[0].metadata["attachments"] == []
+    attachments = service.list_attachments("msg-1", channel_target="team-a/channel-1")
+    assert attachments == [
+        {
+            "id": "hosted-1",
+            "attachment_id": "hosted-1",
+            "hosted_content_id": "hosted-1",
+            "contentType": "image/png",
+            "attachment_kind": "hosted_content",
+            "name": "hosted-content-hosted-1.png",
+            "filename": "hosted-content-hosted-1.png",
+        }
+    ]
+    downloaded = service.download_attachment(
+        "msg-1", "hosted-1", channel_target="team-a/channel-1"
+    )
+    assert downloaded["content"] == b"png-bytes"
+    assert downloaded["mime_type"] == "image/png"
+    assert downloaded["filename"] == "hosted-content-hosted-1.png"
+    assert [request.url.path for request in requests] == [
+        "/v1.0/teams/team-a/channels/channel-1/messages",
+        "/v1.0/teams/team-a/channels/channel-1/messages/msg-1/hostedContents",
+        "/v1.0/teams/team-a/channels/channel-1/messages/msg-1/hostedContents/hosted-1/$value",
+    ]
 
 
 def test_graph_teams_attachment_download_does_not_send_token_to_external_content_url(
@@ -1250,13 +1339,11 @@ def test_graph_teams_attachment_listing_enforces_channel_allowlist(tmp_path: Pat
         service.list_attachments("msg-1", channel_target="team-a/channel-2")
 
 
-def test_graph_teams_post_file_forms_hosted_content_message_request(
+def test_graph_teams_post_file_forms_share_link_reference_request(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     requests: list[httpx.Request] = []
-    artifact_path = tmp_path / "upload.txt"
-    artifact_path.write_text("upload-body", encoding="utf-8")
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
@@ -1265,22 +1352,18 @@ def test_graph_teams_post_file_forms_hosted_content_message_request(
         )
         payload = json.loads(request.read())
         assert payload["body"]["contentType"] == "html"
-        assert payload["body"]["content"] == "<p>file incoming</p>"
+        assert payload["body"]["content"] == (
+            '<p>file incoming</p><p><attachment id="1"></attachment></p>'
+        )
         assert payload["attachments"] == [
             {
                 "id": "1",
                 "name": "upload.txt",
                 "contentType": "reference",
-                "contentUrl": "../hostedContents/1/$value",
+                "contentUrl": "https://contoso.sharepoint.com/sites/dev/Shared%20Documents/upload.txt",
             }
         ]
-        assert payload["hostedContents"] == [
-            {
-                "@microsoft.graph.temporaryId": "1",
-                "contentBytes": "dXBsb2FkLWJvZHk=",
-                "contentType": "text/plain",
-            }
-        ]
+        assert "hostedContents" not in payload
         return httpx.Response(
             200,
             json={
@@ -1310,7 +1393,22 @@ def test_graph_teams_post_file_forms_hosted_content_message_request(
         "file incoming",
         "team-a/channel-1",
         "session-1",
-        [{"path": str(artifact_path), "filename": "upload.txt", "mime_type": "text/plain"}],
+        [
+            {
+                "filename": "upload.txt",
+                "mime_type": "text/plain",
+                "metadata": {
+                    "attachment_ref": {
+                        "metadata": {
+                            "contentUrl": (
+                                "https://contoso.sharepoint.com/sites/dev/"
+                                "Shared Documents/upload.txt"
+                            )
+                        }
+                    }
+                },
+            }
+        ],
         thread_id="root-1",
     )
 
@@ -1335,7 +1433,7 @@ def test_graph_teams_post_file_inlines_image_hosted_content(
             '<p>image incoming</p><p><img src="../hostedContents/1/$value" '
             'alt="photo.png"></p>'
         )
-        assert payload["attachments"][0]["contentUrl"] == "../hostedContents/1/$value"
+        assert "attachments" not in payload
         assert payload["hostedContents"] == [
             {
                 "@microsoft.graph.temporaryId": "1",
@@ -1377,3 +1475,33 @@ def test_graph_teams_post_file_inlines_image_hosted_content(
     assert result["status"] == "posted"
     assert result["artifact_count"] == 1
     assert len(requests) == 1
+
+
+def test_graph_teams_post_file_rejects_non_image_bytes_without_share_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_path = tmp_path / "upload.txt"
+    artifact_path.write_text("upload-body", encoding="utf-8")
+
+    transport = httpx.MockTransport(
+        lambda request: pytest.fail(f"Unexpected request: {request.url}")
+    )
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    with pytest.raises(ValueError, match="SharePoint/OneDrive contentUrl"):
+        service.post_file(
+            "file incoming",
+            "team-a/channel-1",
+            "session-1",
+            [{"path": str(artifact_path), "filename": "upload.txt", "mime_type": "text/plain"}],
+        )
