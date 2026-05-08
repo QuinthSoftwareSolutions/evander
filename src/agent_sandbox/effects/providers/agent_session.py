@@ -886,8 +886,9 @@ def _container_profile_content(*, dotnet: bool, playwright: bool) -> str:
         lines.extend(
             [
                 'export DOTNET_ROOT="/opt/agent-sandbox/toolchains/dotnet"',
+                'export AGENT_SANDBOX_DOTNET_TOOLS_ROOT="/opt/agent-sandbox/toolchains/dotnet-tools"',
                 'export DOTNET_CLI_HOME="$HOME/.dotnet-cli"',
-                'export PATH="$DOTNET_ROOT:$HOME/.dotnet/tools:$PATH"',
+                'export PATH="$DOTNET_ROOT:$HOME/.dotnet/tools:$AGENT_SANDBOX_DOTNET_TOOLS_ROOT:$PATH"',
             ]
         )
     if playwright:

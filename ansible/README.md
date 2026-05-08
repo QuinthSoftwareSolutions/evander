@@ -244,7 +244,10 @@ it.
 
 Before `ansible/worker.yml`, the worker stage also installs the SDK named by `dotnetSdkVersion` into
 `$(Pipeline.Workspace)/dotnet` and exports that path as `HOST_DOTNET_ROOT`. This avoids archiving the
-entire Microsoft-hosted agent dotnet installation, which may include many SDK/runtime versions.
+entire Microsoft-hosted agent dotnet installation, which may include many SDK/runtime versions. The
+worker role installs `dotnet-ef` into the shared dotnet tools cache during deploy; override the
+default EF tool version with `HOST_DOTNET_EF_VERSION`, or provide `HOST_DOTNET_TOOLS_ARCHIVE` to
+deploy a prebuilt dotnet tool-path archive.
 
 ## Re-Runs And Idempotency
 
@@ -423,8 +426,10 @@ directories for .NET, Node/Playwright, Playwright browsers, and NuGet fallback p
 `agent_sandbox_worker_toolchain_cache_root`, then wires them into the daemon with repeated
 `--readonly-mount` flags. The .NET cache is seeded from the Ansible control machine
 (`HOST_DOTNET_ROOT`, `/usr/lib/dotnet`, or
-`agent_sandbox_worker_dotnet_toolchain_archive_path`) and verified by running `dotnet --info`
-inside `agent-sandbox-runner:latest`. The Node cache is seeded the same way
+`agent_sandbox_worker_dotnet_toolchain_archive_path`), and the .NET tools cache is seeded with
+`dotnet-ef` or copied from `agent_sandbox_worker_dotnet_tools_archive_path`. Both are verified
+inside `agent-sandbox-runner:latest` by running `dotnet --info` and `dotnet ef --version`. The Node
+cache is seeded the same way
 (`HOST_NODE_ROOT`, `~/.nvm/versions/node/v24.14.0`, or
 `agent_sandbox_worker_node_toolchain_archive_path`) and verified by running `node`, `npm`, and `npx`.
 The Playwright runtime and browser caches are seeded from `HOST_PLAYWRIGHT_NODE_MODULES` or the repo

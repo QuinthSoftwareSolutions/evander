@@ -227,6 +227,7 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[str, tuple[_ConfigTabSectionSpec, ...]] = {
             (
                 ("providers", "openai_api_base_url"),
                 ("providers", "openai_api_key_env"),
+                ("providers", "openai_costs_api_key_env"),
                 ("providers", "openai_relay_timeout_seconds"),
             ),
             ("openai_",),
@@ -1065,6 +1066,9 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "openai_api_base_url": ("Upstream OpenAI-compatible API base URL used by the host relay."),
     "openai_api_key_env": (
         "Name of the host environment variable that holds the upstream OpenAI API key."
+    ),
+    "openai_costs_api_key_env": (
+        "Name of the host environment variable that holds the OpenAI Admin API key for organization costs."
     ),
     "openai_relay_timeout_seconds": ("Upstream request timeout in seconds for the OpenAI relay."),
     "issue_setup_azure_devops_pr_pat_env": (

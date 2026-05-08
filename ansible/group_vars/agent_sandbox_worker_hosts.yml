@@ -126,6 +126,7 @@ agent_sandbox_runner_image_remote_archive_path: "{{ agent_sandbox_worker_root }}
 # Operators can still populate NuGet fallback package artifacts out-of-band.
 agent_sandbox_worker_toolchain_cache_root: "{{ agent_sandbox_worker_root }}/toolchain-cache"
 agent_sandbox_worker_dotnet_cache_path: "{{ agent_sandbox_worker_toolchain_cache_root }}/dotnet"
+agent_sandbox_worker_dotnet_tools_cache_path: "{{ agent_sandbox_worker_toolchain_cache_root }}/dotnet-tools"
 agent_sandbox_worker_node_cache_path: "{{ agent_sandbox_worker_toolchain_cache_root }}/node-v24.14.0"
 agent_sandbox_worker_playwright_runtime_cache_path: "{{ agent_sandbox_worker_toolchain_cache_root }}/playwright-runtime"
 agent_sandbox_worker_playwright_browsers_cache_path: "{{ agent_sandbox_worker_toolchain_cache_root }}/ms-playwright"
@@ -143,6 +144,10 @@ agent_sandbox_worker_dotnet_toolchain_local_path: >-
   }}
 agent_sandbox_worker_dotnet_toolchain_archive_path: "{{ lookup('env', 'HOST_DOTNET_ARCHIVE') | default('', true) }}"
 agent_sandbox_worker_dotnet_toolchain_remote_archive_path: "{{ agent_sandbox_worker_root }}/images/dotnet-toolchain.tar.gz"
+agent_sandbox_worker_dotnet_tools_archive_path: "{{ lookup('env', 'HOST_DOTNET_TOOLS_ARCHIVE') | default('', true) }}"
+agent_sandbox_worker_dotnet_tools_remote_archive_path: "{{ agent_sandbox_worker_root }}/images/dotnet-tools.tar.gz"
+agent_sandbox_worker_dotnet_ef_package_id: "dotnet-ef"
+agent_sandbox_worker_dotnet_ef_version: "{{ lookup('env', 'HOST_DOTNET_EF_VERSION') | default('10.0.0', true) }}"
 
 # Seed the worker-mounted Node/npm toolchain from the Ansible control machine.
 # HOST_NODE_ROOT can override the default local nvm path; set
@@ -179,6 +184,7 @@ agent_sandbox_worker_playwright_runtime_remote_archive_path: "{{ agent_sandbox_w
 agent_sandbox_worker_playwright_browsers_remote_archive_path: "{{ agent_sandbox_worker_root }}/images/playwright-browsers.tar.gz"
 agent_sandbox_worker_readonly_mounts:
   - "{{ agent_sandbox_worker_dotnet_cache_path }}:/opt/agent-sandbox/toolchains/dotnet"
+  - "{{ agent_sandbox_worker_dotnet_tools_cache_path }}:/opt/agent-sandbox/toolchains/dotnet-tools"
   - "{{ agent_sandbox_worker_node_cache_path }}:/opt/agent-sandbox/toolchains/node-v24.14.0"
   - "{{ agent_sandbox_worker_playwright_runtime_cache_path }}:/opt/agent-sandbox/playwright-runtime"
   - "{{ agent_sandbox_worker_playwright_browsers_cache_path }}:/opt/agent-sandbox/ms-playwright"

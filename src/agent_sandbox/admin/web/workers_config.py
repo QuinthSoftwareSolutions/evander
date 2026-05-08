@@ -223,6 +223,7 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
             (
                 ("providers", "openai_api_base_url"),
                 ("providers", "openai_api_key_env"),
+                ("providers", "openai_costs_api_key_env"),
                 ("providers", "openai_relay_timeout_seconds"),
             ),
             ("openai_",),

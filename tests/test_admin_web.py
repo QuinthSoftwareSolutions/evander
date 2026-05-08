@@ -1613,6 +1613,7 @@ def test_admin_web_state_uses_root_execution_backend(tmp_path: Path) -> None:
 def test_admin_web_openai_costs_endpoint_reports_missing_key(
     tmp_path: Path, monkeypatch
 ) -> None:
+    monkeypatch.delenv("OPENAI_ADMIN_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
@@ -1621,7 +1622,7 @@ def test_admin_web_openai_costs_endpoint_reports_missing_key(
     assert response.status_code == 200
     payload = response.json()["costs"]
     assert payload["status"] == "not_configured"
-    assert payload["api_key_env"] == "OPENAI_API_KEY"
+    assert payload["api_key_env"] == "OPENAI_ADMIN_API_KEY"
     assert payload["cost_usd"] is None
 
 

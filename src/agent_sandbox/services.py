@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import json
 import logging
 import mimetypes
@@ -11,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Iterator, Literal, Protocol
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlparse
 
 import httpx
 from agent_sandbox.models import (
@@ -201,6 +202,15 @@ def _artifact_content_type(artifact: dict[str, Any], filename: str) -> str:
         or mimetypes.guess_type(filename)[0]
         or "application/octet-stream"
     )
+
+
+def _artifact_is_inline_teams_image(content_type: str) -> bool:
+    return content_type.split(";", 1)[0].strip().lower() in {
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+    }
 
 
 def _artifact_bytes(artifact: dict[str, Any]) -> bytes:
@@ -1298,6 +1308,28 @@ class GraphTeamsService:
             time.sleep(sleep_for)
             attempt += 1
 
+    def _is_graph_api_origin(self, url: str) -> bool:
+        parsed_url = urlparse(url)
+        parsed_api_base = urlparse(self.api_base_url)
+        return (
+            parsed_url.scheme.lower() == parsed_api_base.scheme.lower()
+            and parsed_url.netloc.lower() == parsed_api_base.netloc.lower()
+        )
+
+    def _download_attachment_content_url(
+        self,
+        client: httpx.Client,
+        url: str,
+    ) -> httpx.Response:
+        parsed_url = urlparse(url)
+        if parsed_url.scheme.lower() not in {"http", "https"} or not parsed_url.netloc:
+            raise ValueError("Teams attachment contentUrl must be an absolute http(s) URL.")
+        if self._is_graph_api_origin(url):
+            return self._request_with_retries(client, "GET", url)
+        response = client.request("GET", url, timeout=self.timeout_seconds)
+        response.raise_for_status()
+        return response
+
     def new_pagination_budget(self) -> _TeamsGraphPaginationBudget:
         return _TeamsGraphPaginationBudget(
             page_cap=self.history_page_cap,
@@ -1669,7 +1701,11 @@ class GraphTeamsService:
         else:
             url = content_url
         with httpx.Client(timeout=self.timeout_seconds) as client:
-            response = self._request_with_retries(client, "GET", url)
+            response = (
+                self._request_with_retries(client, "GET", url)
+                if attachment.get("attachment_kind") == "hosted_content" or not content_url
+                else self._download_attachment_content_url(client, url)
+            )
             content_type = response.headers.get("content-type") or attachment.get("contentType")
         return {
             **attachment,
@@ -1700,10 +1736,12 @@ class GraphTeamsService:
     ) -> dict[str, Any]:
         hosted_contents: list[dict[str, Any]] = []
         attachments: list[dict[str, Any]] = []
+        inline_images: list[tuple[str, str]] = []
         for index, artifact in enumerate(artifacts):
             temporary_id = str(index + 1)
             filename = _artifact_filename(artifact, index=index)
             content_type = _artifact_content_type(artifact, filename)
+            hosted_content_url = f"../hostedContents/{temporary_id}/$value"
             hosted_contents.append(
                 {
                     "@microsoft.graph.temporaryId": temporary_id,
@@ -1716,11 +1754,22 @@ class GraphTeamsService:
                     "id": temporary_id,
                     "name": filename,
                     "contentType": "reference",
-                    "contentUrl": f"../hostedContents/{temporary_id}/$value",
+                    "contentUrl": hosted_content_url,
                 }
             )
+            if _artifact_is_inline_teams_image(content_type):
+                inline_images.append((filename, hosted_content_url))
+        body_html = _teams_message_to_html(message)
+        for filename, hosted_content_url in inline_images:
+            body_html += (
+                '<p><img src="'
+                f'{html.escape(hosted_content_url, quote=True)}'
+                '" alt="'
+                f'{html.escape(filename, quote=True)}'
+                '"></p>'
+            )
         return {
-            "body": {"content": _teams_message_to_html(message), "contentType": "html"},
+            "body": {"content": body_html, "contentType": "html"},
             "attachments": attachments,
             "hostedContents": hosted_contents,
         }

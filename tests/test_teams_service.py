@@ -1025,6 +1025,63 @@ def test_graph_teams_service_preserves_attachment_metadata_and_downloads_hosted_
     assert downloaded["mime_type"] == "image/png"
 
 
+def test_graph_teams_attachment_download_does_not_send_token_to_external_content_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert str(request.url) == "https://files.example.test/download/doc.txt"
+        return httpx.Response(
+            200,
+            content=b"document",
+            headers={"content-type": "text/plain"},
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    store.put(
+        "team-a/channel-1/msg-1",
+        TeamsMessageEnvelope(
+            cursor="team-a/channel-1/msg-1",
+            message_id="msg-1",
+            author_id="user-a",
+            team_id="team-a",
+            channel_id="channel-1",
+            content="file",
+            metadata={
+                "target": "team-a/channel-1",
+                "attachments": [
+                    {
+                        "id": "att-1",
+                        "name": "doc.txt",
+                        "contentType": "text/plain",
+                        "contentUrl": "https://files.example.test/download/doc.txt",
+                    }
+                ],
+            },
+        ),
+    )
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    downloaded = service.download_attachment("msg-1", "att-1", channel_target="team-a/channel-1")
+
+    assert downloaded["content"] == b"document"
+    assert downloaded["mime_type"] == "text/plain"
+    assert requests[0].headers.get("Authorization") is None
+
+
 def test_graph_teams_attachment_listing_enforces_channel_allowlist(tmp_path: Path) -> None:
     store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
     store.put(
@@ -1070,6 +1127,7 @@ def test_graph_teams_post_file_forms_hosted_content_message_request(
         )
         payload = json.loads(request.read())
         assert payload["body"]["contentType"] == "html"
+        assert payload["body"]["content"] == "<p>file incoming</p>"
         assert payload["attachments"] == [
             {
                 "id": "1",
@@ -1120,5 +1178,64 @@ def test_graph_teams_post_file_forms_hosted_content_message_request(
 
     assert result["status"] == "posted"
     assert result["message_id"] == "reply-1"
+    assert result["artifact_count"] == 1
+    assert len(requests) == 1
+
+
+def test_graph_teams_post_file_inlines_image_hosted_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+    artifact_path = tmp_path / "photo.png"
+    artifact_path.write_bytes(b"png-bytes")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        payload = json.loads(request.read())
+        assert payload["body"]["content"] == (
+            '<p>image incoming</p><p><img src="../hostedContents/1/$value" '
+            'alt="photo.png"></p>'
+        )
+        assert payload["attachments"][0]["contentUrl"] == "../hostedContents/1/$value"
+        assert payload["hostedContents"] == [
+            {
+                "@microsoft.graph.temporaryId": "1",
+                "contentBytes": "cG5nLWJ5dGVz",
+                "contentType": "image/png",
+            }
+        ]
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg-1",
+                "createdDateTime": "2026-03-30T11:00:00Z",
+                "body": {"content": "<p>image incoming</p>", "contentType": "html"},
+                "from": {"user": {"id": "bot-1"}},
+                "attachments": [{"id": "att-1", "name": "photo.png"}],
+            },
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    result = service.post_file(
+        "image incoming",
+        "team-a/channel-1",
+        "session-1",
+        [{"path": str(artifact_path), "filename": "photo.png", "mime_type": "image/png"}],
+    )
+
+    assert result["status"] == "posted"
     assert result["artifact_count"] == 1
     assert len(requests) == 1

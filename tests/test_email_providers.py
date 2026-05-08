@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from email import message_from_bytes, policy
 
 import httpx
 import pytest
@@ -148,6 +149,40 @@ def test_graph_detail_maps_parent_folder_case_insensitively() -> None:
     detail = provider._to_detail(mailbox_id="exec-graph", payload=payload)
 
     assert detail.folder == "inbox"
+
+
+def test_graph_detail_accepts_expanded_attachments_array() -> None:
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={"inbox": "Inbox", "drafts": "Drafts"},
+        auth_secret_refs={"access_token": "GRAPH_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+    )
+    payload = {
+        "id": "graph-msg-4",
+        "conversationId": "conversation-1002",
+        "isRead": False,
+        "receivedDateTime": "2026-03-20T10:00:00Z",
+        "parentFolderId": "Inbox",
+        "from": {"emailAddress": {"address": "sender@example.com"}},
+        "toRecipients": [{"emailAddress": {"address": "person@example.com"}}],
+        "subject": "Hello",
+        "body": {"content": "Body"},
+        "attachments": [
+            {
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "id": "att-1",
+                "name": "report.pdf",
+                "contentType": "application/pdf",
+                "size": 7,
+            }
+        ],
+    }
+
+    detail = provider._to_detail(mailbox_id="exec-graph", payload=payload)
+
+    assert detail.attachments[0].attachment_id == "att-1"
+    assert detail.attachments[0].filename == "report.pdf"
 
 
 def test_gmail_retries_transient_503_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -385,8 +420,9 @@ def test_gmail_create_draft_generates_mime_attachment_payload(
     )
 
     raw = seen_payloads[0]["message"]["raw"]
-    decoded = __import__("email").message_from_bytes(
-        base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
+    decoded = message_from_bytes(
+        base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)),
+        policy=policy.default,
     )
     attachment = next(decoded.iter_attachments())
     assert draft.metadata["attachment_count"] == 1
@@ -566,14 +602,22 @@ def test_graph_create_draft_uses_upload_session_for_large_attachment(
         attachments=[
             EmailDraftAttachment(
                 filename="large.bin",
-                content=b"x" * GraphEmailProvider._large_attachment_threshold_bytes,
+                content=b"x" * (GraphEmailProvider._upload_chunk_size + 1),
                 mime_type="application/octet-stream",
             )
         ],
     )
 
     create_payload = __import__("json").loads(requests[0].content)
-    upload_put = next(request for request in requests if request.method == "PUT")
+    upload_puts = [request for request in requests if request.method == "PUT"]
     assert "attachments" not in create_payload
     assert draft.metadata["large_attachment_count"] == 1
-    assert upload_put.headers["content-range"].startswith("bytes 0-")
+    assert GraphEmailProvider._upload_chunk_size % (320 * 1024) == 0
+    assert len(upload_puts) == 2
+    assert int(upload_puts[0].headers["content-length"]) == (
+        GraphEmailProvider._upload_chunk_size
+    )
+    assert upload_puts[0].headers["content-range"] == (
+        f"bytes 0-{GraphEmailProvider._upload_chunk_size - 1}/"
+        f"{GraphEmailProvider._upload_chunk_size + 1}"
+    )

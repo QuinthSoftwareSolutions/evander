@@ -7,7 +7,7 @@ import pytest
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore, utc_now
 from agent_sandbox.models import CommunicationFileArtifact
 from agent_sandbox.worker.models import WorkerFileWriteRequest, WorkerSessionPrepareRequest
-from agent_sandbox.worker.service import WorkerService
+from agent_sandbox.worker.service import WorkerDaemon
 
 
 def test_store_stages_metadata_with_safe_filename_and_opaque_id(tmp_path):
@@ -67,7 +67,7 @@ def test_store_cleanup_removes_expired_records(tmp_path):
 
 
 def test_worker_file_write_supports_binary_content_base64(tmp_path):
-    service = WorkerService(worker_root=tmp_path)
+    service = WorkerDaemon(runtime_dir=tmp_path / "runtime", worker_root=tmp_path)
     service.prepare_session(WorkerSessionPrepareRequest(session_id="session-1"))
 
     record = service.write_files(

@@ -319,6 +319,7 @@ def test_directory_config_tab_sections_match_expected_groupings() -> None:
     assert ("providers", "container_worker_base_url") in provider_sections["Container worker"]
     assert ("providers", "nuget_azure_pat_env") in provider_sections["NuGet"]
     assert ("providers", "openai_api_key_env") in provider_sections["OpenAI"]
+    assert ("providers", "openai_costs_api_key_env") in provider_sections["OpenAI"]
 
     assert ("issue_setup", "git_root") in issue_setup_sections["Git transport"]
     assert ("issue_setup", "issue_setup_azure_devops_pr_pat_env") in issue_setup_sections[
@@ -907,6 +908,11 @@ def test_update_session_action_bar_populates_session_model_controls() -> None:
         session_model_status_label=DummyLabel(),
         save_session_tools_button=DummyButton(),
         session_tools_checkboxes={},
+        _session_policy_dirty=False,
+        _session_policy_bound_session_id=None,
+        _set_session_policy_controls_enabled=lambda _enabled: None,
+        _sync_session_policy_editor=lambda _summary: None,
+        session_policy_status_label=DummyLabel(),
     )
 
     admin_app.MainWindow.update_session_action_bar(window)
@@ -978,6 +984,11 @@ def test_update_session_action_bar_preserves_dirty_model_input_for_same_session(
         session_model_status_label=DummyLabel(),
         save_session_tools_button=DummyButton(),
         session_tools_checkboxes={},
+        _session_policy_dirty=False,
+        _session_policy_bound_session_id=None,
+        _set_session_policy_controls_enabled=lambda _enabled: None,
+        _sync_session_policy_editor=lambda _summary: None,
+        session_policy_status_label=DummyLabel(),
     )
 
     admin_app.MainWindow.update_session_action_bar(window)
@@ -1047,6 +1058,11 @@ def test_update_session_action_bar_replaces_model_input_when_session_changes() -
         session_model_status_label=DummyLabel(),
         save_session_tools_button=DummyButton(),
         session_tools_checkboxes={},
+        _session_policy_dirty=False,
+        _session_policy_bound_session_id=None,
+        _set_session_policy_controls_enabled=lambda _enabled: None,
+        _sync_session_policy_editor=lambda _summary: None,
+        session_policy_status_label=DummyLabel(),
     )
 
     admin_app.MainWindow.update_session_action_bar(window)
@@ -1131,6 +1147,11 @@ def test_update_session_action_bar_preserves_dirty_tool_checkboxes_for_same_sess
         session_model_status_label=DummyLabel(),
         save_session_tools_button=DummyButton(),
         session_tools_checkboxes={admin_app.ToolName.APPROVAL_CHECK: checkbox},
+        _session_policy_dirty=False,
+        _session_policy_bound_session_id=None,
+        _set_session_policy_controls_enabled=lambda _enabled: None,
+        _sync_session_policy_editor=lambda _summary: None,
+        session_policy_status_label=DummyLabel(),
     )
 
     admin_app.MainWindow.update_session_action_bar(window)
@@ -1216,6 +1237,11 @@ def test_update_session_action_bar_replaces_tool_checkboxes_when_session_changes
         session_model_status_label=DummyLabel(),
         save_session_tools_button=DummyButton(),
         session_tools_checkboxes={admin_app.ToolName.APPROVAL_CHECK: checkbox},
+        _session_policy_dirty=False,
+        _session_policy_bound_session_id=None,
+        _set_session_policy_controls_enabled=lambda _enabled: None,
+        _sync_session_policy_editor=lambda _summary: None,
+        session_policy_status_label=DummyLabel(),
     )
 
     admin_app.MainWindow.update_session_action_bar(window)

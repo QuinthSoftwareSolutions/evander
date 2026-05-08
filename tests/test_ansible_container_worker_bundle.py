@@ -119,6 +119,11 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "agent_sandbox_worker_dotnet_toolchain_local_path" in text
     assert "HOST_DOTNET_ROOT" in text
     assert "agent_sandbox_worker_dotnet_toolchain_archive_path" in text
+    assert "agent_sandbox_worker_dotnet_tools_cache_path" in text
+    assert "agent_sandbox_worker_dotnet_tools_archive_path" in text
+    assert "HOST_DOTNET_TOOLS_ARCHIVE" in text
+    assert "agent_sandbox_worker_dotnet_ef_version" in text
+    assert "HOST_DOTNET_EF_VERSION" in text
     assert "agent_sandbox_worker_node_toolchain_enabled: true" in text
     assert "agent_sandbox_worker_node_toolchain_local_path" in text
     assert "HOST_NODE_ROOT" in text
@@ -130,6 +135,7 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "agent_sandbox_worker_playwright_browsers_archive_path" in text
     assert "agent_sandbox_worker_readonly_mounts" in text
     assert "/opt/agent-sandbox/toolchains/dotnet" in text
+    assert "/opt/agent-sandbox/toolchains/dotnet-tools" in text
     assert "/opt/agent-sandbox/toolchains/node-v24.14.0" in text
     assert "/opt/agent-sandbox/playwright-runtime" in text
     assert "/opt/agent-sandbox/ms-playwright" in text
@@ -294,13 +300,20 @@ def test_worker_dotnet_toolchain_role_seeds_and_verifies_runner_dotnet_cache() -
     assert "Check local dotnet toolchain directory" in role
     assert "/dotnet" in role
     assert "Pack local dotnet toolchain directory" in role
+    assert "Install dotnet EF tool into local staging directory" in role
+    assert "Pack local dotnet tools directory" in role
     assert "Copy dotnet toolchain archive to worker" in role
+    assert "Copy dotnet tools archive to worker" in role
     assert "Unpack dotnet toolchain into worker cache" in role
+    assert "Unpack dotnet tools into worker cache" in role
     assert "Verify worker dotnet toolchain on host cache" in role
-    assert "Verify dotnet is available inside runner container" in role
+    assert "Verify dotnet and EF tooling are available inside runner container" in role
     assert "agent_sandbox_runner_image_name" in role
     assert "/opt/agent-sandbox/toolchains/dotnet" in role
+    assert "/opt/agent-sandbox/toolchains/dotnet-tools" in role
     assert "dotnet --info" in role
+    assert "dotnet ef --version" in role
+    assert "dotnet-ef --version" in role
 
 
 def test_worker_playwright_toolchain_role_seeds_and_verifies_runner_playwright_cache() -> None:

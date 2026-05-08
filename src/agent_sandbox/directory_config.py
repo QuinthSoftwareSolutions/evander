@@ -107,6 +107,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "http_target_relay_timeout_seconds",
             "openai_api_base_url",
             "openai_api_key_env",
+            "openai_costs_api_key_env",
             "openai_relay_timeout_seconds",
             "teams_backend",
             "teams_delegated_authority_base_url",

@@ -1168,6 +1168,10 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]
     )
     assert "DOTNET_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
+    assert (
+        "AGENT_SANDBOX_DOTNET_TOOLS_ROOT"
+        in bootstrap_by_path["/home/agent/.profile"]["content"]
+    )
     assert "AGENT_SANDBOX_NODE_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "PLAYWRIGHT_BROWSERS_PATH" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "/home/agent/.nuget/NuGet/NuGet.Config" in bootstrap_by_path

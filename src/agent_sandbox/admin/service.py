@@ -117,15 +117,13 @@ from agent_sandbox.events.models import (
     QueryDefinitionDiscriminated,
     TriggerEvent,
     TriggerDefinitionDiscriminated,
-    effective_node_output_schema,
     materialize_node_definition,
 )
 from agent_sandbox.triggers.queue import TriggerEventQueue
-from agent_sandbox.workflow.graph import (
-    build_inbound_edge_index,
-    merge_declared_output_intersection,
+from agent_sandbox.workflow.validation import (
+    derive_workflow_output_schemas,
+    validate_workflow_binding_diagnostics,
 )
-from agent_sandbox.workflow.validation import validate_workflow_binding_diagnostics
 from agent_sandbox.services import normalize_teams_target
 
 _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
@@ -7376,52 +7374,22 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         if not isinstance(edges, list):
             return candidate
 
-        nodes_by_id: dict[str, dict[str, object]] = {}
-        for group in (triggers, gates, effects, queries):
-            for node in group:
-                if not isinstance(node, dict):
-                    continue
-                node_id = str(node.get("id") or "").strip()
-                if node_id:
-                    nodes_by_id[node_id] = node
-
-        inbound = build_inbound_edge_index(edges)
+        output_schemas = derive_workflow_output_schemas(candidate)
         for gate in gates:
             if not isinstance(gate, dict):
                 continue
             gate_type = str(gate.get("type") or "").strip()
             gate_id = str(gate.get("id") or "").strip()
-            upstream_edges = inbound.get(gate_id, ())
-            upstream_ids = [
-                str(edge.get("source_id") or "").strip()
-                for edge in upstream_edges
-                if isinstance(edge, dict)
-            ]
-            if gate_type == "gate:filter":
-                upstream_node = nodes_by_id.get(upstream_ids[0]) if upstream_ids else None
-                gate["outputs"] = (
-                    effective_node_output_schema(upstream_node) if upstream_node is not None else {}
-                )
-            elif gate_type == "gate:map":
-                gate["outputs"] = effective_node_output_schema(gate)
-            elif gate_type == "gate:await-agent":
+            if gate_type == "gate:await-agent":
                 gate.pop("completion_trigger_id", None)
-                gate["outputs"] = effective_node_output_schema(
-                    {"type": "trigger:agent:run:completed"}
-                )
-            elif gate_type == "gate:for":
-                gate["outputs"] = effective_node_output_schema(gate)
-            elif gate_type == "gate:merge":
-                upstream_outputs = [
-                    effective_node_output_schema(nodes_by_id[upstream_id])
-                    for upstream_id in upstream_ids
-                    if upstream_id in nodes_by_id
-                ]
-                gate["outputs"] = (
-                    merge_declared_output_intersection(*upstream_outputs)
-                    if upstream_outputs
-                    else {}
-                )
+            if gate_type in {
+                "gate:filter",
+                "gate:map",
+                "gate:await-agent",
+                "gate:for",
+                "gate:merge",
+            }:
+                gate["outputs"] = output_schemas.get(gate_id, {})
 
         return candidate
 

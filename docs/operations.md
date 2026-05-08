@@ -1232,13 +1232,14 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
    service user.
 3. Ensure the needed service env vars are available. The rendered units will load optional
    per-service `config/*.env` files and optional repo-root `secrets.env`.
-4. Ensure `OPENAI_API_KEY` is available for the OpenAI relay and Admin Web cost display, and
+4. Ensure `OPENAI_API_KEY` is available for the OpenAI relay, `OPENAI_ADMIN_API_KEY` is
+   available for the Admin Web cost display when you want organization costs, and
    `AZURE_ARTIFACTS_PAT` when the NuGet relay needs private Azure Artifacts access. The Admin Web
-   unit also loads `config/openai-relay.env` so the selected-directory OpenAI costs card can inspect
-   the same default key as the relay; the key must be allowed to read organization usage/costs
-   (`api.usage.read` for restricted keys). Additional directory-specific key env vars should be
-   supplied through `secrets.env` or the service manager environment. The HTTP target relay is
-   auth-transparent and exists to enforce destination allowlisting for approved external web
+   cost key should be an OpenAI Admin API key with organization usage/cost access; project keys can
+   succeed for model calls while still being rejected by the organization Costs API. For restricted
+   keys, grant `api.usage.read`. Additional directory-specific key env vars should be supplied
+   through `config/admin-web.env`, `secrets.env`, or the service manager environment. The HTTP
+   target relay is auth-transparent and exists to enforce destination allowlisting for approved external web
    endpoints. In the APP demo workflow, guests authenticate to APP interactively or with
    guest-managed bearer tokens/cookies through that relay path.
 5. For private PR feedback polling, ensure the service environment exposes `GITHUB_TOKEN`

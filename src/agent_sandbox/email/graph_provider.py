@@ -27,7 +27,7 @@ class GraphEmailProvider:
     _fallback_lookback_days = 7
     _dedupe_window_size = 512
     _large_attachment_threshold_bytes = 3 * 1024 * 1024
-    _upload_chunk_size = 4 * 1024 * 1024
+    _upload_chunk_size = 5 * 1024 * 1024
 
     def __init__(
         self,
@@ -263,9 +263,20 @@ class GraphEmailProvider:
             body_text=str(body.get("content", "")),
             attachments=[
                 self._attachment_metadata(item)
-                for item in ((payload.get("attachments") or {}).get("value", []))
+                for item in self._expanded_attachment_items(payload)
             ],
         )
+
+    @staticmethod
+    def _expanded_attachment_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        attachments = payload.get("attachments")
+        if isinstance(attachments, list):
+            return [item for item in attachments if isinstance(item, dict)]
+        if isinstance(attachments, dict):
+            value = attachments.get("value", [])
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        return []
 
     @staticmethod
     def _attachment_metadata(payload: dict[str, Any]) -> EmailAttachmentMetadata:

@@ -62,6 +62,7 @@ Playwright operating-system libraries. .NET, Node, Playwright packages, browser 
 fallback packages are worker-level caches mounted read-only into containers:
 
 - `/opt/agent-sandbox/toolchains/dotnet`
+- `/opt/agent-sandbox/toolchains/dotnet-tools`
 - `/opt/agent-sandbox/toolchains/node-v24.14.0`
 - `/opt/agent-sandbox/playwright-runtime`
 - `/opt/agent-sandbox/ms-playwright`
@@ -72,7 +73,11 @@ and wires them into the daemon with repeated `--readonly-mount` flags. It also s
 Node, and Playwright caches from the Ansible control machine and verifies them inside
 `agent-sandbox-runner:latest`.
 By default dotnet reads `HOST_DOTNET_ROOT` or `/usr/lib/dotnet`; set
-`agent_sandbox_worker_dotnet_toolchain_archive_path` to copy a prebuilt tarball instead. By default
+`agent_sandbox_worker_dotnet_toolchain_archive_path` to copy a prebuilt tarball instead. The worker
+role also installs `dotnet-ef` into a separate shared tools cache and verifies
+`dotnet ef --version` in the runner container; set `HOST_DOTNET_EF_VERSION` to pin a different
+version, or set `HOST_DOTNET_TOOLS_ARCHIVE` /
+`agent_sandbox_worker_dotnet_tools_archive_path` to copy a prebuilt dotnet tool-path tarball.
 Node reads `HOST_NODE_ROOT` or `~/.nvm/versions/node/v24.14.0`; set
 `agent_sandbox_worker_node_toolchain_archive_path` to copy a prebuilt tarball instead. By default
 Playwright reads `HOST_PLAYWRIGHT_NODE_MODULES` or the repo frontend `node_modules` plus
