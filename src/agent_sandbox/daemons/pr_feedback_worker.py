@@ -3,19 +3,22 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import mimetypes
 import re
+from html.parser import HTMLParser
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Protocol
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 from pydantic import BaseModel, Field
 
 from agent_sandbox.audit import AuditEventType, AuditLogger
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.models import InlineMediaRef
 from agent_sandbox.worker_directory_context import (
     WorkerDirectoryContextResolver,
     log_shadow_context,
@@ -24,6 +27,181 @@ from agent_sandbox.worker_directory_context import (
 logger = logging.getLogger(__name__)
 
 _FEEDBACK_RETENTION = timedelta(days=90)
+
+
+_GITHUB_MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+_INLINE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+
+
+class _HtmlInlineMediaParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.items: list[dict[str, str]] = []
+        self._active_anchor_index: int | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = {name.lower(): value or "" for name, value in attrs}
+        normalized_tag = tag.lower()
+        if normalized_tag == "img":
+            src = attr_map.get("src", "").strip()
+            if not src:
+                return
+            self.items.append(
+                {
+                    "tag": "img",
+                    "url": src,
+                    "alt": attr_map.get("alt", "").strip(),
+                    "title": attr_map.get("title", "").strip(),
+                }
+            )
+            return
+        if normalized_tag != "a":
+            return
+        href = attr_map.get("href", "").strip()
+        if not href or not _looks_like_ado_attachment_url(href):
+            return
+        self.items.append(
+            {
+                "tag": "a",
+                "url": href,
+                "title": attr_map.get("title", "").strip(),
+                "text": "",
+            }
+        )
+        self._active_anchor_index = len(self.items) - 1
+
+    def handle_data(self, data: str) -> None:
+        if self._active_anchor_index is None:
+            return
+        item = self.items[self._active_anchor_index]
+        item["text"] = (item.get("text", "") + data).strip()
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "a":
+            self._active_anchor_index = None
+
+
+def _looks_like_ado_attachment_url(url: str) -> bool:
+    parsed = urlparse(url)
+    path = parsed.path.lower()
+    return "attachment" in path or "_apis/wit/attachments" in path
+
+
+def _filename_from_url(url: str, *, fallback: str) -> str:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    for key in ("fileName", "filename", "name"):
+        values = query.get(key) or query.get(key.lower())
+        if values:
+            candidate = unquote(values[0]).strip()
+            if candidate:
+                return candidate
+    filename = unquote(Path(parsed.path).name).strip()
+    fallback = fallback.strip()
+    if filename and (Path(filename).suffix or not Path(fallback).suffix):
+        return filename
+    return fallback or filename or "inline-media"
+
+
+def _mime_type_from_filename(filename: str) -> str | None:
+    mime_type, _encoding = mimetypes.guess_type(filename)
+    return mime_type
+
+
+def _media_ref(
+    *,
+    provider: str,
+    feedback_id: str,
+    comment_id: str | None,
+    media_id: str,
+    url: str,
+    filename: str,
+    mime_type: str | None,
+    metadata: dict[str, Any],
+) -> InlineMediaRef:
+    return InlineMediaRef(
+        source_kind="pr_feedback",
+        provider=provider,
+        resource_id=feedback_id,
+        comment_id=comment_id,
+        media_id=media_id,
+        filename=filename,
+        mime_type=mime_type,
+        url=url,
+        metadata=metadata,
+    )
+
+
+def _extract_github_markdown_inline_media(
+    *,
+    body: str,
+    provider: str,
+    feedback_id: str,
+    comment_id: str | None,
+) -> list[InlineMediaRef]:
+    refs: list[InlineMediaRef] = []
+    for index, match in enumerate(_GITHUB_MARKDOWN_IMAGE_RE.finditer(body)):
+        alt_text = match.group(1).strip()
+        url = match.group(2).strip()
+        fallback = alt_text or f"github-inline-image-{index}"
+        filename = _filename_from_url(url, fallback=fallback)
+        refs.append(
+            _media_ref(
+                provider=provider,
+                feedback_id=feedback_id,
+                comment_id=comment_id,
+                media_id=f"markdown-image-{index}",
+                url=url,
+                filename=filename,
+                mime_type=_mime_type_from_filename(filename),
+                metadata={"source": "markdown_image", "alt": alt_text},
+            )
+        )
+    return refs
+
+
+def _extract_ado_inline_media(
+    *,
+    content: str,
+    provider: str,
+    feedback_id: str,
+    comment_id: str | None,
+) -> list[InlineMediaRef]:
+    parser = _HtmlInlineMediaParser()
+    parser.feed(content)
+    refs: list[InlineMediaRef] = []
+    for index, item in enumerate(parser.items):
+        url = item["url"].strip()
+        fallback = (
+            item.get("alt")
+            or item.get("title")
+            or item.get("text")
+            or f"azure-devops-inline-media-{index}"
+        ).strip()
+        filename = _filename_from_url(url, fallback=fallback)
+        mime_type = _mime_type_from_filename(filename)
+        if item.get("tag") == "a" and mime_type is not None:
+            extension = Path(filename).suffix.lower()
+            if extension and extension not in _INLINE_IMAGE_EXTENSIONS:
+                continue
+        refs.append(
+            _media_ref(
+                provider=provider,
+                feedback_id=feedback_id,
+                comment_id=comment_id,
+                media_id=f"ado-{item.get('tag', 'media')}-{index}",
+                url=url,
+                filename=filename,
+                mime_type=mime_type,
+                metadata={
+                    "source": "html_image" if item.get("tag") == "img" else "ado_attachment_link",
+                    "alt": item.get("alt", ""),
+                    "title": item.get("title", ""),
+                    "text": item.get("text", ""),
+                },
+            )
+        )
+    return refs
 
 
 class FeedbackEnvelope(BaseModel):
@@ -40,7 +218,7 @@ class FeedbackEnvelope(BaseModel):
     created_at: datetime
     in_reply_to: str | None = None
     resolved: bool | None = None
-    inline_media: list[dict[str, Any]] = Field(default_factory=list)
+    inline_media: list[InlineMediaRef] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -488,18 +666,26 @@ class GitHubFeedbackAdapter:
         mapped: list[FeedbackEnvelope] = []
         for comment in comments:
             comment_id = str(comment.get("id"))
+            feedback_id = f"github:issue_comment:{comment_id}"
+            body = (comment.get("body") or "").strip()
             created_at = _parse_dt(comment.get("created_at") or comment.get("updated_at"))
             mapped.append(
                 FeedbackEnvelope(
-                    feedback_id=f"github:issue_comment:{comment_id}",
+                    feedback_id=feedback_id,
                     provider="github",
                     repo=repo,
                     pr_id=str(pr_id),
                     thread_id=f"issue_comment:{comment_id}",
                     comment_id=comment_id,
                     author=_github_author(comment.get("user")),
-                    body=(comment.get("body") or "").strip(),
+                    body=body,
                     created_at=created_at,
+                    inline_media=_extract_github_markdown_inline_media(
+                        body=body,
+                        provider="github",
+                        feedback_id=feedback_id,
+                        comment_id=comment_id,
+                    ),
                 )
             )
         return mapped
@@ -511,6 +697,8 @@ class GitHubFeedbackAdapter:
         mapped: list[FeedbackEnvelope] = []
         for comment in comments:
             comment_id = str(comment.get("id"))
+            feedback_id = f"github:review_comment:{comment_id}"
+            body = (comment.get("body") or "").strip()
             review_id = comment.get("pull_request_review_id")
             line = (
                 comment.get("line")
@@ -519,14 +707,14 @@ class GitHubFeedbackAdapter:
             )
             mapped.append(
                 FeedbackEnvelope(
-                    feedback_id=f"github:review_comment:{comment_id}",
+                    feedback_id=feedback_id,
                     provider="github",
                     repo=repo,
                     pr_id=str(pr_id),
                     thread_id=str(review_id) if review_id is not None else None,
                     comment_id=comment_id,
                     author=_github_author(comment.get("user")),
-                    body=(comment.get("body") or "").strip(),
+                    body=body,
                     file_path=comment.get("path"),
                     line=line if isinstance(line, int) else None,
                     created_at=_parse_dt(comment.get("created_at") or comment.get("updated_at")),
@@ -534,6 +722,12 @@ class GitHubFeedbackAdapter:
                         str(comment.get("in_reply_to_id"))
                         if comment.get("in_reply_to_id") is not None
                         else None
+                    ),
+                    inline_media=_extract_github_markdown_inline_media(
+                        body=body,
+                        provider="github",
+                        feedback_id=feedback_id,
+                        comment_id=comment_id,
                     ),
                 )
             )
@@ -550,17 +744,25 @@ class GitHubFeedbackAdapter:
             if cursor_dt and submitted_or_created <= cursor_dt:
                 continue
             review_id = str(review.get("id"))
+            feedback_id = f"github:review:{review_id}"
+            body = (review.get("body") or "").strip()
             mapped.append(
                 FeedbackEnvelope(
-                    feedback_id=f"github:review:{review_id}",
+                    feedback_id=feedback_id,
                     provider="github",
                     repo=repo,
                     pr_id=str(pr_id),
                     thread_id=review_id,
                     comment_id=review_id,
                     author=_github_author(review.get("user")),
-                    body=(review.get("body") or "").strip(),
+                    body=body,
                     created_at=submitted_or_created,
+                    inline_media=_extract_github_markdown_inline_media(
+                        body=body,
+                        provider="github",
+                        feedback_id=feedback_id,
+                        comment_id=review_id,
+                    ),
                     resolved=None,
                 )
             )
@@ -649,6 +851,7 @@ class AzureDevOpsFeedbackAdapter:
                 )
                 author = (comment.get("author", {}).get("displayName") or "unknown").strip()
                 body = (comment.get("content") or "").strip()
+                feedback_id = f"azure_devops:thread_comment:{thread_id}:{comment_id}"
                 if _ado_should_skip_comment(
                     author=author,
                     body=body,
@@ -658,7 +861,7 @@ class AzureDevOpsFeedbackAdapter:
                     continue
                 feedback.append(
                     FeedbackEnvelope(
-                        feedback_id=f"azure_devops:thread_comment:{thread_id}:{comment_id}",
+                        feedback_id=feedback_id,
                         provider="azure_devops",
                         repo=repo,
                         pr_id=str(pr_id),
@@ -671,6 +874,12 @@ class AzureDevOpsFeedbackAdapter:
                         created_at=created_at,
                         in_reply_to=in_reply_to,
                         resolved=resolved,
+                        inline_media=_extract_ado_inline_media(
+                            content=body,
+                            provider="azure_devops",
+                            feedback_id=feedback_id,
+                            comment_id=comment_id,
+                        ),
                     )
                 )
 
