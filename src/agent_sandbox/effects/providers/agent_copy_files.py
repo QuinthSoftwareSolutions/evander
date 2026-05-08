@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -97,6 +98,11 @@ class AgentCopyFilesEffectProvider(VmCopyFilesEffectProvider):
 
     def _worker_file_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
         content = entry.get("content")
+        payload: dict[str, Any] = {
+            "destination_path": entry["destination_path"],
+            "mode": entry.get("mode"),
+            "overwrite": bool(entry.get("overwrite", True)),
+        }
         if content is None:
             source_path = normalize_optional_string(entry.get("source_path"))
             if not source_path:
@@ -108,13 +114,15 @@ class AgentCopyFilesEffectProvider(VmCopyFilesEffectProvider):
                 raise ValueError(
                     "effect:agent:copy-files only supports file sources for container sessions"
                 )
-            content = local_source.read_text(encoding="utf-8")
-        return {
-            "destination_path": entry["destination_path"],
-            "content": str(content),
-            "mode": entry.get("mode"),
-            "overwrite": bool(entry.get("overwrite", True)),
-        }
+            payload["content_base64"] = base64.b64encode(local_source.read_bytes()).decode(
+                "ascii"
+            )
+            return payload
+        if isinstance(content, (bytes, bytearray)):
+            payload["content_base64"] = base64.b64encode(bytes(content)).decode("ascii")
+        else:
+            payload["content"] = str(content)
+        return payload
 
     def _effect(self) -> AgentCopyFilesEffectDefinition:
         if not isinstance(self.effect_definition, AgentCopyFilesEffectDefinition):

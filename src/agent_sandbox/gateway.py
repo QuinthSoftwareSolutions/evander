@@ -5,13 +5,11 @@ import base64
 import contextlib
 import json
 import logging
-import mimetypes
 import os
 from datetime import datetime, timezone
 from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any, Literal
-from hashlib import sha256
 from uuid import uuid4
 
 import httpx
@@ -39,7 +37,18 @@ from agent_sandbox.messaging.agent_prompt_tokens import (
     issue_agent_prompt_response_token,
     verify_agent_prompt_response_token,
 )
+from agent_sandbox.communication_artifacts import (
+    CommunicationArtifactStore,
+    normalize_safe_filename,
+    validate_artifact_id,
+)
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
+from agent_sandbox.effects.providers.base import EffectRuntimeContext
+from agent_sandbox.effects.providers.schemas import (
+    AgentCopyFilesEffectDefinition,
+    VmCopyFilesItemDefinition,
+)
 from agent_sandbox.email.http_utils import ProviderRequestError
 from agent_sandbox.email.providers import EmailDraftAttachment
 from agent_sandbox.issues.service import IssueService
@@ -54,6 +63,8 @@ from agent_sandbox.models import (
     AdoBacklogQueryResponse,
     AuditEvent,
     CommunicationAttachmentRef,
+    CommunicationCopyArtifactToWorkspaceRequest,
+    CommunicationCopyArtifactToWorkspaceResponse,
     CommunicationDownloadAttachmentRequest,
     CommunicationDownloadAttachmentResponse,
     CommunicationFileArtifact,
@@ -641,47 +652,45 @@ def create_server(context: RuntimeContext) -> FastMCP:
         )
 
 
-    def _communication_artifact_dir() -> Path:
-        path = context.config.runtime_dir / "communication-artifacts"
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
-    def _artifact_metadata_path(artifact_id: str) -> Path:
-        return _communication_artifact_dir() / f"{artifact_id}.json"
-
-    def _artifact_blob_path(artifact_id: str) -> Path:
-        return _communication_artifact_dir() / f"{artifact_id}.bin"
+    def _communication_artifact_store() -> CommunicationArtifactStore:
+        store = CommunicationArtifactStore(context.config.runtime_dir)
+        store.cleanup_expired()
+        return store
 
     def _safe_artifact_id(value: str) -> str:
-        normalized = str(value or "").strip()
-        if not normalized or any(part in normalized for part in ("/", "\\", "..")):
-            raise ToolError("artifact_id must be an opaque staged artifact ID")
-        return normalized
+        try:
+            return validate_artifact_id(value)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
+
+    def _artifact_to_model(record: Any) -> CommunicationFileArtifact:
+        payload = (
+            record.model_dump(mode="json")
+            if hasattr(record, "model_dump")
+            else dict(record)
+        )
+        return CommunicationFileArtifact.model_validate(payload)
 
     def _load_artifacts(artifact_ids: list[str]) -> list[CommunicationFileArtifact]:
         artifacts: list[CommunicationFileArtifact] = []
+        store = _communication_artifact_store()
         for artifact_id in artifact_ids:
             safe_id = _safe_artifact_id(artifact_id)
-            metadata_path = _artifact_metadata_path(safe_id)
-            blob_path = _artifact_blob_path(safe_id)
-            if not metadata_path.is_file() or not blob_path.is_file():
-                raise ToolError(f"Unknown staged artifact_id: {safe_id}")
-            artifacts.append(
-                CommunicationFileArtifact.model_validate(
-                    json.loads(metadata_path.read_text(encoding="utf-8"))
-                )
-            )
+            try:
+                artifacts.append(_artifact_to_model(store.get(safe_id).metadata))
+            except FileNotFoundError as exc:
+                raise ToolError(str(exc)) from exc
         return artifacts
 
     def _artifact_payloads(artifact_ids: list[str]) -> list[dict[str, Any]]:
         payloads: list[dict[str, Any]] = []
-        for artifact in _load_artifacts(artifact_ids):
-            payloads.append(
-                {
-                    **artifact.model_dump(mode="json"),
-                    "path": str(_artifact_blob_path(artifact.artifact_id)),
-                }
-            )
+        store = _communication_artifact_store()
+        for artifact_id in artifact_ids:
+            safe_id = _safe_artifact_id(artifact_id)
+            try:
+                payloads.append(store.payload(safe_id))
+            except FileNotFoundError as exc:
+                raise ToolError(str(exc)) from exc
         return payloads
 
     def _artifact_audit_summaries(artifact_ids: list[str]) -> list[dict[str, Any]]:
@@ -695,6 +704,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 "size": artifact.byte_count,
                 "mime_type": artifact.mime_type,
                 "filename": artifact.filename,
+                "normalized_safe_filename": artifact.normalized_safe_filename,
+                "expires_at": artifact.expires_at,
             }
             for artifact in _load_artifacts(artifact_ids)
         ]
@@ -980,26 +991,23 @@ def create_server(context: RuntimeContext) -> FastMCP:
         filename: str,
         mime_type: str | None,
     ) -> CommunicationFileArtifact:
-        digest = sha256(content).hexdigest()
-        artifact_id = f"comm_{uuid4().hex}"
-        _artifact_blob_path(artifact_id).write_bytes(content)
-        resolved_mime = mime_type or mimetypes.guess_type(filename)[0]
-        artifact = CommunicationFileArtifact(
-            artifact_id=artifact_id,
-            provider=request.provider.strip().lower(),
+        store = _communication_artifact_store()
+        source_channel = request.channel_id or request.channel_target
+        record = store.stage(
+            provider=request.provider,
+            session_id=request.session_id,
+            content=content,
+            original_filename=filename,
+            mime_type=mime_type,
             source_message_id=request.message_id,
             source_attachment_id=request.attachment_id,
-            filename=filename,
-            mime_type=resolved_mime,
-            byte_count=len(content),
-            sha256=digest,
-            metadata={"storage": "host_artifact_store"},
+            source_channel=source_channel,
+            source_mailbox=request.mailbox_id,
+            metadata={
+                "attachment_ref": ref.model_dump(mode="json"),
+            },
         )
-        _artifact_metadata_path(artifact_id).write_text(
-            json.dumps(artifact.model_dump(mode="json"), sort_keys=True),
-            encoding="utf-8",
-        )
-        return artifact
+        return _artifact_to_model(record)
 
     def _admin_service() -> AdminService:
         return AdminService(context.config.runtime_dir)
@@ -4781,6 +4789,97 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.COMMUNICATION_DOWNLOAD_ATTACHMENT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def communication_copy_artifact_to_workspace(
+        session_id: str,
+        artifact_id: str,
+        destination_filename: str | None = None,
+        overwrite: bool = True,
+    ) -> dict[str, Any]:
+        request = CommunicationCopyArtifactToWorkspaceRequest(
+            session_id=session_id,
+            artifact_id=artifact_id,
+            destination_filename=destination_filename,
+            overwrite=overwrite,
+        )
+        args = request.model_dump(mode="json")
+        try:
+            session = context.policy.require_tool(
+                session_id, ToolName.COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE
+            )
+            context.policy.require_communication_file_receive_enabled(session)
+            staged = _communication_artifact_store().get(_safe_artifact_id(artifact_id))
+            artifact = _artifact_to_model(staged.metadata)
+            if artifact.session_id != session_id:
+                raise ToolError("artifact_id is not owned by this session")
+            requested_name = (
+                destination_filename or artifact.normalized_safe_filename or artifact.filename
+            )
+            safe_name = context.policy.require_safe_communication_filename(session, requested_name)
+            # Provider filenames are never used as paths; the only destination is this
+            # controlled workspace drop directory plus a policy-validated basename.
+            safe_name = normalize_safe_filename(safe_name)
+            destination_path = f"/home/agent/communication-artifacts/{safe_name}"
+
+            effect = AgentCopyFilesEffectDefinition(
+                id="communication-copy-artifact-to-workspace",
+                type="effect:agent:copy-files",
+                session_id=session_id,
+                files=[
+                    VmCopyFilesItemDefinition(
+                        source_path=str(staged.blob_path),
+                        destination_path=destination_path,
+                        overwrite=overwrite,
+                    )
+                ],
+            )
+            effect_context = EffectRuntimeContext(
+                provider_config=context.resolve_provider_config_for_session(session_id).model_dump(
+                    mode="json"
+                ),
+                admin_service=_admin_service(),
+                metadata={"directory_path": session.directory_path or "root"},
+            )
+            provider = AgentCopyFilesEffectProvider()
+            provider.initialize(effect_definition=effect, runtime_context=effect_context)
+            copy_result = provider.execute()
+            response = CommunicationCopyArtifactToWorkspaceResponse(
+                artifact=artifact,
+                destination_path=destination_path,
+                copied_count=int(copy_result.get("copied_count") or 0),
+                copied_paths=list(copy_result.get("copied_paths") or []),
+                result=copy_result,
+            )
+            result = response.model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE,
+                args,
+                {
+                    "decision": "allowed",
+                    "artifact_id": artifact.artifact_id,
+                    "destination_path": destination_path,
+                    "copied_count": response.copied_count,
+                    "copied_paths": response.copied_paths,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(
+                session_id, ToolName.COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE, args, str(exc)
+            )
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE,
                 args,
                 str(exc),
                 decision="error",
