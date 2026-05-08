@@ -336,6 +336,48 @@ class PolicyEngine:
                 f"Inbound communication file receive is disabled for session {session.session_id}"
             )
 
+    def require_inline_media_receive_enabled(
+        self,
+        session: SessionManifest,
+        *,
+        source_kind: str,
+    ) -> None:
+        """Require receive permission for inline media that will become staged artifacts.
+
+        PR feedback and backlog inline screenshots are not chat attachments, but they use
+        the same host-side communication artifact staging path.  Keep a single receive
+        gate so sessions must explicitly opt in before any provider-sourced media can
+        be downloaded.
+        """
+
+        try:
+            self.require_communication_file_receive_enabled(session)
+        except PolicyError as exc:
+            normalized_source = str(source_kind or "inline_media").strip() or "inline_media"
+            raise PolicyError(
+                f"Inline media receive is disabled for {normalized_source} in session "
+                f"{session.session_id}"
+            ) from exc
+
+    def require_inline_media_content(
+        self,
+        session: SessionManifest,
+        *,
+        source_kind: str,
+        filename: str,
+        mime_type: str | None,
+        byte_count: int,
+    ) -> None:
+        """Apply the communication-file MIME/size policy to inline media downloads."""
+
+        self.require_inline_media_receive_enabled(session, source_kind=source_kind)
+        self.require_communication_file_content(
+            session,
+            filename=filename,
+            mime_type=mime_type,
+            byte_count=byte_count,
+        )
+
     def require_communication_file_send_enabled(self, session: SessionManifest) -> None:
         if not self._communication_file_policy_value(
             session, "communication_file_send_enabled"

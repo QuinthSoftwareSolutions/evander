@@ -1317,7 +1317,6 @@ def create_server(context: RuntimeContext) -> FastMCP:
         return _artifact_to_model(record)
 
     _INLINE_MEDIA_SOURCE_KINDS = {"pr_feedback", "ado_backlog", "communication"}
-    _INLINE_IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/gif"}
     _INLINE_MEDIA_SECRET_FIELDS = {
         "authorization",
         "token",
@@ -1506,7 +1505,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         tool_name: ToolName = ToolName.LIST_INLINE_MEDIA,
     ) -> list[tuple[InlineMediaRef, dict[str, Any]]]:
         session = context.policy.require_tool(request.session_id, tool_name)
-        context.policy.require_communication_file_receive_enabled(session)
+        context.policy.require_inline_media_receive_enabled(
+            session, source_kind="pr_feedback"
+        )
         allowed_streams = {
             (stream["provider"], stream["repo"], stream["pr_id"])
             for stream in context.policy.require_pr_feedback_streams(session)
@@ -1573,7 +1574,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         tool_name: ToolName = ToolName.LIST_INLINE_MEDIA,
     ) -> list[tuple[InlineMediaRef, dict[str, Any]]]:
         session = context.policy.require_tool(request.session_id, tool_name)
-        context.policy.require_communication_file_receive_enabled(session)
+        context.policy.require_inline_media_receive_enabled(
+            session, source_kind="ado_backlog"
+        )
         issue_service = IssueService(context.provider_config)
         payload = issue_service.get_remote_backlog_item_by_id(
             provider=request.provider.strip().lower(),
@@ -1703,6 +1706,101 @@ def create_server(context: RuntimeContext) -> FastMCP:
             },
         )
         return _artifact_to_model(record)
+
+    def _inline_media_source_audit_fields(
+        request: ListInlineMediaRequest | DownloadInlineMediaRequest,
+    ) -> dict[str, Any]:
+        source_kind = _normalize_inline_media_source_kind(request.source_kind)
+        fields: dict[str, Any] = {
+            "source_kind": source_kind,
+            "provider": str(request.provider or "").strip().lower(),
+        }
+        if source_kind == "pr_feedback":
+            raw_feedback = context.pr_feedback_service.store.read_raw().get("feedback", {})
+            raw_item = (
+                raw_feedback.get(request.resource_id) if isinstance(raw_feedback, dict) else None
+            )
+            if isinstance(raw_item, dict):
+                fields.update(
+                    {
+                        "feedback_id": request.resource_id,
+                        "repo": str(raw_item.get("repo") or "").strip() or None,
+                        "pr_id": str(raw_item.get("pr_id") or "").strip() or None,
+                        "comment_id": str(raw_item.get("comment_id") or "").strip() or None,
+                    }
+                )
+            else:
+                fields["feedback_id"] = request.resource_id
+        elif source_kind == "ado_backlog":
+            fields.update(
+                {
+                    "work_item_id": request.resource_id,
+                    "project": request.project,
+                    "comment_id": request.comment_id,
+                }
+            )
+        else:
+            fields.update(
+                {
+                    "message_id": request.resource_id,
+                    "mailbox_id": request.mailbox_id,
+                    "channel_id": request.channel_id,
+                    "channel_target": request.channel_target,
+                }
+            )
+        return fields
+
+    def _inline_media_ref_audit_payload(ref: InlineMediaRef) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "provider": ref.provider,
+            "source_kind": ref.source_kind,
+            "resource_id": ref.resource_id,
+            "media_id": ref.media_id,
+            "comment_id": ref.comment_id,
+            "filename": ref.filename,
+            "mime_type": ref.mime_type,
+            "byte_count": ref.byte_count,
+        }
+        if ref.source_kind == "pr_feedback":
+            payload["feedback_id"] = ref.resource_id
+        elif ref.source_kind == "ado_backlog":
+            payload["work_item_id"] = ref.resource_id
+        else:
+            payload["message_id"] = ref.resource_id
+        return payload
+
+    def _audit_inline_media_operation(
+        *,
+        event_type: str,
+        session_id: str,
+        request: ListInlineMediaRequest | DownloadInlineMediaRequest,
+        media: list[InlineMediaRef],
+        result: dict[str, Any],
+        decision: str = "allowed",
+    ) -> None:
+        session = context.policy.get_session(session_id)
+        source_fields = _inline_media_source_audit_fields(request)
+        context.audit.log(
+            AuditEvent(
+                event_type=event_type,
+                session_id=session_id,
+                vm_id=session.vm_id,
+                provider=source_fields.get("provider"),
+                repo=source_fields.get("repo"),
+                pr_id=source_fields.get("pr_id"),
+                tool_name=(
+                    ToolName.LIST_INLINE_MEDIA.value
+                    if event_type == "inline_media_list"
+                    else ToolName.DOWNLOAD_INLINE_MEDIA.value
+                ),
+                decision=decision,
+                args={**request.model_dump(mode="json"), **source_fields},
+                result={
+                    **result,
+                    "media": [_inline_media_ref_audit_payload(item) for item in media],
+                },
+            )
+        )
 
     def _admin_service() -> AdminService:
         return AdminService(context.config.runtime_dir)
@@ -5499,21 +5597,53 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 media=media,
             )
             result = response.model_dump(mode="json")
+            list_audit_result = {
+                "source_kind": response.source_kind,
+                "provider": response.provider,
+                "resource_id": resource_id,
+                "count": len(media),
+                "comment_ids": sorted(
+                    {item.comment_id for item in media if item.comment_id}
+                ),
+                "mime_types": sorted({item.mime_type for item in media if item.mime_type}),
+                "byte_count": sum(item.byte_count or 0 for item in media),
+            }
             audit_success(
                 session_id,
                 ToolName.LIST_INLINE_MEDIA,
                 args,
-                {"source_kind": response.source_kind, "provider": response.provider, "resource_id": resource_id, "count": len(media)},
+                list_audit_result,
+            )
+            _audit_inline_media_operation(
+                event_type="inline_media_list",
+                session_id=session_id,
+                request=request,
+                media=media,
+                result=list_audit_result,
             )
             return result
         except PolicyError as exc:
             audit_failure(session_id, ToolName.LIST_INLINE_MEDIA, args, str(exc))
             raise
         except (httpx.HTTPError, ProviderRequestError) as exc:
-            audit_failure(session_id, ToolName.LIST_INLINE_MEDIA, args, str(exc), decision="error", error_class="adapter_http_error")
+            audit_failure(
+                session_id,
+                ToolName.LIST_INLINE_MEDIA,
+                args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
             raise
         except Exception as exc:
-            audit_failure(session_id, ToolName.LIST_INLINE_MEDIA, args, str(exc), decision="error", error_class="unexpected_error")
+            audit_failure(
+                session_id,
+                ToolName.LIST_INLINE_MEDIA,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
             raise
 
     @server.tool()
@@ -5542,6 +5672,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             channel_target=channel_target,
         )
         args = request.model_dump(mode="json")
+        audit_args = dict(args)
         try:
             list_request = ListInlineMediaRequest(
                 session_id=session_id,
@@ -5559,6 +5690,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
             if selected is None:
                 raise ToolError(f"Unknown inline media_id for resource: {media_id}")
             ref, raw = selected
+            audit_args.update(_inline_media_ref_audit_payload(ref))
+            session = context.policy.get_session(session_id)
+            context.policy.require_inline_media_receive_enabled(
+                session, source_kind=ref.source_kind
+            )
             if ref.source_kind == "communication" and ref.provider == "teams":
                 content, filename, mime_type = _download_inline_media_bytes(request, ref, raw)
             elif ref.source_kind == "communication":
@@ -5588,12 +5724,17 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 )
             else:
                 content, filename, mime_type = _download_inline_media_bytes(request, ref, raw)
-            normalized_mime = str(mime_type or "").strip().lower()
-            if normalized_mime not in _INLINE_IMAGE_MIME_TYPES:
-                raise PolicyError("Inline media downloads are limited to image/png, image/jpeg, and image/gif")
-            session = context.policy.get_session(session_id)
-            context.policy.require_communication_file_content(
+            audit_args.update(
+                {
+                    "filename": filename,
+                    "mime_type": mime_type,
+                    "byte_count": len(content),
+                    "comment_id": ref.comment_id,
+                }
+            )
+            context.policy.require_inline_media_content(
                 session,
+                source_kind=ref.source_kind,
                 filename=filename,
                 mime_type=mime_type,
                 byte_count=len(content),
@@ -5607,29 +5748,60 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             response = DownloadInlineMediaResponse(artifact=artifact)
             result = response.model_dump(mode="json")
+            download_audit_result = {
+                "source_kind": ref.source_kind,
+                "provider": ref.provider,
+                "resource_id": ref.resource_id,
+                "media_id": ref.media_id,
+                "comment_id": ref.comment_id,
+                "artifact_id": artifact.artifact_id,
+                "byte_count": artifact.byte_count,
+                "mime_type": artifact.mime_type,
+            }
             audit_success(
                 session_id,
                 ToolName.DOWNLOAD_INLINE_MEDIA,
-                {**args, "filename": filename, "mime_type": mime_type, "byte_count": len(content)},
-                {
-                    "source_kind": ref.source_kind,
-                    "provider": ref.provider,
-                    "resource_id": ref.resource_id,
-                    "media_id": ref.media_id,
-                    "artifact_id": artifact.artifact_id,
-                    "byte_count": artifact.byte_count,
-                    "mime_type": artifact.mime_type,
-                },
+                audit_args,
+                download_audit_result,
+            )
+            _audit_inline_media_operation(
+                event_type="inline_media_download",
+                session_id=session_id,
+                request=request,
+                media=[
+                    ref.model_copy(
+                        update={
+                            "filename": filename,
+                            "mime_type": mime_type,
+                            "byte_count": len(content),
+                        }
+                    )
+                ],
+                result=download_audit_result,
             )
             return result
         except PolicyError as exc:
-            audit_failure(session_id, ToolName.DOWNLOAD_INLINE_MEDIA, args, str(exc))
+            audit_failure(session_id, ToolName.DOWNLOAD_INLINE_MEDIA, audit_args, str(exc))
             raise
         except (httpx.HTTPError, ProviderRequestError) as exc:
-            audit_failure(session_id, ToolName.DOWNLOAD_INLINE_MEDIA, args, str(exc), decision="error", error_class="adapter_http_error")
+            audit_failure(
+                session_id,
+                ToolName.DOWNLOAD_INLINE_MEDIA,
+                audit_args,
+                str(exc),
+                decision="error",
+                error_class="adapter_http_error",
+            )
             raise
         except Exception as exc:
-            audit_failure(session_id, ToolName.DOWNLOAD_INLINE_MEDIA, args, str(exc), decision="error", error_class="unexpected_error")
+            audit_failure(
+                session_id,
+                ToolName.DOWNLOAD_INLINE_MEDIA,
+                audit_args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
             raise
 
 

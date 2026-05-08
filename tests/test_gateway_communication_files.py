@@ -320,6 +320,26 @@ def test_inline_media_pr_feedback_downloads_and_copies_artifact(
     assert artifact["metadata"]["source_kind"] == "pr_feedback"
     staged = CommunicationArtifactStore(tmp_path).get(artifact["artifact_id"])
     assert staged.blob_path.read_bytes() == b"png-bytes"
+    audit_events = [
+        json.loads(line)
+        for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    list_event = next(
+        event for event in audit_events if event["event_type"] == "inline_media_list"
+    )
+    assert list_event["provider"] == "github"
+    assert list_event["pr_id"] == "17"
+    assert list_event["result"]["media"][0]["comment_id"] == "comment-1"
+    assert list_event["result"]["media"][0]["mime_type"] == "image/png"
+    assert list_event["result"]["media"][0]["byte_count"] == len(b"png-bytes")
+    download_event = next(
+        event for event in audit_events if event["event_type"] == "inline_media_download"
+    )
+    assert download_event["provider"] == "github"
+    assert download_event["pr_id"] == "17"
+    assert download_event["result"]["media"][0]["comment_id"] == "comment-1"
+    assert download_event["result"]["media"][0]["mime_type"] == "image/png"
+    assert download_event["result"]["media"][0]["byte_count"] == len(b"png-bytes")
 
     copied = call_tool(
         server,
@@ -421,3 +441,212 @@ def test_inline_media_ado_backlog_uses_issue_service_and_content_policy(
     assert artifact["metadata"]["source_kind"] == "ado_backlog"
     staged = CommunicationArtifactStore(tmp_path).get(artifact["artifact_id"])
     assert staged.blob_path.read_bytes() == b"jpeg-bytes"
+
+
+def test_pr_feedback_inline_media_rejects_mime_before_staging(tmp_path: Path) -> None:
+    from agent_sandbox.daemons.pr_feedback_worker import FeedbackEnvelope
+
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.DOWNLOAD_INLINE_MEDIA],
+            communication_file_receive_enabled=True,
+            communication_file_max_bytes=100,
+            communication_file_allowed_mime_types=["image/png"],
+            communication_file_allowed_extensions=[".png"],
+            metadata={
+                "pr_feedback_streams": [
+                    {"provider": "github", "repo": "org/repo", "pr_id": "17"}
+                ]
+            },
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    context.pr_feedback_service.store.add_feedback_if_new(
+        FeedbackEnvelope(
+            feedback_id="feedback-1",
+            provider="github",
+            repo="org/repo",
+            pr_id="17",
+            comment_id="comment-1",
+            author="reviewer",
+            body="See inline image",
+            created_at=datetime.now(UTC),
+            inline_media=[
+                {
+                    "media_id": "media-1",
+                    "comment_id": "comment-1",
+                    "filename": "review.gif",
+                    "mime_type": "image/gif",
+                    "byte_count": len(b"gif-bytes"),
+                    "content_base64": base64.b64encode(b"gif-bytes").decode("ascii"),
+                }
+            ],
+        )
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="MIME type 'image/gif' is not allowlisted"):
+        call_tool(
+            server,
+            "download_inline_media",
+            {
+                "session_id": "session-1",
+                "source_kind": "pr_feedback",
+                "provider": "github",
+                "resource_id": "feedback-1",
+                "media_id": "media-1",
+            },
+        )
+
+    artifact_dir = tmp_path / "communication-artifacts"
+    assert not artifact_dir.exists() or list(artifact_dir.glob("comm_*")) == []
+    audit_events = [
+        json.loads(line)
+        for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    failure = audit_events[-1]
+    assert failure["tool_name"] == "download_inline_media"
+    assert failure["decision"] == "denied"
+    assert failure["args"]["source_kind"] == "pr_feedback"
+    assert failure["args"]["provider"] == "github"
+    assert failure["args"]["resource_id"] == "feedback-1"
+    assert failure["args"]["comment_id"] == "comment-1"
+    assert failure["args"]["mime_type"] == "image/gif"
+    assert failure["args"]["byte_count"] == len(b"gif-bytes")
+
+
+def test_ado_backlog_inline_media_rejects_oversize_before_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeIssueService:
+        def __init__(self, provider_config: object) -> None:
+            self.provider_config = provider_config
+
+        def get_remote_backlog_item_by_id(self, **kwargs: object) -> dict[str, object]:
+            assert kwargs["backlog_item_id"] == "123"
+            return {
+                "provider": "ado",
+                "id": "123",
+                "project": "Project",
+                "title": "Bug with screenshot",
+                "comments": [
+                    {
+                        "id": "comment-7",
+                        "inline_media": [
+                            {
+                                "media_id": "ado-image-1",
+                                "filename": "screen.png",
+                                "mime_type": "image/png",
+                                "byte_count": len(b"too-large"),
+                                "content_base64": base64.b64encode(b"too-large").decode(
+                                    "ascii"
+                                ),
+                            }
+                        ],
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(gateway, "IssueService", FakeIssueService)
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.DOWNLOAD_INLINE_MEDIA],
+            communication_file_receive_enabled=True,
+            communication_file_max_bytes=4,
+            communication_file_allowed_mime_types=["image/png"],
+            communication_file_allowed_extensions=[".png"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="exceeds max bytes"):
+        call_tool(
+            server,
+            "download_inline_media",
+            {
+                "session_id": "session-1",
+                "source_kind": "ado_backlog",
+                "provider": "ado",
+                "resource_id": "123",
+                "media_id": "ado-image-1",
+                "project": "Project",
+            },
+        )
+
+    artifact_dir = tmp_path / "communication-artifacts"
+    assert not artifact_dir.exists() or list(artifact_dir.glob("comm_*")) == []
+    audit_events = [
+        json.loads(line)
+        for line in (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    failure = audit_events[-1]
+    assert failure["tool_name"] == "download_inline_media"
+    assert failure["decision"] == "denied"
+    assert failure["args"]["source_kind"] == "ado_backlog"
+    assert failure["args"]["provider"] == "ado"
+    assert failure["args"]["resource_id"] == "123"
+    assert failure["args"]["work_item_id"] == "123"
+    assert failure["args"]["comment_id"] == "comment-7"
+    assert failure["args"]["mime_type"] == "image/png"
+    assert failure["args"]["byte_count"] == len(b"too-large")
+
+
+def test_pr_feedback_inline_media_requires_receive_permission(tmp_path: Path) -> None:
+    from agent_sandbox.daemons.pr_feedback_worker import FeedbackEnvelope
+
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.DOWNLOAD_INLINE_MEDIA],
+            metadata={
+                "pr_feedback_streams": [
+                    {"provider": "github", "repo": "org/repo", "pr_id": "17"}
+                ]
+            },
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    context.pr_feedback_service.store.add_feedback_if_new(
+        FeedbackEnvelope(
+            feedback_id="feedback-1",
+            provider="github",
+            repo="org/repo",
+            pr_id="17",
+            comment_id="comment-1",
+            author="reviewer",
+            body="See inline image",
+            created_at=datetime.now(UTC),
+            inline_media=[
+                {
+                    "media_id": "media-1",
+                    "filename": "review.png",
+                    "mime_type": "image/png",
+                    "content_base64": base64.b64encode(b"png-bytes").decode("ascii"),
+                }
+            ],
+        )
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="Inline media receive is disabled for pr_feedback"):
+        call_tool(
+            server,
+            "download_inline_media",
+            {
+                "session_id": "session-1",
+                "source_kind": "pr_feedback",
+                "provider": "github",
+                "resource_id": "feedback-1",
+                "media_id": "media-1",
+            },
+        )
+
+    artifact_dir = tmp_path / "communication-artifacts"
+    assert not artifact_dir.exists() or list(artifact_dir.glob("comm_*")) == []
