@@ -38,6 +38,7 @@ import {
   type WorkflowLayout,
   type WorkflowNodeConfig,
   type WorkflowNodeKind,
+  type WorkflowOutputSchemas,
   type WorkflowRunNodeActivity,
   type WorkflowRunSnapshot,
   type WorkflowRunSummary,
@@ -308,14 +309,6 @@ function emptyConfig(): WorkflowConfig {
 
 function emptyCatalog(): WorkflowEditorCatalog {
   return { worker_id: "trigger-orchestrator", nodes: [] };
-}
-
-function agentRunCompletedSchemaNode(): WorkflowNodeConfig {
-  return {
-    id: "__agent-run-completed__",
-    display_name: "Agent run completed",
-    type: "trigger:agent:run:completed",
-  };
 }
 
 function nodeCollections(config: WorkflowConfig) {
@@ -1093,482 +1086,70 @@ function directUpstreamNodeIds(config: WorkflowConfig, targetId: string): string
   return config.edges.filter((edge) => edge.target_id === targetId).map((edge) => edge.source_id);
 }
 
-function declaredOutputsForNode(
-  node: WorkflowNodeConfig | undefined,
-  config?: WorkflowConfig,
-  resolving: Set<string> = new Set<string>(),
-): Record<string, unknown> {
-  if (!node) return {};
-  const schema: Record<string, unknown> = {};
-  const derivedOnlyTypes = new Set(["gate:filter", "gate:merge", "gate:await-agent", "gate:for"]);
-  const staticSchemas: Record<string, Record<string, unknown>> = {
-    "trigger:ticket:created": {
-      ticket: {
-        type: "object",
-        properties: {
-          issue_id: { type: "string" },
-          issue_number: { type: "string" },
-          title: { type: "string" },
-          body: { type: "string" },
-          description: { type: "string" },
-          reason: { type: "string" },
-          rejection_reason: { type: "string" },
-          yaml_path: { type: "string" },
-          directory_path: { type: "string" },
-          repo_source: { type: "string" },
-          source_type: { type: "string" },
-          tags: { type: "array", items: { type: "string" } },
-          state: { type: "string" },
-          url: { type: "string" },
-          comments: { type: "array" },
-          source: { type: "string" },
-          metadata: { type: "object" },
-          created_at: { type: "string" },
-          updated_at: { type: "string" },
-        },
-      },
-    },
-    "trigger:ticket:changed": {
-      ticket: {
-        type: "object",
-        properties: {
-          issue_id: { type: "string" },
-          issue_number: { type: "string" },
-          title: { type: "string" },
-          body: { type: "string" },
-          description: { type: "string" },
-          reason: { type: "string" },
-          rejection_reason: { type: "string" },
-          yaml_path: { type: "string" },
-          directory_path: { type: "string" },
-          repo_source: { type: "string" },
-          source_type: { type: "string" },
-          tags: { type: "array", items: { type: "string" } },
-          state: { type: "string" },
-          url: { type: "string" },
-          comments: { type: "array" },
-          source: { type: "string" },
-          metadata: { type: "object" },
-          created_at: { type: "string" },
-          updated_at: { type: "string" },
-        },
-      },
-    },
-    "trigger:discord:new-message": {
-      message: {
-        type: "object",
-        properties: {
-          message_id: { type: "string" },
-          channel_id: { type: "string" },
-          author_id: { type: "string" },
-          author_name: { type: "string" },
-          content: { type: "string" },
-          created_at: { type: "string" },
-          in_reply_to: { type: "string" },
-          raw: { type: "object" },
-        },
-      },
-    },
-    "trigger:teams:new-message": {
-      message: {
-        type: "object",
-        properties: {
-          cursor: { type: "string" },
-          message_id: { type: "string" },
-          author_id: { type: "string" },
-          team_id: { type: "string" },
-          channel_id: { type: "string" },
-          thread_id: { type: "string" },
-          content: { type: "string" },
-          created_at: { type: "string" },
-          metadata: { type: "object" },
-        },
-      },
-    },
-    "trigger:email:new-message": {
-      message: {
-        type: "object",
-        properties: {
-          mailbox_id: { type: "string" },
-          provider: { type: "string" },
-          folder: { type: "string" },
-          message_id: { type: "string" },
-          thread_id: { type: "string" },
-          sender: { type: "string" },
-          recipients: { type: "array", items: { type: "string" } },
-          received_at: { type: "string" },
-          unread: { type: "boolean" },
-          body_snippet: { type: "string" },
-          metadata: { type: "object" },
-        },
-      },
-    },
-    "trigger:pull-request:new-feedback": {
-      session_id: { type: "string" },
-      pr: {
-        type: "object",
-        properties: {
-          provider: { type: "string" },
-          repo: { type: "string" },
-          pr_id: { type: "string" },
-        },
-      },
-      feedback: {
-        type: "object",
-        properties: {
-          feedback_id: { type: "string" },
-          provider: { type: "string" },
-          repo: { type: "string" },
-          pr_id: { type: "string" },
-          thread_id: { type: "string" },
-          comment_id: { type: "string" },
-          author: { type: "string" },
-          body: { type: "string" },
-          file_path: { type: "string" },
-          line: { type: "integer" },
-          created_at: { type: "string" },
-          in_reply_to: { type: "string" },
-          resolved: { type: "boolean" },
-        },
-      },
-    },
-    "trigger:review:new-request": {
-      review_request: {
-        type: "object",
-        properties: {
-          request_id: { type: "string" },
-          requested_at: { type: "string" },
-          requested_by: { type: "string" },
-          request_channel: { type: "string" },
-          provider: { type: "string" },
-          repo: { type: "string" },
-          pr_id: { type: "string" },
-          canonical_url: { type: "string" },
-          title: { type: "string" },
-          body: { type: "string" },
-          base_branch: { type: "string" },
-          head_branch: { type: "string" },
-          base_commit: { type: "string" },
-          head_commit: { type: "string" },
-          review_type: { type: "string" },
-          instructions: { type: "string" },
-          directory_path: { type: "string" },
-          model: { type: "string" },
-          labels: { type: "object" },
-          metadata: { type: "object" },
-          status: { type: "string" },
-          updated_at: { type: "string" },
-          lease_owner: { type: "string" },
-          lease_expires_at: { type: "string" },
-          dispatch_count: { type: "integer" },
-        },
-      },
-    },
-    "trigger:git:push": {
-      branch_name: { type: "string" },
-      commit_hash: { type: "string" },
-      old_commit_hash: { type: "string" },
-      ref_name: { type: "string" },
-      repo_path: { type: "string" },
-      repo_name: { type: "string" },
-      session_id: { type: "string" },
-      review_branch: { type: "string" },
-      notes_ref: { type: "string" },
-      trusted_repo_path: { type: "string" },
-      base_branch: { type: "string" },
-      canonical_origin_url: { type: "string" },
-    },
-    "trigger:agent:run:completed": {
-      vm: {
-        type: "object",
-        properties: {
-          vm_name: { type: "string" },
-          issue_number: { type: "string" },
-          session_ids: { type: "array", items: { type: "string" } },
-          labels: { type: "object" },
-          directory_paths: { type: "array", items: { type: "string" } },
-          libvirt_state: { type: "string" },
-          ip_address: { type: "string" },
-          agent_state: { type: "string" },
-          agent_repo_names: { type: "array", items: { type: "string" } },
-          last_state_update_at: { type: "string" },
-        },
-      },
-      vm_name: { type: "string" },
-      session_ids: { type: "array" },
-      labels: { type: "object" },
-      directory_paths: { type: "array" },
-      agent_repo_names: { type: "array" },
-      libvirt_state: { type: "string" },
-      agent_state: { type: "string" },
-      previous_agent_state: { type: "string" },
-      transition: {
-        type: "object",
-        properties: {
-          from: { type: "string" },
-          to: { type: "string" },
-        },
-      },
-      last_state_update_at: { type: "string" },
-      dispatch_id: { type: "string" },
-      scope: {
-        type: "object",
-        properties: {
-          directory_path: { type: "string" },
-          vm_name: { type: "string" },
-          session_id: { type: "string" },
-          vm_user: { type: "string" },
-        },
-      },
-      ip_address: { type: "string" },
-    },
-    "gate:for": {
-      current_element: { type: "object" },
-      current_index: { type: "integer" },
-      item_count: { type: "integer" },
-      is_done: { type: "boolean" },
-    },
-    "effect:vm:create": {
-      session_id: { type: "string" },
-      vm_name: { type: "string" },
-      labels: { type: "object" },
-      success: { type: "boolean" },
-      message: { type: "string" },
-    },
-    "effect:vm:clone-repo": {
-      session_id: { type: "string" },
-      vm_name: { type: "string" },
-      success: { type: "boolean" },
-      target_dir: { type: "string" },
-      guest_repo_name: { type: "string" },
-      remote_url: { type: "string" },
-      pr_notes_ref: { type: "string" },
-    },
-    "effect:vm:bootstrap-python": {
-      session_id: { type: "string" },
-      vm_name: { type: "string" },
-      success: { type: "boolean" },
-      message: { type: "string" },
-    },
-    "effect:vm:bootstrap-frontend": {
-      session_id: { type: "string" },
-      vm_name: { type: "string" },
-      success: { type: "boolean" },
-      message: { type: "string" },
-    },
-    "effect:vm:start": {
-      success: { type: "boolean" },
-      action: { type: "string" },
-      target: { type: "string" },
-      vm_name: { type: "string" },
-      message: { type: "string" },
-    },
-    "effect:vm:stop": {
-      success: { type: "boolean" },
-      action: { type: "string" },
-      target: { type: "string" },
-      vm_name: { type: "string" },
-      message: { type: "string" },
-    },
-    "effect:agent:prompt": {
-      dispatch_id: { type: "string" },
-      thread_id: { type: "string" },
-      success: { type: "boolean" },
-      output_mode: { type: "string" },
-    },
-    "effect:agent:enqueue-prompt": {
-      dispatch_id: { type: "string" },
-      thread_id: { type: "string" },
-      success: { type: "boolean" },
-      queued: { type: "boolean" },
-      queue_key: { type: "string" },
-      coalesced_count: { type: "integer" },
-      vm_name: { type: "string" },
-      session_id: { type: "string" },
-      execution_backend: { type: "string" },
-      execution_id: { type: "string" },
-    },
-    "effect:agent:exec": {
-      success: { type: "boolean" },
-      vm_name: { type: "string" },
-      session_id: { type: "string" },
-      execution_backend: { type: "string" },
-      execution_id: { type: "string" },
-      status: { type: "string" },
-      action: { type: "string" },
-      message: { type: "string" },
-      exit_code: { type: "integer" },
-      stdout: { type: "string" },
-      stderr: { type: "string" },
-    },
-    "effect:agent:destroy": {
-      success: { type: "boolean" },
-      action: { type: "string" },
-      target: { type: "string" },
-      session_id: { type: "string" },
-      execution_backend: { type: "string" },
-      vm_name: { type: "string" },
-      target_name: { type: "string" },
-      status: { type: "string" },
-      message: { type: "string" },
-    },
-    "effect:vm:exec": {
-      success: { type: "boolean" },
-      vm_name: { type: "string" },
-      session_id: { type: "string" },
-      action: { type: "string" },
-      message: { type: "string" },
-      exit_code: { type: "integer" },
-      stdout: { type: "string" },
-      stderr: { type: "string" },
-    },
-    "effect:vm:copy-files": {
-      success: { type: "boolean" },
-      action: { type: "string" },
-      message: { type: "string" },
-      target: { type: "string" },
-      vm_name: { type: "string" },
-      vm_ip: { type: "string" },
-      vm_user: { type: "string" },
-      directory_path: { type: "string" },
-      copied_count: { type: "integer" },
-      copied_paths: { type: "array" },
-      file_count: { type: "integer" },
-      copied_files: { type: "array" },
-    },
-    "effect:vm:delete-files": {
-      success: { type: "boolean" },
-      action: { type: "string" },
-      message: { type: "string" },
-      target: { type: "string" },
-      vm_name: { type: "string" },
-      vm_user: { type: "string" },
-      deleted_count: { type: "integer" },
-      deleted_paths: { type: "array" },
-    },
-    "effect:session:update-metadata": {
-      success: { type: "boolean" },
-      action: { type: "string" },
-      message: { type: "string" },
-      session_id: { type: "string" },
-      vm_name: { type: "string" },
-      directory_path: { type: "string" },
-      metadata: { type: "object" },
-    },
-    "effect:git:promote-agent-branch": {
-      success: { type: "boolean" },
-      action: { type: "string" },
-      message: { type: "string" },
-      host_repo_path: { type: "string" },
-      bare_repo_path: { type: "string" },
-      agent_branch: { type: "string" },
-      review_branch: { type: "string" },
-      remote_name: { type: "string" },
-    },
-    "effect:pr:create": {
-      success: { type: "boolean" },
-      action: { type: "string" },
-      message: { type: "string" },
-      pr_id: { type: "string" },
-      pr_url: { type: "string" },
-    },
-    "query:vm:run-state": {
-      vm_name: { type: "string" },
-      session_ids: { type: "array" },
-      libvirt_state: { type: "string" },
-      state_code: { type: "string" },
-      is_running: { type: "boolean" },
-      is_terminal: { type: "boolean" },
-    },
-    "query:git:pr-note": {
-      body: { type: "string" },
-      has_note: { type: "boolean" },
-      local_branch: { type: "string" },
-      host_repo_path: { type: "string" },
-      notes_ref: { type: "string" },
-      local_notes_ref: { type: "string" },
-      remote_name: { type: "string" },
-      commit_sha: { type: "string" },
-    },
-    "query:session-context": {
-      session_id: { type: "string" },
-      vm_name: { type: "string" },
-      directory_path: { type: "string" },
-      metadata: { type: "object" },
-      created_at: { type: "string" },
-      expires_at: { type: "string" },
-      model: { type: "string" },
-    },
-    "query:issue:get": {
-      issue_id: { type: "string" },
-      issue_number: { type: "string" },
-      title: { type: "string" },
-      body: { type: "string" },
-      state: { type: "string" },
-      url: { type: "string" },
-      source: { type: "string" },
-      source_type: { type: "string" },
-      directory_path: { type: "string" },
-      yaml_path: { type: "string" },
-      repo_source: { type: "string" },
-      metadata: { type: "object" },
-      comments: { type: "array" },
-      created_at: { type: "string" },
-      updated_at: { type: "string" },
-    },
-    "query:ado:work-items": {
-      provider: { type: "string" },
-      project: { type: "string" },
-      team: { type: "string" },
-      iteration_path: { type: "string" },
-      items: { type: "array" },
-      count: { type: "integer" },
-      paging: { type: "object" },
-    },
-  };
-  Object.assign(schema, staticSchemas[node.type] ?? {});
-  if (node.type === "gate:filter") {
-    const storedOutputs = isRecord(node.outputs) ? { ...node.outputs } : schema;
-    if (!config || resolving.has(node.id)) return storedOutputs;
-    resolving.add(node.id);
-    try {
-      const upstreamNodeId = directUpstreamNodeIds(config, node.id)[0] ?? "";
-      return declaredOutputsForNode(nodeById(config, upstreamNodeId), config, resolving);
-    } finally {
-      resolving.delete(node.id);
+function copyOutputSchema(schema: Record<string, unknown> | undefined): Record<string, unknown> {
+  return { ...(schema ?? {}) };
+}
+
+function deriveWorkflowOutputSchemas(
+  config: WorkflowConfig,
+  baseOutputSchemas: WorkflowOutputSchemas = {},
+): WorkflowOutputSchemas {
+  const nodesById = new Map(workflowNodes(config).map((node) => [node.id, node]));
+  const cache = new Map<string, Record<string, unknown>>();
+  const visiting = new Set<string>();
+
+  function resolve(nodeId: string): Record<string, unknown> {
+    const cached = cache.get(nodeId);
+    if (cached) return cached;
+    const node = nodesById.get(nodeId);
+    if (!node) return {};
+    if (visiting.has(nodeId)) {
+      const fallback = isRecord(baseOutputSchemas[nodeId]) ? baseOutputSchemas[nodeId] : undefined;
+      return copyOutputSchema(fallback);
     }
-  }
-  if (node.type === "gate:merge") {
-    const storedOutputs = isRecord(node.outputs) ? { ...node.outputs } : schema;
-    if (!config || resolving.has(node.id)) return storedOutputs;
-    resolving.add(node.id);
-    try {
-      const upstreamOutputs = directUpstreamNodeIds(config, node.id).map((upstreamNodeId) =>
-        declaredOutputsForNode(nodeById(config, upstreamNodeId), config, resolving),
+
+    visiting.add(nodeId);
+    let schema: Record<string, unknown>;
+    if (node.type === "gate:filter") {
+      schema = copyOutputSchema(resolve(directUpstreamNodeIds(config, node.id)[0] ?? ""));
+    } else if (node.type === "gate:merge") {
+      schema = mergeDeclaredOutputIntersection(
+        directUpstreamNodeIds(config, node.id).map((upstreamNodeId) => resolve(upstreamNodeId)),
       );
-      return mergeDeclaredOutputIntersection(upstreamOutputs);
-    } finally {
-      resolving.delete(node.id);
+    } else if (node.type === "gate:map" && isRecord(node.template)) {
+      schema = mapTemplateOutputSchema(node.template);
+    } else {
+      const backendSchema = isRecord(baseOutputSchemas[node.id]) ? baseOutputSchemas[node.id] : undefined;
+      schema = copyOutputSchema(backendSchema ?? (isRecord(node.outputs) ? node.outputs : undefined));
     }
-  }
-  if (node.type === "gate:map" && isRecord(node.template)) {
-    for (const [key, value] of Object.entries(node.template)) {
-      const outputName = key.trim();
-      if (!outputName) continue;
-      schema[outputName] = inferSchemaFromTemplateValue(value);
-    }
+    visiting.delete(nodeId);
+    cache.set(nodeId, schema);
     return schema;
   }
-  if (node.type === "gate:await-agent") {
-    return declaredOutputsForNode(
-      agentRunCompletedSchemaNode(),
-      config,
-      resolving,
-    );
+
+  const outputSchemas: WorkflowOutputSchemas = {};
+  for (const node of workflowNodes(config)) {
+    outputSchemas[node.id] = copyOutputSchema(resolve(node.id));
   }
-  if (derivedOnlyTypes.has(node.type)) return schema;
-  if (isRecord(node.outputs)) {
-    Object.assign(schema, node.outputs);
+  return outputSchemas;
+}
+
+function declaredOutputsForNode(
+  node: WorkflowNodeConfig | undefined,
+  outputSchemas: WorkflowOutputSchemas = {},
+): Record<string, unknown> {
+  if (!node) return {};
+  const schema = isRecord(outputSchemas[node.id]) ? outputSchemas[node.id] : undefined;
+  if (schema) return copyOutputSchema(schema);
+  return copyOutputSchema(isRecord(node.outputs) ? node.outputs : undefined);
+}
+
+function mapTemplateOutputSchema(template: Record<string, unknown>): Record<string, unknown> {
+  const schema: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(template)) {
+    const outputName = key.trim();
+    if (!outputName) continue;
+    schema[outputName] = inferSchemaFromTemplateValue(value);
   }
   return schema;
 }
@@ -1604,23 +1185,24 @@ function mergeDeclaredOutputIntersection(outputs: Record<string, unknown>[]): Re
   return merged;
 }
 
-function normalizeDerivedNodeFields(config: WorkflowConfig): WorkflowConfig {
+function normalizeDerivedNodeFields(
+  config: WorkflowConfig,
+  baseOutputSchemas: WorkflowOutputSchemas = {},
+): WorkflowConfig {
   const nextConfig = cloneConfig(config);
+  const outputSchemas = deriveWorkflowOutputSchemas(nextConfig, baseOutputSchemas);
   for (const gate of nextConfig.gates ?? []) {
-    const upstreamIds = directUpstreamNodeIds(nextConfig, gate.id);
     if (gate.type === "gate:filter") {
-      gate.outputs = declaredOutputsForNode(nodeById(nextConfig, upstreamIds[0] ?? ""), nextConfig);
+      gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:map") {
-      gate.outputs = declaredOutputsForNode(gate, nextConfig);
+      gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:await-agent") {
       delete gate.completion_trigger_id;
-      gate.outputs = declaredOutputsForNode(agentRunCompletedSchemaNode(), nextConfig);
+      gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:for") {
-      gate.outputs = declaredOutputsForNode(gate, nextConfig);
+      gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:merge") {
-      gate.outputs = mergeDeclaredOutputIntersection(
-        upstreamIds.map((nodeId) => declaredOutputsForNode(nodeById(nextConfig, nodeId), nextConfig)),
-      );
+      gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     }
   }
   return nextConfig;
@@ -1646,7 +1228,11 @@ function collectAncestorNodeIds(config: WorkflowConfig, nodeId: string): string[
   return ordered;
 }
 
-function upstreamBindingOptions(config: WorkflowConfig, nodeId: string): BindingOption[] {
+function upstreamBindingOptions(
+  config: WorkflowConfig,
+  nodeId: string,
+  outputSchemas: WorkflowOutputSchemas = deriveWorkflowOutputSchemas(config),
+): BindingOption[] {
   const options: BindingOption[] = [...SYSTEM_BINDING_OPTIONS];
   const seen = new Set<string>();
   for (const option of SYSTEM_BINDING_OPTIONS) {
@@ -1654,7 +1240,7 @@ function upstreamBindingOptions(config: WorkflowConfig, nodeId: string): Binding
     seen.add(option.value);
   }
   for (const upstreamNodeId of collectAncestorNodeIds(config, nodeId)) {
-    const outputs = declaredOutputsForNode(nodeById(config, upstreamNodeId), config);
+    const outputs = declaredOutputsForNode(nodeById(config, upstreamNodeId), outputSchemas);
     for (const outputName of Object.keys(outputs)) {
       for (const outputPath of flattenOutputPaths(outputName, outputs[outputName])) {
         const ref = `${upstreamNodeId}.${outputPath}`;
@@ -1708,7 +1294,10 @@ class BindingParseError extends Error {
   }
 }
 
-function validateWorkflowBindingDiagnostics(config: WorkflowConfig): WorkflowValidationDiagnostic[] {
+function validateWorkflowBindingDiagnostics(
+  config: WorkflowConfig,
+  outputSchemas: WorkflowOutputSchemas = deriveWorkflowOutputSchemas(config),
+): WorkflowValidationDiagnostic[] {
   const diagnostics: WorkflowValidationDiagnostic[] = [];
   const nodes = workflowNodes(config);
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
@@ -1717,7 +1306,7 @@ function validateWorkflowBindingDiagnostics(config: WorkflowConfig): WorkflowVal
   for (const node of nodes) {
     const declaredOutputs = new Map(
       collectAncestorNodeIds(config, node.id)
-        .map((upstreamNodeId) => [upstreamNodeId, declaredOutputsForNode(nodesById.get(upstreamNodeId), config)] as const),
+        .map((upstreamNodeId) => [upstreamNodeId, declaredOutputsForNode(nodesById.get(upstreamNodeId), outputSchemas)] as const),
     );
     for (const [fieldPath, value] of walkEditableNodeConfigValues(node)) {
       diagnostics.push(
@@ -2195,7 +1784,9 @@ export default function App() {
     workflowGraphView === "private"
       ? `User: ${currentUserLabel}`
       : `Directory: ${selectedDirectoryPath}`;
-  const selectedNodeBindingOptions = selectedNode ? upstreamBindingOptions(config, selectedNode.id) : [];
+  const selectedNodeBindingOptions = selectedNode
+    ? upstreamBindingOptions(config, selectedNode.id, document?.output_schemas ?? {})
+    : [];
   const hasCollapsedTargetUi =
     selectedNode?.type === "effect:vm:copy-files" ||
     selectedNode?.type === "effect:agent:prompt" ||
@@ -2282,14 +1873,25 @@ export default function App() {
     ])
       .then(([payload, catalogPayload, runSnapshotPayload]) => {
         if (cancelled) return;
-        const normalizedConfig = normalizeDerivedNodeFields(normalizeWorkflowConfigShape(payload.config));
+        const backendOutputSchemas = payload.output_schemas ?? {};
+        const normalizedConfig = normalizeDerivedNodeFields(
+          normalizeWorkflowConfigShape(payload.config),
+          backendOutputSchemas,
+        );
+        const outputSchemas = deriveWorkflowOutputSchemas(normalizedConfig, backendOutputSchemas);
         const normalizedGraphs = normalizeWorkflowGraphs(
           normalizedConfig,
           payload.graphs ?? [],
           initialGraphDirectoryPathRef.current,
         );
-        const normalizedDocument = { ...payload, config: normalizedConfig, graphs: normalizedGraphs };
-        const nextDiagnostics = validateWorkflowBindingDiagnostics(normalizedConfig);
+        const normalizedDocument = {
+          ...payload,
+          config: normalizedConfig,
+          graphs: normalizedGraphs,
+          output_schemas: outputSchemas,
+        };
+        const nextDiagnostics = payload.validation_diagnostics
+          ?? validateWorkflowBindingDiagnostics(normalizedConfig, outputSchemas);
         setCatalog(catalogPayload);
         setRunSnapshot(runSnapshotPayload);
         setValidationDiagnostics(nextDiagnostics);
@@ -2539,9 +2141,15 @@ export default function App() {
     nextGraphs?: WorkflowGraphMetadata[],
     selectedNodeIdsAfterPatch?: string[],
     diagnosticsOverride?: WorkflowValidationDiagnostic[],
+    outputSchemasOverride?: WorkflowOutputSchemas,
   ) {
     if (!document) return;
-    const normalizedConfig = normalizeDerivedNodeFields(normalizeWorkflowConfigShape(nextConfig));
+    const backendOutputSchemas = outputSchemasOverride ?? document.output_schemas ?? {};
+    const normalizedConfig = normalizeDerivedNodeFields(
+      normalizeWorkflowConfigShape(nextConfig),
+      backendOutputSchemas,
+    );
+    const outputSchemas = deriveWorkflowOutputSchemas(normalizedConfig, backendOutputSchemas);
     const normalizedGraphs = normalizeWorkflowGraphs(
       normalizedConfig,
       nextGraphs ?? document.graphs ?? [],
@@ -2553,8 +2161,9 @@ export default function App() {
       config: normalizedConfig,
       layout: nextLayout,
       graphs: normalizedGraphs,
+      output_schemas: outputSchemas,
     };
-    const nextDiagnostics = diagnosticsOverride ?? validateWorkflowBindingDiagnostics(normalizedConfig);
+    const nextDiagnostics = diagnosticsOverride ?? validateWorkflowBindingDiagnostics(normalizedConfig, outputSchemas);
     setDocument(nextDocument);
     setValidationDiagnostics(nextDiagnostics);
     setFlowNodes((currentNodes) =>
@@ -3085,7 +2694,14 @@ export default function App() {
         }),
       },
     );
-    patchDocument(validation.config, validation.layout, validation.graphs, undefined, validation.validation_diagnostics);
+    patchDocument(
+      validation.config,
+      validation.layout,
+      validation.graphs,
+      undefined,
+      validation.validation_diagnostics,
+      validation.output_schemas,
+    );
   }
 
   async function saveDocument() {
@@ -3104,7 +2720,14 @@ export default function App() {
           }),
         },
       );
-      patchDocument(saved.config, saved.layout, saved.graphs, undefined, saved.validation_diagnostics);
+      patchDocument(
+        saved.config,
+        saved.layout,
+        saved.graphs,
+        undefined,
+        saved.validation_diagnostics,
+        saved.output_schemas,
+      );
       setSaveState("saved");
     } catch (reason) {
       setSaveState("idle");

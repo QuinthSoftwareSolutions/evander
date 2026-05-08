@@ -121,6 +121,7 @@ from agent_sandbox.events.models import (
 )
 from agent_sandbox.triggers.queue import TriggerEventQueue
 from agent_sandbox.workflow.validation import (
+    WorkflowValidationDiagnostic,
     derive_workflow_output_schemas,
     validate_workflow_binding_diagnostics,
 )
@@ -348,6 +349,7 @@ class WorkflowEditorDocumentPayload(BaseModel):
     config: dict[str, object]
     layout: dict[str, object]
     graphs: list[WorkflowEditorGraphMetadata] = Field(default_factory=list)
+    output_schemas: dict[str, dict[str, dict[str, Any]]] = Field(default_factory=dict)
     saved_at: datetime | None = None
     revision: str | None = None
 
@@ -357,6 +359,7 @@ class WorkflowEditorValidationPayload(BaseModel):
     config: dict[str, object]
     layout: dict[str, object]
     graphs: list[WorkflowEditorGraphMetadata] = Field(default_factory=list)
+    output_schemas: dict[str, dict[str, dict[str, Any]]] = Field(default_factory=dict)
     validation_diagnostics: list[dict[str, object]] = Field(default_factory=list)
 
 
@@ -367,6 +370,7 @@ class WorkflowEditorSavePayload(BaseModel):
     config: dict[str, object]
     layout: dict[str, object]
     graphs: list[WorkflowEditorGraphMetadata] = Field(default_factory=list)
+    output_schemas: dict[str, dict[str, dict[str, Any]]] = Field(default_factory=dict)
     validation_diagnostics: list[dict[str, object]] = Field(default_factory=list)
     saved_at: datetime | None = None
     revision: str | None = None
@@ -541,6 +545,64 @@ def _strip_default_edge_fields(payload: dict[str, object]) -> dict[str, object]:
         normalized_edges.append(normalized)
     payload["edges"] = normalized_edges
     return payload
+
+
+def _workflow_binding_diagnostics_for_graphs(
+    config: dict[str, object],
+    graphs: list[WorkflowEditorGraphMetadata],
+) -> list[WorkflowValidationDiagnostic]:
+    if not graphs:
+        return validate_workflow_binding_diagnostics(config)
+
+    diagnostics: list[WorkflowValidationDiagnostic] = []
+    seen: set[tuple[str, str | None, str | None, str | None, str | None, str]] = set()
+    for graph in graphs:
+        graph_node_ids = set(graph.node_ids)
+        if not graph_node_ids:
+            continue
+        graph_config = _workflow_config_for_graph_node_ids(config, graph_node_ids)
+        for diagnostic in validate_workflow_binding_diagnostics(graph_config):
+            key = (
+                diagnostic.code,
+                diagnostic.node_id,
+                diagnostic.node_type,
+                diagnostic.field_path,
+                diagnostic.reference,
+                diagnostic.message,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            diagnostics.append(diagnostic)
+    return diagnostics
+
+
+def _workflow_config_for_graph_node_ids(
+    config: dict[str, object], node_ids: set[str]
+) -> dict[str, object]:
+    graph_config = dict(config)
+    for collection_name in ("triggers", "gates", "effects", "queries"):
+        entries = config.get(collection_name)
+        if not isinstance(entries, list):
+            graph_config[collection_name] = []
+            continue
+        graph_config[collection_name] = [
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and str(entry.get("id") or "").strip() in node_ids
+        ]
+    edges = config.get("edges")
+    if isinstance(edges, list):
+        graph_config["edges"] = [
+            edge
+            for edge in edges
+            if isinstance(edge, dict)
+            and str(edge.get("source_id") or "").strip() in node_ids
+            and str(edge.get("target_id") or "").strip() in node_ids
+        ]
+    else:
+        graph_config["edges"] = []
+    return graph_config
 
 
 def _flatten_workflow_node_for_legacy_response(
@@ -1563,6 +1625,78 @@ def _resolve_path_setting(*, base_dir: Path, value: object | None, fallback: Pat
     if candidate.is_absolute():
         return candidate.resolve()
     return (base_dir / candidate).resolve()
+
+
+def _ticket_created_trigger_ids(config: dict[str, object]) -> set[str]:
+    return {trigger["id"] for trigger in _ticket_created_trigger_definitions(config)}
+
+
+def _ticket_created_trigger_definitions(
+    config: dict[str, object],
+) -> list[dict[str, object]]:
+    triggers = config.get("triggers")
+    if not isinstance(triggers, list):
+        return []
+    results: list[dict[str, object]] = []
+    for entry in triggers:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            materialized = materialize_node_definition(
+                _TRIGGER_DEFINITION_ADAPTER.validate_python(entry)
+            )
+        except ValidationError:
+            continue
+        if str(getattr(materialized, "type", "")).strip() != "trigger:ticket:created":
+            continue
+        trigger_id = str(getattr(materialized, "id", "")).strip()
+        if not trigger_id:
+            continue
+        raw_directories = getattr(materialized, "directories", [])
+        directories = [
+            str(directory).strip().strip("/")
+            for directory in raw_directories
+            if str(directory).strip().strip("/")
+        ]
+        results.append({"id": trigger_id, "directories": directories})
+    return results
+
+
+def _max_ticket_created_at_for_directories(
+    issues: object, directories: list[object]
+) -> datetime | None:
+    max_created_at: datetime | None = None
+    for issue in issues:
+        if not isinstance(issue, LocalIssueRecord):
+            continue
+        if not _issue_within_ticket_created_directories(issue.directory_path, directories):
+            continue
+        created_at = _as_utc(issue.created_at)
+        if max_created_at is None or created_at > max_created_at:
+            max_created_at = created_at
+    return max_created_at
+
+
+def _issue_within_ticket_created_directories(candidate: str, directories: list[object]) -> bool:
+    if not directories:
+        return True
+    normalized_candidate = str(candidate).strip().strip("/")
+    for directory in directories:
+        normalized_directory = str(directory).strip().strip("/")
+        if not normalized_directory:
+            continue
+        if (
+            normalized_candidate == normalized_directory
+            or normalized_candidate.startswith(f"{normalized_directory}/")
+        ):
+            return True
+    return False
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _merge_run_node_activity(items: object) -> list[WorkflowRunNodeActivityPayload]:
@@ -6648,6 +6782,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             config=normalized_config,
             layout=layout,
             graphs=graphs,
+            output_schemas=derive_workflow_output_schemas(normalized_config),
             saved_at=saved_at,
             revision=revision,
         )
@@ -6702,11 +6837,16 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             graphs=graph_source,
             strict=graphs is not None,
         )
-        binding_diagnostics = validate_workflow_binding_diagnostics(editable_normalized_config)
+        output_schemas = derive_workflow_output_schemas(editable_normalized_config)
+        binding_diagnostics = _workflow_binding_diagnostics_for_graphs(
+            editable_normalized_config,
+            normalized_graphs,
+        )
         return WorkflowEditorValidationPayload(
             config=editable_normalized_config,
             layout=normalized_layout,
             graphs=normalized_graphs,
+            output_schemas=output_schemas,
             validation_diagnostics=[
                 {
                     **diagnostic.model_dump(mode="json", exclude_none=True),
@@ -6743,6 +6883,13 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
         merged_config = self._merge_system_managed_workflows(
             editable_config=validation.config,
             base_config=raw_config,
+        )
+        existing_editable_config = self._strip_system_managed_workflows(
+            self._compose_workflow_editor_config(raw_config)
+        )
+        self._seed_new_ticket_created_trigger_cursors(
+            previous_config=existing_editable_config,
+            next_config=validation.config,
         )
         layout_path = self._workflow_editor_layout_path(raw_config)
         config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -6783,10 +6930,52 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             config=validation.config,
             layout=validation.layout,
             graphs=validation.graphs,
+            output_schemas=validation.output_schemas,
             validation_diagnostics=validation.validation_diagnostics,
             saved_at=saved_at,
             revision=revision,
         )
+
+    def _seed_new_ticket_created_trigger_cursors(
+        self, *, previous_config: dict[str, object], next_config: dict[str, object]
+    ) -> None:
+        previous_trigger_ids = _ticket_created_trigger_ids(previous_config)
+        new_triggers = [
+            trigger
+            for trigger in _ticket_created_trigger_definitions(next_config)
+            if trigger["id"] not in previous_trigger_ids
+        ]
+        if not new_triggers:
+            return
+
+        runtime_dir = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=next_config.get("runtime_dir"),
+            fallback=self.config.runtime_dir,
+        )
+        issues = JsonStore(runtime_dir / "local-issues.json", LocalIssueRecord).read_all()
+        if not issues:
+            return
+
+        cursor_path = runtime_dir / "trigger-cursors-ticket-created.json"
+        cursor_payload = _read_json_object(cursor_path)
+        changed = False
+        for trigger in new_triggers:
+            trigger_id = trigger["id"]
+            if isinstance(cursor_payload.get(trigger_id), dict):
+                continue
+            max_created_at = _max_ticket_created_at_for_directories(
+                issues.values(), trigger["directories"]
+            )
+            if max_created_at is None:
+                continue
+            cursor_payload[trigger_id] = {
+                "last_created_at": max_created_at.isoformat().replace("+00:00", "Z")
+            }
+            changed = True
+        if changed:
+            cursor_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_json_file_atomic(cursor_path, cursor_payload)
 
     def _read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
         stores = self._workflow_run_store_paths()
@@ -7597,6 +7786,12 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 replacing = True
                 break
         if not replacing:
+            next_config = dict(config)
+            next_config["triggers"] = existing_triggers + [normalized_payload]
+            self._seed_new_ticket_created_trigger_cursors(
+                previous_config=config,
+                next_config=next_config,
+            )
             existing_triggers.append(normalized_payload)
         config["triggers"] = existing_triggers
         write_result = self.trigger_repository.write_document(config)

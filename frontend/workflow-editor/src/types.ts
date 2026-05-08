@@ -47,6 +47,8 @@ export type WorkflowGraphMetadata = {
   node_ids: string[];
 };
 
+export type WorkflowOutputSchemas = Record<string, Record<string, unknown>>;
+
 export type WorkflowEditorDocument = {
   config_path: string;
   layout_path: string;
@@ -55,6 +57,7 @@ export type WorkflowEditorDocument = {
   config: WorkflowConfig;
   layout: WorkflowLayout;
   graphs: WorkflowGraphMetadata[];
+  output_schemas?: WorkflowOutputSchemas;
   validation_diagnostics?: WorkflowValidationDiagnostic[];
 };
 
@@ -62,6 +65,7 @@ export type WorkflowEditorValidation = {
   config: WorkflowConfig;
   layout: WorkflowLayout;
   graphs: WorkflowGraphMetadata[];
+  output_schemas?: WorkflowOutputSchemas;
   validation_diagnostics: WorkflowValidationDiagnostic[];
 };
 
@@ -69,6 +73,7 @@ export type WorkflowEditorSave = {
   config: WorkflowConfig;
   layout: WorkflowLayout;
   graphs: WorkflowGraphMetadata[];
+  output_schemas?: WorkflowOutputSchemas;
   validation_diagnostics: WorkflowValidationDiagnostic[];
 };
 

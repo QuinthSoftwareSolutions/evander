@@ -733,6 +733,49 @@ def _workflow_binding_validation_payload(tmp_path: Path, prompt: str) -> dict[st
     }
 
 
+def _agent_create_clone_validation_payload(tmp_path: Path) -> dict[str, object]:
+    return {
+        "config": {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "trigger-ticket-created-main",
+                    "display_name": "Ticket created",
+                    "type": "trigger:ticket:created",
+                    "directories": ["root"],
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-agent-create-1",
+                    "display_name": "Create agent",
+                    "type": "effect:agent:create",
+                    "execution_backend": "container_worker_vm",
+                    "session_id": "session-1",
+                },
+                {
+                    "id": "effect-agent-clone-repo-1",
+                    "display_name": "Clone repo",
+                    "type": "effect:agent:clone-repo",
+                    "target": "${{effect-agent-create-1.session_id}}",
+                    "repo_source": "git@example.invalid:repo.git",
+                },
+            ],
+            "edges": [
+                {"source_id": "trigger-ticket-created-main", "target_id": "effect-agent-create-1"},
+                {"source_id": "effect-agent-create-1", "target_id": "effect-agent-clone-repo-1"},
+            ],
+        },
+        "layout": {
+            "nodes": {
+                "trigger-ticket-created-main": {"x": 100, "y": 50},
+                "effect-agent-create-1": {"x": 300, "y": 50},
+                "effect-agent-clone-repo-1": {"x": 500, "y": 50},
+            }
+        },
+    }
+
+
 def test_admin_web_validate_reports_deleted_binding_node_without_rejecting_save(
     tmp_path: Path,
 ) -> None:
@@ -759,6 +802,84 @@ def test_admin_web_validate_reports_deleted_binding_node_without_rejecting_save(
     assert save_response.json()["validation_diagnostics"] == diagnostics
 
 
+def test_admin_web_save_seeds_new_ticket_created_trigger_cursor(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    runtime_dir = tmp_path / "runtime"
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    pack_root = tmp_path / "config" / "workflow-packs"
+    config_root.mkdir(parents=True, exist_ok=True)
+    pack_root.mkdir(parents=True, exist_ok=True)
+    existing_trigger = {
+        "id": "ticket-existing",
+        "display_name": "Ticket created",
+        "type": "trigger:ticket:created",
+        "directories": ["root/team-a"],
+    }
+    pack_path = pack_root / "ticket-pack.v1.json"
+    pack_path.write_text(
+        json.dumps(
+            {
+                "pack_id": "ticket-pack",
+                "pack_version": "v1",
+                "ir": {"version": "v1", "nodes": [existing_trigger], "edges": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (config_root / "config.json").write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(runtime_dir),
+                "workflow_packs": ["ticket-pack.v1.json"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    cursor_path = runtime_dir / "trigger-cursors-ticket-created.json"
+    for issue_number, directory_path, created_at in [
+        ("1", "root/team-a", datetime(2026, 5, 2, 8, 0, tzinfo=timezone.utc)),
+        ("2", "root/team-a/subteam", datetime(2026, 5, 2, 11, 30, tzinfo=timezone.utc)),
+        ("3", "root/team-b", datetime(2026, 5, 3, 9, 0, tzinfo=timezone.utc)),
+    ]:
+        issue = LocalIssueRecord(
+            issue_id=f"{directory_path}::local::{issue_number}",
+            issue_number=issue_number,
+            title=f"Issue {issue_number}",
+            body="Body",
+            yaml_path=str(tmp_path / f"issue-{issue_number}.yaml"),
+            directory_path=directory_path,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        service.local_issue_store.put(issue.issue_id, issue)
+
+    client = TestClient(create_app(service))
+    copied_trigger = {
+        **existing_trigger,
+        "id": "ticket-copy",
+        "display_name": "Ticket created Copy",
+    }
+    response = client.put(
+        "/api/workflow-editor/document",
+        json={
+            "config": {
+                "runtime_dir": str(runtime_dir),
+                "triggers": [existing_trigger, copied_trigger],
+                "gates": [],
+                "effects": [],
+                "queries": [],
+                "edges": [],
+            },
+            "layout": {"nodes": {}},
+        },
+    )
+
+    assert response.status_code == 200
+    cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+    assert "ticket-existing" not in cursor_payload
+    assert cursor_payload["ticket-copy"]["last_created_at"] == "2026-05-02T11:30:00Z"
+
+
 def test_admin_web_validate_reports_missing_binding_output(tmp_path: Path) -> None:
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
     payload = _workflow_binding_validation_payload(
@@ -777,6 +898,93 @@ def test_admin_web_validate_reports_missing_binding_output(tmp_path: Path) -> No
         "reference": "trigger-ticket-created-main.missing_output",
         "message": "prompt references missing output trigger-ticket-created-main.missing_output",
     } in response.json()["validation_diagnostics"]
+
+
+def test_admin_web_validate_exposes_backend_output_schemas_for_agent_effects(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = _agent_create_clone_validation_payload(tmp_path)
+
+    response = client.post("/api/workflow-editor/validate", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["validation_diagnostics"] == []
+    assert body["output_schemas"]["effect-agent-create-1"]["session_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-agent-clone-repo-1"]["target_dir"] == {
+        "type": "string"
+    }
+
+
+def test_admin_web_validate_scopes_binding_diagnostics_to_workflow_graphs(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = _agent_create_clone_validation_payload(tmp_path)
+    config = payload["config"]
+    assert isinstance(config, dict)
+    triggers = config["triggers"]
+    effects = config["effects"]
+    edges = config["edges"]
+    assert isinstance(triggers, list)
+    assert isinstance(effects, list)
+    assert isinstance(edges, list)
+    triggers.append(
+        {
+            "id": "trigger-ticket-created-copy",
+            "display_name": "Ticket created Copy",
+            "type": "trigger:ticket:created",
+            "directories": ["root"],
+        }
+    )
+    effects.append(
+        {
+            "id": "effect-agent-clone-repo-copy",
+            "display_name": "Clone repo Copy",
+            "type": "effect:agent:clone-repo",
+            "target": "${{effect-agent-create-1.session_id}}",
+            "repo_source": "git@example.invalid:repo.git",
+        }
+    )
+    edges.append(
+        {"source_id": "trigger-ticket-created-copy", "target_id": "effect-agent-clone-repo-copy"}
+    )
+    payload["graphs"] = [
+        {
+            "id": "issue-handling",
+            "name": "Issue handling",
+            "directory_paths": ["root"],
+            "node_ids": [
+                "trigger-ticket-created-main",
+                "effect-agent-create-1",
+                "effect-agent-clone-repo-1",
+            ],
+        },
+        {
+            "id": "copied-graph",
+            "name": "Copied graph",
+            "directory_paths": ["root"],
+            "node_ids": [
+                "trigger-ticket-created-copy",
+                "effect-agent-clone-repo-copy",
+            ],
+        },
+    ]
+
+    response = client.post("/api/workflow-editor/validate", json=payload)
+
+    assert response.status_code == 200
+    diagnostics = response.json()["validation_diagnostics"]
+    assert all(diagnostic.get("node_id") != "effect-agent-clone-repo-1" for diagnostic in diagnostics)
+    assert {
+        "code": "invalid_binding_node",
+        "node_id": "effect-agent-clone-repo-copy",
+        "node_type": "effect:agent:clone-repo",
+        "field_path": "target",
+        "reference": "effect-agent-create-1.session_id",
+        "message": "target references deleted node effect-agent-create-1",
+    } in diagnostics
 
 
 def test_admin_web_validate_reports_malformed_binding_fallback(tmp_path: Path) -> None:
