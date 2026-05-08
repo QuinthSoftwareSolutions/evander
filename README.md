@@ -1068,6 +1068,41 @@ agent-sandbox-cli directories config-set \
 agent-sandbox-cli create-session real-session --runtime-dir runtime
 ```
 
+## Communication File Transfer
+
+Communication file transfer is intentionally host-mediated. Guests never receive Discord, Teams,
+Gmail, or Microsoft Graph credentials; they call MCP tools on the host gateway, and the host
+adapters perform provider API calls under the active session policy.
+
+- **Inbound attachment download:** use `communication_list_attachments` to enumerate provider
+  attachment metadata, then `communication_download_attachment` to fetch a single attachment into
+  the host artifact store. The gateway validates the provider scope, normalized filename, MIME
+  type, extension, and byte size before it stages the blob. Use
+  `communication_copy_artifact_to_workspace` only when the guest needs a local copy; provider
+  filenames are normalized and copied under `/home/agent/communication-artifacts/`.
+- **Outbound file send:** outbound sends reuse staged artifact IDs rather than arbitrary guest
+  paths. The provider-specific tools are `discord_post_file`, `teams_post_file`,
+  `email_create_draft_with_attachments`, and `email_send_approved_with_attachments`. Keep
+  `communication_file_send_enabled: false` unless the session is explicitly allowed to send files.
+- **Approval behavior:** set `communication_file_require_approval_for_send: true` before enabling
+  outbound file send. When that flag is true, each outbound file send must provide an approval
+  request ID whose approved payload exactly matches the attempted provider, destination, message,
+  and artifact IDs. Email still also requires `email_send_enabled: true` before an approved send
+  can leave the draft state.
+- **Host-only provider credentials:** Discord bot tokens, Teams/Graph tokens, and Gmail OAuth
+  tokens belong in host environment variables or systemd env files referenced by config. Do not
+  place token values in guest disks, cloud-init payloads, session manifests, artifacts, or prompts.
+- **Artifact retention:** staged blobs and metadata live under
+  `runtime/communication-artifacts/` by default. Artifact IDs are opaque (`comm_...`), blobs use
+  host-chosen `.bin` filenames, and metadata records original provider fields for auditability.
+  The store defaults to a seven-day TTL and cleans expired artifacts opportunistically when the
+  store is used; operators can also run cleanup from the host during maintenance windows.
+
+A conservative policy example is available at
+`config/communication-files/policy.json.example`. It enables inbound receive for small text, PDF,
+and image files, leaves outbound send disabled, and preconfigures approval as mandatory before any
+future outbound-send enablement.
+
 ## Project Layout
 
 - `src/agent_sandbox/`: gateway, relay, policy, storage, and CLI code
