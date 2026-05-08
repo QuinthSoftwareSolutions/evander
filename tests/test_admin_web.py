@@ -2069,6 +2069,8 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     ]
     assert "allowed_mcp_tool_profile" not in assistant_fields
     assert assistant_fields["custom_system_instructions"]["kind"] == "multiline_text"
+    access_policy = next(tab for tab in payload["tabs"] if tab["key"] == "access_policy")
+    assert "Communication files" not in {section["title"] for section in access_policy["sections"]}
     providers = next(tab for tab in payload["tabs"] if tab["key"] == "providers")
     container_worker = next(
         section for section in providers["sections"] if section["title"] == "Container worker"
@@ -2928,6 +2930,13 @@ def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
             "metadata": {"keep": "new-value"},
             "email_mailboxes": ["new-mailbox"],
             "email_folders": ["new-folder"],
+            "communication_file_receive_enabled": True,
+            "communication_file_send_enabled": True,
+            "communication_file_max_bytes": 8192,
+            "communication_file_allowed_mime_types": ["text/plain"],
+            "communication_file_allowed_extensions": [".txt"],
+            "communication_file_blocked_extensions": [".exe"],
+            "communication_file_require_approval_for_send": True,
             "labels": {"new": "label"},
         },
     )
@@ -2947,6 +2956,13 @@ def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
     assert updated.teams_channel_allowlist == ["team-a/channel-1", "chat:chat-1"]
     assert updated.email_mailbox_allowlist == ["new-mailbox"]
     assert updated.email_folder_allowlist == ["new-folder"]
+    assert updated.communication_file_receive_enabled is True
+    assert updated.communication_file_send_enabled is True
+    assert updated.communication_file_max_bytes == 8192
+    assert updated.communication_file_allowed_mime_types == ["text/plain"]
+    assert updated.communication_file_allowed_extensions == [".txt"]
+    assert updated.communication_file_blocked_extensions == [".exe"]
+    assert updated.communication_file_require_approval_for_send is True
     assert updated.metadata == {"labels": {"new": "label"}, "keep": "new-value"}
     assert updated.expires_at > datetime.now(timezone.utc) + timedelta(hours=3)
 

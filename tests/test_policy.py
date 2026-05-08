@@ -628,3 +628,147 @@ def test_require_draft_recipients_enforces_address_and_domain_allowlists(tmp_pat
             ),
             ["person@other.com"],
         )
+
+
+def test_communication_file_policy_denies_disallowed_mime_type(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s-file-mime",
+        allowed_tools=[ToolName.DISCORD_POST_FILE],
+        discord_channel_allowlist=["chan-allowed"],
+        communication_file_send_enabled=True,
+        communication_file_allowed_mime_types=["text/plain"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    with pytest.raises(PolicyError, match="MIME type"):
+        engine.require_communication_file_artifacts(
+            session,
+            [
+                {
+                    "filename": "report.pdf",
+                    "mime_type": "application/pdf",
+                    "byte_count": 42,
+                }
+            ],
+            provider="discord",
+            channel_id="chan-allowed",
+        )
+
+
+def test_communication_file_policy_denies_oversized_files(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s-file-size",
+        allowed_tools=[ToolName.DISCORD_POST_FILE],
+        discord_channel_allowlist=["chan-allowed"],
+        communication_file_send_enabled=True,
+        communication_file_max_bytes=10,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    with pytest.raises(PolicyError, match="exceeds max bytes"):
+        engine.require_communication_file_artifacts(
+            session,
+            [
+                {
+                    "filename": "report.txt",
+                    "mime_type": "text/plain",
+                    "byte_count": 11,
+                }
+            ],
+            provider="discord",
+            channel_id="chan-allowed",
+        )
+
+
+def test_communication_file_policy_denies_non_allowlisted_destination(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s-file-dest",
+        allowed_tools=[ToolName.DISCORD_POST_FILE],
+        discord_channel_allowlist=["chan-allowed"],
+        communication_file_send_enabled=True,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    with pytest.raises(PolicyError, match="Discord channel is not allowlisted"):
+        engine.require_communication_file_artifacts(
+            session,
+            [
+                {
+                    "filename": "report.txt",
+                    "mime_type": "text/plain",
+                    "byte_count": 1,
+                }
+            ],
+            provider="discord",
+            channel_id="chan-denied",
+        )
+
+
+def test_communication_file_policy_requires_send_approval_when_enabled(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s-file-approval",
+        allowed_tools=[ToolName.APPROVAL_SUBMIT, ToolName.DISCORD_POST_FILE],
+        discord_channel_allowlist=["chan-allowed"],
+        communication_file_send_enabled=True,
+        communication_file_require_approval_for_send=True,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.session_store.upsert_session(session)
+    payload = {
+        "provider": "discord",
+        "channel_id": "chan-allowed",
+        "message": "see attached",
+        "artifact_ids": ["artifact-1"],
+    }
+
+    with pytest.raises(PolicyError, match="requires approval"):
+        engine.require_communication_file_send_approval(
+            session, request_id=None, payload=payload
+        )
+
+    approval = engine.create_approval(
+        session.session_id,
+        "discord_post_file",
+        payload,
+        "Send report.txt to chan-allowed",
+    )
+    approval.status = ApprovalStatus.APPROVED
+    engine.approval_store.put(approval.request_id, approval)
+
+    approved = engine.require_communication_file_send_approval(
+        session,
+        request_id=approval.request_id,
+        payload=payload,
+    )
+
+    assert approved is not None
+    assert approved.request_id == approval.request_id
+
+
+def test_communication_file_policy_rejects_unsafe_filename(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s-file-name",
+        allowed_tools=[ToolName.DISCORD_POST_FILE],
+        discord_channel_allowlist=["chan-allowed"],
+        communication_file_send_enabled=True,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    with pytest.raises(PolicyError, match="path separators|parent traversal"):
+        engine.require_communication_file_artifacts(
+            session,
+            [
+                {
+                    "filename": "../secret.txt",
+                    "mime_type": "text/plain",
+                    "byte_count": 1,
+                }
+            ],
+            provider="discord",
+            channel_id="chan-allowed",
+        )

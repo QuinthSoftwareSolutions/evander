@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from agent_sandbox.config import GatewayConfig
@@ -24,6 +25,24 @@ from agent_sandbox.storage import JsonStore
 
 class PolicyError(RuntimeError):
     """Raised when a tool action violates the session policy."""
+
+
+def _normalize_extension(value: str | None) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    return text if text.startswith(".") else f".{text}"
+
+
+def _normalize_mime_type(value: str | None) -> str | None:
+    text = str(value or "").strip().lower()
+    return text or None
+
+
+def _artifact_field(artifact: Any, field_name: str, default: Any = None) -> Any:
+    if isinstance(artifact, dict):
+        return artifact.get(field_name, default)
+    return getattr(artifact, field_name, default)
 
 
 def _redact_nested_payload(redacted_keys: set[str], value: Any) -> Any:
@@ -299,6 +318,178 @@ class PolicyEngine:
         effective_policy = self.effective_policy_for_session(session)
         if not (session.email_send_enabled or effective_policy.email_send_enabled):
             raise PolicyError(f"Email send is disabled for session {session.session_id}")
+
+    def _communication_file_policy_value(self, session: SessionManifest, name: str) -> Any:
+        session_value = getattr(session, name)
+        effective_value = getattr(self.effective_policy_for_session(session), name)
+        if isinstance(session_value, bool):
+            return bool(session_value or effective_value)
+        if session_value not in (None, [], {}):
+            return session_value
+        return effective_value
+
+    def require_communication_file_receive_enabled(self, session: SessionManifest) -> None:
+        if not self._communication_file_policy_value(
+            session, "communication_file_receive_enabled"
+        ):
+            raise PolicyError(
+                f"Inbound communication file receive is disabled for session {session.session_id}"
+            )
+
+    def require_communication_file_send_enabled(self, session: SessionManifest) -> None:
+        if not self._communication_file_policy_value(
+            session, "communication_file_send_enabled"
+        ):
+            raise PolicyError(
+                f"Outbound communication file send is disabled for session {session.session_id}"
+            )
+
+    def require_safe_communication_filename(self, session: SessionManifest, filename: str) -> str:
+        normalized = str(filename or "").strip()
+        if not normalized:
+            raise PolicyError("Communication file filename is required")
+        if "\x00" in normalized:
+            raise PolicyError("Communication file filename contains a NUL byte")
+        if normalized in {".", ".."}:
+            raise PolicyError("Communication file filename is not safe")
+        if any(part == ".." for part in PurePosixPath(normalized).parts):
+            raise PolicyError("Communication file filename must not contain parent traversal")
+        if any(part == ".." for part in PureWindowsPath(normalized).parts):
+            raise PolicyError("Communication file filename must not contain parent traversal")
+        if PurePosixPath(normalized).is_absolute() or PureWindowsPath(normalized).is_absolute():
+            raise PolicyError("Communication file filename must not be absolute")
+        if PurePath(normalized).name != normalized or "/" in normalized or "\\" in normalized:
+            raise PolicyError("Communication file filename must not contain path separators")
+        return normalized
+
+    def require_communication_file_scope(
+        self,
+        session: SessionManifest,
+        *,
+        provider: str,
+        mailbox_id: str | None = None,
+        channel_id: str | None = None,
+        channel_target: str | None = None,
+    ) -> str:
+        normalized_provider = str(provider or "").strip().lower()
+        if normalized_provider == "discord":
+            self.require_discord_channel(session, str(channel_id or "").strip())
+        elif normalized_provider == "teams":
+            self.require_teams_channel_target(session, str(channel_target or "").strip())
+        elif normalized_provider == "email":
+            self.require_email_mailbox(session, str(mailbox_id or "").strip())
+        else:
+            raise PolicyError("Communication file provider must be one of: discord, teams, email")
+        return normalized_provider
+
+    def require_communication_file_content(
+        self,
+        session: SessionManifest,
+        *,
+        filename: str,
+        mime_type: str | None,
+        byte_count: int,
+    ) -> None:
+        safe_filename = self.require_safe_communication_filename(session, filename)
+        if byte_count < 0:
+            raise PolicyError("Communication file size must be non-negative")
+        max_bytes = self._communication_file_policy_value(
+            session, "communication_file_max_bytes"
+        )
+        if max_bytes is not None and byte_count > int(max_bytes):
+            raise PolicyError(
+                f"Communication file exceeds max bytes for session {session.session_id}: "
+                f"{byte_count} > {int(max_bytes)}"
+            )
+        extension = _normalize_extension(PurePath(safe_filename).suffix)
+        blocked_extensions = {
+            _normalize_extension(value)
+            for value in self._communication_file_policy_value(
+                session, "communication_file_blocked_extensions"
+            )
+            if str(value or "").strip()
+        }
+        if extension and extension in blocked_extensions:
+            raise PolicyError(
+                f"Communication file extension {extension!r} is blocked for session "
+                f"{session.session_id}"
+            )
+        allowed_extensions = {
+            _normalize_extension(value)
+            for value in self._communication_file_policy_value(
+                session, "communication_file_allowed_extensions"
+            )
+            if str(value or "").strip()
+        }
+        if allowed_extensions and extension not in allowed_extensions:
+            raise PolicyError(
+                f"Communication file extension {extension or '<none>'!r} is not allowlisted "
+                f"for session {session.session_id}"
+            )
+        normalized_mime = _normalize_mime_type(mime_type)
+        allowed_mime_types = {
+            str(value or "").strip().lower()
+            for value in self._communication_file_policy_value(
+                session, "communication_file_allowed_mime_types"
+            )
+            if str(value or "").strip()
+        }
+        if allowed_mime_types and normalized_mime not in allowed_mime_types:
+            raise PolicyError(
+                f"Communication file MIME type {normalized_mime or '<unknown>'!r} is not "
+                f"allowlisted for session {session.session_id}"
+            )
+
+    def require_communication_file_artifacts(
+        self,
+        session: SessionManifest,
+        artifacts: list[Any],
+        *,
+        provider: str,
+        mailbox_id: str | None = None,
+        channel_id: str | None = None,
+        channel_target: str | None = None,
+    ) -> None:
+        self.require_communication_file_send_enabled(session)
+        self.require_communication_file_scope(
+            session,
+            provider=provider,
+            mailbox_id=mailbox_id,
+            channel_id=channel_id,
+            channel_target=channel_target,
+        )
+        for artifact in artifacts:
+            self.require_communication_file_content(
+                session,
+                filename=str(_artifact_field(artifact, "filename", "")),
+                mime_type=_artifact_field(artifact, "mime_type"),
+                byte_count=int(_artifact_field(artifact, "byte_count", 0)),
+            )
+
+    def require_communication_file_send_approval(
+        self,
+        session: SessionManifest,
+        *,
+        request_id: str | None,
+        payload: dict[str, Any],
+    ) -> ApprovalRequest | None:
+        if not self._communication_file_policy_value(
+            session, "communication_file_require_approval_for_send"
+        ):
+            return None
+        normalized_request_id = str(request_id or "").strip()
+        if not normalized_request_id:
+            raise PolicyError(
+                "Outbound communication file send requires approval for session "
+                f"{session.session_id}"
+            )
+        approval = self.require_approved(normalized_request_id, payload)
+        if approval.session_id != session.session_id:
+            raise PolicyError(
+                f"Approval request {normalized_request_id} does not belong to session "
+                f"{session.session_id}"
+            )
+        return approval
 
     def require_draft_recipients(self, session: SessionManifest, recipients: list[str]) -> None:
         if not recipients:

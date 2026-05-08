@@ -59,6 +59,13 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "email_folder_allowlist_by_mailbox",
             "email_mailbox_allowlist",
             "email_send_enabled",
+            "communication_file_receive_enabled",
+            "communication_file_send_enabled",
+            "communication_file_max_bytes",
+            "communication_file_allowed_mime_types",
+            "communication_file_allowed_extensions",
+            "communication_file_blocked_extensions",
+            "communication_file_require_approval_for_send",
             "pr_reply_require_approval",
             "redacted_keys",
         }
