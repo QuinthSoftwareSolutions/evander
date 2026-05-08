@@ -8,7 +8,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from inspect import Parameter, signature
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
@@ -44,10 +44,12 @@ from agent_sandbox.communication_artifacts import (
     validate_artifact_id,
 )
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
 from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.effects.providers.schemas import (
     AgentCopyFilesEffectDefinition,
+    AgentExecEffectDefinition,
     VmCopyFilesItemDefinition,
 )
 from agent_sandbox.email.http_utils import ProviderRequestError
@@ -73,6 +75,8 @@ from agent_sandbox.models import (
     CommunicationListAttachmentsResponse,
     CommunicationSendMessageWithAttachmentsRequest,
     CommunicationSendMessageWithAttachmentsResponse,
+    CommunicationStageWorkspaceFileRequest,
+    CommunicationStageWorkspaceFileResponse,
     DiscordCommandEnvelope,
     GetPullRequestRequest,
     HasPendingDiscordMessagesRequest,
@@ -110,6 +114,48 @@ from agent_sandbox.services import (
 )
 
 logger = logging.getLogger(__name__)
+
+_WORKSPACE_FILE_PAYLOAD_BEGIN = "__AGENT_SANDBOX_WORKSPACE_FILE_JSON_BEGIN__"
+_WORKSPACE_FILE_PAYLOAD_END = "__AGENT_SANDBOX_WORKSPACE_FILE_JSON_END__"
+_WORKSPACE_FILE_READER_SCRIPT = r"""
+import base64
+import json
+import mimetypes
+import pathlib
+import stat
+import sys
+
+try:
+    raw_path = sys.argv[1]
+    max_bytes = int(sys.argv[2]) if len(sys.argv) > 2 else -1
+    base = pathlib.Path("/home/agent").resolve()
+    candidate = pathlib.Path(raw_path)
+    if not candidate.is_absolute():
+        candidate = base / candidate
+    resolved = candidate.resolve(strict=True)
+    resolved.relative_to(base)
+    file_stat = resolved.stat()
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise ValueError("source_path must resolve to a regular file")
+    if max_bytes >= 0 and file_stat.st_size > max_bytes:
+        raise ValueError(
+            f"source_path exceeds communication_file_max_bytes: {file_stat.st_size} > {max_bytes}"
+        )
+    content = resolved.read_bytes()
+    payload = {
+        "source_path": str(resolved),
+        "filename": resolved.name or "attachment",
+        "mime_type": mimetypes.guess_type(resolved.name)[0],
+        "byte_count": len(content),
+        "content_base64": base64.b64encode(content).decode("ascii"),
+    }
+    print("__AGENT_SANDBOX_WORKSPACE_FILE_JSON_BEGIN__")
+    print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    print("__AGENT_SANDBOX_WORKSPACE_FILE_JSON_END__")
+except Exception as exc:
+    print(f"communication_stage_workspace_file: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+""".strip()
 
 
 def _normalize_issue_status_filters(statuses: list[str] | None) -> set[str]:
@@ -676,6 +722,88 @@ def create_server(context: RuntimeContext) -> FastMCP:
             else dict(record)
         )
         return CommunicationFileArtifact.model_validate(payload)
+
+    def _normalize_workspace_source_path(value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise PolicyError("source_path is required")
+        if "\x00" in text:
+            raise PolicyError("source_path contains a NUL byte")
+        if "\\" in text:
+            raise PolicyError("source_path must use POSIX separators")
+        windows_path = PureWindowsPath(text)
+        if windows_path.drive:
+            raise PolicyError("source_path must be under /home/agent")
+        posix_path = PurePosixPath(text)
+        if any(part == ".." for part in posix_path.parts):
+            raise PolicyError("source_path must not contain parent traversal")
+        if posix_path.is_absolute():
+            try:
+                posix_path.relative_to(PurePosixPath("/home/agent"))
+            except ValueError as exc:
+                raise PolicyError("source_path must be under /home/agent") from exc
+        return text
+
+    def _communication_file_max_bytes_for_session(session: Any) -> int | None:
+        session_value = getattr(session, "communication_file_max_bytes", None)
+        if session_value is not None:
+            return int(session_value)
+        effective_value = context.policy.effective_policy_for_session(
+            session
+        ).communication_file_max_bytes
+        return None if effective_value is None else int(effective_value)
+
+    def _parse_workspace_file_payload(stdout: str) -> dict[str, Any]:
+        text = str(stdout or "")
+        start = text.find(_WORKSPACE_FILE_PAYLOAD_BEGIN)
+        end = text.find(_WORKSPACE_FILE_PAYLOAD_END)
+        if start >= 0 and end > start:
+            json_text = text[start + len(_WORKSPACE_FILE_PAYLOAD_BEGIN) : end].strip()
+        else:
+            json_text = text.strip()
+        try:
+            payload = json.loads(json_text)
+        except json.JSONDecodeError as exc:
+            raise ToolError(
+                "Workspace file reader did not return a valid artifact payload"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ToolError("Workspace file reader returned an invalid artifact payload")
+        return payload
+
+    def _read_agent_workspace_file(
+        session: Any,
+        *,
+        source_path: str,
+    ) -> dict[str, Any]:
+        max_bytes = _communication_file_max_bytes_for_session(session)
+        effect = AgentExecEffectDefinition(
+            id="communication-stage-workspace-file",
+            display_name="Stage workspace communication file",
+            type="effect:agent:exec",
+            session_id=session.session_id,
+            command=[
+                "python3",
+                "-c",
+                _WORKSPACE_FILE_READER_SCRIPT,
+                source_path,
+                str(max_bytes if max_bytes is not None else -1),
+            ],
+            working_directory="/home/agent",
+            timeout_seconds=30,
+            check=True,
+        )
+        effect_context = EffectRuntimeContext(
+            provider_config=context.resolve_provider_config_for_session(
+                session.session_id
+            ).model_dump(mode="json"),
+            admin_service=_admin_service(),
+            metadata={"directory_path": session.directory_path or "root"},
+        )
+        provider = AgentExecEffectProvider()
+        provider.initialize(effect_definition=effect, runtime_context=effect_context)
+        exec_result = provider.execute()
+        return _parse_workspace_file_payload(str(exec_result.get("stdout") or ""))
 
     def _load_artifacts(artifact_ids: list[str]) -> list[CommunicationFileArtifact]:
         artifacts: list[CommunicationFileArtifact] = []
@@ -4989,6 +5117,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
 
             effect = AgentCopyFilesEffectDefinition(
                 id="communication-copy-artifact-to-workspace",
+                display_name="Copy communication artifact to workspace",
                 type="effect:agent:copy-files",
                 session_id=session_id,
                 files=[
@@ -5039,6 +5168,97 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def communication_stage_workspace_file(
+        session_id: str,
+        source_path: str,
+        filename: str | None = None,
+        mime_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Stage a regular file under /home/agent for outbound file-send tools."""
+        request = CommunicationStageWorkspaceFileRequest(
+            session_id=session_id,
+            source_path=source_path,
+            filename=filename,
+            mime_type=mime_type,
+        )
+        args = request.model_dump(mode="json", exclude_none=True)
+        try:
+            session = context.policy.require_tool(
+                session_id, ToolName.COMMUNICATION_STAGE_WORKSPACE_FILE
+            )
+            context.policy.require_communication_file_send_enabled(session)
+            normalized_source_path = _normalize_workspace_source_path(source_path)
+            if filename is not None:
+                context.policy.require_safe_communication_filename(session, filename)
+            payload = _read_agent_workspace_file(
+                session,
+                source_path=normalized_source_path,
+            )
+            content_base64 = str(payload.get("content_base64") or "")
+            if not content_base64:
+                raise ToolError("Workspace file reader did not return file content")
+            try:
+                content = base64.b64decode(content_base64, validate=True)
+            except Exception as exc:
+                raise ToolError("Workspace file reader returned invalid base64 content") from exc
+            resolved_source_path = str(payload.get("source_path") or normalized_source_path)
+            resolved_filename = str(filename or payload.get("filename") or "attachment")
+            resolved_mime_type = str(mime_type or payload.get("mime_type") or "").strip() or None
+            context.policy.require_communication_file_content(
+                session,
+                filename=resolved_filename,
+                mime_type=resolved_mime_type,
+                byte_count=len(content),
+            )
+            record = _communication_artifact_store().stage(
+                provider="workspace",
+                session_id=session_id,
+                content=content,
+                original_filename=resolved_filename,
+                mime_type=resolved_mime_type,
+                metadata={
+                    "source": "agent_workspace",
+                    "source_path": resolved_source_path,
+                    "requested_source_path": normalized_source_path,
+                },
+            )
+            artifact = _artifact_to_model(record)
+            response = CommunicationStageWorkspaceFileResponse(
+                artifact=artifact,
+                source_path=resolved_source_path,
+            )
+            result = response.model_dump(mode="json")
+            audit_success(
+                session_id,
+                ToolName.COMMUNICATION_STAGE_WORKSPACE_FILE,
+                args,
+                {
+                    "decision": "allowed",
+                    "artifact_id": artifact.artifact_id,
+                    "source_path": resolved_source_path,
+                    "byte_count": artifact.byte_count,
+                    "size": artifact.byte_count,
+                    "mime_type": artifact.mime_type,
+                    "filename": artifact.filename,
+                    "sha256": artifact.sha256,
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.COMMUNICATION_STAGE_WORKSPACE_FILE, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.COMMUNICATION_STAGE_WORKSPACE_FILE,
                 args,
                 str(exc),
                 decision="error",

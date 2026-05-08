@@ -1079,7 +1079,8 @@ adapters perform provider API calls under the active session policy.
   `communication_copy_artifact_to_workspace` only when the guest needs a local copy; provider
   filenames are normalized and copied under `/home/agent/communication-artifacts/`.
 - **Outbound file send:** outbound sends reuse staged artifact IDs rather than arbitrary guest
-  paths. The provider-specific tools are `discord_post_file`, `teams_post_file`,
+  paths. Use `communication_stage_workspace_file` to stage an agent-created file from under
+  `/home/agent`; the provider-specific tools are `discord_post_file`, `teams_post_file`,
   `email_create_draft_with_attachments`, and `email_send_approved_with_attachments`. Keep
   `communication_file_send_enabled: false` unless the session is explicitly allowed to send files.
 - **Approval behavior:** set `communication_file_require_approval_for_send: true` before enabling

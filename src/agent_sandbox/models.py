@@ -53,6 +53,7 @@ class ToolName(str, Enum):
     COMMUNICATION_LIST_ATTACHMENTS = "communication_list_attachments"
     COMMUNICATION_DOWNLOAD_ATTACHMENT = "communication_download_attachment"
     COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE = "communication_copy_artifact_to_workspace"
+    COMMUNICATION_STAGE_WORKSPACE_FILE = "communication_stage_workspace_file"
     DISCORD_POST_FILE = "discord_post_file"
     TEAMS_GET_MESSAGES = "teams_get_messages"
     TEAMS_POST_STATUS = "teams_post_status"
@@ -722,6 +723,18 @@ class CommunicationCopyArtifactToWorkspaceResponse(BaseModel):
     copied_count: int
     copied_paths: list[str] = Field(default_factory=list)
     result: dict[str, Any] = Field(default_factory=dict)
+
+
+class CommunicationStageWorkspaceFileRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    source_path: str = Field(min_length=1)
+    filename: str | None = None
+    mime_type: str | None = None
+
+
+class CommunicationStageWorkspaceFileResponse(BaseModel):
+    artifact: CommunicationFileArtifact
+    source_path: str
 
 
 class CommunicationListAttachmentsRequest(BaseModel):

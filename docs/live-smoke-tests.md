@@ -223,16 +223,18 @@ the same dedicated test destinations.
 
 1. Keep `communication_file_require_approval_for_send: true` and temporarily set
    `communication_file_send_enabled: true` for the smoke-test session/directory.
-2. Submit and approve an exact payload for one provider-specific send tool. The payload must match
+2. If using an agent-created local fixture, call `communication_stage_workspace_file` for a regular
+   file under `/home/agent` and use the returned `artifact.artifact_id`.
+3. Submit and approve an exact payload for one provider-specific send tool. The payload must match
    the destination, message/body, thread fields when present, and `artifact_ids`.
-3. For Discord, call `discord_post_file` with the approved `request_id` and the staged
+4. For Discord, call `discord_post_file` with the approved `request_id` and the staged
    `artifact_ids`, targeting only the dedicated Discord test channel.
-4. For Teams, call `teams_post_file` with the approved `request_id`, targeting only the dedicated
+5. For Teams, call `teams_post_file` with the approved `request_id`, targeting only the dedicated
    Teams test channel/chat.
-5. For Gmail/Graph, prefer `email_create_draft_with_attachments` first. Exercise
+6. For Gmail/Graph, prefer `email_create_draft_with_attachments` first. Exercise
    `email_send_approved_with_attachments` only if `email_send_enabled: true` is intentionally set
    and the approval payload matches exactly.
-6. Immediately return `communication_file_send_enabled` to `false` after the outbound test.
+7. Immediately return `communication_file_send_enabled` to `false` after the outbound test.
 
 ### Attachment audit checks
 
