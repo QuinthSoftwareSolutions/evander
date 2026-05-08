@@ -459,9 +459,20 @@ class PolicyEngine:
             channel_target=channel_target,
         )
         for artifact in artifacts:
+            artifact_session_id = _artifact_field(artifact, "session_id")
+            if artifact_session_id is not None and str(artifact_session_id) != session.session_id:
+                raise PolicyError(
+                    f"Communication file artifact is not owned by session {session.session_id}"
+                )
             self.require_communication_file_content(
                 session,
-                filename=str(_artifact_field(artifact, "filename", "")),
+                filename=str(
+                    _artifact_field(
+                        artifact,
+                        "normalized_safe_filename",
+                        _artifact_field(artifact, "filename", ""),
+                    )
+                ),
                 mime_type=_artifact_field(artifact, "mime_type"),
                 byte_count=int(_artifact_field(artifact, "byte_count", 0)),
             )

@@ -228,9 +228,16 @@ class WorkerFileWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     destination_path: str
-    content: str
+    content: str | None = None
+    content_base64: str | None = None
     mode: str | None = None
     overwrite: bool = True
+
+    @model_validator(mode="after")
+    def validate_content_source(self) -> "WorkerFileWrite":
+        if (self.content is None) == (self.content_base64 is None):
+            raise ValueError("exactly one of content or content_base64 is required")
+        return self
 
     @field_validator("destination_path", mode="before")
     @classmethod

@@ -52,6 +52,7 @@ class ToolName(str, Enum):
     DISCORD_POST_STATUS = "discord_post_status"
     COMMUNICATION_LIST_ATTACHMENTS = "communication_list_attachments"
     COMMUNICATION_DOWNLOAD_ATTACHMENT = "communication_download_attachment"
+    COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE = "communication_copy_artifact_to_workspace"
     DISCORD_POST_FILE = "discord_post_file"
     TEAMS_GET_MESSAGES = "teams_get_messages"
     TEAMS_POST_STATUS = "teams_post_status"
@@ -693,12 +694,34 @@ class CommunicationFileArtifact(BaseModel):
     provider: str = Field(min_length=1)
     source_message_id: str | None = None
     source_attachment_id: str | None = None
+    source_channel: str | None = None
+    source_mailbox: str | None = None
+    original_filename: str | None = None
+    normalized_safe_filename: str | None = None
     filename: str = Field(min_length=1)
     mime_type: str | None = None
     byte_count: int = Field(ge=0)
     sha256: str
+    created_at: datetime = Field(default_factory=utc_now)
+    expires_at: datetime | None = None
     staged_at: datetime = Field(default_factory=utc_now)
+    session_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CommunicationCopyArtifactToWorkspaceRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    artifact_id: str = Field(min_length=1)
+    destination_filename: str | None = None
+    overwrite: bool = True
+
+
+class CommunicationCopyArtifactToWorkspaceResponse(BaseModel):
+    artifact: CommunicationFileArtifact
+    destination_path: str
+    copied_count: int
+    copied_paths: list[str] = Field(default_factory=list)
+    result: dict[str, Any] = Field(default_factory=dict)
 
 
 class CommunicationListAttachmentsRequest(BaseModel):
