@@ -1,0 +1,42 @@
+{
+  "communication_file_receive_enabled": true,
+  "communication_file_send_enabled": false,
+  "communication_file_require_approval_for_send": true,
+  "communication_file_max_bytes": 1048576,
+  "communication_file_allowed_mime_types": [
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    "application/json",
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp"
+  ],
+  "communication_file_allowed_extensions": [
+    ".txt",
+    ".md",
+    ".csv",
+    ".json",
+    ".pdf",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp"
+  ],
+  "communication_file_blocked_extensions": [
+    ".bat",
+    ".cmd",
+    ".com",
+    ".dll",
+    ".exe",
+    ".js",
+    ".lnk",
+    ".msi",
+    ".ps1",
+    ".sh",
+    ".vbs"
+  ]
+}
