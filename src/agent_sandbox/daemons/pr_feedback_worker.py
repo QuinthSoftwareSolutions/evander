@@ -18,6 +18,10 @@ from pydantic import BaseModel, Field
 
 from agent_sandbox.audit import AuditEventType, AuditLogger
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.inline_media import (
+    InlineMediaDownload,
+    inline_media_download_from_embedded_payload,
+)
 from agent_sandbox.models import InlineMediaRef
 from agent_sandbox.worker_directory_context import (
     WorkerDirectoryContextResolver,
@@ -203,6 +207,77 @@ def _extract_ado_inline_media(
         )
     return refs
 
+
+def _inline_media_refs_from_resource(
+    *,
+    source_kind: str,
+    provider: str,
+    resource_id: str,
+    resource: dict[str, Any] | None,
+    comment_id: str | None = None,
+) -> list[InlineMediaRef]:
+    if not isinstance(resource, dict):
+        return []
+    refs: list[InlineMediaRef] = []
+    raw_media = resource.get("inline_media")
+    if isinstance(raw_media, list):
+        for item in raw_media:
+            try:
+                ref = (
+                    item
+                    if isinstance(item, InlineMediaRef)
+                    else InlineMediaRef.model_validate(item)
+                )
+            except Exception:
+                continue
+            if comment_id and ref.comment_id != comment_id:
+                continue
+            refs.append(
+                ref.model_copy(
+                    update={
+                        "source_kind": source_kind,
+                        "provider": provider,
+                        "resource_id": resource_id,
+                    }
+                )
+            )
+    metadata = resource.get("metadata") if isinstance(resource.get("metadata"), dict) else {}
+    metadata_media = metadata.get("inline_media") or metadata.get("images")
+    if isinstance(metadata_media, list):
+        for item in metadata_media:
+            try:
+                ref = (
+                    item
+                    if isinstance(item, InlineMediaRef)
+                    else InlineMediaRef.model_validate(item)
+                )
+            except Exception:
+                continue
+            if comment_id and ref.comment_id != comment_id:
+                continue
+            refs.append(
+                ref.model_copy(
+                    update={
+                        "source_kind": source_kind,
+                        "provider": provider,
+                        "resource_id": resource_id,
+                    }
+                )
+            )
+    return refs
+
+
+def _download_url_with_optional_headers(
+    *,
+    url: str,
+    headers: dict[str, str],
+    timeout_seconds: float = 30.0,
+) -> tuple[bytes, str | None]:
+    with httpx.Client(timeout=timeout_seconds, follow_redirects=True) as client:
+        response = client.get(url, headers=headers)
+        response.raise_for_status()
+        mime_type = response.headers.get("content-type", "").split(";", 1)[0].strip() or None
+        return response.content, mime_type
 
 class FeedbackEnvelope(BaseModel):
     feedback_id: str
@@ -628,6 +703,42 @@ class GitHubFeedbackAdapter:
         next_cursor = _latest_cursor([cursor, *[item.created_at.isoformat() for item in ordered]])
         return ProviderPollResult(feedback=ordered, next_cursor=next_cursor)
 
+    def list_inline_media(
+        self,
+        *,
+        source_kind: str,
+        resource_id: str,
+        resource: dict[str, Any] | None = None,
+        comment_id: str | None = None,
+    ) -> list[InlineMediaRef]:
+        return _inline_media_refs_from_resource(
+            source_kind=source_kind,
+            provider=self.provider_name,
+            resource_id=resource_id,
+            resource=resource,
+            comment_id=comment_id,
+        )
+
+    def download_inline_media(
+        self,
+        *,
+        media: InlineMediaRef,
+        raw: dict[str, Any] | None = None,
+    ) -> InlineMediaDownload:
+        embedded = inline_media_download_from_embedded_payload(media, raw)
+        if embedded is not None:
+            return embedded
+        if not media.url:
+            raise ValueError("GitHub inline media does not include a download URL")
+        media_host = urlparse(media.url).netloc.lower()
+        api_host = urlparse(self.api_base_url).netloc.lower()
+        headers = self._headers() if media_host == api_host else {}
+        content, mime_type = _download_url_with_optional_headers(
+            url=media.url,
+            headers=headers,
+        )
+        return InlineMediaDownload(content, media.filename, mime_type or media.mime_type)
+
     def _get_issue_comments(
         self, client: httpx.Client, repo: str, pr_id: str, cursor: str | None
     ) -> list[dict[str, Any]]:
@@ -790,6 +901,44 @@ class AzureDevOpsFeedbackAdapter:
             return {}
         token = base64.b64encode(f":{self.pat}".encode("utf-8")).decode("ascii")
         return {"Authorization": f"Basic {token}"}
+
+    def list_inline_media(
+        self,
+        *,
+        source_kind: str,
+        resource_id: str,
+        resource: dict[str, Any] | None = None,
+        comment_id: str | None = None,
+    ) -> list[InlineMediaRef]:
+        return _inline_media_refs_from_resource(
+            source_kind=source_kind,
+            provider=self.provider_name,
+            resource_id=resource_id,
+            resource=resource,
+            comment_id=comment_id,
+        )
+
+    def download_inline_media(
+        self,
+        *,
+        media: InlineMediaRef,
+        raw: dict[str, Any] | None = None,
+    ) -> InlineMediaDownload:
+        if not self.pat:
+            raise FeedbackProviderConfigurationError(
+                "Azure DevOps inline media downloads require a PAT in "
+                f"environment variable {self.pat_env_name!r}."
+            )
+        embedded = inline_media_download_from_embedded_payload(media, raw)
+        if embedded is not None:
+            return embedded
+        if not media.url:
+            raise ValueError("Azure DevOps inline media does not include a download URL")
+        content, mime_type = _download_url_with_optional_headers(
+            url=media.url,
+            headers=self._headers(),
+        )
+        return InlineMediaDownload(content, media.filename, mime_type or media.mime_type)
 
     def poll(
         self,

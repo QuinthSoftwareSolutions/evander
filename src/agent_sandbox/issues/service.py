@@ -13,6 +13,11 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
 
+from agent_sandbox.inline_media import (
+    InlineMediaDownload,
+    inline_media_download_from_embedded_payload,
+)
+from agent_sandbox.models import InlineMediaRef
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.text_formatting import looks_like_html, render_markdownish_text_to_html
 
@@ -1391,6 +1396,84 @@ class AzureDevOpsIssueAdapter:
                     inline_media.extend(comment["inline_media"])
             item["inline_media"] = inline_media
             return item
+
+
+class AzureDevOpsIssueInlineMediaProvider:
+    """Inline-media adapter for Azure DevOps work item/backlog media."""
+
+    provider_name = "ado"
+
+    def __init__(
+        self,
+        config_resolver: ProviderConfigResolver,
+        *,
+        directory_path: str,
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        self.issue_adapter = AzureDevOpsIssueAdapter(
+            config_resolver, timeout_seconds=timeout_seconds
+        )
+        self.directory_path = directory_path
+        self.timeout_seconds = timeout_seconds
+
+    def list_inline_media(
+        self,
+        *,
+        source_kind: str,
+        resource_id: str,
+        resource: dict[str, Any] | None = None,
+        comment_id: str | None = None,
+    ) -> list[InlineMediaRef]:
+        if not isinstance(resource, dict):
+            return []
+        refs: list[InlineMediaRef] = []
+        raw_items = resource.get("inline_media")
+        if not isinstance(raw_items, list):
+            raw_items = []
+        for item in raw_items:
+            try:
+                ref = (
+                    item
+                    if isinstance(item, InlineMediaRef)
+                    else InlineMediaRef.model_validate(item)
+                )
+            except Exception:
+                continue
+            if comment_id and ref.comment_id != comment_id:
+                continue
+            refs.append(
+                ref.model_copy(
+                    update={
+                        "source_kind": source_kind,
+                        "provider": self.provider_name,
+                        "resource_id": resource_id,
+                    }
+                )
+            )
+        return refs
+
+    def download_inline_media(
+        self,
+        *,
+        media: InlineMediaRef,
+        raw: dict[str, Any] | None = None,
+    ) -> InlineMediaDownload:
+        embedded = inline_media_download_from_embedded_payload(media, raw)
+        if embedded is not None:
+            return embedded
+        if not media.url:
+            raise ValueError("Azure DevOps backlog inline media does not include a download URL")
+        _organization_url, _project, pat = self.issue_adapter._resolve_connection(
+            self.directory_path
+        )
+        with httpx.Client(timeout=self.timeout_seconds, follow_redirects=True) as client:
+            response = client.get(
+                media.url,
+                headers={"Authorization": AzureDevOpsIssueAdapter._auth_header(pat)},
+            )
+            response.raise_for_status()
+        mime_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
+        return InlineMediaDownload(response.content, media.filename, mime_type or media.mime_type)
 
 
 class IssueService:
