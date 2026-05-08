@@ -41,6 +41,7 @@ from agent_sandbox.daemons.pr_feedback_worker import (
 from agent_sandbox.inline_media import (
     InlineMediaDownload,
     inline_media_download_from_embedded_payload,
+    sanitize_inline_media_metadata,
 )
 from agent_sandbox.email.providers import (
     EmailAttachmentContent,
@@ -80,6 +81,7 @@ _ATTACHMENT_SECRET_KEYS = {
     "access_token",
     "content",
     "contentBytes",
+    "contentbytes",
     "content_bytes",
     "content_base64",
     "data",
@@ -147,7 +149,11 @@ def _teams_message_to_html(message: str) -> str:
 def _sanitize_attachment_metadata(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
-    return {key: value for key, value in raw.items() if key not in _ATTACHMENT_SECRET_KEYS}
+    return {
+        str(key): sanitize_inline_media_metadata(value)
+        for key, value in raw.items()
+        if str(key).replace("-", "_").lower() not in _ATTACHMENT_SECRET_KEYS
+    }
 
 
 def _teams_attachment_id(item: dict[str, Any]) -> str:
@@ -523,9 +529,12 @@ class TeamsInlineMediaProvider:
         media: InlineMediaRef,
         raw: dict[str, Any] | None = None,
         channel_target: str | None = None,
+        max_bytes: int | None = None,
     ) -> InlineMediaDownload:
         embedded = inline_media_download_from_embedded_payload(media, raw)
         if embedded is not None:
+            if max_bytes is not None and len(embedded.content) > max_bytes:
+                raise ValueError("Inline media exceeds max bytes")
             return embedded
         downloaded = self.service.download_attachment(
             media.resource_id, media.media_id, channel_target=channel_target
@@ -534,8 +543,11 @@ class TeamsInlineMediaProvider:
         if not isinstance(data, bytes):
             embedded = inline_media_download_from_embedded_payload(media, downloaded)
             if embedded is not None:
-                return embedded
-            raise ValueError("Teams inline media download did not return bytes")
+                data = embedded.content
+            else:
+                raise ValueError("Teams inline media download did not return bytes")
+        if max_bytes is not None and len(data) > max_bytes:
+            raise ValueError("Inline media exceeds max bytes")
         return InlineMediaDownload(
             data,
             str(downloaded.get("filename") or downloaded.get("name") or media.filename),

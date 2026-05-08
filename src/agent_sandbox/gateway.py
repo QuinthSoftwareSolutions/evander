@@ -57,7 +57,13 @@ from agent_sandbox.daemons.pr_feedback_worker import (
     GitHubFeedbackAdapter,
 )
 from agent_sandbox.email.http_utils import ProviderRequestError
-from agent_sandbox.inline_media import inline_media_download_from_embedded_payload
+from agent_sandbox.inline_media import (
+    download_url_with_limit,
+    inline_media_download_from_embedded_payload,
+    normalize_inline_media_provider,
+    require_provider_media_url,
+    sanitize_inline_media_metadata,
+)
 from agent_sandbox.email.providers import EmailDraftAttachment
 from agent_sandbox.issues.service import AzureDevOpsIssueInlineMediaProvider, IssueService
 from agent_sandbox.models import (
@@ -941,7 +947,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             }
             refs.append(
                 CommunicationAttachmentRef(
-                    provider=provider,
+                    provider=normalize_inline_media_provider(provider),
                     message_id=message_id,
                     attachment_id=attachment_id,
                     filename=filename,
@@ -1387,10 +1393,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
         request: ListInlineMediaRequest | DownloadInlineMediaRequest,
         ref: InlineMediaRef | None = None,
     ) -> Any:
-        provider = (
+        provider = normalize_inline_media_provider(
             str((ref.provider if ref is not None else request.provider) or "")
-            .strip()
-            .lower()
         )
         if provider == "github":
             return _github_inline_media_provider(request.session_id)
@@ -1471,14 +1475,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 or raw_item.get("content_type")
                 or raw_item.get("contentType")
             )
-            safe_metadata = {
-                str(key): value
-                for key, value in raw_item.items()
-                if str(key) not in _INLINE_MEDIA_SECRET_FIELDS
-            }
+            safe_metadata = sanitize_inline_media_metadata(raw_item)
             ref = InlineMediaRef(
                 source_kind=source_kind,
-                provider=provider,
+                provider=normalize_inline_media_provider(provider),
                 resource_id=resource_id,
                 comment_id=str(raw_comment_id).strip() if raw_comment_id else None,
                 media_id=media_id,
@@ -1579,7 +1579,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         )
         issue_service = IssueService(context.provider_config)
         payload = issue_service.get_remote_backlog_item_by_id(
-            provider=request.provider.strip().lower(),
+            provider=normalize_inline_media_provider(request.provider),
             directory_path=session.directory_path or "root",
             backlog_item_id=request.resource_id,
             project=request.project,
@@ -1592,7 +1592,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         media.extend(
             _inline_media_refs_from_raw(
                 source_kind="ado_backlog",
-                provider=response.provider,
+                provider=normalize_inline_media_provider(response.provider),
                 resource_id=response.id,
                 raw_media=response.inline_media or response.metadata.get("inline_media"),
             )
@@ -1606,7 +1606,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             media.extend(
                 _inline_media_refs_from_raw(
                     source_kind="ado_backlog",
-                    provider=response.provider,
+                    provider=normalize_inline_media_provider(response.provider),
                     resource_id=response.id,
                     raw_media=comment.get("inline_media") or comment.get("images"),
                     comment_id=comment_id,
@@ -1633,7 +1633,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raw = item.model_dump(mode="json")
             ref = InlineMediaRef(
                 source_kind="communication",
-                provider=item.provider,
+                provider=normalize_inline_media_provider(item.provider),
                 resource_id=item.message_id,
                 media_id=item.attachment_id,
                 filename=item.filename,
@@ -1647,7 +1647,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     ).strip()
                     or None
                 ),
-                metadata=item.metadata,
+                metadata=sanitize_inline_media_metadata(item.metadata),
             )
             pairs.append((ref, raw))
         return pairs
@@ -1664,24 +1664,96 @@ def create_server(context: RuntimeContext) -> FastMCP:
             return _inline_media_from_ado_backlog(request, tool_name=tool_name)
         return _inline_media_from_communication(request, tool_name=tool_name)
 
+    def _inline_media_max_bytes_for_session(session: Any) -> int | None:
+        return _communication_file_max_bytes_for_session(session)
+
+    def _preflight_inline_media_content(session: Any, ref: InlineMediaRef) -> None:
+        mime_type = ref.mime_type
+        if not mime_type:
+            allowed_mime_types = context.policy._communication_file_policy_value(
+                session, "communication_file_allowed_mime_types"
+            )
+            if allowed_mime_types:
+                # Preserve cheap filename/extension/declared-size checks without
+                # rejecting solely because the HTTP response MIME type has not been
+                # observed yet; the post-download content policy enforces MIME.
+                mime_type = next(iter(allowed_mime_types), None)
+        context.policy.require_inline_media_content(
+            session,
+            source_kind=ref.source_kind,
+            filename=ref.filename,
+            mime_type=mime_type,
+            byte_count=ref.byte_count if ref.byte_count is not None else 0,
+        )
+
+    def _allowed_inline_media_hosts_for_request(
+        request: DownloadInlineMediaRequest,
+        ref: InlineMediaRef,
+    ) -> list[str]:
+        provider = normalize_inline_media_provider(ref.provider or request.provider)
+        if provider != "azure_devops":
+            return []
+        resolved_config = context.resolve_provider_config_for_session(request.session_id)
+        host = urlparse(resolved_config.azure_devops_organization_url).hostname
+        return [host] if host else []
+
+    def _call_inline_media_provider_download(
+        provider: Any,
+        request: DownloadInlineMediaRequest,
+        ref: InlineMediaRef,
+        raw: dict[str, Any],
+        *,
+        max_bytes: int | None,
+    ) -> Any:
+        kwargs: dict[str, Any] = {"media": ref, "raw": raw}
+        try:
+            parameters = signature(provider.download_inline_media).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        if "channel_target" in parameters:
+            kwargs["channel_target"] = request.channel_target
+        if "max_bytes" in parameters:
+            kwargs["max_bytes"] = max_bytes
+        return provider.download_inline_media(**kwargs)
+
     def _download_inline_media_bytes(
         request: DownloadInlineMediaRequest,
         ref: InlineMediaRef,
         raw: dict[str, Any],
     ) -> tuple[bytes, str, str | None]:
+        session = context.policy.get_session(request.session_id)
+        _preflight_inline_media_content(session, ref)
+        max_bytes = _inline_media_max_bytes_for_session(session)
         provider = _inline_media_provider_for_request(request, ref)
         if provider is not None and hasattr(provider, "download_inline_media"):
-            downloaded = provider.download_inline_media(media=ref, raw=raw)
+            downloaded = _call_inline_media_provider_download(
+                provider, request, ref, raw, max_bytes=max_bytes
+            )
+            if max_bytes is not None and len(downloaded.content) > max_bytes:
+                raise PolicyError(
+                    f"Inline media exceeds max bytes for session {request.session_id}: "
+                    f"{len(downloaded.content)} > {max_bytes}"
+                )
             return downloaded.content, downloaded.filename, downloaded.mime_type
         embedded = inline_media_download_from_embedded_payload(ref, raw)
         if embedded is not None:
+            if max_bytes is not None and len(embedded.content) > max_bytes:
+                raise PolicyError(
+                    f"Inline media exceeds max bytes for session {request.session_id}: "
+                    f"{len(embedded.content)} > {max_bytes}"
+                )
             return embedded.content, embedded.filename, embedded.mime_type
         if ref.url:
-            with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-                response = client.get(ref.url)
-                response.raise_for_status()
-                mime_type = response.headers.get("content-type", "").split(";", 1)[0].strip() or ref.mime_type
-                return response.content, ref.filename, mime_type
+            require_provider_media_url(
+                provider=ref.provider,
+                url=ref.url,
+                allowed_hosts=_allowed_inline_media_hosts_for_request(request, ref),
+            )
+            content, mime_type = download_url_with_limit(
+                url=ref.url,
+                max_bytes=max_bytes,
+            )
+            return content, ref.filename, mime_type or ref.mime_type
         raise ToolError("Inline media content is not available from the configured provider metadata")
 
     def _stage_inline_media_artifact(
@@ -1713,7 +1785,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         source_kind = _normalize_inline_media_source_kind(request.source_kind)
         fields: dict[str, Any] = {
             "source_kind": source_kind,
-            "provider": str(request.provider or "").strip().lower(),
+            "provider": normalize_inline_media_provider(str(request.provider or "")),
         }
         if source_kind == "pr_feedback":
             raw_feedback = context.pr_feedback_service.store.read_raw().get("feedback", {})
@@ -5592,7 +5664,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             media = [ref for ref, _raw in _resolve_inline_media(request)]
             response = ListInlineMediaResponse(
                 source_kind=_normalize_inline_media_source_kind(source_kind),
-                provider=provider.strip().lower(),
+                provider=normalize_inline_media_provider(provider),
                 resource_id=resource_id,
                 media=media,
             )
@@ -5793,6 +5865,16 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 error_class="adapter_http_error",
             )
             raise
+        except ValueError as exc:
+            audit_failure(
+                session_id,
+                ToolName.DOWNLOAD_INLINE_MEDIA,
+                audit_args,
+                str(exc),
+                decision="error",
+                error_class="invalid_inline_media",
+            )
+            raise ToolError(str(exc)) from exc
         except Exception as exc:
             audit_failure(
                 session_id,

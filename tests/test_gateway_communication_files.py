@@ -366,7 +366,7 @@ def test_inline_media_ado_backlog_uses_issue_service_and_content_policy(
             self.provider_config = provider_config
 
         def get_remote_backlog_item_by_id(self, **kwargs: object) -> dict[str, object]:
-            assert kwargs["provider"] == "ado"
+            assert kwargs["provider"] == "azure_devops"
             assert kwargs["backlog_item_id"] == "123"
             return {
                 "provider": "ado",
@@ -417,7 +417,9 @@ def test_inline_media_ado_backlog_uses_issue_service_and_content_policy(
         },
     )
 
+    assert listed["provider"] == "azure_devops"
     assert listed["media"][0]["source_kind"] == "ado_backlog"
+    assert listed["media"][0]["provider"] == "azure_devops"
     assert listed["media"][0]["comment_id"] == "comment-7"
     assert listed["media"][0]["media_id"] == "ado-image-1"
 
@@ -436,7 +438,7 @@ def test_inline_media_ado_backlog_uses_issue_service_and_content_policy(
 
     artifact = downloaded["artifact"]
     assert artifact["artifact_id"].startswith("comm_")
-    assert artifact["provider"] == "ado"
+    assert artifact["provider"] == "azure_devops"
     assert artifact["mime_type"] == "image/jpeg"
     assert artifact["metadata"]["source_kind"] == "ado_backlog"
     staged = CommunicationArtifactStore(tmp_path).get(artifact["artifact_id"])
@@ -589,7 +591,7 @@ def test_ado_backlog_inline_media_rejects_oversize_before_staging(
     assert failure["tool_name"] == "download_inline_media"
     assert failure["decision"] == "denied"
     assert failure["args"]["source_kind"] == "ado_backlog"
-    assert failure["args"]["provider"] == "ado"
+    assert failure["args"]["provider"] == "azure_devops"
     assert failure["args"]["resource_id"] == "123"
     assert failure["args"]["work_item_id"] == "123"
     assert failure["args"]["comment_id"] == "comment-7"

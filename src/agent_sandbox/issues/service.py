@@ -15,7 +15,9 @@ import httpx
 
 from agent_sandbox.inline_media import (
     InlineMediaDownload,
+    download_url_with_limit,
     inline_media_download_from_embedded_payload,
+    require_provider_media_url,
 )
 from agent_sandbox.models import InlineMediaRef
 from agent_sandbox.provider_config import ProviderConfigResolver
@@ -1401,7 +1403,7 @@ class AzureDevOpsIssueAdapter:
 class AzureDevOpsIssueInlineMediaProvider:
     """Inline-media adapter for Azure DevOps work item/backlog media."""
 
-    provider_name = "ado"
+    provider_name = "azure_devops"
 
     def __init__(
         self,
@@ -1457,23 +1459,29 @@ class AzureDevOpsIssueInlineMediaProvider:
         *,
         media: InlineMediaRef,
         raw: dict[str, Any] | None = None,
+        max_bytes: int | None = None,
     ) -> InlineMediaDownload:
         embedded = inline_media_download_from_embedded_payload(media, raw)
         if embedded is not None:
             return embedded
         if not media.url:
             raise ValueError("Azure DevOps backlog inline media does not include a download URL")
-        _organization_url, _project, pat = self.issue_adapter._resolve_connection(
+        organization_url, _project, pat = self.issue_adapter._resolve_connection(
             self.directory_path
         )
-        with httpx.Client(timeout=self.timeout_seconds, follow_redirects=True) as client:
-            response = client.get(
-                media.url,
-                headers={"Authorization": AzureDevOpsIssueAdapter._auth_header(pat)},
-            )
-            response.raise_for_status()
-        mime_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
-        return InlineMediaDownload(response.content, media.filename, mime_type or media.mime_type)
+        allowed_host = urlparse(organization_url).hostname
+        require_provider_media_url(
+            provider=self.provider_name,
+            url=media.url,
+            allowed_hosts=[allowed_host] if allowed_host else [],
+        )
+        content, mime_type = download_url_with_limit(
+            url=media.url,
+            headers={"Authorization": AzureDevOpsIssueAdapter._auth_header(pat)},
+            timeout_seconds=self.timeout_seconds,
+            max_bytes=max_bytes,
+        )
+        return InlineMediaDownload(content, media.filename, mime_type or media.mime_type)
 
 
 class IssueService:
