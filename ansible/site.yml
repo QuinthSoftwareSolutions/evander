@@ -51,8 +51,8 @@
             "active": true,
             "message": {{ agent_sandbox_deployment_status_message | to_json }},
             "source": "ansible",
-            "started_at": {{ now(utc=true).isoformat().replace('+00:00', 'Z') | to_json }},
-            "updated_at": {{ now(utc=true).isoformat().replace('+00:00', 'Z') | to_json }},
+            "started_at": {{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') | to_json }},
+            "updated_at": {{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') | to_json }},
             "ttl_seconds": {{ agent_sandbox_deployment_status_ttl_seconds | int }}
           }
       when:

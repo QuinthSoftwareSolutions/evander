@@ -3412,7 +3412,10 @@ class AdminService:
             return DeploymentStatusPayload()
         if not status.active:
             return status
-        checked_at = status.updated_at or status.started_at
+        started_at = _coerce_optional_datetime(status.started_at)
+        updated_at = _coerce_optional_datetime(status.updated_at)
+        status = status.model_copy(update={"started_at": started_at, "updated_at": updated_at})
+        checked_at = updated_at or started_at
         is_stale = False
         if checked_at is not None:
             is_stale = (_utc_now() - checked_at).total_seconds() > status.ttl_seconds

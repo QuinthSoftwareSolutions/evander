@@ -1290,8 +1290,7 @@ export default function AdminRoot() {
     let cancelled = false;
     async function loadSession() {
       try {
-        const response = await fetch(`${API_BASE}/api/auth/session`, { credentials: "same-origin" });
-        const payload = (await response.json()) as AdminSession;
+        const payload = await fetchJson<AdminSession>("/api/auth/session", { credentials: "same-origin" });
         if (!cancelled) {
           setSession(payload);
           setSessionError(null);
@@ -1318,7 +1317,7 @@ export default function AdminRoot() {
         }
       } catch {
         if (!cancelled) {
-          setDeploymentStatus(null);
+          setDeploymentStatus((current) => (current?.active ? current : null));
         }
       }
     }
@@ -1339,14 +1338,10 @@ export default function AdminRoot() {
     let cancelled = false;
     async function loadAdminState() {
       try {
-        const response = await fetch(
-          `${API_BASE}/api/admin/state?directory_path=${encodeURIComponent(selectedDirectoryPath)}`,
+        const payload = await fetchJson<AdminState>(
+          `/api/admin/state?directory_path=${encodeURIComponent(selectedDirectoryPath)}`,
           { credentials: "same-origin" },
         );
-        const payload = (await response.json()) as AdminState & { error?: string };
-        if (!response.ok) {
-          throw new Error(payload.error ?? "Unable to load admin state.");
-        }
         if (!cancelled) {
           setAdminState(payload);
           if (payload.deployment) {
@@ -1429,14 +1424,10 @@ export default function AdminRoot() {
 
   async function refreshAdminState() {
     try {
-      const response = await fetch(
-        `${API_BASE}/api/admin/state?directory_path=${encodeURIComponent(selectedDirectoryPath)}`,
+      const payload = await fetchJson<AdminState>(
+        `/api/admin/state?directory_path=${encodeURIComponent(selectedDirectoryPath)}`,
         { credentials: "same-origin" },
       );
-      const payload = (await response.json()) as AdminState & { error?: string };
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Unable to load admin state.");
-      }
       setAdminState(payload);
       if (payload.deployment) {
         setDeploymentStatus(payload.deployment);

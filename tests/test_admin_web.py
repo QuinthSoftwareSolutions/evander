@@ -496,6 +496,33 @@ def test_admin_web_ignores_stale_deployment_status(tmp_path: Path) -> None:
     assert response.json()["stale"] is True
 
 
+def test_admin_web_accepts_naive_deployment_status_timestamps(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    naive_timestamp = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    (service.config.runtime_dir / "deployment-status.json").write_text(
+        json.dumps(
+            {
+                "active": True,
+                "message": "Deploying",
+                "started_at": naive_timestamp,
+                "updated_at": naive_timestamp,
+                "ttl_seconds": 3600,
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/deployment-status")
+    state_response = client.get("/api/admin/state")
+
+    assert response.status_code == 200
+    assert response.json()["active"] is True
+    assert response.json()["updated_at"].endswith(("Z", "+00:00"))
+    assert state_response.status_code == 200
+    assert state_response.json()["deployment"]["active"] is True
+
+
 def test_admin_web_skills_api_and_catalog_options(tmp_path: Path) -> None:
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 

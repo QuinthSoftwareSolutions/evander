@@ -68,6 +68,7 @@ def test_ansible_site_announces_control_plane_deployment_status() -> None:
     assert "Check whether an existing runtime directory is present" in site
     assert "Announce deployment in control-plane runtime" in site
     assert '"source": "ansible"' in site
+    assert "strftime('%Y-%m-%dT%H:%M:%SZ')" in site
     assert "Clear deployment status runtime flag" in site
     assert site.index("Announce deployment in control-plane runtime") < site.index(
         "- role: host_prereqs"
