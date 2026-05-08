@@ -29,12 +29,6 @@ manager environment or optional repo-root `secrets.env`.
 |---|---|---|
 | `OPENAI_API_KEY` | `config/openai-relay.env.example` | `src/agent_sandbox/relays/openai.py` model relay traffic (looked up using config key `openai_api_key_env`, defaulting to `OPENAI_API_KEY`). |
 
-## `config/admin-web.env.example`
-
-| Parameter | Found in | Consumed by |
-|---|---|---|
-| `OPENAI_ADMIN_API_KEY` | `config/admin-web.env.example` | Admin Web selected-directory cost display (looked up using config key `openai_costs_api_key_env`, defaulting to `OPENAI_ADMIN_API_KEY`; should be an OpenAI Admin API key with organization usage/cost access, or `api.usage.read` for restricted keys). |
-
 ## `config/nuget-relay.env.example`
 
 | Parameter | Found in | Consumed by |
@@ -540,7 +534,6 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `openai_relay_host`, `openai_relay_port` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` listener bind. |
 | `openai_api_base_url` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` upstream URL base. |
 | `openai_api_key_env` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` env-var name lookup for API key. |
-| `openai_costs_api_key_env` | legacy gateway YAML | `src/agent_sandbox/admin/services/openai_billing_service.py` env-var name lookup for the Admin Web OpenAI organization costs key. |
 | `openai_relay_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` upstream request timeout. |
 
 ### HTTP target relay keys

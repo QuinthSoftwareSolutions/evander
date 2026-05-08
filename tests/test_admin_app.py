@@ -237,9 +237,7 @@ def test_directory_config_domain_help_text_legacy_tab_names_return_none() -> Non
     assert admin_app._directory_config_domain_help_text("teams") is None
 
 
-def test_directory_config_tab_field_sources_omit_discord_fields_from_access_policy_and_providers_tabs() -> (
-    None
-):
+def test_directory_config_tab_field_sources_group_access_policy_fields() -> None:
     policy_fields = {
         field_name
         for _domain, field_name in admin_app._directory_config_tab_field_sources("access_policy")
@@ -253,8 +251,8 @@ def test_directory_config_tab_field_sources_omit_discord_fields_from_access_poli
     assert "discord_operator_channel_allowlist" not in policy_fields
     assert "discord_backend" not in provider_fields
     assert "discord_bot_token_env" not in provider_fields
-    assert "communication_file_receive_enabled" not in policy_fields
-    assert "communication_file_require_approval_for_send" not in policy_fields
+    assert "communication_file_receive_enabled" in policy_fields
+    assert "communication_file_require_approval_for_send" in policy_fields
 
 
 def test_directory_config_tab_field_sources_expose_composite_communications_tab() -> None:
@@ -303,7 +301,13 @@ def test_directory_config_tab_sections_match_expected_groupings() -> None:
     assert ("heartbeat", "discord_resume_prompt") in communications_sections["Discord"]
     assert ("providers", "teams_read_reaction_emoji") in communications_sections["Teams"]
 
-    assert "Communication files" not in access_policy_sections
+    assert ("policy", "communication_file_receive_enabled") in access_policy_sections[
+        "Communication files"
+    ]
+    assert (
+        "policy",
+        "communication_file_require_approval_for_send",
+    ) in access_policy_sections["Communication files"]
 
     assert set(provider_sections) == {
         "Agent prompt",
@@ -319,7 +323,6 @@ def test_directory_config_tab_sections_match_expected_groupings() -> None:
     assert ("providers", "container_worker_base_url") in provider_sections["Container worker"]
     assert ("providers", "nuget_azure_pat_env") in provider_sections["NuGet"]
     assert ("providers", "openai_api_key_env") in provider_sections["OpenAI"]
-    assert ("providers", "openai_costs_api_key_env") in provider_sections["OpenAI"]
 
     assert ("issue_setup", "git_root") in issue_setup_sections["Git transport"]
     assert ("issue_setup", "issue_setup_azure_devops_pr_pat_env") in issue_setup_sections[

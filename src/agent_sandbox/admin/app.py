@@ -61,8 +61,8 @@ _TEAMS_PROVIDER_CONFIG_FIELDS: tuple[tuple[str, str], ...] = tuple(
         name for name in DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"] if name.startswith("teams_")
     )
 )
-_COMMUNICATION_FILE_POLICY_FIELD_NAMES: frozenset[str] = frozenset(
-    COMMUNICATION_FILE_SESSION_POLICY_FIELDS
+_COMMUNICATION_FILE_POLICY_FIELDS: tuple[tuple[str, str], ...] = tuple(
+    ("policy", field_name) for field_name in COMMUNICATION_FILE_SESSION_POLICY_FIELDS
 )
 _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] = {
     "communications": (
@@ -74,7 +74,6 @@ _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] =
         for field_name in sorted(
             DIRECTORY_CONFIG_DOMAIN_FIELDS["policy"]
             - {name for source_domain, name in _DISCORD_CONFIG_FIELDS if source_domain == "policy"}
-            - _COMMUNICATION_FILE_POLICY_FIELD_NAMES
         )
     ),
     "providers": tuple(
@@ -157,6 +156,11 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[str, tuple[_ConfigTabSectionSpec, ...]] = {
             ("email_",),
         ),
         _ConfigTabSectionSpec(
+            "Communication files",
+            _COMMUNICATION_FILE_POLICY_FIELDS,
+            ("communication_file_",),
+        ),
+        _ConfigTabSectionSpec(
             "PR feedback",
             (("policy", "pr_reply_require_approval"),),
         ),
@@ -227,7 +231,6 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[str, tuple[_ConfigTabSectionSpec, ...]] = {
             (
                 ("providers", "openai_api_base_url"),
                 ("providers", "openai_api_key_env"),
-                ("providers", "openai_costs_api_key_env"),
                 ("providers", "openai_relay_timeout_seconds"),
             ),
             ("openai_",),
@@ -1066,9 +1069,6 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "openai_api_base_url": ("Upstream OpenAI-compatible API base URL used by the host relay."),
     "openai_api_key_env": (
         "Name of the host environment variable that holds the upstream OpenAI API key."
-    ),
-    "openai_costs_api_key_env": (
-        "Name of the host environment variable that holds the OpenAI Admin API key for organization costs."
     ),
     "openai_relay_timeout_seconds": ("Upstream request timeout in seconds for the OpenAI relay."),
     "issue_setup_azure_devops_pr_pat_env": (

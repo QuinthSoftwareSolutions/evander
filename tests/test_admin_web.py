@@ -1637,70 +1637,6 @@ def test_admin_web_state_uses_root_execution_backend(tmp_path: Path) -> None:
     assert response.json()["execution_backend"] == "container_worker_vm"
 
 
-def test_admin_web_openai_costs_endpoint_reports_missing_key(
-    tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.delenv("OPENAI_ADMIN_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
-
-    response = client.get("/api/admin/providers/openai/costs")
-
-    assert response.status_code == 200
-    payload = response.json()["costs"]
-    assert payload["status"] == "not_configured"
-    assert payload["api_key_env"] == "OPENAI_ADMIN_API_KEY"
-    assert payload["cost_usd"] is None
-
-
-def test_admin_web_openai_costs_endpoint_passes_selected_directory(
-    tmp_path: Path, monkeypatch
-) -> None:
-    calls: list[dict[str, object]] = []
-
-    class FakeOpenAIBillingService:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
-
-        def fetch_status(
-            self, directory_path: str | None = None, *, force_refresh: bool = False
-        ) -> object:
-            calls.append({"directory_path": directory_path, "force_refresh": force_refresh})
-
-            class Status:
-                def model_dump(self, *, mode: str = "json") -> dict[str, object]:
-                    return {
-                        "provider": "openai",
-                        "status": "ok",
-                        "cost_usd": 12.5,
-                        "currency": "usd",
-                        "period_days": 30,
-                        "period_start": "2026-04-07T00:00:00Z",
-                        "period_end": "2026-05-07T00:00:00Z",
-                        "api_key_env": "TEAM_OPENAI_API_KEY",
-                        "checked_at": "2026-05-07T00:00:00Z",
-                        "source": "organization_costs",
-                        "message": None,
-                        "dashboard_url": "https://platform.openai.com/usage",
-                    }
-
-            return Status()
-
-    monkeypatch.setattr(
-        "agent_sandbox.admin.web.provider_status.OpenAIBillingService",
-        FakeOpenAIBillingService,
-    )
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
-
-    response = client.get(
-        "/api/admin/providers/openai/costs?directory_path=root/team-a&refresh=true"
-    )
-
-    assert response.status_code == 200
-    assert response.json()["costs"]["api_key_env"] == "TEAM_OPENAI_API_KEY"
-    assert calls == [{"directory_path": "root/team-a", "force_refresh": True}]
-
-
 def test_admin_web_azure_mode_requires_login(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "azure_sso")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
@@ -2098,7 +2034,14 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assert "allowed_mcp_tool_profile" not in assistant_fields
     assert assistant_fields["custom_system_instructions"]["kind"] == "multiline_text"
     access_policy = next(tab for tab in payload["tabs"] if tab["key"] == "access_policy")
-    assert "Communication files" not in {section["title"] for section in access_policy["sections"]}
+    communication_files = next(
+        section
+        for section in access_policy["sections"]
+        if section["title"] == "Communication files"
+    )
+    communication_file_fields = {field["field_name"] for field in communication_files["fields"]}
+    assert "communication_file_receive_enabled" in communication_file_fields
+    assert "communication_file_require_approval_for_send" in communication_file_fields
     providers = next(tab for tab in payload["tabs"] if tab["key"] == "providers")
     container_worker = next(
         section for section in providers["sections"] if section["title"] == "Container worker"

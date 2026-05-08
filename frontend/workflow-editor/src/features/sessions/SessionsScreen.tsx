@@ -14,6 +14,13 @@ type SessionRecord = {
   allowed_script_names: string[];
   discord_channel_allowlist: string[];
   teams_channel_allowlist: string[];
+  communication_file_receive_enabled: boolean;
+  communication_file_send_enabled: boolean;
+  communication_file_max_bytes: number | null;
+  communication_file_allowed_mime_types: string[];
+  communication_file_allowed_extensions: string[];
+  communication_file_blocked_extensions: string[];
+  communication_file_require_approval_for_send: boolean;
   expires_at: string;
   created_at: string;
   metadata: Record<string, unknown>;
@@ -71,6 +78,13 @@ type SessionPolicyDraft = {
   allowedScriptNames: string;
   discordChannelAllowlist: string;
   teamsChannelAllowlist: string;
+  communicationFileReceiveEnabled: boolean;
+  communicationFileSendEnabled: boolean;
+  communicationFileMaxBytes: string;
+  communicationFileAllowedMimeTypes: string;
+  communicationFileAllowedExtensions: string;
+  communicationFileBlockedExtensions: string;
+  communicationFileRequireApprovalForSend: boolean;
   metadataJson: string;
 };
 
@@ -105,15 +119,22 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   list_unread_discord_messages: "List unread Discord messages available to the session.",
   list_all_discord_messages: "List all Discord messages visible to the session within its policy scope.",
   add_message_reaction: "Add a reaction to an approved Discord or Teams message from the host side.",
+  communication_list_attachments: "List inbound attachment metadata from an allowlisted Discord, Teams, or email source.",
+  communication_download_attachment: "Download one inbound attachment into the host communication artifact store.",
+  communication_copy_artifact_to_workspace: "Copy a staged communication artifact into the agent workspace.",
+  discord_post_file: "Post staged communication file artifacts to an allowlisted Discord channel.",
   teams_get_messages: "Read Microsoft Teams messages made available to the session by the host ingest worker.",
   teams_post_status: "Post a Microsoft Teams status update from the host on behalf of the session.",
+  teams_post_file: "Post staged communication file artifacts to an allowlisted Microsoft Teams target.",
   teams_meeting_get_events: "Read Teams meeting transcript and status events captured for this session.",
   teams_meeting_speak: "Speak into the active Teams meeting through the host-managed meeting bridge.",
   teams_meeting_stop: "Leave the active Teams meeting and close the host-side meeting binding.",
   email_list_unread: "List unread email messages available to the session through the host email provider.",
   email_get_message: "Open a specific email message that the session is allowed to inspect.",
   email_create_draft: "Create an email draft on the host without sending it yet.",
+  email_create_draft_with_attachments: "Create an email draft with staged communication file artifacts attached.",
   email_send_approved: "Send a previously approved email draft through the host email provider.",
+  email_send_approved_with_attachments: "Send a previously approved email with staged communication file artifacts attached.",
   approval_submit: "Submit an approval request when the session needs a guarded action reviewed by a human.",
   approval_check: "Check the current state of an approval request that the session previously submitted.",
   has_pending_feedback: "Check whether any pull request or review feedback is waiting for the session.",
@@ -166,8 +187,25 @@ function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
     allowedScriptNames: formatList(session.allowed_script_names),
     discordChannelAllowlist: formatList(session.discord_channel_allowlist),
     teamsChannelAllowlist: formatList(session.teams_channel_allowlist),
+    communicationFileReceiveEnabled: Boolean(session.communication_file_receive_enabled),
+    communicationFileSendEnabled: Boolean(session.communication_file_send_enabled),
+    communicationFileMaxBytes: session.communication_file_max_bytes == null ? "" : String(session.communication_file_max_bytes),
+    communicationFileAllowedMimeTypes: formatList(session.communication_file_allowed_mime_types),
+    communicationFileAllowedExtensions: formatList(session.communication_file_allowed_extensions),
+    communicationFileBlockedExtensions: formatList(session.communication_file_blocked_extensions),
+    communicationFileRequireApprovalForSend: Boolean(session.communication_file_require_approval_for_send),
     metadataJson: JSON.stringify(session.metadata ?? {}, null, 2),
   };
+}
+
+function parseNullableNonNegativeInteger(value: string, label: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${label} must be a non-negative integer or blank.`);
+  }
+  return parsed;
 }
 
 function parseJsonObject(value: string, label: string): Record<string, unknown> {
@@ -198,6 +236,7 @@ const TOOL_GROUP_ORDER = [
   "Approvals",
   "Agent control",
   "Messaging",
+  "Files",
   "Discord",
   "Teams",
   "Email",
@@ -265,6 +304,17 @@ function groupToolOption(tool: ToolOption): string {
   }
   if (["add_message_reaction"].includes(value)) {
     return "Messaging";
+  }
+  if ([
+    "communication_list_attachments",
+    "communication_download_attachment",
+    "communication_copy_artifact_to_workspace",
+    "discord_post_file",
+    "teams_post_file",
+    "email_create_draft_with_attachments",
+    "email_send_approved_with_attachments",
+  ].includes(value)) {
+    return "Files";
   }
   if ([
     "teams_get_messages",
@@ -408,6 +458,13 @@ export function SessionsScreen() {
     allowedScriptNames: "",
     discordChannelAllowlist: "",
     teamsChannelAllowlist: "",
+    communicationFileReceiveEnabled: false,
+    communicationFileSendEnabled: false,
+    communicationFileMaxBytes: "",
+    communicationFileAllowedMimeTypes: "",
+    communicationFileAllowedExtensions: "",
+    communicationFileBlockedExtensions: "",
+    communicationFileRequireApprovalForSend: false,
     metadataJson: "{}",
   });
   const [policyDirty, setPolicyDirty] = useState(false);
@@ -772,6 +829,16 @@ export function SessionsScreen() {
               allowed_script_names: parseList(policyDraft.allowedScriptNames),
               discord_channel_allowlist: parseList(policyDraft.discordChannelAllowlist),
               teams_channel_allowlist: parseList(policyDraft.teamsChannelAllowlist),
+              communication_file_receive_enabled: policyDraft.communicationFileReceiveEnabled,
+              communication_file_send_enabled: policyDraft.communicationFileSendEnabled,
+              communication_file_max_bytes: parseNullableNonNegativeInteger(
+                policyDraft.communicationFileMaxBytes,
+                "Communication file max bytes",
+              ),
+              communication_file_allowed_mime_types: parseList(policyDraft.communicationFileAllowedMimeTypes),
+              communication_file_allowed_extensions: parseList(policyDraft.communicationFileAllowedExtensions),
+              communication_file_blocked_extensions: parseList(policyDraft.communicationFileBlockedExtensions),
+              communication_file_require_approval_for_send: policyDraft.communicationFileRequireApprovalForSend,
               metadata: parseJsonObject(policyDraft.metadataJson, "Metadata"),
             }),
           },
@@ -1089,6 +1156,75 @@ export function SessionsScreen() {
                       value={policyDraft.teamsChannelAllowlist}
                       onChange={(event) => updatePolicyDraft({ teamsChannelAllowlist: event.target.value })}
                       placeholder="team-id/channel-id or chat:<chat-id>"
+                      disabled={mutationLocked}
+                    />
+                  </label>
+                  <div className="field-stack">
+                    <span>Communication files</span>
+                    <label className="checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={policyDraft.communicationFileReceiveEnabled}
+                        onChange={(event) => updatePolicyDraft({ communicationFileReceiveEnabled: event.target.checked })}
+                        disabled={mutationLocked}
+                      />
+                      <span>Receive inbound files</span>
+                    </label>
+                    <label className="checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={policyDraft.communicationFileSendEnabled}
+                        onChange={(event) => updatePolicyDraft({ communicationFileSendEnabled: event.target.checked })}
+                        disabled={mutationLocked}
+                      />
+                      <span>Send files</span>
+                    </label>
+                    <label className="checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={policyDraft.communicationFileRequireApprovalForSend}
+                        onChange={(event) => updatePolicyDraft({ communicationFileRequireApprovalForSend: event.target.checked })}
+                        disabled={mutationLocked}
+                      />
+                      <span>Require approval for sends</span>
+                    </label>
+                  </div>
+                  <label className="field-stack">
+                    <span>Communication file max bytes</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      inputMode="numeric"
+                      value={policyDraft.communicationFileMaxBytes}
+                      onChange={(event) => updatePolicyDraft({ communicationFileMaxBytes: event.target.value })}
+                      disabled={mutationLocked}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Allowed MIME types</span>
+                    <textarea
+                      rows={3}
+                      value={policyDraft.communicationFileAllowedMimeTypes}
+                      onChange={(event) => updatePolicyDraft({ communicationFileAllowedMimeTypes: event.target.value })}
+                      disabled={mutationLocked}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Allowed extensions</span>
+                    <textarea
+                      rows={3}
+                      value={policyDraft.communicationFileAllowedExtensions}
+                      onChange={(event) => updatePolicyDraft({ communicationFileAllowedExtensions: event.target.value })}
+                      disabled={mutationLocked}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Blocked extensions</span>
+                    <textarea
+                      rows={3}
+                      value={policyDraft.communicationFileBlockedExtensions}
+                      onChange={(event) => updatePolicyDraft({ communicationFileBlockedExtensions: event.target.value })}
                       disabled={mutationLocked}
                     />
                   </label>

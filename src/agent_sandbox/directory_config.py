@@ -107,7 +107,6 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "http_target_relay_timeout_seconds",
             "openai_api_base_url",
             "openai_api_key_env",
-            "openai_costs_api_key_env",
             "openai_relay_timeout_seconds",
             "teams_backend",
             "teams_delegated_authority_base_url",
@@ -511,7 +510,8 @@ class DirectoryConfigStore:
             return validated.model_dump(mode="json", include=set(payload))
         if domain == "providers":
             compatible_fields = allowed_fields | DIRECTORY_CONFIG_DOMAIN_FIELDS["email"]
-            unknown_fields = sorted(set(payload) - compatible_fields)
+            legacy_fields = {"openai_costs_api_key_env"}
+            unknown_fields = sorted(set(payload) - compatible_fields - legacy_fields)
             if unknown_fields:
                 raise ValueError(
                     f"directory config domain {domain!r} does not allow fields: {', '.join(unknown_fields)}"

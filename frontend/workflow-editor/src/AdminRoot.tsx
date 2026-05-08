@@ -15,7 +15,6 @@ import { UsersPage } from "./features/users/UsersPage";
 import { VmsPage } from "./features/vms/VmsPage";
 import { WorkersScreen } from "./features/workers/WorkersScreen";
 import { ChatLauncher } from "./features/chat/ChatLauncher";
-import { RefreshIcon } from "./features/admin/PageActionIcons";
 import { Tooltip } from "./features/admin/Tooltip";
 
 type AdminSession = {
@@ -58,25 +57,6 @@ type DeploymentStatus = {
   updated_at: string | null;
   ttl_seconds: number;
   stale: boolean;
-};
-
-type OpenAICostStatus = {
-  provider: "openai";
-  status: "ok" | "not_configured" | "unavailable" | "error";
-  cost_usd: number | null;
-  currency: string | null;
-  period_days: number;
-  period_start: string | null;
-  period_end: string | null;
-  api_key_env: string;
-  checked_at: string;
-  source: string | null;
-  message: string | null;
-  dashboard_url: string;
-};
-
-type OpenAICostResponse = {
-  costs: OpenAICostStatus;
 };
 
 type DirectoryStateResponse = {
@@ -646,33 +626,6 @@ function PlaceholderView({ title, description }: { title: string; description: s
   );
 }
 
-function formatOpenAIMoney(value: number | null, currency: string | null): string {
-  if (value === null || Number.isNaN(value)) {
-    return "n/a";
-  }
-  const normalizedCurrency = (currency || "usd").toUpperCase();
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: "currency",
-      currency: normalizedCurrency,
-      maximumFractionDigits: 2,
-    }).format(value);
-  } catch {
-    return `${normalizedCurrency} ${value.toFixed(2)}`;
-  }
-}
-
-function formatOpenAICheckedAt(value: string | null | undefined): string {
-  if (!value) {
-    return "Not checked";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
 function formatDeploymentStartedAt(value: string | null | undefined): string | null {
   if (!value) {
     return null;
@@ -703,72 +656,6 @@ function DeploymentStatusBanner({ status }: { status: DeploymentStatus | null })
         <strong>{status.message || "Control plane update in progress."}</strong>
         {startedAt ? <span>Started {startedAt}</span> : null}
       </div>
-    </div>
-  );
-}
-
-function openAICostLabel(costs: OpenAICostStatus | null, loading: boolean, error: string | null): string {
-  if (loading && costs === null) {
-    return "Checking";
-  }
-  if (error) {
-    return "Check failed";
-  }
-  if (!costs) {
-    return "Not checked";
-  }
-  if (costs.status === "ok") {
-    return formatOpenAIMoney(costs.cost_usd, costs.currency);
-  }
-  if (costs.status === "not_configured") {
-    return "No key";
-  }
-  return "Unavailable";
-}
-
-function OpenAICostBadge({
-  costs,
-  loading,
-  error,
-  directoryPath,
-  onRefresh,
-}: {
-  costs: OpenAICostStatus | null;
-  loading: boolean;
-  error: string | null;
-  directoryPath: string;
-  onRefresh: () => void;
-}) {
-  const unavailable = Boolean(error || (costs && costs.status !== "ok" && costs.status !== "not_configured"));
-  const statusClass = unavailable ? " unavailable" : "";
-  const detailText =
-    error ||
-    costs?.message ||
-    (costs
-      ? `Effective for ${directoryPath}; key env: ${costs.api_key_env}`
-      : `Effective for ${directoryPath}; costs have not been checked.`);
-  const metaText =
-    costs?.status === "ok"
-      ? `${directoryPath} · ${costs.period_days}d · Checked ${formatOpenAICheckedAt(costs.checked_at)}`
-      : error || costs?.message || `${directoryPath} · ${costs?.api_key_env ?? "OPENAI_API_KEY"}`;
-  return (
-    <div className={`openai-balance-badge${statusClass}`} title={detailText}>
-      <div className="openai-balance-copy">
-        <span className="section-label">OpenAI costs</span>
-        <strong>{openAICostLabel(costs, loading, error)}</strong>
-        <span className="openai-balance-meta">{metaText}</span>
-      </div>
-      <Tooltip content="Refresh OpenAI costs.">
-        <button
-          type="button"
-          className="openai-balance-refresh"
-          onClick={onRefresh}
-          disabled={loading}
-          aria-label="Refresh OpenAI costs"
-        >
-          {loading ? "..." : <RefreshIcon />}
-        </button>
-      </Tooltip>
     </div>
   );
 }
@@ -1238,9 +1125,6 @@ export default function AdminRoot() {
   const [selectedTab, setSelectedTab] = useState<AdminTab>(() => currentTab());
   const [adminState, setAdminState] = useState<AdminState | null>(null);
   const [deploymentStatus, setDeploymentStatus] = useState<DeploymentStatus | null>(null);
-  const [openaiCosts, setOpenaiCosts] = useState<OpenAICostStatus | null>(null);
-  const [openaiCostsLoading, setOpenaiCostsLoading] = useState(false);
-  const [openaiCostsError, setOpenaiCostsError] = useState<string | null>(null);
   const [selectedDirectoryPath, setSelectedDirectoryPath] = useState<string>(() => {
     if (typeof window === "undefined") return "root";
     return window.localStorage.getItem(DIRECTORY_STORAGE_KEY) || "root";
@@ -1441,38 +1325,11 @@ export default function AdminRoot() {
     }
   }
 
-  async function loadOpenAICosts(forceRefresh = false) {
-    setOpenaiCostsLoading(true);
-    setOpenaiCostsError(null);
-    try {
-      const query = new URLSearchParams({ directory_path: selectedDirectoryPath });
-      if (forceRefresh) {
-        query.set("refresh", "true");
-      }
-      const payload = await fetchJson<OpenAICostResponse>(
-        `/api/admin/providers/openai/costs?${query.toString()}`,
-      );
-      setOpenaiCosts(payload.costs);
-    } catch (error) {
-      setOpenaiCostsError(error instanceof Error ? error.message : "Unable to load OpenAI costs.");
-    } finally {
-      setOpenaiCostsLoading(false);
-    }
-  }
-
   useEffect(() => {
     if (session === null || (session.auth_required && !session.authenticated)) {
       return;
     }
     void loadDirectoryState(selectedDirectoryPath);
-  }, [session, selectedDirectoryPath]);
-
-  useEffect(() => {
-    if (session === null || (session.auth_required && !session.authenticated)) {
-      setOpenaiCosts(null);
-      return;
-    }
-    void loadOpenAICosts(false);
   }, [session, selectedDirectoryPath]);
 
   async function signIn(username: string, password: string) {
@@ -1491,8 +1348,6 @@ export default function AdminRoot() {
       }
       setSession(payload);
       setAdminState(null);
-      setOpenaiCosts(null);
-      setOpenaiCostsError(null);
     } catch (error) {
       setSessionError(error instanceof Error ? error.message : "Sign in failed.");
     } finally {
@@ -1510,8 +1365,6 @@ export default function AdminRoot() {
       const payload = (await response.json()) as AdminSession;
       setSession(payload);
       setAdminState(null);
-      setOpenaiCosts(null);
-      setOpenaiCostsError(null);
     } finally {
       setAuthBusy(false);
     }
@@ -1672,13 +1525,6 @@ export default function AdminRoot() {
               </button>
             </div>
             <div className="admin-shell-info-group">
-              <OpenAICostBadge
-                costs={openaiCosts}
-                loading={openaiCostsLoading}
-                error={openaiCostsError}
-                directoryPath={selectedDirectoryPath}
-                onRefresh={() => void loadOpenAICosts(true)}
-              />
               <div className="admin-directory-context">
                 <span className="section-label">Directory</span>
                 <strong>{selectedDirectoryPath}</strong>

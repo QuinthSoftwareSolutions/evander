@@ -211,6 +211,38 @@ def test_directory_config_store_validates_delegated_teams_provider_fields(tmp_pa
     assert resolution.validation_errors == []
 
 
+def test_directory_config_store_prunes_legacy_openai_costs_provider_key_on_read(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    team = service.create(parent="root", name="team")
+    team_directory = store.get(team.id)
+    assert team_directory is not None
+    store.put(
+        team_directory.model_copy(
+            update={"metadata": {"directory_config": {"domains": ["providers"]}}}
+        )
+    )
+    providers_path = runtime_dir / "directory-config" / "root" / "team" / "providers.json"
+    providers_path.parent.mkdir(parents=True, exist_ok=True)
+    providers_path.write_text(
+        """
+{
+  "openai_api_key_env": "OPENAI_API_KEY",
+  "openai_costs_api_key_env": "OPENAI_COSTS_API_KEY"
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    assert config_store.read(team.path, domain="providers") == {
+        "openai_api_key_env": "OPENAI_API_KEY"
+    }
+
+
 def test_directory_config_store_writes_validated_domain_files_and_updates_directory_metadata(
     tmp_path: Path,
 ) -> None:

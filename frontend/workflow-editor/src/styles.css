@@ -108,7 +108,9 @@ body {
 }
 
 .admin-shell-brand {
-  max-width: 40rem;
+  flex: 1 1 24rem;
+  min-width: 0;
+  max-width: 34rem;
 }
 
 .admin-shell-brand-lockup {
@@ -122,23 +124,24 @@ body {
 .admin-shell-title-row {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.85rem;
+  white-space: nowrap;
 }
 
 .admin-shell-logo {
-  width: clamp(3.25rem, 4.75vw, 4.4rem);
-  height: clamp(3.25rem, 4.75vw, 4.4rem);
+  width: clamp(2.65rem, 3.4vw, 3.35rem);
+  height: clamp(2.65rem, 3.4vw, 3.35rem);
   object-fit: contain;
   flex: 0 0 auto;
   filter: drop-shadow(0 10px 24px rgba(17, 43, 58, 0.14));
 }
 
 .admin-shell-header h1 {
-  margin: 0.15rem 0 0.35rem;
+  margin: 0.05rem 0 0.2rem;
   font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
-  font-size: clamp(2.4rem, 4vw, 3.4rem);
-  line-height: 1;
-  letter-spacing: -0.03em;
+  font-size: clamp(1.55rem, 2.1vw, 2.1rem);
+  line-height: 1.05;
+  letter-spacing: 0;
   color: #10232f;
 }
 
@@ -188,80 +191,6 @@ body {
   gap: 0.18rem;
   padding: 0.2rem 0;
   min-width: 13rem;
-}
-
-.openai-balance-badge {
-  display: grid;
-  grid-template-columns: minmax(8.5rem, 1fr) auto;
-  align-items: center;
-  gap: 0.55rem;
-  min-width: 14rem;
-  min-height: 3.3rem;
-  padding: 0.48rem 0.55rem 0.48rem 0.75rem;
-  border: 1px solid rgba(32, 104, 118, 0.18);
-  border-radius: 8px;
-  background: rgba(225, 240, 235, 0.86);
-  color: #173241;
-  box-shadow: 0 10px 24px rgba(17, 43, 58, 0.1);
-}
-
-.openai-balance-badge.low {
-  border-color: rgba(167, 51, 36, 0.42);
-  background: rgba(250, 218, 210, 0.96);
-  color: #74291f;
-  box-shadow: 0 14px 30px rgba(117, 37, 28, 0.18);
-}
-
-.openai-balance-badge.unavailable {
-  border-color: rgba(156, 111, 33, 0.28);
-  background: rgba(247, 232, 194, 0.94);
-  color: #6e4d15;
-}
-
-.openai-balance-copy {
-  display: grid;
-  min-width: 0;
-  gap: 0.08rem;
-}
-
-.openai-balance-copy strong {
-  font-size: 1.05rem;
-  line-height: 1.1;
-  overflow-wrap: anywhere;
-}
-
-.openai-balance-meta {
-  color: #526a73;
-  font-size: 0.76rem;
-  overflow-wrap: anywhere;
-}
-
-.openai-balance-badge.low .openai-balance-meta,
-.openai-balance-badge.unavailable .openai-balance-meta {
-  color: currentColor;
-  opacity: 0.78;
-}
-
-.openai-balance-refresh {
-  display: grid;
-  place-items: center;
-  width: 2.15rem;
-  height: 2.15rem;
-  border: 1px solid rgba(22, 52, 69, 0.16);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.45);
-  color: currentColor;
-  cursor: pointer;
-}
-
-.openai-balance-refresh svg {
-  width: 1rem;
-  height: 1rem;
-}
-
-.openai-balance-refresh:disabled {
-  cursor: default;
-  opacity: 0.65;
 }
 
 .admin-directory-context strong {
@@ -545,13 +474,6 @@ body {
   color: rgba(93, 58, 8, 0.78);
   font-size: 0.82rem;
   font-weight: 600;
-}
-
-.openai-balance-alert {
-  border-color: rgba(167, 51, 36, 0.38);
-  background: rgba(250, 218, 210, 0.96);
-  color: #74291f;
-  font-weight: 700;
 }
 
 .modal-backdrop {
@@ -1390,7 +1312,7 @@ select {
   }
 
   .admin-shell-title-row {
-    gap: 0.8rem;
+    gap: 0.75rem;
   }
 
   .admin-shell-actions {
@@ -1400,10 +1322,6 @@ select {
   }
 
   .admin-directory-context {
-    width: 100%;
-  }
-
-  .openai-balance-badge {
     width: 100%;
   }
 
@@ -1444,12 +1362,16 @@ select {
   }
 
   .admin-shell-title-row {
-    gap: 0.7rem;
+    gap: 0.6rem;
   }
 
   .admin-shell-logo {
-    width: 2.9rem;
-    height: 2.9rem;
+    width: 2.35rem;
+    height: 2.35rem;
+  }
+
+  .admin-shell-header h1 {
+    font-size: 1.25rem;
   }
 }
 
@@ -3911,8 +3833,7 @@ select {
 :root[data-theme="dark"] .admin-shell-alert,
 :root[data-theme="dark"] .directory-modal-summary,
 :root[data-theme="dark"] .directory-tree-button,
-:root[data-theme="dark"] .admin-directory-context,
-:root[data-theme="dark"] .openai-balance-badge {
+:root[data-theme="dark"] .admin-directory-context {
   border-color: rgba(125, 170, 190, 0.16);
   color: #d7e3ea;
 }
@@ -3943,32 +3864,6 @@ select {
 :root[data-theme="dark"] .admin-directory-context {
   background: transparent;
   box-shadow: none;
-}
-
-:root[data-theme="dark"] .openai-balance-badge {
-  background: rgba(18, 40, 45, 0.72);
-  box-shadow: none;
-}
-
-:root[data-theme="dark"] .openai-balance-badge.low {
-  border-color: rgba(214, 91, 74, 0.44);
-  background: #321816;
-  color: #ffb6aa;
-}
-
-:root[data-theme="dark"] .openai-balance-badge.unavailable {
-  border-color: rgba(190, 150, 65, 0.38);
-  background: #2d2412;
-  color: #f0d183;
-}
-
-:root[data-theme="dark"] .openai-balance-meta {
-  color: #9fb4bf;
-}
-
-:root[data-theme="dark"] .openai-balance-refresh {
-  border-color: rgba(125, 170, 190, 0.18);
-  background: rgba(255, 255, 255, 0.06);
 }
 
 :root[data-theme="dark"] .admin-identity {
@@ -4163,7 +4058,6 @@ select {
 }
 
 :root[data-theme="dark"] .admin-shell-alert,
-:root[data-theme="dark"] .openai-balance-alert,
 :root[data-theme="dark"] .admin-login-error,
 :root[data-theme="dark"] .error-box,
 :root[data-theme="dark"] .runtime-run-error,

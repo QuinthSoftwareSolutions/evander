@@ -818,19 +818,13 @@ Response:
 ## Relay Environment Configuration
 
 - `OPENAI_API_KEY` is required on the host for `agent-sandbox-openai-relay`.
-- `OPENAI_ADMIN_API_KEY` is preferred for the Admin Web selected-directory cost display.
-  This should be an OpenAI Admin API key with organization usage/cost access; project
-  keys used by the relay can succeed for model calls while still being rejected by the
-  organization Costs API. For restricted keys, grant `api.usage.read`.
 - `AZURE_ARTIFACTS_PAT` is required on the host only when the NuGet relay must reach private
   Azure Artifacts feeds.
 - Keep these values in host-only shell environment or systemd env files such as:
   - `config/openai-relay.env` (loaded by both the relay and Admin Web units)
-  - `config/admin-web.env` (for `OPENAI_ADMIN_API_KEY`)
   - `config/nuget-relay.env`
 - Directory-specific OpenAI model key env vars named by `openai_api_key_env` should be
-  available to the relay and Admin Web fallback path. Directory-specific cost key env vars
-  named by `openai_costs_api_key_env` should be available to Admin Web.
+  available to the relay.
 - Do not place these values in guest images, cloud-init, session manifests, or guest shell
   profiles.
 

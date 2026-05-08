@@ -170,7 +170,6 @@ class GatewayConfig(BaseModel):
     openai_relay_port: int = 11434
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_key_env: str = "OPENAI_API_KEY"
-    openai_costs_api_key_env: str | None = "OPENAI_ADMIN_API_KEY"
     openai_relay_timeout_seconds: float = 300.0
     http_target_relay_host: str = "0.0.0.0"
     http_target_relay_port: int = 11777

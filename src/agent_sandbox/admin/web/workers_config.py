@@ -10,7 +10,10 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.service import (
+    COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
+    AdminService,
+)
 from agent_sandbox.admin.web.shared import AdminWebAuth, request_has_privileged_operations
 from agent_sandbox.config import (
     AdoWorkerGlobalConfig,
@@ -52,16 +55,8 @@ _TEAMS_PROVIDER_CONFIG_FIELDS: tuple[tuple[str, str], ...] = tuple(
         name for name in DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"] if name.startswith("teams_")
     )
 )
-_COMMUNICATION_FILE_POLICY_FIELD_NAMES: frozenset[str] = frozenset(
-    {
-        "communication_file_receive_enabled",
-        "communication_file_send_enabled",
-        "communication_file_max_bytes",
-        "communication_file_allowed_mime_types",
-        "communication_file_allowed_extensions",
-        "communication_file_blocked_extensions",
-        "communication_file_require_approval_for_send",
-    }
+_COMMUNICATION_FILE_POLICY_FIELDS: tuple[tuple[str, str], ...] = tuple(
+    ("policy", field_name) for field_name in COMMUNICATION_FILE_SESSION_POLICY_FIELDS
 )
 _ASSISTANT_SETTINGS_DOMAIN = "assistant_settings"
 _ASSISTANT_SETTINGS_FIELDS: tuple[tuple[str, str], ...] = (
@@ -86,7 +81,6 @@ _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] =
         for field_name in sorted(
             DIRECTORY_CONFIG_DOMAIN_FIELDS["policy"]
             - {name for source_domain, name in _DISCORD_CONFIG_FIELDS if source_domain == "policy"}
-            - _COMMUNICATION_FILE_POLICY_FIELD_NAMES
         )
     ),
     "providers": tuple(
@@ -162,6 +156,11 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
             ),
             ("email_",),
         ),
+        (
+            "Communication files",
+            _COMMUNICATION_FILE_POLICY_FIELDS,
+            ("communication_file_",),
+        ),
         ("PR feedback", (("policy", "pr_reply_require_approval"),), ()),
         ("Audit", (("policy", "redacted_keys"),), ()),
     ),
@@ -223,7 +222,6 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
             (
                 ("providers", "openai_api_base_url"),
                 ("providers", "openai_api_key_env"),
-                ("providers", "openai_costs_api_key_env"),
                 ("providers", "openai_relay_timeout_seconds"),
             ),
             ("openai_",),
