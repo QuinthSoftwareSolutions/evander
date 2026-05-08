@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -351,7 +352,10 @@ class WorkerDaemon:
                 destination=destination,
                 container_path=container_path,
             )
-            destination.write_text(entry.content, encoding="utf-8")
+            if entry.content_base64 is not None:
+                destination.write_bytes(base64.b64decode(entry.content_base64))
+            else:
+                destination.write_text(entry.content or "", encoding="utf-8")
             if entry.mode is not None:
                 destination.chmod(int(self._normalize_mode(entry.mode), 8))
             copied_paths.append(container_path)

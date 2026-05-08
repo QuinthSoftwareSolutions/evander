@@ -643,6 +643,141 @@ Example MCP call:
 - Email is **read + draft only by default**. Keep `email_send_enabled: false` unless you are ready
   to enforce explicit approval checks for send.
 
+## Communication File Transfer Runbook
+
+Use this runbook only for dedicated operator channels/mailboxes that are already covered by the
+normal Discord, Teams, Gmail, or Graph allowlists. File transfer policy is additive: a session must
+still pass the provider destination/mailbox checks, and host-side credentials remain on the host.
+
+### 1. Enable receive/send policy
+
+Start from the conservative example and apply it to the directory that owns the test session:
+
+```bash
+agent-sandbox-cli directories config-set \
+  --runtime-dir runtime \
+  --domain policy \
+  root \
+  "$(cat config/communication-files/policy.json.example)"
+```
+
+This example enables inbound receive, disables outbound file send, and sets
+`communication_file_require_approval_for_send: true` so future send enablement is never approval-free.
+For a tightly scoped outbound-send test, temporarily overlay only the send flag after approval
+reviewers are available:
+
+```bash
+agent-sandbox-cli directories config-set \
+  --runtime-dir runtime \
+  --domain policy \
+  root \
+  '{"communication_file_send_enabled":true,"communication_file_require_approval_for_send":true}'
+```
+
+Return to the conservative example immediately after the send test, or apply an explicit
+`{"communication_file_send_enabled":false}` overlay.
+
+### 2. Configure MIME, extension, and size limits
+
+Set all three controls together so provider-supplied MIME metadata is not the only guardrail:
+
+- `communication_file_max_bytes`: maximum staged artifact size in bytes. Use `1048576` (1 MiB) for
+  live smoke tests.
+- `communication_file_allowed_mime_types`: allow only expected content types, for example
+  `text/plain`, `application/pdf`, `image/png`, `image/jpeg`, and `image/gif`.
+- `communication_file_allowed_extensions`: allow matching filename extensions such as `.txt`,
+  `.pdf`, `.png`, `.jpg`, `.jpeg`, and `.gif`.
+- `communication_file_blocked_extensions`: keep executable/script extensions blocked even when an
+  allowlist is later broadened.
+
+After changing policy, create or update the session manifest so the session receives the effective
+policy values and the expected provider allowlists.
+
+### 3. Receive an inbound attachment
+
+For each provider, use an allowlisted destination and a tiny fixture file such as `hello.txt` or a
+small PNG:
+
+1. Send the fixture into the dedicated Discord channel, Teams channel/chat, Gmail mailbox, or Graph
+   mailbox.
+2. Call `communication_list_attachments` with the correct provider scope:
+   - Discord: `provider="discord"`, `message_id`, and `channel_id`.
+   - Teams: `provider="teams"`, `message_id`, and `channel_target`.
+   - Gmail/Graph email: `provider="email"`, `message_id`, and `mailbox_id`.
+3. Call `communication_download_attachment` for one returned `attachment_id`.
+4. Confirm the response includes an opaque `artifact.artifact_id`, normalized filename, byte count,
+   MIME type, and SHA-256 digest.
+5. If the guest needs the file, call `communication_copy_artifact_to_workspace`; confirm the
+   destination is under `/home/agent/communication-artifacts/`.
+
+### 4. Send an outbound file only with approval
+
+Outbound sends must use staged artifact IDs. Do not send arbitrary guest paths.
+
+1. Keep `communication_file_require_approval_for_send: true`.
+2. If sending an email attachment, keep draft creation separate from actual send: use
+   `email_create_draft_with_attachments` first, then `email_send_approved_with_attachments` only
+   after both `email_send_enabled: true` and a matching approval are present.
+3. For Discord and Teams, submit/approve the exact payload expected by `discord_post_file` or
+   `teams_post_file`, including destination, message, and `artifact_ids`; then pass the approval
+   `request_id` to the send tool.
+4. Disable `communication_file_send_enabled` again after the test unless the production change was
+   intentionally approved.
+
+### 5. Review audit logs
+
+Use the audit log as the source of truth for file-transfer activity:
+
+```bash
+tail -n 100 runtime/audit.jsonl | jq 'select(.tool_name | test("communication_|discord_post_file|teams_post_file|email_.*attachments"))'
+```
+
+Review for:
+
+- `decision == "allowed"` on expected list/download/copy/send calls.
+- `decision == "denied"` when receive is disabled, send is disabled, a file exceeds
+  `communication_file_max_bytes`, or MIME/extension policy blocks the file.
+- `error_class == "adapter_http_error"` for provider API/auth/timeout failures.
+- Provider target fields (`channel_id`, `channel_target`, or `mailbox_id`), `artifact_id`,
+  `byte_count`, MIME type, filename, and approval request/decision fields on outbound sends.
+
+### 6. Clean artifact storage
+
+Staged metadata and blobs live under `runtime/communication-artifacts/`. The default artifact TTL is
+seven days, and the store removes expired records opportunistically when it is used. To clean
+expired artifacts on demand from the host, run:
+
+```bash
+python - <<'PY'
+from pathlib import Path
+from agent_sandbox.communication_artifacts import CommunicationArtifactStore
+removed = CommunicationArtifactStore(Path("runtime")).cleanup_expired()
+print(f"removed_expired_artifacts={removed}")
+PY
+```
+
+For emergency cleanup of a dedicated test runtime only, stop the gateway/workers that might use the
+store, archive any records needed for audit review, and remove only the contents of that runtime's
+`communication-artifacts/` directory. Never delete artifacts from a shared production runtime while
+active sessions may still reference them.
+
+### 7. Provider smoke matrix
+
+Use dedicated test channels/mailboxes only and keep files small:
+
+- **Discord:** send `hello.txt` to the seeded test channel; list/download/copy it; optionally send
+  it back with `discord_post_file` only after approval.
+- **Teams:** send the same fixture to an allowlisted Teams test channel/chat; list/download/copy it;
+  optionally send it back with `teams_post_file` only after approval.
+- **Gmail:** send the fixture to the Gmail test mailbox; list/download/copy it; optionally create a
+  draft with `email_create_draft_with_attachments`; avoid actual send unless `email_send_enabled`
+  and matching approval are both intentionally enabled.
+- **Graph:** repeat the Gmail checks against the Microsoft Graph test mailbox.
+
+Pass criteria: all inbound receives are policy-allowed and audited, blocked file types/sizes are
+denied and audited, outbound sends fail while send is disabled, and any intentional outbound send
+succeeds only with an approval record that matches the exact payload.
+
 ## Feedback Heartbeat (Host Worker + Guest MCP Loop)
 
 Use this run pattern when a guest should continuously pick up human/provider feedback through MCP
@@ -1097,13 +1232,14 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
    service user.
 3. Ensure the needed service env vars are available. The rendered units will load optional
    per-service `config/*.env` files and optional repo-root `secrets.env`.
-4. Ensure `OPENAI_API_KEY` is available for the OpenAI relay and Admin Web cost display, and
+4. Ensure `OPENAI_API_KEY` is available for the OpenAI relay, `OPENAI_ADMIN_API_KEY` is
+   available for the Admin Web cost display when you want organization costs, and
    `AZURE_ARTIFACTS_PAT` when the NuGet relay needs private Azure Artifacts access. The Admin Web
-   unit also loads `config/openai-relay.env` so the selected-directory OpenAI costs card can inspect
-   the same default key as the relay; the key must be allowed to read organization usage/costs
-   (`api.usage.read` for restricted keys). Additional directory-specific key env vars should be
-   supplied through `secrets.env` or the service manager environment. The HTTP target relay is
-   auth-transparent and exists to enforce destination allowlisting for approved external web
+   cost key should be an OpenAI Admin API key with organization usage/cost access; project keys can
+   succeed for model calls while still being rejected by the organization Costs API. For restricted
+   keys, grant `api.usage.read`. Additional directory-specific key env vars should be supplied
+   through `config/admin-web.env`, `secrets.env`, or the service manager environment. The HTTP
+   target relay is auth-transparent and exists to enforce destination allowlisting for approved external web
    endpoints. In the APP demo workflow, guests authenticate to APP interactively or with
    guest-managed bearer tokens/cookies through that relay path.
 5. For private PR feedback polling, ensure the service environment exposes `GITHUB_TOKEN`

@@ -27,6 +27,8 @@
       mode: "0755"
     - path: "{{ agent_sandbox_worker_dotnet_cache_path }}"
       mode: "0755"
+    - path: "{{ agent_sandbox_worker_dotnet_tools_cache_path }}"
+      mode: "0755"
     - path: "{{ agent_sandbox_worker_node_cache_path }}"
       mode: "0755"
     - path: "{{ agent_sandbox_worker_playwright_runtime_cache_path }}"

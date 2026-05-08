@@ -3169,6 +3169,13 @@ def test_update_session_policy_updates_allowlists_and_metadata(
             "allowed_script_names": [" deploy-review ", "deploy-review", "collect-logs"],
             "discord_channel_allowlist": [" chan-a ", "chan-a", "chan-b"],
             "teams_channel_allowlist": [" team-b/channel-2 ", "chat:chat-1"],
+            "communication_file_receive_enabled": True,
+            "communication_file_send_enabled": True,
+            "communication_file_max_bytes": 2048,
+            "communication_file_allowed_mime_types": ["text/plain", " text/plain ", "image/png"],
+            "communication_file_allowed_extensions": [".txt", " txt ", ".png"],
+            "communication_file_blocked_extensions": [".exe", " exe "],
+            "communication_file_require_approval_for_send": True,
             "metadata": {"keep": "new-value"},
         },
     )
@@ -3180,6 +3187,13 @@ def test_update_session_policy_updates_allowlists_and_metadata(
     assert updated.allowed_script_names == ["deploy-review", "collect-logs"]
     assert updated.discord_channel_allowlist == ["chan-a", "chan-b"]
     assert updated.teams_channel_allowlist == ["team-b/channel-2", "chat:chat-1"]
+    assert updated.communication_file_receive_enabled is True
+    assert updated.communication_file_send_enabled is True
+    assert updated.communication_file_max_bytes == 2048
+    assert updated.communication_file_allowed_mime_types == ["text/plain", "image/png"]
+    assert updated.communication_file_allowed_extensions == [".txt", "txt", ".png"]
+    assert updated.communication_file_blocked_extensions == [".exe", "exe"]
+    assert updated.communication_file_require_approval_for_send is True
     assert updated.metadata == {"keep": "new-value"}
 
 

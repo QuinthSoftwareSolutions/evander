@@ -389,7 +389,7 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     assert all(call[1] == "agent" for call in vm_copy_calls)
     assert all(
         call[2][0]["destination_path"] == "/home/agent/AGENTS.md"
-        and "Truman Control Plane" in str(call[2][0]["content"])
+        and "evander Control Plane" in str(call[2][0]["content"])
         for call in vm_copy_calls
     )
     shared_session = admin.runtime.session_repository.get_session("assistant-shared")
@@ -590,7 +590,7 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     assert all(
         any(
             file.get("destination_path") == "/home/agent/AGENTS.md"
-            and "Truman Control Plane" in str(file.get("content") or "")
+            and "evander Control Plane" in str(file.get("content") or "")
             for file in files
         )
         for _session_id, files in fake_container_backend.written

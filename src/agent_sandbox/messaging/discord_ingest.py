@@ -18,6 +18,15 @@ from agent_sandbox.runtime import RuntimeContext, build_runtime
 from agent_sandbox.services import DiscordBotApiService
 
 logger = logging.getLogger(__name__)
+_ATTACHMENT_SECRET_KEYS = {
+    "authorization",
+    "token",
+    "access_token",
+    "content",
+    "content_bytes",
+    "content_base64",
+    "data",
+}
 
 
 @dataclass(frozen=True)
@@ -190,9 +199,13 @@ class DiscordIngestWorker:
         if isinstance(referenced_message, dict):
             in_reply_to = str(referenced_message.get("id", "")).strip() or None
         command = self.runtime.discord_commands.get(message_id)
+        attachments = _sanitize_attachments(payload.get("attachments"))
+        safe_payload = dict(payload)
+        safe_payload["attachments"] = attachments
         raw: dict[str, object] = {
             "source": "discord_bot_api",
-            "message": payload,
+            "attachments": attachments,
+            "message": safe_payload,
         }
         if command is not None:
             command_source = str(command.metadata.get("source", "")).strip()
@@ -217,6 +230,19 @@ class DiscordIngestWorker:
             in_reply_to=in_reply_to,
             raw=raw,
         )
+
+
+def _sanitize_attachments(raw_attachments: object) -> list[dict[str, object]]:
+    if not isinstance(raw_attachments, list):
+        return []
+    sanitized: list[dict[str, object]] = []
+    for raw in raw_attachments:
+        if not isinstance(raw, dict):
+            continue
+        sanitized.append(
+            {key: value for key, value in raw.items() if key not in _ATTACHMENT_SECRET_KEYS}
+        )
+    return sanitized
 
 
 def _worker_global_config_path(project_dir: Path) -> Path:

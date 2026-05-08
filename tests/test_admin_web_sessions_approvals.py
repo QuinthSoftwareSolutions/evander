@@ -188,10 +188,21 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     revoke_response = client.post("/api/admin/sessions/issue-14085-session/revoke")
 
     assert catalog_response.status_code == 200
-    assert any(
-        item["value"] == "approval_check" for item in catalog_response.json()["tool_options"]
+    catalog_payload = catalog_response.json()
+    assert any(item["value"] == "approval_check" for item in catalog_payload["tool_options"])
+    session_policy_fields = {
+        item["field_name"]: item for item in catalog_payload["session_policy_fields"]
+    }
+    assert session_policy_fields["communication_file_receive_enabled"]["section"] == (
+        "Communication files"
     )
-    catalog_tool_values = {item["value"] for item in catalog_response.json()["tool_options"]}
+    assert session_policy_fields["communication_file_receive_enabled"]["kind"] == "bool"
+    assert session_policy_fields["communication_file_max_bytes"]["kind"] == "int_or_null"
+    assert (
+        session_policy_fields["communication_file_allowed_mime_types"]["kind"]
+        == "string_list"
+    )
+    catalog_tool_values = {item["value"] for item in catalog_payload["tool_options"]}
     assert {
         "add_message_reaction",
         "post_pr_inline_comment",
@@ -243,6 +254,13 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
             "allowed_script_names": ["seed-demo", " seed-demo ", "collect-logs"],
             "discord_channel_allowlist": ["chan-a", "chan-b"],
             "teams_channel_allowlist": ["team-b/channel-2", "chat:chat-1"],
+            "communication_file_receive_enabled": True,
+            "communication_file_send_enabled": True,
+            "communication_file_max_bytes": 4096,
+            "communication_file_allowed_mime_types": ["application/pdf"],
+            "communication_file_allowed_extensions": [".pdf"],
+            "communication_file_blocked_extensions": [".exe"],
+            "communication_file_require_approval_for_send": True,
             "metadata": {"keep": "new-value"},
         },
     )
@@ -260,6 +278,13 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
     ]
     updated = service.runtime.session_repository.get_session("issue-14085-session")
     assert updated is not None
+    assert updated.communication_file_receive_enabled is True
+    assert updated.communication_file_send_enabled is True
+    assert updated.communication_file_max_bytes == 4096
+    assert updated.communication_file_allowed_mime_types == ["application/pdf"]
+    assert updated.communication_file_allowed_extensions == [".pdf"]
+    assert updated.communication_file_blocked_extensions == [".exe"]
+    assert updated.communication_file_require_approval_for_send is True
     assert updated.metadata == {"keep": "new-value"}
 
 

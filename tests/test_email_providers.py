@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+from email import message_from_bytes, policy
+
 import httpx
 import pytest
 
@@ -7,6 +10,7 @@ from agent_sandbox.config import GatewayConfig
 from agent_sandbox.email.gmail_provider import GmailEmailProvider
 from agent_sandbox.email.graph_provider import GraphEmailProvider
 from agent_sandbox.email.http_utils import ProviderRequestError
+from agent_sandbox.email.providers import EmailDraftAttachment
 
 
 def patch_provider_client(
@@ -147,6 +151,40 @@ def test_graph_detail_maps_parent_folder_case_insensitively() -> None:
     assert detail.folder == "inbox"
 
 
+def test_graph_detail_accepts_expanded_attachments_array() -> None:
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={"inbox": "Inbox", "drafts": "Drafts"},
+        auth_secret_refs={"access_token": "GRAPH_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+    )
+    payload = {
+        "id": "graph-msg-4",
+        "conversationId": "conversation-1002",
+        "isRead": False,
+        "receivedDateTime": "2026-03-20T10:00:00Z",
+        "parentFolderId": "Inbox",
+        "from": {"emailAddress": {"address": "sender@example.com"}},
+        "toRecipients": [{"emailAddress": {"address": "person@example.com"}}],
+        "subject": "Hello",
+        "body": {"content": "Body"},
+        "attachments": [
+            {
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "id": "att-1",
+                "name": "report.pdf",
+                "contentType": "application/pdf",
+                "size": 7,
+            }
+        ],
+    }
+
+    detail = provider._to_detail(mailbox_id="exec-graph", payload=payload)
+
+    assert detail.attachments[0].attachment_id == "att-1"
+    assert detail.attachments[0].filename == "report.pdf"
+
+
 def test_gmail_retries_transient_503_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
     attempts = {"count": 0}
 
@@ -234,3 +272,352 @@ def test_gmail_create_draft_post_does_not_retry_transient_503(
             recipients=["person@example.com"],
         )
     assert attempts["count"] == 1
+
+
+def _gmail_full_message_with_attachment() -> dict:
+    return {
+        "id": "msg-attach",
+        "threadId": "thread-attach",
+        "labelIds": ["INBOX", "UNREAD"],
+        "internalDate": "1700000000000",
+        "snippet": "attachment",
+        "payload": {
+            "headers": [
+                {"name": "From", "value": "sender@example.com"},
+                {"name": "To", "value": "agent@example.com"},
+                {"name": "Subject", "value": "Report"},
+            ],
+            "parts": [
+                {
+                    "partId": "0",
+                    "mimeType": "text/plain",
+                    "body": {"data": "SGVsbG8"},
+                },
+                {
+                    "partId": "1",
+                    "filename": "report.pdf",
+                    "mimeType": "application/pdf",
+                    "headers": [
+                        {"name": "Content-Disposition", "value": "attachment; filename=report.pdf"}
+                    ],
+                    "body": {"attachmentId": "att-1", "size": 7},
+                },
+            ],
+        },
+    }
+
+
+def test_gmail_detail_lists_attachment_metadata() -> None:
+    provider = GmailEmailProvider(
+        account_identifier="me",
+        folder_mapping={"inbox": "INBOX"},
+        auth_secret_refs={"access_token": "GMAIL_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+    )
+
+    detail = provider._to_detail(
+        mailbox_id="ops-gmail", payload=_gmail_full_message_with_attachment()
+    )
+
+    assert detail.attachments[0].attachment_id == "att-1"
+    assert detail.attachments[0].filename == "report.pdf"
+    assert detail.attachments[0].byte_count == 7
+    assert detail.attachments[0].metadata["gmail_part_id"] == "1"
+
+
+def test_gmail_download_attachment_decodes_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GMAIL_ACCESS_TOKEN", "secret-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/messages/msg-attach"):
+            return httpx.Response(200, json=_gmail_full_message_with_attachment(), request=request)
+        if request.url.path.endswith("/messages/msg-attach/attachments/att-1"):
+            return httpx.Response(200, json={"data": "cGF5bG9hZA"}, request=request)
+        return httpx.Response(404, json={"error": "not found"}, request=request)
+
+    patch_provider_client(
+        monkeypatch,
+        "agent_sandbox.email.gmail_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    provider = GmailEmailProvider(
+        account_identifier="me",
+        folder_mapping={"inbox": "INBOX"},
+        auth_secret_refs={"access_token": "GMAIL_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+        api_base_url="https://gmail.test/gmail/v1",
+    )
+
+    content = provider.download_attachment("ops-gmail", "msg-attach", "att-1")
+
+    assert content.filename == "report.pdf"
+    assert content.content == b"payload"
+
+
+def test_gmail_download_attachment_rejects_unknown_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GMAIL_ACCESS_TOKEN", "secret-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_gmail_full_message_with_attachment(), request=request)
+
+    patch_provider_client(
+        monkeypatch,
+        "agent_sandbox.email.gmail_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    provider = GmailEmailProvider(
+        account_identifier="me",
+        folder_mapping={"inbox": "INBOX"},
+        auth_secret_refs={"access_token": "GMAIL_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+        api_base_url="https://gmail.test/gmail/v1",
+    )
+
+    with pytest.raises(KeyError):
+        provider.download_attachment("ops-gmail", "msg-attach", "missing")
+
+
+def test_gmail_create_draft_generates_mime_attachment_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GMAIL_ACCESS_TOKEN", "secret-token")
+    seen_payloads: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_payloads.append(request.read() and __import__("json").loads(request.content))
+        return httpx.Response(
+            200,
+            json={"id": "draft-1", "message": {"id": "msg-1", "threadId": "thread-1"}},
+            request=request,
+        )
+
+    patch_provider_client(
+        monkeypatch,
+        "agent_sandbox.email.gmail_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    provider = GmailEmailProvider(
+        account_identifier="me@example.com",
+        folder_mapping={},
+        auth_secret_refs={"access_token": "GMAIL_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+        api_base_url="https://gmail.test/gmail/v1",
+    )
+
+    draft = provider.create_draft(
+        mailbox_id="ops-gmail",
+        thread_or_message_id=None,
+        subject="Attached",
+        body="See attached",
+        recipients=["recipient@example.com"],
+        attachments=[
+            EmailDraftAttachment(
+                filename="note.txt", content=b"hello", mime_type="text/plain"
+            )
+        ],
+    )
+
+    raw = seen_payloads[0]["message"]["raw"]
+    decoded = message_from_bytes(
+        base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)),
+        policy=policy.default,
+    )
+    attachment = next(decoded.iter_attachments())
+    assert draft.metadata["attachment_count"] == 1
+    assert attachment.get_filename() == "note.txt"
+    assert attachment.get_content_type() == "text/plain"
+    assert attachment.get_payload(decode=True) == b"hello"
+
+
+def test_graph_list_and_download_file_attachment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GRAPH_ACCESS_TOKEN", "secret-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/messages/msg-1/attachments"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "@odata.type": "#microsoft.graph.fileAttachment",
+                            "id": "att-1",
+                            "name": "report.xlsx",
+                            "contentType": "application/vnd.ms-excel",
+                            "size": 4,
+                            "isInline": False,
+                        }
+                    ]
+                },
+                request=request,
+            )
+        if request.url.path.endswith("/messages/msg-1/attachments/att-1"):
+            return httpx.Response(
+                200,
+                json={
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "id": "att-1",
+                    "name": "report.xlsx",
+                    "contentType": "application/vnd.ms-excel",
+                    "size": 4,
+                    "contentBytes": base64.b64encode(b"book").decode("ascii"),
+                },
+                request=request,
+            )
+        return httpx.Response(404, request=request)
+
+    patch_provider_client(
+        monkeypatch,
+        "agent_sandbox.email.graph_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={},
+        auth_secret_refs={"access_token": "GRAPH_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+        api_base_url="https://graph.test/v1.0",
+    )
+
+    attachments = provider.list_attachments("exec-graph", "msg-1")
+    content = provider.download_attachment("exec-graph", "msg-1", "att-1")
+
+    assert attachments[0].filename == "report.xlsx"
+    assert content.content == b"book"
+
+
+def test_graph_download_rejects_non_file_attachment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GRAPH_ACCESS_TOKEN", "secret-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"@odata.type": "#microsoft.graph.itemAttachment", "id": "att-1"},
+            request=request,
+        )
+
+    patch_provider_client(
+        monkeypatch,
+        "agent_sandbox.email.graph_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={},
+        auth_secret_refs={"access_token": "GRAPH_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+        api_base_url="https://graph.test/v1.0",
+    )
+
+    with pytest.raises(ValueError, match="not a fileAttachment"):
+        provider.download_attachment("exec-graph", "msg-1", "att-1")
+
+
+def test_graph_create_draft_embeds_small_attachment_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GRAPH_ACCESS_TOKEN", "secret-token")
+    seen_payloads: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_payloads.append(__import__("json").loads(request.content))
+        return httpx.Response(
+            200,
+            json={"id": "draft-1", "conversationId": "conversation-1"},
+            request=request,
+        )
+
+    patch_provider_client(
+        monkeypatch,
+        "agent_sandbox.email.graph_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={},
+        auth_secret_refs={"access_token": "GRAPH_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+        api_base_url="https://graph.test/v1.0",
+    )
+
+    draft = provider.create_draft(
+        mailbox_id="exec-graph",
+        thread_or_message_id=None,
+        subject="Attached",
+        body="See attached",
+        recipients=["recipient@example.com"],
+        attachments=[
+            EmailDraftAttachment(
+                filename="note.txt", content=b"hello", mime_type="text/plain"
+            )
+        ],
+    )
+
+    attachment_payload = seen_payloads[0]["attachments"][0]
+    assert draft.metadata["attachment_count"] == 1
+    assert attachment_payload["@odata.type"] == "#microsoft.graph.fileAttachment"
+    assert attachment_payload["contentBytes"] == base64.b64encode(b"hello").decode("ascii")
+
+
+def test_graph_create_draft_uses_upload_session_for_large_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GRAPH_ACCESS_TOKEN", "secret-token")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/messages"):
+            return httpx.Response(200, json={"id": "draft-large"}, request=request)
+        if request.url.path.endswith("/attachments/createUploadSession"):
+            return httpx.Response(
+                200,
+                json={"uploadUrl": "https://upload.test/session"},
+                request=request,
+            )
+        if str(request.url) == "https://upload.test/session":
+            return httpx.Response(201, json={}, request=request)
+        return httpx.Response(404, request=request)
+
+    patch_provider_client(
+        monkeypatch,
+        "agent_sandbox.email.graph_provider.httpx.Client",
+        httpx.MockTransport(handler),
+    )
+    provider = GraphEmailProvider(
+        account_identifier="leader@example.com",
+        folder_mapping={},
+        auth_secret_refs={"access_token": "GRAPH_ACCESS_TOKEN"},
+        timeout_seconds=5.0,
+        api_base_url="https://graph.test/v1.0",
+    )
+
+    draft = provider.create_draft(
+        mailbox_id="exec-graph",
+        thread_or_message_id=None,
+        subject="Large",
+        body="See attached",
+        recipients=["recipient@example.com"],
+        attachments=[
+            EmailDraftAttachment(
+                filename="large.bin",
+                content=b"x" * (GraphEmailProvider._upload_chunk_size + 1),
+                mime_type="application/octet-stream",
+            )
+        ],
+    )
+
+    create_payload = __import__("json").loads(requests[0].content)
+    upload_puts = [request for request in requests if request.method == "PUT"]
+    assert "attachments" not in create_payload
+    assert draft.metadata["large_attachment_count"] == 1
+    assert GraphEmailProvider._upload_chunk_size % (320 * 1024) == 0
+    assert len(upload_puts) == 2
+    assert int(upload_puts[0].headers["content-length"]) == (
+        GraphEmailProvider._upload_chunk_size
+    )
+    assert upload_puts[0].headers["content-range"] == (
+        f"bytes 0-{GraphEmailProvider._upload_chunk_size - 1}/"
+        f"{GraphEmailProvider._upload_chunk_size + 1}"
+    )

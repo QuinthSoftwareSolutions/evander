@@ -52,15 +52,14 @@ class OpenAIBillingService:
         self, directory_path: str | None = None, *, force_refresh: bool = False
     ) -> OpenAICostStatus:
         resolved_config = self.provider_config_resolver.resolve_for_directory(directory_path)
-        api_key_env = resolved_config.openai_api_key_env
+        api_key_env, api_key = _resolve_costs_api_key(resolved_config)
         checked_at = datetime.now(UTC)
-        api_key = os.environ.get(api_key_env)
         if not api_key:
             return OpenAICostStatus(
                 status="not_configured",
                 api_key_env=api_key_env,
                 checked_at=checked_at,
-                message=f"Host environment variable {api_key_env} is not set.",
+                message=_missing_key_message(resolved_config),
             )
 
         cache_key = f"{resolved_config.openai_api_base_url}|{api_key_env}"
@@ -75,6 +74,7 @@ class OpenAIBillingService:
 
         status = self._fetch_cost_status(
             resolved_config=resolved_config,
+            api_key_env=api_key_env,
             api_key=api_key,
             checked_at=checked_at,
         )
@@ -82,9 +82,13 @@ class OpenAIBillingService:
         return status
 
     def _fetch_cost_status(
-        self, *, resolved_config: GatewayConfig, api_key: str, checked_at: datetime
+        self,
+        *,
+        resolved_config: GatewayConfig,
+        api_key_env: str,
+        api_key: str,
+        checked_at: datetime,
     ) -> OpenAICostStatus:
-        api_key_env = resolved_config.openai_api_key_env
         try:
             url = _costs_url(resolved_config.openai_api_base_url)
         except ValueError as exc:
@@ -128,10 +132,7 @@ class OpenAIBillingService:
                 status="unavailable",
                 api_key_env=api_key_env,
                 checked_at=checked_at,
-                message=(
-                    "OpenAI Costs API rejected the key. Grant organization usage/cost "
-                    "access, including api.usage.read for restricted keys."
-                ),
+                message=_rejected_key_message(api_key_env, api_key),
             )
         if response.status_code == 404:
             return OpenAICostStatus(
@@ -191,6 +192,75 @@ def _costs_url(openai_api_base_url: str) -> str:
     if version_path == "/":
         version_path = "/v1"
     return f"{origin}{version_path}{OPENAI_COSTS_PATH}"
+
+
+def _resolve_costs_api_key(resolved_config: GatewayConfig) -> tuple[str, str | None]:
+    candidates = _costs_api_key_env_candidates(resolved_config)
+    for api_key_env in candidates:
+        api_key = os.environ.get(api_key_env)
+        if api_key:
+            return api_key_env, api_key
+    return candidates[0], None
+
+
+def _costs_api_key_env_candidates(resolved_config: GatewayConfig) -> list[str]:
+    costs_api_key_env = _clean_env_name(
+        getattr(resolved_config, "openai_costs_api_key_env", None)
+    )
+    relay_api_key_env = _clean_env_name(resolved_config.openai_api_key_env) or "OPENAI_API_KEY"
+    candidates: list[str] = []
+    for api_key_env in (costs_api_key_env, relay_api_key_env):
+        if api_key_env and api_key_env not in candidates:
+            candidates.append(api_key_env)
+    return candidates or ["OPENAI_ADMIN_API_KEY"]
+
+
+def _clean_env_name(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _missing_key_message(resolved_config: GatewayConfig) -> str:
+    candidates = _costs_api_key_env_candidates(resolved_config)
+    primary = candidates[0]
+    if len(candidates) == 1:
+        return (
+            f"Host environment variable {primary} is not set. Set it to an OpenAI "
+            "Admin API key with organization usage/cost access."
+        )
+    fallback = candidates[1]
+    return (
+        f"Host environment variable {primary} is not set. Fallback {fallback} is "
+        "also unset. Set the costs key to an OpenAI Admin API key with organization "
+        "usage/cost access."
+    )
+
+
+def _rejected_key_message(api_key_env: str, api_key: str) -> str:
+    key_kind = _api_key_kind(api_key)
+    if key_kind == "project":
+        return (
+            f"OpenAI Costs API rejected {api_key_env} (project key). Use an OpenAI "
+            "Admin API key for organization costs, typically via OPENAI_ADMIN_API_KEY; "
+            "project key permissions do not grant organization usage/cost access."
+        )
+    return (
+        f"OpenAI Costs API rejected {api_key_env}. Grant organization usage/cost "
+        "access, including api.usage.read for restricted keys, and verify the key "
+        "owner has the correct organization role."
+    )
+
+
+def _api_key_kind(api_key: str) -> str:
+    if api_key.startswith("sk-admin-"):
+        return "admin"
+    if api_key.startswith("sk-proj-"):
+        return "project"
+    if api_key.startswith("sk-"):
+        return "legacy_or_user"
+    return "unknown"
 
 
 def _extract_cost_total(payload: object) -> tuple[float, str] | None:

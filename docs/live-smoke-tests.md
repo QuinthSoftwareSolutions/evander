@@ -40,7 +40,10 @@ enabling send flows or touching non-test destinations.
   - one Discord test channel
   - one Gmail test mailbox
   - one Graph test mailbox
+  - optionally, one Teams test channel or chat for attachment smoke tests
 - `email_send_enabled: false`
+- For optional attachment smoke tests, `communication_file_send_enabled: false` unless the
+  specific outbound-send approval path is under test.
 
 ## Suggested Test Fixture Config
 
@@ -58,6 +61,25 @@ email_folder_allowlist_by_mailbox:
   ops-gmail-test: ["inbox", "drafts"]
   exec-graph-test: ["inbox", "drafts"]
 email_send_enabled: false
+communication_file_receive_enabled: true
+communication_file_send_enabled: false
+communication_file_require_approval_for_send: true
+communication_file_max_bytes: 1048576
+communication_file_allowed_mime_types:
+  - "text/plain"
+  - "application/pdf"
+  - "image/png"
+  - "image/jpeg"
+communication_file_allowed_extensions:
+  - ".txt"
+  - ".pdf"
+  - ".png"
+  - ".jpg"
+  - ".jpeg"
+communication_file_blocked_extensions:
+  - ".exe"
+  - ".js"
+  - ".sh"
 email_mailboxes:
   - mailbox_id: "ops-gmail-test"
     provider: "gmail"
@@ -168,6 +190,68 @@ Repeat one negative policy call from the VM path:
 
 Then verify the host audit log again and confirm entries include the active session and VM context.
 
+## Optional Attachment Smoke Tests
+
+Run these steps only in dedicated test channels/mailboxes. Do not use personal, production, or
+shared business channels/mailboxes, and keep all fixtures intentionally small (for example a
+`hello.txt` file under 1 KiB and one small PNG/PDF under the configured 1 MiB limit). Keep outbound
+send disabled unless you are explicitly testing the approval path.
+
+### Host gateway attachment receive
+
+1. Apply the conservative communication-file policy from
+   `config/communication-files/policy.json.example` to the smoke-test directory/session.
+2. Upload `hello.txt` to the dedicated Discord test channel. Call
+   `communication_list_attachments` with `provider="discord"`, the Discord `message_id`, and the
+   allowlisted `channel_id`; then call `communication_download_attachment` for the returned
+   `attachment_id`.
+3. Upload `hello.txt` to the dedicated Teams test channel/chat, if Teams credentials and allowlists
+   are configured. Call `communication_list_attachments` with `provider="teams"`, the Teams
+   `message_id`, and the allowlisted `channel_target`; then download one returned attachment.
+4. Send `hello.txt` to the Gmail test mailbox. Call `communication_list_attachments` with
+   `provider="email"`, the Gmail `message_id`, and `mailbox_id="ops-gmail-test"`; then download
+   one returned attachment.
+5. Repeat the email attachment receive check for the Graph test mailbox with
+   `mailbox_id="exec-graph-test"`.
+6. For one staged artifact, call `communication_copy_artifact_to_workspace` and confirm the
+   returned destination path is under `/home/agent/communication-artifacts/`.
+
+### Optional outbound-send approval path
+
+Only run this subsection when the test owner has approved sending visible test artifacts back into
+the same dedicated test destinations.
+
+1. Keep `communication_file_require_approval_for_send: true` and temporarily set
+   `communication_file_send_enabled: true` for the smoke-test session/directory.
+2. Submit and approve an exact payload for one provider-specific send tool. The payload must match
+   the destination, message/body, thread fields when present, and `artifact_ids`.
+3. For Discord, call `discord_post_file` with the approved `request_id` and the staged
+   `artifact_ids`, targeting only the dedicated Discord test channel.
+4. For Teams, call `teams_post_file` with the approved `request_id`, targeting only the dedicated
+   Teams test channel/chat.
+5. For Gmail/Graph, prefer `email_create_draft_with_attachments` first. Exercise
+   `email_send_approved_with_attachments` only if `email_send_enabled: true` is intentionally set
+   and the approval payload matches exactly.
+6. Immediately return `communication_file_send_enabled` to `false` after the outbound test.
+
+### Attachment audit checks
+
+Inspect the host audit log and confirm attachment operations are scoped and audited:
+
+```bash
+tail -n 100 runtime/audit.jsonl | jq 'select(.tool_name | test("communication_|discord_post_file|teams_post_file|email_.*attachments"))'
+```
+
+Expected optional attachment behavior:
+
+- inbound list/download/copy calls for Discord, Teams, Gmail, and Graph test destinations are
+  logged as `allowed`
+- attempts against non-test channels/mailboxes are logged as `denied`
+- oversized or blocked MIME/extension fixtures are logged as `denied`
+- outbound sends fail while send policy is disabled
+- any intentionally enabled outbound send includes approval request/decision fields and stays in
+  the dedicated test destination
+
 ## Pass Criteria
 
 The smoke test passes only if all of these are true:
@@ -179,6 +263,8 @@ The smoke test passes only if all of these are true:
 - provider auth/timeout failures are audited as `adapter_http_error`
 - no email send flow is enabled or exercised
 - all visible artifacts stay within dedicated test channels and test mailboxes
+- optional attachment tests use dedicated Discord, Teams, Gmail, and Graph destinations only, and
+  outbound attachment sends occur only with matching approval when send policy is intentionally enabled
 
 ## Failure Triage
 

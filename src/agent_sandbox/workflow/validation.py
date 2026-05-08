@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -8,7 +9,11 @@ from pydantic import BaseModel
 
 from agent_sandbox.workflow.binding import BindingResolutionError, _parse_binding_expression
 from agent_sandbox.workflow.contracts import effective_node_output_schema
-from agent_sandbox.workflow.graph import build_inbound_edge_index, would_form_cycle
+from agent_sandbox.workflow.graph import (
+    build_inbound_edge_index,
+    merge_output_schema_intersection,
+    would_form_cycle,
+)
 
 
 @dataclass(frozen=True)
@@ -157,13 +162,14 @@ def validate_workflow_binding_diagnostics(
     all_node_ids = set(nodes_by_id)
     edges = config.get("edges", [])
     edge_list = edges if isinstance(edges, list) else []
+    output_schemas = derive_workflow_output_schemas(config)
 
     diagnostics: list[WorkflowValidationDiagnostic] = []
     for node_id, node in nodes:
         node_type = str(node.get("type") or "").strip()
         ancestor_ids = _collect_ancestor_node_ids(edge_list, node_id)
         declared_outputs = {
-            ancestor_id: effective_node_output_schema(nodes_by_id[ancestor_id])
+            ancestor_id: output_schemas.get(ancestor_id, {})
             for ancestor_id in ancestor_ids
             if ancestor_id in nodes_by_id
         }
@@ -179,6 +185,127 @@ def validate_workflow_binding_diagnostics(
                 )
             )
     return diagnostics
+
+
+def derive_workflow_output_schemas(
+    config: Mapping[str, Any],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Return graph-aware output schemas for workflow nodes.
+
+    Some gates do not own a static output contract. A filter gate forwards its
+    single inbound payload, and a merge gate emits the compatible intersection
+    of its inbound payloads. Derive those contracts from the configured graph so
+    binding validation does not treat dynamic gate outputs as missing.
+    """
+
+    nodes = list(_iter_workflow_nodes(config))
+    nodes_by_id = {node_id: node for node_id, node in nodes}
+    edges = config.get("edges", [])
+    edge_list = edges if isinstance(edges, list) else []
+    cache: dict[str, dict[str, dict[str, Any]]] = {}
+    for node_id in nodes_by_id:
+        _derive_workflow_node_output_schema(
+            node_id=node_id,
+            nodes_by_id=nodes_by_id,
+            edges=edge_list,
+            cache=cache,
+            visiting=set(),
+        )
+    return cache
+
+
+def _derive_workflow_node_output_schema(
+    *,
+    node_id: str,
+    nodes_by_id: Mapping[str, Mapping[str, Any]],
+    edges: list[Any],
+    cache: dict[str, dict[str, dict[str, Any]]],
+    visiting: set[str],
+) -> dict[str, dict[str, Any]]:
+    cached = cache.get(node_id)
+    if cached is not None:
+        return cached
+    node = nodes_by_id.get(node_id)
+    if node is None:
+        return {}
+    output_node = _flatten_node_config(node)
+    if node_id in visiting:
+        return _copy_output_schema(effective_node_output_schema(output_node))
+
+    visiting.add(node_id)
+    node_type = str(output_node.get("type") or "").strip()
+    if node_type == "gate:filter":
+        upstream_ids = _collect_direct_upstream_node_ids(edges, node_id)
+        schema = (
+            _derive_workflow_node_output_schema(
+                node_id=upstream_ids[0],
+                nodes_by_id=nodes_by_id,
+                edges=edges,
+                cache=cache,
+                visiting=visiting,
+            )
+            if upstream_ids
+            else {}
+        )
+    elif node_type == "gate:merge":
+        upstream_schemas = [
+            _derive_workflow_node_output_schema(
+                node_id=upstream_id,
+                nodes_by_id=nodes_by_id,
+                edges=edges,
+                cache=cache,
+                visiting=visiting,
+            )
+            for upstream_id in _collect_direct_upstream_node_ids(edges, node_id)
+            if upstream_id in nodes_by_id
+        ]
+        schema = (
+            merge_output_schema_intersection(*upstream_schemas)
+            if upstream_schemas
+            else {}
+        )
+    elif node_type == "gate:await-agent":
+        schema = effective_node_output_schema({"type": "trigger:agent:run:completed"})
+    else:
+        schema = effective_node_output_schema(output_node)
+    visiting.remove(node_id)
+
+    normalized = _copy_output_schema(schema)
+    cache[node_id] = normalized
+    return normalized
+
+
+def _flatten_node_config(node: Mapping[str, Any]) -> dict[str, Any]:
+    flattened = dict(node)
+    config = flattened.pop("config", None)
+    if isinstance(config, Mapping):
+        flattened = {
+            **{str(key): deepcopy(value) for key, value in config.items()},
+            **flattened,
+        }
+    return flattened
+
+
+def _collect_direct_upstream_node_ids(edges: list[Any], node_id: str) -> tuple[str, ...]:
+    upstream_ids: list[str] = []
+    for edge in edges:
+        if not isinstance(edge, Mapping):
+            continue
+        source_id = str(edge.get("source_id") or "").strip()
+        target_id = str(edge.get("target_id") or "").strip()
+        if source_id and target_id == node_id:
+            upstream_ids.append(source_id)
+    return tuple(upstream_ids)
+
+
+def _copy_output_schema(
+    schema: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    return {
+        str(key): dict(value)
+        for key, value in schema.items()
+        if isinstance(value, Mapping)
+    }
 
 
 def _iter_workflow_nodes(config: Mapping[str, Any]) -> Iterable[tuple[str, Mapping[str, Any]]]:

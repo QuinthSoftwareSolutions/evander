@@ -70,6 +70,22 @@ def test_teams_ingest_worker_persists_inbound_messages_and_ignores_status_store_
                             "createdDateTime": "2026-03-30T11:00:00Z",
                             "body": {"content": "<p>hello</p>", "contentType": "html"},
                             "from": {"user": {"id": "user-1", "displayName": "Ada"}},
+                            "attachments": [
+                                {
+                                    "id": "att-1",
+                                    "name": "report.txt",
+                                    "contentType": "reference",
+                                    "contentUrl": "https://graph.microsoft.com/download/att-1",
+                                    "contentBytes": "must-not-store",
+                                }
+                            ],
+                            "hostedContents": [
+                                {
+                                    "id": "hosted-1",
+                                    "contentType": "image/png",
+                                    "contentBytes": "must-not-store",
+                                }
+                            ],
                             "replies": [
                                 {
                                     "id": "msg-2",
@@ -129,6 +145,13 @@ def test_teams_ingest_worker_persists_inbound_messages_and_ignores_status_store_
     assert stored[0].author_name == "Ada"
     assert stored[1].thread_id == "msg-1"
     assert stored[0].metadata["source"] == "teams_graph_api"
+    assert [attachment["id"] for attachment in stored[0].metadata["attachments"]] == [
+        "att-1",
+        "hosted-1",
+    ]
+    assert "contentBytes" not in stored[0].metadata["attachments"][0]
+    assert "contentBytes" not in stored[0].metadata["message"]["attachments"][0]
+    assert "contentBytes" not in stored[0].metadata["message"]["hostedContents"][0]
     assert worker.store.get_cursor("team-a/channel-1") == "team-a/channel-1/msg-2"
     assert requests[0].headers["Authorization"] == "Bearer graph-token"
     assert result.channel_targets_polled == 1

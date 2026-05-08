@@ -38,6 +38,7 @@ agent_sandbox_admin_web_env:
 agent_sandbox_render_shared_secrets_env: true
 agent_sandbox_shared_secrets_env:
   OPENAI_API_KEY: "{{ vault_openai_api_key }}"
+  OPENAI_ADMIN_API_KEY: "{{ vault_openai_admin_api_key }}"
   AZURE_ARTIFACTS_PAT: "{{ vault_azure_artifacts_pat }}"
   ADO_WORK_ITEMS_AZURE_DEVOPS_PAT: "{{ vault_ado_work_items_pat }}"
   AZURE_DEVOPS_PAT: "{{ vault_azure_devops_pat }}"

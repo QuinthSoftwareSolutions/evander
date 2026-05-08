@@ -170,6 +170,7 @@ class GatewayConfig(BaseModel):
     openai_relay_port: int = 11434
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_key_env: str = "OPENAI_API_KEY"
+    openai_costs_api_key_env: str | None = "OPENAI_ADMIN_API_KEY"
     openai_relay_timeout_seconds: float = 300.0
     http_target_relay_host: str = "0.0.0.0"
     http_target_relay_port: int = 11777
@@ -188,6 +189,13 @@ class GatewayConfig(BaseModel):
     email_draft_recipient_allowlist: list[str] = Field(default_factory=list)
     email_draft_domain_allowlist: list[str] = Field(default_factory=list)
     email_send_enabled: bool = False
+    communication_file_receive_enabled: bool = False
+    communication_file_send_enabled: bool = False
+    communication_file_max_bytes: int | None = Field(default=10 * 1024 * 1024, ge=0)
+    communication_file_allowed_mime_types: list[str] = Field(default_factory=list)
+    communication_file_allowed_extensions: list[str] = Field(default_factory=list)
+    communication_file_blocked_extensions: list[str] = Field(default_factory=list)
+    communication_file_require_approval_for_send: bool = False
     pr_reply_require_approval: bool = False
     github_token_env: str = "GITHUB_TOKEN"
     agent_prompt_token_secret_env: str = "AGENT_PROMPT_TOKEN_SECRET"

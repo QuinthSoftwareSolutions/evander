@@ -52,6 +52,17 @@ _TEAMS_PROVIDER_CONFIG_FIELDS: tuple[tuple[str, str], ...] = tuple(
         name for name in DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"] if name.startswith("teams_")
     )
 )
+_COMMUNICATION_FILE_POLICY_FIELD_NAMES: frozenset[str] = frozenset(
+    {
+        "communication_file_receive_enabled",
+        "communication_file_send_enabled",
+        "communication_file_max_bytes",
+        "communication_file_allowed_mime_types",
+        "communication_file_allowed_extensions",
+        "communication_file_blocked_extensions",
+        "communication_file_require_approval_for_send",
+    }
+)
 _ASSISTANT_SETTINGS_DOMAIN = "assistant_settings"
 _ASSISTANT_SETTINGS_FIELDS: tuple[tuple[str, str], ...] = (
     (_ASSISTANT_SETTINGS_DOMAIN, "enabled"),
@@ -75,6 +86,7 @@ _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] =
         for field_name in sorted(
             DIRECTORY_CONFIG_DOMAIN_FIELDS["policy"]
             - {name for source_domain, name in _DISCORD_CONFIG_FIELDS if source_domain == "policy"}
+            - _COMMUNICATION_FILE_POLICY_FIELD_NAMES
         )
     ),
     "providers": tuple(
@@ -211,6 +223,7 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
             (
                 ("providers", "openai_api_base_url"),
                 ("providers", "openai_api_key_env"),
+                ("providers", "openai_costs_api_key_env"),
                 ("providers", "openai_relay_timeout_seconds"),
             ),
             ("openai_",),
@@ -597,7 +610,10 @@ def _directory_tab_help_text(tab_key: str) -> str | None:
     if tab_key == "communications":
         return "Messaging integrations for Discord and Teams, including routing, read reactions, and wake prompts."
     if tab_key == "access_policy":
-        return "Directory-level guardrails for approvals, recipients, mailboxes, and audit redaction defaults."
+        return (
+            "Directory-level guardrails for approvals, recipients, mailboxes, "
+            "communication files, and audit redaction defaults."
+        )
     if tab_key == "vm_runtime":
         return "VM network and relay endpoint settings used when launching and wiring guest runtime access."
     if tab_key == "automation":

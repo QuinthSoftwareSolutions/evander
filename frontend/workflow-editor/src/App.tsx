@@ -1093,7 +1093,11 @@ function directUpstreamNodeIds(config: WorkflowConfig, targetId: string): string
   return config.edges.filter((edge) => edge.target_id === targetId).map((edge) => edge.source_id);
 }
 
-function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: WorkflowConfig): Record<string, unknown> {
+function declaredOutputsForNode(
+  node: WorkflowNodeConfig | undefined,
+  config?: WorkflowConfig,
+  resolving: Set<string> = new Set<string>(),
+): Record<string, unknown> {
   if (!node) return {};
   const schema: Record<string, unknown> = {};
   const derivedOnlyTypes = new Set(["gate:filter", "gate:merge", "gate:await-agent", "gate:for"]);
@@ -1523,9 +1527,35 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
     },
   };
   Object.assign(schema, staticSchemas[node.type] ?? {});
+  if (node.type === "gate:filter") {
+    const storedOutputs = isRecord(node.outputs) ? { ...node.outputs } : schema;
+    if (!config || resolving.has(node.id)) return storedOutputs;
+    resolving.add(node.id);
+    try {
+      const upstreamNodeId = directUpstreamNodeIds(config, node.id)[0] ?? "";
+      return declaredOutputsForNode(nodeById(config, upstreamNodeId), config, resolving);
+    } finally {
+      resolving.delete(node.id);
+    }
+  }
+  if (node.type === "gate:merge") {
+    const storedOutputs = isRecord(node.outputs) ? { ...node.outputs } : schema;
+    if (!config || resolving.has(node.id)) return storedOutputs;
+    resolving.add(node.id);
+    try {
+      const upstreamOutputs = directUpstreamNodeIds(config, node.id).map((upstreamNodeId) =>
+        declaredOutputsForNode(nodeById(config, upstreamNodeId), config, resolving),
+      );
+      return mergeDeclaredOutputIntersection(upstreamOutputs);
+    } finally {
+      resolving.delete(node.id);
+    }
+  }
   if (node.type === "gate:map" && isRecord(node.template)) {
-    for (const key of Object.keys(node.template)) {
-      schema[key] = { type: "string" };
+    for (const [key, value] of Object.entries(node.template)) {
+      const outputName = key.trim();
+      if (!outputName) continue;
+      schema[outputName] = inferSchemaFromTemplateValue(value);
     }
     return schema;
   }
@@ -1533,6 +1563,7 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
     return declaredOutputsForNode(
       agentRunCompletedSchemaNode(),
       config,
+      resolving,
     );
   }
   if (derivedOnlyTypes.has(node.type)) return schema;
@@ -1540,6 +1571,16 @@ function declaredOutputsForNode(node: WorkflowNodeConfig | undefined, config?: W
     Object.assign(schema, node.outputs);
   }
   return schema;
+}
+
+function inferSchemaFromTemplateValue(value: unknown): Record<string, unknown> {
+  if (typeof value === "boolean") return { type: "boolean" };
+  if (typeof value === "number") return { type: Number.isInteger(value) ? "integer" : "number" };
+  if (value === null) return { type: "null" };
+  if (typeof value === "string") return { type: "string" };
+  if (Array.isArray(value)) return { type: "array" };
+  if (isRecord(value)) return { type: "object" };
+  return { type: "object" };
 }
 
 function mergeDeclaredOutputIntersection(outputs: Record<string, unknown>[]): Record<string, unknown> {

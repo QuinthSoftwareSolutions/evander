@@ -253,6 +253,8 @@ def test_directory_config_tab_field_sources_omit_discord_fields_from_access_poli
     assert "discord_operator_channel_allowlist" not in policy_fields
     assert "discord_backend" not in provider_fields
     assert "discord_bot_token_env" not in provider_fields
+    assert "communication_file_receive_enabled" not in policy_fields
+    assert "communication_file_require_approval_for_send" not in policy_fields
 
 
 def test_directory_config_tab_field_sources_expose_composite_communications_tab() -> None:
@@ -279,6 +281,10 @@ def test_directory_config_tab_sections_match_expected_groupings() -> None:
         section.title: section.field_sources
         for section in admin_app._directory_config_tab_sections("communications")
     }
+    access_policy_sections = {
+        section.title: section.field_sources
+        for section in admin_app._directory_config_tab_sections("access_policy")
+    }
     provider_sections = {
         section.title: section.field_sources
         for section in admin_app._directory_config_tab_sections("providers")
@@ -297,6 +303,8 @@ def test_directory_config_tab_sections_match_expected_groupings() -> None:
     assert ("heartbeat", "discord_resume_prompt") in communications_sections["Discord"]
     assert ("providers", "teams_read_reaction_emoji") in communications_sections["Teams"]
 
+    assert "Communication files" not in access_policy_sections
+
     assert set(provider_sections) == {
         "Agent prompt",
         "Azure DevOps",
@@ -311,6 +319,7 @@ def test_directory_config_tab_sections_match_expected_groupings() -> None:
     assert ("providers", "container_worker_base_url") in provider_sections["Container worker"]
     assert ("providers", "nuget_azure_pat_env") in provider_sections["NuGet"]
     assert ("providers", "openai_api_key_env") in provider_sections["OpenAI"]
+    assert ("providers", "openai_costs_api_key_env") in provider_sections["OpenAI"]
 
     assert ("issue_setup", "git_root") in issue_setup_sections["Git transport"]
     assert ("issue_setup", "issue_setup_azure_devops_pr_pat_env") in issue_setup_sections[
@@ -899,6 +908,11 @@ def test_update_session_action_bar_populates_session_model_controls() -> None:
         session_model_status_label=DummyLabel(),
         save_session_tools_button=DummyButton(),
         session_tools_checkboxes={},
+        _session_policy_dirty=False,
+        _session_policy_bound_session_id=None,
+        _set_session_policy_controls_enabled=lambda _enabled: None,
+        _sync_session_policy_editor=lambda _summary: None,
+        session_policy_status_label=DummyLabel(),
     )
 
     admin_app.MainWindow.update_session_action_bar(window)
@@ -970,6 +984,11 @@ def test_update_session_action_bar_preserves_dirty_model_input_for_same_session(
         session_model_status_label=DummyLabel(),
         save_session_tools_button=DummyButton(),
         session_tools_checkboxes={},
+        _session_policy_dirty=False,
+        _session_policy_bound_session_id=None,
+        _set_session_policy_controls_enabled=lambda _enabled: None,
+        _sync_session_policy_editor=lambda _summary: None,
+        session_policy_status_label=DummyLabel(),
     )
 
     admin_app.MainWindow.update_session_action_bar(window)
@@ -1039,6 +1058,11 @@ def test_update_session_action_bar_replaces_model_input_when_session_changes() -
         session_model_status_label=DummyLabel(),
         save_session_tools_button=DummyButton(),
         session_tools_checkboxes={},
+        _session_policy_dirty=False,
+        _session_policy_bound_session_id=None,
+        _set_session_policy_controls_enabled=lambda _enabled: None,
+        _sync_session_policy_editor=lambda _summary: None,
+        session_policy_status_label=DummyLabel(),
     )
 
     admin_app.MainWindow.update_session_action_bar(window)
@@ -1123,6 +1147,11 @@ def test_update_session_action_bar_preserves_dirty_tool_checkboxes_for_same_sess
         session_model_status_label=DummyLabel(),
         save_session_tools_button=DummyButton(),
         session_tools_checkboxes={admin_app.ToolName.APPROVAL_CHECK: checkbox},
+        _session_policy_dirty=False,
+        _session_policy_bound_session_id=None,
+        _set_session_policy_controls_enabled=lambda _enabled: None,
+        _sync_session_policy_editor=lambda _summary: None,
+        session_policy_status_label=DummyLabel(),
     )
 
     admin_app.MainWindow.update_session_action_bar(window)
@@ -1208,6 +1237,11 @@ def test_update_session_action_bar_replaces_tool_checkboxes_when_session_changes
         session_model_status_label=DummyLabel(),
         save_session_tools_button=DummyButton(),
         session_tools_checkboxes={admin_app.ToolName.APPROVAL_CHECK: checkbox},
+        _session_policy_dirty=False,
+        _session_policy_bound_session_id=None,
+        _set_session_policy_controls_enabled=lambda _enabled: None,
+        _sync_session_policy_editor=lambda _summary: None,
+        session_policy_status_label=DummyLabel(),
     )
 
     admin_app.MainWindow.update_session_action_bar(window)

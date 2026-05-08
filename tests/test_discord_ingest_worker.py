@@ -78,3 +78,45 @@ def test_discord_ingest_worker_counts_active_sessions_in_configured_scope(tmp_pa
 
     assert result.directories_polled == 1
     assert result.sessions_seen == 1
+
+
+def test_discord_ingest_normalize_message_preserves_attachment_metadata_without_bytes(
+    tmp_path: Path,
+) -> None:
+    worker = build_discord_ingest_worker(
+        GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")}),
+        project_dir=tmp_path,
+    )
+
+    envelope = worker._normalize_message(
+        channel_id="chan-a",
+        created_at=datetime(2026, 3, 30, 11, 0, tzinfo=UTC),
+        payload={
+            "id": "msg-1",
+            "content": "attached",
+            "author": {"id": "user-a", "username": "Ada"},
+            "attachments": [
+                {
+                    "id": "att-1",
+                    "filename": "report.txt",
+                    "content_type": "text/plain",
+                    "size": 11,
+                    "url": "https://cdn.discord.test/att-1",
+                    "content": "must-not-store",
+                    "content_base64": "bXVzdC1ub3Qtc3RvcmU=",
+                }
+            ],
+        },
+    )
+
+    assert envelope.raw["attachments"] == [
+        {
+            "id": "att-1",
+            "filename": "report.txt",
+            "content_type": "text/plain",
+            "size": 11,
+            "url": "https://cdn.discord.test/att-1",
+        }
+    ]
+    assert "content" not in envelope.raw["message"]["attachments"][0]
+    assert "content_base64" not in envelope.raw["message"]["attachments"][0]

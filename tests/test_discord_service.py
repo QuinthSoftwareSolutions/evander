@@ -715,3 +715,138 @@ def test_get_commands_returns_deterministic_cross_channel_order_by_snowflake(
     commands = service.get_commands(since_cursor="998")
 
     assert [command.command_id for command in commands] == ["999", "1000", "4000", "5000"]
+
+
+def test_discord_bot_api_preserves_attachment_metadata_and_downloads_host_side(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/channels/chan-a/messages"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": "1000",
+                        "content": "see attached",
+                        "author": {"id": "user-a"},
+                        "guild_id": "guild-1",
+                        "attachments": [
+                            {
+                                "id": "att-1",
+                                "filename": "report.txt",
+                                "content_type": "text/plain",
+                                "size": 11,
+                                "url": "https://cdn.discord.test/att-1",
+                                "content": "must-not-store",
+                            }
+                        ],
+                    }
+                ],
+                request=request,
+            )
+        if str(request.url) == "https://cdn.discord.test/att-1":
+            return httpx.Response(
+                200,
+                content=b"hello world",
+                headers={"content-type": "text/plain"},
+                request=request,
+            )
+        raise AssertionError(f"Unexpected URL: {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    service = make_service(tmp_path, transport)
+
+    messages = service.get_commands()
+
+    assert messages[0].metadata["attachments"] == [
+        {
+            "id": "att-1",
+            "filename": "report.txt",
+            "content_type": "text/plain",
+            "size": 11,
+            "url": "https://cdn.discord.test/att-1",
+        }
+    ]
+    assert "content" not in messages[0].metadata["attachments"][0]
+    assert service.list_attachments("1000", channel_id="chan-a")[0]["filename"] == "report.txt"
+    downloaded = service.download_attachment("1000", "att-1", channel_id="chan-a")
+    assert downloaded["content"] == b"hello world"
+    assert downloaded["mime_type"] == "text/plain"
+    assert requests[-1].headers["Authorization"] == "Bot test-token"
+
+
+def test_discord_attachment_listing_enforces_channel_allowlist(tmp_path: Path) -> None:
+    command_store = JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope)
+    command_store.put(
+        "1000",
+        DiscordCommandEnvelope(
+            command_id="1000",
+            author_id="user-a",
+            channel_id="chan-b",
+            content="blocked",
+            metadata={"attachments": [{"id": "att-1", "filename": "x.txt"}]},
+        ),
+    )
+    service = DiscordBotApiService(
+        command_store,
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_ids_provider=lambda: ["chan-a"],
+    )
+
+    with pytest.raises(ValueError, match="not allowlisted"):
+        service.list_attachments("1000", channel_id="chan-b")
+
+
+def test_discord_post_file_uses_multipart_bot_api_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+    artifact_path = tmp_path / "upload.txt"
+    artifact_path.write_text("upload-body", encoding="utf-8")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.url.path.endswith("/channels/chan-a/messages")
+        assert request.headers["Authorization"] == "Bot test-token"
+        assert request.headers["content-type"].startswith("multipart/form-data")
+        body = request.read()
+        assert b'name="payload_json"' in body
+        assert b'"content": "file incoming"' in body
+        assert b'name="files[0]"' in body
+        assert b'filename="upload.txt"' in body
+        assert b"upload-body" in body
+        return httpx.Response(
+            200,
+            json={
+                "id": "9000",
+                "content": "file incoming",
+                "author": {"id": "bot-1"},
+                "attachments": [{"id": "new-att", "filename": "upload.txt", "size": 11}],
+            },
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    service = make_service(tmp_path, transport)
+
+    result = service.post_file(
+        "file incoming",
+        "chan-a",
+        "session-1",
+        [{"path": str(artifact_path), "filename": "upload.txt", "mime_type": "text/plain"}],
+    )
+
+    assert result["status"] == "posted"
+    assert result["message_id"] == "9000"
+    assert result["artifact_count"] == 1
+    assert len(requests) == 1

@@ -5,6 +5,10 @@
       {{
         (agent_sandbox_worker_dotnet_toolchain_archive_path | default('') | string | trim | length) > 0
       }}
+    agent_sandbox_worker_dotnet_tools_uses_archive: >-
+      {{
+        (agent_sandbox_worker_dotnet_tools_archive_path | default('') | string | trim | length) > 0
+      }}
 
 - name: Check local dotnet toolchain archive
   ansible.builtin.stat:
@@ -31,6 +35,33 @@
   when:
     - agent_sandbox_worker_dotnet_toolchain_enabled | bool
     - agent_sandbox_worker_dotnet_toolchain_uses_archive | bool
+
+- name: Check local dotnet tools archive
+  ansible.builtin.stat:
+    path: "{{ agent_sandbox_worker_dotnet_tools_archive_path }}"
+  delegate_to: localhost
+  become: false
+  register: agent_sandbox_worker_dotnet_tools_archive_stat
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - agent_sandbox_worker_dotnet_tools_uses_archive | bool
+
+- name: Assert local dotnet tools archive exists
+  ansible.builtin.assert:
+    that:
+      - agent_sandbox_worker_dotnet_tools_archive_stat.stat.exists
+      - agent_sandbox_worker_dotnet_tools_archive_stat.stat.isreg
+    fail_msg: >-
+      Missing local dotnet tools archive:
+      {{ agent_sandbox_worker_dotnet_tools_archive_path }}. Set
+      agent_sandbox_worker_dotnet_tools_archive_path to a tar.gz containing a
+      dotnet tool-path root with dotnet-ef, or unset it so the playbook installs
+      {{ agent_sandbox_worker_dotnet_ef_package_id }} locally with the SDK from
+      HOST_DOTNET_ROOT/agent_sandbox_worker_dotnet_toolchain_local_path.
+    success_msg: Local dotnet tools archive is present.
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - agent_sandbox_worker_dotnet_tools_uses_archive | bool
 
 - name: Check local dotnet toolchain directory
   ansible.builtin.stat:
@@ -69,6 +100,33 @@
     - agent_sandbox_worker_dotnet_toolchain_enabled | bool
     - not (agent_sandbox_worker_dotnet_toolchain_uses_archive | bool)
 
+- name: Check local dotnet launcher for EF tool install
+  ansible.builtin.stat:
+    path: "{{ agent_sandbox_worker_dotnet_toolchain_local_path }}/dotnet"
+  delegate_to: localhost
+  become: false
+  register: agent_sandbox_worker_dotnet_tools_local_binary_stat
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_tools_uses_archive | bool)
+
+- name: Assert local dotnet launcher is available for EF tool install
+  ansible.builtin.assert:
+    that:
+      - agent_sandbox_worker_dotnet_tools_local_binary_stat.stat.exists
+      - agent_sandbox_worker_dotnet_tools_local_binary_stat.stat.executable
+    fail_msg: >-
+      Missing local dotnet launcher at
+      {{ agent_sandbox_worker_dotnet_toolchain_local_path }}/dotnet. The worker
+      deploy uses that local SDK to install {{ agent_sandbox_worker_dotnet_ef_package_id }}
+      into the shared tools cache. Set HOST_DOTNET_ROOT, or provide
+      agent_sandbox_worker_dotnet_tools_archive_path/HOST_DOTNET_TOOLS_ARCHIVE
+      with a prebuilt tool-path archive.
+    success_msg: Local dotnet launcher can install EF tooling.
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_tools_uses_archive | bool)
+
 - name: Create local temporary dotnet toolchain archive directory
   ansible.builtin.tempfile:
     state: directory
@@ -96,6 +154,97 @@
     - agent_sandbox_worker_dotnet_toolchain_enabled | bool
     - not (agent_sandbox_worker_dotnet_toolchain_uses_archive | bool)
 
+- name: Create local temporary dotnet tools archive directory
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: agent-sandbox-dotnet-tools
+  delegate_to: localhost
+  become: false
+  register: agent_sandbox_worker_dotnet_tools_archive_tmp
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_tools_uses_archive | bool)
+
+- name: Create local dotnet tools staging directories
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_worker_dotnet_tools_archive_tmp.path }}/{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - tools
+    - cli-home
+    - nuget-packages
+  delegate_to: localhost
+  become: false
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_tools_uses_archive | bool)
+
+- name: Install dotnet EF tool into local staging directory
+  ansible.builtin.command:
+    argv: >-
+      {{
+        [
+          agent_sandbox_worker_dotnet_toolchain_local_path ~ '/dotnet',
+          'tool',
+          'install',
+          agent_sandbox_worker_dotnet_ef_package_id,
+          '--tool-path',
+          agent_sandbox_worker_dotnet_tools_archive_tmp.path ~ '/tools'
+        ]
+        + (
+          ['--version', agent_sandbox_worker_dotnet_ef_version]
+          if (agent_sandbox_worker_dotnet_ef_version | default('') | string | trim | length) > 0
+          else []
+        )
+      }}
+  environment:
+    DOTNET_ROOT: "{{ agent_sandbox_worker_dotnet_toolchain_local_path }}"
+    DOTNET_CLI_HOME: "{{ agent_sandbox_worker_dotnet_tools_archive_tmp.path }}/cli-home"
+    DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+    DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+    NUGET_PACKAGES: "{{ agent_sandbox_worker_dotnet_tools_archive_tmp.path }}/nuget-packages"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_tools_uses_archive | bool)
+
+- name: Verify local staged dotnet EF tool
+  ansible.builtin.command:
+    argv:
+      - "{{ agent_sandbox_worker_dotnet_tools_archive_tmp.path }}/tools/dotnet-ef"
+      - --version
+  environment:
+    DOTNET_ROOT: "{{ agent_sandbox_worker_dotnet_toolchain_local_path }}"
+    DOTNET_CLI_HOME: "{{ agent_sandbox_worker_dotnet_tools_archive_tmp.path }}/cli-home"
+    DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+    DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+    PATH: "{{ agent_sandbox_worker_dotnet_toolchain_local_path }}:{{ lookup('env', 'PATH') }}"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_tools_uses_archive | bool)
+
+- name: Pack local dotnet tools directory
+  ansible.builtin.command:
+    argv:
+      - tar
+      - -C
+      - "{{ agent_sandbox_worker_dotnet_tools_archive_tmp.path }}/tools"
+      - -czf
+      - "{{ agent_sandbox_worker_dotnet_tools_archive_tmp.path }}/dotnet-tools.tar.gz"
+      - .
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_tools_uses_archive | bool)
+
 - name: Resolve dotnet toolchain archive to copy
   ansible.builtin.set_fact:
     agent_sandbox_worker_dotnet_toolchain_archive_to_copy: >-
@@ -103,6 +252,12 @@
         agent_sandbox_worker_dotnet_toolchain_archive_path
         if (agent_sandbox_worker_dotnet_toolchain_uses_archive | bool)
         else agent_sandbox_worker_dotnet_archive_tmp.path ~ '/dotnet-toolchain.tar.gz'
+      }}
+    agent_sandbox_worker_dotnet_tools_archive_to_copy: >-
+      {{
+        agent_sandbox_worker_dotnet_tools_archive_path
+        if (agent_sandbox_worker_dotnet_tools_uses_archive | bool)
+        else agent_sandbox_worker_dotnet_tools_archive_tmp.path ~ '/dotnet-tools.tar.gz'
       }}
   when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
 
@@ -115,9 +270,24 @@
     mode: "0640"
   when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
 
+- name: Copy dotnet tools archive to worker
+  ansible.builtin.copy:
+    src: "{{ agent_sandbox_worker_dotnet_tools_archive_to_copy }}"
+    dest: "{{ agent_sandbox_worker_dotnet_tools_remote_archive_path }}"
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0640"
+  when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
+
 - name: Reset worker dotnet toolchain cache
   ansible.builtin.file:
     path: "{{ agent_sandbox_worker_dotnet_cache_path }}"
+    state: absent
+  when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
+
+- name: Reset worker dotnet tools cache
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_worker_dotnet_tools_cache_path }}"
     state: absent
   when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
 
@@ -130,10 +300,28 @@
     mode: "0755"
   when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
 
+- name: Recreate worker dotnet tools cache
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_worker_dotnet_tools_cache_path }}"
+    state: directory
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0755"
+  when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
+
 - name: Unpack dotnet toolchain into worker cache
   ansible.builtin.unarchive:
     src: "{{ agent_sandbox_worker_dotnet_toolchain_remote_archive_path }}"
     dest: "{{ agent_sandbox_worker_dotnet_cache_path }}"
+    remote_src: true
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+  when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
+
+- name: Unpack dotnet tools into worker cache
+  ansible.builtin.unarchive:
+    src: "{{ agent_sandbox_worker_dotnet_tools_remote_archive_path }}"
+    dest: "{{ agent_sandbox_worker_dotnet_tools_cache_path }}"
     remote_src: true
     owner: "{{ agent_sandbox_run_user }}"
     group: "{{ agent_sandbox_run_user }}"
@@ -151,12 +339,14 @@
         export DOTNET_CLI_HOME="$dotnet_cli_home";
         export DOTNET_CLI_TELEMETRY_OPTOUT=1;
         export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1;
-        export PATH="$DOTNET_ROOT:$PATH";
-        dotnet --info
+        export PATH="$DOTNET_ROOT:{{ agent_sandbox_worker_dotnet_tools_cache_path }}:$PATH";
+        dotnet --info;
+        dotnet ef --version;
+        dotnet-ef --version
   changed_when: false
   when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
 
-- name: Verify dotnet is available inside runner container
+- name: Verify dotnet and EF tooling are available inside runner container
   ansible.builtin.command:
     argv:
       - docker
@@ -166,6 +356,8 @@
       - none
       - -v
       - "{{ agent_sandbox_worker_dotnet_cache_path }}:/opt/agent-sandbox/toolchains/dotnet:ro"
+      - -v
+      - "{{ agent_sandbox_worker_dotnet_tools_cache_path }}:/opt/agent-sandbox/toolchains/dotnet-tools:ro"
       - "{{ agent_sandbox_runner_image_name }}"
       - bash
       - -lc
@@ -176,8 +368,10 @@
         export DOTNET_CLI_HOME="$dotnet_cli_home";
         export DOTNET_CLI_TELEMETRY_OPTOUT=1;
         export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1;
-        export PATH="$DOTNET_ROOT:$PATH";
-        dotnet --info
+        export PATH="$DOTNET_ROOT:/opt/agent-sandbox/toolchains/dotnet-tools:$PATH";
+        dotnet --info;
+        dotnet ef --version;
+        dotnet-ef --version
   changed_when: false
   when: agent_sandbox_worker_dotnet_toolchain_enabled | bool
 
@@ -192,3 +386,15 @@
     - agent_sandbox_worker_dotnet_toolchain_enabled | bool
     - not (agent_sandbox_worker_dotnet_toolchain_uses_archive | bool)
     - agent_sandbox_worker_dotnet_archive_tmp.path is defined
+
+- name: Remove temporary local dotnet tools archive directory
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_worker_dotnet_tools_archive_tmp.path }}"
+    state: absent
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  when:
+    - agent_sandbox_worker_dotnet_toolchain_enabled | bool
+    - not (agent_sandbox_worker_dotnet_tools_uses_archive | bool)
+    - agent_sandbox_worker_dotnet_tools_archive_tmp.path is defined

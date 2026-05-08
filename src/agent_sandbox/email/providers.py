@@ -10,6 +10,29 @@ from agent_sandbox.repositories.records import EmailRecordsRepository
 from agent_sandbox.storage import JsonStore
 
 
+class EmailAttachmentMetadata(BaseModel):
+    attachment_id: str
+    filename: str
+    mime_type: str | None = None
+    byte_count: int | None = Field(default=None, ge=0)
+    inline: bool = False
+    content_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EmailAttachmentContent(EmailAttachmentMetadata):
+    content: bytes
+
+
+class EmailDraftAttachment(BaseModel):
+    filename: str
+    content: bytes
+    mime_type: str | None = None
+    content_id: str | None = None
+    inline: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class EmailMessageSummary(BaseModel):
     mailbox_id: str
     provider: str
@@ -27,6 +50,7 @@ class EmailMessageSummary(BaseModel):
 class EmailMessageDetail(EmailMessageSummary):
     subject: str
     body_text: str
+    attachments: list[EmailAttachmentMetadata] = Field(default_factory=list)
 
 
 class EmailDraft(BaseModel):
@@ -48,6 +72,14 @@ class EmailProvider(Protocol):
 
     def get_message(self, mailbox_id: str, message_id: str) -> EmailMessageDetail: ...
 
+    def list_attachments(
+        self, mailbox_id: str, message_id: str
+    ) -> list[EmailAttachmentMetadata]: ...
+
+    def download_attachment(
+        self, mailbox_id: str, message_id: str, attachment_id: str
+    ) -> EmailAttachmentContent: ...
+
     def create_draft(
         self,
         mailbox_id: str,
@@ -55,6 +87,7 @@ class EmailProvider(Protocol):
         subject: str | None,
         body: str,
         recipients: list[str],
+        attachments: list[EmailDraftAttachment] | None = None,
     ) -> EmailDraft: ...
 
 
@@ -78,6 +111,20 @@ class MultiMailboxEmailProvider:
         provider = self._provider_for_mailbox(mailbox_id)
         return provider.get_message(mailbox_id=mailbox_id, message_id=message_id)
 
+    def list_attachments(
+        self, mailbox_id: str, message_id: str
+    ) -> list[EmailAttachmentMetadata]:
+        provider = self._provider_for_mailbox(mailbox_id)
+        return provider.list_attachments(mailbox_id=mailbox_id, message_id=message_id)
+
+    def download_attachment(
+        self, mailbox_id: str, message_id: str, attachment_id: str
+    ) -> EmailAttachmentContent:
+        provider = self._provider_for_mailbox(mailbox_id)
+        return provider.download_attachment(
+            mailbox_id=mailbox_id, message_id=message_id, attachment_id=attachment_id
+        )
+
     def create_draft(
         self,
         mailbox_id: str,
@@ -85,6 +132,7 @@ class MultiMailboxEmailProvider:
         subject: str | None,
         body: str,
         recipients: list[str],
+        attachments: list[EmailDraftAttachment] | None = None,
     ) -> EmailDraft:
         provider = self._provider_for_mailbox(mailbox_id)
         return provider.create_draft(
@@ -93,6 +141,7 @@ class MultiMailboxEmailProvider:
             subject=subject,
             body=body,
             recipients=recipients,
+            attachments=attachments,
         )
 
 
@@ -122,6 +171,22 @@ class JsonEmailProvider:
             raise KeyError(f"Unknown message for mailbox {mailbox_id}: {message_id}")
         return self._to_detail(message)
 
+    def list_attachments(
+        self, mailbox_id: str, message_id: str
+    ) -> list[EmailAttachmentMetadata]:
+        message = self.email_store.get(message_id)
+        if message is None or message.mailbox_id != mailbox_id:
+            raise KeyError(f"Unknown message for mailbox {mailbox_id}: {message_id}")
+        return []
+
+    def download_attachment(
+        self, mailbox_id: str, message_id: str, attachment_id: str
+    ) -> EmailAttachmentContent:
+        message = self.email_store.get(message_id)
+        if message is None or message.mailbox_id != mailbox_id:
+            raise KeyError(f"Unknown message for mailbox {mailbox_id}: {message_id}")
+        raise KeyError(f"Unknown attachment for message {message_id}: {attachment_id}")
+
     def create_draft(
         self,
         mailbox_id: str,
@@ -129,6 +194,7 @@ class JsonEmailProvider:
         subject: str | None,
         body: str,
         recipients: list[str],
+        attachments: list[EmailDraftAttachment] | None = None,
     ) -> EmailDraft:
         now = datetime.now(UTC)
         draft = DraftMessage(
@@ -151,7 +217,7 @@ class JsonEmailProvider:
             body=draft.body,
             recipients=draft.recipients,
             created_at=draft.created_at,
-            metadata={},
+            metadata={"attachment_count": len(attachments or [])},
         )
 
     @staticmethod
@@ -177,4 +243,5 @@ class JsonEmailProvider:
             **summary.model_dump(),
             subject=message.subject,
             body_text=message.body_text,
+            attachments=[],
         )

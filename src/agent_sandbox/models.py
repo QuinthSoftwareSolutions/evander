@@ -50,8 +50,13 @@ class ToolName(str, Enum):
     GET_AGENT_LOGS = "get_agent_logs"
     DISCORD_GET_COMMANDS = "discord_get_commands"
     DISCORD_POST_STATUS = "discord_post_status"
+    COMMUNICATION_LIST_ATTACHMENTS = "communication_list_attachments"
+    COMMUNICATION_DOWNLOAD_ATTACHMENT = "communication_download_attachment"
+    COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE = "communication_copy_artifact_to_workspace"
+    DISCORD_POST_FILE = "discord_post_file"
     TEAMS_GET_MESSAGES = "teams_get_messages"
     TEAMS_POST_STATUS = "teams_post_status"
+    TEAMS_POST_FILE = "teams_post_file"
     TEAMS_MEETING_GET_EVENTS = "teams_meeting_get_events"
     TEAMS_MEETING_SPEAK = "teams_meeting_speak"
     TEAMS_MEETING_STOP = "teams_meeting_stop"
@@ -59,9 +64,11 @@ class ToolName(str, Enum):
     EMAIL_LIST_UNREAD = "email_list_unread"
     EMAIL_GET_MESSAGE = "email_get_message"
     EMAIL_CREATE_DRAFT = "email_create_draft"
+    EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS = "email_create_draft_with_attachments"
     APPROVAL_SUBMIT = "approval_submit"
     APPROVAL_CHECK = "approval_check"
     EMAIL_SEND_APPROVED = "email_send_approved"
+    EMAIL_SEND_APPROVED_WITH_ATTACHMENTS = "email_send_approved_with_attachments"
     HAS_PENDING_FEEDBACK = "has_pending_feedback"
     LIST_UNREAD_FEEDBACK = "list_unread_feedback"
     LIST_ALL_FEEDBACK = "list_all_feedback"
@@ -141,6 +148,13 @@ class SessionManifest(BaseModel):
     email_draft_recipient_allowlist: list[str] = Field(default_factory=list)
     email_draft_domain_allowlist: list[str] = Field(default_factory=list)
     email_send_enabled: bool = False
+    communication_file_receive_enabled: bool = False
+    communication_file_send_enabled: bool = False
+    communication_file_max_bytes: int | None = Field(default=None, ge=0)
+    communication_file_allowed_mime_types: list[str] = Field(default_factory=list)
+    communication_file_allowed_extensions: list[str] = Field(default_factory=list)
+    communication_file_blocked_extensions: list[str] = Field(default_factory=list)
+    communication_file_require_approval_for_send: bool = False
     quotas: dict[str, int] = Field(default_factory=dict)
     expires_at: datetime
     created_at: datetime = Field(default_factory=utc_now)
@@ -660,6 +674,107 @@ class DiscordMessageEnvelope(BaseModel):
     created_at: datetime
     in_reply_to: str | None = None
     raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class CommunicationAttachmentRef(BaseModel):
+    provider: str = Field(min_length=1)
+    message_id: str = Field(min_length=1)
+    attachment_id: str = Field(min_length=1)
+    filename: str = Field(min_length=1)
+    mime_type: str | None = None
+    byte_count: int | None = Field(default=None, ge=0)
+    mailbox_id: str | None = None
+    channel_id: str | None = None
+    channel_target: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CommunicationFileArtifact(BaseModel):
+    artifact_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    source_message_id: str | None = None
+    source_attachment_id: str | None = None
+    source_channel: str | None = None
+    source_mailbox: str | None = None
+    original_filename: str | None = None
+    normalized_safe_filename: str | None = None
+    filename: str = Field(min_length=1)
+    mime_type: str | None = None
+    byte_count: int = Field(ge=0)
+    sha256: str
+    created_at: datetime = Field(default_factory=utc_now)
+    expires_at: datetime | None = None
+    staged_at: datetime = Field(default_factory=utc_now)
+    session_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CommunicationCopyArtifactToWorkspaceRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    artifact_id: str = Field(min_length=1)
+    destination_filename: str | None = None
+    overwrite: bool = True
+
+
+class CommunicationCopyArtifactToWorkspaceResponse(BaseModel):
+    artifact: CommunicationFileArtifact
+    destination_path: str
+    copied_count: int
+    copied_paths: list[str] = Field(default_factory=list)
+    result: dict[str, Any] = Field(default_factory=dict)
+
+
+class CommunicationListAttachmentsRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    message_id: str = Field(min_length=1)
+    mailbox_id: str | None = None
+    channel_id: str | None = None
+    channel_target: str | None = None
+
+
+class CommunicationListAttachmentsResponse(BaseModel):
+    provider: str = Field(min_length=1)
+    message_id: str = Field(min_length=1)
+    attachments: list[CommunicationAttachmentRef] = Field(default_factory=list)
+
+
+class CommunicationDownloadAttachmentRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    message_id: str = Field(min_length=1)
+    attachment_id: str = Field(min_length=1)
+    mailbox_id: str | None = None
+    channel_id: str | None = None
+    channel_target: str | None = None
+
+
+class CommunicationDownloadAttachmentResponse(BaseModel):
+    artifact: CommunicationFileArtifact
+
+
+class CommunicationSendMessageWithAttachmentsRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    artifact_ids: list[str] = Field(default_factory=list)
+    mailbox_id: str | None = None
+    channel_id: str | None = None
+    channel_target: str | None = None
+    thread_id: str | None = None
+    subject: str | None = None
+    recipients: list[str] = Field(default_factory=list)
+    request_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class CommunicationSendMessageWithAttachmentsResponse(BaseModel):
+    provider: str = Field(min_length=1)
+    status: str = Field(min_length=1)
+    message_id: str | None = None
+    draft_id: str | None = None
+    artifact_ids: list[str] = Field(default_factory=list)
+    result: dict[str, Any] = Field(default_factory=dict)
 
 
 class PromptAgentRequest(BaseModel):

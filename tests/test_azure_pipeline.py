@@ -11,7 +11,7 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
     text = pipeline_path.read_text(encoding="utf-8")
     parsed = yaml.safe_load(text)
 
-    assert parsed["trigger"] == "none"
+    assert parsed["trigger"] == ["main"]
     assert parsed["pr"] == "none"
     assert parsed["variables"]["AGENT_SANDBOX_REPO_VERSION"] == "$(Build.SourceVersion)"
     assert parsed["variables"]["CONTROL_PLANE_TARGET"] == "${{ parameters.controlPlaneTarget }}"

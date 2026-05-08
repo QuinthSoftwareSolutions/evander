@@ -38,6 +38,7 @@ def test_openai_costs_use_resolved_directory_api_key_env(
         domain="providers",
         payload={"openai_api_key_env": "TEAM_A_OPENAI_TOKEN"},
     )
+    monkeypatch.delenv("OPENAI_ADMIN_API_KEY", raising=False)
     monkeypatch.setenv("TEAM_A_OPENAI_TOKEN", "team-a-secret")
     requests: list[httpx.Request] = []
 
@@ -86,10 +87,51 @@ def test_openai_costs_use_resolved_directory_api_key_env(
     assert "team-a-secret" not in status.model_dump_json()
 
 
+def test_openai_costs_prefer_dedicated_admin_key_env(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = make_config(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "relay-project-secret")
+    monkeypatch.setenv("OPENAI_ADMIN_API_KEY", "costs-admin-secret")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "object": "page",
+                "data": [
+                    {
+                        "object": "bucket",
+                        "results": [
+                            {
+                                "object": "organization.costs.result",
+                                "amount": {"value": 2.0, "currency": "usd"},
+                            }
+                        ],
+                    },
+                ],
+            },
+            request=request,
+        )
+
+    service = OpenAIBillingService(config, transport=httpx.MockTransport(handler))
+
+    status = service.fetch_status("root")
+
+    assert status.status == "ok"
+    assert status.api_key_env == "OPENAI_ADMIN_API_KEY"
+    assert requests[0].headers["authorization"] == "Bearer costs-admin-secret"
+    assert "relay-project-secret" not in status.model_dump_json()
+    assert "costs-admin-secret" not in status.model_dump_json()
+
+
 def test_openai_costs_do_not_call_upstream_when_key_is_missing(
     tmp_path: Path, monkeypatch
 ) -> None:
     config = make_config(tmp_path)
+    monkeypatch.delenv("OPENAI_ADMIN_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -101,13 +143,15 @@ def test_openai_costs_do_not_call_upstream_when_key_is_missing(
 
     assert status.status == "not_configured"
     assert status.cost_usd is None
-    assert status.api_key_env == "OPENAI_API_KEY"
+    assert status.api_key_env == "OPENAI_ADMIN_API_KEY"
+    assert "OpenAI Admin API key" in (status.message or "")
 
 
 def test_openai_costs_report_unsupported_non_openai_base_url(
     tmp_path: Path, monkeypatch
 ) -> None:
     config = make_config(tmp_path, openai_api_base_url="https://models.example.test/v1")
+    monkeypatch.delenv("OPENAI_ADMIN_API_KEY", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
 
     service = OpenAIBillingService(config)
@@ -120,7 +164,8 @@ def test_openai_costs_report_unsupported_non_openai_base_url(
 
 def test_openai_costs_report_missing_usage_scope(tmp_path: Path, monkeypatch) -> None:
     config = make_config(tmp_path)
-    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+    monkeypatch.delenv("OPENAI_ADMIN_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-test-secret")
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -139,4 +184,5 @@ def test_openai_costs_report_missing_usage_scope(tmp_path: Path, monkeypatch) ->
     status = service.fetch_status("root")
 
     assert status.status == "unavailable"
-    assert "api.usage.read" in (status.message or "")
+    assert "project key" in (status.message or "")
+    assert "OPENAI_ADMIN_API_KEY" in (status.message or "")
