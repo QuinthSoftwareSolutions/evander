@@ -4564,7 +4564,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             args = request.model_dump(mode="json")
             session = context.policy.require_tool(
                 resolved_session_id,
-                ToolName.MAKE_PHONE_CALL,
+                ToolName.GET_PHONE_CALL_RESULT,
             )
             result = context.retell_phone_call_service_for_session(
                 resolved_session_id
@@ -4575,7 +4575,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             audit_success(
                 resolved_session_id,
-                ToolName.MAKE_PHONE_CALL,
+                ToolName.GET_PHONE_CALL_RESULT,
                 args,
                 {
                     "request_id": result.get("request_id"),
@@ -4587,12 +4587,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             return result
         except PolicyError as exc:
-            audit_failure(resolved_session_id, ToolName.MAKE_PHONE_CALL, args, str(exc))
+            audit_failure(resolved_session_id, ToolName.GET_PHONE_CALL_RESULT, args, str(exc))
             raise
         except (ValueError, ProviderRequestError) as exc:
             audit_failure(
                 resolved_session_id,
-                ToolName.MAKE_PHONE_CALL,
+                ToolName.GET_PHONE_CALL_RESULT,
                 args,
                 str(exc),
                 decision="error",
@@ -4602,7 +4602,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         except Exception as exc:
             audit_failure(
                 resolved_session_id,
-                ToolName.MAKE_PHONE_CALL,
+                ToolName.GET_PHONE_CALL_RESULT,
                 args,
                 str(exc),
                 decision="error",

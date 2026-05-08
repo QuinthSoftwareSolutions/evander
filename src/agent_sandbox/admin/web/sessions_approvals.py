@@ -17,7 +17,10 @@ from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionSummary
 
 _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.MAKE_PHONE_CALL: (
-        "Start and read Retell phone calls to directory-configured contact aliases."
+        "Start Retell phone calls to directory-configured contact aliases."
+    ),
+    ToolName.GET_PHONE_CALL_RESULT: (
+        "Read Retell phone call status and transcripts for calls owned by the session."
     ),
 }
 

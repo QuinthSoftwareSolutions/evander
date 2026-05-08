@@ -236,6 +236,7 @@ const TOOL_GROUP_ORDER = [
   "Approvals",
   "Agent control",
   "Messaging",
+  "Voice calling",
   "Files",
   "Discord",
   "Teams",
@@ -305,10 +306,14 @@ function groupToolOption(tool: ToolOption): string {
   if (["add_message_reaction"].includes(value)) {
     return "Messaging";
   }
+  if (["make_phone_call", "get_phone_call_result"].includes(value)) {
+    return "Voice calling";
+  }
   if ([
     "communication_list_attachments",
     "communication_download_attachment",
     "communication_copy_artifact_to_workspace",
+    "communication_stage_workspace_file",
     "discord_post_file",
     "teams_post_file",
     "email_create_draft_with_attachments",

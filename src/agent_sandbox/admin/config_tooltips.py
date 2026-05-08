@@ -262,7 +262,10 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Name of the host environment variable that holds the upstream OpenAI API key."
     ),
     "openai_relay_timeout_seconds": ("Upstream request timeout in seconds for the OpenAI relay."),
-    "retell_api_base_url": ("Base URL for Retell API requests made by the host gateway."),
+    "retell_api_base_url": (
+        "Optional override for Retell API requests made by the host gateway. "
+        "Leave the default for the public Retell API."
+    ),
     "retell_api_key_env": (
         "Name of the host environment variable that holds the Retell API key."
     ),

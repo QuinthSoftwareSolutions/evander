@@ -555,12 +555,16 @@ phone numbers or Retell credentials.
   - `make_phone_call`
   - `get_phone_call_result`
 - Policy gating:
-  - Add `make_phone_call` to the session manifest `allowed_tools`.
-  - `get_phone_call_result` uses the same `make_phone_call` permission and only returns calls owned
-    by the same session and directory path.
-- Required effective provider config:
-  - `retell_api_base_url` (default `https://api.retellai.com`)
-  - `retell_api_key_env` (default `RETELL_API_KEY`)
+  - Add `make_phone_call` to the session manifest `allowed_tools` to start calls.
+  - Add `get_phone_call_result` to read call status and transcripts.
+  - `get_phone_call_result` only returns calls owned by the same session and directory path.
+- Provider config with defaults:
+  - `retell_api_base_url` defaults to `https://api.retellai.com`; leave the default in the GUI or
+    omit the key from JSON unless Retell gives you a different endpoint or you intentionally route
+    through a host-side proxy/mock.
+  - `retell_api_key_env` defaults to `RETELL_API_KEY`; leave the default unless the host secret uses
+    a different env-var name.
+- Required provider config:
   - `retell_from_number`
   - `retell_default_agent_id` or per-contact `agent_id`
   - `retell_phonebook`, mapping contact alias to `display_name`, `phone_number`, and optional

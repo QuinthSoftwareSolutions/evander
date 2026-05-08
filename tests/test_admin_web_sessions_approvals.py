@@ -10,6 +10,9 @@ from agent_sandbox.admin.web.app import create_app
 from agent_sandbox.models import ApprovalRequest, SessionManifest, ToolName
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 def write_config(tmp_path: Path) -> Path:
     runtime_dir = tmp_path / "runtime"
     config_path = tmp_path / "gateway.yaml"
@@ -28,6 +31,16 @@ def write_config(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return config_path
+
+
+def test_sessions_screen_groups_voice_calling_and_workspace_staging_tools() -> None:
+    source = (
+        ROOT / "frontend" / "workflow-editor" / "src" / "features" / "sessions" / "SessionsScreen.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert '"Voice calling"' in source
+    assert '"make_phone_call", "get_phone_call_result"' in source
+    assert '"communication_copy_artifact_to_workspace",\n    "communication_stage_workspace_file",' in source
 
 
 def test_admin_web_exposes_approvals_index_detail_and_decision(tmp_path: Path) -> None:
@@ -205,6 +218,7 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     catalog_tool_values = {item["value"] for item in catalog_payload["tool_options"]}
     assert {
         "add_message_reaction",
+        "get_phone_call_result",
         "make_phone_call",
         "post_pr_inline_comment",
         "teams_meeting_get_events",
@@ -212,7 +226,8 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
         "teams_meeting_stop",
     }.issubset(catalog_tool_values)
     tool_options = {item["value"]: item for item in catalog_payload["tool_options"]}
-    assert "Retell phone calls" in tool_options["make_phone_call"]["description"]
+    assert "Start Retell phone calls" in tool_options["make_phone_call"]["description"]
+    assert "Read Retell phone call status" in tool_options["get_phone_call_result"]["description"]
     assert list_response.status_code == 200
     assert list_response.json()["items"][0]["session_id"] == "issue-14085-session"
     assert list_response.json()["active_items"][0]["session_id"] == "issue-14085-session"

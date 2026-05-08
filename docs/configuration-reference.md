@@ -547,7 +547,7 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 
 | Key | Found in | Consumed by |
 |---|---|---|
-| `retell_api_base_url` | provider config overlays | `src/agent_sandbox/retell_phone.py` create-call, get-call, and webhook signature configuration. |
+| `retell_api_base_url` | provider config overlays | Optional override for Retell create-call, get-call, and webhook signature configuration; defaults to `https://api.retellai.com` and normally does not need to be set. |
 | `retell_api_key_env` | provider config overlays | Host env-var name lookup for the Retell API key; default `RETELL_API_KEY`. |
 | `retell_from_number` | provider config overlays | Outbound Retell caller number used only by the host-side create-call request. |
 | `retell_default_agent_id` | provider config overlays | Default Retell `override_agent_id` when a phonebook contact does not set `agent_id`. |

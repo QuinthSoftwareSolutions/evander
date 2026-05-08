@@ -63,6 +63,7 @@ class ToolName(str, Enum):
     TEAMS_MEETING_STOP = "teams_meeting_stop"
     ADD_MESSAGE_REACTION = "add_message_reaction"
     MAKE_PHONE_CALL = "make_phone_call"
+    GET_PHONE_CALL_RESULT = "get_phone_call_result"
     EMAIL_LIST_UNREAD = "email_list_unread"
     EMAIL_GET_MESSAGE = "email_get_message"
     EMAIL_CREATE_DRAFT = "email_create_draft"

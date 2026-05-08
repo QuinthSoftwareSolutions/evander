@@ -616,6 +616,20 @@ def test_make_phone_call_enforces_policy_contact_alias_and_audit_redaction(
             "metadata": {"safe": "visible", "phone": "+15550000004"},
         },
     )
+    with pytest.raises(ToolError, match="Tool get_phone_call_result is not allowed"):
+        _call_tool(
+            server,
+            "get_phone_call_result",
+            {"session_id": "session-1", "request_id": "phone-1"},
+        )
+
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.MAKE_PHONE_CALL, ToolName.GET_PHONE_CALL_RESULT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
     result = _call_tool(
         server,
         "get_phone_call_result",
@@ -677,7 +691,7 @@ def test_get_phone_call_result_denies_cross_session_reads(tmp_path: Path) -> Non
     context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-2",
-            allowed_tools=[ToolName.MAKE_PHONE_CALL],
+            allowed_tools=[ToolName.GET_PHONE_CALL_RESULT],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )

@@ -820,7 +820,8 @@ Response:
 - `make_phone_call` starts an outbound Retell call to a configured contact alias. Agents pass
   `contact` and `prompt`; they never pass raw phone numbers.
 - `get_phone_call_result` reads the call state/transcript by `request_id` or `call_id`.
-- Both tools are gated by the single `make_phone_call` session permission.
+- Each tool is gated by its matching session permission: `make_phone_call` starts calls and
+  `get_phone_call_result` reads results.
 - Configure Retell under directory-scoped `providers.json` with `retell_api_key_env`,
   `retell_from_number`, `retell_default_agent_id`, and `retell_phonebook`.
 - Put the actual Retell API key in the gateway host environment; the systemd gateway unit already
