@@ -1159,35 +1159,37 @@ export function SessionsScreen() {
                       disabled={mutationLocked}
                     />
                   </label>
-                  <div className="field-stack">
+                  <div className="field-stack session-communication-files">
                     <span>Communication files</span>
-                    <label className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={policyDraft.communicationFileReceiveEnabled}
-                        onChange={(event) => updatePolicyDraft({ communicationFileReceiveEnabled: event.target.checked })}
-                        disabled={mutationLocked}
-                      />
-                      <span>Receive inbound files</span>
-                    </label>
-                    <label className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={policyDraft.communicationFileSendEnabled}
-                        onChange={(event) => updatePolicyDraft({ communicationFileSendEnabled: event.target.checked })}
-                        disabled={mutationLocked}
-                      />
-                      <span>Send files</span>
-                    </label>
-                    <label className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={policyDraft.communicationFileRequireApprovalForSend}
-                        onChange={(event) => updatePolicyDraft({ communicationFileRequireApprovalForSend: event.target.checked })}
-                        disabled={mutationLocked}
-                      />
-                      <span>Require approval for sends</span>
-                    </label>
+                    <div className="session-communication-file-toggles">
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={policyDraft.communicationFileReceiveEnabled}
+                          onChange={(event) => updatePolicyDraft({ communicationFileReceiveEnabled: event.target.checked })}
+                          disabled={mutationLocked}
+                        />
+                        <span>Receive inbound files</span>
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={policyDraft.communicationFileSendEnabled}
+                          onChange={(event) => updatePolicyDraft({ communicationFileSendEnabled: event.target.checked })}
+                          disabled={mutationLocked}
+                        />
+                        <span>Send files</span>
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={policyDraft.communicationFileRequireApprovalForSend}
+                          onChange={(event) => updatePolicyDraft({ communicationFileRequireApprovalForSend: event.target.checked })}
+                          disabled={mutationLocked}
+                        />
+                        <span>Require approval for sends</span>
+                      </label>
+                    </div>
                   </div>
                   <label className="field-stack">
                     <span>Communication file max bytes</span>
