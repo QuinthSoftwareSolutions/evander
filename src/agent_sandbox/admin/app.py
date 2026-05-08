@@ -11,7 +11,11 @@ from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel
 
-from agent_sandbox.admin.service import ISSUE_STATES, AdminService
+from agent_sandbox.admin.service import (
+    COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
+    ISSUE_STATES,
+    AdminService,
+)
 from agent_sandbox.config import (
     AdoWorkerGlobalConfig,
     DiscordWakeWorkerGlobalConfig,
@@ -57,6 +61,9 @@ _TEAMS_PROVIDER_CONFIG_FIELDS: tuple[tuple[str, str], ...] = tuple(
         name for name in DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"] if name.startswith("teams_")
     )
 )
+_COMMUNICATION_FILE_POLICY_FIELD_NAMES: frozenset[str] = frozenset(
+    COMMUNICATION_FILE_SESSION_POLICY_FIELDS
+)
 _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] = {
     "communications": (
         *_DISCORD_CONFIG_FIELDS,
@@ -67,6 +74,7 @@ _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] =
         for field_name in sorted(
             DIRECTORY_CONFIG_DOMAIN_FIELDS["policy"]
             - {name for source_domain, name in _DISCORD_CONFIG_FIELDS if source_domain == "policy"}
+            - _COMMUNICATION_FILE_POLICY_FIELD_NAMES
         )
     ),
     "providers": tuple(
@@ -899,6 +907,30 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "email_send_enabled": (
         "Enables actual email send operations. Leave disabled to keep email access in read-and-draft mode."
     ),
+    "communication_file_receive_enabled": (
+        "Allows sessions to list and download inbound communication attachments from allowlisted "
+        "Discord channels, Teams targets, or email mailboxes."
+    ),
+    "communication_file_send_enabled": (
+        "Allows sessions to send staged communication file artifacts to allowlisted destinations."
+    ),
+    "communication_file_max_bytes": (
+        "Maximum allowed size in bytes for each inbound or outbound communication file. Use null "
+        "for no size limit."
+    ),
+    "communication_file_allowed_mime_types": (
+        "Optional MIME type allowlist for communication files. Leave empty to allow any MIME type "
+        "not otherwise blocked by extension policy."
+    ),
+    "communication_file_allowed_extensions": (
+        "Optional filename extension allowlist for communication files, for example .txt or .pdf."
+    ),
+    "communication_file_blocked_extensions": (
+        "Filename extensions that are always blocked for communication files."
+    ),
+    "communication_file_require_approval_for_send": (
+        "Requires an approval request before outbound file sends are allowed."
+    ),
     "pr_reply_require_approval": (
         "Requires an approval request before posting PR feedback replies through the gateway."
     ),
@@ -1243,8 +1275,8 @@ def _directory_config_domain_help_text(domain: str) -> str | None:
         )
     if domain == "access_policy":
         return (
-            "Directory-level guardrails for approvals, recipient and mailbox restrictions, and "
-            "audit redaction defaults."
+            "Directory-level guardrails for approvals, recipient, mailbox, communication file, "
+            "and audit redaction defaults."
         )
     if domain == "vm_runtime":
         return "VM network and relay endpoint settings used when launching and wiring guest runtime access."
@@ -1536,6 +1568,58 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._session_tools_bound_session_id: str | None = None
         self._session_tools_server_values: set[str] = set()
         self.session_tools_checkboxes: dict[ToolName, QCheckBox] = {}
+        self._session_policy_dirty = False
+        self._session_policy_form_loading = False
+        self._session_policy_bound_session_id: str | None = None
+        self.session_comm_file_receive_checkbox = QCheckBox("Receive enabled")
+        self.session_comm_file_send_checkbox = QCheckBox("Send enabled")
+        self.session_comm_file_require_approval_checkbox = QCheckBox(
+            "Require approval for send"
+        )
+        self.session_comm_file_max_bytes_edit = QLineEdit()
+        self.session_comm_file_max_bytes_edit.setPlaceholderText(
+            "Blank inherits directory default"
+        )
+        self.session_comm_file_allowed_mime_types_edit = QPlainTextEdit()
+        self.session_comm_file_allowed_mime_types_edit.setPlaceholderText(
+            "One MIME type per line"
+        )
+        self.session_comm_file_allowed_extensions_edit = QPlainTextEdit()
+        self.session_comm_file_allowed_extensions_edit.setPlaceholderText(
+            "One extension per line"
+        )
+        self.session_comm_file_blocked_extensions_edit = QPlainTextEdit()
+        self.session_comm_file_blocked_extensions_edit.setPlaceholderText(
+            "One extension per line"
+        )
+        for editor in (
+            self.session_comm_file_allowed_mime_types_edit,
+            self.session_comm_file_allowed_extensions_edit,
+            self.session_comm_file_blocked_extensions_edit,
+        ):
+            editor.setFixedHeight(64)
+        self.save_session_policy_button = QPushButton("Save File Policy")
+        _set_standard_icon(self.save_session_policy_button, "SP_DialogSaveButton")
+        self.save_session_policy_button.clicked.connect(
+            self.handle_save_selected_session_policy
+        )
+        self.session_policy_status_label = QLabel("")
+        self.session_policy_status_label.setWordWrap(True)
+        for checkbox in (
+            self.session_comm_file_receive_checkbox,
+            self.session_comm_file_send_checkbox,
+            self.session_comm_file_require_approval_checkbox,
+        ):
+            checkbox.toggled.connect(self._mark_session_policy_dirty)
+        self.session_comm_file_max_bytes_edit.textEdited.connect(
+            self._mark_session_policy_dirty
+        )
+        for editor in (
+            self.session_comm_file_allowed_mime_types_edit,
+            self.session_comm_file_allowed_extensions_edit,
+            self.session_comm_file_blocked_extensions_edit,
+        ):
+            editor.textChanged.connect(self._mark_session_policy_dirty)
         self.worker_log_view = QTextEdit()
         self.worker_log_view.setReadOnly(True)
         self.worker_log_view.setPlaceholderText("Select a background worker to see its logs.")
@@ -1843,6 +1927,26 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         session_tools_layout.addWidget(self.session_model_edit)
         session_tools_layout.addWidget(self.save_session_model_button)
         session_tools_layout.addWidget(self.session_model_status_label)
+        session_tools_layout.addWidget(QLabel("Communication file policy"))
+        session_policy_form = QFormLayout()
+        session_policy_form.addRow("Receive", self.session_comm_file_receive_checkbox)
+        session_policy_form.addRow("Send", self.session_comm_file_send_checkbox)
+        session_policy_form.addRow(
+            "Send approval", self.session_comm_file_require_approval_checkbox
+        )
+        session_policy_form.addRow("Max bytes", self.session_comm_file_max_bytes_edit)
+        session_policy_form.addRow(
+            "Allowed MIME types", self.session_comm_file_allowed_mime_types_edit
+        )
+        session_policy_form.addRow(
+            "Allowed extensions", self.session_comm_file_allowed_extensions_edit
+        )
+        session_policy_form.addRow(
+            "Blocked extensions", self.session_comm_file_blocked_extensions_edit
+        )
+        session_tools_layout.addLayout(session_policy_form)
+        session_tools_layout.addWidget(self.save_session_policy_button)
+        session_tools_layout.addWidget(self.session_policy_status_label)
         session_tools_layout.addWidget(QLabel("Allowed tools"))
         tools_scroll = QScrollArea()
         tools_scroll.setWidgetResizable(True)
@@ -3668,9 +3772,14 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self._session_tools_dirty = False
             self._session_tools_bound_session_id = None
             self._session_tools_server_values = set()
+            self._session_policy_dirty = False
+            self._session_policy_bound_session_id = None
             self.save_session_model_button.setEnabled(False)
             self.session_model_status_label.setText("")
             self.save_session_tools_button.setEnabled(False)
+            self._set_session_policy_controls_enabled(False)
+            self._clear_session_policy_editor()
+            self.session_policy_status_label.setText("")
             for checkbox in self.session_tools_checkboxes.values():
                 checkbox.setEnabled(False)
                 checkbox.setChecked(False)
@@ -3687,6 +3796,8 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             self.session_model_status_label.setText("")
         self.save_session_tools_button.setEnabled(True)
         self._sync_session_tools_editor(summary.session_id, set(summary.allowed_tools))
+        self._set_session_policy_controls_enabled(True)
+        self._sync_session_policy_editor(summary)
 
     def refresh_selected_session_details(self) -> None:
         summary = self.selected_session_summary()
@@ -3720,6 +3831,114 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
     def _on_session_tab_changed(self) -> None:
         self.update_session_action_bar()
         self.refresh_selected_session_details()
+
+    def _set_session_policy_controls_enabled(self, enabled: bool) -> None:
+        for widget in (
+            self.session_comm_file_receive_checkbox,
+            self.session_comm_file_send_checkbox,
+            self.session_comm_file_require_approval_checkbox,
+            self.session_comm_file_max_bytes_edit,
+            self.session_comm_file_allowed_mime_types_edit,
+            self.session_comm_file_allowed_extensions_edit,
+            self.session_comm_file_blocked_extensions_edit,
+            self.save_session_policy_button,
+        ):
+            widget.setEnabled(enabled)
+
+    def _clear_session_policy_editor(self) -> None:
+        self._session_policy_form_loading = True
+        try:
+            self.session_comm_file_receive_checkbox.setChecked(False)
+            self.session_comm_file_send_checkbox.setChecked(False)
+            self.session_comm_file_require_approval_checkbox.setChecked(False)
+            self.session_comm_file_max_bytes_edit.setText("")
+            self.session_comm_file_allowed_mime_types_edit.setPlainText("")
+            self.session_comm_file_allowed_extensions_edit.setPlainText("")
+            self.session_comm_file_blocked_extensions_edit.setPlainText("")
+        finally:
+            self._session_policy_form_loading = False
+
+    @staticmethod
+    def _set_plain_text_list(control: QPlainTextEdit, values: list[str]) -> None:
+        lines = [str(value).strip() for value in values if str(value).strip()]
+        control.setPlainText("\n".join(lines))
+        control.document().setModified(False)
+
+    @staticmethod
+    def _read_plain_text_list(control: QPlainTextEdit) -> list[str]:
+        return [line.strip() for line in control.toPlainText().splitlines() if line.strip()]
+
+    def _sync_session_policy_editor(self, summary) -> None:
+        should_apply = (
+            self._session_policy_bound_session_id != summary.session_id
+            or not self._session_policy_dirty
+        )
+        self._session_policy_bound_session_id = summary.session_id
+        if not should_apply:
+            return
+        self._session_policy_form_loading = True
+        try:
+            self.session_comm_file_receive_checkbox.setChecked(
+                bool(summary.communication_file_receive_enabled)
+            )
+            self.session_comm_file_send_checkbox.setChecked(
+                bool(summary.communication_file_send_enabled)
+            )
+            self.session_comm_file_require_approval_checkbox.setChecked(
+                bool(summary.communication_file_require_approval_for_send)
+            )
+            max_bytes = summary.communication_file_max_bytes
+            self.session_comm_file_max_bytes_edit.setText(
+                "" if max_bytes is None else str(max_bytes)
+            )
+            self._set_plain_text_list(
+                self.session_comm_file_allowed_mime_types_edit,
+                list(summary.communication_file_allowed_mime_types),
+            )
+            self._set_plain_text_list(
+                self.session_comm_file_allowed_extensions_edit,
+                list(summary.communication_file_allowed_extensions),
+            )
+            self._set_plain_text_list(
+                self.session_comm_file_blocked_extensions_edit,
+                list(summary.communication_file_blocked_extensions),
+            )
+        finally:
+            self._session_policy_form_loading = False
+        self._session_policy_dirty = False
+        self.session_policy_status_label.setText("")
+
+    def _session_policy_payload_from_editor(self) -> dict[str, object]:
+        raw_max_bytes = self.session_comm_file_max_bytes_edit.text().strip()
+        max_bytes: int | None
+        if raw_max_bytes:
+            try:
+                max_bytes = int(raw_max_bytes)
+            except ValueError as exc:
+                raise ValueError("Max bytes must be a non-negative integer or blank.") from exc
+            if max_bytes < 0:
+                raise ValueError("Max bytes must be a non-negative integer or blank.")
+        else:
+            max_bytes = None
+        return {
+            "communication_file_receive_enabled": (
+                self.session_comm_file_receive_checkbox.isChecked()
+            ),
+            "communication_file_send_enabled": self.session_comm_file_send_checkbox.isChecked(),
+            "communication_file_max_bytes": max_bytes,
+            "communication_file_allowed_mime_types": self._read_plain_text_list(
+                self.session_comm_file_allowed_mime_types_edit
+            ),
+            "communication_file_allowed_extensions": self._read_plain_text_list(
+                self.session_comm_file_allowed_extensions_edit
+            ),
+            "communication_file_blocked_extensions": self._read_plain_text_list(
+                self.session_comm_file_blocked_extensions_edit
+            ),
+            "communication_file_require_approval_for_send": (
+                self.session_comm_file_require_approval_checkbox.isChecked()
+            ),
+        }
 
     def handle_renew_selected_session(self) -> None:
         summary = self.selected_session_summary()
@@ -3793,6 +4012,26 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
             ),
         )
 
+    def handle_save_selected_session_policy(self) -> None:
+        summary = self.selected_session_summary()
+        if summary is None:
+            return
+        try:
+            payload = self._session_policy_payload_from_editor()
+        except ValueError as exc:
+            self.session_policy_status_label.setText(str(exc))
+            return
+        self.session_policy_status_label.setText("")
+        self.run_action(
+            f"Update communication file policy for {summary.session_id}",
+            self.service.update_session_policy,
+            summary.session_id,
+            payload,
+            on_success=lambda _result: self._handle_session_policy_save_success(
+                summary.session_id
+            ),
+        )
+
     def handle_save_selected_session_model(self) -> None:
         summary = self.selected_session_summary()
         if summary is None:
@@ -3817,6 +4056,11 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
 
     def _mark_session_tools_dirty(self, _checked: bool) -> None:
         self._session_tools_dirty = True
+
+    def _mark_session_policy_dirty(self, *_args: object) -> None:
+        if self._session_policy_form_loading:
+            return
+        self._session_policy_dirty = True
 
     def _sync_session_model_editor(self, session_id: str, model_value: str) -> None:
         self._session_model_server_value = model_value
@@ -3856,6 +4100,12 @@ class MainWindow(QMainWindow):  # type: ignore[misc]
         self._session_tools_bound_session_id = session_id
         self._session_tools_server_values = set(selected_tools)
         self._session_tools_dirty = False
+        self.refresh_sessions()
+
+    def _handle_session_policy_save_success(self, session_id: str) -> None:
+        self._session_policy_bound_session_id = session_id
+        self._session_policy_dirty = False
+        self.session_policy_status_label.setText("")
         self.refresh_sessions()
 
     def selected_worker_summary(self):

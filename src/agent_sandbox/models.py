@@ -147,6 +147,13 @@ class SessionManifest(BaseModel):
     email_draft_recipient_allowlist: list[str] = Field(default_factory=list)
     email_draft_domain_allowlist: list[str] = Field(default_factory=list)
     email_send_enabled: bool = False
+    communication_file_receive_enabled: bool = False
+    communication_file_send_enabled: bool = False
+    communication_file_max_bytes: int | None = Field(default=None, ge=0)
+    communication_file_allowed_mime_types: list[str] = Field(default_factory=list)
+    communication_file_allowed_extensions: list[str] = Field(default_factory=list)
+    communication_file_blocked_extensions: list[str] = Field(default_factory=list)
+    communication_file_require_approval_for_send: bool = False
     quotas: dict[str, int] = Field(default_factory=dict)
     expires_at: datetime
     created_at: datetime = Field(default_factory=utc_now)

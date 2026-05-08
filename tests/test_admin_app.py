@@ -253,6 +253,8 @@ def test_directory_config_tab_field_sources_omit_discord_fields_from_access_poli
     assert "discord_operator_channel_allowlist" not in policy_fields
     assert "discord_backend" not in provider_fields
     assert "discord_bot_token_env" not in provider_fields
+    assert "communication_file_receive_enabled" not in policy_fields
+    assert "communication_file_require_approval_for_send" not in policy_fields
 
 
 def test_directory_config_tab_field_sources_expose_composite_communications_tab() -> None:
@@ -279,6 +281,10 @@ def test_directory_config_tab_sections_match_expected_groupings() -> None:
         section.title: section.field_sources
         for section in admin_app._directory_config_tab_sections("communications")
     }
+    access_policy_sections = {
+        section.title: section.field_sources
+        for section in admin_app._directory_config_tab_sections("access_policy")
+    }
     provider_sections = {
         section.title: section.field_sources
         for section in admin_app._directory_config_tab_sections("providers")
@@ -296,6 +302,8 @@ def test_directory_config_tab_sections_match_expected_groupings() -> None:
     assert ("providers", "discord_backend") in communications_sections["Discord"]
     assert ("heartbeat", "discord_resume_prompt") in communications_sections["Discord"]
     assert ("providers", "teams_read_reaction_emoji") in communications_sections["Teams"]
+
+    assert "Communication files" not in access_policy_sections
 
     assert set(provider_sections) == {
         "Agent prompt",

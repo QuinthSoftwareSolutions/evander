@@ -692,11 +692,31 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 "attachment_id": artifact.source_attachment_id,
                 "artifact_id": artifact.artifact_id,
                 "byte_count": artifact.byte_count,
+                "size": artifact.byte_count,
                 "mime_type": artifact.mime_type,
                 "filename": artifact.filename,
             }
             for artifact in _load_artifacts(artifact_ids)
         ]
+
+    def _communication_target_audit_fields(
+        *,
+        provider: str,
+        mailbox_id: str | None = None,
+        channel_id: str | None = None,
+        channel_target: str | None = None,
+        approval_request_id: str | None = None,
+        approval_decision: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "provider": provider,
+            "mailbox_id": mailbox_id,
+            "channel_id": channel_id,
+            "channel_target": channel_target,
+            "approval_request_id": approval_request_id,
+            "approval_decision": approval_decision,
+            "decision": "allowed",
+        }
 
     def _coerce_attachment_refs(
         provider: str,
@@ -799,21 +819,25 @@ def create_server(context: RuntimeContext) -> FastMCP:
         provider = request.provider.strip().lower()
         if provider == "discord":
             session = context.policy.require_tool(request.session_id, tool_name)
+            context.policy.require_communication_file_receive_enabled(session)
             channel_id = str(request.channel_id or "").strip()
-            if channel_id:
-                context.policy.require_discord_channel(session, channel_id)
             service = context.discord_service_for_session(request.session_id)
             if hasattr(service, "list_attachments"):
+                context.policy.require_communication_file_scope(
+                    session, provider=provider, channel_id=channel_id
+                )
                 return _coerce_attachment_refs(
                     provider,
                     request.message_id,
-                    service.list_attachments(request.message_id, channel_id=channel_id or None),
-                    channel_id=channel_id or None,
+                    service.list_attachments(request.message_id, channel_id=channel_id),
+                    channel_id=channel_id,
                 )
             record = context.discord_commands.get(request.message_id)
             if record is None:
                 raise ToolError(f"Unknown Discord message_id: {request.message_id}")
-            context.policy.require_discord_channel(session, channel_id or record.channel_id)
+            context.policy.require_communication_file_scope(
+                session, provider=provider, channel_id=channel_id or record.channel_id
+            )
             return _attachments_from_metadata(
                 provider,
                 request.message_id,
@@ -822,8 +846,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
         if provider == "teams":
             session = context.policy.require_tool(request.session_id, tool_name)
-            target = context.policy.require_teams_channel_target(
-                session, str(request.channel_target or "").strip()
+            context.policy.require_communication_file_receive_enabled(session)
+            target = context.policy.require_communication_file_scope(
+                session, provider=provider, channel_target=str(request.channel_target or "").strip()
             )
             service = context.teams_service_for_session(request.session_id)
             if hasattr(service, "list_attachments"):
@@ -853,8 +878,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
         if provider == "email":
             session = context.policy.require_tool(request.session_id, tool_name)
+            context.policy.require_communication_file_receive_enabled(session)
             mailbox_id = str(request.mailbox_id or "").strip()
-            context.policy.require_email_mailbox(session, mailbox_id)
+            context.policy.require_communication_file_scope(
+                session, provider=provider, mailbox_id=mailbox_id
+            )
             service = context.email_service_for_session(request.session_id)
             message = service.get_message(
                 mailbox_id=mailbox_id,
@@ -4610,7 +4638,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 ToolName.COMMUNICATION_LIST_ATTACHMENTS,
                 args,
                 {
-                    "provider": response.provider,
+                    **_communication_target_audit_fields(
+                        provider=response.provider,
+                        mailbox_id=mailbox_id,
+                        channel_id=channel_id,
+                        channel_target=channel_target,
+                    ),
                     "message_id": response.message_id,
                     "count": len(response.attachments),
                     "attachments": [
@@ -4619,6 +4652,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                             "filename": item.filename,
                             "mime_type": item.mime_type,
                             "byte_count": item.byte_count,
+                            "size": item.byte_count,
                         }
                         for item in response.attachments
                     ],
@@ -4686,6 +4720,20 @@ def create_server(context: RuntimeContext) -> FastMCP:
             if ref is None:
                 raise ToolError(f"Unknown attachment_id for message: {attachment_id}")
             content, filename, mime_type = _provider_download_attachment(request, ref)
+            args.update(
+                {
+                    "filename": filename,
+                    "mime_type": mime_type,
+                    "byte_count": len(content),
+                    "size": len(content),
+                }
+            )
+            context.policy.require_communication_file_content(
+                context.policy.get_session(session_id),
+                filename=filename,
+                mime_type=mime_type,
+                byte_count=len(content),
+            )
             artifact = _stage_communication_artifact(
                 request,
                 ref,
@@ -4700,11 +4748,17 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 ToolName.COMMUNICATION_DOWNLOAD_ATTACHMENT,
                 args,
                 {
-                    "provider": artifact.provider,
+                    **_communication_target_audit_fields(
+                        provider=artifact.provider,
+                        mailbox_id=mailbox_id,
+                        channel_id=channel_id,
+                        channel_target=channel_target,
+                    ),
                     "message_id": message_id,
                     "attachment_id": attachment_id,
                     "artifact_id": artifact.artifact_id,
                     "byte_count": artifact.byte_count,
+                    "size": artifact.byte_count,
                     "mime_type": artifact.mime_type,
                     "filename": artifact.filename,
                 },
@@ -4740,6 +4794,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         channel_id: str,
         message: str,
         artifact_ids: list[str],
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         request = CommunicationSendMessageWithAttachmentsRequest(
             session_id=session_id,
@@ -4747,12 +4802,22 @@ def create_server(context: RuntimeContext) -> FastMCP:
             channel_id=channel_id,
             message=message,
             artifact_ids=artifact_ids,
+            request_id=request_id,
         )
         args = request.model_dump(mode="json")
         try:
             session = context.policy.require_tool(session_id, ToolName.DISCORD_POST_FILE)
-            context.policy.require_discord_channel(session, channel_id)
             artifacts = _artifact_payloads(artifact_ids)
+            args["artifacts"] = _artifact_audit_summaries(artifact_ids)
+            context.policy.require_communication_file_artifacts(
+                session, artifacts, provider="discord", channel_id=channel_id
+            )
+            approval_payload = request.model_dump(
+                mode="json", exclude={"request_id"}, exclude_none=True
+            )
+            approval = context.policy.require_communication_file_send_approval(
+                session, request_id=request_id, payload=approval_payload
+            )
             service = context.discord_service_for_session(session_id)
             if not hasattr(service, "post_file"):
                 raise ToolError("Configured Discord adapter does not support file posts")
@@ -4769,7 +4834,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 ToolName.DISCORD_POST_FILE,
                 args,
                 {
-                    "provider": "discord",
+                    **_communication_target_audit_fields(
+                        provider="discord",
+                        channel_id=channel_id,
+                        approval_request_id=request_id,
+                        approval_decision=None if approval is None else approval.status.value,
+                    ),
                     "message_id": response.message_id,
                     "artifacts": _artifact_audit_summaries(artifact_ids),
                 },
@@ -4796,6 +4866,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         message: str,
         artifact_ids: list[str],
         thread_id: str | None = None,
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         request = CommunicationSendMessageWithAttachmentsRequest(
             session_id=session_id,
@@ -4804,12 +4875,23 @@ def create_server(context: RuntimeContext) -> FastMCP:
             message=message,
             artifact_ids=artifact_ids,
             thread_id=thread_id,
+            request_id=request_id,
         )
         args = request.model_dump(mode="json")
         try:
             session = context.policy.require_tool(session_id, ToolName.TEAMS_POST_FILE)
-            target = context.policy.require_teams_channel_target(session, channel_target)
             artifacts = _artifact_payloads(artifact_ids)
+            args["artifacts"] = _artifact_audit_summaries(artifact_ids)
+            context.policy.require_communication_file_artifacts(
+                session, artifacts, provider="teams", channel_target=channel_target
+            )
+            target = context.policy.require_teams_channel_target(session, channel_target)
+            approval_payload = request.model_dump(
+                mode="json", exclude={"request_id"}, exclude_none=True
+            )
+            approval = context.policy.require_communication_file_send_approval(
+                session, request_id=request_id, payload=approval_payload
+            )
             service = context.teams_service_for_session(session_id)
             if not hasattr(service, "post_file"):
                 raise ToolError("Configured Teams adapter does not support file posts")
@@ -4826,7 +4908,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 ToolName.TEAMS_POST_FILE,
                 args,
                 {
-                    "provider": "teams",
+                    **_communication_target_audit_fields(
+                        provider="teams",
+                        channel_target=target,
+                        approval_request_id=request_id,
+                        approval_decision=None if approval is None else approval.status.value,
+                    ),
                     "message_id": response.message_id,
                     "artifacts": _artifact_audit_summaries(artifact_ids),
                 },
@@ -4876,6 +4963,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
             normalized_recipients = recipients or []
             context.policy.require_draft_recipients(session, normalized_recipients)
             artifacts = _artifact_payloads(artifact_ids)
+            args["artifacts"] = _artifact_audit_summaries(artifact_ids)
+            context.policy.require_communication_file_artifacts(
+                session, artifacts, provider="email", mailbox_id=mailbox_id
+            )
             service = context.email_service_for_session(session_id)
             if hasattr(service, "create_draft_with_attachments"):
                 draft = service.create_draft_with_attachments(
@@ -4914,7 +5005,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 ToolName.EMAIL_CREATE_DRAFT_WITH_ATTACHMENTS,
                 args,
                 {
-                    "provider": "email",
+                    **_communication_target_audit_fields(
+                        provider="email",
+                        mailbox_id=mailbox_id,
+                    ),
                     "draft_id": result.get("draft_id"),
                     "artifacts": _artifact_audit_summaries(artifact_ids),
                 },
@@ -4967,12 +5061,20 @@ def create_server(context: RuntimeContext) -> FastMCP:
             context.policy.require_email_mailbox(session, str(payload.get("mailbox_id", "")))
             recipients = draft_recipients_from_payload(payload)
             context.policy.require_draft_recipients(session, recipients)
-            approval = context.policy.require_approved(request_id, payload)
+            artifacts = _artifact_payloads(artifact_ids)
+            args["artifacts"] = _artifact_audit_summaries(artifact_ids)
+            context.policy.require_communication_file_artifacts(
+                session, artifacts, provider="email", mailbox_id=str(payload.get("mailbox_id", ""))
+            )
+            file_approval_payload = {**payload, "artifact_ids": artifact_ids}
+            file_approval = context.policy.require_communication_file_send_approval(
+                session, request_id=request_id, payload=file_approval_payload
+            )
+            approval = file_approval or context.policy.require_approved(request_id, payload)
             if approval.session_id != session_id:
                 raise PolicyError(
                     f"Approval request {request_id} does not belong to session {session_id}"
                 )
-            artifacts = _artifact_payloads(artifact_ids)
             send_payload = {**payload, "artifact_ids": artifact_ids, "attachments": artifacts}
             result = context.email_service.send_from_draft(
                 request_id=request_id, payload=send_payload
@@ -4982,7 +5084,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 ToolName.EMAIL_SEND_APPROVED_WITH_ATTACHMENTS,
                 args,
                 {
-                    "provider": "email",
+                    **_communication_target_audit_fields(
+                        provider="email",
+                        mailbox_id=str(payload.get("mailbox_id", "")),
+                        approval_request_id=request_id,
+                        approval_decision=(
+                            approval.status.value
+                        ),
+                    ),
                     "artifacts": _artifact_audit_summaries(artifact_ids),
                     **result,
                 },

@@ -7,9 +7,41 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.service import (
+    COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
+    AdminService,
+)
 from agent_sandbox.admin.web.shared import AdminWebAuth, json_error
 from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionSummary, ToolName
+
+
+
+_SESSION_POLICY_FIELD_KINDS: dict[str, str] = {
+    "communication_file_receive_enabled": "bool",
+    "communication_file_send_enabled": "bool",
+    "communication_file_max_bytes": "int_or_null",
+    "communication_file_allowed_mime_types": "string_list",
+    "communication_file_allowed_extensions": "string_list",
+    "communication_file_blocked_extensions": "string_list",
+    "communication_file_require_approval_for_send": "bool",
+}
+
+_SESSION_POLICY_FIELD_LABELS: dict[str, str] = {
+    field_name: field_name.removeprefix("communication_file_").replace("_", " ")
+    for field_name in COMMUNICATION_FILE_SESSION_POLICY_FIELDS
+}
+
+
+def _session_policy_field_catalog() -> list[dict[str, str]]:
+    return [
+        {
+            "field_name": field_name,
+            "label": _SESSION_POLICY_FIELD_LABELS[field_name],
+            "kind": _SESSION_POLICY_FIELD_KINDS[field_name],
+            "section": "Communication files",
+        }
+        for field_name in COMMUNICATION_FILE_SESSION_POLICY_FIELDS
+    ]
 
 
 def _parse_bool(value: str | None, *, default: bool = False) -> bool:
@@ -200,6 +232,7 @@ def session_approval_routes(service: AdminService, _auth: AdminWebAuth) -> list[
                     {"value": "new_context", "label": "new_context"},
                 ],
                 "renew_extension_presets": ["1h", "6h", "12h", "1d", "7d"],
+                "session_policy_fields": _session_policy_field_catalog(),
             }
         )
 

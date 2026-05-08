@@ -2863,6 +2863,15 @@ def _build_issue_session_manifest(
         email_draft_recipient_allowlist=policy.email_draft_recipient_allowlist,
         email_draft_domain_allowlist=policy.email_draft_domain_allowlist,
         email_send_enabled=policy.email_send_enabled,
+        communication_file_receive_enabled=policy.communication_file_receive_enabled,
+        communication_file_send_enabled=policy.communication_file_send_enabled,
+        communication_file_max_bytes=policy.communication_file_max_bytes,
+        communication_file_allowed_mime_types=policy.communication_file_allowed_mime_types,
+        communication_file_allowed_extensions=policy.communication_file_allowed_extensions,
+        communication_file_blocked_extensions=policy.communication_file_blocked_extensions,
+        communication_file_require_approval_for_send=(
+            policy.communication_file_require_approval_for_send
+        ),
         expires_at=_utc_now() + _resolve_session_ttl(policy, ttl_hours),
         metadata=metadata,
     )
@@ -2940,6 +2949,65 @@ def _normalize_teams_channel_allowlist(value: object, *, field_name: str) -> lis
     return normalized
 
 
+COMMUNICATION_FILE_SESSION_POLICY_FIELDS: tuple[str, ...] = (
+    "communication_file_receive_enabled",
+    "communication_file_send_enabled",
+    "communication_file_max_bytes",
+    "communication_file_allowed_mime_types",
+    "communication_file_allowed_extensions",
+    "communication_file_blocked_extensions",
+    "communication_file_require_approval_for_send",
+)
+
+
+def _normalize_session_policy_bool(value: object, *, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{field_name} must be a boolean")
+
+
+def _normalize_session_policy_non_negative_int_or_none(
+    value: object, *, field_name: str
+) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field_name} must be a non-negative integer or null")
+    if value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer or null")
+    return value
+
+
+def _communication_file_session_policy_update(payload: Mapping[str, Any]) -> dict[str, Any]:
+    update: dict[str, Any] = {}
+    for field_name in (
+        "communication_file_receive_enabled",
+        "communication_file_send_enabled",
+        "communication_file_require_approval_for_send",
+    ):
+        if field_name in payload:
+            update[field_name] = _normalize_session_policy_bool(
+                payload.get(field_name), field_name=field_name
+            )
+    if "communication_file_max_bytes" in payload:
+        update["communication_file_max_bytes"] = (
+            _normalize_session_policy_non_negative_int_or_none(
+                payload.get("communication_file_max_bytes"),
+                field_name="communication_file_max_bytes",
+            )
+        )
+    for field_name in (
+        "communication_file_allowed_mime_types",
+        "communication_file_allowed_extensions",
+        "communication_file_blocked_extensions",
+    ):
+        if field_name in payload:
+            update[field_name] = _normalize_plain_string_list(
+                payload.get(field_name), field_name=field_name
+            )
+    return update
+
+
 def _session_policy_update_from_payload(
     session: SessionManifest, payload: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -2950,6 +3018,7 @@ def _session_policy_update_from_payload(
         "teams_channel_allowlist",
         "teams_channels",
         "metadata",
+        *COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
     }
     unsupported = sorted(set(payload) - allowed_fields)
     if unsupported:
@@ -2988,6 +3057,8 @@ def _session_policy_update_from_payload(
             payload.get(teams_field),
             field_name=teams_field,
         )
+
+    update.update(_communication_file_session_policy_update(payload))
 
     if "metadata" in payload:
         metadata = payload.get("metadata")
@@ -4311,6 +4382,21 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             "teams_channel_allowlist": list(session.teams_channel_allowlist),
             "email_mailboxes": list(session.email_mailbox_allowlist),
             "email_folders": list(session.email_folder_allowlist),
+            "communication_file_receive_enabled": session.communication_file_receive_enabled,
+            "communication_file_send_enabled": session.communication_file_send_enabled,
+            "communication_file_max_bytes": session.communication_file_max_bytes,
+            "communication_file_allowed_mime_types": list(
+                session.communication_file_allowed_mime_types
+            ),
+            "communication_file_allowed_extensions": list(
+                session.communication_file_allowed_extensions
+            ),
+            "communication_file_blocked_extensions": list(
+                session.communication_file_blocked_extensions
+            ),
+            "communication_file_require_approval_for_send": (
+                session.communication_file_require_approval_for_send
+            ),
             "metadata": dict(session.metadata),
             "labels": labels,
         }
@@ -4841,6 +4927,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             "email_mailboxes",
             "email_folders",
             "labels",
+            *COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
         }
         unsupported = sorted(set(body) - allowed_fields)
         if unsupported:
@@ -4875,6 +4962,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 "teams_channels",
                 "teams_channel_allowlist",
                 "metadata",
+                *COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
             )
             if key in body
         }
