@@ -20,7 +20,10 @@ from agent_sandbox.audit import AuditEventType, AuditLogger
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.inline_media import (
     InlineMediaDownload,
+    download_url_with_limit,
     inline_media_download_from_embedded_payload,
+    require_provider_media_url,
+    sanitize_inline_media_metadata,
 )
 from agent_sandbox.models import InlineMediaRef
 from agent_sandbox.worker_directory_context import (
@@ -158,7 +161,9 @@ def _extract_github_markdown_inline_media(
                 url=url,
                 filename=filename,
                 mime_type=_mime_type_from_filename(filename),
-                metadata={"source": "markdown_image", "alt": alt_text},
+                metadata=sanitize_inline_media_metadata(
+                    {"source": "markdown_image", "alt": alt_text}
+                ),
             )
         )
     return refs
@@ -197,12 +202,14 @@ def _extract_ado_inline_media(
                 url=url,
                 filename=filename,
                 mime_type=mime_type,
-                metadata={
-                    "source": "html_image" if item.get("tag") == "img" else "ado_attachment_link",
-                    "alt": item.get("alt", ""),
-                    "title": item.get("title", ""),
-                    "text": item.get("text", ""),
-                },
+                metadata=sanitize_inline_media_metadata(
+                    {
+                        "source": "html_image" if item.get("tag") == "img" else "ado_attachment_link",
+                        "alt": item.get("alt", ""),
+                        "title": item.get("title", ""),
+                        "text": item.get("text", ""),
+                    }
+                ),
             )
         )
     return refs
@@ -238,6 +245,7 @@ def _inline_media_refs_from_resource(
                         "source_kind": source_kind,
                         "provider": provider,
                         "resource_id": resource_id,
+                        "metadata": sanitize_inline_media_metadata(ref.metadata),
                     }
                 )
             )
@@ -261,6 +269,7 @@ def _inline_media_refs_from_resource(
                         "source_kind": source_kind,
                         "provider": provider,
                         "resource_id": resource_id,
+                        "metadata": sanitize_inline_media_metadata(ref.metadata),
                     }
                 )
             )
@@ -272,12 +281,15 @@ def _download_url_with_optional_headers(
     url: str,
     headers: dict[str, str],
     timeout_seconds: float = 30.0,
+    max_bytes: int | None = None,
 ) -> tuple[bytes, str | None]:
-    with httpx.Client(timeout=timeout_seconds, follow_redirects=True) as client:
-        response = client.get(url, headers=headers)
-        response.raise_for_status()
-        mime_type = response.headers.get("content-type", "").split(";", 1)[0].strip() or None
-        return response.content, mime_type
+    return download_url_with_limit(
+        url=url,
+        headers=headers,
+        timeout_seconds=timeout_seconds,
+        max_bytes=max_bytes,
+    )
+
 
 class FeedbackEnvelope(BaseModel):
     feedback_id: str
@@ -724,18 +736,21 @@ class GitHubFeedbackAdapter:
         *,
         media: InlineMediaRef,
         raw: dict[str, Any] | None = None,
+        max_bytes: int | None = None,
     ) -> InlineMediaDownload:
         embedded = inline_media_download_from_embedded_payload(media, raw)
         if embedded is not None:
             return embedded
         if not media.url:
             raise ValueError("GitHub inline media does not include a download URL")
-        media_host = urlparse(media.url).netloc.lower()
-        api_host = urlparse(self.api_base_url).netloc.lower()
-        headers = self._headers() if media_host == api_host else {}
+        require_provider_media_url(provider=self.provider_name, url=media.url)
+        media_host = urlparse(media.url).hostname or ""
+        api_host = urlparse(self.api_base_url).hostname or ""
+        headers = self._headers() if media_host.lower() == api_host.lower() else {}
         content, mime_type = _download_url_with_optional_headers(
             url=media.url,
             headers=headers,
+            max_bytes=max_bytes,
         )
         return InlineMediaDownload(content, media.filename, mime_type or media.mime_type)
 
@@ -923,6 +938,7 @@ class AzureDevOpsFeedbackAdapter:
         *,
         media: InlineMediaRef,
         raw: dict[str, Any] | None = None,
+        max_bytes: int | None = None,
     ) -> InlineMediaDownload:
         if not self.pat:
             raise FeedbackProviderConfigurationError(
@@ -934,9 +950,16 @@ class AzureDevOpsFeedbackAdapter:
             return embedded
         if not media.url:
             raise ValueError("Azure DevOps inline media does not include a download URL")
+        allowed_host = urlparse(self.organization_url).hostname
+        require_provider_media_url(
+            provider=self.provider_name,
+            url=media.url,
+            allowed_hosts=[allowed_host] if allowed_host else [],
+        )
         content, mime_type = _download_url_with_optional_headers(
             url=media.url,
             headers=self._headers(),
+            max_bytes=max_bytes,
         )
         return InlineMediaDownload(content, media.filename, mime_type or media.mime_type)
 
