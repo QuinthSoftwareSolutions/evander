@@ -37,6 +37,7 @@ def test_default_registry_includes_all_known_trigger_types() -> None:
         "trigger:teams:new-message",
         "trigger:teams-meeting:new-transcript",
         "trigger:email:new-message",
+        "trigger:event",
         "trigger:pull-request:new-feedback",
         "trigger:review:new-request",
         "trigger:git:push",
