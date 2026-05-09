@@ -2059,10 +2059,12 @@ def test_fetch_work_item_comments_normalizes_and_truncates(
     assert captured["params"] == {"api-version": "7.1-preview.4", "$top": "3", "order": "asc"}
     assert comments == [
         {
+            "id": "",
             "text": "abcde",
             "author": "Ada",
             "created_date": "2026-03-21T00:00:00Z",
             "modified_date": "2026-03-21T01:00:00Z",
+            "url": "",
         }
     ]
 

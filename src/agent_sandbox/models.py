@@ -473,7 +473,7 @@ class LocalIssueRecord(BaseModel):
     tags: list[str] = Field(default_factory=list)
     state: str | None = None
     url: str | None = None
-    comments: list[dict[str, str]] = Field(default_factory=list)
+    comments: list[dict[str, Any]] = Field(default_factory=list)
     forwarding_policy: "IssueForwardingPolicy | None" = None
     source: str = "local_gui"
     metadata: dict[str, Any] = Field(default_factory=dict)

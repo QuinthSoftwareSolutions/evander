@@ -50,6 +50,7 @@ from agent_sandbox.triggers.providers.schemas import (
     DiscordNewMessageTriggerDefinition,
     EmailNewMessageTriggerDefinition,
     GitPushTriggerDefinition,
+    IssueCommentCreatedTriggerDefinition,
     PullRequestNewFeedbackTriggerDefinition,
     ReviewNewRequestTriggerDefinition,
     ScriptRunRequestTriggerDefinition,

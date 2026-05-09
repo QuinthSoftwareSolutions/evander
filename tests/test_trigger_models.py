@@ -45,6 +45,31 @@ def test_ticket_created_trigger_normalizes_directories() -> None:
     assert trigger.directories == ["root/team-a", "root/team-a/subdir"]
 
 
+def test_issue_comment_trigger_normalizes_ado_config() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    trigger = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "t-comment",
+                "display_name": "Issue comment",
+                "type": "trigger:issue:comment-created",
+                "config": {
+                    "provider": "azure_devops",
+                    "organization_url": " https://dev.azure.com/example/ ",
+                    "project": " APP ",
+                    "directories": [" root/team-a "],
+                },
+            }
+        )
+    )
+
+    assert trigger.provider == "ado"
+    assert trigger.organization_url == "https://dev.azure.com/example"
+    assert trigger.project == "APP"
+    assert trigger.directories == ["root/team-a"]
+
+
 def test_email_trigger_validates_provider_enum() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 

@@ -161,6 +161,7 @@ Type-specific keys:
 | `trigger:cron` | `expression` | — |
 | `trigger:ticket:created` | `directories` | — |
 | `trigger:ticket:changed` | `directories` | — |
+| `trigger:issue:comment-created` / `trigger:issue:new-comment` | — | `provider`, `organization_url`, `project`, `directories` |
 | `trigger:script-run-request` | — | — |
 | `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |
 | `trigger:email:new-message` | `provider`, `account_identifier`, `mailbox_ids` | `auth_secret_refs` |
