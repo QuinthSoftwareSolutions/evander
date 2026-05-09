@@ -61,6 +61,9 @@ class AdminServiceProviderAdapter:
     def update_issue(self, issue_id: str, **kwargs: Any) -> Any:
         return self._admin_service.update_issue(issue_id, **kwargs)
 
+    def update_issue_metadata(self, **kwargs: Any) -> Any:
+        return self._admin_service.update_issue_metadata(**kwargs)
+
     def session_update_metadata(self, *, target: str, metadata: dict[str, Any]) -> Any:
         return self._admin_service.session_update_metadata(target=target, metadata=metadata)
 

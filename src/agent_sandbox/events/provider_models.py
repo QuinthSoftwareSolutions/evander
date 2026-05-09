@@ -12,6 +12,7 @@ from agent_sandbox.effects.providers.schemas import (
     ChatAssistantEnsureSessionEffectDefinition,
     BashScriptEffectDefinition,
     GitPromoteAgentBranchEffectDefinition,
+    IssueUpdateMetadataEffectDefinition,
     IssueUpdateStateEffectDefinition,
     NotificationSendEffectDefinition,
     PrCreateEffectDefinition,

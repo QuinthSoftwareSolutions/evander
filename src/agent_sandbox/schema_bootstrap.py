@@ -449,6 +449,17 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "provider": {"type": "string"},
         "remote_issue_id": {"type": "string"},
     },
+    "effect:issue:update-metadata": {
+        "success": {"type": "boolean"},
+        "issue_number": {"type": "string"},
+        "issue_id": {"type": "string"},
+        "source_type": {"type": "string"},
+        "updated": {"type": "boolean"},
+        "updated_at": {"type": "string"},
+        "metadata": {"type": "object"},
+        "metadata_paths": {"type": "array"},
+        "patch_kind": {"type": "string"},
+    },
     "effect:notification:send": {
         "success": {"type": "boolean"},
         "provider": {"type": "string"},
