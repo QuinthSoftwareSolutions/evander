@@ -23,7 +23,6 @@ from agent_sandbox.models import (
     SessionManifest,
     ToolName,
 )
-from agent_sandbox.policy import PolicyError
 from agent_sandbox.runtime import build_runtime
 
 
@@ -1891,6 +1890,18 @@ class _FakePrFeedbackService:
                     "author": "reviewer",
                     "body": "Please rename this variable.",
                     "created_at": "2026-01-01T00:00:00Z",
+                    "inline_media": [
+                        {
+                            "source_kind": "pr_feedback",
+                            "provider": "github",
+                            "resource_id": "github:review_comment:7",
+                            "comment_id": "7",
+                            "media_id": "markdown-image-0",
+                            "filename": "actual.png",
+                            "mime_type": "image/png",
+                            "url": "https://example.test/actual.png",
+                        }
+                    ],
                 }
             ],
             "next_cursor": "2026-01-01T00:00:00Z",
@@ -1926,6 +1937,18 @@ class _FakePrFeedbackService:
                     "author": "reviewer",
                     "body": "Please rename this variable.",
                     "created_at": "2026-01-01T00:00:00Z",
+                    "inline_media": [
+                        {
+                            "source_kind": "pr_feedback",
+                            "provider": "github",
+                            "resource_id": "github:review_comment:7",
+                            "comment_id": "7",
+                            "media_id": "markdown-image-0",
+                            "filename": "actual.png",
+                            "mime_type": "image/png",
+                            "url": "https://example.test/actual.png",
+                        }
+                    ],
                 },
             ],
             "next_cursor": "2026-01-01T00:00:00Z",
@@ -2227,6 +2250,8 @@ def test_list_unread_feedback_returns_items_and_audits_result_count(tmp_path: Pa
     )
 
     assert result["feedback"][0]["feedback_id"] == "github:review_comment:7"
+    assert result["feedback"][0]["inline_media"][0]["media_id"] == "markdown-image-0"
+    assert result["feedback"][0]["inline_media"][0]["url"] == "https://example.test/actual.png"
     assert result["next_cursor"] == "2026-01-01T00:00:00Z"
     assert context.pr_feedback_service.last_limit == 1
     event = read_audit_events(context.config.audit_log_path)[-1]
@@ -2377,6 +2402,7 @@ def test_list_all_feedback_returns_history_including_already_read_items(tmp_path
         "github:review_comment:1",
         "github:review_comment:7",
     ]
+    assert result["feedback"][1]["inline_media"][0]["media_id"] == "markdown-image-0"
     assert context.pr_feedback_service.last_cursor is None
     assert context.pr_feedback_service.last_limit == 2
     event = read_audit_events(context.config.audit_log_path)[-1]
