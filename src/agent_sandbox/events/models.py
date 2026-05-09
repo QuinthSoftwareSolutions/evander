@@ -129,6 +129,30 @@ class GateDebounceDefinition(GateDefinition):
         return self
 
 
+class GateDedupeDefinition(GateDefinition):
+    type: Literal["gate:dedupe"]
+    key: ConfigValue
+    ttl: ConfigValue
+
+    @field_validator("key")
+    @classmethod
+    def validate_key_present(cls, value: ConfigValue) -> ConfigValue:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ValueError("gate:dedupe key must be a non-empty string")
+        if not isinstance(value, str):
+            raise ValueError("gate:dedupe key must be a string")
+        return value
+
+    @field_validator("ttl")
+    @classmethod
+    def validate_ttl_present(cls, value: ConfigValue) -> ConfigValue:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ValueError("gate:dedupe ttl must be a non-empty ISO-8601 duration")
+        if not isinstance(value, str):
+            raise ValueError("gate:dedupe ttl must be a string")
+        return value
+
+
 class GateAwaitAgentDefinition(GateDefinition):
     type: Literal["gate:await-agent"]
     completion_trigger_id: str | None = None
@@ -230,6 +254,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "gate:map": GateMapDefinition,
         "gate:merge": GateMergeDefinition,
         "gate:debounce": GateDebounceDefinition,
+        "gate:dedupe": GateDedupeDefinition,
         "gate:await-agent": GateAwaitAgentDefinition,
         "gate:for": GateForDefinition,
         "effect:vm:create": provider_models.VmCreateEffectDefinition,

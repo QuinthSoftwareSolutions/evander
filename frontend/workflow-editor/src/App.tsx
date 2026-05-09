@@ -150,6 +150,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "gate:filter": "Allow only matching events to continue downstream.",
   "gate:map": "Project upstream outputs into a new payload shape.",
   "gate:merge": "Merge compatible inbound event streams into one downstream path.",
+  "gate:dedupe": "Suppress duplicate activations for the same key until a TTL expires.",
   "gate:await-agent": "Pause the workflow until a selected agent session completes.",
   "gate:for": "Iterate over an array and execute the body branch for each item.",
   "effect:agent:prompt": "Send a prompt to an agent session.",
@@ -731,6 +732,16 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   if (kind === "gate" && type === "gate:merge") {
     return { id, display_name: "New merge", type, outputs: {} };
   }
+  if (kind === "gate" && type === "gate:dedupe") {
+    return {
+      id,
+      display_name: "Dedupe",
+      type,
+      key: "dedupe:${{system.event_id}}",
+      ttl: "P7D",
+      outputs: {},
+    };
+  }
   if (kind === "gate" && type === "gate:await-agent") {
     return { id, display_name: "Await agent", type, session_id: "session-id", outputs: {} };
   }
@@ -1110,7 +1121,7 @@ function deriveWorkflowOutputSchemas(
 
     visiting.add(nodeId);
     let schema: Record<string, unknown>;
-    if (node.type === "gate:filter") {
+    if (node.type === "gate:filter" || node.type === "gate:dedupe") {
       schema = copyOutputSchema(resolve(directUpstreamNodeIds(config, node.id)[0] ?? ""));
     } else if (node.type === "gate:merge") {
       schema = mergeDeclaredOutputIntersection(
@@ -1195,6 +1206,8 @@ function normalizeDerivedNodeFields(
     if (gate.type === "gate:filter") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:map") {
+      gate.outputs = declaredOutputsForNode(gate, outputSchemas);
+    } else if (gate.type === "gate:dedupe") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:await-agent") {
       delete gate.completion_trigger_id;

@@ -981,6 +981,41 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="gate",
+        type="gate:dedupe",
+        label="Dedupe",
+        fields=[
+            _field(
+                "key",
+                "Key",
+                "string",
+                required=True,
+                bindable=True,
+                description=(
+                    "Stable idempotency key. Duplicate activations with the same key "
+                    "are dropped until TTL expires."
+                ),
+                placeholder="issue-comment:${{trigger.comment_id}}",
+            ),
+            _field(
+                "ttl",
+                "TTL",
+                "string",
+                required=True,
+                bindable=True,
+                description="ISO-8601 dedupe window, for example P7D or PT1H.",
+                placeholder="P7D",
+            ),
+            _field(
+                "outputs",
+                "Outputs",
+                "json",
+                read_only=True,
+                description="Derived from the single upstream node.",
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
         type="gate:merge",
         label="Merge",
         fields=[
@@ -7618,6 +7653,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 "gate:filter",
                 "gate:debounce",
                 "gate:map",
+                "gate:dedupe",
                 "gate:await-agent",
                 "gate:for",
                 "gate:merge",
