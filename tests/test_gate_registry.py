@@ -70,6 +70,7 @@ def test_effect_orchestrator_runs_without_await_agent_provider(tmp_path: Path) -
 def test_default_registry_includes_all_known_gate_types() -> None:
     assert set(DEFAULT_GATE_PROVIDER_REGISTRY) == {
         "gate:await-agent",
+        "gate:debounce",
         "gate:filter",
         "gate:for",
         "gate:map",

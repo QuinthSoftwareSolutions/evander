@@ -13,6 +13,7 @@ from pydantic import (
 )
 from typing_extensions import TypeAliasType
 
+from agent_sandbox.gate_runtime import GateRuntimeError, parse_iso8601_duration
 from agent_sandbox.workflow.contracts import (
     EdgeDefinition,
     NODE_OUTPUTS_CONTEXT_KEY,
@@ -93,6 +94,39 @@ class GateMapDefinition(GateDefinition):
 
 class GateMergeDefinition(GateDefinition):
     type: Literal["gate:merge"]
+
+
+class GateDebounceDefinition(GateDefinition):
+    type: Literal["gate:debounce"]
+    key: ConfigValue
+    quiet_period: str
+    max_delay: str
+
+    @field_validator("quiet_period", "max_delay")
+    @classmethod
+    def validate_duration(cls, value: str, info) -> str:
+        try:
+            parse_iso8601_duration(value, field_name=info.field_name)
+        except GateRuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+        return value
+
+    @field_validator("key")
+    @classmethod
+    def validate_key(cls, value: ConfigValue) -> ConfigValue:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("gate:debounce key must be a non-empty string or binding template")
+        return value
+
+    @model_validator(mode="after")
+    def validate_delay_order(self) -> "GateDebounceDefinition":
+        max_delay = parse_iso8601_duration(self.max_delay, field_name="max_delay")
+        quiet_period = parse_iso8601_duration(self.quiet_period, field_name="quiet_period")
+        if max_delay < quiet_period:
+            raise ValueError(
+                "gate:debounce max_delay must be greater than or equal to quiet_period"
+            )
+        return self
 
 
 class GateAwaitAgentDefinition(GateDefinition):
@@ -195,6 +229,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "gate:filter": GateFilterDefinition,
         "gate:map": GateMapDefinition,
         "gate:merge": GateMergeDefinition,
+        "gate:debounce": GateDebounceDefinition,
         "gate:await-agent": GateAwaitAgentDefinition,
         "gate:for": GateForDefinition,
         "effect:vm:create": provider_models.VmCreateEffectDefinition,
