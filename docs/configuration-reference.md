@@ -222,7 +222,7 @@ Each gate entry requires the shared envelope keys:
 - `id` (string, required, unique across all gates)
 - `display_name` (string, required)
 - `type` (required discriminator)
-- `gate_type` (string, required; one of `filter`, `map`, `merge`)
+- `gate_type` (string, required; one of `filter`, `map`, `merge`, `dedupe`)
 
 Type-specific keys:
 
@@ -231,6 +231,13 @@ Type-specific keys:
 | `gate:filter` | `predicate` | `outputs` |
 | `gate:map` | `mapping` | `outputs` |
 | `gate:merge` | _none beyond envelope_ | `outputs` |
+| `gate:dedupe` | `key`, `ttl` | `outputs` |
+
+`gate:dedupe` resolves `key` with the same `${{node.output}}` binding syntax used by other
+nodes, then atomically records the key for the ISO-8601 `ttl` window (for example `P7D`
+or `PT1H`). The first activation for a key is forwarded; duplicate activations inside the
+TTL are recorded as dropped and do not publish downstream completion events. Expired keys are
+cleaned up opportunistically during later dedupe checks.
 
 `gate:merge` uses Reactive Extensions `merge` semantics: every inbound event is forwarded as it
 arrives. When `outputs` is declared, the gate projects each inbound payload to that shared key set.

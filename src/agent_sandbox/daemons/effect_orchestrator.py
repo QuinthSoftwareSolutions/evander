@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import logging
@@ -8,7 +9,7 @@ import random
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
 from typing import Any, Literal
@@ -641,6 +642,25 @@ class EffectOrchestratorWorker:
             trace_id=queue_record.trace_id,
             event_id=queue_record.event_id,
             node_id=node_id,
+        )
+
+
+    def claim_dedupe_key(
+        self,
+        *,
+        gate_id: str,
+        key: str,
+        ttl: timedelta,
+        now: datetime,
+        event_id: str,
+    ) -> bool:
+        return _claim_dedupe_key(
+            self.worker_config.runtime_dir / "gate-dedupe-keys.json",
+            gate_id=gate_id,
+            key=key,
+            ttl=ttl,
+            now=now,
+            event_id=event_id,
         )
 
     def _dispatch_query(
@@ -1445,6 +1465,110 @@ def _extract_effect_config(effect: EffectDefinitionDiscriminated) -> dict[str, A
 
 def _extract_query_config(query: QueryDefinitionDiscriminated) -> dict[str, Any]:
     return dict(query.config)
+
+
+def _claim_dedupe_key(
+    store_path: Path,
+    *,
+    gate_id: str,
+    key: str,
+    ttl: timedelta,
+    now: datetime,
+    event_id: str,
+) -> bool:
+    now_utc = _ensure_utc(now)
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = store_path.with_suffix(f"{store_path.suffix}.lock")
+    lock_path.touch(exist_ok=True)
+    with lock_path.open("r+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            payload = _read_dedupe_payload(store_path)
+            entries = payload.setdefault("entries", {})
+            if not isinstance(entries, dict):
+                entries = {}
+                payload["entries"] = entries
+            _prune_expired_dedupe_entries(entries, now=now_utc)
+            entry_id = _dedupe_entry_id(gate_id=gate_id, key=key)
+            existing = entries.get(entry_id)
+            if isinstance(existing, dict):
+                expires_at = _parse_dedupe_timestamp(existing.get("expires_at"))
+                if expires_at is not None and expires_at > now_utc:
+                    _write_dedupe_payload(store_path, payload)
+                    return False
+            expires_at = now_utc + ttl
+            entries[entry_id] = {
+                "gate_id": gate_id,
+                "key": key,
+                "first_event_id": event_id,
+                "seen_at": _format_dedupe_timestamp(now_utc),
+                "expires_at": _format_dedupe_timestamp(expires_at),
+            }
+            _write_dedupe_payload(store_path, payload)
+            return True
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _read_dedupe_payload(store_path: Path) -> dict[str, Any]:
+    if not store_path.exists():
+        return {"version": 1, "entries": {}}
+    try:
+        payload = json.loads(store_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("Unable to read gate dedupe state path=%s", store_path, exc_info=True)
+        return {"version": 1, "entries": {}}
+    if not isinstance(payload, dict):
+        return {"version": 1, "entries": {}}
+    payload.setdefault("version", 1)
+    payload.setdefault("entries", {})
+    return payload
+
+
+def _write_dedupe_payload(store_path: Path, payload: dict[str, Any]) -> None:
+    tmp_path = store_path.with_suffix(f"{store_path.suffix}.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(store_path)
+
+
+def _prune_expired_dedupe_entries(entries: dict[str, Any], *, now: datetime) -> None:
+    expired = []
+    for entry_id, entry in entries.items():
+        if not isinstance(entry, dict):
+            expired.append(entry_id)
+            continue
+        expires_at = _parse_dedupe_timestamp(entry.get("expires_at"))
+        if expires_at is None or expires_at <= now:
+            expired.append(entry_id)
+    for entry_id in expired:
+        entries.pop(entry_id, None)
+
+
+def _dedupe_entry_id(*, gate_id: str, key: str) -> str:
+    digest = hashlib.sha256(f"{gate_id}\0{key}".encode("utf-8")).hexdigest()
+    return digest[:32]
+
+
+def _ensure_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _parse_dedupe_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        return _ensure_utc(datetime.fromisoformat(text))
+    except ValueError:
+        return None
+
+
+def _format_dedupe_timestamp(value: datetime) -> str:
+    return _ensure_utc(value).isoformat().replace("+00:00", "Z")
 
 
 def _execution_idempotency_key(event_id: str, node_id: str) -> str:

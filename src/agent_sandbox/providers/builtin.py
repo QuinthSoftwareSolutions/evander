@@ -35,6 +35,7 @@ from agent_sandbox.effects.providers.vm_exec import VmExecEffectProvider
 from agent_sandbox.effects.providers.vm_start import VmStartEffectProvider
 from agent_sandbox.effects.providers.vm_stop import VmStopEffectProvider
 from agent_sandbox.gates.providers.await_agent import AwaitAgentGateProvider
+from agent_sandbox.gates.providers.dedupe_gate import DedupeGateProvider
 from agent_sandbox.gates.providers.filter_gate import FilterGateProvider
 from agent_sandbox.gates.providers.for_gate import ForGateProvider
 from agent_sandbox.gates.providers.map_gate import MapGateProvider
@@ -82,6 +83,7 @@ def register_providers() -> dict[str, dict[str, type]]:
         },
         gate_providers={
             "gate:await-agent": AwaitAgentGateProvider,
+            "gate:dedupe": DedupeGateProvider,
             "gate:filter": FilterGateProvider,
             "gate:for": ForGateProvider,
             "gate:map": MapGateProvider,

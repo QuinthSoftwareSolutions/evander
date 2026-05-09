@@ -234,12 +234,14 @@ Execution model:
 2. Gate execution consumes upstream events through declared edges.
 3. `gate:filter` nodes either forward or suppress an event.
 4. `gate:map` nodes transform payload shape and can rename or derive outputs.
-5. `gate:merge` nodes behave like a Reactive Extensions `merge`: each inbound event is forwarded
+5. `gate:dedupe` nodes atomically forward the first activation for a resolved key inside its TTL
+   window and drop duplicate activations until the key expires.
+6. `gate:merge` nodes behave like a Reactive Extensions `merge`: each inbound event is forwarded
    independently as it arrives, while the gate records the latest payload seen from every upstream
    source for debugging and conflict inspection.
-6. Effects consume the post-gate payload and still resolve `${{node.output_name}}` bindings against the
+7. Effects consume the post-gate payload and still resolve `${{node.output_name}}` bindings against the
    upstream event payload.
-7. On success, the effect publishes a completion event whose `trigger_id` is the effect id so
+8. On success, the effect publishes a completion event whose `trigger_id` is the effect id so
    downstream edges can continue the chain.
 
 Safety/idempotency guarantees:

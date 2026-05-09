@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from agent_sandbox.events.models import (
     GateAwaitAgentDefinition,
+    GateDedupeDefinition,
     GateFilterDefinition,
     GateForDefinition,
     GateMapDefinition,
@@ -18,6 +19,7 @@ _GATE_MODEL_BY_TYPE = {
     "gate:filter": GateFilterDefinition,
     "gate:map": GateMapDefinition,
     "gate:merge": GateMergeDefinition,
+    "gate:dedupe": GateDedupeDefinition,
     "gate:await-agent": GateAwaitAgentDefinition,
     "gate:for": GateForDefinition,
 }
