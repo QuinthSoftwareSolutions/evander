@@ -20,6 +20,7 @@ from agent_sandbox.effects.providers.chat_assistant import ChatAssistantEnsureSe
 from agent_sandbox.effects.providers.git_promote_agent_branch import (
     GitPromoteAgentBranchEffectProvider,
 )
+from agent_sandbox.effects.providers.issue_update_metadata import IssueUpdateMetadataEffectProvider
 from agent_sandbox.effects.providers.issue_update_state import IssueUpdateStateEffectProvider
 from agent_sandbox.effects.providers.notification_send import NotificationSendEffectProvider
 from agent_sandbox.effects.providers.pr_create import PrCreateEffectProvider
@@ -116,6 +117,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:vm:copy-files": VmCopyFilesEffectProvider,
             "effect:vm:delete-files": VmDeleteFilesEffectProvider,
             "effect:issue:update-state": IssueUpdateStateEffectProvider,
+            "effect:issue:update-metadata": IssueUpdateMetadataEffectProvider,
             "effect:notification:send": NotificationSendEffectProvider,
             "effect:session:update-metadata": SessionUpdateMetadataEffectProvider,
             "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectProvider,

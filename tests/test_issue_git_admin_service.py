@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import subprocess
 
+import pytest
 import yaml
 
 import agent_sandbox.admin.services.issue_git_service as issue_git_module
@@ -361,3 +362,153 @@ def test_admin_service_delegates_issue_git_methods() -> None:
         ),
         ("delete_local_issue", ("issue-7",), {}),
     ]
+
+
+def test_issue_git_admin_service_update_issue_metadata_adds_property_and_audits(
+    tmp_path: Path,
+) -> None:
+    admin, store = _build_issue_admin(tmp_path)
+    audit_calls: list[dict[str, object]] = []
+    admin.runtime.audit = SimpleNamespace(log_decision=lambda **kwargs: audit_calls.append(kwargs))
+    service = IssueGitAdminService(_issue_git_dependencies(admin))
+    issue = LocalIssueRecord(
+        issue_id="root::local::1",
+        issue_number="1",
+        title="Issue",
+        body="Body",
+        yaml_path=str(tmp_path / "issues" / "1.yaml"),
+        metadata={"keep": True},
+    )
+    store.put(issue.issue_id, issue)
+
+    result = service.update_issue_metadata(
+        issue_id="root::local::1", patch={"plan.status": "committed"}
+    )
+
+    updated = store.get("root::local::1")
+    assert isinstance(updated, LocalIssueRecord)
+    assert updated.metadata == {"keep": True, "plan": {"status": "committed"}}
+    assert result["metadata_paths"] == ["plan.status"]
+    assert result["patch_kind"] == "dot_path"
+    assert audit_calls[0]["event_type"] == "issue_metadata_updated"
+    assert audit_calls[0]["args"]["paths"] == ["plan.status"]
+
+
+def test_issue_git_admin_service_update_issue_metadata_updates_nested_and_preserves_unrelated(
+    tmp_path: Path,
+) -> None:
+    admin, store = _build_issue_admin(tmp_path)
+    service = IssueGitAdminService(_issue_git_dependencies(admin))
+    issue = LocalIssueRecord(
+        issue_id="root::local::1",
+        issue_number="1",
+        title="Issue",
+        body="Body",
+        yaml_path=str(tmp_path / "issues" / "1.yaml"),
+        metadata={"plan": {"status": "draft", "version": 2}, "keep": {"nested": True}},
+    )
+    store.put(issue.issue_id, issue)
+
+    service.update_issue_metadata(
+        issue_id="root::local::1", patch={"plan.status": "committed"}
+    )
+
+    updated = store.get("root::local::1")
+    assert isinstance(updated, LocalIssueRecord)
+    assert updated.metadata == {
+        "plan": {"status": "committed", "version": 2},
+        "keep": {"nested": True},
+    }
+
+
+def test_issue_git_admin_service_update_issue_metadata_merge_patch_removes_null_property(
+    tmp_path: Path,
+) -> None:
+    admin, store = _build_issue_admin(tmp_path)
+    service = IssueGitAdminService(_issue_git_dependencies(admin))
+    issue = LocalIssueRecord(
+        issue_id="root::local::1",
+        issue_number="1",
+        title="Issue",
+        body="Body",
+        yaml_path=str(tmp_path / "issues" / "1.yaml"),
+        metadata={"plan": {"status": "draft", "obsolete": True}, "keep": True},
+    )
+    store.put(issue.issue_id, issue)
+
+    result = service.update_issue_metadata(
+        issue_id="root::local::1",
+        merge_patch={"plan": {"obsolete": None, "status": "committed"}},
+    )
+
+    updated = store.get("root::local::1")
+    assert isinstance(updated, LocalIssueRecord)
+    assert updated.metadata == {"plan": {"status": "committed"}, "keep": True}
+    assert result["metadata_paths"] == ["plan", "plan.obsolete", "plan.status"]
+    assert result["patch_kind"] == "json_merge_patch"
+
+
+def test_issue_git_admin_service_update_issue_metadata_rejects_concurrency_conflict(
+    tmp_path: Path,
+) -> None:
+    admin, store = _build_issue_admin(tmp_path)
+    service = IssueGitAdminService(_issue_git_dependencies(admin))
+    issue = LocalIssueRecord(
+        issue_id="root::local::1",
+        issue_number="1",
+        title="Issue",
+        body="Body",
+        yaml_path=str(tmp_path / "issues" / "1.yaml"),
+        metadata={"plan": {"status": "draft"}},
+    )
+    store.put(issue.issue_id, issue)
+
+    with pytest.raises(RuntimeError, match="concurrency conflict"):
+        service.update_issue_metadata(
+            issue_id="root::local::1",
+            patch={"plan.status": "committed"},
+            expected_updated_at="2000-01-01T00:00:00+00:00",
+        )
+
+    updated = store.get("root::local::1")
+    assert isinstance(updated, LocalIssueRecord)
+    assert updated.metadata == {"plan": {"status": "draft"}}
+
+
+def test_issue_git_admin_service_update_issue_metadata_works_for_ado_proxy_without_remote_update(
+    tmp_path: Path,
+) -> None:
+    admin, store = _build_issue_admin(tmp_path)
+    remote_calls: list[dict[str, object]] = []
+    admin.issue_service = SimpleNamespace(
+        read_remote_issue=lambda **kwargs: {},
+        post_remote_comment=lambda **kwargs: {"comment_added": True},
+        update_remote_issue=lambda **kwargs: remote_calls.append(kwargs) or {"updated": True},
+    )
+    admin._proxy_target_for_issue = lambda issue: ("azure_devops", "14084")
+    service = IssueGitAdminService(_issue_git_dependencies(admin))
+    issue = LocalIssueRecord(
+        issue_id="root::azure_devops::14084",
+        issue_number="14084",
+        title="Issue",
+        body="Body",
+        yaml_path=str(tmp_path / "issues" / "14084.yaml"),
+        source_type="remote_proxy",
+        metadata={
+            "remote": {"provider": "azure_devops", "issue_id": "14084"},
+            "proxy_cache": {"state": "Active"},
+        },
+    )
+    store.put(issue.issue_id, issue)
+
+    result = service.update_issue_metadata(
+        issue_id="root::azure_devops::14084", patch={"workflow.status": "ready"}
+    )
+
+    updated = store.get("root::azure_devops::14084")
+    assert isinstance(updated, LocalIssueRecord)
+    assert updated.metadata["remote"] == {"provider": "azure_devops", "issue_id": "14084"}
+    assert updated.metadata["proxy_cache"] == {"state": "Active"}
+    assert updated.metadata["workflow"] == {"status": "ready"}
+    assert result["source_type"] == "proxy"
+    assert remote_calls == []

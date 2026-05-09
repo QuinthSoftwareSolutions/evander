@@ -8285,6 +8285,23 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
             sync_proxy_cache=sync_proxy_cache,
         )
 
+    def update_issue_metadata(
+        self,
+        *,
+        issue_id: str,
+        patch: Mapping[str, Any] | None = None,
+        merge_patch: Mapping[str, Any] | None = None,
+        expected_updated_at: str | None = None,
+        sync_proxy_cache: bool = True,
+    ) -> dict[str, object]:
+        return self.issue_git_admin.update_issue_metadata(
+            issue_id=issue_id,
+            patch=patch,
+            merge_patch=merge_patch,
+            expected_updated_at=expected_updated_at,
+            sync_proxy_cache=sync_proxy_cache,
+        )
+
     def claim_next_issue(
         self,
         *,

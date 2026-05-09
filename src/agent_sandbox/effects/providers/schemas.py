@@ -325,6 +325,36 @@ class IssueUpdateStateEffectDefinition(EffectDefinition):
     sync_proxy_cache: ConfigValue | None = True
 
 
+class IssueUpdateMetadataEffectDefinition(EffectDefinition):
+    type: Literal["effect:issue:update-metadata"]
+    issue_id: ConfigValue
+    patch: ConfigValue | None = None
+    merge_patch: ConfigValue | None = None
+    expected_updated_at: ConfigValue | None = None
+    sync_proxy_cache: ConfigValue | None = True
+
+    @field_validator("patch", "merge_patch")
+    @classmethod
+    def validate_patch_is_object(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None:
+            return None
+        if not isinstance(value, (Mapping, str)):
+            raise ValueError(
+                "effect:issue:update-metadata patch and merge_patch must be JSON objects"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def validate_patch_selector(self) -> "IssueUpdateMetadataEffectDefinition":
+        if self.patch is None and self.merge_patch is None:
+            raise ValueError("effect:issue:update-metadata requires patch or merge_patch")
+        if self.patch is not None and self.merge_patch is not None:
+            raise ValueError(
+                "effect:issue:update-metadata patch and merge_patch are mutually exclusive"
+            )
+        return self
+
+
 class NotificationSendEffectDefinition(EffectDefinition):
     type: Literal["effect:notification:send"]
     communication_target_id: str

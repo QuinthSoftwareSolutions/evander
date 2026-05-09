@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -22,6 +23,77 @@ from agent_sandbox.models import (
     VmActionResult,
 )
 from agent_sandbox.repositories.session_manifests import as_session_manifest_repository
+
+
+def _apply_issue_metadata_dot_patch(
+    metadata: Mapping[str, Any], patch: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    updated = copy.deepcopy(dict(metadata))
+    touched: list[str] = []
+    for raw_path, value in patch.items():
+        path = str(raw_path).strip()
+        if not path:
+            raise ValueError("effect:issue:update-metadata patch contains an empty metadata path")
+        parts = path.split(".")
+        if any(part == "" for part in parts):
+            raise ValueError(
+                f"effect:issue:update-metadata patch path {path!r} contains an empty segment"
+            )
+        cursor: dict[str, Any] = updated
+        for segment in parts[:-1]:
+            existing = cursor.get(segment)
+            if existing is None:
+                next_value: dict[str, Any] = {}
+                cursor[segment] = next_value
+                cursor = next_value
+                continue
+            if not isinstance(existing, dict):
+                raise ValueError(
+                    "effect:issue:update-metadata cannot set "
+                    f"{path!r} because metadata.{segment} is not an object"
+                )
+            cursor = existing
+        cursor[parts[-1]] = copy.deepcopy(value)
+        touched.append(path)
+    return updated, touched
+
+
+def _apply_json_merge_patch(
+    metadata: Mapping[str, Any], merge_patch: Mapping[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    touched: list[str] = []
+
+    def merge(base: Any, patch: Mapping[str, Any], prefix: str) -> dict[str, Any]:
+        result = copy.deepcopy(base) if isinstance(base, Mapping) else {}
+        for key, value in patch.items():
+            normalized_key = str(key)
+            path = f"{prefix}.{normalized_key}" if prefix else normalized_key
+            touched.append(path)
+            if value is None:
+                result.pop(normalized_key, None)
+                continue
+            if isinstance(value, Mapping):
+                result[normalized_key] = merge(result.get(normalized_key), value, path)
+                continue
+            result[normalized_key] = copy.deepcopy(value)
+        return result
+
+    return merge(metadata, merge_patch, ""), touched
+
+
+def _issue_updated_at_matches(issue: LocalIssueRecord, expected_updated_at: str) -> bool:
+    expected = str(expected_updated_at).strip()
+    if expected == issue.updated_at.isoformat():
+        return True
+    normalized = expected[:-1] + "+00:00" if expected.endswith("Z") else expected
+    try:
+        expected_dt = datetime.fromisoformat(normalized)
+    except ValueError:
+        return False
+    actual_dt = issue.updated_at
+    if expected_dt.tzinfo is not None and actual_dt.tzinfo is not None:
+        return expected_dt.astimezone(actual_dt.tzinfo) == actual_dt
+    return expected_dt == actual_dt
 
 
 @dataclass(frozen=True)
@@ -589,7 +661,6 @@ class IssueGitAdminService:
     def session_update_metadata(
         self, *, target: str, metadata: Mapping[str, Any]
     ) -> dict[str, Any]:
-        admin = self._deps
         session_repository = self._session_repository()
         session_id, manifest = self._resolve_session_target(target)
         merged_metadata = _admin_service._deep_merge_mapping(manifest.metadata, metadata)
@@ -606,7 +677,6 @@ class IssueGitAdminService:
         }
 
     def session_context_query(self, *, target: str) -> dict[str, Any]:
-        admin = self._deps
         session_id, manifest = self._resolve_session_target(target)
         return {
             "session_id": session_id,
@@ -1330,6 +1400,82 @@ class IssueGitAdminService:
             )
             admin.refresh_proxy_cache_from_remote(issue, remote_payload)
         return {"issue_number": issue.issue_number, "source_type": "proxy", **result}
+
+    def update_issue_metadata(
+        self,
+        *,
+        issue_id: str,
+        patch: Mapping[str, Any] | None = None,
+        merge_patch: Mapping[str, Any] | None = None,
+        expected_updated_at: str | None = None,
+        sync_proxy_cache: bool = True,
+    ) -> dict[str, object]:
+        admin = self._deps
+        if patch is None and merge_patch is None:
+            raise ValueError("effect:issue:update-metadata requires patch or merge_patch")
+        if patch is not None and merge_patch is not None:
+            raise ValueError(
+                "effect:issue:update-metadata patch and merge_patch are mutually exclusive"
+            )
+        if patch is not None and not isinstance(patch, Mapping):
+            raise ValueError("effect:issue:update-metadata patch must be a JSON object")
+        if merge_patch is not None and not isinstance(merge_patch, Mapping):
+            raise ValueError("effect:issue:update-metadata merge_patch must be a JSON object")
+
+        issue = admin.resolve_local_issue_record(issue_id)
+        current_updated_at = issue.updated_at.isoformat()
+        if expected_updated_at is not None and not _issue_updated_at_matches(
+            issue, expected_updated_at
+        ):
+            raise RuntimeError(
+                "effect:issue:update-metadata concurrency conflict for "
+                f"{issue.issue_number}: expected updated_at {expected_updated_at}, "
+                f"found {current_updated_at}"
+            )
+
+        if patch is not None:
+            updated_metadata, touched_paths = _apply_issue_metadata_dot_patch(issue.metadata, patch)
+            patch_kind = "dot_path"
+        else:
+            assert merge_patch is not None
+            updated_metadata, touched_paths = _apply_json_merge_patch(issue.metadata, merge_patch)
+            patch_kind = "json_merge_patch"
+
+        issue.metadata = updated_metadata
+        issue.sync_derived_fields()
+        issue.updated_at = _admin_service._utc_now()
+        admin.local_issue_store.put(issue.issue_id, issue)
+        admin.write_local_issue_yaml(issue, updated_at=issue.updated_at)
+
+        audit = getattr(getattr(admin, "runtime", None), "audit", None)
+        log_decision = getattr(audit, "log_decision", None)
+        if callable(log_decision):
+            log_decision(
+                event_type="issue_metadata_updated",
+                decision="allowed",
+                args={
+                    "issue_id": issue.issue_id,
+                    "issue_number": issue.issue_number,
+                    "patch_kind": patch_kind,
+                    "paths": touched_paths,
+                },
+                result={
+                    "updated": True,
+                    "updated_at": issue.updated_at.isoformat(),
+                },
+            )
+
+        return {
+            "success": True,
+            "issue_number": issue.issue_number,
+            "issue_id": issue.issue_id,
+            "source_type": "proxy" if admin.proxy_target_for_issue(issue) is not None else "local",
+            "updated": True,
+            "updated_at": issue.updated_at.isoformat(),
+            "metadata": dict(issue.metadata),
+            "metadata_paths": touched_paths,
+            "patch_kind": patch_kind,
+        }
 
     def claim_next_issue(
         self,

@@ -281,6 +281,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:vm:copy-files": provider_models.VmCopyFilesEffectDefinition,
         "effect:vm:delete-files": provider_models.VmDeleteFilesEffectDefinition,
         "effect:issue:update-state": provider_models.IssueUpdateStateEffectDefinition,
+        "effect:issue:update-metadata": provider_models.IssueUpdateMetadataEffectDefinition,
         "effect:notification:send": provider_models.NotificationSendEffectDefinition,
         "effect:session:update-metadata": provider_models.SessionUpdateMetadataEffectDefinition,
         "effect:git:promote-agent-branch": provider_models.GitPromoteAgentBranchEffectDefinition,

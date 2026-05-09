@@ -67,6 +67,7 @@ class EffectRuntimeContext(ProviderRuntimeBase):
             ("vm_file_copier", "vm_copy_files"),
             ("vm_file_deleter", "vm_delete_files"),
             ("issue_updater", "update_issue"),
+            ("issue_updater", "update_issue_metadata"),
             ("session_metadata_updater", "session_update_metadata"),
             ("git_branch_promoter", "promote_agent_branch"),
             ("pull_request_creator", "pr_create"),
