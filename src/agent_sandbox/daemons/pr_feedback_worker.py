@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Any, Protocol
+from typing import Any, Iterable, Protocol
 from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
@@ -139,6 +139,108 @@ def _media_ref(
     )
 
 
+def _inline_media_id(raw: dict[str, Any], *, fallback: str) -> str:
+    return str(
+        raw.get("media_id")
+        or raw.get("attachment_id")
+        or raw.get("id")
+        or raw.get("content_id")
+        or raw.get("url")
+        or raw.get("filename")
+        or raw.get("name")
+        or fallback
+    ).strip()
+
+
+def _raw_inline_media_ref(
+    *,
+    source_kind: str,
+    provider: str,
+    resource_id: str,
+    raw_item: Any,
+    index: int,
+    comment_id: str | None,
+) -> InlineMediaRef | None:
+    if isinstance(raw_item, InlineMediaRef):
+        return raw_item.model_copy(
+            update={
+                "source_kind": source_kind,
+                "provider": provider,
+                "resource_id": resource_id,
+                "comment_id": raw_item.comment_id or comment_id,
+                "metadata": sanitize_inline_media_metadata(raw_item.metadata),
+            }
+        )
+    if hasattr(raw_item, "model_dump"):
+        raw_item = raw_item.model_dump()
+    if not isinstance(raw_item, dict):
+        return None
+    media_id = _inline_media_id(raw_item, fallback=str(index))
+    filename = str(
+        raw_item.get("filename") or raw_item.get("name") or raw_item.get("title") or ""
+    ).strip()
+    url = str(
+        raw_item.get("url") or raw_item.get("download_url") or raw_item.get("web_url") or ""
+    ).strip()
+    if not filename and url:
+        filename = _filename_from_url(url, fallback=f"inline-media-{index}")
+    if not filename:
+        filename = f"inline-media-{index}"
+    if not media_id or not filename:
+        return None
+    raw_comment_id = raw_item.get("comment_id") or comment_id
+    byte_count_raw = raw_item.get("byte_count", raw_item.get("size", raw_item.get("contentSize")))
+    byte_count: int | None = None
+    if byte_count_raw is not None:
+        try:
+            byte_count = int(byte_count_raw)
+        except (TypeError, ValueError):
+            byte_count = None
+    mime_type = (
+        raw_item.get("mime_type") or raw_item.get("content_type") or raw_item.get("contentType")
+    )
+    return InlineMediaRef(
+        source_kind=source_kind,
+        provider=provider,
+        resource_id=resource_id,
+        comment_id=str(raw_comment_id).strip() if raw_comment_id else None,
+        media_id=media_id,
+        filename=filename,
+        mime_type=str(mime_type).strip() if mime_type else _mime_type_from_filename(filename),
+        byte_count=byte_count,
+        url=url or None,
+        metadata=sanitize_inline_media_metadata(raw_item),
+    )
+
+
+def _inline_media_refs_from_items(
+    *,
+    source_kind: str,
+    provider: str,
+    resource_id: str,
+    raw_media: object,
+    comment_id: str | None,
+) -> list[InlineMediaRef]:
+    if not isinstance(raw_media, list):
+        return []
+    refs: list[InlineMediaRef] = []
+    for index, item in enumerate(raw_media):
+        ref = _raw_inline_media_ref(
+            source_kind=source_kind,
+            provider=provider,
+            resource_id=resource_id,
+            raw_item=item,
+            index=index,
+            comment_id=comment_id,
+        )
+        if ref is None:
+            continue
+        if comment_id and ref.comment_id != comment_id:
+            continue
+        refs.append(ref)
+    return refs
+
+
 def _extract_github_markdown_inline_media(
     *,
     body: str,
@@ -225,55 +327,47 @@ def _inline_media_refs_from_resource(
 ) -> list[InlineMediaRef]:
     if not isinstance(resource, dict):
         return []
-    refs: list[InlineMediaRef] = []
-    raw_media = resource.get("inline_media")
-    if isinstance(raw_media, list):
-        for item in raw_media:
-            try:
-                ref = (
-                    item
-                    if isinstance(item, InlineMediaRef)
-                    else InlineMediaRef.model_validate(item)
-                )
-            except Exception:
-                continue
-            if comment_id and ref.comment_id != comment_id:
-                continue
-            refs.append(
-                ref.model_copy(
-                    update={
-                        "source_kind": source_kind,
-                        "provider": provider,
-                        "resource_id": resource_id,
-                        "metadata": sanitize_inline_media_metadata(ref.metadata),
-                    }
-                )
-            )
+    refs = _inline_media_refs_from_items(
+        source_kind=source_kind,
+        provider=provider,
+        resource_id=resource_id,
+        raw_media=resource.get("inline_media"),
+        comment_id=comment_id,
+    )
     metadata = resource.get("metadata") if isinstance(resource.get("metadata"), dict) else {}
     metadata_media = metadata.get("inline_media") or metadata.get("images")
-    if isinstance(metadata_media, list):
-        for item in metadata_media:
-            try:
-                ref = (
-                    item
-                    if isinstance(item, InlineMediaRef)
-                    else InlineMediaRef.model_validate(item)
-                )
-            except Exception:
-                continue
-            if comment_id and ref.comment_id != comment_id:
-                continue
-            refs.append(
-                ref.model_copy(
-                    update={
-                        "source_kind": source_kind,
-                        "provider": provider,
-                        "resource_id": resource_id,
-                        "metadata": sanitize_inline_media_metadata(ref.metadata),
-                    }
-                )
-            )
+    refs.extend(
+        _inline_media_refs_from_items(
+            source_kind=source_kind,
+            provider=provider,
+            resource_id=resource_id,
+            raw_media=metadata_media,
+            comment_id=comment_id,
+        )
+    )
     return refs
+
+
+def pr_feedback_item_payload(raw_feedback: dict[str, Any] | "FeedbackEnvelope") -> dict[str, Any]:
+    payload = (
+        raw_feedback.model_dump(mode="json")
+        if isinstance(raw_feedback, FeedbackEnvelope)
+        else dict(raw_feedback)
+    )
+    provider = str(payload.get("provider") or "").strip()
+    feedback_id = str(payload.get("feedback_id") or "").strip()
+    comment_id = str(payload.get("comment_id") or "").strip() or None
+    payload["inline_media"] = [
+        ref.model_dump(mode="json")
+        for ref in _inline_media_refs_from_resource(
+            source_kind="pr_feedback",
+            provider=provider,
+            resource_id=feedback_id,
+            resource=payload,
+            comment_id=comment_id,
+        )
+    ]
+    return payload
 
 
 def _download_url_with_optional_headers(
@@ -282,12 +376,16 @@ def _download_url_with_optional_headers(
     headers: dict[str, str],
     timeout_seconds: float = 30.0,
     max_bytes: int | None = None,
+    provider: str | None = None,
+    allowed_hosts: Iterable[str] | None = None,
 ) -> tuple[bytes, str | None]:
     return download_url_with_limit(
         url=url,
         headers=headers,
         timeout_seconds=timeout_seconds,
         max_bytes=max_bytes,
+        provider=provider,
+        allowed_hosts=allowed_hosts,
     )
 
 
@@ -305,7 +403,7 @@ class FeedbackEnvelope(BaseModel):
     created_at: datetime
     in_reply_to: str | None = None
     resolved: bool | None = None
-    inline_media: list[InlineMediaRef] = Field(default_factory=list)
+    inline_media: list[dict[str, Any] | InlineMediaRef] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -751,6 +849,7 @@ class GitHubFeedbackAdapter:
             url=media.url,
             headers=headers,
             max_bytes=max_bytes,
+            provider=self.provider_name,
         )
         return InlineMediaDownload(content, media.filename, mime_type or media.mime_type)
 
@@ -960,6 +1059,8 @@ class AzureDevOpsFeedbackAdapter:
             url=media.url,
             headers=self._headers(),
             max_bytes=max_bytes,
+            provider=self.provider_name,
+            allowed_hosts=[allowed_host] if allowed_host else [],
         )
         return InlineMediaDownload(content, media.filename, mime_type or media.mime_type)
 

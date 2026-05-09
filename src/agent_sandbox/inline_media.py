@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Protocol
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -154,16 +154,47 @@ def download_url_with_limit(
     headers: Mapping[str, str] | None = None,
     timeout_seconds: float = 30.0,
     max_bytes: int | None = None,
+    provider: str | None = None,
+    allowed_hosts: Iterable[str] | None = None,
+    max_redirects: int = 5,
 ) -> tuple[bytes, str | None]:
     """Download a provider-validated URL while enforcing a streaming byte cap.
 
-    Redirects are intentionally disabled; callers validate the exact provider URL they
-    fetch so a redirect cannot pivot the host-side control plane to another network.
+    Redirects are followed only after the caller's provider allowlist validates
+    the target URL, so a redirect cannot pivot the host-side control plane to
+    another network.
     """
 
+    request_headers = dict(headers or {})
+    current_url = url
+    redirects_seen = 0
     with httpx.Client(timeout=timeout_seconds, follow_redirects=False) as client:
-        with client.stream("GET", url, headers=dict(headers or {})) as response:
-            response.raise_for_status()
-            content = read_http_response_with_limit(response, max_bytes=max_bytes)
-            mime_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
-            return content, mime_type or None
+        while True:
+            with client.stream("GET", current_url, headers=request_headers) as response:
+                if response.is_redirect:
+                    redirects_seen += 1
+                    if redirects_seen > max_redirects:
+                        raise ValueError("Inline media redirect limit exceeded")
+                    location = response.headers.get("location")
+                    if not location:
+                        raise ValueError("Inline media redirect response missing Location")
+                    next_url = urljoin(str(response.url), location)
+                    if provider is None:
+                        raise ValueError("Inline media redirect requires provider validation")
+                    require_provider_media_url(
+                        provider=provider,
+                        url=next_url,
+                        allowed_hosts=allowed_hosts,
+                    )
+                    if urlparse(current_url).hostname != urlparse(next_url).hostname:
+                        request_headers = {
+                            key: value
+                            for key, value in request_headers.items()
+                            if key.lower() not in {"authorization", "cookie"}
+                        }
+                    current_url = next_url
+                    continue
+                response.raise_for_status()
+                content = read_http_response_with_limit(response, max_bytes=max_bytes)
+                mime_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
+                return content, mime_type or None

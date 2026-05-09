@@ -445,6 +445,97 @@ def test_inline_media_ado_backlog_uses_issue_service_and_content_policy(
     assert staged.blob_path.read_bytes() == b"jpeg-bytes"
 
 
+def test_ado_backlog_inline_media_does_not_duplicate_aggregate_comment_media(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeIssueService:
+        def __init__(self, provider_config: object) -> None:
+            self.provider_config = provider_config
+
+        def get_remote_backlog_item_by_id(self, **kwargs: object) -> dict[str, object]:
+            assert kwargs["include_comments"] is True
+            return {
+                "provider": "azure_devops",
+                "id": "123",
+                "project": "Project",
+                "title": "Bug with screenshots",
+                "inline_media": [
+                    {
+                        "source_kind": "ado_backlog",
+                        "provider": "azure_devops",
+                        "resource_id": "123",
+                        "media_id": "field-image",
+                        "filename": "field.png",
+                        "mime_type": "image/png",
+                    },
+                    {
+                        "source_kind": "ado_backlog",
+                        "provider": "azure_devops",
+                        "resource_id": "123",
+                        "comment_id": "comment-7",
+                        "media_id": "comment-image",
+                        "filename": "comment.png",
+                        "mime_type": "image/png",
+                    },
+                ],
+                "comments": [
+                    {
+                        "id": "comment-7",
+                        "inline_media": [
+                            {
+                                "media_id": "comment-image",
+                                "filename": "comment.png",
+                                "mime_type": "image/png",
+                            }
+                        ],
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(gateway, "IssueService", FakeIssueService)
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.LIST_INLINE_MEDIA],
+            communication_file_receive_enabled=True,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    listed = call_tool(
+        server,
+        "list_inline_media",
+        {
+            "session_id": "session-1",
+            "source_kind": "ado_backlog",
+            "provider": "ado",
+            "resource_id": "123",
+            "project": "Project",
+        },
+    )
+    scoped = call_tool(
+        server,
+        "list_inline_media",
+        {
+            "session_id": "session-1",
+            "source_kind": "ado_backlog",
+            "provider": "ado",
+            "resource_id": "123",
+            "project": "Project",
+            "comment_id": "comment-7",
+        },
+    )
+
+    assert [media["media_id"] for media in listed["media"]] == [
+        "field-image",
+        "comment-image",
+    ]
+    assert [media["media_id"] for media in scoped["media"]] == ["comment-image"]
+
+
 def test_pr_feedback_inline_media_rejects_mime_before_staging(tmp_path: Path) -> None:
     from agent_sandbox.daemons.pr_feedback_worker import FeedbackEnvelope
 
@@ -479,7 +570,7 @@ def test_pr_feedback_inline_media_rejects_mime_before_staging(tmp_path: Path) ->
                 {
                     "media_id": "media-1",
                     "comment_id": "comment-1",
-                    "filename": "review.gif",
+                    "filename": "review.png",
                     "mime_type": "image/gif",
                     "byte_count": len(b"gif-bytes"),
                     "content_base64": base64.b64encode(b"gif-bytes").decode("ascii"),

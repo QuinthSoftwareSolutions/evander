@@ -19,6 +19,7 @@ from agent_sandbox.daemons.pr_feedback_worker import (
     PrFeedbackStore,
     PullRequestFeedbackWorker,
     build_pr_feedback_worker,
+    pr_feedback_item_payload,
 )
 from agent_sandbox.worker_directory_context import ShadowDomainContext, WorkerDirectoryContext
 
@@ -44,6 +45,49 @@ def test_pr_feedback_store_dedupes_feedback(tmp_path: Path) -> None:
         (tmp_path / "runtime" / "pr-feedback-store.json").read_text(encoding="utf-8")
     )
     assert list(payload["feedback"].keys()) == ["github:issue_comment:1"]
+
+
+def test_pr_feedback_store_preserves_raw_embedded_inline_media_payload(
+    tmp_path: Path,
+) -> None:
+    store = PrFeedbackStore(tmp_path / "runtime" / "pr-feedback-store.json")
+    store.add_feedback_if_new(
+        FeedbackEnvelope(
+            feedback_id="feedback-1",
+            provider="github",
+            repo="org/repo",
+            pr_id="123",
+            comment_id="comment-1",
+            author="octocat",
+            body="Screenshot attached",
+            created_at=datetime(2026, 3, 21, tzinfo=timezone.utc),
+            inline_media=[
+                {
+                    "media_id": "media-1",
+                    "filename": "review.png",
+                    "mime_type": "image/png",
+                    "content_base64": base64.b64encode(b"png-bytes").decode("ascii"),
+                }
+            ],
+        )
+    )
+
+    raw_payload = json.loads(
+        (tmp_path / "runtime" / "pr-feedback-store.json").read_text(encoding="utf-8")
+    )
+    stored_media = raw_payload["feedback"]["feedback-1"]["inline_media"][0]
+    listed = store.list_feedback_for_streams(
+        streams=[{"provider": "github", "repo": "org/repo", "pr_id": "123"}],
+        after={("github", "org/repo", "123"): None},
+    )
+    public_media = pr_feedback_item_payload(listed[0])["inline_media"][0]
+
+    assert stored_media["content_base64"] == base64.b64encode(b"png-bytes").decode("ascii")
+    assert public_media["source_kind"] == "pr_feedback"
+    assert public_media["provider"] == "github"
+    assert public_media["resource_id"] == "feedback-1"
+    assert public_media["comment_id"] == "comment-1"
+    assert "content_base64" not in public_media["metadata"]
 
 
 def test_pr_feedback_store_persists_and_resumes_cursors(tmp_path: Path) -> None:

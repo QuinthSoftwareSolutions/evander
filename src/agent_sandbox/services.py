@@ -21,6 +21,7 @@ from agent_sandbox.models import (
     HasPendingDiscordMessagesResponse,
     HasPendingFeedbackResponse,
     GetPullRequestResponse,
+    InlineMediaRef,
     ListPullRequestsResponse,
     ListUnreadDiscordMessagesResponse,
     ListUnreadFeedbackResponse,
@@ -37,6 +38,7 @@ from agent_sandbox.daemons.pr_feedback_worker import (
     PrFeedbackRepository,
     PrFeedbackStore,
     _stream_key,
+    pr_feedback_item_payload,
 )
 from agent_sandbox.inline_media import (
     InlineMediaDownload,
@@ -484,8 +486,6 @@ class TeamsInlineMediaProvider:
         comment_id: str | None = None,
         channel_target: str | None = None,
     ) -> list[InlineMediaRef]:
-        from agent_sandbox.models import InlineMediaRef
-
         refs: list[InlineMediaRef] = []
         for index, item in enumerate(
             self.service.list_attachments(resource_id, channel_target=channel_target)
@@ -2546,7 +2546,7 @@ class PrFeedbackService:
         }
         ignored_feedback_ids = self._read_ignored_feedback_ids()
         items = [
-            PrFeedbackItem.model_validate(item.model_dump(mode="json"))
+            PrFeedbackItem.model_validate(pr_feedback_item_payload(item))
             for item in self.store.list_feedback_for_streams(
                 streams=streams,
                 after=stream_cursors,

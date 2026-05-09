@@ -33,13 +33,27 @@ class _RecordingClient:
     def __exit__(self, exc_type, exc, tb) -> None:
         return None
 
+    @staticmethod
+    def _with_request(response: httpx.Response, *, method: str, url: str) -> httpx.Response:
+        try:
+            response.request
+            return response
+        except RuntimeError:
+            return httpx.Response(
+                response.status_code,
+                headers=response.headers,
+                content=response.content,
+                request=httpx.Request(method, url),
+                extensions=response.extensions,
+            )
+
     def post(self, url: str, **kwargs: object) -> httpx.Response:
         self._calls.append({"method": "POST", "url": url, **kwargs})
-        return self._responses.pop(0)
+        return self._with_request(self._responses.pop(0), method="POST", url=url)
 
     def get(self, url: str, **kwargs: object) -> httpx.Response:
         self._calls.append({"method": "GET", "url": url, **kwargs})
-        return self._responses.pop(0)
+        return self._with_request(self._responses.pop(0), method="GET", url=url)
 
 
 def test_create_issue_appends_parent_relation_operation(monkeypatch: pytest.MonkeyPatch) -> None:

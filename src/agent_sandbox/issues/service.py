@@ -1480,6 +1480,8 @@ class AzureDevOpsIssueInlineMediaProvider:
             headers={"Authorization": AzureDevOpsIssueAdapter._auth_header(pat)},
             timeout_seconds=self.timeout_seconds,
             max_bytes=max_bytes,
+            provider=self.provider_name,
+            allowed_hosts=[allowed_host] if allowed_host else [],
         )
         return InlineMediaDownload(content, media.filename, mime_type or media.mime_type)
 

@@ -1588,22 +1588,20 @@ def create_server(context: RuntimeContext) -> FastMCP:
             include_updates=False,
         )
         response = AdoBacklogGetResponse.model_validate(payload)
-        media: list[tuple[InlineMediaRef, dict[str, Any]]] = []
-        media.extend(
-            _inline_media_refs_from_raw(
-                source_kind="ado_backlog",
-                provider=normalize_inline_media_provider(response.provider),
-                resource_id=response.id,
-                raw_media=response.inline_media or response.metadata.get("inline_media"),
-            )
+        aggregate_media = _inline_media_refs_from_raw(
+            source_kind="ado_backlog",
+            provider=normalize_inline_media_provider(response.provider),
+            resource_id=response.id,
+            raw_media=response.inline_media or response.metadata.get("inline_media"),
         )
+        comment_media: list[tuple[InlineMediaRef, dict[str, Any]]] = []
         for comment in response.comments:
             if not isinstance(comment, dict):
                 continue
             comment_id = str(comment.get("comment_id") or comment.get("id") or "").strip() or None
             if request.comment_id and comment_id != request.comment_id:
                 continue
-            media.extend(
+            comment_media.extend(
                 _inline_media_refs_from_raw(
                     source_kind="ado_backlog",
                     provider=normalize_inline_media_provider(response.provider),
@@ -1612,7 +1610,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     comment_id=comment_id,
                 )
             )
-        return media
+        if request.comment_id:
+            return comment_media or [
+                item for item in aggregate_media if item[0].comment_id == request.comment_id
+            ]
+        return [item for item in aggregate_media if item[0].comment_id is None] + comment_media
 
     def _inline_media_from_communication(
         request: ListInlineMediaRequest,
@@ -1752,6 +1754,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
             content, mime_type = download_url_with_limit(
                 url=ref.url,
                 max_bytes=max_bytes,
+                provider=ref.provider,
+                allowed_hosts=_allowed_inline_media_hosts_for_request(request, ref),
             )
             return content, ref.filename, mime_type or ref.mime_type
         raise ToolError("Inline media content is not available from the configured provider metadata")
