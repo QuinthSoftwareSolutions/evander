@@ -33,13 +33,27 @@ class _RecordingClient:
     def __exit__(self, exc_type, exc, tb) -> None:
         return None
 
+    @staticmethod
+    def _with_request(response: httpx.Response, *, method: str, url: str) -> httpx.Response:
+        try:
+            response.request
+            return response
+        except RuntimeError:
+            return httpx.Response(
+                response.status_code,
+                headers=response.headers,
+                content=response.content,
+                request=httpx.Request(method, url),
+                extensions=response.extensions,
+            )
+
     def post(self, url: str, **kwargs: object) -> httpx.Response:
         self._calls.append({"method": "POST", "url": url, **kwargs})
-        return self._responses.pop(0)
+        return self._with_request(self._responses.pop(0), method="POST", url=url)
 
     def get(self, url: str, **kwargs: object) -> httpx.Response:
         self._calls.append({"method": "GET", "url": url, **kwargs})
-        return self._responses.pop(0)
+        return self._with_request(self._responses.pop(0), method="GET", url=url)
 
 
 def test_create_issue_appends_parent_relation_operation(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -578,3 +592,87 @@ def test_get_backlog_item_by_id_url_encodes_project_name(monkeypatch: pytest.Mon
     )
 
     assert calls[0]["url"] == "https://dev.azure.com/example/My%20Project/_apis/wit/workitems/101"
+
+
+def test_get_backlog_item_extracts_inline_media_from_fields_comments_and_relations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "My Project", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(
+            200,
+            json={
+                "id": 101,
+                "rev": 3,
+                "url": "https://dev.azure.com/example/_apis/wit/workItems/101",
+                "fields": {
+                    "System.TeamProject": "My Project",
+                    "System.Title": "Bug with screenshots",
+                    "System.Description": (
+                        '<p>See <img alt="main shot" '
+                        'src="https://dev.azure.com/example/_apis/wit/attachments/desc?fileName=desc.png" /></p>'
+                    ),
+                },
+                "relations": [
+                    {
+                        "rel": "AttachedFile",
+                        "url": "https://dev.azure.com/example/_apis/wit/attachments/rel?fileName=attached.jpg",
+                        "attributes": {"name": "attached.jpg"},
+                    }
+                ],
+                "_links": {
+                    "web": {
+                        "href": "https://dev.azure.com/example/My%20Project/_workitems/edit/101"
+                    }
+                },
+            },
+        ),
+        httpx.Response(
+            200,
+            json={
+                "comments": [
+                    {
+                        "id": 7,
+                        "text": (
+                            '<div>Comment <img title="comment shot" '
+                            'src="https://dev.azure.com/example/_apis/wit/attachments/comment?fileName=comment.gif" /></div>'
+                        ),
+                        "createdBy": {"displayName": "Ada"},
+                        "createdDate": "2026-01-02T03:04:05Z",
+                        "_links": {"web": {"href": "https://dev.azure.com/comment/7"}},
+                    }
+                ]
+            },
+        ),
+    ]
+    monkeypatch.setattr(
+        "agent_sandbox.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses.copy()),
+    )
+
+    item = adapter.get_backlog_item_by_id(directory_path="root", backlog_item_id="101")
+
+    assert calls[0]["url"] == "https://dev.azure.com/example/My%20Project/_apis/wit/workitems/101"
+    assert calls[1]["url"] == "https://dev.azure.com/example/My Project/_apis/wit/workItems/101/comments"
+    assert len(item["inline_media"]) == 3
+    assert [media["filename"] for media in item["inline_media"]] == [
+        "desc.png",
+        "attached.jpg",
+        "comment.gif",
+    ]
+    field_media, relation_media, comment_media = item["inline_media"]
+    assert field_media["source_kind"] == "ado_backlog"
+    assert field_media["resource_id"] == "101"
+    assert field_media["metadata"]["field_reference_name"] == "System.Description"
+    assert relation_media["metadata"]["source"] == "work_item_relation"
+    assert item["relations"][0]["inline_media"]["filename"] == "attached.jpg"
+    assert item["comments"][0]["html"].startswith("<div>Comment")
+    assert item["comments"][0]["raw_text"].startswith("<div>Comment")
+    assert item["comments"][0]["inline_media"][0]["filename"] == "comment.gif"
+    assert comment_media["comment_id"] == "7"

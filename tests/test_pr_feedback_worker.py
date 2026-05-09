@@ -19,6 +19,7 @@ from agent_sandbox.daemons.pr_feedback_worker import (
     PrFeedbackStore,
     PullRequestFeedbackWorker,
     build_pr_feedback_worker,
+    pr_feedback_item_payload,
 )
 from agent_sandbox.worker_directory_context import ShadowDomainContext, WorkerDirectoryContext
 
@@ -44,6 +45,49 @@ def test_pr_feedback_store_dedupes_feedback(tmp_path: Path) -> None:
         (tmp_path / "runtime" / "pr-feedback-store.json").read_text(encoding="utf-8")
     )
     assert list(payload["feedback"].keys()) == ["github:issue_comment:1"]
+
+
+def test_pr_feedback_store_preserves_raw_embedded_inline_media_payload(
+    tmp_path: Path,
+) -> None:
+    store = PrFeedbackStore(tmp_path / "runtime" / "pr-feedback-store.json")
+    store.add_feedback_if_new(
+        FeedbackEnvelope(
+            feedback_id="feedback-1",
+            provider="github",
+            repo="org/repo",
+            pr_id="123",
+            comment_id="comment-1",
+            author="octocat",
+            body="Screenshot attached",
+            created_at=datetime(2026, 3, 21, tzinfo=timezone.utc),
+            inline_media=[
+                {
+                    "media_id": "media-1",
+                    "filename": "review.png",
+                    "mime_type": "image/png",
+                    "content_base64": base64.b64encode(b"png-bytes").decode("ascii"),
+                }
+            ],
+        )
+    )
+
+    raw_payload = json.loads(
+        (tmp_path / "runtime" / "pr-feedback-store.json").read_text(encoding="utf-8")
+    )
+    stored_media = raw_payload["feedback"]["feedback-1"]["inline_media"][0]
+    listed = store.list_feedback_for_streams(
+        streams=[{"provider": "github", "repo": "org/repo", "pr_id": "123"}],
+        after={("github", "org/repo", "123"): None},
+    )
+    public_media = pr_feedback_item_payload(listed[0])["inline_media"][0]
+
+    assert stored_media["content_base64"] == base64.b64encode(b"png-bytes").decode("ascii")
+    assert public_media["source_kind"] == "pr_feedback"
+    assert public_media["provider"] == "github"
+    assert public_media["resource_id"] == "feedback-1"
+    assert public_media["comment_id"] == "comment-1"
+    assert "content_base64" not in public_media["metadata"]
 
 
 def test_pr_feedback_store_persists_and_resumes_cursors(tmp_path: Path) -> None:
@@ -262,6 +306,34 @@ def test_github_mapping_review_comment_edge_cases() -> None:
     assert envelope.in_reply_to == "54"
 
 
+def test_github_mapping_extracts_markdown_inline_images() -> None:
+    comments = [
+        {
+            "id": 56,
+            "user": {"login": "reviewer"},
+            "body": "Please compare ![actual screenshot](https://example.test/uploads/actual.png)",
+            "created_at": "2026-03-20T12:00:00Z",
+        }
+    ]
+
+    mapped = GitHubFeedbackAdapter._map_issue_comments(
+        repo="org/repo", pr_id="9", comments=comments
+    )
+
+    assert len(mapped) == 1
+    media = mapped[0].inline_media
+    assert len(media) == 1
+    assert media[0].source_kind == "pr_feedback"
+    assert media[0].provider == "github"
+    assert media[0].resource_id == "github:issue_comment:56"
+    assert media[0].comment_id == "56"
+    assert media[0].media_id == "markdown-image-0"
+    assert media[0].filename == "actual.png"
+    assert media[0].mime_type == "image/png"
+    assert media[0].url == "https://example.test/uploads/actual.png"
+    assert media[0].metadata["alt"] == "actual screenshot"
+
+
 def test_github_mapping_review_event_filters_cursor() -> None:
     reviews = [
         {
@@ -286,6 +358,60 @@ def test_github_mapping_review_event_filters_cursor() -> None:
     )
 
     assert [event.feedback_id for event in mapped] == ["github:review:11"]
+
+
+def test_ado_mapping_extracts_html_inline_images_and_attachment_links() -> None:
+    adapter = AzureDevOpsFeedbackAdapter("https://dev.azure.com/example", "proj", pat="test-pat")
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "value": [
+                    {
+                        "id": 45,
+                        "status": "active",
+                        "comments": [
+                            {
+                                "id": 93,
+                                "author": {"displayName": "Dev One"},
+                                "content": (
+                                    "<p>See <img alt='diff' "
+                                    "src='https://dev.azure.com/org/project/_apis/wit/attachments/abc?fileName=diff.png' /></p>"
+                                    "<p><a href='https://dev.azure.com/org/project/_apis/wit/attachments/def'>expected.jpg</a></p>"
+                                ),
+                                "publishedDate": "2026-03-21T01:00:00Z",
+                                "isDeleted": False,
+                            },
+                        ],
+                    }
+                ]
+            }
+
+    class FakeClient:
+        def get(self, *args: object, **kwargs: object) -> FakeResponse:
+            return FakeResponse()
+
+    result = adapter.poll(client=FakeClient(), repo="repo-1", pr_id="101", cursor=None)
+
+    assert len(result.feedback) == 1
+    media = result.feedback[0].inline_media
+    assert len(media) == 2
+    assert media[0].source_kind == "pr_feedback"
+    assert media[0].provider == "azure_devops"
+    assert media[0].resource_id == "azure_devops:thread_comment:45:93"
+    assert media[0].comment_id == "93"
+    assert media[0].media_id == "ado-img-0"
+    assert media[0].filename == "diff.png"
+    assert media[0].mime_type == "image/png"
+    assert media[0].metadata["source"] == "html_image"
+    assert media[0].metadata["alt"] == "diff"
+    assert media[1].media_id == "ado-a-1"
+    assert media[1].filename == "expected.jpg"
+    assert media[1].mime_type == "image/jpeg"
+    assert media[1].metadata["source"] == "ado_attachment_link"
 
 
 def test_ado_mapping_thread_edge_cases() -> None:

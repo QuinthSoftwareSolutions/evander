@@ -21,6 +21,7 @@ from agent_sandbox.models import (
     HasPendingDiscordMessagesResponse,
     HasPendingFeedbackResponse,
     GetPullRequestResponse,
+    InlineMediaRef,
     ListPullRequestsResponse,
     ListUnreadDiscordMessagesResponse,
     ListUnreadFeedbackResponse,
@@ -37,6 +38,12 @@ from agent_sandbox.daemons.pr_feedback_worker import (
     PrFeedbackRepository,
     PrFeedbackStore,
     _stream_key,
+    pr_feedback_item_payload,
+)
+from agent_sandbox.inline_media import (
+    InlineMediaDownload,
+    inline_media_download_from_embedded_payload,
+    sanitize_inline_media_metadata,
 )
 from agent_sandbox.email.providers import (
     EmailAttachmentContent,
@@ -76,6 +83,7 @@ _ATTACHMENT_SECRET_KEYS = {
     "access_token",
     "content",
     "contentBytes",
+    "contentbytes",
     "content_bytes",
     "content_base64",
     "data",
@@ -143,7 +151,11 @@ def _teams_message_to_html(message: str) -> str:
 def _sanitize_attachment_metadata(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
-    return {key: value for key, value in raw.items() if key not in _ATTACHMENT_SECRET_KEYS}
+    return {
+        str(key): sanitize_inline_media_metadata(value)
+        for key, value in raw.items()
+        if str(key).replace("-", "_").lower() not in _ATTACHMENT_SECRET_KEYS
+    }
 
 
 def _teams_attachment_id(item: dict[str, Any]) -> str:
@@ -455,6 +467,100 @@ class TeamsService(Protocol):
         reaction: str,
         session_id: str,
     ) -> dict[str, Any]: ...
+
+
+class TeamsInlineMediaProvider:
+    """Inline-media adapter backed by the existing Teams attachment APIs."""
+
+    provider_name = "teams"
+
+    def __init__(self, service: TeamsService) -> None:
+        self.service = service
+
+    def list_inline_media(
+        self,
+        *,
+        source_kind: str,
+        resource_id: str,
+        resource: dict[str, Any] | None = None,
+        comment_id: str | None = None,
+        channel_target: str | None = None,
+    ) -> list[InlineMediaRef]:
+        refs: list[InlineMediaRef] = []
+        for index, item in enumerate(
+            self.service.list_attachments(resource_id, channel_target=channel_target)
+        ):
+            mime_type = str(
+                item.get("mime_type") or item.get("content_type") or item.get("contentType") or ""
+            ).split(";", 1)[0].strip() or None
+            filename = str(
+                item.get("filename") or item.get("name") or f"teams-inline-media-{index}"
+            ).strip()
+            attachment_id = _teams_attachment_id(item) or str(index)
+            byte_count: int | None = None
+            raw_size = item.get("byte_count", item.get("size", item.get("contentSize")))
+            if raw_size is not None:
+                try:
+                    byte_count = int(raw_size)
+                except (TypeError, ValueError):
+                    byte_count = None
+            refs.append(
+                InlineMediaRef(
+                    source_kind=source_kind,
+                    provider=self.provider_name,
+                    resource_id=resource_id,
+                    comment_id=comment_id,
+                    media_id=attachment_id,
+                    filename=filename,
+                    mime_type=mime_type,
+                    byte_count=byte_count,
+                    url=(
+                        str(item.get("contentUrl") or item.get("content_url") or "").strip()
+                        or None
+                    ),
+                    metadata=_sanitize_attachment_metadata(item),
+                )
+            )
+        return refs
+
+    def download_inline_media(
+        self,
+        *,
+        media: InlineMediaRef,
+        raw: dict[str, Any] | None = None,
+        channel_target: str | None = None,
+        max_bytes: int | None = None,
+    ) -> InlineMediaDownload:
+        embedded = inline_media_download_from_embedded_payload(media, raw)
+        if embedded is not None:
+            if max_bytes is not None and len(embedded.content) > max_bytes:
+                raise ValueError("Inline media exceeds max bytes")
+            return embedded
+        downloaded = self.service.download_attachment(
+            media.resource_id, media.media_id, channel_target=channel_target
+        )
+        data = downloaded.get("content")
+        if not isinstance(data, bytes):
+            embedded = inline_media_download_from_embedded_payload(media, downloaded)
+            if embedded is not None:
+                data = embedded.content
+            else:
+                raise ValueError("Teams inline media download did not return bytes")
+        if max_bytes is not None and len(data) > max_bytes:
+            raise ValueError("Inline media exceeds max bytes")
+        return InlineMediaDownload(
+            data,
+            str(downloaded.get("filename") or downloaded.get("name") or media.filename),
+            (
+                str(
+                    downloaded.get("mime_type")
+                    or downloaded.get("contentType")
+                    or media.mime_type
+                    or ""
+                )
+                or None
+            ),
+        )
 
 
 class TeamsAuthenticationError(httpx.HTTPError):
@@ -2440,7 +2546,7 @@ class PrFeedbackService:
         }
         ignored_feedback_ids = self._read_ignored_feedback_ids()
         items = [
-            PrFeedbackItem.model_validate(item.model_dump(mode="json"))
+            PrFeedbackItem.model_validate(pr_feedback_item_payload(item))
             for item in self.store.list_feedback_for_streams(
                 streams=streams,
                 after=stream_cursors,

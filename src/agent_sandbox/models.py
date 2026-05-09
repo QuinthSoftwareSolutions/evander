@@ -52,6 +52,8 @@ class ToolName(str, Enum):
     DISCORD_POST_STATUS = "discord_post_status"
     COMMUNICATION_LIST_ATTACHMENTS = "communication_list_attachments"
     COMMUNICATION_DOWNLOAD_ATTACHMENT = "communication_download_attachment"
+    LIST_INLINE_MEDIA = "list_inline_media"
+    DOWNLOAD_INLINE_MEDIA = "download_inline_media"
     COMMUNICATION_COPY_ARTIFACT_TO_WORKSPACE = "communication_copy_artifact_to_workspace"
     COMMUNICATION_STAGE_WORKSPACE_FILE = "communication_stage_workspace_file"
     DISCORD_POST_FILE = "discord_post_file"
@@ -692,6 +694,55 @@ class CommunicationAttachmentRef(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class InlineMediaRef(BaseModel):
+    source_kind: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    resource_id: str = Field(min_length=1)
+    comment_id: str | None = None
+    media_id: str = Field(min_length=1)
+    filename: str = Field(min_length=1)
+    mime_type: str | None = None
+    byte_count: int | None = Field(default=None, ge=0)
+    url: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ListInlineMediaRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    source_kind: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    resource_id: str = Field(min_length=1)
+    comment_id: str | None = None
+    project: str | None = None
+    mailbox_id: str | None = None
+    channel_id: str | None = None
+    channel_target: str | None = None
+
+
+class ListInlineMediaResponse(BaseModel):
+    source_kind: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    resource_id: str = Field(min_length=1)
+    media: list[InlineMediaRef] = Field(default_factory=list)
+
+
+class DownloadInlineMediaRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    source_kind: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    resource_id: str = Field(min_length=1)
+    media_id: str = Field(min_length=1)
+    comment_id: str | None = None
+    project: str | None = None
+    mailbox_id: str | None = None
+    channel_id: str | None = None
+    channel_target: str | None = None
+
+
+class DownloadInlineMediaResponse(BaseModel):
+    artifact: "CommunicationFileArtifact"
+
+
 class CommunicationFileArtifact(BaseModel):
     artifact_id: str = Field(min_length=1)
     provider: str = Field(min_length=1)
@@ -892,6 +943,8 @@ class PrFeedbackItem(BaseModel):
     created_at: datetime
     in_reply_to: str | None = None
     resolved: bool | None = None
+    inline_media: list[InlineMediaRef] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class HasPendingFeedbackRequest(BaseModel):
@@ -1327,6 +1380,8 @@ class AdoBacklogGetResponse(BaseModel):
     relations: list[dict[str, Any]] = Field(default_factory=list)
     comments: list[dict[str, Any]] = Field(default_factory=list)
     updates: list[dict[str, Any]] = Field(default_factory=list)
+    inline_media: list[InlineMediaRef] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class RequestPrReviewRequest(BaseModel):

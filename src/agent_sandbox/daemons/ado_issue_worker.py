@@ -43,6 +43,7 @@ from agent_sandbox.daemons.pr_feedback_worker import (
     FeedbackEnvelope,
     PrFeedbackStore,
     _stream_key,
+    pr_feedback_item_payload,
 )
 from agent_sandbox.policy_config import EffectivePolicyConfig
 from agent_sandbox.provider_config import ProviderConfigResolver
@@ -2259,7 +2260,7 @@ def _publish_directory_pr_feedback_events(
                             "repo": envelope.repo,
                             "pr_id": envelope.pr_id,
                         },
-                        PrFeedbackItem.model_validate(envelope.model_dump(mode="json")),
+                        PrFeedbackItem.model_validate(pr_feedback_item_payload(envelope)),
                     )
                 )
             next_cursors[stream_key] = _latest_cursor_value(

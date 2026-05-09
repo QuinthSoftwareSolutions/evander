@@ -2,16 +2,202 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
+from html.parser import HTMLParser
+import mimetypes
 import os
+from pathlib import Path
 import re
 from datetime import UTC, datetime
 from typing import Any, Protocol
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
 
+from agent_sandbox.inline_media import (
+    InlineMediaDownload,
+    download_url_with_limit,
+    inline_media_download_from_embedded_payload,
+    require_provider_media_url,
+)
+from agent_sandbox.models import InlineMediaRef
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.text_formatting import looks_like_html, render_markdownish_text_to_html
+
+_ADO_HTML_MEDIA_FIELDS = (
+    "System.Description",
+    "Microsoft.VSTS.TCM.ReproSteps",
+    "Microsoft.VSTS.TCM.SystemInfo",
+    "Microsoft.VSTS.Common.AcceptanceCriteria",
+)
+_IMAGE_EXTENSIONS = {
+    ".apng",
+    ".avif",
+    ".bmp",
+    ".gif",
+    ".ico",
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".svg",
+    ".tif",
+    ".tiff",
+    ".webp",
+}
+
+
+class _AdoHtmlImageParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.images: list[dict[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "img":
+            return
+        attributes = {name.lower(): value or "" for name, value in attrs}
+        src = attributes.get("src", "").strip()
+        if not src:
+            return
+        self.images.append(
+            {
+                "url": src,
+                "alt": attributes.get("alt", "").strip(),
+                "title": attributes.get("title", "").strip(),
+            }
+        )
+
+
+def _filename_from_media_url(url: str, *, fallback: str) -> str:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    for key in ("fileName", "filename", "name"):
+        values = query.get(key) or query.get(key.lower())
+        if values:
+            candidate = unquote(values[0]).strip()
+            if candidate:
+                return candidate
+    candidate = unquote(Path(parsed.path).name).strip()
+    fallback = fallback.strip()
+    if candidate and (Path(candidate).suffix or not Path(fallback).suffix):
+        return candidate
+    return fallback or candidate or "inline-media"
+
+
+def _mime_type_from_filename(filename: str) -> str | None:
+    mime_type, _encoding = mimetypes.guess_type(filename)
+    return mime_type
+
+
+def _looks_like_media_filename(value: object) -> bool:
+    filename = str(value or "").strip()
+    if not filename:
+        return False
+    suffix = Path(filename).suffix.lower()
+    if suffix in _IMAGE_EXTENSIONS:
+        return True
+    mime_type = _mime_type_from_filename(filename)
+    return bool(mime_type and mime_type.startswith("image/"))
+
+
+def _looks_like_ado_attachment_url(url: str) -> bool:
+    parsed = urlparse(url)
+    path = parsed.path.lower()
+    return "_apis/wit/attachments" in path or "attachment" in path
+
+
+def _relation_is_media_reference(rel: str, url: str, attributes: dict[str, Any]) -> bool:
+    if rel.lower() == "attachedfile":
+        return True
+    if _looks_like_ado_attachment_url(url):
+        return True
+    if _looks_like_media_filename(url):
+        return True
+    if _looks_like_media_filename(_filename_from_media_url(url, fallback="")):
+        return True
+    for key in ("name", "fileName", "filename", "resourceName"):
+        if _looks_like_media_filename(attributes.get(key)):
+            return True
+    return False
+
+
+def _make_ado_media_ref(
+    *,
+    provider: str,
+    resource_id: str,
+    media_id: str,
+    url: str,
+    filename: str,
+    comment_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "source_kind": "ado_backlog",
+        "provider": provider,
+        "resource_id": resource_id,
+        "comment_id": comment_id,
+        "media_id": media_id,
+        "filename": filename,
+        "mime_type": _mime_type_from_filename(filename),
+        "url": url,
+        "metadata": metadata or {},
+    }
+
+
+def extract_ado_html_image_refs(
+    html: str,
+    *,
+    provider: str,
+    resource_id: str,
+    media_id_prefix: str,
+    field_reference_name: str | None = None,
+    comment_id: str | None = None,
+) -> list[dict[str, Any]]:
+    parser = _AdoHtmlImageParser()
+    parser.feed(html or "")
+    refs: list[dict[str, Any]] = []
+    for index, item in enumerate(parser.images):
+        fallback = item.get("alt") or item.get("title") or f"ado-inline-image-{index}"
+        url = item["url"]
+        filename = _filename_from_media_url(url, fallback=fallback)
+        metadata = {
+            "source": "html_image",
+            "alt": item.get("alt", ""),
+            "title": item.get("title", ""),
+        }
+        if field_reference_name:
+            metadata["field_reference_name"] = field_reference_name
+        refs.append(
+            _make_ado_media_ref(
+                provider=provider,
+                resource_id=resource_id,
+                comment_id=comment_id,
+                media_id=f"{media_id_prefix}-{index}",
+                url=url,
+                filename=filename,
+                metadata=metadata,
+            )
+        )
+    return refs
+
+
+def extract_ado_field_inline_media_refs(
+    fields: dict[str, Any], *, provider: str, resource_id: str
+) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for field_name in _ADO_HTML_MEDIA_FIELDS:
+        value = fields.get(field_name)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        refs.extend(
+            extract_ado_html_image_refs(
+                value,
+                provider=provider,
+                resource_id=resource_id,
+                field_reference_name=field_name,
+                media_id_prefix=f"field-{field_name.replace('.', '-').lower()}-image",
+            )
+        )
+    return refs
+
 
 
 def _format_ado_html_field(value: str | None) -> str | None:
@@ -362,15 +548,29 @@ class AzureDevOpsIssueAdapter:
         for raw in entries:
             if not isinstance(raw, dict):
                 continue
+            comment_id = str(raw.get("id", "")).strip()
+            raw_text = str(raw.get("text", "")).strip()
+            html_content = str(
+                raw.get("html") or raw.get("renderedText") or raw.get("text") or ""
+            ).strip()
             normalized.append(
                 {
-                    "id": str(raw.get("id", "")).strip(),
-                    "text": str(raw.get("text", "")).strip(),
+                    "id": comment_id,
+                    "text": raw_text,
+                    "html": html_content,
+                    "raw_text": raw_text,
                     "created_by": str((raw.get("createdBy") or {}).get("displayName", "")).strip(),
                     "created_date": self._normalize_datetime(
                         str(raw.get("createdDate", "")).strip()
                     ),
                     "url": str((raw.get("_links") or {}).get("web", {}).get("href", "")).strip(),
+                    "inline_media": extract_ado_html_image_refs(
+                        html_content,
+                        provider=self.provider_name,
+                        resource_id=remote_issue_id,
+                        comment_id=comment_id or None,
+                        media_id_prefix=f"comment-{comment_id or len(normalized)}-image",
+                    ),
                 }
             )
         return normalized
@@ -418,23 +618,49 @@ class AzureDevOpsIssueAdapter:
             }
         return str(value)
 
-    def _normalize_relations(self, relations: object) -> list[dict[str, Any]]:
+    def _normalize_relations(
+        self, relations: object, *, resource_id: str | None = None
+    ) -> list[dict[str, Any]]:
         if not isinstance(relations, list):
             return []
         normalized: list[dict[str, Any]] = []
-        for relation in relations:
+        for index, relation in enumerate(relations):
             if not isinstance(relation, dict):
                 continue
             attrs = (
                 relation.get("attributes") if isinstance(relation.get("attributes"), dict) else {}
             )
-            normalized.append(
-                {
-                    "rel": str(relation.get("rel") or "").strip() or None,
-                    "url": str(relation.get("url") or "").strip() or None,
-                    "attributes": self._json_safe(attrs),
-                }
-            )
+            rel = str(relation.get("rel") or "").strip()
+            url = str(relation.get("url") or "").strip()
+            safe_attrs = self._json_safe(attrs)
+            normalized_relation: dict[str, Any] = {
+                "rel": rel or None,
+                "url": url or None,
+                "attributes": safe_attrs,
+            }
+            if url and resource_id and _relation_is_media_reference(rel, url, safe_attrs):
+                filename = str(
+                    safe_attrs.get("name")
+                    or safe_attrs.get("fileName")
+                    or safe_attrs.get("filename")
+                    or safe_attrs.get("resourceName")
+                    or ""
+                ).strip()
+                if not filename:
+                    filename = _filename_from_media_url(url, fallback=f"ado-relation-media-{index}")
+                normalized_relation["inline_media"] = _make_ado_media_ref(
+                    provider=self.provider_name,
+                    resource_id=resource_id,
+                    media_id=f"relation-{index}",
+                    url=url,
+                    filename=filename,
+                    metadata={
+                        "source": "work_item_relation",
+                        "rel": rel,
+                        "attributes": safe_attrs,
+                    },
+                )
+            normalized.append(normalized_relation)
         return normalized
 
     def _fetch_updates(
@@ -1131,10 +1357,14 @@ class AzureDevOpsIssueAdapter:
                     str(fields.get("Microsoft.VSTS.Common.ClosedDate") or "").strip()
                 ),
                 "fields": self._json_safe(fields),
-                "relations": self._normalize_relations(payload.get("relations"))
-                if include_relations
-                else [],
+                "relations": [],
+                "inline_media": [],
             }
+            item["relations"] = (
+                self._normalize_relations(payload.get("relations"), resource_id=item["id"])
+                if include_relations
+                else []
+            )
             item["comments"] = (
                 self._fetch_comments(
                     client,
@@ -1157,7 +1387,103 @@ class AzureDevOpsIssueAdapter:
                 if include_updates
                 else []
             )
+            inline_media = extract_ado_field_inline_media_refs(
+                fields, provider=self.provider_name, resource_id=item["id"]
+            )
+            for relation in item["relations"]:
+                if isinstance(relation, dict) and isinstance(relation.get("inline_media"), dict):
+                    inline_media.append(relation["inline_media"])
+            for comment in item["comments"]:
+                if isinstance(comment, dict) and isinstance(comment.get("inline_media"), list):
+                    inline_media.extend(comment["inline_media"])
+            item["inline_media"] = inline_media
             return item
+
+
+class AzureDevOpsIssueInlineMediaProvider:
+    """Inline-media adapter for Azure DevOps work item/backlog media."""
+
+    provider_name = "azure_devops"
+
+    def __init__(
+        self,
+        config_resolver: ProviderConfigResolver,
+        *,
+        directory_path: str,
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        self.issue_adapter = AzureDevOpsIssueAdapter(
+            config_resolver, timeout_seconds=timeout_seconds
+        )
+        self.directory_path = directory_path
+        self.timeout_seconds = timeout_seconds
+
+    def list_inline_media(
+        self,
+        *,
+        source_kind: str,
+        resource_id: str,
+        resource: dict[str, Any] | None = None,
+        comment_id: str | None = None,
+    ) -> list[InlineMediaRef]:
+        if not isinstance(resource, dict):
+            return []
+        refs: list[InlineMediaRef] = []
+        raw_items = resource.get("inline_media")
+        if not isinstance(raw_items, list):
+            raw_items = []
+        for item in raw_items:
+            try:
+                ref = (
+                    item
+                    if isinstance(item, InlineMediaRef)
+                    else InlineMediaRef.model_validate(item)
+                )
+            except Exception:
+                continue
+            if comment_id and ref.comment_id != comment_id:
+                continue
+            refs.append(
+                ref.model_copy(
+                    update={
+                        "source_kind": source_kind,
+                        "provider": self.provider_name,
+                        "resource_id": resource_id,
+                    }
+                )
+            )
+        return refs
+
+    def download_inline_media(
+        self,
+        *,
+        media: InlineMediaRef,
+        raw: dict[str, Any] | None = None,
+        max_bytes: int | None = None,
+    ) -> InlineMediaDownload:
+        embedded = inline_media_download_from_embedded_payload(media, raw)
+        if embedded is not None:
+            return embedded
+        if not media.url:
+            raise ValueError("Azure DevOps backlog inline media does not include a download URL")
+        organization_url, _project, pat = self.issue_adapter._resolve_connection(
+            self.directory_path
+        )
+        allowed_host = urlparse(organization_url).hostname
+        require_provider_media_url(
+            provider=self.provider_name,
+            url=media.url,
+            allowed_hosts=[allowed_host] if allowed_host else [],
+        )
+        content, mime_type = download_url_with_limit(
+            url=media.url,
+            headers={"Authorization": AzureDevOpsIssueAdapter._auth_header(pat)},
+            timeout_seconds=self.timeout_seconds,
+            max_bytes=max_bytes,
+            provider=self.provider_name,
+            allowed_hosts=[allowed_host] if allowed_host else [],
+        )
+        return InlineMediaDownload(content, media.filename, mime_type or media.mime_type)
 
 
 class IssueService:

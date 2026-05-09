@@ -11,6 +11,7 @@ from agent_sandbox.daemons.pr_feedback_worker import (
     AzureDevOpsFeedbackAdapter,
     GitHubFeedbackAdapter,
     _stream_key,
+    pr_feedback_item_payload,
 )
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import PullRequestNewFeedbackTriggerDefinition
@@ -41,7 +42,7 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                 for raw in payload.get("feedback", {}).values():
                     if not isinstance(raw, dict):
                         continue
-                    item = PrFeedbackItem.model_validate(raw)
+                    item = PrFeedbackItem.model_validate(pr_feedback_item_payload(raw))
                     if item.provider not in {"local", "github", "azure_devops"}:
                         continue
                     stream = {"provider": item.provider, "repo": item.repo, "pr_id": item.pr_id}
@@ -71,7 +72,7 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                                     "repo": envelope.repo,
                                     "pr_id": envelope.pr_id,
                                 },
-                                PrFeedbackItem.model_validate(envelope.model_dump(mode="json")),
+                                PrFeedbackItem.model_validate(pr_feedback_item_payload(envelope)),
                             )
                         )
                     if result.next_cursor:
