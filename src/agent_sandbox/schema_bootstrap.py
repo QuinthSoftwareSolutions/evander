@@ -32,6 +32,15 @@ _TICKET_OUTPUT_SCHEMA = {
 }
 
 _TRIGGER_OUTPUT_SCHEMAS = {
+    "trigger:event": {
+        "event_id": {"type": "string"},
+        "event_type": {"type": "string"},
+        "payload": {"type": "object"},
+        "correlation_key": {"type": ["string", "null"]},
+        "created_at": {"type": "string"},
+        "source": {"type": ["object", "null"]},
+        "idempotency_key": {"type": ["string", "null"]},
+    },
     "trigger:ticket:created": _TICKET_OUTPUT_SCHEMA,
     "trigger:ticket:changed": _TICKET_OUTPUT_SCHEMA,
     "trigger:script-run-request": {
@@ -267,6 +276,14 @@ _GATE_OUTPUT_SCHEMAS = {
 }
 
 _EFFECT_OUTPUT_SCHEMAS = {
+    "effect:event:emit": {
+        "success": {"type": "boolean"},
+        "event_id": {"type": "string"},
+        "event_type": {"type": "string"},
+        "payload": {"type": "object"},
+        "correlation_key": {"type": ["string", "null"]},
+        "created_at": {"type": "string"},
+    },
     "effect:vm:create": {
         "provider": {"type": "string"},
         "session_id": {"type": "string"},

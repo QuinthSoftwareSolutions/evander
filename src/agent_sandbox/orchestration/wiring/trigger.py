@@ -52,6 +52,12 @@ def build_trigger_worker_wiring(
         trigger_providers=provider_catalog.trigger_providers,
         env=os.environ,
     )
+    provider_factory.metadata.update(
+        {
+            "internal_event_store_path": str(worker_config.internal_event_store_path),
+            "workflow_event_journal_path": str(worker_config.workflow_event_journal_path),
+        }
+    )
     return TriggerWorkerWiring(
         provider_config_resolver=resolver,
         event_queue=event_queue,

@@ -4031,3 +4031,249 @@ def test_merge_gate_re_emits_shared_payload_keys(tmp_path: Path) -> None:
     )
     effect_record = next(iter(effect_payload.values()))
     assert effect_record["status"] == "succeeded"
+
+
+def test_event_emit_effect_evaluates_payload_and_writes_internal_event(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Trigger",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"issue_id": {"type": "string"}, "metadata": {"type": "object"}},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "emit-plan",
+                    "display_name": "Emit plan",
+                    "type": "effect:event:emit",
+                    "event_type": "issue.plan_committed",
+                    "correlation_key": "issue:${{trigger-1.issue_id}}",
+                    "payload": {
+                        "issue_id": "${{trigger-1.issue_id}}",
+                        "plan_version": "${{trigger-1.metadata.plan.version}}",
+                    },
+                }
+            ],
+            "edges": [_edge("trigger-1", "emit-plan")],
+        }
+    )
+    worker = EffectOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None
+    )  # type: ignore[arg-type]
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="input-event-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime.now(timezone.utc),
+            trace_id="trace-1",
+            payload={"issue_id": "ISSUE-1", "metadata": {"plan": {"version": 7}}},
+        )
+    )
+
+    worker.run_once()
+    worker._wait_for_inflight_completion(timeout_seconds=2)
+    worker.run_once()
+
+    events = json.loads(worker_config.internal_event_store_path.read_text(encoding="utf-8"))
+    assert len(events) == 1
+    emitted = next(iter(events.values()))
+    assert emitted["event_type"] == "issue.plan_committed"
+    assert emitted["payload"] == {"issue_id": "ISSUE-1", "plan_version": 7}
+    assert emitted["correlation_key"] == "issue:ISSUE-1"
+    assert emitted["source"]["workflow_run_id"] == "trace-1"
+    assert emitted["source"]["node_id"] == "emit-plan"
+    journal = worker_config.workflow_event_journal_path.read_text(encoding="utf-8")
+    assert "workflow.internal_event.published" in journal
+
+
+def test_event_emit_effect_can_start_event_trigger_workflow(tmp_path: Path) -> None:
+    from agent_sandbox.daemons.trigger_orchestrator import TriggerOrchestratorWorker
+
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "source-trigger",
+                    "display_name": "Source",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                },
+                {
+                    "id": "event-trigger",
+                    "display_name": "Custom event",
+                    "type": "trigger:event",
+                    "event_type": "custom.operator_event",
+                },
+            ],
+            "effects": [
+                {
+                    "id": "emit-custom",
+                    "display_name": "Emit custom",
+                    "type": "effect:event:emit",
+                    "event_type": "custom.operator_event",
+                    "payload": {"value": "ok"},
+                }
+            ],
+            "edges": [_edge("source-trigger", "emit-custom")],
+        }
+    )
+    effect_worker = EffectOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None
+    )  # type: ignore[arg-type]
+    effect_worker.event_queue.publish(
+        TriggerEvent(
+            event_id="source-event-1",
+            trigger_id="source-trigger",
+            trigger_type="trigger:cron",
+            occurred_at=datetime.now(timezone.utc),
+            trace_id="trace-1",
+            payload={},
+        )
+    )
+    effect_worker.run_once()
+    effect_worker._wait_for_inflight_completion(timeout_seconds=2)
+    effect_worker.run_once()
+
+    trigger_worker = TriggerOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None
+    )  # type: ignore[arg-type]
+    result = trigger_worker.run_once()
+
+    assert result.events_published >= 1
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    event_trigger_records = [
+        record for record in queue_payload.values() if record["trigger_id"] == "event-trigger"
+    ]
+    assert len(event_trigger_records) == 1
+    assert event_trigger_records[0]["payload"]["payload"] == {"value": "ok"}
+
+
+def test_event_emit_effect_invalid_event_type_fails_clearly(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Trigger",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"event_type": {"type": "string"}},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "emit-invalid",
+                    "display_name": "Emit invalid",
+                    "type": "effect:event:emit",
+                    "event_type": "${{trigger-1.event_type}}",
+                    "payload": {},
+                }
+            ],
+            "edges": [_edge("trigger-1", "emit-invalid")],
+        }
+    )
+    worker = EffectOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None
+    )  # type: ignore[arg-type]
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="input-event-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime.now(timezone.utc),
+            trace_id="trace-1",
+            payload={"event_type": "bad event type"},
+        )
+    )
+
+    worker.run_once()
+    worker._wait_for_inflight_completion(timeout_seconds=2)
+    worker.run_once()
+
+    executions = [
+        record
+        for record in worker.execution_store.list_executions()
+        if record.effect_id == "emit-invalid"
+    ]
+    assert executions[-1].status == "failed"
+    assert "event_type" in (executions[-1].error or "")
+    assert json.loads(worker_config.internal_event_store_path.read_text(encoding="utf-8")) == {}
+
+
+def test_event_emit_effect_retry_uses_idempotency_key(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Trigger",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "emit-once",
+                    "display_name": "Emit once",
+                    "type": "effect:event:emit",
+                    "event_type": "custom.operator_event",
+                    "payload": {"value": "ok"},
+                }
+            ],
+            "edges": [_edge("trigger-1", "emit-once")],
+        }
+    )
+    worker = EffectOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None
+    )  # type: ignore[arg-type]
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="input-event-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime.now(timezone.utc),
+            trace_id="trace-1",
+            payload={},
+        )
+    )
+
+    worker.run_once()
+    worker._wait_for_inflight_completion(timeout_seconds=2)
+    first_worker_events = json.loads(
+        worker_config.internal_event_store_path.read_text(encoding="utf-8")
+    )
+    assert len(first_worker_events) == 1
+    worker_retry = EffectOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None
+    )  # type: ignore[arg-type]
+    worker_retry.run_once()
+    worker_retry._wait_for_inflight_completion(timeout_seconds=2)
+    worker_retry.run_once()
+
+    events = json.loads(worker_config.internal_event_store_path.read_text(encoding="utf-8"))
+    assert len(events) == 1

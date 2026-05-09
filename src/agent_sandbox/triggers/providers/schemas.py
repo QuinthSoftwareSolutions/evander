@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agent_sandbox.events.models import TriggerDefinition
+from agent_sandbox.events.internal import validate_internal_event_type
 from agent_sandbox.events.provider_types import (
     EmailProvider,
     PrFeedbackProvider,
@@ -12,6 +13,25 @@ from agent_sandbox.events.provider_types import (
     validate_pr_feedback_provider,
 )
 from agent_sandbox.workflow.contracts import normalize_directory_paths, normalize_string_list
+
+
+class EventTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:event"]
+    event_type: str = Field(min_length=1)
+    correlation_key: str | None = None
+
+    @field_validator("event_type")
+    @classmethod
+    def validate_event_type(cls, value: str) -> str:
+        return validate_internal_event_type(value)
+
+    @field_validator("correlation_key", mode="before")
+    @classmethod
+    def normalize_correlation_key(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
 
 class CronTriggerDefinition(TriggerDefinition):

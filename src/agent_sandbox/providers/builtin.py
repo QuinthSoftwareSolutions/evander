@@ -12,6 +12,7 @@ from agent_sandbox.effects.providers.agent_clone_repo import AgentCloneRepoEffec
 from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
 from agent_sandbox.effects.providers.agent_create import AgentCreateEffectProvider
 from agent_sandbox.effects.providers.agent_destroy import AgentDestroyEffectProvider
+from agent_sandbox.effects.providers.event_emit import EventEmitEffectProvider
 from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
 from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
 from agent_sandbox.effects.providers.bash_script import BashScriptEffectProvider
@@ -51,6 +52,7 @@ from agent_sandbox.triggers.providers.agent_run_completed import AgentRunComplet
 from agent_sandbox.triggers.providers.cron import CronTriggerProvider
 from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
+from agent_sandbox.triggers.providers.event import EventTriggerProvider
 from agent_sandbox.triggers.providers.git_push import GitPushTriggerProvider
 from agent_sandbox.triggers.providers.pull_request_new_feedback import (
     PullRequestNewFeedbackTriggerProvider,
@@ -68,6 +70,7 @@ from agent_sandbox.triggers.providers.ticket_created import TicketCreatedTrigger
 def register_providers() -> dict[str, dict[str, type]]:
     return dict(
         trigger_providers={
+            "trigger:event": EventTriggerProvider,
             "trigger:cron": CronTriggerProvider,
             "trigger:ticket:created": TicketCreatedTriggerProvider,
             "trigger:ticket:changed": TicketChangedTriggerProvider,
@@ -92,6 +95,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "gate:merge": MergeGateProvider,
         },
         effect_providers={
+            "effect:event:emit": EventEmitEffectProvider,
             "effect:vm:create": VmCreateEffectProvider,
             "effect:vm:clone-repo": VmCloneRepoEffectProvider,
             "effect:vm:bootstrap-python": VmBootstrapPythonEffectProvider,
