@@ -762,6 +762,15 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="trigger",
+        type="trigger:event",
+        label="Internal event",
+        fields=[
+            _field("event_type", "Event type", "string", required=True),
+            _field("correlation_key", "Correlation key", "string"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
         type="trigger:ticket:created",
         label="Ticket created",
         fields=[
@@ -774,6 +783,42 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         label="Ticket changed",
         fields=[
             _field("directories", "Directories", "string_list", required=True, placeholder="root"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:issue:comment-created",
+        label="Issue comment created",
+        fields=[
+            _field(
+                "provider",
+                "Provider",
+                "enum",
+                options=[
+                    _field_option("ado", "Azure DevOps"),
+                ],
+            ),
+            _field("organization_url", "Organization URL", "string"),
+            _field("project", "Project", "string"),
+            _field("directories", "Directories", "string_list", placeholder="root"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:issue:new-comment",
+        label="Issue new comment",
+        fields=[
+            _field(
+                "provider",
+                "Provider",
+                "enum",
+                options=[
+                    _field_option("ado", "Azure DevOps"),
+                ],
+            ),
+            _field("organization_url", "Organization URL", "string"),
+            _field("project", "Project", "string"),
+            _field("directories", "Directories", "string_list", placeholder="root"),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -1499,6 +1544,28 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("issue_id", "Issue ID", "string", required=True, bindable=True),
             _field("state", "State", "string", required=True, bindable=True),
             _field("sync_proxy_cache", "Sync proxy cache", "boolean", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:issue:update-metadata",
+        label="Issue update metadata",
+        fields=[
+            _field("issue_id", "Issue ID", "string", required=True, bindable=True),
+            _field("patch", "Patch", "json", bindable=True),
+            _field("merge_patch", "Merge patch", "json", bindable=True),
+            _field("expected_updated_at", "Expected updated at", "string", bindable=True),
+            _field("sync_proxy_cache", "Sync proxy cache", "boolean", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:event:emit",
+        label="Emit internal event",
+        fields=[
+            _field("event_type", "Event type", "string", required=True, bindable=True),
+            _field("correlation_key", "Correlation key", "string", bindable=True),
+            _field("payload", "Payload", "json", required=True, bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

@@ -139,8 +139,11 @@ const NODE_KIND_DESCRIPTIONS: Record<WorkflowNodeKind, string> = {
 
 const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "trigger:cron": "Start a workflow on a recurring cron schedule.",
+  "trigger:event": "Start when an internal workflow event is emitted.",
   "trigger:ticket:created": "Start when a tracked ticket is created.",
   "trigger:ticket:changed": "Start when a tracked ticket changes state or metadata.",
+  "trigger:issue:comment-created": "Start when a tracked issue receives a new comment.",
+  "trigger:issue:new-comment": "Start when a tracked issue receives a new comment.",
   "trigger:discord:new-message": "Start from new Discord messages that match the configured filters.",
   "trigger:teams:new-message": "Start from new Microsoft Teams messages that match the configured targets.",
   "trigger:email:new-message": "Start from newly ingested email messages for the configured mailbox scope.",
@@ -150,6 +153,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "gate:filter": "Allow only matching events to continue downstream.",
   "gate:map": "Project upstream outputs into a new payload shape.",
   "gate:merge": "Merge compatible inbound event streams into one downstream path.",
+  "gate:debounce": "Wait for a quiet period, then forward the latest activation.",
   "gate:dedupe": "Suppress duplicate activations for the same key until a TTL expires.",
   "gate:await-agent": "Pause the workflow until a selected agent session completes.",
   "gate:for": "Iterate over an array and execute the body branch for each item.",
@@ -165,6 +169,8 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:vm:exec": "Run a shell command inside a VM.",
   "effect:vm:copy-files": "Copy rendered file content into a VM.",
   "effect:vm:delete-files": "Delete files from a VM.",
+  "effect:event:emit": "Emit an internal workflow event for other graphs.",
+  "effect:issue:update-metadata": "Patch metadata on a tracked issue.",
   "effect:session:update-metadata": "Patch session metadata on the host.",
   "effect:git:promote-agent-branch": "Promote an agent branch into a trusted host checkout.",
   "effect:pr:create": "Create a pull request from the host side.",
@@ -678,11 +684,23 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   if (kind === "trigger" && type === "trigger:cron") {
     return { id, display_name: "New trigger", type, expression: "*/15 * * * *" };
   }
+  if (kind === "trigger" && type === "trigger:event") {
+    return { id, display_name: "Internal event", type, event_type: "custom.operator_event" };
+  }
   if (kind === "trigger" && type === "trigger:ticket:created") {
     return { id, display_name: "Ticket created", type, directories: ["root"] };
   }
   if (kind === "trigger" && type === "trigger:ticket:changed") {
     return { id, display_name: "Ticket changed", type, directories: ["root"] };
+  }
+  if (kind === "trigger" && (type === "trigger:issue:comment-created" || type === "trigger:issue:new-comment")) {
+    return {
+      id,
+      display_name: "Issue comment",
+      type,
+      provider: "ado",
+      directories: ["root"],
+    };
   }
   if (kind === "trigger" && type === "trigger:discord:new-message") {
     return {
@@ -732,12 +750,23 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   if (kind === "gate" && type === "gate:merge") {
     return { id, display_name: "New merge", type, outputs: {} };
   }
+  if (kind === "gate" && type === "gate:debounce") {
+    return {
+      id,
+      display_name: "Debounce",
+      type,
+      key: "debounce:${{system.execution.event_id}}",
+      quiet_period: "PT2M",
+      max_delay: "PT10M",
+      outputs: {},
+    };
+  }
   if (kind === "gate" && type === "gate:dedupe") {
     return {
       id,
       display_name: "Dedupe",
       type,
-      key: "dedupe:${{system.event_id}}",
+      key: "dedupe:${{system.execution.event_id}}",
       ttl: "P7D",
       outputs: {},
     };
@@ -802,6 +831,25 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       type,
       paths: ["/tmp/example.txt"],
       missing_ok: true,
+    };
+  }
+  if (kind === "effect" && type === "effect:event:emit") {
+    return {
+      id,
+      display_name: "Emit internal event",
+      type,
+      event_type: "custom.operator_event",
+      payload: {},
+    };
+  }
+  if (kind === "effect" && type === "effect:issue:update-metadata") {
+    return {
+      id,
+      display_name: "Update issue metadata",
+      type,
+      issue_id: "issue-1",
+      patch: { "fields.workflow_status": "updated" },
+      sync_proxy_cache: true,
     };
   }
   if (kind === "effect" && type === "effect:session:update-metadata") {

@@ -175,6 +175,26 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "state",
         "sync_proxy_cache",
     ]
+    issue_metadata = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "effect:issue:update-metadata"
+    )
+    assert [field["key"] for field in issue_metadata["fields"]] == [
+        "issue_id",
+        "patch",
+        "merge_patch",
+        "expected_updated_at",
+        "sync_proxy_cache",
+    ]
+    event_emit = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:event:emit"
+    )
+    assert [field["key"] for field in event_emit["fields"]] == [
+        "event_type",
+        "correlation_key",
+        "payload",
+    ]
     notification = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:notification:send"
     )
@@ -255,6 +275,33 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         node for node in catalog_payload["nodes"] if node["type"] == "trigger:script-run-request"
     )
     assert script_run_request["fields"] == []
+    internal_event = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "trigger:event"
+    )
+    assert [field["key"] for field in internal_event["fields"]] == [
+        "event_type",
+        "correlation_key",
+    ]
+    issue_comment = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "trigger:issue:comment-created"
+    )
+    assert [field["key"] for field in issue_comment["fields"]] == [
+        "provider",
+        "organization_url",
+        "project",
+        "directories",
+    ]
+    issue_comment_alias = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "trigger:issue:new-comment"
+    )
+    assert [field["key"] for field in issue_comment_alias["fields"]] == [
+        "provider",
+        "organization_url",
+        "project",
+        "directories",
+    ]
     teams_message = next(
         node for node in catalog_payload["nodes"] if node["type"] == "trigger:teams:new-message"
     )
@@ -424,6 +471,15 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "codex_skills",
         "directory_path",
     ]
+
+
+def test_workflow_editor_default_dedupe_node_uses_supported_event_binding() -> None:
+    app_source = (
+        Path(__file__).resolve().parents[1] / "frontend" / "workflow-editor" / "src" / "App.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "dedupe:${{system.execution.event_id}}" in app_source
+    assert "dedupe:${{system.event_id}}" not in app_source
 
 
 def test_admin_web_exposes_deployment_status_from_runtime(tmp_path: Path) -> None:
