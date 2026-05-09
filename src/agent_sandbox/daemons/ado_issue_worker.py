@@ -1229,10 +1229,12 @@ def fetch_work_item_comments(
         revised_by = comment.get("revisedBy", {})
         normalized.append(
             {
+                "id": str(comment.get("id", "")).strip(),
                 "text": text,
                 "author": str(revised_by.get("displayName", "")).strip(),
                 "created_date": str(comment.get("createdDate", "")),
                 "modified_date": str(comment.get("modifiedDate", "")),
+                "url": str((comment.get("_links") or {}).get("web", {}).get("href", "")).strip(),
             }
         )
     return normalized

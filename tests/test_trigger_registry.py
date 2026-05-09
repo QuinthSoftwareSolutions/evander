@@ -30,6 +30,8 @@ def test_default_registry_includes_all_known_trigger_types() -> None:
         "trigger:cron",
         "trigger:ticket:created",
         "trigger:ticket:changed",
+        "trigger:issue:comment-created",
+        "trigger:issue:new-comment",
         "trigger:script-run-request",
         "trigger:discord:new-message",
         "trigger:teams:new-message",

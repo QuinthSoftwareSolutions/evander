@@ -50,6 +50,7 @@ from agent_sandbox.triggers.providers.cron import CronTriggerProvider
 from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.git_push import GitPushTriggerProvider
+from agent_sandbox.triggers.providers.issue_comment_created import IssueCommentCreatedTriggerProvider
 from agent_sandbox.triggers.providers.pull_request_new_feedback import (
     PullRequestNewFeedbackTriggerProvider,
 )
@@ -69,6 +70,8 @@ def register_providers() -> dict[str, dict[str, type]]:
             "trigger:cron": CronTriggerProvider,
             "trigger:ticket:created": TicketCreatedTriggerProvider,
             "trigger:ticket:changed": TicketChangedTriggerProvider,
+            "trigger:issue:comment-created": IssueCommentCreatedTriggerProvider,
+            "trigger:issue:new-comment": IssueCommentCreatedTriggerProvider,
             "trigger:script-run-request": ScriptRunRequestTriggerProvider,
             "trigger:discord:new-message": DiscordNewMessageTriggerProvider,
             "trigger:teams:new-message": TeamsNewMessageTriggerProvider,

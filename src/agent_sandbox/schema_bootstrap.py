@@ -31,9 +31,24 @@ _TICKET_OUTPUT_SCHEMA = {
     }
 }
 
+_ISSUE_COMMENT_OUTPUT_SCHEMA = {
+    "issue_id": {"type": "string"},
+    "issue_number": {"type": "string"},
+    "comment_id": {"type": "string"},
+    "comment_body": {"type": "string"},
+    "author": {"type": "object"},
+    "created_at": {"type": "string"},
+    "url": {"type": "string"},
+    "source": {"type": "string"},
+    "source_type": {"type": "string"},
+    "metadata": {"type": "object"},
+}
+
 _TRIGGER_OUTPUT_SCHEMAS = {
     "trigger:ticket:created": _TICKET_OUTPUT_SCHEMA,
     "trigger:ticket:changed": _TICKET_OUTPUT_SCHEMA,
+    "trigger:issue:comment-created": _ISSUE_COMMENT_OUTPUT_SCHEMA,
+    "trigger:issue:new-comment": _ISSUE_COMMENT_OUTPUT_SCHEMA,
     "trigger:script-run-request": {
         "request_id": {"type": "string"},
         "session_id": {"type": "string"},

@@ -44,6 +44,47 @@ class TicketChangedTriggerDefinition(TriggerDefinition):
         return normalize_directory_paths(value)
 
 
+class IssueCommentCreatedTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:issue:comment-created", "trigger:issue:new-comment"]
+    provider: str | None = None
+    organization_url: str | None = None
+    project: str | None = None
+    directories: list[str] = Field(default_factory=list)
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def normalize_provider(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip().lower()
+        if not text:
+            return None
+        if text in {"ado", "azure_devops", "azure-devops"}:
+            return "ado"
+        raise ValueError("Unsupported issue comment provider: %r. Allowed providers: ado" % text)
+
+    @field_validator("organization_url", mode="before")
+    @classmethod
+    def normalize_organization_url(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip().rstrip("/")
+        return text or None
+
+    @field_validator("project", mode="before")
+    @classmethod
+    def normalize_project(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("directories", mode="before")
+    @classmethod
+    def normalize_directories(cls, value: object) -> object:
+        return normalize_directory_paths(value)
+
+
 class ScriptRunRequestTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:script-run-request"]
 
