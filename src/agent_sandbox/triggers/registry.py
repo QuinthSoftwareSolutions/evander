@@ -62,6 +62,7 @@ class TriggerProviderFactory:
         admin_service: object | None = None,
         env: Mapping[str, str] | None = None,
         secret_resolver: Callable[[str], str | None] | None = None,
+        metadata: Mapping[str, Any] | None = None,
     ) -> None:
         self.provider_config_resolver = provider_config_resolver
         self.registry = registry or TriggerProviderRegistry()
@@ -79,6 +80,7 @@ class TriggerProviderFactory:
         )
         self.env = env or dict(os.environ)
         self.secret_resolver = secret_resolver
+        self.metadata = dict(metadata or {})
 
     def build(
         self,
@@ -95,6 +97,7 @@ class TriggerProviderFactory:
             env=self.env,
             secret_resolver=self.secret_resolver,
             metadata={
+                **self.metadata,
                 "directory_path": directory_path or "root",
                 "admin_service": self.admin_service,
                 "vm_inventory": self._provider_runtime_ports.gate_vm_inventory

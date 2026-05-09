@@ -833,6 +833,7 @@ class OrchestrationCoreConfig(BaseModel):
     event_queue_store_path: Path | None = None
     event_queue_cursor_store_path: Path | None = None
     workflow_event_journal_path: Path | None = None
+    internal_event_store_path: Path | None = None
     gate_execution_store_path: Path | None = None
     gate_cursor_store_path: Path | None = None
     effect_execution_store_path: Path | None = None
@@ -889,6 +890,8 @@ class OrchestrationCoreConfig(BaseModel):
             )
         if self.workflow_event_journal_path is None:
             self.workflow_event_journal_path = self.runtime_dir / "workflow-events.jsonl"
+        if self.internal_event_store_path is None:
+            self.internal_event_store_path = self.runtime_dir / "internal-events.json"
         if self.gate_execution_store_path is None:
             self.gate_execution_store_path = self.runtime_dir / "gate-orchestrator-executions.json"
         if self.gate_cursor_store_path is None:

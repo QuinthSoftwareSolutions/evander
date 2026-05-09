@@ -9,6 +9,7 @@ from agent_sandbox.triggers.providers.schemas import (
     AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
     CronTriggerDefinition,
+    EventTriggerDefinition,
     DiscordNewMessageTriggerDefinition,
     EmailNewMessageTriggerDefinition,
     GitPushTriggerDefinition,
@@ -24,6 +25,7 @@ from agent_sandbox.schema_bootstrap import _TRIGGER_OUTPUT_SCHEMAS
 from agent_sandbox.workflow.contracts import WorkflowNodeEnvelope, register_node_output_schema
 
 _TRIGGER_MODEL_BY_TYPE = {
+    "trigger:event": EventTriggerDefinition,
     "trigger:cron": CronTriggerDefinition,
     "trigger:ticket:created": TicketCreatedTriggerDefinition,
     "trigger:ticket:changed": TicketChangedTriggerDefinition,

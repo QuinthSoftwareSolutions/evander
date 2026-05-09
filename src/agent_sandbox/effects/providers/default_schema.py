@@ -10,6 +10,7 @@ from agent_sandbox.effects.providers.schemas import (
     AgentCopyFilesEffectDefinition,
     AgentCreateEffectDefinition,
     AgentDestroyEffectDefinition,
+    EventEmitEffectDefinition,
     AgentEnqueuePromptEffectDefinition,
     AgentExecEffectDefinition,
     AgentPromptEffectDefinition,
@@ -34,6 +35,7 @@ from agent_sandbox.schema_bootstrap import _EFFECT_OUTPUT_SCHEMAS
 from agent_sandbox.workflow.contracts import WorkflowNodeEnvelope, register_node_output_schema
 
 _EFFECT_MODEL_BY_TYPE = {
+    "effect:event:emit": EventEmitEffectDefinition,
     "effect:vm:create": VmCreateEffectDefinition,
     "effect:vm:clone-repo": VmCloneRepoEffectDefinition,
     "effect:vm:bootstrap-python": VmBootstrapPythonEffectDefinition,

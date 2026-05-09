@@ -6,6 +6,28 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agent_sandbox.events.models import ConfigValue, EffectDefinition
+from agent_sandbox.events.internal import validate_internal_event_type
+
+
+class EventEmitEffectDefinition(EffectDefinition):
+    type: Literal["effect:event:emit"]
+    event_type: ConfigValue
+    correlation_key: ConfigValue | None = None
+    payload: ConfigValue = Field(default_factory=dict)
+
+    @field_validator("event_type")
+    @classmethod
+    def validate_static_event_type(cls, value: ConfigValue) -> ConfigValue:
+        if isinstance(value, str) and "${{" not in value:
+            validate_internal_event_type(value)
+        return value
+
+    @field_validator("payload")
+    @classmethod
+    def validate_payload_shape(cls, value: ConfigValue) -> ConfigValue:
+        if not isinstance(value, (Mapping, str)):
+            raise ValueError("effect:event:emit payload must be a JSON object")
+        return value
 
 
 class VmCreateEffectDefinition(EffectDefinition):

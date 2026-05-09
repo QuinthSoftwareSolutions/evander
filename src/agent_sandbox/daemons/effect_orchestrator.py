@@ -21,6 +21,7 @@ from agent_sandbox.config import (
     TriggerOrchestratorWorkerGlobalConfig,
 )
 from agent_sandbox.effects.registry import EffectProviderFactory, EffectProviderRegistry
+from agent_sandbox.events.internal import InternalEventBus, InternalEventSource
 from agent_sandbox.events.models import (
     EffectDefinitionDiscriminated,
     GateDefinitionDiscriminated,
@@ -184,6 +185,48 @@ class EffectOrchestratorCycleResult:
 class InflightExecution:
     future: Future[dict[str, Any]]
     config_revision: str
+
+
+class EventEmitEffectExecutor:
+    def __init__(self, *, internal_event_bus: InternalEventBus) -> None:
+        self.internal_event_bus = internal_event_bus
+
+    def prepare_resolved_config(self, **kwargs: Any) -> dict[str, Any]:
+        resolved_config = kwargs.get("resolved_config")
+        config = dict(resolved_config) if isinstance(resolved_config, dict) else {}
+        payload = config.get("payload", {})
+        if not isinstance(payload, dict):
+            raise ValueError("effect:event:emit payload must resolve to a JSON object")
+        config["payload"] = payload
+        return config
+
+    def execute(self, **kwargs: Any) -> dict[str, Any]:
+        resolved_config = dict(kwargs.get("resolved_config") or {})
+        context = dict(kwargs.get("execution_context") or {})
+        payload = resolved_config.get("payload", {})
+        if not isinstance(payload, dict):
+            raise ValueError("effect:event:emit payload must resolve to a JSON object")
+        event = self.internal_event_bus.publish(
+            event_type=resolved_config.get("event_type"),
+            payload=payload,
+            correlation_key=resolved_config.get("correlation_key"),
+            source=InternalEventSource(
+                workflow_run_id=context.get("workflow_run_id"),
+                workflow_event_id=context.get("workflow_event_id"),
+                workflow_trace_id=context.get("workflow_trace_id"),
+                node_id=context.get("node_id"),
+                node_type=context.get("node_type"),
+            ),
+            idempotency_key=context.get("idempotency_key"),
+        )
+        return {
+            "success": True,
+            "event_id": event.event_id,
+            "event_type": event.event_type,
+            "correlation_key": event.correlation_key,
+            "created_at": event.created_at.isoformat().replace("+00:00", "Z"),
+            "payload": dict(event.payload),
+        }
 
 
 class EffectOrchestratorWorker:
@@ -513,6 +556,15 @@ class EffectOrchestratorWorker:
             self.gate_executor_registry.register(gate_type, gate_type)
         for effect_type in self.provider_factory.registry.registered_types():
             self.effect_executor_registry.register(effect_type, provider_effect_executor)
+        self.effect_executor_registry.register(
+            "effect:event:emit",
+            EventEmitEffectExecutor(
+                internal_event_bus=InternalEventBus(
+                    self.worker_config.internal_event_store_path,
+                    journal_path=self.worker_config.workflow_event_journal_path,
+                )
+            ),
+        )
         for query_type in self.query_provider_factory.registry.registered_types():
             self.query_executor_registry.register(query_type, provider_query_executor)
 
@@ -756,6 +808,11 @@ class EffectOrchestratorWorker:
                     self._execute_provider,
                     effect=effect,
                     resolved_config=dict(existing.resolved_config),
+                    execution_context=_effect_execution_context(
+                        idempotency_key=idempotency_key,
+                        queue_record=queue_record,
+                        effect=effect,
+                    ),
                 )
                 with self._inflight_lock:
                     self._inflight[idempotency_key] = InflightExecution(
@@ -857,7 +914,14 @@ class EffectOrchestratorWorker:
         )
         self.execution_store.record_execution(record)
         future = self._executor.submit(
-            self._execute_provider, effect=effect, resolved_config=resolved_config
+            self._execute_provider,
+            effect=effect,
+            resolved_config=resolved_config,
+            execution_context=_effect_execution_context(
+                idempotency_key=idempotency_key,
+                queue_record=queue_record,
+                effect=effect,
+            ),
         )
         with self._inflight_lock:
             self._inflight[idempotency_key] = InflightExecution(
@@ -933,10 +997,21 @@ class EffectOrchestratorWorker:
             )
 
     def _execute_provider(
-        self, *, effect: EffectDefinitionDiscriminated, resolved_config: dict[str, Any]
+        self,
+        *,
+        effect: EffectDefinitionDiscriminated,
+        resolved_config: dict[str, Any],
+        execution_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         executor = self.effect_executor_registry.resolve(effect.type)
-        return dict(executor.execute(effect=effect, resolved_config=resolved_config) or {})
+        return dict(
+            executor.execute(
+                effect=effect,
+                resolved_config=resolved_config,
+                execution_context=dict(execution_context or {}),
+            )
+            or {}
+        )
 
     def _execute_query_provider(
         self,
@@ -1723,3 +1798,19 @@ def _compute_backoff_sleep_seconds(*, poll_interval_seconds: float, jitter_secon
 
 def build_effect_cursor_repository(path: Path) -> JsonEffectCursorRepository:
     return JsonEffectCursorRepository(path)
+
+
+def _effect_execution_context(
+    *,
+    idempotency_key: str,
+    queue_record: TriggerQueueRecord,
+    effect: EffectDefinitionDiscriminated,
+) -> dict[str, Any]:
+    return {
+        "idempotency_key": idempotency_key,
+        "workflow_run_id": queue_record.trace_id,
+        "workflow_event_id": queue_record.event_id,
+        "workflow_trace_id": queue_record.trace_id,
+        "node_id": effect.id,
+        "node_type": effect.type,
+    }

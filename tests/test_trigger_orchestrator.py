@@ -441,3 +441,140 @@ def test_trigger_orchestrator_logs_revision_and_tolerates_trigger_set_changes(
         updated_config.event_queue_cursor_store_path.read_text(encoding="utf-8")
     )
     assert cursor_payload["triggers"]["cron-new"]["last_discovered_count"] == 0
+
+
+def test_event_trigger_matches_internal_event_and_preserves_payload(tmp_path: Path) -> None:
+    from agent_sandbox.events.internal import InternalEventBus
+
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "event-listener",
+                    "display_name": "Plan committed",
+                    "type": "trigger:event",
+                    "event_type": "issue.plan_committed",
+                }
+            ],
+        }
+    )
+    bus = InternalEventBus(
+        worker_config.internal_event_store_path,
+        journal_path=worker_config.workflow_event_journal_path,
+    )
+    internal = bus.publish(
+        event_type="issue.plan_committed",
+        payload={"issue_id": "ISSUE-1", "plan_version": 3},
+        correlation_key="issue:ISSUE-1",
+        idempotency_key="test-event-1",
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None
+    )  # type: ignore[arg-type]
+
+    result = worker.run_once()
+
+    assert result.events_published == 1
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    record = queue_payload[f"event-listener:{internal.event_id}"]
+    assert record["trigger_id"] == "event-listener"
+    assert record["trigger_type"] == "trigger:event"
+    assert record["payload"]["event_type"] == "issue.plan_committed"
+    assert record["payload"]["payload"] == {"issue_id": "ISSUE-1", "plan_version": 3}
+    assert record["payload"]["correlation_key"] == "issue:ISSUE-1"
+
+
+def test_event_trigger_ignores_non_matching_type_and_correlation_key(tmp_path: Path) -> None:
+    from agent_sandbox.events.internal import InternalEventBus
+
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "event-listener",
+                    "display_name": "Plan committed",
+                    "type": "trigger:event",
+                    "event_type": "issue.plan_committed",
+                    "correlation_key": "issue:expected",
+                }
+            ],
+        }
+    )
+    bus = InternalEventBus(
+        worker_config.internal_event_store_path,
+        journal_path=worker_config.workflow_event_journal_path,
+    )
+    bus.publish(event_type="issue.step_completed", payload={}, idempotency_key="wrong-type")
+    bus.publish(
+        event_type="issue.plan_committed",
+        payload={},
+        correlation_key="issue:other",
+        idempotency_key="wrong-correlation",
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None
+    )  # type: ignore[arg-type]
+
+    result = worker.run_once()
+
+    assert result.events_published == 0
+    assert json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8")) == {}
+
+
+def test_multiple_event_triggers_can_listen_to_same_internal_event(tmp_path: Path) -> None:
+    from agent_sandbox.events.internal import InternalEventBus
+
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "listener-a",
+                    "display_name": "A",
+                    "type": "trigger:event",
+                    "event_type": "human.question_answered",
+                },
+                {
+                    "id": "listener-b",
+                    "display_name": "B",
+                    "type": "trigger:event",
+                    "event_type": "human.question_answered",
+                },
+            ],
+        }
+    )
+    bus = InternalEventBus(
+        worker_config.internal_event_store_path,
+        journal_path=worker_config.workflow_event_journal_path,
+    )
+    event = bus.publish(
+        event_type="human.question_answered",
+        payload={"answer": "yes"},
+        idempotency_key="answer-1",
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None
+    )  # type: ignore[arg-type]
+
+    result = worker.run_once()
+
+    assert result.events_published == 2
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    assert sorted(queue_payload) == [
+        f"listener-a:{event.event_id}",
+        f"listener-b:{event.event_id}",
+    ]

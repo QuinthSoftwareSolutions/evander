@@ -177,6 +177,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
     from agent_sandbox.events import provider_models
 
     models_by_type: dict[str, type[BaseModel]] = {
+        "trigger:event": provider_models.EventTriggerDefinition,
         "trigger:cron": provider_models.CronTriggerDefinition,
         "trigger:ticket:created": provider_models.TicketCreatedTriggerDefinition,
         "trigger:ticket:changed": provider_models.TicketChangedTriggerDefinition,
@@ -197,6 +198,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "gate:merge": GateMergeDefinition,
         "gate:await-agent": GateAwaitAgentDefinition,
         "gate:for": GateForDefinition,
+        "effect:event:emit": provider_models.EventEmitEffectDefinition,
         "effect:vm:create": provider_models.VmCreateEffectDefinition,
         "effect:vm:clone-repo": provider_models.VmCloneRepoEffectDefinition,
         "effect:vm:bootstrap-python": provider_models.VmBootstrapPythonEffectDefinition,
