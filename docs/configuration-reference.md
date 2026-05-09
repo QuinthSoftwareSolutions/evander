@@ -222,7 +222,7 @@ Each gate entry requires the shared envelope keys:
 - `id` (string, required, unique across all gates)
 - `display_name` (string, required)
 - `type` (required discriminator)
-- `gate_type` (string, required; one of `filter`, `map`, `merge`)
+- `gate_type` (string, required; one of `filter`, `map`, `merge`, `debounce`)
 
 Type-specific keys:
 
@@ -231,11 +231,17 @@ Type-specific keys:
 | `gate:filter` | `predicate` | `outputs` |
 | `gate:map` | `mapping` | `outputs` |
 | `gate:merge` | _none beyond envelope_ | `outputs` |
+| `gate:debounce` | `key`, `quiet_period`, `max_delay` | `outputs` |
 
 `gate:merge` uses Reactive Extensions `merge` semantics: every inbound event is forwarded as it
 arrives. When `outputs` is declared, the gate projects each inbound payload to that shared key set.
 The runtime also records the latest inbound payload seen from each upstream source in the gate
 execution log for debugging.
+
+`gate:debounce` groups inbound activations by its bindable `key`, waits until no newer
+activation for that key has arrived for the ISO-8601 `quiet_period`, and caps each burst by
+ISO-8601 `max_delay`. It forwards the latest payload in the burst and records debounce
+diagnostics including key, first/last seen times, scheduled release time, and release reason.
 
 Edge wiring records connect upstream node ids to downstream node ids and replace any node-local
 `upstream_id` field.

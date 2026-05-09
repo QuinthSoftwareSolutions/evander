@@ -234,7 +234,7 @@ def _derive_workflow_node_output_schema(
 
     visiting.add(node_id)
     node_type = str(output_node.get("type") or "").strip()
-    if node_type == "gate:filter":
+    if node_type in {"gate:filter", "gate:debounce"}:
         upstream_ids = _collect_direct_upstream_node_ids(edges, node_id)
         schema = (
             _derive_workflow_node_output_schema(

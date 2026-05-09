@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 
@@ -151,3 +152,29 @@ def _updated_at_sort_key(value: datetime | str | None) -> tuple[int, str]:
     except ValueError:
         normalized = text
     return (1, normalized)
+
+
+_ISO8601_DURATION_PATTERN = re.compile(
+    r"P(?:(?P<days>\d+(?:\.\d+)?)D)?"
+    r"(?:T(?:(?P<hours>\d+(?:\.\d+)?)H)?"
+    r"(?:(?P<minutes>\d+(?:\.\d+)?)M)?"
+    r"(?:(?P<seconds>\d+(?:\.\d+)?)S)?)?"
+)
+
+
+def parse_iso8601_duration(
+    value: Any, *, field_name: str, gate_type: str = "gate:debounce"
+) -> timedelta:
+    if not isinstance(value, str) or not value.strip():
+        raise GateRuntimeError(f"{gate_type} {field_name} must be an ISO-8601 duration string")
+    match = _ISO8601_DURATION_PATTERN.fullmatch(value.strip())
+    if match is None or not any(match.groupdict().values()):
+        raise GateRuntimeError(f"{gate_type} {field_name} must be an ISO-8601 duration string")
+    seconds = 0.0
+    seconds += float(match.group("days") or 0) * 86400
+    seconds += float(match.group("hours") or 0) * 3600
+    seconds += float(match.group("minutes") or 0) * 60
+    seconds += float(match.group("seconds") or 0)
+    if seconds <= 0:
+        raise GateRuntimeError(f"{gate_type} {field_name} must be greater than zero")
+    return timedelta(seconds=seconds)

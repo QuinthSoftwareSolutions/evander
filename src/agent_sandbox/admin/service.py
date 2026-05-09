@@ -924,6 +924,46 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             ),
         ],
     ),
+
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
+        type="gate:debounce",
+        label="Debounce",
+        fields=[
+            _field(
+                "key",
+                "Key",
+                "string",
+                required=True,
+                bindable=True,
+                description="Groups activations to debounce. Supports workflow bindings.",
+                placeholder="issue-comment:${{trigger.issue_id}}",
+            ),
+            _field(
+                "quiet_period",
+                "Quiet period",
+                "string",
+                required=True,
+                description="ISO-8601 duration to wait after the latest activation, for example PT2M.",
+                placeholder="PT2M",
+            ),
+            _field(
+                "max_delay",
+                "Max delay",
+                "string",
+                required=True,
+                description="ISO-8601 duration cap from the first activation in a burst, for example PT10M.",
+                placeholder="PT10M",
+            ),
+            _field(
+                "outputs",
+                "Outputs",
+                "json",
+                read_only=True,
+                description="Derived from the single upstream node and emitted from the latest activation in a burst.",
+            ),
+        ],
+    ),
     WorkflowEditorNodeCatalogEntry(
         kind="gate",
         type="gate:map",
@@ -7576,6 +7616,7 @@ git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_I
                 gate.pop("completion_trigger_id", None)
             if gate_type in {
                 "gate:filter",
+                "gate:debounce",
                 "gate:map",
                 "gate:await-agent",
                 "gate:for",
