@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
+import html
 from html.parser import HTMLParser
 import mimetypes
 import os
@@ -210,6 +211,51 @@ def _format_ado_html_field(value: str | None) -> str | None:
     return render_markdownish_text_to_html(value)
 
 
+def _artifact_filename(artifact: dict[str, Any]) -> str:
+    return str(
+        artifact.get("normalized_safe_filename")
+        or artifact.get("filename")
+        or artifact.get("original_filename")
+        or "attachment"
+    ).strip() or "attachment"
+
+
+def _artifact_mime_type(artifact: dict[str, Any]) -> str | None:
+    mime_type = str(artifact.get("mime_type") or "").strip()
+    return mime_type or _mime_type_from_filename(_artifact_filename(artifact))
+
+
+def _artifact_is_image(artifact: dict[str, Any]) -> bool:
+    mime_type = _artifact_mime_type(artifact)
+    return bool(mime_type and mime_type.lower().startswith("image/"))
+
+
+def _artifact_bytes(artifact: dict[str, Any]) -> bytes:
+    path = str(artifact.get("path") or "").strip()
+    if not path:
+        raise ValueError("Published artifact payload is missing path")
+    return Path(path).read_bytes()
+
+
+def _append_html_attachment_links(text: str | None, attachments: list[dict[str, Any]]) -> str | None:
+    if not attachments:
+        return text
+    rendered = _format_ado_html_field(text or "")
+    lines = [rendered or ""]
+    for item in attachments:
+        filename = str(item.get("filename") or "attachment").strip() or "attachment"
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        escaped_url = html.escape(url, quote=True)
+        escaped_name = html.escape(filename)
+        if item.get("is_image"):
+            lines.append(f'<p><img src="{escaped_url}" alt="{escaped_name}" /></p>')
+        else:
+            lines.append(f'<p><a href="{escaped_url}">{escaped_name}</a></p>')
+    return "\n".join(line for line in lines if line is not None).strip()
+
+
 @dataclass(frozen=True)
 class _AdoTeamFieldValue:
     field_reference_name: str
@@ -234,6 +280,8 @@ class IssueProviderAdapter(Protocol):
         remote_issue_id: str,
         directory_path: str,
         comment: str,
+        project: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]: ...
 
     def update_issue(
@@ -243,6 +291,8 @@ class IssueProviderAdapter(Protocol):
         directory_path: str,
         state: str | None,
         fields: dict[str, Any] | None,
+        project: str | None = None,
+        field_attachments: dict[str, list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]: ...
 
     def create_issue(
@@ -259,6 +309,8 @@ class IssueProviderAdapter(Protocol):
         assigned_to: str | None = None,
         parent_backlog_item_id: str | None = None,
         fields: dict[str, Any] | None = None,
+        description_attachments: list[dict[str, Any]] | None = None,
+        acceptance_criteria_attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]: ...
 
     def query_backlog_items(
@@ -518,6 +570,72 @@ class AzureDevOpsIssueAdapter:
             f"Azure DevOps {action} failed (status {response.status_code}): {message}"
         )
 
+    def _upload_work_item_attachments(
+        self,
+        client: httpx.Client,
+        *,
+        organization_url: str,
+        project: str,
+        auth_header: str,
+        attachments: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        uploaded: list[dict[str, Any]] = []
+        for artifact in attachments or []:
+            filename = _artifact_filename(artifact)
+            response = client.post(
+                f"{organization_url}/{project}/_apis/wit/attachments",
+                params={
+                    "api-version": "7.1",
+                    "fileName": filename,
+                    "uploadType": "Simple",
+                },
+                headers={
+                    "Authorization": auth_header,
+                    "Content-Type": "application/octet-stream",
+                },
+                content=_artifact_bytes(artifact),
+            )
+            if response.is_error:
+                self._raise_ado_http_error(action="upload work item attachment", response=response)
+            payload = response.json()
+            uploaded.append(
+                {
+                    "provider": self.provider_name,
+                    "surface": "work_item",
+                    "artifact_id": artifact.get("artifact_id"),
+                    "filename": filename,
+                    "mime_type": _artifact_mime_type(artifact),
+                    "byte_count": artifact.get("byte_count"),
+                    "url": str(payload.get("url") or "").strip(),
+                    "id": payload.get("id"),
+                    "is_image": _artifact_is_image(artifact),
+                    "raw": payload,
+                }
+            )
+        return uploaded
+
+    @staticmethod
+    def _attachment_relation_operations(
+        uploaded_attachments: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        operations: list[dict[str, Any]] = []
+        for item in uploaded_attachments:
+            url = str(item.get("url") or "").strip()
+            if not url:
+                continue
+            operations.append(
+                {
+                    "op": "add",
+                    "path": "/relations/-",
+                    "value": {
+                        "rel": "AttachedFile",
+                        "url": url,
+                        "attributes": {"name": str(item.get("filename") or "attachment")},
+                    },
+                }
+            )
+        return operations
+
     def _fetch_comments(
         self,
         client: httpx.Client,
@@ -752,31 +870,59 @@ class AzureDevOpsIssueAdapter:
         remote_issue_id: str,
         directory_path: str,
         comment: str,
+        project: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        organization_url, project, pat = self._resolve_connection(directory_path)
+        organization_url, configured_project, pat = self._resolve_connection(directory_path)
+        normalized_project = str(project or configured_project).strip()
+        if not normalized_project:
+            raise ValueError("project is required for Azure DevOps issue comments.")
         auth_header = self._auth_header(pat)
         comments_url = (
-            f"{organization_url}/{project}/_apis/wit/workItems/{remote_issue_id}/comments"
+            f"{organization_url}/{normalized_project}/_apis/wit/workItems/{remote_issue_id}/comments"
         )
         with httpx.Client(timeout=self.timeout_seconds) as client:
+            uploaded_attachments = self._upload_work_item_attachments(
+                client,
+                organization_url=organization_url,
+                project=normalized_project,
+                auth_header=auth_header,
+                attachments=attachments,
+            )
+            formatted_comment = _append_html_attachment_links(comment, uploaded_attachments) or ""
             response = client.post(
                 comments_url,
                 params={"api-version": "7.1-preview.4"},
                 headers={"Authorization": auth_header, "Content-Type": "application/json"},
-                json={"text": comment},
+                json={"text": formatted_comment},
             )
             response.raise_for_status()
             payload = response.json()
+            if uploaded_attachments:
+                work_item_url = (
+                    f"{organization_url}/{normalized_project}/_apis/wit/workitems/{remote_issue_id}"
+                )
+                relation_response = client.patch(
+                    work_item_url,
+                    params={"api-version": "7.1"},
+                    headers={
+                        "Authorization": auth_header,
+                        "Content-Type": "application/json-patch+json",
+                    },
+                    json=self._attachment_relation_operations(uploaded_attachments),
+                )
+                relation_response.raise_for_status()
             return {
                 "provider": self.provider_name,
                 "remote_issue_id": str(remote_issue_id),
                 "comment": {
                     "id": str(payload.get("id") or "").strip(),
-                    "text": str(payload.get("text") or comment),
+                    "text": str(payload.get("text") or formatted_comment),
                     "url": str(
                         (payload.get("_links") or {}).get("web", {}).get("href") or ""
                     ).strip(),
                 },
+                "uploaded_attachments": uploaded_attachments,
             }
 
     def update_issue(
@@ -786,26 +932,51 @@ class AzureDevOpsIssueAdapter:
         directory_path: str,
         state: str | None,
         fields: dict[str, Any] | None,
+        project: str | None = None,
+        field_attachments: dict[str, list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
-        operations: list[dict[str, Any]] = []
-        if state is not None:
-            operations.append({"op": "add", "path": "/fields/System.State", "value": state})
-        for field_name, value in (fields or {}).items():
-            normalized = str(field_name).strip()
-            if not normalized:
-                continue
-            operations.append({"op": "add", "path": f"/fields/{normalized}", "value": value})
-        if not operations:
+        fields = fields or {}
+        field_attachments = field_attachments or {}
+        normalized_field_names = {
+            str(field_name).strip()
+            for field_name in [*fields.keys(), *field_attachments.keys()]
+            if str(field_name).strip()
+        }
+        if state is None and not normalized_field_names:
             return {
                 "provider": self.provider_name,
                 "remote_issue_id": str(remote_issue_id),
                 "updated": False,
             }
 
-        organization_url, project, pat = self._resolve_connection(directory_path)
+        organization_url, configured_project, pat = self._resolve_connection(directory_path)
+        normalized_project = str(project or configured_project).strip()
+        if not normalized_project:
+            raise ValueError("project is required for Azure DevOps issue updates.")
         auth_header = self._auth_header(pat)
-        work_item_url = f"{organization_url}/{project}/_apis/wit/workitems/{remote_issue_id}"
+        work_item_url = f"{organization_url}/{normalized_project}/_apis/wit/workitems/{remote_issue_id}"
+        uploaded_attachments: list[dict[str, Any]] = []
+        operations: list[dict[str, Any]] = []
+        if state is not None:
+            operations.append({"op": "add", "path": "/fields/System.State", "value": state})
         with httpx.Client(timeout=self.timeout_seconds) as client:
+            for field_name in sorted(normalized_field_names):
+                attachments = self._upload_work_item_attachments(
+                    client,
+                    organization_url=organization_url,
+                    project=normalized_project,
+                    auth_header=auth_header,
+                    attachments=field_attachments.get(field_name),
+                )
+                uploaded_attachments.extend(attachments)
+                value = fields.get(field_name)
+                if attachments:
+                    value = _append_html_attachment_links(
+                        str(value or ""),
+                        attachments,
+                    )
+                operations.append({"op": "add", "path": f"/fields/{field_name}", "value": value})
+            operations.extend(self._attachment_relation_operations(uploaded_attachments))
             response = client.patch(
                 work_item_url,
                 params={"api-version": "7.1"},
@@ -822,6 +993,7 @@ class AzureDevOpsIssueAdapter:
             "updated": True,
             "state": state,
             "fields": fields or {},
+            "uploaded_attachments": uploaded_attachments,
         }
 
     def create_issue(
@@ -838,6 +1010,8 @@ class AzureDevOpsIssueAdapter:
         assigned_to: str | None = None,
         parent_backlog_item_id: str | None = None,
         fields: dict[str, Any] | None = None,
+        description_attachments: list[dict[str, Any]] | None = None,
+        acceptance_criteria_attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         organization_url, configured_project, pat = self._resolve_connection(directory_path)
         normalized_project = str(project or configured_project).strip()
@@ -852,7 +1026,7 @@ class AzureDevOpsIssueAdapter:
         operations: list[dict[str, Any]] = [
             {"op": "add", "path": "/fields/System.Title", "value": title}
         ]
-        if description is not None:
+        if description is not None and not description_attachments:
             operations.append(
                 {
                     "op": "add",
@@ -864,7 +1038,7 @@ class AzureDevOpsIssueAdapter:
             operations.append(
                 {"op": "add", "path": "/fields/System.IterationPath", "value": iteration_path}
             )
-        if acceptance_criteria is not None:
+        if acceptance_criteria is not None and not acceptance_criteria_attachments:
             operations.append(
                 {
                     "op": "add",
@@ -902,7 +1076,45 @@ class AzureDevOpsIssueAdapter:
                 }
             )
 
+        uploaded_attachments: list[dict[str, Any]] = []
         with httpx.Client(timeout=self.timeout_seconds) as client:
+            description_uploaded = self._upload_work_item_attachments(
+                client,
+                organization_url=organization_url,
+                project=normalized_project,
+                auth_header=auth_header,
+                attachments=description_attachments,
+            )
+            uploaded_attachments.extend(description_uploaded)
+            if description_uploaded:
+                operations.append(
+                    {
+                        "op": "add",
+                        "path": "/fields/System.Description",
+                        "value": _append_html_attachment_links(
+                            description or "", description_uploaded
+                        ),
+                    }
+                )
+            acceptance_uploaded = self._upload_work_item_attachments(
+                client,
+                organization_url=organization_url,
+                project=normalized_project,
+                auth_header=auth_header,
+                attachments=acceptance_criteria_attachments,
+            )
+            uploaded_attachments.extend(acceptance_uploaded)
+            if acceptance_uploaded:
+                operations.append(
+                    {
+                        "op": "add",
+                        "path": "/fields/Microsoft.VSTS.Common.AcceptanceCriteria",
+                        "value": _append_html_attachment_links(
+                            acceptance_criteria or "", acceptance_uploaded
+                        ),
+                    }
+                )
+            operations.extend(self._attachment_relation_operations(uploaded_attachments))
             response = client.patch(
                 create_url,
                 params={"api-version": "7.1"},
@@ -943,6 +1155,7 @@ class AzureDevOpsIssueAdapter:
                 ),
                 **{k: v for k, v in (fields or {}).items() if k in payload_fields},
             },
+            "uploaded_attachments": uploaded_attachments,
         }
 
     def query_backlog_items(
@@ -1566,6 +1779,8 @@ class IssueService:
         remote_issue_id: str,
         directory_path: str,
         comment: str,
+        project: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         adapter = self.adapters.get(provider)
         if adapter is None:
@@ -1574,6 +1789,8 @@ class IssueService:
             remote_issue_id=remote_issue_id,
             directory_path=directory_path,
             comment=comment,
+            project=project,
+            attachments=attachments,
         )
 
     def update_remote_issue(
@@ -1584,6 +1801,8 @@ class IssueService:
         directory_path: str,
         state: str | None,
         fields: dict[str, Any] | None,
+        project: str | None = None,
+        field_attachments: dict[str, list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
         adapter = self.adapters.get(provider)
         if adapter is None:
@@ -1593,6 +1812,8 @@ class IssueService:
             directory_path=directory_path,
             state=state,
             fields=fields,
+            project=project,
+            field_attachments=field_attachments,
         )
 
     def create_remote_issue(
@@ -1610,6 +1831,8 @@ class IssueService:
         assigned_to: str | None = None,
         parent_backlog_item_id: str | None = None,
         fields: dict[str, Any] | None = None,
+        description_attachments: list[dict[str, Any]] | None = None,
+        acceptance_criteria_attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         adapter = self.adapters.get(provider)
         if adapter is None:
@@ -1626,6 +1849,8 @@ class IssueService:
             assigned_to=assigned_to,
             parent_backlog_item_id=parent_backlog_item_id,
             fields=fields,
+            description_attachments=description_attachments,
+            acceptance_criteria_attachments=acceptance_criteria_attachments,
         )
 
     def query_remote_backlog_items(

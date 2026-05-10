@@ -412,6 +412,7 @@ class IssueGitAdminService:
         title: str | None = None,
         body: str | None = None,
         body_file: str | None = None,
+        body_artifact_ids: list[str] | None = None,
         draft: bool | None = None,
         fill: bool = True,
     ) -> dict[str, Any]:
@@ -437,6 +438,10 @@ class IssueGitAdminService:
             cmd.extend(["--work-item-id", work_item_id])
         if title:
             cmd.extend(["--title", title])
+        for artifact_id in body_artifact_ids or []:
+            normalized_artifact_id = str(artifact_id or "").strip()
+            if normalized_artifact_id:
+                cmd.extend(["--body-artifact-id", normalized_artifact_id])
         if not fill:
             cmd.append("--no-fill")
 

@@ -37,6 +37,8 @@ class ToolName(str, Enum):
     QUERY_ADO_BACKLOG_ITEMS = "query_ado_backlog_items"
     LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS = "list_ado_current_iteration_backlog_items"
     GET_ADO_BACKLOG_ITEM = "get_ado_backlog_item"
+    POST_ADO_BACKLOG_COMMENT = "post_ado_backlog_comment"
+    UPDATE_ADO_BACKLOG_TEXT = "update_ado_backlog_text"
     CREATE_LOCAL_ISSUE = "create_local_issue"
     LIST_ISSUES = "list_issues"
     GET_ISSUE = "get_issue"
@@ -995,8 +997,18 @@ class PostPrFeedbackReplyRequest(BaseModel):
     body_text: str = Field(min_length=1)
     thread_id: str | None = None
     comment_id: str | None = None
+    artifact_ids: list[str] = Field(default_factory=list)
     idempotency_key: str | None = None
     request_id: str | None = None
+
+    @field_validator("artifact_ids", mode="before")
+    @classmethod
+    def normalize_artifact_ids(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("artifact_ids must be a list of strings")
+        return [str(item).strip() for item in value if str(item).strip()]
 
 
 class PostPrFeedbackReplyResponse(BaseModel):
@@ -1008,6 +1020,7 @@ class PostPrFeedbackReplyResponse(BaseModel):
     comment_id: str | None = None
     reply_id: str | None = None
     reply_url: str | None = None
+    uploaded_attachments: list[dict[str, Any]] = Field(default_factory=list)
     idempotency_key: str | None = None
 
 
@@ -1087,9 +1100,12 @@ class AdoBacklogCreateRequest(BaseModel):
     title: str = Field(min_length=1)
     description: str | None = None
     acceptance_criteria: str | None = None
+    description_artifact_ids: list[str] = Field(default_factory=list)
+    acceptance_criteria_artifact_ids: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     assigned_user: str | None = None
     parent_backlog_item_id: int | str | None = None
+    request_id: str | None = None
 
     @field_validator("type", mode="before")
     @classmethod
@@ -1105,6 +1121,7 @@ class AdoBacklogCreateRequest(BaseModel):
         "description",
         "acceptance_criteria",
         "assigned_user",
+        "request_id",
         mode="before",
     )
     @classmethod
@@ -1140,6 +1157,19 @@ class AdoBacklogCreateRequest(BaseModel):
             deduped.append(normalized)
         return deduped
 
+    @field_validator(
+        "description_artifact_ids",
+        "acceptance_criteria_artifact_ids",
+        mode="before",
+    )
+    @classmethod
+    def normalize_artifact_ids(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("artifact IDs must be a list of strings")
+        return [str(item).strip() for item in value if str(item).strip()]
+
     @field_validator("parent_backlog_item_id", mode="before")
     @classmethod
     def normalize_parent_backlog_item_id(cls, value: object) -> str | None:
@@ -1172,6 +1202,102 @@ class AdoBacklogCreateResponse(BaseModel):
     tags: list[str] = Field(default_factory=list)
     assigned_user: str | None = None
     parent_backlog_item_id: str | None = None
+    uploaded_attachments: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class AdoBacklogCommentRequest(BaseModel):
+    id: int | str
+    project: str | None = None
+    comment: str = Field(min_length=1)
+    artifact_ids: list[str] = Field(default_factory=list)
+    request_id: str | None = None
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def normalize_id(cls, value: object) -> str:
+        if value is None:
+            raise ValueError("id is required")
+        if isinstance(value, bool):
+            raise ValueError("id must be an integer")
+        normalized = str(value).strip()
+        if not normalized or not normalized.isdigit():
+            raise ValueError("id must be a numeric backlog item id")
+        return normalized
+
+    @field_validator("project", "comment", "request_id", mode="before")
+    @classmethod
+    def trim_optional_strings(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator("artifact_ids", mode="before")
+    @classmethod
+    def normalize_artifact_ids(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("artifact_ids must be a list of strings")
+        return [str(item).strip() for item in value if str(item).strip()]
+
+
+class AdoBacklogTextUpdateRequest(BaseModel):
+    id: int | str
+    project: str | None = None
+    description: str | None = None
+    acceptance_criteria: str | None = None
+    description_artifact_ids: list[str] = Field(default_factory=list)
+    acceptance_criteria_artifact_ids: list[str] = Field(default_factory=list)
+    request_id: str | None = None
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def normalize_id(cls, value: object) -> str:
+        if value is None:
+            raise ValueError("id is required")
+        if isinstance(value, bool):
+            raise ValueError("id must be an integer")
+        normalized = str(value).strip()
+        if not normalized or not normalized.isdigit():
+            raise ValueError("id must be a numeric backlog item id")
+        return normalized
+
+    @field_validator(
+        "project",
+        "description",
+        "acceptance_criteria",
+        "request_id",
+        mode="before",
+    )
+    @classmethod
+    def trim_optional_strings(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator(
+        "description_artifact_ids",
+        "acceptance_criteria_artifact_ids",
+        mode="before",
+    )
+    @classmethod
+    def normalize_artifact_ids(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("artifact IDs must be a list of strings")
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    def model_post_init(self, __context: Any) -> None:
+        if (
+            self.description is None
+            and self.acceptance_criteria is None
+            and not self.description_artifact_ids
+            and not self.acceptance_criteria_artifact_ids
+        ):
+            raise ValueError("description or acceptance_criteria update is required")
 
 
 class AdoBacklogQueryRequest(BaseModel):
@@ -1429,8 +1555,18 @@ class PostPrCommentRequest(BaseModel):
     repo: str = Field(min_length=1)
     pr_id: str = Field(min_length=1)
     body_text: str = Field(min_length=1)
+    artifact_ids: list[str] = Field(default_factory=list)
     idempotency_key: str | None = None
     request_id: str | None = None
+
+    @field_validator("artifact_ids", mode="before")
+    @classmethod
+    def normalize_artifact_ids(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("artifact_ids must be a list of strings")
+        return [str(item).strip() for item in value if str(item).strip()]
 
 
 class PostPrCommentResponse(BaseModel):
@@ -1466,6 +1602,7 @@ class SubmitPrReviewComment(BaseModel):
         default=None,
         description="Diff side for the inline comment. Use RIGHT for added/changed lines, LEFT for removed lines.",
     )
+    artifact_ids: list[str] = Field(default_factory=list)
 
     @field_validator("side")
     @classmethod
@@ -1476,6 +1613,15 @@ class SubmitPrReviewComment(BaseModel):
         if normalized not in {"LEFT", "RIGHT"}:
             raise ValueError("side must be LEFT or RIGHT")
         return normalized
+
+    @field_validator("artifact_ids", mode="before")
+    @classmethod
+    def normalize_artifact_ids(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("artifact_ids must be a list of strings")
+        return [str(item).strip() for item in value if str(item).strip()]
 
 
 class PostPrInlineCommentRequest(BaseModel):
@@ -1504,6 +1650,7 @@ class PostPrInlineCommentRequest(BaseModel):
         default="RIGHT",
         description="Diff side for the inline comment. Use RIGHT for added/changed lines, LEFT for removed lines.",
     )
+    artifact_ids: list[str] = Field(default_factory=list)
     idempotency_key: str | None = None
     request_id: str | None = None
 
@@ -1517,6 +1664,15 @@ class PostPrInlineCommentRequest(BaseModel):
             raise ValueError("side must be LEFT or RIGHT")
         return normalized
 
+    @field_validator("artifact_ids", mode="before")
+    @classmethod
+    def normalize_artifact_ids(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("artifact_ids must be a list of strings")
+        return [str(item).strip() for item in value if str(item).strip()]
+
 
 class SubmitPrReviewRequest(BaseModel):
     session_id: str = Field(min_length=1)
@@ -1526,8 +1682,18 @@ class SubmitPrReviewRequest(BaseModel):
     body_text: str = Field(min_length=1)
     event: str | None = None
     comments: list[SubmitPrReviewComment] = Field(default_factory=list)
+    artifact_ids: list[str] = Field(default_factory=list)
     idempotency_key: str | None = None
     request_id: str | None = None
+
+    @field_validator("artifact_ids", mode="before")
+    @classmethod
+    def normalize_artifact_ids(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("artifact_ids must be a list of strings")
+        return [str(item).strip() for item in value if str(item).strip()]
 
 
 class SubmitPrReviewResponse(BaseModel):

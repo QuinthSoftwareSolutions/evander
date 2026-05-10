@@ -16,6 +16,12 @@ from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionSummary
 
 
 _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
+    ToolName.POST_ADO_BACKLOG_COMMENT: (
+        "Post comments to Azure DevOps backlog items, including staged image artifacts when enabled."
+    ),
+    ToolName.UPDATE_ADO_BACKLOG_TEXT: (
+        "Update Azure DevOps backlog description or acceptance criteria text."
+    ),
     ToolName.MAKE_PHONE_CALL: (
         "Start Retell phone calls to directory-configured contact aliases."
     ),

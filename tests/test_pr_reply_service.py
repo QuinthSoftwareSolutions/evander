@@ -270,6 +270,67 @@ def test_azure_reply_provider_posts_reply(monkeypatch: pytest.MonkeyPatch) -> No
     assert result.reply_url == "https://ado.test/reply/301"
 
 
+def test_azure_reply_provider_uploads_attachment_and_embeds_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    image_path = tmp_path / "reply.png"
+    image_path.write_bytes(b"png-bytes")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/pullRequests/17/attachments/reply.png"):
+            assert request.method == "POST"
+            assert request.headers["content-type"] == "application/octet-stream"
+            assert request.content == b"png-bytes"
+            return httpx.Response(
+                201,
+                json={
+                    "url": "https://dev.azure.com/example/proj/_apis/git/repositories/repo1/pullRequests/17/attachments/reply.png"
+                },
+            )
+        if request.url.path.endswith("/pullRequests/17/threads/44/comments"):
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["content"] == (
+                "Handled.\n\n"
+                "![reply.png](https://dev.azure.com/example/proj/_apis/git/repositories/repo1/pullRequests/17/attachments/reply.png)"
+            )
+            return httpx.Response(
+                201,
+                json={"id": 301, "_links": {"web": {"href": "https://ado.test/reply/301"}}},
+            )
+        raise AssertionError(f"unexpected path: {request.url.path}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrReplyProvider(
+        organization_url="https://dev.azure.com/example",
+        project="proj",
+        pat="secret",
+    )
+    result = provider.post_reply(
+        repo="repo1",
+        pr_id="17",
+        thread_id="44",
+        comment_id="10",
+        body_text="Handled.",
+        attachments=[
+            {
+                "artifact_id": "comm_123",
+                "filename": "reply.png",
+                "mime_type": "image/png",
+                "byte_count": len(b"png-bytes"),
+                "path": str(image_path),
+            }
+        ],
+    )
+
+    assert [request.url.path for request in requests] == [
+        "/example/proj/_apis/git/repositories/repo1/pullRequests/17/attachments/reply.png",
+        "/example/proj/_apis/git/repositories/repo1/pullRequests/17/threads/44/comments",
+    ]
+    assert result.uploaded_attachments[0]["filename"] == "reply.png"
+
+
 def test_azure_reply_provider_normalizes_composite_repo_identifier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -38,6 +38,7 @@ class PrCreateEffectProvider(EffectProviderBase):
             title=self._normalize_optional_string(payload.get("title")),
             body=self._normalize_optional_string(payload.get("body")),
             body_file=self._normalize_optional_string(payload.get("body_file")),
+            body_artifact_ids=self._normalize_string_list(payload.get("body_artifact_ids")),
             draft=self._as_optional_bool(payload.get("draft")),
             fill=self._resolve_fill(payload),
         )
@@ -63,6 +64,7 @@ class PrCreateEffectProvider(EffectProviderBase):
             "title",
             "body",
             "body_file",
+            "body_artifact_ids",
             "draft",
             "fill",
             "no_fill",
@@ -96,6 +98,23 @@ class PrCreateEffectProvider(EffectProviderBase):
             return None
         text = str(value).strip()
         return text or None
+
+    @classmethod
+    def _normalize_string_list(cls, value: Any) -> list[str] | None:
+        if value is None or value == "":
+            return None
+        if isinstance(value, (list, tuple)):
+            normalized = [
+                item
+                for item in (cls._normalize_optional_string(item) for item in value)
+                if item
+            ]
+            return normalized or None
+        text = cls._normalize_optional_string(value)
+        if text is None:
+            return None
+        normalized = [item.strip() for item in text.replace(";", ",").split(",") if item.strip()]
+        return normalized or None
 
     @classmethod
     def _as_bool(cls, value: Any, *, default: bool = False) -> bool:

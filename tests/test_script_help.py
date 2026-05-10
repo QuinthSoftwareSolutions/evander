@@ -36,6 +36,8 @@ SCRIPTS = [
     "resume_issue_agent.sh",
     "resolve_repo_source.sh",
     "set_issue_agent_state.sh",
+    "guest/push_agent.sh",
+    "guest/sync_base.sh",
     "guest/setup_review_repo.sh",
     "setup_issue_git_vm.sh",
     "setup_vm.sh",

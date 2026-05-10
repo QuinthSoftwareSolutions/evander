@@ -228,9 +228,15 @@ New repo clones set `agent-sandbox.prNotesRef` to
 `open_agent_pr.sh`, then tries to read the note attached to the pushed commit SHA only.
 
 Guest VMs should treat that tip note as the canonical full PR summary snapshot for the current
-branch, not as a per-commit delta log. The repo-clone path installs a `git agent-pr-note` helper
-that keeps a branch-local aggregate cache, rewrites the full note onto each new `HEAD`, and lets
-agents append later updates without losing earlier summary content.
+branch, not as a per-commit delta log. The repo-clone path creates a local `work` branch from the
+configured base branch and installs `git agent-pr-note`, `git sync-base`, and `git push-agent`
+helpers. `agent-pr-note` keeps a branch-local aggregate cache, rewrites the full note onto each new
+`HEAD`, and lets agents append later updates without losing earlier summary content. `sync-base`
+fetches and merges the configured base branch through the guest-visible mirror, so "merge main"
+becomes one unambiguous command even though the agent is on `work`. `push-agent` fetches the
+configured destination and base branches and refuses to push if either has commits missing from
+`HEAD`; that makes the agent merge human-updated branches before host-side promotion tries to update
+the canonical remote.
 
 When a PR body is assembled, merge order is deterministic:
 

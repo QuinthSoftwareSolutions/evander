@@ -137,7 +137,17 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
                     ),
                     "content": self._agent_pr_note_helper_content(),
                     "mode": "0755",
-                }
+                },
+                {
+                    "destination_path": f"{target_dir.rstrip('/')}/.agent-sandbox/bin/push-agent",
+                    "content": self._push_agent_helper_content(),
+                    "mode": "0755",
+                },
+                {
+                    "destination_path": f"{target_dir.rstrip('/')}/.agent-sandbox/bin/sync-base",
+                    "content": self._sync_base_helper_content(),
+                    "mode": "0755",
+                },
             ],
         )
         execution_id = safe_effect_execution_id("clone-config", session_id)
@@ -186,11 +196,20 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             )
 
     def _agent_pr_note_helper_content(self) -> str:
+        return self._guest_helper_content("agent_pr_note.sh")
+
+    def _push_agent_helper_content(self) -> str:
+        return self._guest_helper_content("push_agent.sh")
+
+    def _sync_base_helper_content(self) -> str:
+        return self._guest_helper_content("sync_base.sh")
+
+    def _guest_helper_content(self, helper_name: str) -> str:
         context = self._context()
         project_dir = Path(getattr(context.admin_service, "project_dir", Path.cwd()))
-        helper_path = project_dir / "scripts" / "guest" / "agent_pr_note.sh"
+        helper_path = project_dir / "scripts" / "guest" / helper_name
         if not helper_path.exists():
-            raise RuntimeError(f"Missing agent PR note helper: {helper_path}")
+            raise RuntimeError(f"Missing guest Git helper: {helper_path}")
         return helper_path.read_text(encoding="utf-8")
 
     @staticmethod
@@ -214,6 +233,7 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             f"SESSION_ID={shlex.quote(session_id)}",
             f"BRANCH_SUFFIX={shlex.quote(session_id)}",
             f"PR_NOTES_REF={shlex.quote(pr_notes_ref)}",
+            "WORK_BRANCH=work",
             'if [ -n "$PUSH_REMOTE_URL" ]; then',
             '  if git remote get-url agent >/dev/null 2>&1; then git remote set-url agent "$PUSH_REMOTE_URL"; else git remote add agent "$PUSH_REMOTE_URL"; fi',
             '  if [ -n "$CANONICAL_REMOTE_URL" ] && [ "$CANONICAL_REMOTE_URL" != "$PUSH_REMOTE_URL" ]; then',
@@ -228,21 +248,30 @@ class AgentCloneRepoEffectProvider(EffectProviderBase):
             "fi",
             'git config user.name "Truman Bot"',
             'git config user.email "truman@quinth.se"',
+            'BASE_BRANCH=${CLONE_BRANCH:-}',
+            'if [ -z "$BASE_BRANCH" ]; then BASE_BRANCH=$(git branch --show-current || true); fi',
+            'if [ -n "$BASE_BRANCH" ]; then git config agent-sandbox.baseBranch "$BASE_BRANCH"; fi',
+            'git config agent-sandbox.workBranch "$WORK_BRANCH"',
+            'CURRENT_BRANCH=$(git branch --show-current || true)',
+            'if [ "$CURRENT_BRANCH" != "$WORK_BRANCH" ]; then',
+            '  if git show-ref --verify --quiet "refs/heads/$WORK_BRANCH"; then git switch "$WORK_BRANCH"; else git switch -c "$WORK_BRANCH"; fi',
+            "fi",
             'git config agent-sandbox.sessionId "$SESSION_ID"',
             'git config agent-sandbox.branchSuffix "$BRANCH_SUFFIX"',
             'git config agent-sandbox.prNotesRef "$PR_NOTES_REF"',
         ]
         if clone_branch:
-            lines.append(f"git config agent-sandbox.baseBranch {shlex.quote(clone_branch)}")
+            lines.insert(8, f"CLONE_BRANCH={shlex.quote(clone_branch)}")
         lines.extend(
             [
                 'git config alias.agent-pr-note \'!f(){ repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" "$@"; }; f\'',
+                'git config alias.sync-base \'!f(){ repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/sync-base" "$@"; }; f\'',
             ]
         )
         if push_remote_url:
             lines.extend(
                 [
-                    'git config alias.push-agent \'!f(){ session_id=${SESSION_ID:-$(git config --get agent-sandbox.sessionId || true)}; if [ -z "${session_id}" ]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; expected_issue_number=$(git config --get agent-sandbox.issueNumber || true); if [ -n "${expected_issue_number}" ]; then case "${session_id}" in issue-${expected_issue_number}|issue-${expected_issue_number}-*) ;; *) echo "SESSION_ID (${session_id}) does not match expected issue ${expected_issue_number}; refusing agent push." >&2; return 1 ;; esac; fi; suffix_source=${AGENT_BRANCH_SUFFIX:-$(git config --get agent-sandbox.branchSuffix || true)}; if [ -z "${suffix_source}" ]; then suffix_source=${HOSTNAME:-}; fi; suffix=$(printf "%s" "${suffix_source}" | tr "[:upper:]" "[:lower:]" | tr -cs "a-z0-9._-" "-" | sed "s/^-*//;s/-*$//"); if [ -z "${suffix}" ]; then echo "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." >&2; return 1; fi; notes_ref=$(git config --get agent-sandbox.prNotesRef || true); if [ -z "${notes_ref}" ]; then notes_ref=refs/notes/agent-pr; fi; repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/agent-pr-note" ensure-head; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${session_id}/${branch}-${suffix} "${notes_ref}"; }; f\'',
+                    'git config alias.push-agent \'!f(){ repo_root=$(git rev-parse --show-toplevel); "${repo_root}/.agent-sandbox/bin/push-agent" "$@"; }; f\'',
                 ]
             )
         return "\n".join(lines) + "\n"

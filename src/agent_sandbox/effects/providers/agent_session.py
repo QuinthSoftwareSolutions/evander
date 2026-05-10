@@ -937,6 +937,14 @@ def _nuget_config_content(nuget_relay_base_url: str) -> str:
         f'    <add key="sandbox-nuget" value="{escaped_base}/nuget/nuget-org/v3/index.json" allowInsecureConnections="true" />\n'
         f'    <add key="sandbox-azure" value="{escaped_base}/nuget/azure/v3/index.json" allowInsecureConnections="true" />\n'
         "  </packageSources>\n"
+        "  <packageSourceMapping>\n"
+        '    <packageSource key="sandbox-nuget">\n'
+        '      <package pattern="*" />\n'
+        "    </packageSource>\n"
+        '    <packageSource key="sandbox-azure">\n'
+        '      <package pattern="ExampleIndustry.*" />\n'
+        "    </packageSource>\n"
+        "  </packageSourceMapping>\n"
         "  <fallbackPackageFolders>\n"
         '    <add key="shared-readonly" value="/opt/agent-sandbox/nuget-cache-ro" />\n'
         "  </fallbackPackageFolders>\n"

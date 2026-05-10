@@ -69,12 +69,14 @@ from agent_sandbox.issues.service import AzureDevOpsIssueInlineMediaProvider, Is
 from agent_sandbox.models import (
     AdoBacklogCreateRequest,
     AdoBacklogCreateResponse,
+    AdoBacklogCommentRequest,
     AdoCurrentIterationBacklogRequest,
     AdoCurrentIterationBacklogResponse,
     AdoBacklogGetRequest,
     AdoBacklogGetResponse,
     AdoBacklogQueryRequest,
     AdoBacklogQueryResponse,
+    AdoBacklogTextUpdateRequest,
     AuditEvent,
     CommunicationAttachmentRef,
     CommunicationCopyArtifactToWorkspaceRequest,
@@ -869,6 +871,43 @@ def create_server(context: RuntimeContext) -> FastMCP:
             }
             for artifact in _load_artifacts(artifact_ids)
         ]
+
+    def _require_ado_artifact_send(
+        session: Any, artifact_payloads: list[dict[str, Any]]
+    ) -> None:
+        if not artifact_payloads:
+            return
+        context.policy.require_communication_file_send_enabled(session)
+        for artifact in artifact_payloads:
+            artifact_session_id = artifact.get("session_id")
+            if artifact_session_id is not None and str(artifact_session_id) != session.session_id:
+                raise PolicyError(
+                    f"Communication file artifact is not owned by session {session.session_id}"
+                )
+            context.policy.require_communication_file_content(
+                session,
+                filename=str(
+                    artifact.get("normalized_safe_filename")
+                    or artifact.get("filename")
+                    or "attachment"
+                ),
+                mime_type=artifact.get("mime_type"),
+                byte_count=int(artifact.get("byte_count") or 0),
+            )
+
+    def _ado_artifacts_for_ids(
+        session: Any, artifact_ids: list[str]
+    ) -> list[dict[str, Any]]:
+        artifacts = _artifact_payloads(artifact_ids)
+        _require_ado_artifact_send(session, artifacts)
+        return artifacts
+
+    def _ado_artifact_approval_payload(payload: Any) -> dict[str, Any]:
+        if hasattr(payload, "model_dump"):
+            return payload.model_dump(mode="json", exclude={"request_id"}, exclude_none=True)
+        if isinstance(payload, dict):
+            return {key: value for key, value in payload.items() if key != "request_id"}
+        return {}
 
     def _communication_target_audit_fields(
         *,
@@ -3009,9 +3048,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
         title: str,
         description: str | None = None,
         acceptance_criteria: str | None = None,
+        description_artifact_ids: list[str] | None = None,
+        acceptance_criteria_artifact_ids: list[str] | None = None,
         tags: list[str] | None = None,
         assigned_user: str | None = None,
         parent_backlog_item_id: int | str | None = None,
+        request_id: str | None = None,
         *,
         session_id: str | None = None,
         ctx: Context | None = None,
@@ -3027,9 +3069,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
             "title": title,
             "description": description,
             "acceptance_criteria": acceptance_criteria,
+            "description_artifact_ids": description_artifact_ids,
+            "acceptance_criteria_artifact_ids": acceptance_criteria_artifact_ids,
             "tags": tags,
             "assigned_user": assigned_user,
             "parent_backlog_item_id": parent_backlog_item_id,
+            "request_id": request_id,
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.CREATE_ADO_BACKLOG_ITEM)
@@ -3040,28 +3085,53 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 title=title,
                 description=description,
                 acceptance_criteria=acceptance_criteria,
+                description_artifact_ids=description_artifact_ids or [],
+                acceptance_criteria_artifact_ids=acceptance_criteria_artifact_ids or [],
                 tags=tags or [],
                 assigned_user=assigned_user,
                 parent_backlog_item_id=parent_backlog_item_id,
+                request_id=request_id,
             )
             args = {
                 "session_id": session_id,
                 **request_model.model_dump(mode="json"),
             }
             issue_service = IssueService(context.provider_config)
-            remote_payload = issue_service.create_remote_issue(
-                provider="azure_devops",
-                directory_path=session.directory_path,
-                project=request_model.project,
-                issue_type=request_model.type.value,
-                title=request_model.title,
-                description=request_model.description,
-                iteration_path=request_model.iteration,
-                acceptance_criteria=request_model.acceptance_criteria,
-                tags=request_model.tags,
-                assigned_to=request_model.assigned_user,
-                parent_backlog_item_id=request_model.parent_backlog_item_id,
+            description_artifacts = _ado_artifacts_for_ids(
+                session, request_model.description_artifact_ids
             )
+            acceptance_artifacts = _ado_artifacts_for_ids(
+                session, request_model.acceptance_criteria_artifact_ids
+            )
+            artifact_ids = [
+                *request_model.description_artifact_ids,
+                *request_model.acceptance_criteria_artifact_ids,
+            ]
+            if artifact_ids:
+                args["artifacts"] = _artifact_audit_summaries(artifact_ids)
+                context.policy.require_communication_file_send_approval(
+                    session,
+                    request_id=request_model.request_id,
+                    payload=_ado_artifact_approval_payload(request_model),
+                )
+            create_kwargs: dict[str, Any] = {
+                "provider": "azure_devops",
+                "directory_path": session.directory_path,
+                "project": request_model.project,
+                "issue_type": request_model.type.value,
+                "title": request_model.title,
+                "description": request_model.description,
+                "iteration_path": request_model.iteration,
+                "acceptance_criteria": request_model.acceptance_criteria,
+                "tags": request_model.tags,
+                "assigned_to": request_model.assigned_user,
+                "parent_backlog_item_id": request_model.parent_backlog_item_id,
+            }
+            if description_artifacts:
+                create_kwargs["description_attachments"] = description_artifacts
+            if acceptance_artifacts:
+                create_kwargs["acceptance_criteria_attachments"] = acceptance_artifacts
+            remote_payload = issue_service.create_remote_issue(**create_kwargs)
             remote_fields = (
                 remote_payload.get("fields")
                 if isinstance(remote_payload.get("fields"), dict)
@@ -3104,6 +3174,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 tags=request_model.tags,
                 assigned_user=normalized_assigned_to or request_model.assigned_user,
                 parent_backlog_item_id=request_model.parent_backlog_item_id,
+                uploaded_attachments=remote_payload.get("uploaded_attachments") or [],
             )
             payload = response_model.model_dump(mode="json")
             audit_success(
@@ -3125,6 +3196,164 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.CREATE_ADO_BACKLOG_ITEM,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def post_ado_backlog_comment(
+        id: int | str,
+        comment: str,
+        project: str | None = None,
+        artifact_ids: list[str] | None = None,
+        request_id: str | None = None,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        request_model = AdoBacklogCommentRequest(
+            id=id,
+            project=project,
+            comment=comment,
+            artifact_ids=artifact_ids or [],
+            request_id=request_id,
+        )
+        args = {"session_id": session_id, **request_model.model_dump(mode="json")}
+        try:
+            session = context.policy.require_tool(session_id, ToolName.POST_ADO_BACKLOG_COMMENT)
+            artifacts = _ado_artifacts_for_ids(session, request_model.artifact_ids)
+            if request_model.artifact_ids:
+                args["artifacts"] = _artifact_audit_summaries(request_model.artifact_ids)
+                context.policy.require_communication_file_send_approval(
+                    session,
+                    request_id=request_model.request_id,
+                    payload=_ado_artifact_approval_payload(request_model),
+                )
+            result = IssueService(context.provider_config).post_remote_comment(
+                provider="azure_devops",
+                remote_issue_id=request_model.id,
+                directory_path=session.directory_path,
+                project=request_model.project,
+                comment=request_model.comment,
+                attachments=artifacts,
+            )
+            audit_success(
+                session_id,
+                ToolName.POST_ADO_BACKLOG_COMMENT,
+                args,
+                {
+                    "work_item_id": request_model.id,
+                    "project": request_model.project,
+                    "comment_id": (result.get("comment") or {}).get("id"),
+                    "uploaded_attachment_count": len(result.get("uploaded_attachments") or []),
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.POST_ADO_BACKLOG_COMMENT, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.POST_ADO_BACKLOG_COMMENT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def update_ado_backlog_text(
+        id: int | str,
+        project: str | None = None,
+        description: str | None = None,
+        acceptance_criteria: str | None = None,
+        description_artifact_ids: list[str] | None = None,
+        acceptance_criteria_artifact_ids: list[str] | None = None,
+        request_id: str | None = None,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        request_model = AdoBacklogTextUpdateRequest(
+            id=id,
+            project=project,
+            description=description,
+            acceptance_criteria=acceptance_criteria,
+            description_artifact_ids=description_artifact_ids or [],
+            acceptance_criteria_artifact_ids=acceptance_criteria_artifact_ids or [],
+            request_id=request_id,
+        )
+        args = {"session_id": session_id, **request_model.model_dump(mode="json")}
+        try:
+            session = context.policy.require_tool(session_id, ToolName.UPDATE_ADO_BACKLOG_TEXT)
+            description_artifacts = _ado_artifacts_for_ids(
+                session, request_model.description_artifact_ids
+            )
+            acceptance_artifacts = _ado_artifacts_for_ids(
+                session, request_model.acceptance_criteria_artifact_ids
+            )
+            artifact_ids = [
+                *request_model.description_artifact_ids,
+                *request_model.acceptance_criteria_artifact_ids,
+            ]
+            if artifact_ids:
+                args["artifacts"] = _artifact_audit_summaries(artifact_ids)
+                context.policy.require_communication_file_send_approval(
+                    session,
+                    request_id=request_model.request_id,
+                    payload=_ado_artifact_approval_payload(request_model),
+                )
+            fields: dict[str, Any] = {}
+            field_attachments: dict[str, list[dict[str, Any]]] = {}
+            if request_model.description is not None or description_artifacts:
+                fields["System.Description"] = request_model.description or ""
+                field_attachments["System.Description"] = description_artifacts
+            if request_model.acceptance_criteria is not None or acceptance_artifacts:
+                fields["Microsoft.VSTS.Common.AcceptanceCriteria"] = (
+                    request_model.acceptance_criteria or ""
+                )
+                field_attachments["Microsoft.VSTS.Common.AcceptanceCriteria"] = (
+                    acceptance_artifacts
+                )
+            result = IssueService(context.provider_config).update_remote_issue(
+                provider="azure_devops",
+                remote_issue_id=request_model.id,
+                directory_path=session.directory_path,
+                project=request_model.project,
+                state=None,
+                fields=fields,
+                field_attachments=field_attachments,
+            )
+            audit_success(
+                session_id,
+                ToolName.UPDATE_ADO_BACKLOG_TEXT,
+                args,
+                {
+                    "work_item_id": request_model.id,
+                    "project": request_model.project,
+                    "updated": result.get("updated"),
+                    "uploaded_attachment_count": len(result.get("uploaded_attachments") or []),
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.UPDATE_ADO_BACKLOG_TEXT, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.UPDATE_ADO_BACKLOG_TEXT,
                 args,
                 str(exc),
                 decision="error",
@@ -4263,6 +4492,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         body_text: str,
         thread_id: str | None = None,
         comment_id: str | None = None,
+        artifact_ids: list[str] | None = None,
         idempotency_key: str | None = None,
         request_id: str | None = None,
     ) -> dict[str, Any]:
@@ -4276,6 +4506,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             body_text=body_text.strip(),
             thread_id=normalized_thread_id,
             comment_id=normalized_comment_id,
+            artifact_ids=artifact_ids or [],
             idempotency_key=idempotency_key.strip() if isinstance(idempotency_key, str) else None,
             request_id=request_id.strip() if isinstance(request_id, str) else None,
         )
@@ -4286,12 +4517,21 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise PolicyError(message)
         try:
             session = context.policy.require_tool(session_id, ToolName.POST_PR_FEEDBACK_REPLY)
+            artifacts = _ado_artifacts_for_ids(session, request.artifact_ids)
+            approval_payload = _ado_artifact_approval_payload(request)
+            if request.artifact_ids:
+                args["artifacts"] = _artifact_audit_summaries(request.artifact_ids)
+                context.policy.require_communication_file_send_approval(
+                    session,
+                    request_id=request.request_id,
+                    payload=approval_payload,
+                )
             if context.policy.effective_policy_for_session(session).pr_reply_require_approval:
                 if not request.request_id:
                     raise PolicyError(
                         "request_id is required when pr_reply_require_approval is enabled"
                     )
-                context.policy.require_approved(request.request_id, payload=args)
+                context.policy.require_approved(request.request_id, payload=approval_payload)
             result = (
                 context.pr_reply_service_for_session(session_id)
                 .post_reply(
@@ -4301,6 +4541,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     thread_id=request.thread_id,
                     comment_id=request.comment_id,
                     body_text=request.body_text,
+                    attachments=artifacts,
                     idempotency_key=request.idempotency_key,
                 )
                 .model_dump(mode="json")
@@ -4435,6 +4676,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         repo: str,
         pr_id: str,
         body_text: str,
+        artifact_ids: list[str] | None = None,
         idempotency_key: str | None = None,
         request_id: str | None = None,
     ) -> dict[str, Any]:
@@ -4444,23 +4686,34 @@ def create_server(context: RuntimeContext) -> FastMCP:
             repo=repo.strip(),
             pr_id=pr_id.strip(),
             body_text=body_text.strip(),
+            artifact_ids=artifact_ids or [],
             idempotency_key=idempotency_key.strip() if isinstance(idempotency_key, str) else None,
             request_id=request_id.strip() if isinstance(request_id, str) else None,
         )
         args = request.model_dump(mode="json")
         try:
             session = context.policy.require_tool(request.session_id, ToolName.POST_PR_COMMENT)
+            artifacts = _ado_artifacts_for_ids(session, request.artifact_ids)
+            approval_payload = _ado_artifact_approval_payload(request)
+            if request.artifact_ids:
+                args["artifacts"] = _artifact_audit_summaries(request.artifact_ids)
+                context.policy.require_communication_file_send_approval(
+                    session,
+                    request_id=request.request_id,
+                    payload=approval_payload,
+                )
             if context.policy.effective_policy_for_session(session).pr_reply_require_approval:
                 if not request.request_id:
                     raise PolicyError(
                         "request_id is required when pr_reply_require_approval is enabled"
                     )
-                context.policy.require_approved(request.request_id, payload=args)
+                context.policy.require_approved(request.request_id, payload=approval_payload)
             result = context.pr_publish_service_for_session(request.session_id).post_comment(
                 provider=request.provider,
                 repo=request.repo,
                 pr_id=request.pr_id,
                 body_text=request.body_text,
+                attachments=artifacts,
                 idempotency_key=request.idempotency_key,
             )
             audit_success(
@@ -4510,6 +4763,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         body_text: str,
         start_line: int | None = None,
         side: str | None = "RIGHT",
+        artifact_ids: list[str] | None = None,
         idempotency_key: str | None = None,
         request_id: str | None = None,
     ) -> dict[str, Any]:
@@ -4523,6 +4777,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             body_text=body_text.strip(),
             start_line=start_line,
             side=side.strip().upper() if isinstance(side, str) else None,
+            artifact_ids=artifact_ids or [],
             idempotency_key=idempotency_key.strip() if isinstance(idempotency_key, str) else None,
             request_id=request_id.strip() if isinstance(request_id, str) else None,
         )
@@ -4531,12 +4786,21 @@ def create_server(context: RuntimeContext) -> FastMCP:
             session = context.policy.require_tool(
                 request.session_id, ToolName.POST_PR_INLINE_COMMENT
             )
+            artifacts = _ado_artifacts_for_ids(session, request.artifact_ids)
+            approval_payload = _ado_artifact_approval_payload(request)
+            if request.artifact_ids:
+                args["artifacts"] = _artifact_audit_summaries(request.artifact_ids)
+                context.policy.require_communication_file_send_approval(
+                    session,
+                    request_id=request.request_id,
+                    payload=approval_payload,
+                )
             if context.policy.effective_policy_for_session(session).pr_reply_require_approval:
                 if not request.request_id:
                     raise PolicyError(
                         "request_id is required when pr_reply_require_approval is enabled"
                     )
-                context.policy.require_approved(request.request_id, payload=args)
+                context.policy.require_approved(request.request_id, payload=approval_payload)
             result = context.pr_publish_service_for_session(request.session_id).post_inline_comment(
                 provider=request.provider,
                 repo=request.repo,
@@ -4546,6 +4810,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 body_text=request.body_text,
                 start_line=request.start_line,
                 side=request.side,
+                attachments=artifacts,
                 idempotency_key=request.idempotency_key,
             )
             audit_success(
@@ -4594,6 +4859,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         body_text: str,
         event: str | None = None,
         comments: list[dict[str, Any]] | None = None,
+        artifact_ids: list[str] | None = None,
         idempotency_key: str | None = None,
         request_id: str | None = None,
     ) -> dict[str, Any]:
@@ -4605,25 +4871,46 @@ def create_server(context: RuntimeContext) -> FastMCP:
             body_text=body_text.strip(),
             event=event.strip() if isinstance(event, str) else None,
             comments=comments or [],
+            artifact_ids=artifact_ids or [],
             idempotency_key=idempotency_key.strip() if isinstance(idempotency_key, str) else None,
             request_id=request_id.strip() if isinstance(request_id, str) else None,
         )
         args = request.model_dump(mode="json")
         try:
             session = context.policy.require_tool(request.session_id, ToolName.SUBMIT_PR_REVIEW)
+            summary_artifacts = _ado_artifacts_for_ids(session, request.artifact_ids)
+            comment_payloads: list[dict[str, Any]] = []
+            comment_artifact_ids: list[str] = []
+            for item in request.comments:
+                payload = item.model_dump(mode="json")
+                artifacts = _ado_artifacts_for_ids(session, item.artifact_ids)
+                if artifacts:
+                    payload["attachments"] = artifacts
+                    comment_artifact_ids.extend(item.artifact_ids)
+                comment_payloads.append(payload)
+            all_artifact_ids = [*request.artifact_ids, *comment_artifact_ids]
+            approval_payload = _ado_artifact_approval_payload(request)
+            if all_artifact_ids:
+                args["artifacts"] = _artifact_audit_summaries(all_artifact_ids)
+                context.policy.require_communication_file_send_approval(
+                    session,
+                    request_id=request.request_id,
+                    payload=approval_payload,
+                )
             if context.policy.effective_policy_for_session(session).pr_reply_require_approval:
                 if not request.request_id:
                     raise PolicyError(
                         "request_id is required when pr_reply_require_approval is enabled"
                     )
-                context.policy.require_approved(request.request_id, payload=args)
+                context.policy.require_approved(request.request_id, payload=approval_payload)
             result = context.pr_publish_service_for_session(request.session_id).submit_review(
                 provider=request.provider,
                 repo=request.repo,
                 pr_id=request.pr_id,
                 body_text=request.body_text,
                 event=request.event,
-                comments=[item.model_dump(mode="json") for item in request.comments],
+                comments=comment_payloads,
+                attachments=summary_artifacts,
                 idempotency_key=request.idempotency_key,
             )
             audit_success(

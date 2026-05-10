@@ -228,6 +228,69 @@ def test_communication_stage_workspace_file_rejects_non_workspace_path(
     assert FakeAgentExecEffectProvider.calls == []
 
 
+def test_post_ado_backlog_comment_uses_staged_artifact_send_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeIssueService:
+        def __init__(self, provider_config: object) -> None:
+            self.provider_config = provider_config
+
+        def post_remote_comment(self, **kwargs: object) -> dict[str, object]:
+            calls.append(dict(kwargs))
+            attachments = kwargs["attachments"]
+            assert isinstance(attachments, list)
+            assert Path(str(attachments[0]["path"])).read_bytes() == b"png-bytes"
+            return {
+                "provider": "azure_devops",
+                "remote_issue_id": kwargs["remote_issue_id"],
+                "comment": {"id": "9", "text": kwargs["comment"], "url": ""},
+                "uploaded_attachments": [{"filename": "shot.png"}],
+            }
+
+    monkeypatch.setattr(gateway, "IssueService", FakeIssueService)
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.POST_ADO_BACKLOG_COMMENT],
+            communication_file_send_enabled=True,
+            communication_file_max_bytes=100,
+            communication_file_allowed_mime_types=["image/png"],
+            communication_file_allowed_extensions=[".png"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    artifact = CommunicationArtifactStore(tmp_path).stage(
+        provider="workspace",
+        session_id="session-1",
+        content=b"png-bytes",
+        original_filename="shot.png",
+        mime_type="image/png",
+    )
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "post_ado_backlog_comment",
+        {
+            "session_id": "session-1",
+            "id": 123,
+            "project": "Project",
+            "comment": "Screenshot",
+            "artifact_ids": [artifact.artifact_id],
+        },
+    )
+
+    assert result["comment"]["id"] == "9"
+    assert calls[0]["provider"] == "azure_devops"
+    assert calls[0]["remote_issue_id"] == "123"
+    assert calls[0]["project"] == "Project"
+    assert calls[0]["attachments"][0]["artifact_id"] == artifact.artifact_id
+
+
 def test_inline_media_pr_feedback_downloads_and_copies_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

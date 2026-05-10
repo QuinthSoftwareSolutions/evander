@@ -431,14 +431,27 @@ When diagnosing streamed `/v1/*` relay calls, inspect host relay logs for these 
 
 A transport-terminated warning without client-visible failure can be expected for some upstream SSE responses that close abruptly after emitting the final event.
 
-## Host-Side Azure DevOps Backlog Creation Tool
+## Host-Side Azure DevOps Backlog Tools
 
 - Gateway tool name: `create_ado_backlog_item`.
 - The tool is policy-gated: each session manifest must include `create_ado_backlog_item` in
   `allowed_tools` before calls are accepted.
 - Required MCP arguments: `type`, `project`, `iteration`, `title`.
 - Optional MCP arguments: `description`, `acceptance_criteria`, `tags`, `assigned_user`,
-  `parent_backlog_item_id`.
+  `parent_backlog_item_id`, `description_artifact_ids`, and
+  `acceptance_criteria_artifact_ids`.
+- Gateway tool name: `post_ado_backlog_comment`.
+  - Policy-gated with `post_ado_backlog_comment`.
+  - Required MCP arguments: `id`, `comment`.
+  - Optional MCP arguments: `project`, `artifact_ids`, `request_id`.
+- Gateway tool name: `update_ado_backlog_text`.
+  - Policy-gated with `update_ado_backlog_text`.
+  - Required MCP argument: `id`; at least one text field or artifact list must be present.
+  - Optional MCP arguments: `project`, `description`, `acceptance_criteria`,
+    `description_artifact_ids`, `acceptance_criteria_artifact_ids`, `request_id`.
+- Artifact arguments use opaque IDs returned by `communication_stage_workspace_file` or inbound
+  media download tools. When `communication_file_require_approval_for_send` is enabled, the call
+  must include a matching approved `request_id`.
 
 ## Host-Side Azure DevOps Backlog Query Tool
 
@@ -492,6 +505,8 @@ Example session tool allowlist entry:
 ```json
 {
   "allowed_tools": [
+    "post_ado_backlog_comment",
+    "update_ado_backlog_text",
     "query_ado_backlog_items",
     "get_ado_backlog_item"
   ]
@@ -794,6 +809,7 @@ Outbound sends must use staged artifact IDs. Do not send arbitrary guest paths.
 4. For Discord and Teams, submit/approve the exact payload expected by `discord_post_file` or
    `teams_post_file`, including destination, message, and `artifact_ids`; then pass the approval
    `request_id` to the send tool.
+   For Azure DevOps PR/backlog tools, approve the exact comment/text payload and artifact IDs.
 5. Disable `communication_file_send_enabled` again after the test unless the production change was
    intentionally approved.
 
@@ -980,9 +996,12 @@ work and let the trigger orchestrator start a temporary review VM.
   - `post_pr_inline_comment(...)` for one file/line finding; prefer this over writing
     `path line N` at the start of a top-level comment
   - `submit_pr_review(...)` for a summary plus optional batched inline findings
+  - `post_pr_feedback_reply(...)` when replying to an existing feedback thread/comment
 
 The review-request inbox is persisted in `runtime/review-request-store.json`. Records transition
 through `pending`, `leased`, `dispatched`, `completed`, `failed`, or `cancelled`.
+For Azure DevOps PRs, these publish tools can include staged `artifact_ids`; the gateway uploads
+them as PR attachments and appends Markdown image/link references to the posted text.
 
 ### Recommended workflow graph
 
@@ -1420,8 +1439,11 @@ After that initial setup, a guest-side `git fetch` or `git pull` against the iss
 restricted host Git wrapper to refresh the mirror from its configured source before serving the read.
 That keeps the guest on the latest mirrored refs without granting the guest direct access to the
 canonical remote.
-The cloned repo also gets `AGENT_TASK.yaml` in the repo root, a repo-local `git push-agent`
-alias, and the guest-home `AGENTS.md` guidance file during the repo-clone step.
+The cloned repo also gets `AGENT_TASK.yaml` in the repo root, a local `work` branch created from
+the configured base branch, repo-local `git sync-base` and `git push-agent` aliases, and the
+guest-home `AGENTS.md` guidance file during the repo-clone step. `sync-base` merges the latest
+configured base branch through `origin`; `push-agent` verifies the destination and base branches
+before pushing.
 Mirror freshness flags are accepted and forwarded through the git-setup helper and the repo-clone
 step:
 
@@ -1452,6 +1474,9 @@ environment variables:
   still default to the legacy `refs/notes/agent-pr` ref.
 - `AGENT_SANDBOX_PR_BODY_MAX_BYTES` (optional, default `60000`): hard byte cap applied to the
   composed PR body before creating/updating the PR.
+- `AGENT_SANDBOX_PR_BODY_ARTIFACT_IDS` (optional): comma-, semicolon-, or newline-separated staged
+  artifact IDs to append to the Azure DevOps PR description. The same behavior is available with
+  repeated `open_agent_pr.sh --body-artifact-id <artifact-id>` options.
 
 PR creation behavior is also directory-scoped via `ado-worker.json` overlays:
 
@@ -1477,9 +1502,13 @@ agent-sandbox-cli migrate-pr-template-to-root --config config/gateway.yaml
 ```
 
 On guest issue VMs, prefer `git agent-pr-note set` / `git agent-pr-note append` instead of raw
-`git notes add -f`. The helper keeps an additive branch-local summary cache and `git push-agent`
-reattaches that full summary to the current `HEAD` before it pushes the configured
-`agent-sandbox.prNotesRef` notes ref.
+`git notes add -f`. The helper keeps an additive branch-local summary cache. Agents should use
+`git sync-base` when they need to merge the latest configured base branch, such as `main`, because
+their local coding branch is `work`. `git push-agent` fetches the configured destination and base
+branches through the guest-visible mirror before pushing. If either branch has commits missing from
+`HEAD`, `git push-agent` refuses the push and prints the merge command the agent should run. Once
+those branches are contained, it reattaches the full summary to the current `HEAD` before it pushes
+the configured `agent-sandbox.prNotesRef` notes ref.
 
 Expected resulting PR body shape when both fixed boilerplate and note summary are present:
 

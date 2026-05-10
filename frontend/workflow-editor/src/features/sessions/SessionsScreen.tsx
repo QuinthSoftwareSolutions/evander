@@ -93,6 +93,8 @@ const TOOL_DESCRIPTION_FALLBACK = "Allow the session to invoke this MCP tool whe
 
 const TOOL_DESCRIPTIONS: Record<string, string> = {
   create_ado_backlog_item: "Create a new Azure DevOps backlog item on the host using the configured project defaults.",
+  post_ado_backlog_comment: "Post a comment to an Azure DevOps backlog item, optionally with staged image artifacts.",
+  update_ado_backlog_text: "Update Azure DevOps backlog description or acceptance criteria text, optionally with staged image artifacts.",
   query_ado_backlog_items: "Search Azure DevOps backlog items with the host-side query filters and return matching work items.",
   list_ado_current_iteration_backlog_items: "List backlog items assigned to the current Azure DevOps iteration for the configured project.",
   get_ado_backlog_item: "Fetch a single Azure DevOps backlog item with its latest host-side details.",
@@ -262,6 +264,8 @@ function groupToolOption(tool: ToolOption): string {
   }
   if ([
     "create_ado_backlog_item",
+    "post_ado_backlog_comment",
+    "update_ado_backlog_text",
     "query_ado_backlog_items",
     "list_ado_current_iteration_backlog_items",
     "get_ado_backlog_item",

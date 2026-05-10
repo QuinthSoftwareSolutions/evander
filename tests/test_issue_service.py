@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 import pytest
 
@@ -50,6 +52,10 @@ class _RecordingClient:
     def post(self, url: str, **kwargs: object) -> httpx.Response:
         self._calls.append({"method": "POST", "url": url, **kwargs})
         return self._with_request(self._responses.pop(0), method="POST", url=url)
+
+    def patch(self, url: str, **kwargs: object) -> httpx.Response:
+        self._calls.append({"method": "PATCH", "url": url, **kwargs})
+        return self._with_request(self._responses.pop(0), method="PATCH", url=url)
 
     def get(self, url: str, **kwargs: object) -> httpx.Response:
         self._calls.append({"method": "GET", "url": url, **kwargs})
@@ -141,6 +147,206 @@ def test_create_issue_uses_explicit_project_override(monkeypatch: pytest.MonkeyP
         == "https://dev.azure.com/example/other-project/_apis/wit/workItems/1234"
     )
     assert result["project"] == "other-project"
+
+
+def test_create_issue_uploads_description_artifact_and_links_relation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "project-x", "pat"),
+    )
+    image_path = tmp_path / "screen.png"
+    image_path.write_bytes(b"png-bytes")
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(
+            200,
+            json={
+                "id": "att-1",
+                "url": "https://dev.azure.com/example/project-x/_apis/wit/attachments/att-1",
+            },
+        ),
+        httpx.Response(
+            200,
+            json={
+                "id": 77,
+                "fields": {
+                    "System.WorkItemType": "Task",
+                    "System.TeamProject": "project-x",
+                    "System.Title": "T",
+                    "System.Description": "<p>See screenshot</p>",
+                },
+                "_links": {
+                    "web": {
+                        "href": "https://dev.azure.com/example/project-x/_workitems/edit/77"
+                    }
+                },
+            },
+        ),
+    ]
+    monkeypatch.setattr(
+        "agent_sandbox.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses.copy()),
+    )
+
+    result = adapter.create_issue(
+        directory_path="root",
+        issue_type="task",
+        title="T",
+        description="See screenshot",
+        description_attachments=[
+            {
+                "artifact_id": "comm_abc",
+                "filename": "screen.png",
+                "mime_type": "image/png",
+                "byte_count": len(b"png-bytes"),
+                "path": str(image_path),
+            }
+        ],
+    )
+
+    assert calls[0]["method"] == "POST"
+    assert calls[0]["url"] == "https://dev.azure.com/example/project-x/_apis/wit/attachments"
+    assert calls[0]["content"] == b"png-bytes"
+    operations = calls[1]["json"]
+    assert any(
+        item["path"] == "/fields/System.Description"
+        and '<img src="https://dev.azure.com/example/project-x/_apis/wit/attachments/att-1"'
+        in item["value"]
+        for item in operations
+    )
+    assert operations[-1] == {
+        "op": "add",
+        "path": "/relations/-",
+        "value": {
+            "rel": "AttachedFile",
+            "url": "https://dev.azure.com/example/project-x/_apis/wit/attachments/att-1",
+            "attributes": {"name": "screen.png"},
+        },
+    }
+    assert result["uploaded_attachments"][0]["filename"] == "screen.png"
+
+
+def test_post_comment_uploads_artifact_appends_image_and_links_relation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "project-x", "pat"),
+    )
+    image_path = tmp_path / "comment.png"
+    image_path.write_bytes(b"comment-png")
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(
+            200,
+            json={
+                "id": "att-2",
+                "url": "https://dev.azure.com/example/project-x/_apis/wit/attachments/att-2",
+            },
+        ),
+        httpx.Response(
+            200,
+            json={
+                "id": 5,
+                "text": "Comment",
+                "_links": {"web": {"href": "https://dev.azure.com/comment/5"}},
+            },
+        ),
+        httpx.Response(200, json={"id": 77}),
+    ]
+    monkeypatch.setattr(
+        "agent_sandbox.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses.copy()),
+    )
+
+    result = adapter.post_comment(
+        directory_path="root",
+        remote_issue_id="77",
+        comment="Comment",
+        attachments=[
+            {
+                "artifact_id": "comm_def",
+                "filename": "comment.png",
+                "mime_type": "image/png",
+                "byte_count": len(b"comment-png"),
+                "path": str(image_path),
+            }
+        ],
+    )
+
+    assert calls[0]["url"] == "https://dev.azure.com/example/project-x/_apis/wit/attachments"
+    assert calls[1]["url"] == "https://dev.azure.com/example/project-x/_apis/wit/workItems/77/comments"
+    assert (
+        '<img src="https://dev.azure.com/example/project-x/_apis/wit/attachments/att-2"'
+        in calls[1]["json"]["text"]
+    )
+    assert calls[2]["method"] == "PATCH"
+    assert calls[2]["json"][0]["value"]["rel"] == "AttachedFile"
+    assert result["uploaded_attachments"][0]["filename"] == "comment.png"
+
+
+def test_update_issue_uploads_field_artifact_appends_image_and_links_relation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "project-x", "pat"),
+    )
+    image_path = tmp_path / "field.png"
+    image_path.write_bytes(b"field-png")
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(
+            200,
+            json={
+                "id": "att-3",
+                "url": "https://dev.azure.com/example/project-x/_apis/wit/attachments/att-3",
+            },
+        ),
+        httpx.Response(200, json={"id": 77}),
+    ]
+    monkeypatch.setattr(
+        "agent_sandbox.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses.copy()),
+    )
+
+    result = adapter.update_issue(
+        directory_path="root",
+        remote_issue_id="77",
+        state=None,
+        fields={"System.Description": "Updated"},
+        field_attachments={
+            "System.Description": [
+                {
+                    "artifact_id": "comm_ghi",
+                    "filename": "field.png",
+                    "mime_type": "image/png",
+                    "byte_count": len(b"field-png"),
+                    "path": str(image_path),
+                }
+            ]
+        },
+    )
+
+    assert calls[0]["url"] == "https://dev.azure.com/example/project-x/_apis/wit/attachments"
+    assert calls[1]["method"] == "PATCH"
+    operations = calls[1]["json"]
+    assert any(
+        item["path"] == "/fields/System.Description"
+        and '<img src="https://dev.azure.com/example/project-x/_apis/wit/attachments/att-3"'
+        in item["value"]
+        for item in operations
+    )
+    assert operations[-1]["value"]["rel"] == "AttachedFile"
+    assert result["uploaded_attachments"][0]["filename"] == "field.png"
 
 
 def test_create_issue_rejects_invalid_parent_relation_id_before_network(

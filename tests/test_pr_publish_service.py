@@ -161,6 +161,7 @@ def test_pr_publish_service_posts_inline_comment_via_review_provider(tmp_path: P
             "body_text": "",
             "comments": [{"path": "src/app.py", "line": 17, "body_text": "Fix this line"}],
             "event": None,
+            "attachments": None,
         }
     ]
 
@@ -326,6 +327,70 @@ def test_azure_publish_provider_posts_top_level_comment(monkeypatch: pytest.Monk
     assert result["thread_id"] == "44"
     assert result["comment_id"] == "10"
     assert result["published_feedback_ids"] == ["azure_devops:thread_comment:44:10"]
+
+
+def test_azure_publish_provider_uploads_pr_attachment_and_embeds_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    image_path = tmp_path / "shot.png"
+    image_path.write_bytes(b"png-bytes")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/pullRequests/17/attachments/shot.png"):
+            assert request.headers["content-type"] == "application/octet-stream"
+            assert request.content == b"png-bytes"
+            return httpx.Response(
+                201,
+                json={
+                    "id": 7,
+                    "url": "https://dev.azure.com/example/proj/_apis/git/repositories/repo1/pullRequests/17/attachments/shot.png",
+                },
+            )
+        if request.url.path.endswith("/pullRequests/17/threads"):
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["comments"][0]["content"] == (
+                "Published.\n\n"
+                "![shot.png](https://dev.azure.com/example/proj/_apis/git/repositories/repo1/pullRequests/17/attachments/shot.png)"
+            )
+            return httpx.Response(
+                201,
+                json={
+                    "id": 44,
+                    "comments": [{"id": 10}],
+                    "_links": {"web": {"href": "https://ado.test/threads/44"}},
+                },
+            )
+        raise AssertionError(f"unexpected path: {request.url.path}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrPublishProvider(
+        organization_url="https://dev.azure.com/example",
+        project="proj",
+        pat="secret",
+    )
+
+    result = provider.post_comment(
+        repo="repo1",
+        pr_id="17",
+        body_text="Published.",
+        attachments=[
+            {
+                "artifact_id": "comm_123",
+                "filename": "shot.png",
+                "mime_type": "image/png",
+                "byte_count": len(b"png-bytes"),
+                "path": str(image_path),
+            }
+        ],
+    )
+
+    assert [request.url.path for request in requests] == [
+        "/example/proj/_apis/git/repositories/repo1/pullRequests/17/attachments/shot.png",
+        "/example/proj/_apis/git/repositories/repo1/pullRequests/17/threads",
+    ]
+    assert result["uploaded_attachments"][0]["filename"] == "shot.png"
 
 
 def test_azure_publish_provider_submits_review_and_inline_comments(

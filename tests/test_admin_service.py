@@ -4367,11 +4367,15 @@ def test_clone_repo_into_vm_installs_agent_push_and_pr_note_helpers(
     assert captured_ssh_input
     remote_script = captured_ssh_input[-1]
     assert "config alias.agent-pr-note" in remote_script
-    assert 'agent-pr-note" ensure-head' in remote_script
+    assert "config alias.push-agent" in remote_script
+    assert "config alias.sync-base" in remote_script
+    assert 'AGENT_PUSH_HELPER_B64="' in remote_script
+    assert 'SYNC_BASE_HELPER_B64="' in remote_script
+    assert '.agent-sandbox/bin/push-agent' in remote_script
+    assert '.agent-sandbox/bin/sync-base' in remote_script
     assert "config agent-sandbox.prNotesRef" in remote_script
-    assert "git config --get agent-sandbox.prNotesRef" in remote_script
-    assert '"${notes_ref}"' in remote_script
     assert "config agent-sandbox.branchSuffix" in remote_script
+    assert "config agent-sandbox.workBranch" in remote_script
 
 
 def test_clone_repo_into_vm_honors_clone_branch_and_records_base_branch(
@@ -4426,7 +4430,9 @@ def test_clone_repo_into_vm_honors_clone_branch_and_records_base_branch(
     remote_script = captured_ssh_input[-1]
     assert 'CLONE_BRANCH="release/1.2"' in remote_script
     assert 'git clone --branch "${CLONE_BRANCH}" "${REMOTE_URL}" "${TARGET_DIR}"' in remote_script
-    assert 'config agent-sandbox.baseBranch "${CLONE_BRANCH}"' in remote_script
+    assert 'BASE_BRANCH="${CLONE_BRANCH:-}"' in remote_script
+    assert 'config agent-sandbox.baseBranch "${BASE_BRANCH}"' in remote_script
+    assert 'git -C "${TARGET_DIR}" switch -c "${WORK_BRANCH}"' in remote_script
 
 
 def test_clone_repo_into_vm_preserves_canonical_remote_for_remote_sources(
@@ -5422,6 +5428,7 @@ def test_pr_create_writes_inline_body_to_temporary_file_and_cleans_it_up(
         project="Example Industry APP",
         title="14724: Test Issue: Truman",
         body="Inline PR body",
+        body_artifact_ids=["comm_11111111111111111111111111111111"],
         draft=True,
     )
 
@@ -5430,6 +5437,8 @@ def test_pr_create_writes_inline_body_to_temporary_file_and_cleans_it_up(
     assert cmd[0].endswith("/scripts/open_agent_pr.sh")
     assert "--create-pr" in cmd
     assert "--draft" in cmd
+    assert "--body-artifact-id" in cmd
+    assert "comm_11111111111111111111111111111111" in cmd
     assert "--project" in cmd
     assert "Example Industry APP" in cmd
     assert (

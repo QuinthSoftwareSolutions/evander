@@ -45,18 +45,35 @@ def test_issue_vm_setup_configures_agent_remote_for_push_alias() -> None:
 
     assert 'git -C "${{TARGET_DIR}}" remote add agent "${{REMOTE_URL}}"' in clone_runtime
     assert 'AGENT_PR_NOTE_HELPER_B64="' in clone_runtime
+    assert 'AGENT_PUSH_HELPER_B64="' in clone_runtime
+    assert 'SYNC_BASE_HELPER_B64="' in clone_runtime
     assert "def _guest_agent_pr_note_helper_b64(project_dir: Path) -> str:" in admin_service
+    assert "def _guest_push_agent_helper_b64(project_dir: Path) -> str:" in admin_service
+    assert "def _guest_sync_base_helper_b64(project_dir: Path) -> str:" in admin_service
     assert 'return base64.b64encode(helper_path.read_bytes()).decode("ascii")' in admin_service
     assert (
         'python3 - "${{TARGET_DIR}}/.agent-sandbox/bin/agent-pr-note" "${{AGENT_PR_NOTE_HELPER_B64}}"'
         in clone_runtime
     )
+    assert (
+        'python3 - "${{TARGET_DIR}}/.agent-sandbox/bin/push-agent" "${{AGENT_PUSH_HELPER_B64}}"'
+        in clone_runtime
+    )
+    assert (
+        'python3 - "${{TARGET_DIR}}/.agent-sandbox/bin/sync-base" "${{SYNC_BASE_HELPER_B64}}"'
+        in clone_runtime
+    )
     assert "target_path.write_bytes(base64.b64decode(sys.argv[2]))" in clone_runtime
     assert "config alias.agent-pr-note" in clone_runtime
+    assert "config alias.push-agent" in clone_runtime
+    assert "config alias.sync-base" in clone_runtime
     assert 'config agent-sandbox.sessionId "${{SESSION_ID}}"' in clone_runtime
     assert 'config agent-sandbox.prNotesRef "${{PR_NOTES_REF}}"' in clone_runtime
     assert 'config agent-sandbox.issueNumber "{issue_number}"' in clone_runtime
+    assert 'config agent-sandbox.destinationBranch "feature/issue-{issue_number}"' in clone_runtime
     assert 'config agent-sandbox.branchSuffix "${VM_NAME}"' in clone_runtime
+    assert 'config agent-sandbox.workBranch "${{WORK_BRANCH}}"' in clone_runtime
+    assert 'git -C "${{TARGET_DIR}}" switch -c "${{WORK_BRANCH}}"' in clone_runtime
     assert (
         "Check the repository's root for an `AGENTS.md` file containing instructions local to the repository."
         in guest_agents_template
@@ -65,10 +82,8 @@ def test_issue_vm_setup_configures_agent_remote_for_push_alias() -> None:
     assert "agent-sandbox.prNotesRef" in guest_agents_template
     assert "`push-agent` refuses to run when `SESSION_ID` is missing" in guest_agents_template
     assert "suffix resolves empty" in guest_agents_template
-    assert (
-        "HEAD:refs/heads/agents/${SESSION_ID}/$(git rev-parse --abbrev-ref HEAD)-${AGENT_BRANCH_SUFFIX:-${HOSTNAME}} $(git config --get agent-sandbox.prNotesRef || printf '%s' refs/notes/agent-pr)"
-        in guest_agents_template
-    )
+    assert "`push-agent` fetches and verifies the configured destination branch" in guest_agents_template
+    assert "`sync-base` fetches and merges the configured base branch" in guest_agents_template
 
 
 def test_guest_agent_pr_note_helper_supports_additive_updates() -> None:
@@ -80,3 +95,26 @@ def test_guest_agent_pr_note_helper_supports_additive_updates() -> None:
     assert "git config --get agent-sandbox.prNotesRef" in helper
     assert 'git notes --ref="$(pr_notes_ref)" add -f -F' in helper
     assert "Run 'git agent-pr-note set -m" in helper
+
+
+def test_guest_push_agent_helper_preflights_destination_branch_before_push() -> None:
+    helper = (ROOT / "scripts" / "guest" / "push_agent.sh").read_text(encoding="utf-8")
+
+    assert "agent-sandbox.baseBranch" in helper
+    assert "agent-sandbox.destinationBranch" in helper
+    assert "issue_number_from_value" in helper
+    assert "git ls-remote --exit-code" in helper
+    assert "git fetch" in helper
+    assert "merge-base --is-ancestor" in helper
+    assert "Refusing to push: " in helper
+    assert "git sync-base" in helper
+    assert 'git push agent "HEAD:refs/heads/agents/${session_id_value}/${branch}-${suffix}"' in helper
+
+
+def test_guest_sync_base_helper_fetches_and_merges_configured_base_branch() -> None:
+    helper = (ROOT / "scripts" / "guest" / "sync_base.sh").read_text(encoding="utf-8")
+
+    assert "agent-sandbox.baseBranch" in helper
+    assert "git fetch" in helper
+    assert "git merge --no-edit" in helper
+    assert "git agent-pr-note append" in helper

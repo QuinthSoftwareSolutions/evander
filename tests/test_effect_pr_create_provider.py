@@ -87,6 +87,7 @@ def test_pr_create_provider_calls_admin_service_with_normalized_arguments(tmp_pa
             "title": "Override title",
             "body": "Override body",
             "body_file": None,
+            "body_artifact_ids": None,
             "draft": False,
             "fill": False,
         }
@@ -129,6 +130,30 @@ def test_pr_create_provider_passes_structured_preflight_failure(tmp_path: Path) 
     assert result["preflight_success"] is False
     assert result["reason"] == "destination_branch_ahead"
     assert result["origin_branch"] == "feature/issue-1"
+
+
+def test_pr_create_provider_normalizes_body_artifact_ids(tmp_path: Path) -> None:
+    admin_service = _AdminServiceStub(pr_create_result={"success": True})
+    provider = PrCreateEffectProvider()
+    provider.initialize(
+        effect_definition=SimpleNamespace(
+            id="effect-pr",
+            display_name="Create PR",
+            type="effect:pr:create",
+            host_repo_path="/repo",
+            body_artifact_ids=" comm_aaa, comm_bbb ; comm_ccc ",
+        ),
+        runtime_context=_build_context(tmp_path, admin_service),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert admin_service.calls[0]["body_artifact_ids"] == [
+        "comm_aaa",
+        "comm_bbb",
+        "comm_ccc",
+    ]
 
 
 def test_pr_create_provider_requires_admin_service_method(tmp_path: Path) -> None:

@@ -451,9 +451,12 @@ The guest clone URL is also derived from configurable Git-root settings:
 That now also clones the mirrored repo into the guest user's home directory using
 the host repo basename, for example `/home/agent/AcmePlatform`. It also writes a short
 `/home/agent/AGENTS.md` note, copies the issue YAML into the repo root as
-`AGENT_TASK.yaml`, configures a repo-local `git push-agent` alias for the safe
-session-namespaced push pattern, and starts a background agent run inside the guest by
-default. The guest-side PID and state files live under `/home/agent/.agent-sandbox/`; root-owned transcript logs live under `/var/log/agent-sandbox/agent-runs/`.
+`AGENT_TASK.yaml`, creates a local `work` branch from the configured base branch, configures
+repo-local `git sync-base` and `git push-agent` aliases, and starts a background agent run
+inside the guest by default. `sync-base` merges the latest configured base branch via `origin`,
+while `push-agent` verifies the destination and base branches before using the safe
+session-namespaced push pattern. The guest-side PID and state files live under
+`/home/agent/.agent-sandbox/`; root-owned transcript logs live under `/var/log/agent-sandbox/agent-runs/`.
 When `--python` is enabled, the guest repo also gets a repo-local `.venv`. Activate it with
 `. .venv/bin/activate`, then run `python -m pytest -q` and `python -m ruff check` from inside
 the guest clone.
@@ -542,9 +545,12 @@ heading, then the git note content from the configured PR notes ref. New checkou
 `refs/notes/agent-pr/<session-hash>`, where `<session-hash>` is the first 12 hex characters of
 `sha256(session_id)`; older checkouts can still use `refs/notes/agent-pr`.
 
-Guest issue VMs install a `git agent-pr-note` helper so agents can maintain that note as an
-additive branch summary instead of overwriting it with per-commit deltas. `git push-agent`
-refreshes the cached summary onto the current `HEAD` and pushes the configured PR notes ref
+Guest issue VMs install `git agent-pr-note`, `git sync-base`, and `git push-agent` helpers.
+Agents work on a local `work` branch even when the base branch is `main`, so `git merge main`
+does not accidentally merge the branch into itself. `git sync-base` fetches and merges the
+configured base branch through the guest-visible mirror. `git push-agent` fetches the configured
+destination and base branches before pushing, refuses when either has commits missing from `HEAD`,
+refreshes the cached summary onto the current `HEAD`, and pushes the configured PR notes ref
 automatically.
 
 Example assembled PR body:
@@ -732,16 +738,24 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   inspect rejected, approved, committed, or completed issues without depending on list filters.
 - Use `create_ado_backlog_item` to create Azure DevOps backlog work items through the host-side
   provider adapter (no guest PAT required).
+- Use `post_ado_backlog_comment` to add an Azure DevOps backlog comment, including staged image
+  artifacts when outbound communication file send is enabled for the session.
+- Use `update_ado_backlog_text` to update the work item description or acceptance criteria and
+  append staged artifact links/images to those fields.
 - Use `query_ado_backlog_items` to list/filter Azure DevOps backlog work items.
 - Use `get_ado_backlog_item` when you need a single normalized Azure DevOps work item by numeric
   id, with optional comments/relations/updates expansion.
 - `create_ado_backlog_item` request fields:
   - required: `type`, `project`, `iteration`, `title`
   - optional: `description`, `acceptance_criteria`, `tags`, `assigned_user`,
-    `parent_backlog_item_id`
+    `parent_backlog_item_id`, `description_artifact_ids`,
+    `acceptance_criteria_artifact_ids`
+- `post_ado_backlog_comment` accepts `id`, `comment`, optional `project`, and optional
+  `artifact_ids`.
+- `update_ado_backlog_text` accepts `id`, optional `project`, `description`,
+  `acceptance_criteria`, `description_artifact_ids`, and `acceptance_criteria_artifact_ids`.
 - Session allowlisting is required: include `create_ado_backlog_item` in the session manifest
-  `allowed_tools`, or the call is denied by policy. The same applies to
-  `query_ado_backlog_items` and `get_ado_backlog_item`.
+  `allowed_tools`, or the call is denied by policy. The same applies to every ADO backlog tool.
 
 ### Minimal MCP client example (request/response)
 
@@ -779,7 +793,8 @@ Response:
     "acceptance_criteria": null,
     "tags": [],
     "assigned_user": null,
-    "parent_backlog_item_id": null
+    "parent_backlog_item_id": null,
+    "uploaded_attachments": []
   }
 }
 ```
@@ -981,6 +996,10 @@ Use `post_pr_inline_comment` for a single file/line finding, or `submit_pr_revie
 write the file path and line number into the comment body; the tool attaches the provider-native
 line context.
 
+For Azure DevOps PRs, PR comment/reply/review tools accept staged `artifact_ids`. The gateway
+uploads each artifact to the PR attachments API and appends Markdown image/link references to the
+posted text.
+
 ### Typical workflow shape
 
 1. `trigger:review:new-request`
@@ -1096,8 +1115,10 @@ adapters perform provider API calls under the active session policy.
 - **Outbound file send:** outbound sends reuse staged artifact IDs rather than arbitrary guest
   paths. Use `communication_stage_workspace_file` to stage an agent-created file from under
   `/home/agent`; the provider-specific tools are `discord_post_file`, `teams_post_file`,
-  `email_create_draft_with_attachments`, and `email_send_approved_with_attachments`. Keep
-  `communication_file_send_enabled: false` unless the session is explicitly allowed to send files.
+  `email_create_draft_with_attachments`, `email_send_approved_with_attachments`,
+  Azure DevOps PR comment/reply/review tools, and Azure DevOps backlog comment/text tools.
+  Keep `communication_file_send_enabled: false` unless the session is explicitly allowed to
+  send files.
 - **Approval behavior:** set `communication_file_require_approval_for_send: true` before enabling
   outbound file send. When that flag is true, each outbound file send must provide an approval
   request ID whose approved payload exactly matches the attempted provider, destination, message,

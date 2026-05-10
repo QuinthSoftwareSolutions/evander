@@ -24,6 +24,9 @@ Options:
   --work-item-id <id> Explicit Azure DevOps work item id to associate with the PR.
   --title <title>     Explicit PR title.
   --body-file <path>  Read PR body from a file.
+  --body-artifact-id <id>
+                      Attach a staged communication artifact to the Azure DevOps PR body.
+                      May be passed multiple times.
   --no-fill           Do not pass --fill to gh pr create.
   -h, --help          Show this help text.
 
@@ -48,6 +51,7 @@ BASE_BRANCH=""
 TITLE=""
 TITLE_EXPLICIT=0
 BODY_FILE=""
+BODY_ARTIFACT_IDS=()
 USE_FILL=1
 PROVIDER="auto"
 PROJECT_OVERRIDE=""
@@ -131,6 +135,14 @@ while [[ $# -gt 0 ]]; do
       BODY_FILE="$2"
       shift 2
       ;;
+    --body-artifact-id)
+      if [[ $# -lt 2 ]]; then
+        echo "Missing value for --body-artifact-id" >&2
+        exit 1
+      fi
+      BODY_ARTIFACT_IDS+=("$2")
+      shift 2
+      ;;
     --no-fill)
       USE_FILL=0
       shift
@@ -148,6 +160,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 set -- "${POSITIONAL[@]}"
+
+if [[ -n "${AGENT_SANDBOX_PR_BODY_ARTIFACT_IDS:-}" ]]; then
+  while IFS= read -r artifact_id; do
+    if [[ -n "${artifact_id}" ]]; then
+      BODY_ARTIFACT_IDS+=("${artifact_id}")
+    fi
+  done < <(printf '%s\n' "${AGENT_SANDBOX_PR_BODY_ARTIFACT_IDS}" | tr ',;' '\n')
+fi
 
 if [[ $# -lt 1 || $# -gt 3 ]]; then
   show_help >&2
@@ -857,8 +877,18 @@ if [[ -z "${REPO_SLUG}" ]]; then
   REPO_SLUG="$(basename "${HOST_REPO_PATH}")"
 fi
 
+if [[ "${#BODY_ARTIFACT_IDS[@]}" -gt 0 && "${PROVIDER}" != "azure_devops" ]]; then
+  echo "--body-artifact-id is currently supported only for --provider azure_devops." >&2
+  exit 1
+fi
+
 PR_URL=""
 PR_ID=""
+PR_UPLOADED_ATTACHMENTS_JSON="[]"
+BODY_ARTIFACT_IDS_TEXT=""
+if [[ "${#BODY_ARTIFACT_IDS[@]}" -gt 0 ]]; then
+  BODY_ARTIFACT_IDS_TEXT="$(printf '%s\n' "${BODY_ARTIFACT_IDS[@]}")"
+fi
 
 case "${PROVIDER}" in
   github)
@@ -909,16 +939,21 @@ case "${PROVIDER}" in
     TITLE="${TITLE}" \
     TITLE_EXPLICIT="${TITLE_EXPLICIT}" \
     BODY_CONTENT="${BODY_CONTENT}" \
+    PR_BODY_ARTIFACT_IDS="${BODY_ARTIFACT_IDS_TEXT}" \
+    RUNTIME_DIR="${AGENT_SANDBOX_RUNTIME_DIR:-${ROOT_DIR}/runtime}" \
+    SESSION_ID="${SESSION_ID}" \
     WORK_ITEM_ID="${WORK_ITEM_ID}" \
     CREATE_PRS_AS_DRAFT="${CREATE_PRS_AS_DRAFT}" \
     python3 - <<'PY'
 import base64
 import json
+import mimetypes
 import os
 import re
 import sys
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 origin_url = os.environ["ORIGIN_URL"]
 project_override = os.environ.get("PROJECT_OVERRIDE", "").strip()
@@ -927,6 +962,13 @@ origin_branch = os.environ["ORIGIN_BRANCH"]
 title = os.environ["TITLE"]
 title_explicit = os.environ.get("TITLE_EXPLICIT", "0") == "1"
 body = os.environ["BODY_CONTENT"]
+body_artifact_ids = [
+    item.strip()
+    for item in os.environ.get("PR_BODY_ARTIFACT_IDS", "").splitlines()
+    if item.strip()
+]
+runtime_dir = Path(os.environ.get("RUNTIME_DIR", "runtime"))
+session_id = os.environ.get("SESSION_ID", "").strip()
 pat = os.environ["AZURE_DEVOPS_PR_PAT_VALUE"]
 work_item_id = os.environ.get("WORK_ITEM_ID", "").strip()
 create_prs_as_draft = os.environ.get("CREATE_PRS_AS_DRAFT", "").strip() in {"1", "true", "yes", "on"}
@@ -965,6 +1007,11 @@ headers = {
     "Authorization": f"Basic {auth_header}",
     "Content-Type": "application/json",
 }
+attachment_upload_headers = {
+    "Authorization": f"Basic {auth_header}",
+    "Content-Type": "application/octet-stream",
+}
+artifact_id_re = re.compile(r"^comm_[0-9a-f]{32}$")
 
 
 def request_json(url: str, *, method: str = "GET", payload: dict | None = None, content_type: str = "application/json") -> dict:
@@ -981,6 +1028,115 @@ def request_json(url: str, *, method: str = "GET", payload: dict | None = None, 
     )
     with urllib.request.urlopen(request) as response:
         return json.load(response)
+
+
+def safe_artifact_filename(value: object, fallback: str) -> str:
+    raw = str(value or fallback).replace("\x00", "")
+    name = Path(raw.replace("\\", "/")).name
+    if not name or name in {".", ".."}:
+        name = fallback
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip(".-")[:255] or "attachment"
+
+
+def load_body_artifacts() -> list[dict]:
+    artifacts: list[dict] = []
+    if not body_artifact_ids:
+        return artifacts
+    artifact_root = runtime_dir / "communication-artifacts"
+    for artifact_id in body_artifact_ids:
+        if not artifact_id_re.fullmatch(artifact_id):
+            print(f"Invalid body artifact id: {artifact_id}", file=sys.stderr)
+            sys.exit(1)
+        metadata_path = artifact_root / f"{artifact_id}.json"
+        blob_path = artifact_root / f"{artifact_id}.bin"
+        if not metadata_path.is_file() or not blob_path.is_file():
+            print(f"Unknown staged body artifact: {artifact_id}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"Could not read staged body artifact metadata {artifact_id}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        artifact_session_id = str(metadata.get("session_id") or "").strip()
+        if session_id and artifact_session_id and artifact_session_id != session_id:
+            print(
+                f"Body artifact {artifact_id} is owned by session {artifact_session_id}, not {session_id}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        filename = safe_artifact_filename(
+            metadata.get("normalized_safe_filename")
+            or metadata.get("filename")
+            or metadata.get("original_filename"),
+            f"{artifact_id}.bin",
+        )
+        mime_type = str(metadata.get("mime_type") or mimetypes.guess_type(filename)[0] or "")
+        artifacts.append(
+            {
+                "artifact_id": artifact_id,
+                "filename": filename,
+                "mime_type": mime_type,
+                "byte_count": int(metadata.get("byte_count") or blob_path.stat().st_size),
+                "path": blob_path,
+            }
+        )
+    return artifacts
+
+
+def upload_pr_body_attachments(pr_id: str, artifacts: list[dict]) -> list[dict]:
+    uploaded: list[dict] = []
+    if not artifacts:
+        return uploaded
+    for artifact in artifacts:
+        filename = artifact["filename"]
+        upload_url = (
+            f"{base_url}/{urllib.parse.quote(pr_id, safe='')}/attachments/"
+            f"{urllib.parse.quote(filename, safe='')}?api-version=7.1"
+        )
+        request = urllib.request.Request(
+            upload_url,
+            headers=attachment_upload_headers,
+            data=artifact["path"].read_bytes(),
+            method="POST",
+        )
+        with urllib.request.urlopen(request) as response:
+            payload = json.load(response)
+        uploaded_url = str(payload.get("url") or upload_url.split("?", 1)[0])
+        uploaded.append(
+            {
+                "artifact_id": artifact["artifact_id"],
+                "filename": filename,
+                "url": uploaded_url,
+                "mime_type": artifact.get("mime_type") or None,
+                "byte_count": artifact["byte_count"],
+            }
+        )
+    return uploaded
+
+
+def append_markdown_attachment_links(text: str, attachments: list[dict]) -> str:
+    if not attachments:
+        return text
+    lines: list[str] = []
+    for attachment in attachments:
+        filename = str(attachment.get("filename") or "attachment")
+        url = str(attachment.get("url") or "")
+        if not url:
+            continue
+        label = filename.replace("[", "\\[").replace("]", "\\]")
+        mime_type = str(attachment.get("mime_type") or "")
+        if mime_type.startswith("image/"):
+            lines.append(f"![{label}]({url})")
+        else:
+            lines.append(f"[{label}]({url})")
+    if not lines:
+        return text
+    if text.strip():
+        return f"{text.rstrip()}\n\n" + "\n".join(lines)
+    return "\n".join(lines)
+
+
+body_artifacts = load_body_artifacts()
 
 
 def ensure_work_item_link(pr: dict) -> None:
@@ -1043,7 +1199,8 @@ payload = request_json(f"{base_url}?{query}")
 if payload.get("count", 0):
     pr = payload["value"][0]
     pr_id = str(pr.get("pullRequestId", ""))
-    update_doc = {"description": body}
+    uploaded_attachments = upload_pr_body_attachments(pr_id, body_artifacts)
+    update_doc = {"description": append_markdown_attachment_links(body, uploaded_attachments)}
     if title_explicit:
         update_doc["title"] = title
     pr = request_json(
@@ -1054,7 +1211,16 @@ if payload.get("count", 0):
     ensure_work_item_link(pr)
     web = pr.get("_links", {}).get("web", {}).get("href") or pr.get("url")
     pr_id = str(pr.get("pullRequestId", ""))
-    print(json.dumps({"pr_url": web, "pr_id": pr_id}, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "pr_url": web,
+                "pr_id": pr_id,
+                "uploaded_attachments": uploaded_attachments,
+            },
+            sort_keys=True,
+        )
+    )
     sys.exit(0)
 
 pr = request_json(
@@ -1068,11 +1234,28 @@ pr = request_json(
     },
     method="POST",
 )
+pr_id = str(pr.get("pullRequestId") or "").strip()
+uploaded_attachments = upload_pr_body_attachments(pr_id, body_artifacts)
+if uploaded_attachments:
+    pr = request_json(
+        f"{base_url}/{urllib.parse.quote(pr_id)}?api-version=7.1",
+        payload={"description": append_markdown_attachment_links(body, uploaded_attachments)},
+        method="PATCH",
+    )
 ensure_work_item_link(pr)
 
 web = pr.get("_links", {}).get("web", {}).get("href") or pr.get("url")
 pr_id = str(pr.get("pullRequestId", ""))
-print(json.dumps({"pr_url": web, "pr_id": pr_id}, sort_keys=True))
+print(
+    json.dumps(
+        {
+            "pr_url": web,
+            "pr_id": pr_id,
+            "uploaded_attachments": uploaded_attachments,
+        },
+        sort_keys=True,
+    )
+)
 PY
     )"
     PR_URL="$(
@@ -1089,6 +1272,14 @@ import json
 import os
 payload = json.loads(os.environ["AZURE_RESULT"])
 print(payload.get("pr_id", ""), end="")
+PY
+    )"
+    PR_UPLOADED_ATTACHMENTS_JSON="$(
+      AZURE_RESULT="${AZURE_RESULT}" python3 - <<'PY'
+import json
+import os
+payload = json.loads(os.environ["AZURE_RESULT"])
+print(json.dumps(payload.get("uploaded_attachments") or []), end="")
 PY
     )"
     ;;
@@ -1127,22 +1318,24 @@ RESULT_JSON="$(
   BASE_BRANCH="${BASE_BRANCH}" \
   SESSION_ID="${SESSION_ID}" \
   WORK_ITEM_ID="${WORK_ITEM_ID}" \
+  PR_UPLOADED_ATTACHMENTS_JSON="${PR_UPLOADED_ATTACHMENTS_JSON}" \
   python3 - <<'PY'
 import json
 import os
+uploaded_attachments = json.loads(os.environ.get("PR_UPLOADED_ATTACHMENTS_JSON") or "[]")
+payload = {
+    "provider": os.environ["PROVIDER"],
+    "pr_url": os.environ["PR_URL"],
+    "pr_id": os.environ["PR_ID"],
+    "origin_branch": os.environ["ORIGIN_BRANCH"],
+    "base_branch": os.environ["BASE_BRANCH"],
+    "session_id": os.environ["SESSION_ID"],
+    "work_item_id": os.environ["WORK_ITEM_ID"],
+}
+if uploaded_attachments:
+    payload["uploaded_attachments"] = uploaded_attachments
 print(
-    json.dumps(
-        {
-            "provider": os.environ["PROVIDER"],
-            "pr_url": os.environ["PR_URL"],
-            "pr_id": os.environ["PR_ID"],
-            "origin_branch": os.environ["ORIGIN_BRANCH"],
-            "base_branch": os.environ["BASE_BRANCH"],
-            "session_id": os.environ["SESSION_ID"],
-            "work_item_id": os.environ["WORK_ITEM_ID"],
-        },
-        sort_keys=True,
-    )
+    json.dumps(payload, sort_keys=True)
 )
 PY
 )"

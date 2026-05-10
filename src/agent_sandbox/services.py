@@ -2626,6 +2626,107 @@ class PrFeedbackService:
         return parsed.astimezone(UTC)
 
 
+def _pr_artifact_filename(artifact: dict[str, Any]) -> str:
+    return str(
+        artifact.get("normalized_safe_filename")
+        or artifact.get("filename")
+        or artifact.get("original_filename")
+        or "attachment"
+    ).strip() or "attachment"
+
+
+def _pr_artifact_mime_type(artifact: dict[str, Any]) -> str | None:
+    mime_type = str(artifact.get("mime_type") or "").strip()
+    return mime_type or mimetypes.guess_type(_pr_artifact_filename(artifact))[0]
+
+
+def _pr_artifact_is_image(artifact: dict[str, Any]) -> bool:
+    mime_type = _pr_artifact_mime_type(artifact)
+    if mime_type and mime_type.lower().startswith("image/"):
+        return True
+    guessed, _encoding = mimetypes.guess_type(_pr_artifact_filename(artifact))
+    return bool(guessed and guessed.lower().startswith("image/"))
+
+
+def _pr_artifact_bytes(artifact: dict[str, Any]) -> bytes:
+    path = str(artifact.get("path") or "").strip()
+    if not path:
+        raise ValueError("Published artifact payload is missing path")
+    return Path(path).read_bytes()
+
+
+def _append_markdown_attachment_links(
+    body_text: str, uploaded_attachments: list[dict[str, Any]]
+) -> str:
+    if not uploaded_attachments:
+        return body_text
+    lines = [body_text.rstrip(), ""]
+    for item in uploaded_attachments:
+        filename = str(item.get("filename") or "attachment").strip() or "attachment"
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        escaped_label = filename.replace("[", "\\[").replace("]", "\\]")
+        if item.get("is_image"):
+            lines.append(f"![{escaped_label}]({url})")
+        else:
+            lines.append(f"[{escaped_label}]({url})")
+    return "\n".join(lines).rstrip()
+
+
+def _reject_unsupported_attachments(provider: str, attachments: list[dict[str, Any]] | None) -> None:
+    if attachments:
+        raise ValueError(f"{provider} PR publishing does not support artifact attachments")
+
+
+def _reject_unsupported_comment_attachments(provider: str, comments: list[dict[str, Any]]) -> None:
+    if any(comment.get("attachments") for comment in comments):
+        raise ValueError(f"{provider} PR review comments do not support artifact attachments")
+
+
+def _upload_azure_devops_pr_attachments(
+    *,
+    client: httpx.Client,
+    organization_url: str,
+    project: str,
+    pat: str,
+    repo: str,
+    pr_id: str,
+    attachments: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    uploaded: list[dict[str, Any]] = []
+    for artifact in attachments or []:
+        filename = _pr_artifact_filename(artifact)
+        response = client.post(
+            (
+                f"{organization_url}/{project}/_apis/git/repositories/"
+                f"{_normalize_azure_devops_repo_identifier(repo)}/pullRequests/{pr_id}/"
+                f"attachments/{quote(filename, safe='')}"
+            ),
+            params={"api-version": "7.1"},
+            auth=("", pat),
+            content=_pr_artifact_bytes(artifact),
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        uploaded.append(
+            {
+                "provider": "azure_devops",
+                "surface": "pull_request",
+                "artifact_id": artifact.get("artifact_id"),
+                "filename": filename,
+                "mime_type": _pr_artifact_mime_type(artifact),
+                "byte_count": artifact.get("byte_count"),
+                "url": str(payload.get("url") or "").strip(),
+                "id": payload.get("id"),
+                "is_image": _pr_artifact_is_image(artifact),
+                "raw": payload,
+            }
+        )
+    return uploaded
+
+
 class PrReplyProvider(Protocol):
     def post_reply(
         self,
@@ -2635,6 +2736,7 @@ class PrReplyProvider(Protocol):
         thread_id: str | None,
         comment_id: str | None,
         body_text: str,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> PostPrFeedbackReplyResponse: ...
 
 
@@ -2680,7 +2782,9 @@ class GitHubPrReplyProvider:
         thread_id: str | None,
         comment_id: str | None,
         body_text: str,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> PostPrFeedbackReplyResponse:
+        _reject_unsupported_attachments("GitHub", attachments)
         if not comment_id:
             raise ValueError("GitHub reply posting requires comment_id")
         with httpx.Client(timeout=self.timeout_seconds) as client:
@@ -2729,6 +2833,7 @@ class AzureDevOpsPrReplyProvider:
         thread_id: str | None,
         comment_id: str | None,
         body_text: str,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> PostPrFeedbackReplyResponse:
         if not thread_id:
             raise ValueError("Azure DevOps reply posting requires thread_id")
@@ -2736,6 +2841,16 @@ class AzureDevOpsPrReplyProvider:
             raise ValueError("Azure DevOps reply posting requires comment_id")
         repo_identifier = _normalize_azure_devops_repo_identifier(repo)
         with httpx.Client(timeout=self.timeout_seconds) as client:
+            uploaded_attachments = _upload_azure_devops_pr_attachments(
+                client=client,
+                organization_url=self.organization_url,
+                project=self.project,
+                pat=self.pat,
+                repo=repo,
+                pr_id=pr_id,
+                attachments=attachments,
+            )
+            content = _append_markdown_attachment_links(body_text, uploaded_attachments)
             response = client.post(
                 (
                     f"{self.organization_url}/{self.project}/_apis/git/repositories/{repo_identifier}/"
@@ -2743,7 +2858,7 @@ class AzureDevOpsPrReplyProvider:
                 ),
                 params={"api-version": "7.1"},
                 auth=("", self.pat),
-                json={"content": body_text, "parentCommentId": int(comment_id)},
+                json={"content": content, "parentCommentId": int(comment_id)},
             )
             response.raise_for_status()
             payload = response.json()
@@ -2756,6 +2871,7 @@ class AzureDevOpsPrReplyProvider:
             comment_id=comment_id,
             reply_id=str(payload.get("id", "")) or None,
             reply_url=payload.get("_links", {}).get("web", {}).get("href"),
+            uploaded_attachments=uploaded_attachments,
         )
 
 
@@ -3043,6 +3159,7 @@ class PrReplyService:
         thread_id: str | None,
         comment_id: str | None,
         body_text: str,
+        attachments: list[dict[str, Any]] | None = None,
         idempotency_key: str | None = None,
     ) -> PostPrFeedbackReplyResponse:
         provider_name = normalize_pr_feedback_provider(provider)
@@ -3065,6 +3182,7 @@ class PrReplyService:
             thread_id=thread_id,
             comment_id=comment_id,
             body_text=body_text.strip(),
+            attachments=attachments,
         )
         response.idempotency_key = normalized_key
         self._record_ignored_feedback_id(response)
@@ -3188,6 +3306,7 @@ class PrPublishProvider(Protocol):
         repo: str,
         pr_id: str,
         body_text: str,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]: ...
 
     def submit_review(
@@ -3198,6 +3317,7 @@ class PrPublishProvider(Protocol):
         body_text: str,
         comments: list[dict[str, Any]] | None = None,
         event: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -3226,7 +3346,9 @@ class GitHubPrPublishProvider:
         repo: str,
         pr_id: str,
         body_text: str,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        _reject_unsupported_attachments("GitHub", attachments)
         normalized_body = body_text.strip()
         if not normalized_body:
             raise ValueError("GitHub PR comment publishing requires body_text")
@@ -3257,9 +3379,12 @@ class GitHubPrPublishProvider:
         body_text: str,
         comments: list[dict[str, Any]] | None = None,
         event: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        _reject_unsupported_attachments("GitHub", attachments)
         normalized_body = body_text.strip()
         normalized_comments = _normalize_pr_review_comments(comments)
+        _reject_unsupported_comment_attachments("GitHub", normalized_comments)
         normalized_event = _normalize_pr_review_event(event)
         if not normalized_body and not normalized_comments:
             raise ValueError("GitHub PR review publishing requires body_text or comments")
@@ -3347,10 +3472,21 @@ class AzureDevOpsPrPublishProvider:
         body_text: str,
         thread_context: dict[str, Any] | None = None,
         error_context: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        uploaded_attachments = _upload_azure_devops_pr_attachments(
+            client=client,
+            organization_url=self.organization_url,
+            project=self.project,
+            pat=self.pat,
+            repo=repo,
+            pr_id=pr_id,
+            attachments=attachments,
+        )
+        content = _append_markdown_attachment_links(body_text, uploaded_attachments)
         payload: dict[str, Any] = {
             "comments": [
-                {"parentCommentId": 0, "content": body_text.strip(), "commentType": "text"}
+                {"parentCommentId": 0, "content": content.strip(), "commentType": "text"}
             ],
             "status": "active",
         }
@@ -3388,6 +3524,7 @@ class AzureDevOpsPrPublishProvider:
             "comment_id": comment_id,
             "comment_url": comment_url,
             "published_feedback_ids": published_feedback_ids,
+            "uploaded_attachments": uploaded_attachments,
         }
 
     def post_comment(
@@ -3396,6 +3533,7 @@ class AzureDevOpsPrPublishProvider:
         repo: str,
         pr_id: str,
         body_text: str,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         normalized_body = body_text.strip()
         if not normalized_body:
@@ -3407,6 +3545,7 @@ class AzureDevOpsPrPublishProvider:
                 pr_id=pr_id,
                 body_text=normalized_body,
                 error_context="top-level PR comment",
+                attachments=attachments,
             )
         return {
             "status": "posted",
@@ -3424,6 +3563,7 @@ class AzureDevOpsPrPublishProvider:
         body_text: str,
         comments: list[dict[str, Any]] | None = None,
         event: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         normalized_body = body_text.strip()
         normalized_comments = _normalize_pr_review_comments(comments)
@@ -3439,6 +3579,7 @@ class AzureDevOpsPrPublishProvider:
         inline_comment_ids: list[str] = []
         inline_comment_urls: list[str] = []
         inline_published_feedback_ids: list[str] = []
+        uploaded_attachments: list[dict[str, Any]] = []
 
         with httpx.Client(timeout=self.timeout_seconds) as client:
             total_inline_comments = len(normalized_comments)
@@ -3457,6 +3598,7 @@ class AzureDevOpsPrPublishProvider:
                         body_text=comment["body_text"],
                         thread_context=thread_context,
                         error_context=error_context,
+                        attachments=comment.get("attachments"),
                     )
                 except httpx.HTTPStatusError as exc:
                     posted_count = len(inline_comment_ids)
@@ -3475,6 +3617,7 @@ class AzureDevOpsPrPublishProvider:
                 if comment_result["comment_url"]:
                     inline_comment_urls.append(comment_result["comment_url"])
                 inline_published_feedback_ids.extend(comment_result["published_feedback_ids"])
+                uploaded_attachments.extend(comment_result.get("uploaded_attachments") or [])
 
             if normalized_body:
                 summary_result = self._post_thread_comment(
@@ -3483,6 +3626,7 @@ class AzureDevOpsPrPublishProvider:
                     pr_id=pr_id,
                     body_text=normalized_body,
                     error_context="review summary comment",
+                    attachments=attachments,
                 )
                 summary_thread_id = summary_result["thread_id"]
                 summary_comment_id = summary_result["comment_id"]
@@ -3492,6 +3636,7 @@ class AzureDevOpsPrPublishProvider:
                 if summary_comment_url:
                     comment_urls.append(summary_comment_url)
                 published_feedback_ids.extend(summary_result["published_feedback_ids"])
+                uploaded_attachments.extend(summary_result.get("uploaded_attachments") or [])
 
             comment_ids.extend(inline_comment_ids)
             comment_urls.extend(inline_comment_urls)
@@ -3512,6 +3657,7 @@ class AzureDevOpsPrPublishProvider:
             "comment_ids": comment_ids,
             "comment_urls": comment_urls,
             "published_feedback_ids": published_feedback_ids,
+            "uploaded_attachments": uploaded_attachments,
         }
 
 
@@ -3646,6 +3792,7 @@ class PrPublishService:
         repo: str,
         pr_id: str,
         body_text: str,
+        attachments: list[dict[str, Any]] | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         return self._publish(
@@ -3654,6 +3801,7 @@ class PrPublishService:
             repo=repo,
             pr_id=pr_id,
             body_text=body_text,
+            attachments=attachments,
             comments=None,
             event=None,
             idempotency_key=idempotency_key,
@@ -3668,6 +3816,7 @@ class PrPublishService:
         body_text: str,
         comments: list[dict[str, Any]] | None = None,
         event: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         return self._publish(
@@ -3676,6 +3825,7 @@ class PrPublishService:
             repo=repo,
             pr_id=pr_id,
             body_text=body_text,
+            attachments=attachments,
             comments=comments,
             event=event,
             idempotency_key=idempotency_key,
@@ -3692,6 +3842,7 @@ class PrPublishService:
         body_text: str,
         start_line: int | None = None,
         side: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         comment: dict[str, Any] = {
@@ -3703,12 +3854,15 @@ class PrPublishService:
             comment["start_line"] = start_line
         if side is not None:
             comment["side"] = side
+        if attachments:
+            comment["attachments"] = attachments
         return self._publish(
             operation="post_inline_comment",
             provider=provider,
             repo=repo,
             pr_id=pr_id,
             body_text="",
+            attachments=None,
             comments=[comment],
             event=None,
             idempotency_key=idempotency_key,
@@ -3722,6 +3876,7 @@ class PrPublishService:
         repo: str,
         pr_id: str,
         body_text: str,
+        attachments: list[dict[str, Any]] | None,
         comments: list[dict[str, Any]] | None,
         event: str | None,
         idempotency_key: str | None,
@@ -3747,7 +3902,12 @@ class PrPublishService:
 
         provider = self.providers[provider_name]
         if operation == "post_comment":
-            response = provider.post_comment(repo=repo, pr_id=pr_id, body_text=body_text.strip())
+            response = provider.post_comment(
+                repo=repo,
+                pr_id=pr_id,
+                body_text=body_text.strip(),
+                attachments=attachments,
+            )
         elif operation in {"submit_review", "post_inline_comment"}:
             response = provider.submit_review(
                 repo=repo,
@@ -3755,6 +3915,7 @@ class PrPublishService:
                 body_text=body_text.strip(),
                 comments=comments,
                 event=event,
+                attachments=attachments,
             )
         else:
             raise ValueError(f"Unsupported publish operation: {operation!r}")
@@ -3849,6 +4010,15 @@ def _normalize_pr_review_comments(comments: Any) -> list[dict[str, Any]]:
         commit_id = _normalize_optional_text(raw_comment.get("commit_id"))
         if commit_id is not None:
             normalized_comment["commit_id"] = commit_id
+        raw_attachments = raw_comment.get("attachments")
+        if raw_attachments is None:
+            raw_attachments = raw_comment.get("artifacts")
+        if raw_attachments is not None:
+            if not isinstance(raw_attachments, list):
+                raise ValueError(f"PR review comment at index {index} attachments must be a list")
+            normalized_comment["attachments"] = [
+                item for item in raw_attachments if isinstance(item, dict)
+            ]
         normalized.append(normalized_comment)
     return normalized
 

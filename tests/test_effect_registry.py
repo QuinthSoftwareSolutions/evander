@@ -1191,15 +1191,26 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert "http://nuget.test:11666/nuget/nuget-org/v3/index.json" in nuget_config
     assert "http://nuget.test:11666/nuget/azure/v3/index.json" in nuget_config
     assert 'allowInsecureConnections="true"' in nuget_config
+    assert "<packageSourceMapping>" in nuget_config
+    assert '<packageSource key="sandbox-nuget">' in nuget_config
+    assert '<package pattern="*" />' in nuget_config
+    assert '<packageSource key="sandbox-azure">' in nuget_config
+    assert '<package pattern="ExampleIndustry.*" />' in nuget_config
     assert backend.written_files[1]["files"][0]["destination_path"].endswith("agent-pr-note")
+    assert backend.written_files[1]["files"][1]["destination_path"].endswith("push-agent")
+    assert backend.written_files[1]["files"][2]["destination_path"].endswith("sync-base")
     assert backend.written_files[2]["files"][0]["content"] == "task"
     clone_config_command = str(backend.started_specs[0].command)
     assert "cd /home/agent/repos/repo" in clone_config_command
     assert "config alias.agent-pr-note" in clone_config_command
     assert "config alias.push-agent" in clone_config_command
+    assert "config alias.sync-base" in clone_config_command
+    assert '.agent-sandbox/bin/push-agent' in clone_config_command
+    assert '.agent-sandbox/bin/sync-base' in clone_config_command
     assert "git config agent-sandbox.prNotesRef" in clone_config_command
+    assert 'git config agent-sandbox.workBranch "$WORK_BRANCH"' in clone_config_command
+    assert "git switch -c" in clone_config_command
     assert "refs/notes/agent-pr/" in clone_config_command
-    assert "git config --get agent-sandbox.prNotesRef" in clone_config_command
     assert 'git config agent-sandbox.pushAgentAvailable "true"' in clone_config_command
     assert "CANONICAL_REMOTE_URL=https://example.test/org/repo.git" in clone_config_command
     assert "url.${PUSH_REMOTE_URL}.insteadOf" in clone_config_command
@@ -1243,6 +1254,9 @@ def test_agent_clone_container_uses_private_ssh_mirror_for_push_and_instead_of()
     assert 'git config "url.${PUSH_REMOTE_URL}.insteadOf" "$CANONICAL_REMOTE_URL"' in command
     assert "config alias.push-agent" in command
     assert "git config agent-sandbox.prNotesRef" in command
+    assert "config alias.sync-base" in command
+    assert "CLONE_BRANCH=main" in command
+    assert 'git config agent-sandbox.baseBranch "$BASE_BRANCH"' in command
     assert 'git config agent-sandbox.pushAgentAvailable "true"' in command
 
 
@@ -1317,7 +1331,8 @@ def test_agent_clone_container_allows_push_alias_for_mounted_remotes() -> None:
     assert 'git remote add agent "$PUSH_REMOTE_URL"' in command
     assert "config alias.push-agent" in command
     assert 'git config agent-sandbox.pushAgentAvailable "true"' in command
-    assert "git config agent-sandbox.baseBranch main" in command
+    assert "CLONE_BRANCH=main" in command
+    assert 'git config agent-sandbox.baseBranch "$BASE_BRANCH"' in command
 
 
 def test_container_reachable_git_remote_url_is_limited_to_mounted_paths() -> None:

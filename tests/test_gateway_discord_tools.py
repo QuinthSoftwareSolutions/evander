@@ -1962,7 +1962,7 @@ class _FakePrFeedbackService:
 
 class _FakePrReplyService:
     def __init__(self) -> None:
-        self.calls: list[dict[str, str | None]] = []
+        self.calls: list[dict[str, object]] = []
 
     def post_reply(
         self,
@@ -1973,6 +1973,7 @@ class _FakePrReplyService:
         thread_id: str | None,
         comment_id: str | None,
         body_text: str,
+        attachments: list[dict[str, object]] | None = None,
         idempotency_key: str | None = None,
     ) -> SimpleNamespace:
         self.calls.append(
@@ -1983,6 +1984,7 @@ class _FakePrReplyService:
                 "thread_id": thread_id,
                 "comment_id": comment_id,
                 "body_text": body_text,
+                "attachments": attachments,
                 "idempotency_key": idempotency_key,
             }
         )
@@ -2513,6 +2515,7 @@ def test_post_pr_inline_comment_calls_publish_service_and_audits_inline_target(
             "body_text": "Fix this line.",
             "start_line": None,
             "side": "RIGHT",
+            "attachments": [],
             "idempotency_key": "inline-1",
         }
     ]

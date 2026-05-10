@@ -501,6 +501,8 @@ class VmAgentAdminSupport:
         )
         guest_repo_root = f"/home/{vm_user}/{repo_name}"
         agent_pr_note_helper_b64 = _admin_service._guest_agent_pr_note_helper_b64(self.project_dir)
+        agent_push_helper_b64 = _admin_service._guest_push_agent_helper_b64(self.project_dir)
+        sync_base_helper_b64 = _admin_service._guest_sync_base_helper_b64(self.project_dir)
         clone_branch_line = ""
         clone_command = 'git clone "${REMOTE_URL}" "${TARGET_DIR}"'
         if clone_branch:
@@ -510,15 +512,11 @@ class VmAgentAdminSupport:
         if issue_number:
             issue_config_line = (
                 f'git -C "${{TARGET_DIR}}" config agent-sandbox.issueNumber "{issue_number}"\n'
+                f'git -C "${{TARGET_DIR}}" config agent-sandbox.destinationBranch "feature/issue-{issue_number}"\n'
             )
         branch_suffix_line = (
             'git -C "${TARGET_DIR}" config agent-sandbox.branchSuffix "${VM_NAME}"\n'
         )
-        base_branch_config_line = ""
-        if clone_branch:
-            base_branch_config_line = (
-                'git -C "${TARGET_DIR}" config agent-sandbox.baseBranch "${CLONE_BRANCH}"\n'
-            )
         remote_script = f"""
 set -euo pipefail
 . ~/.profile
@@ -529,6 +527,9 @@ SESSION_ID="{session_id}"
 VM_NAME="{vm_name}"
 PR_NOTES_REF="{pr_notes_ref}"
 AGENT_PR_NOTE_HELPER_B64="{agent_pr_note_helper_b64}"
+AGENT_PUSH_HELPER_B64="{agent_push_helper_b64}"
+SYNC_BASE_HELPER_B64="{sync_base_helper_b64}"
+WORK_BRANCH="work"
 {clone_branch_line}\
 if [[ -e "${{TARGET_DIR}}" ]]; then
   echo "Guest repo path already exists: ${{TARGET_DIR}}" >&2
@@ -544,9 +545,25 @@ else
 fi
 git -C "${{TARGET_DIR}}" config user.name "Truman Bot"
 git -C "${{TARGET_DIR}}" config user.email "truman@quinth.se"
+BASE_BRANCH="${{CLONE_BRANCH:-}}"
+if [[ -z "${{BASE_BRANCH}}" ]]; then
+  BASE_BRANCH="$(git -C "${{TARGET_DIR}}" branch --show-current || true)"
+fi
+if [[ -n "${{BASE_BRANCH}}" ]]; then
+  git -C "${{TARGET_DIR}}" config agent-sandbox.baseBranch "${{BASE_BRANCH}}"
+fi
+git -C "${{TARGET_DIR}}" config agent-sandbox.workBranch "${{WORK_BRANCH}}"
+CURRENT_BRANCH="$(git -C "${{TARGET_DIR}}" branch --show-current || true)"
+if [[ "${{CURRENT_BRANCH}}" != "${{WORK_BRANCH}}" ]]; then
+  if git -C "${{TARGET_DIR}}" show-ref --verify --quiet "refs/heads/${{WORK_BRANCH}}"; then
+    git -C "${{TARGET_DIR}}" switch "${{WORK_BRANCH}}"
+  else
+    git -C "${{TARGET_DIR}}" switch -c "${{WORK_BRANCH}}"
+  fi
+fi
 git -C "${{TARGET_DIR}}" config agent-sandbox.sessionId "${{SESSION_ID}}"
 git -C "${{TARGET_DIR}}" config agent-sandbox.prNotesRef "${{PR_NOTES_REF}}"
-{issue_config_line}{branch_suffix_line}{base_branch_config_line}install -d -m 0755 "${{TARGET_DIR}}/.agent-sandbox/bin"
+{issue_config_line}{branch_suffix_line}install -d -m 0755 "${{TARGET_DIR}}/.agent-sandbox/bin"
 python3 - "${{TARGET_DIR}}/.agent-sandbox/bin/agent-pr-note" "${{AGENT_PR_NOTE_HELPER_B64}}" <<'PY'
 import base64
 import os
@@ -558,8 +575,29 @@ target_path = Path(sys.argv[1])
 target_path.write_bytes(base64.b64decode(sys.argv[2]))
 os.chmod(target_path, 0o755)
 PY
+python3 - "${{TARGET_DIR}}/.agent-sandbox/bin/push-agent" "${{AGENT_PUSH_HELPER_B64}}" <<'PY'
+import base64
+import os
+import sys
+from pathlib import Path
+
+target_path = Path(sys.argv[1])
+target_path.write_bytes(base64.b64decode(sys.argv[2]))
+os.chmod(target_path, 0o755)
+PY
+python3 - "${{TARGET_DIR}}/.agent-sandbox/bin/sync-base" "${{SYNC_BASE_HELPER_B64}}" <<'PY'
+import base64
+import os
+import sys
+from pathlib import Path
+
+target_path = Path(sys.argv[1])
+target_path.write_bytes(base64.b64decode(sys.argv[2]))
+os.chmod(target_path, 0o755)
+PY
 git -C "${{TARGET_DIR}}" config alias.agent-pr-note '!f(){{ repo_root=$(git rev-parse --show-toplevel); "${{repo_root}}/.agent-sandbox/bin/agent-pr-note" "$@"; }}; f'
-git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ session_id=${{SESSION_ID:-$(git config --get agent-sandbox.sessionId || true)}}; if [ -z "${{session_id}}" ]; then echo "SESSION_ID is not set; refusing ambiguous agent push." >&2; return 1; fi; expected_issue_number=$(git config --get agent-sandbox.issueNumber || true); if [ -n "${{expected_issue_number}}" ]; then case "${{session_id}}" in issue-${{expected_issue_number}}|issue-${{expected_issue_number}}-*) ;; *) echo "SESSION_ID (${{session_id}}) does not match expected issue ${{expected_issue_number}}; refusing agent push." >&2; return 1 ;; esac; fi; suffix_source=${{AGENT_BRANCH_SUFFIX:-$(git config --get agent-sandbox.branchSuffix || true)}}; if [ -z "${{suffix_source}}" ]; then suffix_source=${{HOSTNAME:-}}; fi; suffix=$(printf "%s" "${{suffix_source}}" | tr "[:upper:]" "[:lower:]" | tr -cs "a-z0-9._-" "-" | sed "s/^-*//;s/-*$//"); if [ -z "${{suffix}}" ]; then echo "AGENT_BRANCH_SUFFIX/HOSTNAME is empty; refusing ambiguous agent push." >&2; return 1; fi; notes_ref=$(git config --get agent-sandbox.prNotesRef || true); if [ -z "${{notes_ref}}" ]; then notes_ref=refs/notes/agent-pr; fi; repo_root=$(git rev-parse --show-toplevel); "${{repo_root}}/.agent-sandbox/bin/agent-pr-note" ensure-head; branch=$(git rev-parse --abbrev-ref HEAD); git push agent HEAD:refs/heads/agents/${{session_id}}/${{branch}}-${{suffix}} "${{notes_ref}}"; }}; f'
+git -C "${{TARGET_DIR}}" config alias.push-agent '!f(){{ repo_root=$(git rev-parse --show-toplevel); "${{repo_root}}/.agent-sandbox/bin/push-agent" "$@"; }}; f'
+git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-parse --show-toplevel); "${{repo_root}}/.agent-sandbox/bin/sync-base" "$@"; }}; f'
 """
         ssh_result = _admin_service._run_subprocess(
             [

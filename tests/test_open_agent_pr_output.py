@@ -678,6 +678,8 @@ fi
 if [[ -n "${{AZURE_RESULT:-}}" ]]; then
   if [[ "${{script}}" == *'payload.get("pr_url"'* ]]; then
     printf '%s' "https://dev.azure.com/example-org/example-project/_git/example-repo/pullrequest/42"
+  elif [[ "${{script}}" == *'uploaded_attachments'* ]]; then
+    printf '%s' "[]"
   else
     printf '%s' "42"
   fi
@@ -1174,3 +1176,212 @@ exit 1
 
     logged = python_log.read_text(encoding="utf-8")
     assert "CREATE_PRS_AS_DRAFT=1" in logged
+
+
+def test_open_agent_pr_uploads_azure_body_artifact_and_updates_description(
+    tmp_path: Path,
+) -> None:
+    script = Path(__file__).resolve().parents[1] / "scripts/open_agent_pr.sh"
+    host_repo = tmp_path / "repo"
+    host_repo.mkdir()
+    (host_repo / ".git").mkdir()
+
+    runtime_dir = tmp_path / "runtime"
+    artifact_dir = runtime_dir / "communication-artifacts"
+    artifact_dir.mkdir(parents=True)
+    artifact_id = "comm_11111111111111111111111111111111"
+    (artifact_dir / f"{artifact_id}.bin").write_bytes(b"png-bytes")
+    (artifact_dir / f"{artifact_id}.json").write_text(
+        json.dumps(
+            {
+                "artifact_id": artifact_id,
+                "session_id": "session-1",
+                "filename": "screen.png",
+                "normalized_safe_filename": "screen.png",
+                "original_filename": "screen.png",
+                "mime_type": "image/png",
+                "byte_count": len(b"png-bytes"),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    request_log = tmp_path / "requests.jsonl"
+    sitecustomize_dir = tmp_path / "pythonpath"
+    sitecustomize_dir.mkdir()
+
+    (fake_bin / "git").write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+if [[ "${args[0]}" == "-C" ]]; then
+  args=("${args[@]:2}")
+fi
+while [[ "${args[0]:-}" == "-c" ]]; do
+  args=("${args[@]:2}")
+done
+case "${args[0]:-}" in
+  rev-parse)
+    ;;
+  remote)
+    echo "https://dev.azure.com/example-org/example-project/_git/example-repo"
+    ;;
+  push)
+    ;;
+  ls-remote)
+    exit 2
+    ;;
+  symbolic-ref)
+    echo "origin/main"
+    ;;
+  log)
+    echo "Latest commit title"
+    ;;
+  *)
+    echo "unexpected git invocation: $*" >&2
+    exit 1
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    (fake_bin / "python3").write_text(
+        f'#!/usr/bin/env bash\nexec "{sys.executable}" "$@"\n',
+        encoding="utf-8",
+    )
+    (fake_bin / "agent-sandbox-cli").write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n",
+        encoding="utf-8",
+    )
+    (sitecustomize_dir / "sitecustomize.py").write_text(
+        f"""
+import base64
+import io
+import json
+import os
+import urllib.request
+
+log_path = {str(request_log)!r}
+
+
+class Response(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+def response(payload):
+    return Response(json.dumps(payload).encode("utf-8"))
+
+
+def fake_urlopen(request):
+    method = request.get_method()
+    url = request.full_url
+    data = request.data or b""
+    with open(log_path, "a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {{
+                    "method": method,
+                    "url": url,
+                    "headers": dict(request.header_items()),
+                    "body": data.decode("utf-8", "replace"),
+                    "body_base64": base64.b64encode(data).decode("ascii"),
+                }},
+                sort_keys=True,
+            )
+            + "\\n"
+        )
+    if "searchCriteria.status=active" in url:
+        return response({{"count": 0, "value": []}})
+    if method == "POST" and url.endswith("/pullrequests?api-version=7.1"):
+        return response(
+            {{
+                "pullRequestId": 42,
+                "repository": {{"id": "repo-guid", "project": {{"id": "project-guid"}}}},
+                "_links": {{
+                    "web": {{
+                        "href": "https://dev.azure.com/example-org/example-project/_git/example-repo/pullrequest/42"
+                    }}
+                }},
+            }}
+        )
+    if method == "POST" and url.endswith("/attachments/screen.png?api-version=7.1"):
+        return response(
+            {{
+                "url": "https://dev.azure.com/example-org/example-project/_apis/git/repositories/example-repo/pullRequests/42/attachments/screen.png"
+            }}
+        )
+    if method == "PATCH" and url.endswith("/pullrequests/42?api-version=7.1"):
+        return response(
+            {{
+                "pullRequestId": 42,
+                "_links": {{
+                    "web": {{
+                        "href": "https://dev.azure.com/example-org/example-project/_git/example-repo/pullrequest/42"
+                    }}
+                }},
+            }}
+        )
+    raise AssertionError(f"unexpected request: {{method}} {{url}}")
+
+
+urllib.request.urlopen = fake_urlopen
+""",
+        encoding="utf-8",
+    )
+    os.chmod(fake_bin / "git", 0o755)
+    os.chmod(fake_bin / "python3", 0o755)
+    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["PYTHONPATH"] = str(sitecustomize_dir)
+    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
+    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
+    env["AGENT_SANDBOX_RUNTIME_DIR"] = str(runtime_dir)
+    env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
+
+    result = subprocess.run(
+        [
+            str(script),
+            "--create-pr",
+            "--provider",
+            "azure_devops",
+            "--session-id",
+            "session-1",
+            "--body-artifact-id",
+            artifact_id,
+            str(host_repo),
+            "review/session-1/work",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    requests = [
+        json.loads(line)
+        for line in request_log.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    upload_request = next(
+        item
+        for item in requests
+        if item["method"] == "POST" and "/attachments/screen.png" in item["url"]
+    )
+    assert upload_request["url"].endswith("/attachments/screen.png?api-version=7.1")
+    assert upload_request["body_base64"] == "cG5nLWJ5dGVz"
+    patch_payload = json.loads(next(item for item in requests if item["method"] == "PATCH")["body"])
+    assert (
+        "![screen.png](https://dev.azure.com/example-org/example-project/_apis/git/repositories/example-repo/pullRequests/42/attachments/screen.png)"
+        in patch_payload["description"]
+    )
+    lines = [line for line in result.stdout.splitlines() if line.startswith("AGENT_PR_RESULT ")]
+    payload = json.loads(lines[-1].split(" ", 1)[1])
+    assert payload["uploaded_attachments"][0]["filename"] == "screen.png"

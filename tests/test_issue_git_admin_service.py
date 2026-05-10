@@ -328,6 +328,7 @@ def test_admin_service_delegates_issue_git_methods() -> None:
                 "title": "Add PR",
                 "body": None,
                 "body_file": None,
+                "body_artifact_ids": None,
                 "draft": None,
                 "fill": True,
             },

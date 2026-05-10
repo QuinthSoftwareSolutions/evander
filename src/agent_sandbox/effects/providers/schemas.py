@@ -432,5 +432,6 @@ class PrCreateEffectDefinition(EffectDefinition):
     title: ConfigValue | None = None
     body: ConfigValue | None = None
     body_file: ConfigValue | None = None
+    body_artifact_ids: ConfigValue | None = None
     draft: ConfigValue | None = None
     fill: ConfigValue | None = True
