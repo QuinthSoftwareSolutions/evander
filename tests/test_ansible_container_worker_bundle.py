@@ -215,6 +215,9 @@ def test_worker_mssql_role_installs_sql_server_and_verifies_sqlcmd() -> None:
     assert "agent_sandbox_worker_mssql_package_proxy_environment" in role
     assert "mssql-conf" in role
     assert "set-sa-password" in role
+    assert "/var/opt/mssql/data/master.mdf" in role
+    assert "mssql.conf" not in role
+    assert "Stop SQL Server before reconciling SA password" in role
     assert "mssql-tools18" in defaults
     assert "https://packages.microsoft.com/keys/microsoft.asc" in defaults
     assert "https://packages.microsoft.com/ubuntu" not in defaults
