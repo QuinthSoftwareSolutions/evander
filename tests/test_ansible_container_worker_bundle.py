@@ -388,7 +388,9 @@ def test_worker_playwright_toolchain_role_seeds_and_verifies_runner_playwright_c
     assert "agent_sandbox_worker_node_cache_path" in role
     assert "/opt/agent-sandbox/playwright-runtime" in role
     assert "/opt/agent-sandbox/ms-playwright" in role
-    assert 'require("playwright")' in role
+    assert "PLAYWRIGHT_MCP_EXECUTABLE_PATH" in role
+    assert "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD" in role
+    assert 'path.join(runtime, "playwright")' in role
     assert "chromium.executablePath()" in role
 
 

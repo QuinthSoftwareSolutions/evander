@@ -268,9 +268,14 @@
       - -lc
       - >-
         export PATH="{{ agent_sandbox_worker_node_cache_path }}/bin:$PATH";
-        export NODE_PATH="{{ agent_sandbox_worker_playwright_runtime_cache_path }}/node_modules";
+        export AGENT_SANDBOX_PLAYWRIGHT_RUNTIME="{{ agent_sandbox_worker_playwright_runtime_cache_path }}/node_modules";
+        export NODE_PATH="$AGENT_SANDBOX_PLAYWRIGHT_RUNTIME";
         export PLAYWRIGHT_BROWSERS_PATH="{{ agent_sandbox_worker_playwright_browsers_cache_path }}";
-        node -e 'const fs = require("fs"); const { chromium } = require("playwright"); const path = chromium.executablePath(); console.log(path); if (!fs.existsSync(path)) process.exit(3);'
+        export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1";
+        export PLAYWRIGHT_MCP_SANDBOX="0";
+        export PLAYWRIGHT_MCP_EXECUTABLE_PATH="$(node -e 'const fs = require("fs"); const path = require("path"); const runtime = process.env.AGENT_SANDBOX_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) process.exit(3); process.stdout.write(executable);')";
+        printf '%s\n' "$PLAYWRIGHT_MCP_EXECUTABLE_PATH";
+        test -x "$PLAYWRIGHT_MCP_EXECUTABLE_PATH"
   changed_when: false
   when: agent_sandbox_worker_playwright_toolchain_enabled | bool
 
@@ -293,9 +298,14 @@
       - -lc
       - >-
         export PATH="/opt/agent-sandbox/toolchains/node-v24.14.0/bin:$PATH";
-        export NODE_PATH="/opt/agent-sandbox/playwright-runtime/node_modules";
+        export AGENT_SANDBOX_PLAYWRIGHT_RUNTIME="/opt/agent-sandbox/playwright-runtime/node_modules";
+        export NODE_PATH="$AGENT_SANDBOX_PLAYWRIGHT_RUNTIME";
         export PLAYWRIGHT_BROWSERS_PATH="/opt/agent-sandbox/ms-playwright";
-        node -e 'const fs = require("fs"); const { chromium } = require("playwright"); const path = chromium.executablePath(); console.log(path); if (!fs.existsSync(path)) process.exit(3);'
+        export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1";
+        export PLAYWRIGHT_MCP_SANDBOX="0";
+        export PLAYWRIGHT_MCP_EXECUTABLE_PATH="$(node -e 'const fs = require("fs"); const path = require("path"); const runtime = process.env.AGENT_SANDBOX_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) process.exit(3); process.stdout.write(executable);')";
+        printf '%s\n' "$PLAYWRIGHT_MCP_EXECUTABLE_PATH";
+        test -x "$PLAYWRIGHT_MCP_EXECUTABLE_PATH"
   changed_when: false
   when: agent_sandbox_worker_playwright_toolchain_enabled | bool
 

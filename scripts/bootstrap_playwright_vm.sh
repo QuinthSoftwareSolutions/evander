@@ -108,13 +108,34 @@ else:
 managed = {
     'export PATH="$HOME/toolchains/node-v24.14.0/bin:$PATH"',
     'export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"',
+    'export AGENT_SANDBOX_PLAYWRIGHT_RUNTIME="$HOME/playwright-runtime/node_modules"',
+    'export PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright"',
+    'export NODE_PATH="$AGENT_SANDBOX_PLAYWRIGHT_RUNTIME"',
+    'export NODE_PATH="$HOME/playwright-runtime/node_modules"',
+    'export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1"',
+    'export PLAYWRIGHT_MCP_SANDBOX="0"',
+    'if [ -z "${PLAYWRIGHT_MCP_EXECUTABLE_PATH:-}" ] && command -v node >/dev/null 2>&1; then',
+    '  if _agent_sandbox_playwright_chromium="$(node -e \'const fs = require("fs"); const path = require("path"); const runtime = process.env.AGENT_SANDBOX_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) process.exit(1); process.stdout.write(executable);\' 2>/dev/null)" && [ -n "$_agent_sandbox_playwright_chromium" ]; then',
+    '    export PLAYWRIGHT_MCP_EXECUTABLE_PATH="$_agent_sandbox_playwright_chromium"',
+    '  fi',
+    '  unset _agent_sandbox_playwright_chromium',
+    'fi',
 }
 filtered = [line for line in lines if line.strip() not in managed]
 filtered.extend(
     [
         'export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"',
+        'export AGENT_SANDBOX_PLAYWRIGHT_RUNTIME="$HOME/playwright-runtime/node_modules"',
         'export PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright"',
-        'export NODE_PATH="$HOME/playwright-runtime/node_modules"',
+        'export NODE_PATH="$AGENT_SANDBOX_PLAYWRIGHT_RUNTIME"',
+        'export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1"',
+        'export PLAYWRIGHT_MCP_SANDBOX="0"',
+        'if [ -z "${PLAYWRIGHT_MCP_EXECUTABLE_PATH:-}" ] && command -v node >/dev/null 2>&1; then',
+        '  if _agent_sandbox_playwright_chromium="$(node -e \'const fs = require("fs"); const path = require("path"); const runtime = process.env.AGENT_SANDBOX_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) process.exit(1); process.stdout.write(executable);\' 2>/dev/null)" && [ -n "$_agent_sandbox_playwright_chromium" ]; then',
+        '    export PLAYWRIGHT_MCP_EXECUTABLE_PATH="$_agent_sandbox_playwright_chromium"',
+        '  fi',
+        '  unset _agent_sandbox_playwright_chromium',
+        'fi',
     ]
 )
 target.write_text("\n".join(filtered) + "\n", encoding="utf-8")
@@ -124,11 +145,22 @@ PY
 append_node_path_setup ~/.profile
 
 export PATH="$HOME/bin:$HOME/toolchains/node-v24.14.0/bin:$PATH"
+export AGENT_SANDBOX_PLAYWRIGHT_RUNTIME="$HOME/playwright-runtime/node_modules"
 export PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright"
-export NODE_PATH="$HOME/playwright-runtime/node_modules"
+export NODE_PATH="$AGENT_SANDBOX_PLAYWRIGHT_RUNTIME"
+export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1"
+export PLAYWRIGHT_MCP_SANDBOX="0"
+if _agent_sandbox_playwright_chromium="$(node -e 'const fs = require("fs"); const path = require("path"); const runtime = process.env.AGENT_SANDBOX_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) process.exit(1); process.stdout.write(executable);' 2>/dev/null)" && [[ -n "${_agent_sandbox_playwright_chromium}" ]]; then
+  export PLAYWRIGHT_MCP_EXECUTABLE_PATH="${_agent_sandbox_playwright_chromium}"
+else
+  echo "Could not resolve seeded Chromium executable from ${AGENT_SANDBOX_PLAYWRIGHT_RUNTIME}" >&2
+  exit 1
+fi
+unset _agent_sandbox_playwright_chromium
 
 node --version
-node -e 'const { chromium } = require("playwright"); console.log(chromium.executablePath());'
+node -e 'const fs = require("fs"); const path = require("path"); const runtime = process.env.AGENT_SANDBOX_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, "playwright")); const executable = chromium.executablePath(); console.log(executable); if (!fs.existsSync(executable)) process.exit(3);'
+printf 'PLAYWRIGHT_MCP_EXECUTABLE_PATH=%s\n' "${PLAYWRIGHT_MCP_EXECUTABLE_PATH}"
 EOF
 
 echo "Playwright bootstrap complete for ${VM_NAME} (${VM_IP})"

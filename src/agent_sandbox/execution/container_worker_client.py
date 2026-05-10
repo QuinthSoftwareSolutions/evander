@@ -142,10 +142,57 @@ class ContainerWorkerClient:
         response = self._request("DELETE", f"/v1/sessions/{session_id}")
         return self._json_dict(response, operation="delete session")
 
-    def logs(self, job_id: str, *, mode: str | None = None) -> str:
-        params = {"mode": mode} if mode else None
+    def logs(
+        self,
+        job_id: str,
+        *,
+        mode: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        query: str | None = None,
+    ) -> str:
+        text, _metadata = self.logs_page(
+            job_id,
+            mode=mode,
+            limit=limit,
+            offset=offset,
+            query=query,
+        )
+        return text
+
+    def logs_page(
+        self,
+        job_id: str,
+        *,
+        mode: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        query: str | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        params: dict[str, str] = {}
+        if mode:
+            params["mode"] = mode
+        if limit is not None:
+            params["limit"] = str(limit)
+        if offset is not None:
+            params["offset"] = str(offset)
+        if query:
+            params["query"] = query
         response = self._request("GET", f"/v1/jobs/{job_id}/logs", params=params)
-        return response.text
+        metadata = {
+            "paged": response.headers.get("x-agent-sandbox-log-paged") == "true",
+            "limit": _int_header(response, "x-agent-sandbox-log-limit"),
+            "offset": _int_header(response, "x-agent-sandbox-log-offset"),
+            "returned_lines": _int_header(response, "x-agent-sandbox-log-returned-lines"),
+            "total_lines": _int_header(response, "x-agent-sandbox-log-total-lines"),
+            "start_line": _int_header(response, "x-agent-sandbox-log-start-line"),
+            "end_line": _int_header(response, "x-agent-sandbox-log-end-line"),
+            "has_more_before": response.headers.get(
+                "x-agent-sandbox-log-has-more-before"
+            )
+            == "true",
+        }
+        return response.text, metadata
 
     def _request(
         self, method: str, path: str, *, auth: bool = True, **kwargs: Any
@@ -199,3 +246,13 @@ class ContainerWorkerClient:
         if isinstance(payload, dict):
             return sanitize_text(str(sanitize_metadata(payload)))
         return sanitize_text(str(payload))
+
+
+def _int_header(response: httpx.Response, name: str) -> int | None:
+    value = response.headers.get(name)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None

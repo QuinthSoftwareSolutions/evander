@@ -1255,6 +1255,37 @@ def test_get_agent_log_snapshot_returns_unavailable_when_ssh_times_out(
     assert any("agent@192.168.122.11" in cmd for cmd in calls)
 
 
+def test_get_admin_agent_log_page_pages_libvirt_tail(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    def fake_snapshot(
+        target: str,
+        *,
+        lines: int = 50,
+        repo_name: str | None = None,
+        vm_user: str = "agent",
+    ) -> str:
+        assert target == "bug-finder-vm"
+        assert lines == 4
+        assert repo_name == "repo-a"
+        assert vm_user == "agent"
+        return "one\ntwo\nthree\nfour\n"
+
+    monkeypatch.setattr(service, "get_agent_log_snapshot", fake_snapshot)
+
+    page = service.get_admin_agent_log_page(
+        "bug-finder-vm",
+        backend="libvirt_vm",
+        limit=2,
+        offset=2,
+        repo_name="repo-a",
+    )
+
+    assert page["text"] == "one\ntwo\n"
+    assert page["returned_lines"] == 2
+    assert page["has_more_before"] is True
+
+
 def test_list_sessions_filters_active_and_expired(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(

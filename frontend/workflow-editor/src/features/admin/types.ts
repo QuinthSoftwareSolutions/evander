@@ -135,6 +135,14 @@ export type AgentLogResponse = {
   backend: AgentBackend | null;
   lines: number;
   text: string;
+  limit?: number;
+  offset?: number;
+  returned_lines?: number;
+  total_lines?: number | null;
+  start_line?: number | null;
+  end_line?: number | null;
+  has_more_before?: boolean;
+  query?: string | null;
 };
 
 export type AgentActionResponse = {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
@@ -64,7 +64,43 @@ type AgentPolicyFormState = {
 };
 
 const REFRESH_MS = 5000;
+const LOG_PAGE_LIMIT = 300;
+const LOG_SCROLL_BOTTOM_THRESHOLD = 24;
 const AGENT_SELECTION_STORAGE_KEY = "admin-web:agents:selected-agent";
+
+type AgentLogViewState = {
+  text: string;
+  loading: boolean;
+  loadingOlder: boolean;
+  error: string | null;
+  appliedQuery: string;
+  loadedLines: number;
+  returnedLines: number;
+  totalLines: number | null;
+  startLine: number | null;
+  endLine: number | null;
+  hasMoreBefore: boolean;
+  pendingLiveUpdate: boolean;
+  updatedAt: string | null;
+};
+
+function emptyLogState(text = "Loading..."): AgentLogViewState {
+  return {
+    text,
+    loading: true,
+    loadingOlder: false,
+    error: null,
+    appliedQuery: "",
+    loadedLines: 0,
+    returnedLines: 0,
+    totalLines: null,
+    startLine: null,
+    endLine: null,
+    hasMoreBefore: false,
+    pendingLiveUpdate: false,
+    updatedAt: null,
+  };
+}
 
 function emptyCreateForm(directoryPath: string): AgentCreateFormState {
   return {
@@ -175,22 +211,45 @@ async function loadSkillList(): Promise<SkillLibraryItem[]> {
   return payload.items;
 }
 
-async function loadAgentLog(agent: AgentRecord | null): Promise<string> {
-  if (!agent) return "No agent selected.";
-  if (!agent.capabilities.logs) return "Logs are not available for this agent.";
+async function loadAgentLogPage(
+  agent: AgentRecord | null,
+  options: { limit?: number; offset?: number; query?: string } = {},
+): Promise<AgentLogResponse> {
+  if (!agent) {
+    return {
+      agent_id: "",
+      backend: null,
+      lines: 0,
+      text: "No agent selected.",
+      returned_lines: 1,
+      has_more_before: false,
+    };
+  }
+  if (!agent.capabilities.logs) {
+    return {
+      agent_id: agent.agent_id,
+      backend: agent.backend,
+      lines: 0,
+      text: "Logs are not available for this agent.",
+      returned_lines: 1,
+      has_more_before: false,
+    };
+  }
   const query = new URLSearchParams({
     backend: agent.backend,
-    lines: "200",
+    limit: String(options.limit ?? LOG_PAGE_LIMIT),
+    offset: String(options.offset ?? 0),
   });
+  const searchQuery = options.query?.trim();
+  if (searchQuery) query.set("query", searchQuery);
   const guestAgent = hostRecord(agent.host, "agent");
   const repoName = hostString(guestAgent, "preferred_repo_name");
   if (repoName) {
     query.set("repo_name", repoName);
   }
-  const payload = await fetchJson<AgentLogResponse>(
+  return fetchJson<AgentLogResponse>(
     `/api/admin/agents/${encodeURIComponent(agent.agent_id)}/log?${query.toString()}`,
   );
-  return payload.text || "No log output yet.";
 }
 
 function agentKey(agent: AgentRecord): string {
@@ -246,6 +305,28 @@ function recordEntries(value: Record<string, unknown> | null | undefined): Array
   return Object.entries(value)
     .filter(([, item]) => item != null && typeof item !== "object")
     .map(([key, item]) => [key, String(item)]);
+}
+
+function responseReturnedLines(payload: AgentLogResponse): number {
+  if (typeof payload.returned_lines === "number" && Number.isFinite(payload.returned_lines)) {
+    return payload.returned_lines;
+  }
+  return payload.text ? payload.text.split(/\r?\n/).filter((line, index, lines) => line || index < lines.length - 1).length : 0;
+}
+
+function appendLogText(older: string, newer: string): string {
+  if (!older) return newer;
+  if (!newer) return older;
+  if (older.endsWith("\n") || newer.startsWith("\n")) return older + newer;
+  return `${older}\n${newer}`;
+}
+
+function isScrolledToBottom(element: HTMLElement | null): boolean {
+  if (!element) return true;
+  return (
+    element.scrollHeight - element.scrollTop - element.clientHeight <=
+    LOG_SCROLL_BOTTOM_THRESHOLD
+  );
 }
 
 function metadataForAgent(agent: AgentRecord | null): Record<string, unknown> | null {
@@ -468,7 +549,9 @@ export function AgentsPage() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [backendFilter, setBackendFilter] = useState<BackendFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [agentLog, setAgentLog] = useState("Loading...");
+  const [agentLog, setAgentLog] = useState<AgentLogViewState>(() => emptyLogState());
+  const [logSearchInput, setLogSearchInput] = useState("");
+  const [logReloadNonce, setLogReloadNonce] = useState(0);
   const [resumePrompt, setResumePrompt] = useState("");
   const [resumeModel, setResumeModel] = useState("");
   const [showResumeForm, setShowResumeForm] = useState(false);
@@ -486,6 +569,10 @@ export function AgentsPage() {
   const [editForm, setEditForm] = useState<AgentPolicyFormState>(() => emptyPolicyForm());
   const [inlineValidation, setInlineValidation] = useState("");
   const [selectionHydrated, setSelectionHydrated] = useState(false);
+  const logViewRef = useRef<HTMLPreElement | null>(null);
+  const logSticksToBottomRef = useRef(true);
+  const logLoadedLinesRef = useRef(LOG_PAGE_LIMIT);
+  const pendingLogScrollRef = useRef<"bottom" | { previousHeight: number; previousTop: number } | null>(null);
 
   useEffect(() => {
     const saved = window.localStorage.getItem(AGENT_SELECTION_STORAGE_KEY);
@@ -503,6 +590,19 @@ export function AgentsPage() {
     }
     window.localStorage.removeItem(AGENT_SELECTION_STORAGE_KEY);
   }, [selectedKey, selectionHydrated]);
+
+  useLayoutEffect(() => {
+    const pending = pendingLogScrollRef.current;
+    const element = logViewRef.current;
+    if (!pending || !element) return;
+    if (pending === "bottom") {
+      element.scrollTop = element.scrollHeight;
+      logSticksToBottomRef.current = true;
+    } else {
+      element.scrollTop = element.scrollHeight - pending.previousHeight + pending.previousTop;
+    }
+    pendingLogScrollRef.current = null;
+  }, [agentLog.text]);
 
   useEffect(() => {
     if (!showCreateForm) {
@@ -589,29 +689,85 @@ export function AgentsPage() {
 
   useEffect(() => {
     if (!selectedAgent) {
-      setAgentLog("No agent selected.");
+      setAgentLog({ ...emptyLogState("No agent selected."), loading: false });
       return;
     }
     let cancelled = false;
+    const activeQuery = agentLog.appliedQuery;
     const refreshLog = async (showLoadingState: boolean) => {
-      if (showLoadingState) setAgentLog("Loading...");
+      if (showLoadingState) {
+        pendingLogScrollRef.current = "bottom";
+        setAgentLog((current) => ({
+          ...emptyLogState("Loading..."),
+          appliedQuery: activeQuery,
+          loading: true,
+          pendingLiveUpdate: current.pendingLiveUpdate,
+        }));
+      }
       try {
-        const text = await loadAgentLog(selectedAgent);
-        if (!cancelled) setAgentLog((current) => (current === text ? current : text));
+        const shouldStick = isScrolledToBottom(logViewRef.current);
+        const payload = await loadAgentLogPage(selectedAgent, {
+          limit: activeQuery ? LOG_PAGE_LIMIT : Math.max(LOG_PAGE_LIMIT, logLoadedLinesRef.current),
+          offset: 0,
+          query: activeQuery || undefined,
+        });
+        if (cancelled) return;
+        if (!activeQuery && !showLoadingState && !shouldStick) {
+          setAgentLog((current) => ({
+            ...current,
+            loading: false,
+            error: null,
+            pendingLiveUpdate: true,
+            updatedAt: new Date().toISOString(),
+          }));
+          return;
+        }
+        if (!activeQuery) {
+          pendingLogScrollRef.current = "bottom";
+        }
+        const returnedLines = responseReturnedLines(payload);
+        logLoadedLinesRef.current = Math.max(LOG_PAGE_LIMIT, returnedLines);
+        setAgentLog((current) => ({
+          ...current,
+          text: payload.text || (activeQuery ? "No matching log lines." : "No log output yet."),
+          loading: false,
+          loadingOlder: false,
+          error: null,
+          appliedQuery: activeQuery,
+          loadedLines: returnedLines,
+          returnedLines,
+          totalLines: payload.total_lines ?? null,
+          startLine: payload.start_line ?? null,
+          endLine: payload.end_line ?? null,
+          hasMoreBefore: Boolean(payload.has_more_before),
+          pendingLiveUpdate: false,
+          updatedAt: new Date().toISOString(),
+        }));
       } catch (reason: unknown) {
         const message = reason instanceof Error ? reason.message : String(reason);
-        if (!cancelled) setAgentLog((current) => (current === message ? current : message));
+        if (!cancelled) {
+          setAgentLog((current) => ({
+            ...current,
+            text: current.text || message,
+            loading: false,
+            loadingOlder: false,
+            error: message,
+            updatedAt: new Date().toISOString(),
+          }));
+        }
       }
     };
     void refreshLog(true);
-    const timer = window.setInterval(() => {
-      void refreshLog(false);
-    }, REFRESH_MS);
+    const timer = activeQuery
+      ? null
+      : window.setInterval(() => {
+          void refreshLog(false);
+        }, REFRESH_MS);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer !== null) window.clearInterval(timer);
     };
-  }, [selectedAgent?.backend, selectedAgent?.agent_id]);
+  }, [agentLog.appliedQuery, logReloadNonce, selectedAgent?.backend, selectedAgent?.agent_id]);
 
   async function handleManualRefresh() {
     setLoading(true);
@@ -623,6 +779,61 @@ export function AgentsPage() {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setLoading(false);
+    }
+  }
+
+  function reloadLog(query: string) {
+    const normalizedQuery = query.trim();
+    pendingLogScrollRef.current = "bottom";
+    logLoadedLinesRef.current = LOG_PAGE_LIMIT;
+    setAgentLog((current) => ({
+      ...emptyLogState("Loading..."),
+      appliedQuery: normalizedQuery,
+      pendingLiveUpdate: current.pendingLiveUpdate,
+    }));
+    setLogReloadNonce((current) => current + 1);
+  }
+
+  async function loadOlderLogLines() {
+    if (!selectedAgent || agentLog.loadingOlder || !agentLog.hasMoreBefore) return;
+    const element = logViewRef.current;
+    pendingLogScrollRef.current = element
+      ? { previousHeight: element.scrollHeight, previousTop: element.scrollTop }
+      : null;
+    setAgentLog((current) => ({ ...current, loadingOlder: true, error: null }));
+    try {
+      const payload = await loadAgentLogPage(selectedAgent, {
+        limit: LOG_PAGE_LIMIT,
+        offset: agentLog.loadedLines,
+        query: agentLog.appliedQuery || undefined,
+      });
+      const returnedLines = responseReturnedLines(payload);
+      setAgentLog((current) => {
+        const loadedLines = current.loadedLines + returnedLines;
+        logLoadedLinesRef.current = Math.max(LOG_PAGE_LIMIT, loadedLines);
+        return {
+          ...current,
+          text: appendLogText(payload.text, current.text),
+          loading: false,
+          loadingOlder: false,
+          error: null,
+          loadedLines,
+          returnedLines,
+          totalLines: payload.total_lines ?? current.totalLines,
+          startLine: payload.start_line ?? current.startLine,
+          hasMoreBefore: Boolean(payload.has_more_before) && returnedLines > 0,
+          updatedAt: new Date().toISOString(),
+        };
+      });
+    } catch (reason: unknown) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      pendingLogScrollRef.current = null;
+      setAgentLog((current) => ({
+        ...current,
+        loadingOlder: false,
+        error: message,
+        updatedAt: new Date().toISOString(),
+      }));
     }
   }
 
@@ -839,6 +1050,9 @@ export function AgentsPage() {
       ? `${selectedExecutions.length} execution${selectedExecutions.length === 1 ? "" : "s"}`
       : "Container session"
     : hostString(guestAgent, "preferred_repo_name") ?? "Agent output";
+  const logRangeLabel = agentLog.totalLines != null && agentLog.startLine != null && agentLog.endLine != null
+    ? `${agentLog.startLine}-${agentLog.endLine} of ${agentLog.totalLines}`
+    : `${agentLog.loadedLines || agentLog.returnedLines || 0} visible`;
 
   return (
     <div className="feature-page agents-page">
@@ -1605,11 +1819,79 @@ export function AgentsPage() {
             ) : null}
 
             <article className="panel">
-              <div className="panel-header">
-                <h3>Logs</h3>
-                <span className="panel-meta">{logTitle}</span>
+              <div className="panel-header agent-log-header">
+                <div>
+                  <h3>Logs</h3>
+                  <span className="panel-meta">
+                    {logTitle} / {logRangeLabel}
+                    {agentLog.pendingLiveUpdate ? " / live update waiting" : ""}
+                  </span>
+                </div>
+                <form
+                  className="agent-log-search"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    reloadLog(logSearchInput);
+                  }}
+                >
+                  <input
+                    value={logSearchInput}
+                    onChange={(event) => setLogSearchInput(event.target.value)}
+                    placeholder="Search logs"
+                    aria-label="Search logs"
+                  />
+                  <button type="submit" disabled={agentLog.loading}>
+                    Search
+                  </button>
+                  {agentLog.appliedQuery ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLogSearchInput("");
+                        reloadLog("");
+                      }}
+                      disabled={agentLog.loading}
+                    >
+                      Clear
+                    </button>
+                  ) : null}
+                </form>
               </div>
-              <pre className="log-view vm-agent-log">{agentLog}</pre>
+              <div className="agent-log-controls">
+                <button
+                  type="button"
+                  onClick={() => void loadOlderLogLines()}
+                  disabled={agentLog.loading || agentLog.loadingOlder || !agentLog.hasMoreBefore}
+                >
+                  {agentLog.loadingOlder ? "Loading..." : "Load older"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLogSearchInput("");
+                    reloadLog("");
+                  }}
+                  disabled={agentLog.loading && !agentLog.text}
+                >
+                  Latest
+                </button>
+                {agentLog.loading ? <span className="panel-meta">Loading...</span> : null}
+                {agentLog.error ? <span className="panel-meta error-text">{agentLog.error}</span> : null}
+              </div>
+              <pre
+                ref={logViewRef}
+                className="log-view vm-agent-log"
+                onScroll={(event) => {
+                  const atBottom = isScrolledToBottom(event.currentTarget);
+                  logSticksToBottomRef.current = atBottom;
+                  if (atBottom && agentLog.pendingLiveUpdate && !agentLog.loading) {
+                    pendingLogScrollRef.current = "bottom";
+                    setAgentLog((current) => ({ ...current, pendingLiveUpdate: false }));
+                  }
+                }}
+              >
+                {agentLog.text}
+              </pre>
             </article>
           </>
         ) : (

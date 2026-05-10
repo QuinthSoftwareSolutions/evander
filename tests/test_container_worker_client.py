@@ -103,6 +103,7 @@ def test_container_worker_client_health_create_get_stop_delete_and_logs(
     assert worker.delete("job-1") == {"deleted": True, "job_id": "job-1"}
     assert worker.logs("job-1") == "hello\n"
     assert worker.logs("job-1", mode="raw") == "hello\n"
+    assert worker.logs("job-1", mode="session", limit=25, offset=50, query="needle") == "hello\n"
     assert seen == [
         ("GET", "/healthz", ""),
         ("POST", "/v1/jobs", ""),
@@ -111,6 +112,7 @@ def test_container_worker_client_health_create_get_stop_delete_and_logs(
         ("DELETE", "/v1/jobs/job-1", ""),
         ("GET", "/v1/jobs/job-1/logs", ""),
         ("GET", "/v1/jobs/job-1/logs", "mode=raw"),
+        ("GET", "/v1/jobs/job-1/logs", "mode=session&limit=25&offset=50&query=needle"),
     ]
 
 

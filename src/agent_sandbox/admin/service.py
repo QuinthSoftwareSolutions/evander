@@ -5573,6 +5573,92 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             return "\n\n".join(chunks).rstrip() + "\n"
         raise ValueError(f"Unknown agent backend: {selected_backend}")
 
+    def get_admin_agent_log_page(
+        self,
+        agent_id: str,
+        *,
+        backend: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+        query: str | None = None,
+        repo_name: str | None = None,
+        vm_user: str = "agent",
+    ) -> dict[str, object]:
+        normalized_limit = max(1, min(int(limit), 5000))
+        normalized_offset = max(0, int(offset))
+        normalized_query = str(query or "").strip()
+        selected_backend = str(backend or "libvirt_vm").strip()
+        if selected_backend in {"libvirt", "libvirt_vm"}:
+            window_lines = normalized_limit + normalized_offset
+            if normalized_query:
+                window_lines = max(window_lines, 5000)
+            text = self.get_agent_log_snapshot(
+                agent_id,
+                lines=window_lines,
+                repo_name=repo_name,
+                vm_user=vm_user,
+            )
+            page = _log_page_from_end(
+                text,
+                limit=normalized_limit,
+                offset=normalized_offset,
+                query=normalized_query or None,
+            )
+            if not normalized_query and page["returned_lines"] >= normalized_limit:
+                page["has_more_before"] = True
+                page["total_lines"] = None
+                page["start_line"] = None
+                page["end_line"] = None
+            return page
+        if selected_backend == "container_worker_vm":
+            session, record = self._resolve_container_agent_session(agent_id, require_session=False)
+            session_id = (
+                str(session.session_id).strip()
+                if session is not None
+                else str(getattr(record, "session_id", "") or "").strip()
+            )
+            execution_records = (
+                self._container_execution_records_for_session(session_id) if session_id else []
+            )
+            worker_backend = self._container_worker_backend(
+                directory_path=(
+                    session.directory_path
+                    if session is not None
+                    else getattr(record, "directory_path", None)
+                ),
+                worker_url=self._container_worker_url_for_target(
+                    session=session,
+                    record=record,
+                    records=execution_records,
+                ),
+            )
+            target = agent_id
+            if session is not None and record is None:
+                if not execution_records:
+                    return _log_page_from_end(
+                        f"No container executions have run for session {session_id}.\n",
+                        limit=normalized_limit,
+                        offset=normalized_offset,
+                        query=normalized_query or None,
+                    )
+                target = execution_records[-1].execution_id
+            page_reader = getattr(worker_backend, "get_log_page", None)
+            if callable(page_reader):
+                return page_reader(
+                    target,
+                    limit=normalized_limit,
+                    offset=normalized_offset,
+                    query=normalized_query or None,
+                )
+            text = worker_backend.get_log_snapshot(target, lines=normalized_limit + normalized_offset)
+            return _log_page_from_end(
+                text,
+                limit=normalized_limit,
+                offset=normalized_offset,
+                query=normalized_query or None,
+            )
+        raise ValueError(f"Unknown agent backend: {selected_backend}")
+
     def run_admin_agent_action(
         self,
         agent_id: str,
@@ -8684,3 +8770,34 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
     def delete_local_issue(self, issue_identifier: str) -> VmActionResult:
         return self.issue_git_admin.delete_local_issue(issue_identifier)
+
+
+def _log_page_from_end(
+    text: str,
+    *,
+    limit: int,
+    offset: int,
+    query: str | None = None,
+) -> dict[str, object]:
+    lines = text.splitlines()
+    normalized_query = str(query or "").strip()
+    if normalized_query:
+        needle = normalized_query.casefold()
+        lines = [line for line in lines if needle in line.casefold()]
+    total_lines = len(lines)
+    normalized_limit = max(1, int(limit))
+    normalized_offset = max(0, int(offset))
+    end_index = max(0, total_lines - normalized_offset)
+    start_index = max(0, end_index - normalized_limit)
+    page_lines = lines[start_index:end_index]
+    return {
+        "text": "\n".join(page_lines) + ("\n" if page_lines else ""),
+        "limit": normalized_limit,
+        "offset": normalized_offset,
+        "returned_lines": len(page_lines),
+        "total_lines": total_lines,
+        "start_line": start_index + 1 if page_lines else 0,
+        "end_line": end_index if page_lines else 0,
+        "has_more_before": start_index > 0,
+        "query": normalized_query or None,
+    }

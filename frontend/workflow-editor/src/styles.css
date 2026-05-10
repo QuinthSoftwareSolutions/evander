@@ -2728,6 +2728,35 @@ select {
   word-break: normal;
 }
 
+.agent-log-header {
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.agent-log-search {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  min-width: min(100%, 24rem);
+}
+
+.agent-log-search input {
+  width: min(16rem, 100%);
+}
+
+.agent-log-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+.error-text {
+  color: #a23838;
+}
+
 .compact-log-view {
   min-height: 0;
   max-height: 180px;

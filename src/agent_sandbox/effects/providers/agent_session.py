@@ -894,8 +894,17 @@ def _container_profile_content(*, dotnet: bool, playwright: bool) -> str:
     if playwright:
         lines.extend(
             [
-                'export NODE_PATH="/opt/agent-sandbox/playwright-runtime/node_modules"',
+                'export AGENT_SANDBOX_PLAYWRIGHT_RUNTIME="/opt/agent-sandbox/playwright-runtime/node_modules"',
+                'export NODE_PATH="$AGENT_SANDBOX_PLAYWRIGHT_RUNTIME"',
                 'export PLAYWRIGHT_BROWSERS_PATH="/opt/agent-sandbox/ms-playwright"',
+                'export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1"',
+                'export PLAYWRIGHT_MCP_SANDBOX="0"',
+                'if [ -z "${PLAYWRIGHT_MCP_EXECUTABLE_PATH:-}" ] && command -v node >/dev/null 2>&1; then',
+                "  if _agent_sandbox_playwright_chromium=\"$(node -e 'const fs = require(\"fs\"); const path = require(\"path\"); const runtime = process.env.AGENT_SANDBOX_PLAYWRIGHT_RUNTIME; const { chromium } = require(path.join(runtime, \"playwright\")); const executable = chromium.executablePath(); if (!fs.existsSync(executable)) process.exit(1); process.stdout.write(executable);' 2>/dev/null)\" && [ -n \"$_agent_sandbox_playwright_chromium\" ]; then",
+                '    export PLAYWRIGHT_MCP_EXECUTABLE_PATH="$_agent_sandbox_playwright_chromium"',
+                "  fi",
+                "  unset _agent_sandbox_playwright_chromium",
+                "fi",
             ]
         )
     return "\n".join(lines) + "\n"
