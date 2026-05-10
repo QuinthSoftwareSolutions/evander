@@ -108,6 +108,7 @@ agent_sandbox_apt_cache_port: 3142
 agent_sandbox_apt_cache_bind_host: "0.0.0.0"
 agent_sandbox_apt_cache_cache_dir: "/var/cache/apt-cacher-ng"
 agent_sandbox_apt_cache_config_path: "/etc/apt-cacher-ng/acng.conf"
+agent_sandbox_apt_cache_passthrough_pattern: "^(packages\\.microsoft\\.com):443$"
 agent_sandbox_worker_use_apt_proxy: true
 agent_sandbox_worker_apt_proxy_config_path: "/etc/apt/apt.conf.d/01agent-sandbox-proxy"
 agent_sandbox_worker_apt_proxy_url: "http://{{ agent_sandbox_control_plane_private_ip }}:{{ agent_sandbox_apt_cache_port }}"

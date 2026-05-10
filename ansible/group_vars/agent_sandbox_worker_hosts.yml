@@ -85,10 +85,13 @@ agent_sandbox_worker_mssql_admin_host: "127.0.0.1"
 agent_sandbox_worker_mssql_port: 1433
 agent_sandbox_worker_mssql_container_host: "172.17.0.1"
 agent_sandbox_worker_mssql_sqlcmd_path: "/opt/mssql-tools18/bin/sqlcmd"
+agent_sandbox_worker_mssql_package_proxy_environment:
+  http_proxy: "{{ agent_sandbox_worker_apt_proxy_url }}"
+  https_proxy: "{{ agent_sandbox_worker_apt_proxy_url }}"
 agent_sandbox_worker_mssql_apt_key_url: "https://packages.microsoft.com/keys/microsoft.asc"
 agent_sandbox_worker_mssql_apt_key_path: "/etc/apt/keyrings/microsoft.asc"
-agent_sandbox_worker_mssql_server_repo: "deb [arch=amd64,arm64 signed-by={{ agent_sandbox_worker_mssql_apt_key_path }}] https://packages.microsoft.com/ubuntu/22.04/mssql-server-2022 jammy main"
-agent_sandbox_worker_mssql_tools_repo: "deb [arch=amd64,arm64 signed-by={{ agent_sandbox_worker_mssql_apt_key_path }}] https://packages.microsoft.com/ubuntu/22.04/prod jammy main"
+agent_sandbox_worker_mssql_server_repo: "deb [arch=amd64,arm64 signed-by={{ agent_sandbox_worker_mssql_apt_key_path }}] http://packages.microsoft.com/ubuntu/22.04/mssql-server-2022 jammy main"
+agent_sandbox_worker_mssql_tools_repo: "deb [arch=amd64,arm64 signed-by={{ agent_sandbox_worker_mssql_apt_key_path }}] http://packages.microsoft.com/ubuntu/22.04/prod jammy main"
 agent_sandbox_worker_mssql_server_package: "mssql-server"
 agent_sandbox_worker_mssql_tools_packages:
   - mssql-tools18

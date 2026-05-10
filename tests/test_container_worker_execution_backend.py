@@ -14,6 +14,8 @@ from agent_sandbox.worker.models import (
     WorkerFileWriteRequest,
     WorkerJobRecord,
     WorkerJobRequest,
+    WorkerMssqlDatabaseRecord,
+    WorkerMssqlDatabaseRequest,
     WorkerRepoCloneRecord,
     WorkerRepoCloneRequest,
     WorkerSessionPrepareRequest,
@@ -34,6 +36,7 @@ class FakeContainerWorkerClient:
         self.prepared_sessions: list[WorkerSessionPrepareRequest] = []
         self.cloned_repos: list[tuple[str, WorkerRepoCloneRequest]] = []
         self.written_files: list[tuple[str, WorkerFileWriteRequest]] = []
+        self.provisioned_mssql: list[tuple[str, WorkerMssqlDatabaseRequest]] = []
         self.status_by_job: dict[str, str] = {}
 
     def create(self, request: WorkerJobRequest) -> WorkerJobRecord:
@@ -103,6 +106,21 @@ class FakeContainerWorkerClient:
             session_id=session_id,
             copied_count=len(request.files),
             copied_paths=[entry.destination_path for entry in request.files],
+        )
+
+    def provision_mssql_database(
+        self, session_id: str, request: WorkerMssqlDatabaseRequest
+    ) -> WorkerMssqlDatabaseRecord:
+        self.provisioned_mssql.append((session_id, request))
+        return WorkerMssqlDatabaseRecord(
+            session_id=session_id,
+            logical_name=request.logical_name,
+            database_name="asb_hash_app_hash",
+            server="worker-default",
+            port=1433,
+            username="asb_login_hash",
+            password="session-secret",
+            connection_string="Server=tcp:worker-default,1433;Password=session-secret",
         )
 
 
@@ -299,6 +317,34 @@ def test_delete_session_delegates_to_worker_client(tmp_path: Path) -> None:
 
     assert result == {"deleted": True, "session_id": "session-1"}
     assert client.deleted_sessions == ["session-1"]
+
+
+def test_mssql_provisioning_uses_configured_advertised_endpoint(tmp_path: Path) -> None:
+    client = FakeContainerWorkerClient()
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+        container_worker_mssql_host="10.55.0.12",
+        container_worker_mssql_port=15433,
+    )
+    backend = ContainerWorkerVmExecutionBackend(
+        config=config,
+        client=client,
+        repository=ContainerWorkerExecutionRepository(
+            tmp_path / "container-worker-executions.json"
+        ),
+    )
+
+    record = backend.provision_mssql_database(session_id="session-1", logical_name="app")
+
+    assert client.provisioned_mssql[0][0] == "session-1"
+    assert client.provisioned_mssql[0][1].logical_name == "app"
+    assert record.server == "10.55.0.12"
+    assert record.port == 15433
+    assert record.connection_string.startswith("Server=tcp:10.55.0.12,15433;")
+    assert "Database=asb_hash_app_hash;" in record.connection_string
+    assert "Password=session-secret;" in record.connection_string
 
 
 def test_ambiguous_session_id_resolution_raises_clear_error(tmp_path: Path) -> None:

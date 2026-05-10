@@ -274,6 +274,10 @@ def test_ansible_apt_cache_relay_defaults_and_role_contract() -> None:
     assert "agent_sandbox_apt_cache_port: 3142" in defaults
     assert 'agent_sandbox_apt_cache_bind_host: "0.0.0.0"' in defaults
     assert 'agent_sandbox_apt_cache_cache_dir: "/var/cache/apt-cacher-ng"' in defaults
+    assert (
+        'agent_sandbox_apt_cache_passthrough_pattern: "^(packages\\\\.microsoft\\\\.com):443$"'
+        in defaults
+    )
     assert "agent_sandbox_apt_cache_allowed_tcp_ports" in defaults
     assert "[agent_sandbox_apt_cache_port]" in defaults
 
@@ -282,6 +286,7 @@ def test_ansible_apt_cache_relay_defaults_and_role_contract() -> None:
     assert "Port: {{ agent_sandbox_apt_cache_port }}" in tasks
     assert "BindAddress: {{ agent_sandbox_apt_cache_bind_host }}" in tasks
     assert "CacheDir: {{ agent_sandbox_apt_cache_cache_dir }}" in tasks
+    assert "PassThroughPattern: {{ agent_sandbox_apt_cache_passthrough_pattern }}" in tasks
     assert "apt-cacher-ng.service" in tasks
     assert "acng-report.html" in tasks
 

@@ -210,9 +210,15 @@ def test_worker_mssql_role_installs_sql_server_and_verifies_sqlcmd() -> None:
     ).read_text(encoding="utf-8")
 
     assert "agent_sandbox_worker_mssql_accept_eula" in role
+    assert "agent_sandbox_worker_use_apt_proxy | bool" in role
+    assert "agent_sandbox_worker_apt_proxy_url" in role
+    assert "agent_sandbox_worker_mssql_package_proxy_environment" in role
     assert "mssql-conf" in role
     assert "set-sa-password" in role
     assert "mssql-tools18" in defaults
+    assert "https://packages.microsoft.com/keys/microsoft.asc" in defaults
+    assert "https://packages.microsoft.com/ubuntu" not in defaults
+    assert "http://packages.microsoft.com/ubuntu" in defaults
     assert "SQLCMDPASSWORD" in role
     assert "agent_sandbox_worker_mssql_allowed_source_cidr" in role
     assert "DROP" in role

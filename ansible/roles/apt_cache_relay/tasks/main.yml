@@ -38,11 +38,27 @@
           line: "CacheDir: {{ agent_sandbox_apt_cache_cache_dir }}"
       register: agent_sandbox_apt_cache_config
 
+    - name: Configure apt-cacher-ng HTTPS pass-through allowlist
+      ansible.builtin.lineinfile:
+        path: "{{ agent_sandbox_apt_cache_config_path }}"
+        regexp: '^\s*#?\s*PassThroughPattern:'
+        line: "PassThroughPattern: {{ agent_sandbox_apt_cache_passthrough_pattern }}"
+      register: agent_sandbox_apt_cache_passthrough_config
+      when: (agent_sandbox_apt_cache_passthrough_pattern | default('') | string | length) > 0
+
     - name: Reconcile apt cache relay service
       ansible.builtin.systemd:
         name: apt-cacher-ng.service
         enabled: true
-        state: "{{ 'restarted' if agent_sandbox_apt_cache_config.changed else 'started' }}"
+        state: >-
+          {{
+            'restarted'
+            if (
+              agent_sandbox_apt_cache_config.changed
+              or agent_sandbox_apt_cache_passthrough_config.changed | default(false)
+            )
+            else 'started'
+          }}
         daemon_reload: true
 
     - name: Wait for apt cache relay listener

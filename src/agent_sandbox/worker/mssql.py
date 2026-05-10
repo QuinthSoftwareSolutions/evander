@@ -24,22 +24,16 @@ from .security import safe_subprocess_error
 
 class WorkerMssqlStore:
     def __init__(self, path: Path) -> None:
-        self._store = JsonStore(path, WorkerMssqlSessionState)
-        self._restrict_permissions()
+        self._store = JsonStore(path, WorkerMssqlSessionState, file_mode=0o600)
 
     def get(self, session_id: str) -> WorkerMssqlSessionState | None:
         return self._store.get(session_id)
 
     def put(self, state: WorkerMssqlSessionState) -> None:
         self._store.put(state.session_id, state)
-        self._restrict_permissions()
 
     def delete(self, session_id: str) -> None:
         self._store.delete(session_id)
-        self._restrict_permissions()
-
-    def _restrict_permissions(self) -> None:
-        self._store.path.chmod(0o600)
 
 
 class WorkerMssqlProvisioner:

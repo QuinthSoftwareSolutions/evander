@@ -230,6 +230,8 @@ def test_mssql_tools_call_container_worker_backend_and_redact_audit(
             execution_backend="container_worker_vm",
             container_worker_base_url="http://worker.test",
             container_worker_mssql_enabled=True,
+            container_worker_mssql_host="10.55.0.12",
+            container_worker_mssql_port=15433,
         )
     )
     context.session_repository.upsert_session(
@@ -249,6 +251,8 @@ def test_mssql_tools_call_container_worker_backend_and_redact_audit(
     class FakeContainerWorkerBackend:
         def __init__(self, *, config: GatewayConfig) -> None:
             assert config.container_worker_mssql_enabled is True
+            assert config.container_worker_mssql_host == "10.55.0.12"
+            assert config.container_worker_mssql_port == 15433
 
         def provision_mssql_database(
             self,
