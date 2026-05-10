@@ -196,7 +196,7 @@ class AgentExecEffectProvider(VmExecEffectProvider):
     @staticmethod
     def _log_snapshot(backend: Any, execution_id: str) -> str:
         try:
-            return str(backend.get_log_snapshot(execution_id, lines=400) or "")
+            return str(backend.get_log_snapshot(execution_id, lines=0, mode="raw") or "")
         except Exception:
             return ""
 

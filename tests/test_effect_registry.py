@@ -81,6 +81,7 @@ class _FakeContainerBackend:
         self.prepared_specs: list[object] = []
         self.started_specs: list[object] = []
         self.destroyed: list[str] = []
+        self.log_snapshot_calls: list[dict[str, object]] = []
         self.status = SimpleNamespace(status=ExecutionStatusKind.STOPPED, message=None, metadata={})
         self.logs = ""
         self.start_error: Exception | None = None
@@ -125,8 +126,8 @@ class _FakeContainerBackend:
     def destroy(self, execution_id: str):
         self.destroyed.append(execution_id)
 
-    def get_log_snapshot(self, execution_id: str, *, lines: int = 50):
-        del execution_id, lines
+    def get_log_snapshot(self, execution_id: str, *, lines: int = 50, mode: str | None = None):
+        self.log_snapshot_calls.append({"execution_id": execution_id, "lines": lines, "mode": mode})
         return self.logs
 
 
@@ -1751,6 +1752,9 @@ def test_agent_exec_provider_runs_container_command_and_cleans_up(
     assert "cd /home/agent/repos/repo" in str(backend.started_specs[0].command)
     assert "echo prepared" in str(backend.started_specs[0].command)
     assert backend.destroyed == [output["execution_id"]]
+    assert backend.log_snapshot_calls == [
+        {"execution_id": output["execution_id"], "lines": 0, "mode": "raw"}
+    ]
 
 
 def test_agent_exec_provider_returns_container_failure_when_check_disabled(
