@@ -42,13 +42,15 @@ The playbook follows the repo-native bootstrap order:
 7. Render managed config under `config/` and optional `secrets.env`
 8. Run `scripts/install_systemd_units.sh`
 9. Build the Admin Web frontend bundle with `npm ci && npm run build`
-10. Run `scripts/create_libvirt_network.sh` in the `full` profile
-11. Run `scripts/apply_firewall.sh` when the `full` profile firewall service is enabled
-12. Run `scripts/create_base_vm.sh` in the `full` profile
-13. Enable and start only the selected repo-native services
-14. Install and configure the Nexus PyPI/npm package cache when enabled
-15. Verify unit state, enabled firewall, full-profile VM host state, package-cache health, and repo-aware status
-16. Clear the Admin Web deployment-status flag after a successful run
+10. Install/configure Caddy for Admin Web public static-file serving when enabled
+11. Run `scripts/create_libvirt_network.sh` in the `full` profile
+12. Run `scripts/apply_firewall.sh` when the `full` profile firewall service is enabled
+13. Run `scripts/create_base_vm.sh` in the `full` profile
+14. Enable and start only the selected repo-native services
+15. Install and configure the Nexus PyPI/npm package cache when enabled
+16. Verify unit state, enabled firewall, full-profile VM host state, package-cache health, Admin
+    Web Caddy routing when enabled, and repo-aware status
+17. Clear the Admin Web deployment-status flag after a successful run
 
 VM/session launch is intentionally not part of initial deployment. After the host is prepared, use
 the existing operator flow to create a session manifest and launch a VM.
@@ -103,6 +105,17 @@ Service toggles:
 - `agent_sandbox_services.teams_ingest`
 - `agent_sandbox_services.effect_orchestrator`
 - `agent_sandbox_services.trigger_orchestrator`
+
+Admin Web public access:
+
+- `agent_sandbox_admin_web_caddy_enabled: false` by default. Set it to `true` on deployments that
+  expose Admin Web through Caddy.
+- The managed Caddy config serves `frontend/workflow-editor/dist` directly for `/`, `index.html`,
+  and `/assets/*`, while proxying `/api/*` and `/healthz` to the local Admin Web Python service.
+- `agent_sandbox_admin_web_caddy_hostname` defaults to the host from
+  `AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL`; override it when the public hostname differs from the
+  Admin Web base URL.
+- Azure inventory enables this role for `truman-admin.northeurope.cloudapp.azure.com`.
 
 Workflow config ownership:
 
@@ -257,6 +270,8 @@ The playbook is intended to be safe to re-run:
 - the Git checkout updates to the requested revision
 - `uv venv` and `uv pip install` reconcile the Python environment
 - `npm ci` and `npm run build` refresh the Admin Web frontend bundle
+- when `agent_sandbox_admin_web_caddy_enabled` is true, the managed Caddyfile is reconciled after
+  the frontend bundle is built
 - `init-state` is re-run against the same runtime directory
 - managed config files are re-rendered from variables
 - worker/global JSON files are preserved when `agent_sandbox_force_render_worker_config: false`
@@ -289,6 +304,8 @@ The verification role checks:
 - selected systemd units are enabled and active
 - disabled units remain installed but not enabled/started
 - Admin Web responds on the configured host port
+- when enabled, managed Caddy is active and serves `/`, `/index.html`, one built JS asset, one built
+  CSS asset, and proxied `/healthz` through local TLS/SNI resolution
 - for `full`: libvirt network `agent-sandbox` exists
 - for `full` when firewall is enabled: nftables table `inet agent_sandbox` exists
 - for `full`: the Ubuntu 24.04 base cloud image is present under libvirt-accessible storage
@@ -312,7 +329,9 @@ sudo virsh net-info agent-sandbox
 ```
 
 If you expose Admin Web beyond localhost, set `config/admin-web.env` from Vault-backed variables,
-enable authentication, and prefer TLS plus ingress policy in front of the service.
+enable authentication, and prefer TLS plus ingress policy in front of the service. For Ansible-owned
+Caddy exposure, set `agent_sandbox_admin_web_caddy_enabled: true`; Caddy will serve static frontend
+assets directly and proxy API/health routes to the local Admin Web service.
 For Azure SSO deployments, `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS` is a first-run seed for
 `runtime/admin-web-users.json`; after the file exists, use the Admin Web Users tab for membership
 and role changes.

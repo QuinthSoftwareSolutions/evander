@@ -68,6 +68,7 @@
     - role: service_config
     - role: systemd_install
     - role: frontend_build
+    - role: admin_web_caddy
     - role: network_vm_bootstrap
     - role: service_runtime
     - role: package_cache_nexus

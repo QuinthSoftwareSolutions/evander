@@ -18,6 +18,7 @@ def test_ansible_bundle_exists_with_expected_roles() -> None:
         "service_config",
         "systemd_install",
         "frontend_build",
+        "admin_web_caddy",
         "network_vm_bootstrap",
         "service_runtime",
         "apt_cache_relay",
@@ -46,12 +47,57 @@ def test_ansible_site_uses_repo_native_bootstrap_order() -> None:
     assert "- role: service_config" in site
     assert "- role: systemd_install" in site
     assert "- role: frontend_build" in site
+    assert "- role: admin_web_caddy" in site
     assert "- role: network_vm_bootstrap" in site
     assert "- role: service_runtime" in site
     assert "- role: package_cache_nexus" in site
     assert "- role: verification" in site
     assert site.index("- role: host_prereqs") < site.index("- role: apt_cache_relay")
     assert site.index("- role: apt_cache_relay") < site.index("- role: repo_checkout")
+    assert site.index("- role: frontend_build") < site.index("- role: admin_web_caddy")
+    assert site.index("- role: admin_web_caddy") < site.index("- role: service_runtime")
+
+
+def test_ansible_admin_web_caddy_role_serves_static_assets_directly() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    azure = (repo / "ansible" / "group_vars" / "azure.yml").read_text(encoding="utf-8")
+    tasks = (
+        repo / "ansible" / "roles" / "admin_web_caddy" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    caddyfile = (
+        repo / "ansible" / "roles" / "admin_web_caddy" / "templates" / "Caddyfile.j2"
+    ).read_text(encoding="utf-8")
+    verification = (
+        repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "agent_sandbox_admin_web_frontend_dist_dir" in defaults
+    assert "agent_sandbox_admin_web_caddy_enabled: false" in defaults
+    assert "agent_sandbox_admin_web_caddy_enabled: true" in azure
+    assert "Install Caddy package" in tasks
+    assert "Assert Admin Web frontend assets were built" in tasks
+    assert "Render Admin Web Caddyfile" in tasks
+    assert "caddy validate --adapter caddyfile --config" in tasks
+    assert "Reload Caddy after Caddyfile changes" in tasks
+
+    assert "handle /api/*" in caddyfile
+    assert "handle /healthz" in caddyfile
+    assert (
+        "reverse_proxy {{ agent_sandbox_admin_web_caddy_upstream_host }}:{{ agent_sandbox_admin_web_caddy_upstream_port }}"
+        in caddyfile
+    )
+    assert "root * {{ agent_sandbox_admin_web_frontend_dist_dir }}" in caddyfile
+    assert "try_files {path} /index.html" in caddyfile
+    assert "file_server" in caddyfile
+
+    assert "Verify managed Admin Web Caddy is active" in verification
+    assert "Verify managed Admin Web Caddy serves frontend and proxies health" in verification
+    assert "--resolve" in verification
+    assert "https://${host}/index.html" in verification
+    assert 'find "${dist_dir}/assets"' in verification
 
 
 def test_ansible_site_announces_control_plane_deployment_status() -> None:
@@ -133,6 +179,19 @@ def test_ansible_nexus_package_cache_tasks_are_not_ignored_by_git() -> None:
 def test_ansible_apt_cache_role_tasks_are_not_ignored_by_git() -> None:
     repo = Path(__file__).resolve().parents[1]
     role_task_path = "ansible/roles/apt_cache_relay/tasks/main.yml"
+
+    result = subprocess.run(
+        ["git", "check-ignore", "--quiet", "--", role_task_path],
+        cwd=repo,
+        check=False,
+    )
+
+    assert result.returncode == 1
+
+
+def test_ansible_admin_web_caddy_role_tasks_are_not_ignored_by_git() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    role_task_path = "ansible/roles/admin_web_caddy/tasks/main.yml"
 
     result = subprocess.run(
         ["git", "check-ignore", "--quiet", "--", role_task_path],

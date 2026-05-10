@@ -13,6 +13,7 @@ def test_ansible_readme_covers_ubuntu_azure_and_repo_native_entrypoints() -> Non
     assert "scripts/create_base_vm.sh" in text
     assert "config/admin-web.env" in text
     assert "agent_sandbox_services.admin_web" in text
+    assert "agent_sandbox_admin_web_caddy_enabled" in text
     assert "agent_sandbox_services.package_cache" in text
     assert "agent_sandbox_services.apt_cache" in text
     assert "agent_sandbox_nexus_admin_password" in text

@@ -56,6 +56,15 @@
   loop: "{{ agent_sandbox_verification_units }}"
   when: not (agent_sandbox_services[item.key] | bool)
 
+- name: Verify managed Admin Web Caddy is active
+  ansible.builtin.assert:
+    that:
+      - "ansible_facts.services.get('caddy.service', {}).get('status') == 'enabled'"
+      - "ansible_facts.services.get('caddy.service', {}).get('state') == 'running'"
+    fail_msg: "caddy.service should be enabled and running for managed Admin Web public access."
+    success_msg: "caddy.service is enabled and running for managed Admin Web public access."
+  when: agent_sandbox_admin_web_caddy_enabled | bool
+
 - name: Verify the libvirt network exists
   ansible.builtin.command:
     cmd: "virsh net-info agent-sandbox"
@@ -135,6 +144,40 @@
     - key: http_target_relay
       url: "http://127.0.0.1:11777/healthz"
   when: agent_sandbox_services[item.key] | bool
+
+- name: Verify managed Admin Web Caddy serves frontend and proxies health
+  ansible.builtin.shell: |
+    set -euo pipefail
+    host="{{ agent_sandbox_admin_web_caddy_hostname }}"
+    dist_dir="{{ agent_sandbox_admin_web_frontend_dist_dir }}"
+    curl_common=(
+      curl
+      --fail
+      --silent
+      --show-error
+      --insecure
+      --max-time
+      "10"
+      --resolve
+      "${host}:443:127.0.0.1"
+    )
+
+    "${curl_common[@]}" -o /dev/null "https://${host}/healthz"
+    "${curl_common[@]}" -o /dev/null "https://${host}/"
+    "${curl_common[@]}" -o /dev/null "https://${host}/index.html"
+
+    for extension in js css; do
+      asset_path="$(find "${dist_dir}/assets" -maxdepth 1 -type f -name "*.${extension}" -print -quit)"
+      test -n "${asset_path}"
+      url_path="/${asset_path#"${dist_dir}/"}"
+      "${curl_common[@]}" -o /dev/null "https://${host}${url_path}"
+    done
+  args:
+    executable: /bin/bash
+  changed_when: false
+  when:
+    - agent_sandbox_admin_web_caddy_enabled | bool
+    - agent_sandbox_services.admin_web | bool
 
 - name: Emit deployment verification summary
   ansible.builtin.debug:
