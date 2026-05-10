@@ -383,8 +383,13 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "allowed_tools",
         "allowed_script_names",
         "discord_channels",
+        "teams_channel_allowlist",
         "email_mailboxes",
         "email_folders",
+        "communication_file_receive_enabled",
+        "communication_file_send_enabled",
+        "communication_file_require_approval_for_send",
+        "communication_file_max_bytes",
         "dotnet",
         "nuget",
         "mssql",
@@ -3086,8 +3091,13 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
             "allowed_tools": ["run_script"],
             "allowed_script_names": ["demo"],
             "discord_channels": ["ops"],
+            "teams_channel_allowlist": ["team-a/channel-1", "chat:chat-1"],
             "email_mailboxes": ["default"],
             "email_folders": ["inbox"],
+            "communication_file_receive_enabled": True,
+            "communication_file_send_enabled": True,
+            "communication_file_max_bytes": 4096,
+            "communication_file_require_approval_for_send": True,
             "vm_user": "agent",
             "dotnet": True,
             "nuget": True,
@@ -3110,8 +3120,13 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "allowed_tools": ["run_script"],
         "allowed_script_names": ["demo"],
         "discord_channels": ["ops"],
+        "teams_channel_allowlist": ["team-a/channel-1", "chat:chat-1"],
         "email_mailboxes": ["default"],
         "email_folders": ["inbox"],
+        "communication_file_receive_enabled": True,
+        "communication_file_send_enabled": True,
+        "communication_file_max_bytes": 4096,
+        "communication_file_require_approval_for_send": True,
         "dotnet": True,
         "nuget": True,
         "mssql": True,
@@ -3177,6 +3192,11 @@ def test_admin_web_agents_create_container_session_and_list_it(tmp_path: Path, m
             "model": "gpt-5.2-codex",
             "labels": {"role": "demo"},
             "allowed_script_names": ["seed-demo"],
+            "teams_channel_allowlist": ["team-a/channel-1", "chat:chat-1"],
+            "communication_file_receive_enabled": True,
+            "communication_file_send_enabled": True,
+            "communication_file_max_bytes": 8192,
+            "communication_file_require_approval_for_send": True,
         },
     )
     list_response = client.get(
@@ -3204,6 +3224,11 @@ def test_admin_web_agents_create_container_session_and_list_it(tmp_path: Path, m
     assert manifest.vm_id is None
     assert manifest.model == "gpt-5.2-codex"
     assert manifest.allowed_script_names == ["seed-demo"]
+    assert manifest.teams_channel_allowlist == ["team-a/channel-1", "chat:chat-1"]
+    assert manifest.communication_file_receive_enabled is True
+    assert manifest.communication_file_send_enabled is True
+    assert manifest.communication_file_max_bytes == 8192
+    assert manifest.communication_file_require_approval_for_send is True
 
     assert list_response.status_code == 200
     payload = list_response.json()

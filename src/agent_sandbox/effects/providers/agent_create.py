@@ -8,6 +8,7 @@ from agent_sandbox.events.provider_models import AgentCreateEffectDefinition
 
 from .agent_session import (
     allowed_tools_for_profile,
+    as_bool_or_none,
     as_int_or_none,
     as_string_list,
     as_string_mapping,
@@ -42,8 +43,15 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "allowed_tools": effect.allowed_tools,
             "allowed_script_names": effect.allowed_script_names,
             "discord_channels": effect.discord_channels,
+            "teams_channel_allowlist": effect.teams_channel_allowlist,
             "email_mailboxes": effect.email_mailboxes,
             "email_folders": effect.email_folders,
+            "communication_file_receive_enabled": effect.communication_file_receive_enabled,
+            "communication_file_send_enabled": effect.communication_file_send_enabled,
+            "communication_file_max_bytes": effect.communication_file_max_bytes,
+            "communication_file_require_approval_for_send": (
+                effect.communication_file_require_approval_for_send
+            ),
             "dotnet": effect.dotnet,
             "nuget": effect.nuget,
             "mssql": effect.mssql,
@@ -100,8 +108,21 @@ class AgentCreateEffectProvider(EffectProviderBase):
             allowed_tools=as_string_list(payload.get("allowed_tools")),
             allowed_script_names=as_string_list(payload.get("allowed_script_names")),
             discord_channels=as_string_list(payload.get("discord_channels")),
+            teams_channel_allowlist=as_string_list(payload.get("teams_channel_allowlist")),
             email_mailboxes=as_string_list(payload.get("email_mailboxes")),
             email_folders=as_string_list(payload.get("email_folders")),
+            communication_file_receive_enabled=as_bool_or_none(
+                payload.get("communication_file_receive_enabled")
+            ),
+            communication_file_send_enabled=as_bool_or_none(
+                payload.get("communication_file_send_enabled")
+            ),
+            communication_file_max_bytes=as_int_or_none(
+                payload.get("communication_file_max_bytes")
+            ),
+            communication_file_require_approval_for_send=as_bool_or_none(
+                payload.get("communication_file_require_approval_for_send")
+            ),
             dotnet=bool(payload.get("dotnet", False)),
             nuget=bool(payload.get("nuget", False)),
             mssql=bool(payload.get("mssql", False)),
@@ -174,8 +195,21 @@ class AgentCreateEffectProvider(EffectProviderBase):
             allowed_tools=resolved_allowed_tools,
             allowed_script_names=as_string_list(payload.get("allowed_script_names")),
             discord_channels=as_string_list(payload.get("discord_channels")),
+            teams_channel_allowlist=as_string_list(payload.get("teams_channel_allowlist")),
             email_mailboxes=as_string_list(payload.get("email_mailboxes")),
             email_folders=as_string_list(payload.get("email_folders")),
+            communication_file_receive_enabled=as_bool_or_none(
+                payload.get("communication_file_receive_enabled")
+            ),
+            communication_file_send_enabled=as_bool_or_none(
+                payload.get("communication_file_send_enabled")
+            ),
+            communication_file_max_bytes=as_int_or_none(
+                payload.get("communication_file_max_bytes")
+            ),
+            communication_file_require_approval_for_send=as_bool_or_none(
+                payload.get("communication_file_require_approval_for_send")
+            ),
             metadata=metadata,
         )
         runtime_session_repository(context, config).upsert_session(manifest)

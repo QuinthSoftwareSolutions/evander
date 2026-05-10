@@ -106,6 +106,11 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "display_name": "Create agent",
             "type": "effect:agent:create",
             "session_id": "session-1",
+            "teams_channel_allowlist": ["team-a/channel-1", "chat:chat-1"],
+            "communication_file_receive_enabled": True,
+            "communication_file_send_enabled": True,
+            "communication_file_max_bytes": 4096,
+            "communication_file_require_approval_for_send": True,
         }
     )
     agent_destroy = adapter.validate_python(
@@ -245,6 +250,11 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert vm_start.type == "effect:vm:start"
     assert vm_stop.type == "effect:vm:stop"
     assert agent_create.type == "effect:agent:create"
+    assert agent_create.teams_channel_allowlist == ["team-a/channel-1", "chat:chat-1"]
+    assert agent_create.communication_file_receive_enabled is True
+    assert agent_create.communication_file_send_enabled is True
+    assert agent_create.communication_file_max_bytes == 4096
+    assert agent_create.communication_file_require_approval_for_send is True
     assert agent_destroy.type == "effect:agent:destroy"
     assert agent_clone.type == "effect:agent:clone-repo"
     assert agent_frontend.type == "effect:agent:bootstrap-frontend"

@@ -812,8 +812,13 @@ def _libvirt_create_vm(
     allowed_tools: list[str | Any] | None = None,
     allowed_script_names: list[str] | None = None,
     discord_channels: list[str] | None = None,
+    teams_channel_allowlist: list[str] | None = None,
     email_mailboxes: list[str] | None = None,
     email_folders: list[str] | None = None,
+    communication_file_receive_enabled: bool | None = None,
+    communication_file_send_enabled: bool | None = None,
+    communication_file_max_bytes: int | None = None,
+    communication_file_require_approval_for_send: bool | None = None,
     dotnet: bool = False,
     nuget: bool = False,
     mssql: bool = False,
@@ -885,8 +890,15 @@ def _libvirt_create_vm(
             extra_allowed_tools=allowed_tools,
             allowed_script_names=allowed_script_names,
             discord_channels=discord_channels or [],
+            teams_channel_allowlist=teams_channel_allowlist or [],
             email_mailboxes=email_mailboxes or [],
             email_folders=email_folders or [],
+            communication_file_receive_enabled=communication_file_receive_enabled,
+            communication_file_send_enabled=communication_file_send_enabled,
+            communication_file_max_bytes=communication_file_max_bytes,
+            communication_file_require_approval_for_send=(
+                communication_file_require_approval_for_send
+            ),
         )
     normalized_labels = admin_service_module._normalize_session_labels(labels or {})
     if normalized_labels:

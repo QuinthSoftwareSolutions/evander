@@ -1337,8 +1337,38 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Additional script names the created session may invoke with run_script.",
             ),
             _field("discord_channels", "Discord channels", "string_list"),
+            _field(
+                "teams_channel_allowlist",
+                "Teams targets",
+                "string_list",
+                placeholder="team-id/channel-id or chat:<chat-id>",
+            ),
             _field("email_mailboxes", "Email mailboxes", "string_list"),
             _field("email_folders", "Email folders", "string_list"),
+            _field(
+                "communication_file_receive_enabled",
+                "Receive inbound files",
+                "boolean",
+                bindable=True,
+            ),
+            _field(
+                "communication_file_send_enabled",
+                "Send files",
+                "boolean",
+                bindable=True,
+            ),
+            _field(
+                "communication_file_require_approval_for_send",
+                "Require approval for file sends",
+                "boolean",
+                bindable=True,
+            ),
+            _field(
+                "communication_file_max_bytes",
+                "Communication file max bytes",
+                "number",
+                bindable=True,
+            ),
             _field("dotnet", "Dotnet", "boolean", bindable=True),
             _field("nuget", "NuGet", "boolean", bindable=True),
             _field("mssql", "MSSQL", "boolean", bindable=True),
@@ -3152,8 +3182,13 @@ def _build_issue_session_manifest(
     extra_allowed_tools: list[str | ToolName] | None = None,
     allowed_script_names: list[str] | None = None,
     discord_channels: list[str],
+    teams_channel_allowlist: list[str] | None = None,
     email_mailboxes: list[str],
     email_folders: list[str],
+    communication_file_receive_enabled: bool | None = None,
+    communication_file_send_enabled: bool | None = None,
+    communication_file_max_bytes: int | None = None,
+    communication_file_require_approval_for_send: bool | None = None,
 ) -> SessionManifest:
     resolved_allowed_tools: list[ToolName] = [ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK]
     if discord_channels:
@@ -3210,20 +3245,37 @@ def _build_issue_session_manifest(
         allowed_tools=list(dict.fromkeys(resolved_allowed_tools)),
         allowed_script_names=_normalize_allowed_script_names(allowed_script_names or []),
         discord_channel_allowlist=discord_channels,
+        teams_channel_allowlist=_normalize_teams_channel_allowlist(
+            teams_channel_allowlist or [], field_name="teams_channel_allowlist"
+        ),
         email_folder_allowlist=resolved_email_folders,
         email_mailbox_allowlist=resolved_email_mailboxes,
         email_folder_allowlist_by_mailbox=policy.email_folder_allowlist_by_mailbox,
         email_draft_recipient_allowlist=policy.email_draft_recipient_allowlist,
         email_draft_domain_allowlist=policy.email_draft_domain_allowlist,
         email_send_enabled=policy.email_send_enabled,
-        communication_file_receive_enabled=policy.communication_file_receive_enabled,
-        communication_file_send_enabled=policy.communication_file_send_enabled,
-        communication_file_max_bytes=policy.communication_file_max_bytes,
+        communication_file_receive_enabled=(
+            policy.communication_file_receive_enabled
+            if communication_file_receive_enabled is None
+            else communication_file_receive_enabled
+        ),
+        communication_file_send_enabled=(
+            policy.communication_file_send_enabled
+            if communication_file_send_enabled is None
+            else communication_file_send_enabled
+        ),
+        communication_file_max_bytes=(
+            policy.communication_file_max_bytes
+            if communication_file_max_bytes is None
+            else communication_file_max_bytes
+        ),
         communication_file_allowed_mime_types=policy.communication_file_allowed_mime_types,
         communication_file_allowed_extensions=policy.communication_file_allowed_extensions,
         communication_file_blocked_extensions=policy.communication_file_blocked_extensions,
         communication_file_require_approval_for_send=(
             policy.communication_file_require_approval_for_send
+            if communication_file_require_approval_for_send is None
+            else communication_file_require_approval_for_send
         ),
         expires_at=_utc_now() + _resolve_session_ttl(policy, ttl_hours),
         metadata=metadata,
@@ -5117,8 +5169,43 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 allowed_tools=self._agent_string_list(payload, "allowed_tools"),
                 allowed_script_names=self._agent_string_list(payload, "allowed_script_names"),
                 discord_channels=self._agent_string_list(payload, "discord_channels"),
+                teams_channel_allowlist=self._agent_string_list(
+                    payload, "teams_channel_allowlist"
+                ),
                 email_mailboxes=self._agent_string_list(payload, "email_mailboxes"),
                 email_folders=self._agent_string_list(payload, "email_folders"),
+                communication_file_receive_enabled=(
+                    _normalize_session_policy_bool(
+                        payload.get("communication_file_receive_enabled"),
+                        field_name="communication_file_receive_enabled",
+                    )
+                    if "communication_file_receive_enabled" in payload
+                    else None
+                ),
+                communication_file_send_enabled=(
+                    _normalize_session_policy_bool(
+                        payload.get("communication_file_send_enabled"),
+                        field_name="communication_file_send_enabled",
+                    )
+                    if "communication_file_send_enabled" in payload
+                    else None
+                ),
+                communication_file_max_bytes=(
+                    _normalize_session_policy_non_negative_int_or_none(
+                        payload.get("communication_file_max_bytes"),
+                        field_name="communication_file_max_bytes",
+                    )
+                    if "communication_file_max_bytes" in payload
+                    else None
+                ),
+                communication_file_require_approval_for_send=(
+                    _normalize_session_policy_bool(
+                        payload.get("communication_file_require_approval_for_send"),
+                        field_name="communication_file_require_approval_for_send",
+                    )
+                    if "communication_file_require_approval_for_send" in payload
+                    else None
+                ),
                 dotnet=bool(payload.get("dotnet", False)),
                 nuget=bool(payload.get("nuget", False)),
                 mssql=bool(payload.get("mssql", False)),
@@ -5184,8 +5271,42 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             extra_allowed_tools=self._agent_string_list(payload, "allowed_tools"),
             allowed_script_names=self._agent_string_list(payload, "allowed_script_names"),
             discord_channels=self._agent_string_list(payload, "discord_channels") or [],
+            teams_channel_allowlist=self._agent_string_list(payload, "teams_channel_allowlist")
+            or [],
             email_mailboxes=self._agent_string_list(payload, "email_mailboxes") or [],
             email_folders=self._agent_string_list(payload, "email_folders") or [],
+            communication_file_receive_enabled=(
+                _normalize_session_policy_bool(
+                    payload.get("communication_file_receive_enabled"),
+                    field_name="communication_file_receive_enabled",
+                )
+                if "communication_file_receive_enabled" in payload
+                else None
+            ),
+            communication_file_send_enabled=(
+                _normalize_session_policy_bool(
+                    payload.get("communication_file_send_enabled"),
+                    field_name="communication_file_send_enabled",
+                )
+                if "communication_file_send_enabled" in payload
+                else None
+            ),
+            communication_file_max_bytes=(
+                _normalize_session_policy_non_negative_int_or_none(
+                    payload.get("communication_file_max_bytes"),
+                    field_name="communication_file_max_bytes",
+                )
+                if "communication_file_max_bytes" in payload
+                else None
+            ),
+            communication_file_require_approval_for_send=(
+                _normalize_session_policy_bool(
+                    payload.get("communication_file_require_approval_for_send"),
+                    field_name="communication_file_require_approval_for_send",
+                )
+                if "communication_file_require_approval_for_send" in payload
+                else None
+            ),
         ).model_copy(
             update={
                 "vm_id": None,
@@ -8674,8 +8795,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         allowed_tools: list[str | ToolName] | None = None,
         allowed_script_names: list[str] | None = None,
         discord_channels: list[str] | None = None,
+        teams_channel_allowlist: list[str] | None = None,
         email_mailboxes: list[str] | None = None,
         email_folders: list[str] | None = None,
+        communication_file_receive_enabled: bool | None = None,
+        communication_file_send_enabled: bool | None = None,
+        communication_file_max_bytes: int | None = None,
+        communication_file_require_approval_for_send: bool | None = None,
         dotnet: bool = False,
         nuget: bool = False,
         mssql: bool = False,
@@ -8687,6 +8813,18 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         payload: dict[str, Any] = {}
         if provider is not None:
             payload["provider"] = provider
+        if teams_channel_allowlist is not None:
+            payload["teams_channel_allowlist"] = teams_channel_allowlist
+        if communication_file_receive_enabled is not None:
+            payload["communication_file_receive_enabled"] = communication_file_receive_enabled
+        if communication_file_send_enabled is not None:
+            payload["communication_file_send_enabled"] = communication_file_send_enabled
+        if communication_file_max_bytes is not None:
+            payload["communication_file_max_bytes"] = communication_file_max_bytes
+        if communication_file_require_approval_for_send is not None:
+            payload["communication_file_require_approval_for_send"] = (
+                communication_file_require_approval_for_send
+            )
         return self.vm_agent_admin.create_vm(
             vm_name=vm_name,
             session_id=session_id,

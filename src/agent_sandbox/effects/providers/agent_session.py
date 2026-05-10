@@ -14,6 +14,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.runtime import allowed_tools_for_capability_profile
+from agent_sandbox.services import normalize_teams_target
 from agent_sandbox.execution import (
     ExecutionBackendKind,
     ExecutionStatusKind,
@@ -78,6 +79,35 @@ def as_int_or_none(value: Any) -> int | None:
     if value is None or value == "":
         return None
     return int(value)
+
+
+def as_bool_or_none(value: Any) -> bool | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
+def normalize_teams_channel_allowlist(value: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_target in value or []:
+        text = str(raw_target).strip()
+        if not text:
+            continue
+        target = normalize_teams_target(text)
+        if target in seen:
+            continue
+        seen.add(target)
+        normalized.append(target)
+    return normalized
 
 
 def runtime_session_repository(context: EffectRuntimeContext, config: GatewayConfig):
@@ -319,8 +349,13 @@ def build_container_session_manifest(
     allowed_tools: list[str] | None,
     allowed_script_names: list[str] | None,
     discord_channels: list[str] | None,
+    teams_channel_allowlist: list[str] | None = None,
     email_mailboxes: list[str] | None,
     email_folders: list[str] | None,
+    communication_file_receive_enabled: bool | None = None,
+    communication_file_send_enabled: bool | None = None,
+    communication_file_max_bytes: int | None = None,
+    communication_file_require_approval_for_send: bool | None = None,
     metadata: dict[str, Any],
 ) -> SessionManifest:
     expires_delta = (
@@ -352,6 +387,9 @@ def build_container_session_manifest(
         if config.email_send_enabled and ToolName.EMAIL_SEND_APPROVED not in resolved_tools:
             resolved_tools.append(ToolName.EMAIL_SEND_APPROVED)
 
+    resolved_teams_channel_allowlist = normalize_teams_channel_allowlist(
+        teams_channel_allowlist
+    )
     resolved_email_mailboxes = email_mailboxes or (
         config.email_mailbox_allowlist if email_requested else []
     )
@@ -375,12 +413,36 @@ def build_container_session_manifest(
         allowed_tools=resolved_tools,
         allowed_script_names=normalize_allowed_script_names(allowed_script_names),
         discord_channel_allowlist=discord_channels or [],
+        teams_channel_allowlist=resolved_teams_channel_allowlist,
         email_folder_allowlist=resolved_email_folders,
         email_mailbox_allowlist=resolved_email_mailboxes,
         email_folder_allowlist_by_mailbox=config.email_folder_allowlist_by_mailbox,
         email_draft_recipient_allowlist=config.email_draft_recipient_allowlist,
         email_draft_domain_allowlist=config.email_draft_domain_allowlist,
         email_send_enabled=config.email_send_enabled,
+        communication_file_receive_enabled=(
+            config.communication_file_receive_enabled
+            if communication_file_receive_enabled is None
+            else communication_file_receive_enabled
+        ),
+        communication_file_send_enabled=(
+            config.communication_file_send_enabled
+            if communication_file_send_enabled is None
+            else communication_file_send_enabled
+        ),
+        communication_file_max_bytes=(
+            config.communication_file_max_bytes
+            if communication_file_max_bytes is None
+            else communication_file_max_bytes
+        ),
+        communication_file_allowed_mime_types=list(config.communication_file_allowed_mime_types),
+        communication_file_allowed_extensions=list(config.communication_file_allowed_extensions),
+        communication_file_blocked_extensions=list(config.communication_file_blocked_extensions),
+        communication_file_require_approval_for_send=(
+            config.communication_file_require_approval_for_send
+            if communication_file_require_approval_for_send is None
+            else communication_file_require_approval_for_send
+        ),
         expires_at=datetime.now(UTC) + expires_delta,
         metadata=metadata,
     )
