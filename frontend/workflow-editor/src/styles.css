@@ -2414,6 +2414,24 @@ select {
   border-bottom: 1px solid rgba(93, 75, 48, 0.12);
 }
 
+.agent-execution-status-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.agent-execution-stop-button {
+  min-height: 2rem;
+  min-width: 2rem;
+  padding: 0.35rem;
+}
+
+.agent-execution-stop-button svg {
+  width: 1rem;
+  height: 1rem;
+}
+
 .agent-execution-row strong,
 .agent-execution-row span {
   display: block;

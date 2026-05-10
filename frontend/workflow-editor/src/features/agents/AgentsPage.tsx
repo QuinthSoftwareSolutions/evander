@@ -659,6 +659,35 @@ export function AgentsPage() {
     }
   }
 
+  async function runContainerExecutionAction(execution: AgentExecutionRecord, action: "stop") {
+    if (!selectedAgent) return;
+    const actionKey = `${action}:${execution.execution_id}`;
+    setBusyAction(actionKey);
+    try {
+      const query = new URLSearchParams({ backend: "container_worker_vm" });
+      const payload = await fetchJson<AgentActionResponse>(
+        `/api/admin/agents/${encodeURIComponent(execution.execution_id)}/actions/${encodeURIComponent(action)}?${query.toString()}`,
+        {
+          method: "POST",
+          body: JSON.stringify({}),
+        },
+      );
+      const message = `${execution.execution_id}: ${payload.message}`;
+      setActionLog((current) => [{ at: new Date().toISOString(), message, tone: "info" as const }, ...current].slice(0, 30));
+      setStatus(payload.message);
+      setError(null);
+      await refreshAgents();
+      setSelectedKey(agentKey(selectedAgent));
+    } catch (reason: unknown) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setError(message);
+      setStatus(null);
+      setActionLog((current) => [{ at: new Date().toISOString(), message: `${execution.execution_id}: ${message}`, tone: "error" as const }, ...current].slice(0, 30));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   function ttlIsInvalid(value: string): boolean {
     const trimmed = value.trim();
     return Boolean(trimmed) && optionalNumber(trimmed) == null;
@@ -802,7 +831,7 @@ export function AgentsPage() {
   const showDisable = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.enable_disable && agentState !== "disabled";
   const showKill = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.kill && agentState === "running" && agentPid != null;
   const showResume = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.resume && agentState !== "disabled";
-  const showContainerStop = selectedAgent?.backend === "container_worker_vm" && selectedAgent.capabilities.stop && isActiveStatus(selectedAgent.status);
+  const showContainerStop = selectedAgent?.backend === "container_worker_vm" && selectedAgent.capabilities.stop;
   const showDestroy = Boolean(selectedAgent?.capabilities.destroy);
   const canEditPolicy = Boolean(selectedAgent && sessionPolicyForAgent(selectedAgent));
   const logTitle = selectedAgent?.backend === "container_worker_vm"
@@ -1519,21 +1548,43 @@ export function AgentsPage() {
                 </summary>
                 {selectedExecutions.length > 0 ? (
                   <div className="agent-execution-list">
-                    {selectedExecutions.map((execution) => (
-                      <div className="agent-execution-row" key={execution.execution_id}>
-                        <div>
-                          <strong>{execution.execution_id}</strong>
-                          <span>{execution.worker_job_id}</span>
+                    {selectedExecutions.map((execution) => {
+                      const executionCanStop = isActiveStatus(execution.status);
+                      return (
+                        <div className="agent-execution-row" key={execution.execution_id}>
+                          <div>
+                            <strong>{execution.execution_id}</strong>
+                            <span>{execution.worker_job_id}</span>
+                          </div>
+                          <div className="agent-execution-status-actions">
+                            <span className={`status-pill state-${statusClass(execution.status)}`}>
+                              {execution.status}
+                            </span>
+                            {executionCanStop ? (
+                              <Tooltip content="Stop this running container execution.">
+                                <button
+                                  type="button"
+                                  className="agent-execution-stop-button"
+                                  onClick={() => {
+                                    if (window.confirm(`Stop container execution ${execution.execution_id}?`)) {
+                                      void runContainerExecutionAction(execution, "stop");
+                                    }
+                                  }}
+                                  disabled={!canMutate}
+                                  aria-label={`Stop container execution ${execution.execution_id}`}
+                                >
+                                  {busyAction === `stop:${execution.execution_id}` ? "..." : <StopIcon />}
+                                </button>
+                              </Tooltip>
+                            ) : null}
+                          </div>
+                          <div className="agent-execution-meta">
+                            <span>{formatTimestamp(execution.started_at ?? execution.created_at)}</span>
+                            <span>{execution.image ?? "Image unknown"}</span>
+                          </div>
                         </div>
-                        <span className={`status-pill state-${statusClass(execution.status)}`}>
-                          {execution.status}
-                        </span>
-                        <div className="agent-execution-meta">
-                          <span>{formatTimestamp(execution.started_at ?? execution.created_at)}</span>
-                          <span>{execution.image ?? "Image unknown"}</span>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="empty-state compact-empty-state">No executions have run for this session.</div>
