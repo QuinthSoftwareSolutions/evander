@@ -50,6 +50,9 @@ class EffectProviderConfig(BaseModel):
     container_worker_guest_nuget_relay_base_url: str | None = None
     container_worker_guest_pypi_index_url: str | None = None
     container_worker_guest_npm_registry_url: str | None = None
+    container_worker_mssql_enabled: bool = False
+    container_worker_mssql_host: str | None = None
+    container_worker_mssql_port: int = 1433
 
 
 class QueryProviderConfig(BaseModel):

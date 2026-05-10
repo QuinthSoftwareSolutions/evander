@@ -130,6 +130,9 @@ class GatewayConfig(BaseModel):
     container_worker_guest_nuget_relay_base_url: str | None = None
     container_worker_guest_pypi_index_url: str | None = None
     container_worker_guest_npm_registry_url: str | None = None
+    container_worker_mssql_enabled: bool = False
+    container_worker_mssql_host: str | None = None
+    container_worker_mssql_port: int = Field(default=1433, gt=0, le=65535)
     discord_backend: Literal["stub", "bot_api"] = "stub"
     discord_bot_token_env: str = Field(default="DISCORD_BOT_TOKEN", min_length=1)
     discord_api_base_url: str = "https://discord.com/api/v10"
@@ -294,6 +297,9 @@ class GatewayConfig(BaseModel):
             "token",
             "response_token",
             "parameters",
+            "password",
+            "connection_string",
+            "connectionString",
         }
     )
 
@@ -353,6 +359,14 @@ class GatewayConfig(BaseModel):
     @field_validator("retell_from_number", "retell_default_agent_id", mode="before")
     @classmethod
     def normalize_retell_optional_strings(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("container_worker_mssql_host", mode="before")
+    @classmethod
+    def normalize_container_worker_mssql_host(cls, value: object) -> object:
         if value is None:
             return None
         text = str(value).strip()

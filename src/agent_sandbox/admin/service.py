@@ -469,6 +469,7 @@ class WorkflowEditorNodeCatalogEntry(BaseModel):
     kind: str
     type: str
     label: str
+    description: str | None = None
     fields: list[WorkflowEditorFieldDefinition] = Field(default_factory=list)
     input_ports: list[WorkflowEditorNodePortDefinition] = Field(default_factory=list)
     output_ports: list[WorkflowEditorNodePortDefinition] = Field(default_factory=list)
@@ -759,6 +760,71 @@ def _field(
         options=options or [],
         item_fields=item_fields or [],
     )
+
+
+_WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
+    "trigger:cron": "Start a workflow on a recurring cron schedule.",
+    "trigger:event": "Start when an internal workflow event is emitted.",
+    "trigger:ticket:created": "Start when a tracked ticket is created.",
+    "trigger:ticket:changed": "Start when a tracked ticket changes state or metadata.",
+    "trigger:issue:comment-created": "Start when a tracked issue receives a new comment.",
+    "trigger:issue:new-comment": "Start when a tracked issue receives a new comment.",
+    "trigger:script-run-request": "Start from an approved run_script request submitted by a session.",
+    "trigger:discord:new-message": (
+        "Start from new Discord messages that match the configured filters."
+    ),
+    "trigger:teams:new-message": (
+        "Start from new Microsoft Teams messages that match the configured targets."
+    ),
+    "trigger:email:new-message": (
+        "Start from newly ingested email messages for the configured mailbox scope."
+    ),
+    "trigger:pull-request:new-feedback": (
+        "Start when new pull-request feedback arrives from the configured provider."
+    ),
+    "trigger:review:new-request": "Start when a review request is queued for orchestration.",
+    "trigger:git:push": "Start from Git push events captured by the host-side bare-repo hook.",
+    "trigger:agent:run:completed": "Start when an agent run completion event is recorded.",
+    "gate:filter": "Allow only matching events to continue downstream.",
+    "gate:debounce": "Wait for a quiet period, then forward the latest activation.",
+    "gate:map": "Project upstream outputs into a new payload shape.",
+    "gate:dedupe": "Suppress duplicate activations for the same key until a TTL expires.",
+    "gate:merge": "Merge compatible inbound event streams into one downstream path.",
+    "gate:await-agent": "Pause the workflow until a selected agent session completes.",
+    "gate:for": "Iterate over an array and run the body branch for each item.",
+    "effect:vm:create": "Create a dedicated libvirt VM and session record.",
+    "effect:vm:clone-repo": "Clone a repository into a VM-backed agent workspace.",
+    "effect:vm:bootstrap-python": "Bootstrap a Python checkout and environment in a VM.",
+    "effect:vm:bootstrap-frontend": "Bootstrap frontend dependencies in a VM.",
+    "effect:vm:start": "Start an existing VM-backed agent target.",
+    "effect:vm:stop": "Stop an existing VM-backed agent target.",
+    "effect:agent:create": "Create an agent session using the selected execution backend.",
+    "effect:agent:destroy": "Destroy an agent session and its backend resources.",
+    "effect:agent:clone-repo": "Clone a repository into an agent session workspace.",
+    "effect:agent:bootstrap-frontend": "Bootstrap frontend dependencies for an agent session.",
+    "effect:agent:copy-files": "Copy rendered file content into an agent session workspace.",
+    "effect:agent:prompt": "Dispatch a prompt to an agent session and wait for completion.",
+    "effect:agent:enqueue-prompt": "Queue a prompt for asynchronous agent-session execution.",
+    "effect:agent:exec": "Run a shell command inside an agent session workspace.",
+    "effect:bash:script": "Run a host-side Bash script from the effect orchestrator.",
+    "effect:vm:exec": "Run a shell command inside a VM-backed agent target.",
+    "effect:vm:copy-files": "Copy rendered file content into a VM-backed agent target.",
+    "effect:vm:delete-files": "Delete files from a VM-backed agent target.",
+    "effect:issue:update-state": "Update the workflow state for a tracked issue.",
+    "effect:issue:update-metadata": "Patch metadata on a tracked issue.",
+    "effect:event:emit": "Emit an internal workflow event for other graphs.",
+    "effect:notification:send": "Send a notification through a configured communication target.",
+    "effect:session:update-metadata": "Patch metadata on a host-side session record.",
+    "effect:git:promote-agent-branch": (
+        "Promote an agent branch into a trusted host checkout."
+    ),
+    "effect:pr:create": "Create a pull request from a host-side checkout.",
+    "query:vm:run-state": "Read the current run state for a VM-backed agent target.",
+    "query:git:pr-note": "Read pull-request note context from a host checkout.",
+    "query:session-context": "Read session context and metadata.",
+    "query:issue:get": "Read a local issue record by id.",
+    "query:ado:work-items": "Query Azure DevOps work items.",
+}
 
 
 _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
@@ -6986,7 +7052,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         skill_options = [_field_option(skill.name) for skill in self.skill_library.list_skills()]
         nodes: list[WorkflowEditorNodeCatalogEntry] = []
         for entry in _WORKFLOW_EDITOR_NODE_CATALOG:
-            node = entry.model_copy(deep=True)
+            node = entry.model_copy(
+                deep=True,
+                update={
+                    "description": (
+                        entry.description or _WORKFLOW_EDITOR_NODE_DESCRIPTIONS.get(entry.type)
+                    )
+                },
+            )
             if node.type in {"effect:vm:create", "effect:agent:create"}:
                 node.fields = [
                     field.model_copy(update={"options": skill_options})

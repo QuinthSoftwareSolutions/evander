@@ -139,5 +139,6 @@
     - role: worker_dotnet_toolchain
     - role: worker_node_toolchain
     - role: worker_playwright_toolchain
+    - role: worker_mssql
     - role: container_worker_service
     - role: container_worker_verification

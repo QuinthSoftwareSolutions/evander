@@ -9,6 +9,10 @@ from agent_sandbox.worker.models import (
     WorkerFileWriteRequest,
     WorkerFileWriteRecord,
     WorkerJobRequest,
+    WorkerMssqlDatabaseDeleteRecord,
+    WorkerMssqlDatabaseListRecord,
+    WorkerMssqlDatabaseRecord,
+    WorkerMssqlDatabaseRequest,
     WorkerRepoCloneRecord,
     WorkerRepoCloneRequest,
     WorkerResourceLimits,
@@ -229,6 +233,33 @@ class ContainerWorkerVmExecutionBackend:
             WorkerFileWriteRequest.model_validate({"files": files}),
         )
 
+    def provision_mssql_database(
+        self,
+        *,
+        session_id: str,
+        logical_name: str,
+    ) -> WorkerMssqlDatabaseRecord:
+        record = self.client.provision_mssql_database(
+            session_id,
+            WorkerMssqlDatabaseRequest(logical_name=logical_name),
+        )
+        return self._apply_mssql_endpoint_config(record)
+
+    def list_mssql_databases(
+        self,
+        *,
+        session_id: str,
+    ) -> WorkerMssqlDatabaseListRecord:
+        return self.client.list_mssql_databases(session_id)
+
+    def drop_mssql_database(
+        self,
+        *,
+        session_id: str,
+        logical_name: str,
+    ) -> WorkerMssqlDatabaseDeleteRecord:
+        return self.client.drop_mssql_database(session_id, logical_name)
+
     def delete_session(self, session_id: str) -> dict[str, Any]:
         return self.client.delete_session(session_id)
 
@@ -251,6 +282,30 @@ class ContainerWorkerVmExecutionBackend:
                 prepared.resource_limits
             )
         return WorkerJobRequest.model_validate(payload)
+
+    def _apply_mssql_endpoint_config(
+        self,
+        record: WorkerMssqlDatabaseRecord,
+    ) -> WorkerMssqlDatabaseRecord:
+        server = str(self.config.container_worker_mssql_host or record.server).strip()
+        server = server or record.server
+        port = int(self.config.container_worker_mssql_port)
+        if server == record.server and port == record.port:
+            return record
+        connection_string = (
+            f"Server=tcp:{server},{port};"
+            f"Database={record.database_name};"
+            f"User ID={record.username};"
+            f"Password={record.password};"
+            "Encrypt=True;TrustServerCertificate=True"
+        )
+        return record.model_copy(
+            update={
+                "server": server,
+                "port": port,
+                "connection_string": connection_string,
+            }
+        )
 
     def _command_from_spec(self, command: Any) -> list[str]:
         if command is None:

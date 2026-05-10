@@ -138,6 +138,34 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert payload["graphs"] == []
     assert runs_payload["runs"] == []
     assert any(node["type"] == "effect:vm:exec" for node in catalog_payload["nodes"])
+    generic_kind_tooltips = {
+        "Triggers start workflow execution from incoming events.",
+        "Gates transform, filter, fan out, or combine workflow data between nodes.",
+        "Effects perform side effects such as VM actions, session updates, Git operations, or agent prompts.",
+        "Queries read workflow or environment state without causing a side effect.",
+    }
+    descriptions_by_type = {
+        node["type"]: node.get("description") for node in catalog_payload["nodes"]
+    }
+    assert all(
+        descriptions_by_type[node["type"]] for node in catalog_payload["nodes"]
+    ), descriptions_by_type
+    assert not any(
+        descriptions_by_type[node["type"]] in generic_kind_tooltips
+        for node in catalog_payload["nodes"]
+    )
+    assert (
+        descriptions_by_type["effect:bash:script"]
+        == "Run a host-side Bash script from the effect orchestrator."
+    )
+    assert (
+        descriptions_by_type["effect:agent:exec"]
+        == "Run a shell command inside an agent session workspace."
+    )
+    assert (
+        descriptions_by_type["trigger:script-run-request"]
+        == "Start from an approved run_script request submitted by a session."
+    )
     vm_exec = next(node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:exec")
     assert any(field["key"] == "command" and field["bindable"] for field in vm_exec["fields"])
     agent_exec = next(
@@ -2325,9 +2353,9 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     container_worker = next(
         section for section in providers["sections"] if section["title"] == "Container worker"
     )
-    assert "container_worker_base_url" in {
-        field["field_name"] for field in container_worker["fields"]
-    }
+    container_worker_fields = {field["field_name"] for field in container_worker["fields"]}
+    assert "container_worker_base_url" in container_worker_fields
+    assert "container_worker_mssql_enabled" in container_worker_fields
     retell = next(section for section in providers["sections"] if section["title"] == "Retell")
     assert {field["field_name"] for field in retell["fields"]} == {
         "retell_api_base_url",

@@ -219,6 +219,22 @@ def test_container_worker_package_cache_url_derivation_does_not_change_relays() 
     assert container_worker_guest_nuget_relay_base_url(config) == "http://10.20.30.40:11666"
 
 
+def test_container_worker_mssql_config_fields_are_validated_and_redacted_by_default() -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "container_worker_mssql_enabled": True,
+            "container_worker_mssql_host": " 172.17.0.1 ",
+            "container_worker_mssql_port": 1433,
+        }
+    )
+
+    assert config.container_worker_mssql_enabled is True
+    assert config.container_worker_mssql_host == "172.17.0.1"
+    assert config.container_worker_mssql_port == 1433
+    assert "password" in config.redacted_keys
+    assert "connection_string" in config.redacted_keys
+
+
 @pytest.mark.parametrize(
     "value",
     [

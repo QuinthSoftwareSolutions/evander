@@ -249,6 +249,15 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "container_worker_guest_npm_registry_url": (
         "Container-visible npm registry URL used inside runner sessions."
     ),
+    "container_worker_mssql_enabled": (
+        "Enables session-scoped SQL Server database provisioning tools for container-backed agents."
+    ),
+    "container_worker_mssql_host": (
+        "Container-visible SQL Server host returned in provisioned database connection details."
+    ),
+    "container_worker_mssql_port": (
+        "Container-visible SQL Server TCP port returned in provisioned database connection details."
+    ),
     "nuget_azure_feed_base_url": (
         "Base URL for the Azure Artifacts NuGet feed proxied by the host relay."
     ),

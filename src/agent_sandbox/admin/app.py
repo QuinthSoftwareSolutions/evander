@@ -205,6 +205,9 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[str, tuple[_ConfigTabSectionSpec, ...]] = {
                 ("providers", "container_worker_guest_nuget_relay_base_url"),
                 ("providers", "container_worker_guest_pypi_index_url"),
                 ("providers", "container_worker_guest_npm_registry_url"),
+                ("providers", "container_worker_mssql_enabled"),
+                ("providers", "container_worker_mssql_host"),
+                ("providers", "container_worker_mssql_port"),
             ),
             ("container_worker_",),
         ),
@@ -465,7 +468,10 @@ except ImportError:  # pragma: no cover - exercised only when GUI extra is missi
     QThreadPool = object
     QTimer = object
     Qt = object
-    Signal = lambda *args, **kwargs: None
+
+    def Signal(*args: object, **kwargs: object) -> None:
+        return None
+
     QButtonGroup = object
     QCheckBox = QDialog = QDialogButtonBox = QFileDialog = QFormLayout = QHBoxLayout = object
     QHeaderView = QInputDialog = QLabel = QLineEdit = QMainWindow = QMessageBox = object

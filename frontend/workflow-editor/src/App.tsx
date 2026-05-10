@@ -52,6 +52,7 @@ type GraphNodeData = {
   displayName: string;
   kind: WorkflowNodeKind;
   type: string;
+  description: string;
   inputPorts: ReadonlyArray<WorkflowEditorNodePortDefinition>;
   outputPorts: ReadonlyArray<WorkflowEditorNodePortDefinition>;
   activeRunCount: number;
@@ -230,7 +231,8 @@ function clampWorkflowSidebarWidth(width: number, containerWidth: number): numbe
 function WorkflowNodeCard({ data, selected }: NodeProps) {
   const nodeData = data as GraphNodeData;
   const kindDescription = NODE_KIND_DESCRIPTIONS[nodeData.kind];
-  const typeDescription = NODE_TYPE_DESCRIPTIONS[nodeData.type] ?? `${nodeData.type} node.`;
+  const typeDescription =
+    nodeData.description || NODE_TYPE_DESCRIPTIONS[nodeData.type] || `${nodeData.type} node.`;
   return (
     <div
       className={`node-card node-${nodeData.kind}${selected ? " selected" : ""}${
@@ -562,6 +564,9 @@ function buildNodes(
         displayName: node.display_name,
         kind,
         type: node.type,
+        description: catalogEntry
+          ? nodeTypeDescription(catalogEntry)
+          : NODE_TYPE_DESCRIPTIONS[node.type] || `${node.type} node.`,
         inputPorts: catalogEntry?.input_ports ?? [],
         outputPorts: catalogEntry?.output_ports ?? [],
         activeRunCount: Object.values(activity ?? {}).reduce((total, value) => total + value, 0),
@@ -1137,8 +1142,9 @@ function getCatalogEntry(catalog: WorkflowEditorCatalog, type: string) {
   return catalog.nodes.find((entry) => entry.type === type);
 }
 
-function nodeTypeDescription(type: string, kind: WorkflowNodeKind): string {
-  return NODE_TYPE_DESCRIPTIONS[type] ?? NODE_KIND_DESCRIPTIONS[kind];
+function nodeTypeDescription(entry: WorkflowEditorNodeCatalogEntry): string {
+  const description = entry.description?.trim();
+  return description || NODE_TYPE_DESCRIPTIONS[entry.type] || NODE_KIND_DESCRIPTIONS[entry.kind];
 }
 
 function directUpstreamNodeIds(config: WorkflowConfig, targetId: string): string[] {
@@ -3579,7 +3585,7 @@ export default function App() {
                   <p className="create-group-description">{group.description}</p>
                   <div className="create-group-actions">
                     {group.entries.map((entry) => (
-                      <Tooltip key={entry.type} content={nodeTypeDescription(entry.type, entry.kind)} inline={false}>
+                      <Tooltip key={entry.type} content={nodeTypeDescription(entry)} inline={false}>
                         <button
                           type="button"
                           draggable={!editLocked}

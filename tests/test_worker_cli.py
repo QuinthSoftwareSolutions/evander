@@ -102,6 +102,40 @@ def test_worker_cli_accepts_git_mirror_restriction_flags(monkeypatch, tmp_path: 
     assert captured["create_app"]["git_ssh_source_dir"] == ssh_dir
 
 
+def test_worker_cli_accepts_mssql_flags(monkeypatch, tmp_path: Path) -> None:
+    captured = _run_cli(
+        monkeypatch,
+        [
+            "agent-sandbox-worker-daemon",
+            "--runtime-dir",
+            str(tmp_path / "runtime"),
+            "--worker-root",
+            str(tmp_path / "worker-root"),
+            "--mssql-enabled",
+            "--mssql-admin-user",
+            "sa",
+            "--mssql-admin-password-env",
+            "WORKER_SQL_PASSWORD",
+            "--mssql-admin-host",
+            "127.0.0.1",
+            "--mssql-port",
+            "14330",
+            "--mssql-container-host",
+            "172.18.0.1",
+            "--mssql-sqlcmd-path",
+            "/opt/mssql-tools18/bin/sqlcmd",
+        ],
+    )
+
+    assert captured["create_app"]["mssql_enabled"] is True
+    assert captured["create_app"]["mssql_admin_user"] == "sa"
+    assert captured["create_app"]["mssql_admin_password_env"] == "WORKER_SQL_PASSWORD"
+    assert captured["create_app"]["mssql_admin_host"] == "127.0.0.1"
+    assert captured["create_app"]["mssql_port"] == 14330
+    assert captured["create_app"]["mssql_container_host"] == "172.18.0.1"
+    assert captured["create_app"]["mssql_sqlcmd_path"] == "/opt/mssql-tools18/bin/sqlcmd"
+
+
 def test_worker_cli_reads_sandbox_profile_from_environment(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("AGENT_SANDBOX_WORKER_SANDBOX_PROFILE", "strict")
     captured = _run_cli(

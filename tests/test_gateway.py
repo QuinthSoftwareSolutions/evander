@@ -29,6 +29,12 @@ from agent_sandbox.models import (
 )
 from agent_sandbox.policy import PolicyError
 from agent_sandbox.runtime import build_runtime
+from agent_sandbox.worker.models import (
+    WorkerMssqlDatabaseDeleteRecord,
+    WorkerMssqlDatabaseListRecord,
+    WorkerMssqlDatabaseRecord,
+    WorkerMssqlDatabaseState,
+)
 
 
 def _call_tool(server, name: str, arguments: dict[str, object]):
@@ -169,6 +175,11 @@ def test_create_server_registers_schedule_resume_tool(tmp_path) -> None:
     assert any(tool.name == "assistant_read_config" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "make_phone_call" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "get_phone_call_result" for tool in server._tool_manager.list_tools())
+    assert any(
+        tool.name == "mssql_provision_database" for tool in server._tool_manager.list_tools()
+    )
+    assert any(tool.name == "mssql_list_databases" for tool in server._tool_manager.list_tools())
+    assert any(tool.name == "mssql_drop_database" for tool in server._tool_manager.list_tools())
     make_phone_call_tool = next(
         tool for tool in server._tool_manager.list_tools() if tool.name == "make_phone_call"
     )
@@ -201,6 +212,150 @@ def test_request_pr_review_schema_advertises_allowed_provider_values(tmp_path: P
 
     assert provider_schema["type"] == "string"
     assert provider_schema["enum"] == ["github", "azure_devops"]
+
+
+def test_mssql_tools_call_container_worker_backend_and_redact_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+            execution_backend="container_worker_vm",
+            container_worker_base_url="http://worker.test",
+            container_worker_mssql_enabled=True,
+            container_worker_mssql_host="10.55.0.12",
+            container_worker_mssql_port=15433,
+        )
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[
+                ToolName.MSSQL_PROVISION_DATABASE,
+                ToolName.MSSQL_LIST_DATABASES,
+                ToolName.MSSQL_DROP_DATABASE,
+            ],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            directory_path="root",
+        )
+    )
+    calls: list[tuple[str, str]] = []
+
+    class FakeContainerWorkerBackend:
+        def __init__(self, *, config: GatewayConfig) -> None:
+            assert config.container_worker_mssql_enabled is True
+            assert config.container_worker_mssql_host == "10.55.0.12"
+            assert config.container_worker_mssql_port == 15433
+
+        def provision_mssql_database(
+            self,
+            *,
+            session_id: str,
+            logical_name: str,
+        ) -> WorkerMssqlDatabaseRecord:
+            calls.append(("provision", logical_name))
+            return WorkerMssqlDatabaseRecord(
+                session_id=session_id,
+                logical_name=logical_name,
+                database_name="asb_hash_app_hash",
+                server="172.17.0.1",
+                port=1433,
+                username="asb_login_hash",
+                password="session-secret",
+                connection_string="Server=tcp:172.17.0.1,1433;Password=session-secret",
+            )
+
+        def list_mssql_databases(self, *, session_id: str) -> WorkerMssqlDatabaseListRecord:
+            calls.append(("list", session_id))
+            return WorkerMssqlDatabaseListRecord(
+                session_id=session_id,
+                databases=[
+                    WorkerMssqlDatabaseState(
+                        logical_name="app",
+                        database_name="asb_hash_app_hash",
+                    )
+                ],
+            )
+
+        def drop_mssql_database(
+            self,
+            *,
+            session_id: str,
+            logical_name: str,
+        ) -> WorkerMssqlDatabaseDeleteRecord:
+            calls.append(("drop", logical_name))
+            return WorkerMssqlDatabaseDeleteRecord(
+                session_id=session_id,
+                logical_name=logical_name,
+                database_name="asb_hash_app_hash",
+                deleted=True,
+            )
+
+    monkeypatch.setattr(
+        "agent_sandbox.gateway.ContainerWorkerVmExecutionBackend",
+        FakeContainerWorkerBackend,
+    )
+    server = create_server(context)
+
+    provisioned = _call_tool(
+        server,
+        "mssql_provision_database",
+        {"session_id": "session-1", "logical_name": "app"},
+    )
+    listed = _call_tool(server, "mssql_list_databases", {"session_id": "session-1"})
+    dropped = _call_tool(
+        server,
+        "mssql_drop_database",
+        {"session_id": "session-1", "logical_name": "app"},
+    )
+
+    assert provisioned["password"] == "session-secret"
+    assert listed["databases"][0]["logical_name"] == "app"
+    assert dropped["deleted"] is True
+    assert calls == [("provision", "app"), ("list", "session-1"), ("drop", "app")]
+    audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert "session-secret" not in audit_text
+    assert "<redacted>" in audit_text
+
+
+def test_mssql_provision_database_requires_allowed_tool(tmp_path: Path) -> None:
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+            execution_backend="container_worker_vm",
+            container_worker_base_url="http://worker.test",
+            container_worker_mssql_enabled=True,
+        )
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            directory_path="root",
+        )
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError):
+        _call_tool(
+            server,
+            "mssql_provision_database",
+            {"session_id": "session-1", "logical_name": "app"},
+        )
 
 
 def test_assistant_mutation_audit_result_redacts_before_after_summary() -> None:

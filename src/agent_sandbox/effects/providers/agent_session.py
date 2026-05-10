@@ -550,11 +550,6 @@ def build_container_session_files(
         files.extend(
             [
                 {
-                    "destination_path": "/home/agent/.dotnet-cli/.keep",
-                    "content": "",
-                    "mode": "0644",
-                },
-                {
                     "destination_path": "/home/agent/.dotnet/tools/.keep",
                     "content": "",
                     "mode": "0644",
@@ -887,7 +882,7 @@ def _container_profile_content(*, dotnet: bool, playwright: bool) -> str:
             [
                 'export DOTNET_ROOT="/opt/agent-sandbox/toolchains/dotnet"',
                 'export AGENT_SANDBOX_DOTNET_TOOLS_ROOT="/opt/agent-sandbox/toolchains/dotnet-tools"',
-                'export DOTNET_CLI_HOME="$HOME/.dotnet-cli"',
+                'export DOTNET_CLI_HOME="$HOME"',
                 'export DOTNET_CLI_TELEMETRY_OPTOUT="1"',
                 'export DOTNET_SKIP_FIRST_TIME_EXPERIENCE="1"',
                 'export DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE="1"',

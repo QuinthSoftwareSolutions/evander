@@ -115,6 +115,7 @@ export type WorkflowEditorNodeCatalogEntry = {
   kind: WorkflowNodeKind;
   type: string;
   label: string;
+  description?: string | null;
   fields: WorkflowEditorFieldDefinition[];
   input_ports: WorkflowEditorNodePortDefinition[];
   output_ports: WorkflowEditorNodePortDefinition[];
