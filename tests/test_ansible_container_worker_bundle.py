@@ -26,6 +26,7 @@ def test_worker_playbook_exists_with_expected_roles() -> None:
     assert "- role: worker_dotnet_toolchain" in worker
     assert "- role: worker_node_toolchain" in worker
     assert "- role: worker_playwright_toolchain" in worker
+    assert "- role: worker_mssql" in worker
     assert "- role: container_worker_service" in worker
     assert "- role: container_worker_verification" in worker
 
@@ -36,6 +37,7 @@ def test_worker_playbook_exists_with_expected_roles() -> None:
         "worker_dotnet_toolchain",
         "worker_node_toolchain",
         "worker_playwright_toolchain",
+        "worker_mssql",
         "container_worker_service",
         "container_worker_verification",
     ]:
@@ -50,6 +52,7 @@ def test_worker_role_task_files_are_not_ignored_by_git() -> None:
         "ansible/roles/worker_dotnet_toolchain/tasks/main.yml",
         "ansible/roles/worker_node_toolchain/tasks/main.yml",
         "ansible/roles/worker_playwright_toolchain/tasks/main.yml",
+        "ansible/roles/worker_mssql/tasks/main.yml",
         "ansible/roles/container_worker_service/tasks/main.yml",
         "ansible/roles/container_worker_verification/tasks/main.yml",
     ]
@@ -80,6 +83,7 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "ansible/roles/worker_dotnet_toolchain" in text
     assert "ansible/roles/worker_node_toolchain" in text
     assert "ansible/roles/worker_playwright_toolchain" in text
+    assert "ansible/roles/worker_mssql" in text
     assert "ansible/roles/container_worker_service" in text
     assert "  - docker" in text
     assert "  - docker.io" in text
@@ -144,6 +148,9 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "/opt/agent-sandbox/ms-playwright" in text
     assert "/opt/agent-sandbox/nuget-cache-ro" in text
     assert "agent_sandbox_worker_preload_images" in text
+    assert "agent_sandbox_worker_mssql_enabled: false" in text
+    assert "agent_sandbox_worker_mssql_container_host" in text
+    assert "AGENT_SANDBOX_WORKER_MSSQL_ADMIN_PASSWORD" in text
 
 
 def test_worker_azure_inventory_uses_truman_control_plane_identity() -> None:
@@ -186,10 +193,29 @@ def test_worker_service_role_renders_env_and_daemon_unit() -> None:
     assert "--docker-network {{ agent_sandbox_worker_docker_network }}" in unit
     assert "--allowed-git-source-prefix {{ prefix }}" in unit
     assert "--git-ssh-source-dir {{ agent_sandbox_worker_git_ssh_source_dir }}" in unit
+    assert "--mssql-enabled" in unit
+    assert "--mssql-container-host {{ agent_sandbox_worker_mssql_container_host }}" in unit
     assert "--read-only-rootfs" in unit
     assert "--container-user {{ agent_sandbox_effective_worker_container_user }}" in unit
     assert "--readonly-mount {{ mount }}" in unit
     assert "{% endfor %}{{ \"\" }}\nRestart=on-failure" in unit
+
+
+def test_worker_mssql_role_installs_sql_server_and_verifies_sqlcmd() -> None:
+    role = (
+        ROOT / "ansible" / "roles" / "worker_mssql" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    defaults = (
+        ROOT / "ansible" / "group_vars" / "agent_sandbox_worker_hosts.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "agent_sandbox_worker_mssql_accept_eula" in role
+    assert "mssql-conf" in role
+    assert "set-sa-password" in role
+    assert "mssql-tools18" in defaults
+    assert "SQLCMDPASSWORD" in role
+    assert "agent_sandbox_worker_mssql_allowed_source_cidr" in role
+    assert "DROP" in role
 
 
 def test_python_env_role_accepts_private_package_index_environment() -> None:

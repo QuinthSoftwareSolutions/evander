@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import stat
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -52,6 +53,9 @@ def _client(
     *,
     allowed_git_source_prefixes: list[str] | None = None,
     git_ssh_source_dir: Path | None = None,
+    mssql_enabled: bool = False,
+    mssql_admin_password: str | None = None,
+    mssql_sqlcmd_path: str = "sqlcmd",
 ) -> TestClient:
     app = create_app(
         runtime_dir=tmp_path / "runtime",
@@ -60,6 +64,9 @@ def _client(
         allowed_git_source_prefixes=allowed_git_source_prefixes,
         git_ssh_source_dir=git_ssh_source_dir,
         token="test-token",
+        mssql_enabled=mssql_enabled,
+        mssql_admin_password=mssql_admin_password,
+        mssql_sqlcmd_path=mssql_sqlcmd_path,
     )
     return TestClient(app)
 
@@ -245,6 +252,115 @@ def test_session_delete_removes_stopped_worker_jobs(tmp_path: Path) -> None:
     assert deleted.status_code == 200
     assert runtime.removed == ["job-1"]
     assert client.get("/v1/jobs/job-1", headers=_auth()).status_code == 404
+
+
+def test_mssql_database_endpoints_are_session_scoped_and_cleanup_on_delete(
+    tmp_path: Path,
+) -> None:
+    client = _client(
+        tmp_path,
+        mssql_enabled=True,
+        mssql_admin_password="AdminPassw0rd!",
+        mssql_sqlcmd_path="/bin/true",
+    )
+
+    created = client.post(
+        "/v1/sessions/session-1/mssql/databases",
+        headers=_auth(),
+        json={"logical_name": "app"},
+    )
+    assert created.status_code == 201
+    payload = created.json()
+    assert payload["logical_name"] == "app"
+    assert payload["database_name"].startswith("asb_")
+    assert payload["server"] == "172.17.0.1"
+    assert payload["username"].startswith("asb_login_")
+    assert "Password=" in payload["connection_string"]
+    state_path = tmp_path / "runtime" / "mssql-state.json"
+    assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
+
+    second = client.post(
+        "/v1/sessions/session-1/mssql/databases",
+        headers=_auth(),
+        json={"logical_name": "shadow"},
+    )
+    assert second.status_code == 201
+    other_session = client.post(
+        "/v1/sessions/session-2/mssql/databases",
+        headers=_auth(),
+        json={"logical_name": "app"},
+    )
+    assert other_session.status_code == 201
+
+    listed = client.get("/v1/sessions/session-1/mssql/databases", headers=_auth())
+
+    assert listed.status_code == 200
+    assert [item["logical_name"] for item in listed.json()["databases"]] == ["app", "shadow"]
+
+    dropped = client.delete(
+        "/v1/sessions/session-1/mssql/databases/app",
+        headers=_auth(),
+    )
+    assert dropped.status_code == 200
+    assert dropped.json()["deleted"] is True
+
+    deleted = client.delete("/v1/sessions/session-1", headers=_auth())
+
+    assert deleted.status_code == 200
+    assert not (tmp_path / "worker-root" / "sessions" / "session-1").exists()
+    assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
+    remaining = client.get("/v1/sessions/session-2/mssql/databases", headers=_auth())
+    assert [item["logical_name"] for item in remaining.json()["databases"]] == ["app"]
+
+
+def test_mssql_cleanup_failure_blocks_session_file_deletion(tmp_path: Path) -> None:
+    client = _client(
+        tmp_path,
+        mssql_enabled=True,
+        mssql_admin_password="AdminPassw0rd!",
+        mssql_sqlcmd_path="/bin/true",
+    )
+    created = client.post(
+        "/v1/sessions/session-1/mssql/databases",
+        headers=_auth(),
+        json={"logical_name": "app"},
+    )
+    assert created.status_code == 201
+    session_root = tmp_path / "worker-root" / "sessions" / "session-1"
+    session_root.mkdir(parents=True, exist_ok=True)
+    failing_client = _client(
+        tmp_path,
+        mssql_enabled=True,
+        mssql_admin_password="AdminPassw0rd!",
+        mssql_sqlcmd_path="/bin/false",
+    )
+
+    deleted = failing_client.delete("/v1/sessions/session-1", headers=_auth())
+
+    assert deleted.status_code == 502
+    assert session_root.exists()
+
+
+def test_mssql_database_provisioning_requires_enabled_worker_support(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    created = client.post(
+        "/v1/sessions/session-1/mssql/databases",
+        headers=_auth(),
+        json={"logical_name": "app"},
+    )
+    listed = client.get("/v1/sessions/session-1/mssql/databases", headers=_auth())
+    dropped = client.delete(
+        "/v1/sessions/session-1/mssql/databases/app",
+        headers=_auth(),
+    )
+
+    assert created.status_code == 400
+    assert "MSSQL support is disabled" in created.json()["error"]
+    assert listed.status_code == 400
+    assert "MSSQL support is disabled" in listed.json()["error"]
+    assert dropped.status_code == 400
+    assert "MSSQL support is disabled" in dropped.json()["error"]
 
 
 def test_session_file_write_rejects_paths_outside_worker_session_roots(tmp_path: Path) -> None:

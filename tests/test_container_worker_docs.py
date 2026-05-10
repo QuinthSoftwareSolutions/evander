@@ -34,6 +34,9 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     assert "--allowed-git-source-prefix" in docs
     assert "ssh://<git_ssh_alias><git_root>/<mirror>.git" in docs
     assert "GitHub/Azure DevOps egress" in docs
+    assert "mssql_provision_database" in docs
+    assert "session-owned" in docs
+    assert "/v1/sessions/{session_id}/mssql/databases" in docs
 
 
 def test_execution_backend_docs_distinguish_daemon_from_gateway_integration() -> None:

@@ -60,6 +60,41 @@ def main() -> None:
         ),
         help="Directory containing restricted Git SSH config/key copied into session agent homes.",
     )
+    parser.add_argument(
+        "--mssql-enabled",
+        action="store_true",
+        default=os.environ.get("AGENT_SANDBOX_WORKER_MSSQL_ENABLED", "").strip().lower()
+        in {"1", "true", "yes", "on"},
+        help="Enable session-scoped SQL Server provisioning endpoints.",
+    )
+    parser.add_argument(
+        "--mssql-admin-user",
+        default=os.environ.get("AGENT_SANDBOX_WORKER_MSSQL_ADMIN_USER", "sa"),
+    )
+    parser.add_argument(
+        "--mssql-admin-password-env",
+        default=os.environ.get(
+            "AGENT_SANDBOX_WORKER_MSSQL_ADMIN_PASSWORD_ENV",
+            "AGENT_SANDBOX_WORKER_MSSQL_ADMIN_PASSWORD",
+        ),
+    )
+    parser.add_argument(
+        "--mssql-admin-host",
+        default=os.environ.get("AGENT_SANDBOX_WORKER_MSSQL_ADMIN_HOST", "127.0.0.1"),
+    )
+    parser.add_argument(
+        "--mssql-port",
+        type=int,
+        default=int(os.environ.get("AGENT_SANDBOX_WORKER_MSSQL_PORT", "1433")),
+    )
+    parser.add_argument(
+        "--mssql-container-host",
+        default=os.environ.get("AGENT_SANDBOX_WORKER_MSSQL_CONTAINER_HOST", "172.17.0.1"),
+    )
+    parser.add_argument(
+        "--mssql-sqlcmd-path",
+        default=os.environ.get("AGENT_SANDBOX_WORKER_MSSQL_SQLCMD_PATH", "sqlcmd"),
+    )
     args = parser.parse_args()
     sandbox_profile = worker_sandbox_profile(args.sandbox_profile).with_overrides(
         network_mode=args.docker_network,
@@ -77,6 +112,13 @@ def main() -> None:
             read_only_mounts=args.readonly_mount,
             allowed_git_source_prefixes=args.allowed_git_source_prefix,
             git_ssh_source_dir=args.git_ssh_source_dir,
+            mssql_enabled=args.mssql_enabled,
+            mssql_admin_user=args.mssql_admin_user,
+            mssql_admin_password_env=args.mssql_admin_password_env,
+            mssql_admin_host=args.mssql_admin_host,
+            mssql_port=args.mssql_port,
+            mssql_container_host=args.mssql_container_host,
+            mssql_sqlcmd_path=args.mssql_sqlcmd_path,
         ),
         host=args.host,
         port=args.port,

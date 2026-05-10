@@ -10,6 +10,10 @@ from agent_sandbox.worker.models import (
     WorkerFileWriteRecord,
     WorkerJobRecord,
     WorkerJobRequest,
+    WorkerMssqlDatabaseDeleteRecord,
+    WorkerMssqlDatabaseListRecord,
+    WorkerMssqlDatabaseRecord,
+    WorkerMssqlDatabaseRequest,
     WorkerRepoCloneRecord,
     WorkerRepoCloneRequest,
     WorkerSessionPrepareRequest,
@@ -87,6 +91,39 @@ class ContainerWorkerClient:
         )
         return WorkerFileWriteRecord.model_validate(
             self._json_dict(response, operation="write files")
+        )
+
+    def provision_mssql_database(
+        self,
+        session_id: str,
+        request: WorkerMssqlDatabaseRequest,
+    ) -> WorkerMssqlDatabaseRecord:
+        response = self._request(
+            "POST",
+            f"/v1/sessions/{session_id}/mssql/databases",
+            json=request.model_dump(mode="json", exclude_none=True),
+        )
+        return WorkerMssqlDatabaseRecord.model_validate(
+            self._json_dict(response, operation="provision mssql database")
+        )
+
+    def list_mssql_databases(self, session_id: str) -> WorkerMssqlDatabaseListRecord:
+        response = self._request("GET", f"/v1/sessions/{session_id}/mssql/databases")
+        return WorkerMssqlDatabaseListRecord.model_validate(
+            self._json_dict(response, operation="list mssql databases")
+        )
+
+    def drop_mssql_database(
+        self,
+        session_id: str,
+        logical_name: str,
+    ) -> WorkerMssqlDatabaseDeleteRecord:
+        response = self._request(
+            "DELETE",
+            f"/v1/sessions/{session_id}/mssql/databases/{logical_name}",
+        )
+        return WorkerMssqlDatabaseDeleteRecord.model_validate(
+            self._json_dict(response, operation="drop mssql database")
         )
 
     def get(self, job_id: str) -> WorkerJobRecord:

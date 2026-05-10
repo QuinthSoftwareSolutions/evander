@@ -278,6 +278,81 @@ class WorkerFileWriteRecord(BaseModel):
     roots: dict[str, str] = Field(default_factory=dict)
 
 
+class WorkerMssqlDatabaseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    logical_name: str
+
+    @field_validator("logical_name", mode="before")
+    @classmethod
+    def normalize_logical_name(cls, value: object) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("logical_name is required")
+        if text in {".", ".."} or not SAFE_ID_PATTERN.fullmatch(text):
+            raise ValueError(
+                "logical_name must contain only letters, numbers, dots, underscores, or dashes"
+            )
+        if len(text) > 64:
+            raise ValueError("logical_name must be 64 characters or fewer")
+        return text
+
+
+class WorkerMssqlDatabaseState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    logical_name: str
+    database_name: str
+    created_at: datetime = Field(default_factory=now_utc)
+
+
+class WorkerMssqlSessionState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    login_name: str
+    password: str
+    created_at: datetime = Field(default_factory=now_utc)
+    databases: dict[str, WorkerMssqlDatabaseState] = Field(default_factory=dict)
+
+
+class WorkerMssqlDatabaseRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    logical_name: str
+    database_name: str
+    server: str
+    port: int
+    username: str
+    password: str
+    connection_string: str
+
+
+class WorkerMssqlDatabaseListRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    databases: list[WorkerMssqlDatabaseState]
+
+
+class WorkerMssqlDatabaseDeleteRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    logical_name: str
+    database_name: str | None = None
+    deleted: bool
+
+
+class WorkerMssqlSessionDeleteRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    deleted_databases: list[str] = Field(default_factory=list)
+    deleted_login: bool = False
+
+
 class WorkerJobRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

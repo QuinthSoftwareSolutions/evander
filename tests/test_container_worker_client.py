@@ -10,6 +10,7 @@ from agent_sandbox.execution.container_worker_client import (
 from agent_sandbox.worker.models import WorkerJobRequest
 from agent_sandbox.worker.models import (
     WorkerFileWriteRequest,
+    WorkerMssqlDatabaseRequest,
     WorkerRepoCloneRequest,
     WorkerSessionPrepareRequest,
 )
@@ -203,6 +204,79 @@ def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
         ("POST", "/v1/sessions/session-1/repo"),
         ("POST", "/v1/sessions/session-1/files"),
         ("DELETE", "/v1/sessions/session-1"),
+    ]
+
+
+def test_container_worker_client_provisions_lists_and_drops_mssql_databases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORKER_TOKEN", "secret-token")
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        assert request.headers["authorization"] == "Bearer secret-token"
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "session_id": "session-1",
+                    "databases": [
+                        {
+                            "logical_name": "app",
+                            "database_name": "asb_hash_app_hash",
+                            "created_at": "2026-05-10T12:00:00Z",
+                        }
+                    ],
+                },
+                request=request,
+            )
+        if request.method == "DELETE":
+            return httpx.Response(
+                200,
+                json={
+                    "session_id": "session-1",
+                    "logical_name": "app",
+                    "database_name": "asb_hash_app_hash",
+                    "deleted": True,
+                },
+                request=request,
+            )
+        return httpx.Response(
+            201,
+            json={
+                "session_id": "session-1",
+                "logical_name": "app",
+                "database_name": "asb_hash_app_hash",
+                "server": "172.17.0.1",
+                "port": 1433,
+                "username": "asb_login_hash",
+                "password": "session-secret",
+                "connection_string": "Server=tcp:172.17.0.1,1433;Password=session-secret",
+            },
+            request=request,
+        )
+
+    worker = ContainerWorkerClient(
+        base_url="http://worker.test",
+        token_env="WORKER_TOKEN",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    provisioned = worker.provision_mssql_database(
+        "session-1",
+        WorkerMssqlDatabaseRequest(logical_name="app"),
+    )
+    listed = worker.list_mssql_databases("session-1")
+    dropped = worker.drop_mssql_database("session-1", "app")
+
+    assert provisioned.connection_string.startswith("Server=tcp:172.17.0.1")
+    assert [item.logical_name for item in listed.databases] == ["app"]
+    assert dropped.deleted is True
+    assert seen == [
+        ("POST", "/v1/sessions/session-1/mssql/databases"),
+        ("GET", "/v1/sessions/session-1/mssql/databases"),
+        ("DELETE", "/v1/sessions/session-1/mssql/databases/app"),
     ]
 
 

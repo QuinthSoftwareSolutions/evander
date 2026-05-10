@@ -44,6 +44,7 @@ from agent_sandbox.communication_artifacts import (
     validate_artifact_id,
 )
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.execution.container_worker_backend import ContainerWorkerVmExecutionBackend
 from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
 from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
@@ -387,10 +388,10 @@ def _assistant_mutation_audit_result(
     *,
     default_status: str,
 ) -> dict[str, Any]:
-    if tool_name not in _ASSISTANT_MUTATION_TOOLS:
-        return dict(result)
-
     audit_result = _redact_nested_value(redacted_keys, dict(result))
+    if tool_name not in _ASSISTANT_MUTATION_TOOLS:
+        return audit_result
+
     audit_result.setdefault("status", default_status)
     before_after_summary = audit_result.get("before_after_summary")
     if before_after_summary is None:
@@ -730,6 +731,18 @@ def create_server(context: RuntimeContext) -> FastMCP:
             error,
             error_class,
         )
+
+
+    def _container_worker_backend_for_session(session_id: str) -> ContainerWorkerVmExecutionBackend:
+        session = context.policy.get_session(session_id)
+        config = context.provider_config.resolve_for_session_manifest(session)
+        if config.execution_backend != "container_worker_vm":
+            raise ToolError(
+                "MSSQL provisioning is only supported for container_worker_vm sessions"
+            )
+        if not config.container_worker_mssql_enabled:
+            raise ToolError("container worker MSSQL provisioning is not enabled")
+        return ContainerWorkerVmExecutionBackend(config=config)
 
 
     def _communication_artifact_store() -> CommunicationArtifactStore:
@@ -4092,6 +4105,131 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 resolved_session_id,
                 ToolName.GET_AGENT_LOGS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def mssql_provision_database(
+        logical_name: str,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        args = {"session_id": resolved_session_id, "logical_name": logical_name}
+        try:
+            context.policy.require_tool(
+                resolved_session_id,
+                ToolName.MSSQL_PROVISION_DATABASE,
+            )
+            backend = _container_worker_backend_for_session(resolved_session_id)
+            record = backend.provision_mssql_database(
+                session_id=resolved_session_id,
+                logical_name=logical_name,
+            )
+            payload = record.model_dump(mode="json")
+            audit_success(
+                resolved_session_id,
+                ToolName.MSSQL_PROVISION_DATABASE,
+                args,
+                payload,
+            )
+            return payload
+        except (PolicyError, ToolError, ValueError) as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.MSSQL_PROVISION_DATABASE,
+                args,
+                str(exc),
+            )
+            raise ToolError(str(exc)) from exc
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.MSSQL_PROVISION_DATABASE,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def mssql_list_databases(
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        args = {"session_id": resolved_session_id}
+        try:
+            context.policy.require_tool(resolved_session_id, ToolName.MSSQL_LIST_DATABASES)
+            backend = _container_worker_backend_for_session(resolved_session_id)
+            record = backend.list_mssql_databases(session_id=resolved_session_id)
+            payload = record.model_dump(mode="json")
+            audit_success(
+                resolved_session_id,
+                ToolName.MSSQL_LIST_DATABASES,
+                args,
+                {"count": len(payload.get("databases", []))},
+            )
+            return payload
+        except (PolicyError, ToolError, ValueError) as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.MSSQL_LIST_DATABASES,
+                args,
+                str(exc),
+            )
+            raise ToolError(str(exc)) from exc
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.MSSQL_LIST_DATABASES,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def mssql_drop_database(
+        logical_name: str,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        args = {"session_id": resolved_session_id, "logical_name": logical_name}
+        try:
+            context.policy.require_tool(resolved_session_id, ToolName.MSSQL_DROP_DATABASE)
+            backend = _container_worker_backend_for_session(resolved_session_id)
+            record = backend.drop_mssql_database(
+                session_id=resolved_session_id,
+                logical_name=logical_name,
+            )
+            payload = record.model_dump(mode="json")
+            audit_success(
+                resolved_session_id,
+                ToolName.MSSQL_DROP_DATABASE,
+                args,
+                payload,
+            )
+            return payload
+        except (PolicyError, ToolError, ValueError) as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.MSSQL_DROP_DATABASE,
+                args,
+                str(exc),
+            )
+            raise ToolError(str(exc)) from exc
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.MSSQL_DROP_DATABASE,
                 args,
                 str(exc),
                 decision="error",

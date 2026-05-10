@@ -50,6 +50,8 @@ tasks/
 !ansible/roles/worker_node_toolchain/tasks/main.yml
 !ansible/roles/worker_playwright_toolchain/tasks/
 !ansible/roles/worker_playwright_toolchain/tasks/main.yml
+!ansible/roles/worker_mssql/tasks/
+!ansible/roles/worker_mssql/tasks/main.yml
 frontend/workflow-editor/node_modules/
 frontend/workflow-editor/tsconfig.tsbuildinfo
 **/dist/*

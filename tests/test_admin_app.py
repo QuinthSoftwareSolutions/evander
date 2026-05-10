@@ -324,6 +324,10 @@ def test_directory_config_tab_sections_match_expected_groupings() -> None:
     }
     assert ("providers", "execution_backend") in provider_sections["Container worker"]
     assert ("providers", "container_worker_base_url") in provider_sections["Container worker"]
+    assert (
+        "providers",
+        "container_worker_mssql_enabled",
+    ) in provider_sections["Container worker"]
     assert ("providers", "nuget_azure_pat_env") in provider_sections["NuGet"]
     assert ("providers", "openai_api_key_env") in provider_sections["OpenAI"]
     assert set(provider_sections["Retell"]) == {

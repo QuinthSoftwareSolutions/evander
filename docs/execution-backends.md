@@ -51,6 +51,9 @@ container_worker_guest_gateway_url: "http://<control-plane-private-ip>:8000/mcp"
 container_worker_guest_nuget_relay_base_url: "http://<control-plane-private-ip>:11666"
 container_worker_guest_pypi_index_url: "http://<control-plane-private-ip>:8081/repository/pypi-all/simple"
 container_worker_guest_npm_registry_url: "http://<control-plane-private-ip>:8081/repository/npm-all/"
+container_worker_mssql_enabled: true
+container_worker_mssql_host: "172.17.0.1"
+container_worker_mssql_port: 1433
 ```
 
 Those container-session PyPI/npm URLs are separate from worker VM OS provisioning. The worker
@@ -81,7 +84,11 @@ Container sessions are bootstrapped through mounted `/home/agent`, not image reb
 Codex config, shell profile setup, and optional NuGet/.NET/Playwright environment into the durable
 agent home. Toolchains are expected to come from worker-level read-only cache mounts, while writable
 session cache state remains under `/home/agent`. MSSQL bootstrap is not implemented for
-`container_worker_vm`; `mssql=true` and `mssql_init_root` fail explicitly.
+`effect:agent:create` on `container_worker_vm`; `mssql=true` and `mssql_init_root` fail explicitly.
+Container-backed sessions use SQL Server through the separate MCP provisioning tools
+`mssql_provision_database`, `mssql_list_databases`, and `mssql_drop_database`, which create
+session-owned databases on the worker-host SQL Server instance and return scoped direct TDS
+connection details for app/test commands.
 
 ## Migration Path
 

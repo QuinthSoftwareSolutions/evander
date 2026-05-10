@@ -94,6 +94,9 @@ class ToolName(str, Enum):
     LIST_PENDING_AGENT_PROMPTS = "list_pending_agent_prompts"
     RESPOND_TO_AGENT = "respond_to_agent"
     RUN_SCRIPT = "run_script"
+    MSSQL_PROVISION_DATABASE = "mssql_provision_database"
+    MSSQL_LIST_DATABASES = "mssql_list_databases"
+    MSSQL_DROP_DATABASE = "mssql_drop_database"
     COPILOT_HOST_AUTH = "copilot_host_auth"
 
 

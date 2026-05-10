@@ -23,6 +23,11 @@ from .models import (
     WorkerFileWriteRecord,
     WorkerJobRecord,
     WorkerJobRequest,
+    WorkerMssqlDatabaseDeleteRecord,
+    WorkerMssqlDatabaseListRecord,
+    WorkerMssqlDatabaseRecord,
+    WorkerMssqlDatabaseRequest,
+    WorkerMssqlSessionDeleteRecord,
     WorkerRepoCloneRecord,
     WorkerRepoCloneRequest,
     SAFE_ID_PATTERN,
@@ -31,6 +36,7 @@ from .models import (
     WorkerSessionRecord,
     now_utc,
 )
+from .mssql import WorkerMssqlProvisioner, WorkerMssqlStore
 from .runtime import ContainerRuntime
 from .sandbox_profile import WorkerSandboxProfile
 from .security import safe_subprocess_error, sanitize_metadata, sanitize_text
@@ -56,6 +62,15 @@ class WorkerDaemon:
         allowed_git_source_prefixes: Sequence[str] | None = None,
         git_ssh_source_dir: Path | None = None,
         token: str | None = None,
+        mssql_enabled: bool = False,
+        mssql_admin_user: str = "sa",
+        mssql_admin_password: str | None = None,
+        mssql_admin_password_env: str = "AGENT_SANDBOX_WORKER_MSSQL_ADMIN_PASSWORD",
+        mssql_admin_host: str = "127.0.0.1",
+        mssql_port: int = 1433,
+        mssql_container_host: str = "172.17.0.1",
+        mssql_sqlcmd_path: str = "sqlcmd",
+        mssql_provisioner: WorkerMssqlProvisioner | None = None,
     ) -> None:
         self.runtime_dir = runtime_dir
         self.worker_root = worker_root
@@ -72,6 +87,20 @@ class WorkerDaemon:
             read_only_mounts=read_only_mounts,
         )
         self.token = token if token is not None else os.environ.get("AGENT_SANDBOX_WORKER_TOKEN")
+        self.mssql = mssql_provisioner or WorkerMssqlProvisioner(
+            enabled=mssql_enabled,
+            store=WorkerMssqlStore(runtime_dir / "mssql-state.json"),
+            admin_user=mssql_admin_user,
+            admin_password=(
+                mssql_admin_password
+                if mssql_admin_password is not None
+                else os.environ.get(mssql_admin_password_env)
+            ),
+            admin_host=mssql_admin_host,
+            port=mssql_port,
+            container_host=mssql_container_host,
+            sqlcmd_path=mssql_sqlcmd_path,
+        )
 
     def create_app(self) -> Starlette:
 
@@ -366,6 +395,26 @@ class WorkerDaemon:
             roots={"agent_home": "/home/agent", "repo_root": "/home/agent/repos"},
         )
 
+    def provision_mssql_database(
+        self,
+        session_id: str,
+        request: WorkerMssqlDatabaseRequest,
+    ) -> WorkerMssqlDatabaseRecord:
+        return self.mssql.provision_database(session_id, request)
+
+    def list_mssql_databases(self, session_id: str) -> WorkerMssqlDatabaseListRecord:
+        return self.mssql.list_databases(session_id)
+
+    def drop_mssql_database(
+        self,
+        session_id: str,
+        logical_name: str,
+    ) -> WorkerMssqlDatabaseDeleteRecord:
+        return self.mssql.drop_database(session_id, logical_name)
+
+    def drop_mssql_session(self, session_id: str) -> WorkerMssqlSessionDeleteRecord:
+        return self.mssql.drop_session(session_id)
+
     def delete_session(self, session_id: str) -> bool:
         normalized_session_id = str(session_id or "").strip()
         if not normalized_session_id:
@@ -375,6 +424,7 @@ class WorkerDaemon:
                 "session_id must contain only letters, numbers, dots, underscores, or dashes"
             )
 
+        mssql_cleanup = self.drop_mssql_session(normalized_session_id)
         removed_any = False
         for record in list(self.store.read_all().values()):
             if record.session_id != normalized_session_id:
@@ -392,9 +442,10 @@ class WorkerDaemon:
             shutil.rmtree(session_root)
             removed_any = True
         logger.info(
-            "worker_session_deleted session_id=%s removed=%s",
+            "worker_session_deleted session_id=%s removed=%s mssql_databases=%s",
             normalized_session_id,
             removed_any,
+            len(mssql_cleanup.deleted_databases),
         )
         return removed_any
 

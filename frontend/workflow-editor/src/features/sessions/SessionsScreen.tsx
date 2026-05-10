@@ -114,6 +114,9 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   respond_to_agent: "Reply to a pending agent prompt or approval-style checkpoint from the guest agent.",
   schedule_resume: "Create or update a host-managed wake schedule that resumes this session later.",
   run_script: "Run an approved host-side script on behalf of the session.",
+  mssql_provision_database: "Provision a session-owned SQL Server database through the container worker.",
+  mssql_list_databases: "List SQL Server databases owned by this session.",
+  mssql_drop_database: "Drop a SQL Server database owned by this session.",
   copilot_host_auth: "Bridge host-managed GitHub Copilot authentication into the guest when that provider is in use.",
   discord_get_commands: "Read Discord command traffic that the host has ingested for this session or directory.",
   discord_post_status: "Post a Discord status update from the host on behalf of the session.",
@@ -239,6 +242,7 @@ const TOOL_GROUP_ORDER = [
   "Agent control",
   "Messaging",
   "Voice calling",
+  "SQL Server",
   "Files",
   "Discord",
   "Teams",
@@ -312,6 +316,9 @@ function groupToolOption(tool: ToolOption): string {
   }
   if (["make_phone_call", "get_phone_call_result"].includes(value)) {
     return "Voice calling";
+  }
+  if (["mssql_provision_database", "mssql_list_databases", "mssql_drop_database"].includes(value)) {
+    return "SQL Server";
   }
   if ([
     "communication_list_attachments",

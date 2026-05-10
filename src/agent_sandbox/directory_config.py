@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.host_config import HostConfig, build_runtime_gateway_config
-from agent_sandbox.models import Directory, DirectoryInfo, DirectoryPath
+from agent_sandbox.models import DirectoryInfo, DirectoryPath
 
 DIRECTORY_CONFIG_OVERLAYS_KEY = "config_overlays"
 DIRECTORY_CONFIG_METADATA_KEY = "directory_config"
@@ -87,6 +87,9 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "container_worker_guest_nuget_relay_base_url",
             "container_worker_guest_pypi_index_url",
             "container_worker_guest_npm_registry_url",
+            "container_worker_mssql_enabled",
+            "container_worker_mssql_host",
+            "container_worker_mssql_port",
             "execution_backend",
             "discord_api_base_url",
             "discord_backend",

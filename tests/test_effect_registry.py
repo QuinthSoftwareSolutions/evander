@@ -1174,6 +1174,11 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         "AGENT_SANDBOX_DOTNET_TOOLS_ROOT"
         in bootstrap_by_path["/home/agent/.profile"]["content"]
     )
+    assert (
+        'export DOTNET_CLI_HOME="$HOME"'
+        in bootstrap_by_path["/home/agent/.profile"]["content"]
+    )
+    assert ".dotnet-cli" not in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE" in bootstrap_by_path[
         "/home/agent/.profile"
     ]["content"]
@@ -1183,6 +1188,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert "DOTNET_NOLOGO" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "AGENT_SANDBOX_NODE_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "PLAYWRIGHT_BROWSERS_PATH" in bootstrap_by_path["/home/agent/.profile"]["content"]
+    assert "/home/agent/.dotnet-cli/.keep" not in bootstrap_by_path
     assert "/home/agent/.nuget/NuGet/NuGet.Config" in bootstrap_by_path
     nuget_config = bootstrap_by_path["/home/agent/.nuget/NuGet/NuGet.Config"]["content"]
     assert "<clear />" in nuget_config

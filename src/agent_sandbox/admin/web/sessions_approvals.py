@@ -16,6 +16,11 @@ from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionSummary
 
 
 _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
+    ToolName.MSSQL_PROVISION_DATABASE: (
+        "Provision a session-owned SQL Server database through the container worker."
+    ),
+    ToolName.MSSQL_LIST_DATABASES: "List SQL Server databases owned by this session.",
+    ToolName.MSSQL_DROP_DATABASE: "Drop a SQL Server database owned by this session.",
     ToolName.POST_ADO_BACKLOG_COMMENT: (
         "Post comments to Azure DevOps backlog items, including staged image artifacts when enabled."
     ),

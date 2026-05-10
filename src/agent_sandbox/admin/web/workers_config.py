@@ -221,6 +221,9 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
                 ("providers", "container_worker_guest_nuget_relay_base_url"),
                 ("providers", "container_worker_guest_pypi_index_url"),
                 ("providers", "container_worker_guest_npm_registry_url"),
+                ("providers", "container_worker_mssql_enabled"),
+                ("providers", "container_worker_mssql_host"),
+                ("providers", "container_worker_mssql_port"),
             ),
             ("container_worker_",),
         ),
@@ -1129,7 +1132,6 @@ def worker_config_routes(service: AdminService, auth: AdminWebAuth) -> list[Base
                     directory_path, source_domain, merged_payload
                 )
                 if not result.ok:
-                    message = result.errors[0].message if result.errors else "Save failed."
                     return JSONResponse(
                         {
                             "write_result": _normalize_admin_result(result),

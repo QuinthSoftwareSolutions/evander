@@ -9,6 +9,10 @@ from agent_sandbox.worker.models import (
     WorkerFileWriteRequest,
     WorkerFileWriteRecord,
     WorkerJobRequest,
+    WorkerMssqlDatabaseDeleteRecord,
+    WorkerMssqlDatabaseListRecord,
+    WorkerMssqlDatabaseRecord,
+    WorkerMssqlDatabaseRequest,
     WorkerRepoCloneRecord,
     WorkerRepoCloneRequest,
     WorkerResourceLimits,
@@ -228,6 +232,32 @@ class ContainerWorkerVmExecutionBackend:
             session_id,
             WorkerFileWriteRequest.model_validate({"files": files}),
         )
+
+    def provision_mssql_database(
+        self,
+        *,
+        session_id: str,
+        logical_name: str,
+    ) -> WorkerMssqlDatabaseRecord:
+        return self.client.provision_mssql_database(
+            session_id,
+            WorkerMssqlDatabaseRequest(logical_name=logical_name),
+        )
+
+    def list_mssql_databases(
+        self,
+        *,
+        session_id: str,
+    ) -> WorkerMssqlDatabaseListRecord:
+        return self.client.list_mssql_databases(session_id)
+
+    def drop_mssql_database(
+        self,
+        *,
+        session_id: str,
+        logical_name: str,
+    ) -> WorkerMssqlDatabaseDeleteRecord:
+        return self.client.drop_mssql_database(session_id, logical_name)
 
     def delete_session(self, session_id: str) -> dict[str, Any]:
         return self.client.delete_session(session_id)

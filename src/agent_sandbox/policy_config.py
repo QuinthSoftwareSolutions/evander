@@ -42,7 +42,16 @@ class EffectivePolicyConfig(BaseModel):
     communication_file_require_approval_for_send: bool = False
     pr_reply_require_approval: bool = False
     redacted_keys: set[str] = Field(
-        default_factory=lambda: {"body", "body_text", "authorization", "token", "response_token"}
+        default_factory=lambda: {
+            "body",
+            "body_text",
+            "authorization",
+            "token",
+            "response_token",
+            "password",
+            "connection_string",
+            "connectionString",
+        }
     )
 
 

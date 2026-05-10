@@ -28,6 +28,7 @@ agent_sandbox_worker_revision_guard_paths:
   - ansible/roles/worker_dotnet_toolchain
   - ansible/roles/worker_node_toolchain
   - ansible/roles/worker_playwright_toolchain
+  - ansible/roles/worker_mssql
   - ansible/roles/container_worker_service
   - ansible/roles/container_worker_verification
   - pyproject.toml
@@ -69,6 +70,31 @@ agent_sandbox_worker_tmpfs: []
 agent_sandbox_worker_container_user: ""
 agent_sandbox_worker_env:
   AGENT_SANDBOX_WORKER_TOKEN: "{{ agent_sandbox_worker_token }}"
+  AGENT_SANDBOX_WORKER_MSSQL_ADMIN_PASSWORD: "{{ agent_sandbox_worker_mssql_admin_password }}"
+
+# Optional worker-host SQL Server instance for session-scoped database provisioning.
+# When enabled, agents request databases through MCP and receive a scoped SQL login
+# that can connect from runner containers to agent_sandbox_worker_mssql_container_host.
+agent_sandbox_worker_mssql_enabled: false
+agent_sandbox_worker_mssql_accept_eula: false
+agent_sandbox_worker_mssql_pid: "Developer"
+agent_sandbox_worker_mssql_admin_user: "sa"
+agent_sandbox_worker_mssql_admin_password: "{{ vault_agent_sandbox_worker_mssql_admin_password | default('') }}"
+agent_sandbox_worker_mssql_admin_password_env: "AGENT_SANDBOX_WORKER_MSSQL_ADMIN_PASSWORD"
+agent_sandbox_worker_mssql_admin_host: "127.0.0.1"
+agent_sandbox_worker_mssql_port: 1433
+agent_sandbox_worker_mssql_container_host: "172.17.0.1"
+agent_sandbox_worker_mssql_sqlcmd_path: "/opt/mssql-tools18/bin/sqlcmd"
+agent_sandbox_worker_mssql_apt_key_url: "https://packages.microsoft.com/keys/microsoft.asc"
+agent_sandbox_worker_mssql_apt_key_path: "/etc/apt/keyrings/microsoft.asc"
+agent_sandbox_worker_mssql_server_repo: "deb [arch=amd64,arm64 signed-by={{ agent_sandbox_worker_mssql_apt_key_path }}] https://packages.microsoft.com/ubuntu/22.04/mssql-server-2022 jammy main"
+agent_sandbox_worker_mssql_tools_repo: "deb [arch=amd64,arm64 signed-by={{ agent_sandbox_worker_mssql_apt_key_path }}] https://packages.microsoft.com/ubuntu/22.04/prod jammy main"
+agent_sandbox_worker_mssql_server_package: "mssql-server"
+agent_sandbox_worker_mssql_tools_packages:
+  - mssql-tools18
+  - unixodbc-dev
+agent_sandbox_worker_mssql_manage_iptables: true
+agent_sandbox_worker_mssql_allowed_source_cidr: "172.17.0.0/16"
 
 # Worker Git is restricted to the control-plane bare mirror root. The worker
 # daemon rejects repo_source values outside these prefixes.

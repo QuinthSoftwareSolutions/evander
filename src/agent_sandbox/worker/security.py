@@ -10,6 +10,7 @@ SENSITIVE_METADATA_KEYS = {
     "access_token",
     "api_key",
     "password",
+    "connection_string",
     "secret",
     "pat",
     "env",

@@ -19,6 +19,9 @@ container_worker_guest_gateway_url: "http://<control-plane-private-ip>:8000/mcp"
 container_worker_guest_nuget_relay_base_url: "http://<control-plane-private-ip>:11666"
 container_worker_guest_pypi_index_url: "http://<control-plane-private-ip>:8081/repository/pypi-all/simple"
 container_worker_guest_npm_registry_url: "http://<control-plane-private-ip>:8081/repository/npm-all/"
+container_worker_mssql_enabled: true
+container_worker_mssql_host: "172.17.0.1"
+container_worker_mssql_port: 1433
 ```
 
 For directory-scoped runtime config, put these values on the root `providers` domain. Start the worker daemon on the worker VM with a matching token:
@@ -155,8 +158,17 @@ locations, and NuGet config when `nuget=true`. The Codex config points at the se
 relay URL and MCP gateway URL. If `dotnet=true` or `playwright=true`, the profile points at the
 read-only worker cache mounts and keeps writable per-session cache paths under `/home/agent`.
 
-MSSQL is intentionally unsupported for container workers in this phase. Requests that set
-`mssql=true` or `mssql_init_root` fail clearly instead of being ignored.
+SQL Server for container workers is a controlled provisioning capability, not an automatic
+`effect:agent:create` bootstrap. Requests that set `mssql=true` or `mssql_init_root` still fail
+clearly. Sessions that are allowed to use the session-owned SQL tools call
+`mssql_provision_database` through MCP.
+The gateway checks the session policy and backend config, then calls the worker daemon. The worker
+creates or reconciles a SQL login for that session, creates a physical database name derived from
+`session_id` and the requested logical name, grants the session login `db_owner` only inside that
+database, and returns a scoped connection string for normal app/test commands inside containers.
+`mssql_list_databases` and `mssql_drop_database` operate only on databases recorded as owned by the
+calling session. `DELETE /v1/sessions/{session_id}` drops all worker-recorded SQL databases and the
+session login before removing durable files; SQL cleanup failure blocks session-file deletion.
 
 The host-side backend records the control-plane mapping in:
 
@@ -225,6 +237,9 @@ Routes:
 - `DELETE /v1/jobs/{id}`
 - `GET /v1/jobs/{id}/logs`
 - `GET /v1/jobs/{id}/artifacts`
+- `POST /v1/sessions/{session_id}/mssql/databases`
+- `GET /v1/sessions/{session_id}/mssql/databases`
+- `DELETE /v1/sessions/{session_id}/mssql/databases/{logical_name}`
 - `GET /healthz`
 
 `POST /v1/jobs` accepts `session_id`, optional `job_id`, `image`, `command`, optional `repo_source`, optional `clone_branch`, `resource_limits`, and sanitized `metadata`. Raw `env`, `environment`, and `environment_variables` request fields are rejected. If `repo_source` is present, it must start with a configured allowed Git source prefix.

@@ -14,6 +14,7 @@ from .models import (
     DEFAULT_WORKER_ROOT,
     WorkerFileWriteRequest,
     WorkerJobRequest,
+    WorkerMssqlDatabaseRequest,
     WorkerRepoCloneRequest,
     WorkerSessionPrepareRequest,
 )
@@ -88,11 +89,46 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             deleted = daemon.delete_session(request.path_params["session_id"])
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
+        except RuntimeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
         except subprocess.CalledProcessError as exc:
             return JSONResponse({"error": safe_subprocess_error(exc)}, status_code=502)
         return JSONResponse(
             {"deleted": deleted, "session_id": request.path_params["session_id"]}
         )
+
+    async def provision_mssql_database(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+            database_request = WorkerMssqlDatabaseRequest.model_validate(payload)
+            record = daemon.provision_mssql_database(
+                request.path_params["session_id"],
+                database_request,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except RuntimeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        return JSONResponse(record.model_dump(mode="json"), status_code=201)
+
+    async def list_mssql_databases(request: Request) -> JSONResponse:
+        try:
+            record = daemon.list_mssql_databases(request.path_params["session_id"])
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(record.model_dump(mode="json"))
+
+    async def drop_mssql_database(request: Request) -> JSONResponse:
+        try:
+            record = daemon.drop_mssql_database(
+                request.path_params["session_id"],
+                request.path_params["logical_name"],
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except RuntimeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        return JSONResponse(record.model_dump(mode="json"))
 
     async def get_job(request: Request) -> JSONResponse:
         record = daemon.store.get(request.path_params["job_id"])
@@ -147,6 +183,21 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             Route("/v1/sessions", prepare_session, methods=["POST"]),
             Route("/v1/sessions/{session_id}/repo", clone_session_repo, methods=["POST"]),
             Route("/v1/sessions/{session_id}/files", write_session_files, methods=["POST"]),
+            Route(
+                "/v1/sessions/{session_id}/mssql/databases",
+                provision_mssql_database,
+                methods=["POST"],
+            ),
+            Route(
+                "/v1/sessions/{session_id}/mssql/databases",
+                list_mssql_databases,
+                methods=["GET"],
+            ),
+            Route(
+                "/v1/sessions/{session_id}/mssql/databases/{logical_name}",
+                drop_mssql_database,
+                methods=["DELETE"],
+            ),
             Route("/v1/sessions/{session_id}", delete_session, methods=["DELETE"]),
             Route("/v1/jobs", create_job, methods=["POST"]),
             Route("/v1/jobs/{job_id}", get_job, methods=["GET"]),
@@ -171,6 +222,14 @@ def create_app(
     allowed_git_source_prefixes: Sequence[str] | None = None,
     git_ssh_source_dir: Path | None = None,
     token: str | None = None,
+    mssql_enabled: bool = False,
+    mssql_admin_user: str = "sa",
+    mssql_admin_password: str | None = None,
+    mssql_admin_password_env: str = "AGENT_SANDBOX_WORKER_MSSQL_ADMIN_PASSWORD",
+    mssql_admin_host: str = "127.0.0.1",
+    mssql_port: int = 1433,
+    mssql_container_host: str = "172.17.0.1",
+    mssql_sqlcmd_path: str = "sqlcmd",
 ) -> Starlette:
     return WorkerDaemon(
         runtime_dir=runtime_dir,
@@ -182,4 +241,12 @@ def create_app(
         allowed_git_source_prefixes=allowed_git_source_prefixes,
         git_ssh_source_dir=git_ssh_source_dir,
         token=token,
+        mssql_enabled=mssql_enabled,
+        mssql_admin_user=mssql_admin_user,
+        mssql_admin_password=mssql_admin_password,
+        mssql_admin_password_env=mssql_admin_password_env,
+        mssql_admin_host=mssql_admin_host,
+        mssql_port=mssql_port,
+        mssql_container_host=mssql_container_host,
+        mssql_sqlcmd_path=mssql_sqlcmd_path,
     ).create_app()
