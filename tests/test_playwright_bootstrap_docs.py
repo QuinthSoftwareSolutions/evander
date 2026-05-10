@@ -14,4 +14,6 @@ def test_playwright_bootstrap_docs_and_script_are_present() -> None:
     assert "guest_ssh_resolve_vm_ip" in script
     assert "sudo -n virsh domifaddr" in guest_ssh_lib
     assert "PLAYWRIGHT_BROWSERS_PATH" in script
+    assert "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD" in script
+    assert "PLAYWRIGHT_MCP_EXECUTABLE_PATH" in script
     assert "playwright-core" in script

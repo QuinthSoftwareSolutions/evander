@@ -185,11 +185,17 @@ class WorkerDaemon:
         self.store.put(record)
         logger.info("worker_job_removed job_id=%s session_id=%s", record.job_id, record.session_id)
 
-    def get_logs(self, record: WorkerJobRecord, *, mode: str = "augmented") -> str:
+    def get_logs(
+        self,
+        record: WorkerJobRecord,
+        *,
+        mode: str = "augmented",
+        tail_lines: int | None = None,
+    ) -> str:
         selected_mode = str(mode or "augmented").strip().casefold()
         if selected_mode not in {"augmented", "raw", "session"}:
             raise ValueError("log mode must be one of: augmented, raw, session")
-        text = self._raw_logs(record)
+        text = self._raw_logs(record, tail_lines=tail_lines)
         if selected_mode == "raw":
             return text
         session_log = self._codex_session_log(
@@ -201,16 +207,53 @@ class WorkerDaemon:
             return session_log
         return self._append_codex_session_log(text, session_log)
 
-    def _raw_logs(self, record: WorkerJobRecord) -> str:
+    def get_log_page(
+        self,
+        record: WorkerJobRecord,
+        *,
+        mode: str = "augmented",
+        limit: int = 200,
+        offset: int = 0,
+        query: str | None = None,
+    ) -> dict[str, object]:
+        normalized_limit = max(1, min(int(limit), 5000))
+        normalized_offset = max(0, int(offset))
+        normalized_query = str(query or "").strip()
+        tail_lines = (
+            normalized_limit + normalized_offset
+            if not normalized_query and normalized_limit > 0
+            else None
+        )
+        text = self.get_logs(record, mode=mode, tail_lines=tail_lines)
+        page = _log_page_from_end(
+            text,
+            limit=normalized_limit,
+            offset=normalized_offset,
+            query=normalized_query or None,
+        )
+        if tail_lines is not None and page["returned_lines"] >= normalized_limit:
+            page["has_more_before"] = True
+            page["total_lines"] = None
+            page["start_line"] = None
+            page["end_line"] = None
+        return page
+
+    def _raw_logs(self, record: WorkerJobRecord, *, tail_lines: int | None = None) -> str:
         log_path = self._log_path(record)
         try:
-            text = self.container_runtime.get_logs(record)
+            try:
+                text = self.container_runtime.get_logs(record, tail_lines=tail_lines)
+            except TypeError:
+                text = self.container_runtime.get_logs(record)
         except subprocess.CalledProcessError:
             text = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
             reconstructed = self._reconstruct_codex_job_log(record, text)
             if reconstructed is not None:
                 text = reconstructed
-        log_path.write_text(text, encoding="utf-8")
+        if tail_lines is None:
+            log_path.write_text(text, encoding="utf-8")
+        elif text:
+            _merge_tail_log_snapshot(log_path, text)
         return text
 
     def _codex_session_log(
@@ -220,12 +263,14 @@ class WorkerDaemon:
         *,
         skip_existing: bool,
     ) -> str:
+        agent_home = Path(record.agent_home_path)
         thread_ids = list(dict.fromkeys(_CODEX_SESSION_ID_LOG_PATTERN.findall(text)))
+        if not thread_ids:
+            thread_ids = _recent_codex_session_ids(agent_home)
         if not thread_ids:
             return ""
         messages: list[str] = []
         seen: set[str] = set()
-        agent_home = Path(record.agent_home_path)
         for thread_id in thread_ids:
             for message in self._codex_session_messages(
                 agent_home,
@@ -682,6 +727,111 @@ def _codex_session_jsonl_paths(agent_home: Path, thread_id: str) -> list[Path]:
         except OSError:
             continue
     return sorted(paths, key=lambda path: (path.stat().st_mtime, str(path)))
+
+
+def _recent_codex_session_ids(agent_home: Path, *, limit: int = 5) -> list[str]:
+    roots = [
+        agent_home / ".config" / "agent-sandbox" / "codex" / "sessions",
+        agent_home / ".codex" / "sessions",
+    ]
+    paths: dict[Path, None] = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            for path in root.rglob("*.jsonl"):
+                if path.is_file():
+                    paths[path] = None
+        except OSError:
+            continue
+    session_ids: list[str] = []
+    for path in sorted(paths, key=lambda item: (item.stat().st_mtime, str(item)), reverse=True):
+        session_id = _session_id_from_codex_jsonl(path)
+        if not session_id or session_id in session_ids:
+            continue
+        session_ids.append(session_id)
+        if len(session_ids) >= limit:
+            break
+    return session_ids
+
+
+def _session_id_from_codex_jsonl(path: Path) -> str | None:
+    match = re.search(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        path.name,
+    )
+    if match is not None:
+        return match.group(0)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for _index, raw_line in zip(range(20), handle):
+                try:
+                    event = json.loads(raw_line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                if str(event.get("type") or "") != "session_meta":
+                    continue
+                payload = event.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                session_id = _codex_first_text(payload.get("id"))
+                if session_id:
+                    return session_id.strip()
+    except OSError:
+        return None
+    return None
+
+
+def _merge_tail_log_snapshot(log_path: Path, tail_text: str) -> None:
+    if not tail_text:
+        return
+    if not log_path.exists():
+        log_path.write_text(tail_text, encoding="utf-8")
+        return
+    try:
+        existing = log_path.read_text(encoding="utf-8")
+    except OSError:
+        existing = ""
+    if not existing or tail_text.startswith(existing):
+        log_path.write_text(tail_text, encoding="utf-8")
+        return
+    overlap = min(len(existing), len(tail_text))
+    for size in range(overlap, 0, -1):
+        if existing.endswith(tail_text[:size]):
+            log_path.write_text(existing + tail_text[size:], encoding="utf-8")
+            return
+    log_path.write_text(existing.rstrip("\n") + "\n" + tail_text, encoding="utf-8")
+
+
+def _log_page_from_end(
+    text: str,
+    *,
+    limit: int,
+    offset: int,
+    query: str | None = None,
+) -> dict[str, object]:
+    lines = text.splitlines()
+    normalized_query = str(query or "").strip()
+    if normalized_query:
+        needle = normalized_query.casefold()
+        lines = [line for line in lines if needle in line.casefold()]
+    total_lines = len(lines)
+    end_index = max(0, total_lines - max(0, offset))
+    start_index = max(0, end_index - max(1, limit))
+    page_lines = lines[start_index:end_index]
+    return {
+        "text": "\n".join(page_lines) + ("\n" if page_lines else ""),
+        "limit": max(1, limit),
+        "offset": max(0, offset),
+        "returned_lines": len(page_lines),
+        "total_lines": total_lines,
+        "start_line": start_index + 1 if page_lines else 0,
+        "end_line": end_index if page_lines else 0,
+        "has_more_before": start_index > 0,
+        "query": normalized_query or None,
+    }
 
 
 def _codex_event_is_in_window(

@@ -2935,6 +2935,7 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
         def __init__(self) -> None:
             self.inspected: list[str] = []
             self.logged: list[tuple[str, int, str | None]] = []
+            self.paged: list[tuple[str, int, int, str | None]] = []
             self.stopped: list[str] = []
             self.destroyed: list[str] = []
 
@@ -2959,6 +2960,27 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
             if mode == "session":
                 return "session transcript\n" if target == "exec-1" else ""
             return "line 2\n"
+
+        def get_log_page(
+            self,
+            target: str,
+            *,
+            limit: int = 200,
+            offset: int = 0,
+            query: str | None = None,
+        ) -> dict[str, object]:
+            self.paged.append((target, limit, offset, query))
+            return {
+                "text": "paged line\n",
+                "limit": limit,
+                "offset": offset,
+                "returned_lines": 1,
+                "total_lines": 8,
+                "start_line": 5,
+                "end_line": 5,
+                "has_more_before": True,
+                "query": query,
+            }
 
         def stop(self, target: str) -> ExecutionStatus:
             self.stopped.append(target)
@@ -2997,6 +3019,9 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     client = TestClient(create_app(service))
 
     log_response = client.get("/api/admin/agents/session-1/log?backend=container_worker_vm&lines=4")
+    paged_response = client.get(
+        "/api/admin/agents/session-1/log?backend=container_worker_vm&limit=3&offset=3&query=repo"
+    )
     stop_response = client.post(
         "/api/admin/agents/session-1/actions/stop?backend=container_worker_vm", json={}
     )
@@ -3010,6 +3035,10 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     assert "execution=exec-2" in log_response.json()["text"]
     assert "execution=exec-1" in log_response.json()["text"]
     assert "log=raw" in log_response.json()["text"]
+    assert paged_response.status_code == 200
+    assert paged_response.json()["text"] == "paged line\n"
+    assert paged_response.json()["has_more_before"] is True
+    assert paged_response.json()["total_lines"] == 8
     assert stop_response.status_code == 200
     assert stop_response.json()["status"] == "stopped"
     assert destroy_response.status_code == 200
@@ -3020,6 +3049,7 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
         ("exec-2", 2, "raw"),
         ("exec-1", 2, "raw"),
     ]
+    assert fake_backend.paged == [("exec-1", 3, 3, "repo")]
     assert fake_backend.stopped == ["exec-1"]
     assert fake_backend.destroyed == ["exec-1"]
 

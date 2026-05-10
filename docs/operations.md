@@ -351,7 +351,8 @@ Storage layout for directory config:
 - `./scripts/bootstrap_playwright_vm.sh <vm-name>` copies a host-seeded Node runtime into `~/toolchains/node-v24.14.0`.
 - It copies `playwright` and `playwright-core` into `~/playwright-runtime/node_modules`.
 - It copies the host Playwright browser cache into `~/.cache/ms-playwright`.
-- It appends `PATH`, `PLAYWRIGHT_BROWSERS_PATH`, and `NODE_PATH` exports to `~/.profile`.
+- It appends `PATH`, `PLAYWRIGHT_BROWSERS_PATH`, `NODE_PATH`, `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD`, `PLAYWRIGHT_MCP_SANDBOX`, and `PLAYWRIGHT_MCP_EXECUTABLE_PATH` setup to `~/.profile`.
+- `PLAYWRIGHT_MCP_EXECUTABLE_PATH` is resolved from the seeded Playwright package/cache so `playwright-cli` does not try to use `/opt/google/chrome/chrome` or download a browser during an agent task.
 - It verifies the guest can resolve the Chromium executable without guest internet access.
 
 ## VM Frontend Dependency Bootstrap

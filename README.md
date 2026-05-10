@@ -193,7 +193,7 @@ Directory-scoped config is rooted at `root`:
    ./scripts/bootstrap_playwright_vm.sh vm-real
    ```
 
-   This copies a host-seeded Node runtime, Playwright packages, and browser cache into the guest and verifies that Playwright can resolve Chromium offline.
+   This copies a host-seeded Node runtime, Playwright packages, and browser cache into the guest, then configures `PLAYWRIGHT_MCP_EXECUTABLE_PATH` so `playwright-cli` uses the seeded Chromium binary instead of trying to install or launch system Chrome.
 
 15. Optionally install a repo-specific browser-test runtime into the VM for frontend unit tests:
 

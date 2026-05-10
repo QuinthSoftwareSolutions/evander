@@ -90,7 +90,11 @@ Node reads `HOST_NODE_ROOT` or `~/.nvm/versions/node/v24.14.0`; set
 `agent_sandbox_worker_node_toolchain_archive_path` to copy a prebuilt tarball instead. By default
 Playwright reads `HOST_PLAYWRIGHT_NODE_MODULES` or the repo frontend `node_modules` plus
 `HOST_PLAYWRIGHT_BROWSERS` or `~/.cache/ms-playwright`; set the Playwright archive variables to copy
-prebuilt tarballs instead. Project-specific NuGet fallback packages remain operator-controlled and
+prebuilt tarballs instead. Playwright-enabled container sessions export
+`PLAYWRIGHT_MCP_EXECUTABLE_PATH` from that mounted browser cache and
+`PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`, so `playwright-cli` uses the seeded Chromium binary instead of
+looking for system Chrome under `/opt/google/chrome` or downloading a browser at task time.
+Project-specific NuGet fallback packages remain operator-controlled and
 are not baked into the image. Secrets are not mounted. When `--container-user` is numeric, the worker daemon writes a per-session
 `/etc/passwd` and `/etc/group` bind mount so tools such as OpenSSH can resolve the active uid
 without the runner image hard-coding a host-specific user id.

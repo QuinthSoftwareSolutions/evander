@@ -51,6 +51,13 @@ def _string_query(request: Request, name: str, *, default: str | None = None) ->
     return normalized or default
 
 
+def _int_query(request: Request, name: str, *, default: int) -> int:
+    value = request.query_params.get(name)
+    if value is None:
+        return default
+    return int(value.strip())
+
+
 def agent_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRoute]:
     async def list_agents(request: Request) -> JSONResponse:
         directory_path = _string_query(request, "directory_path")
@@ -84,12 +91,42 @@ def agent_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRoute]:
         lines_text = _string_query(request, "lines", default="200") or "200"
         try:
             lines = max(1, int(lines_text))
+            repo_name = _string_query(request, "repo_name")
+            limit_requested = request.query_params.get("limit") is not None
+            offset_requested = request.query_params.get("offset") is not None
+            query_requested = request.query_params.get("query") is not None
+            if limit_requested or offset_requested or query_requested:
+                page = await run_in_threadpool(
+                    service.get_admin_agent_log_page,
+                    agent_id,
+                    backend=backend,
+                    limit=max(1, _int_query(request, "limit", default=lines)),
+                    offset=max(0, _int_query(request, "offset", default=0)),
+                    query=_string_query(request, "query"),
+                    repo_name=repo_name,
+                )
+                return JSONResponse(
+                    {
+                        "agent_id": agent_id,
+                        "backend": backend,
+                        "lines": page["limit"],
+                        "text": page["text"],
+                        "limit": page["limit"],
+                        "offset": page["offset"],
+                        "returned_lines": page["returned_lines"],
+                        "total_lines": page["total_lines"],
+                        "start_line": page["start_line"],
+                        "end_line": page["end_line"],
+                        "has_more_before": page["has_more_before"],
+                        "query": page["query"],
+                    }
+                )
             text = await run_in_threadpool(
                 service.get_admin_agent_log_snapshot,
                 agent_id,
                 backend=backend,
                 lines=lines,
-                repo_name=_string_query(request, "repo_name"),
+                repo_name=repo_name,
             )
         except ValueError as exc:
             return json_error(str(exc), status_code=400)

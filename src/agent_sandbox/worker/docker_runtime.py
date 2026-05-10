@@ -88,11 +88,16 @@ class DockerContainerRuntime:
             text=True,
         )
 
-    def get_logs(self, record: WorkerJobRecord) -> str:
+    def get_logs(self, record: WorkerJobRecord, *, tail_lines: int | None = None) -> str:
+        command = [self.docker_binary, "logs"]
+        if tail_lines is not None and tail_lines > 0:
+            command.extend(["--tail", str(tail_lines)])
+        command.append(record.container_id or record.container_name)
         completed = subprocess.run(
-            [self.docker_binary, "logs", record.container_id or record.container_name],
+            command,
             check=True,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
         )
         return completed.stdout

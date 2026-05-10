@@ -709,6 +709,30 @@ def test_logs_are_written_and_read_from_session_logs(tmp_path: Path) -> None:
     assert log_path.read_text(encoding="utf-8") == "hello from container\n"
 
 
+def test_logs_endpoint_returns_bounded_pages_from_newest_end(tmp_path: Path) -> None:
+    runtime = FakeContainerRuntime()
+    runtime.logs["job-1"] = "one\ntwo\nthree\nfour\n"
+    client = _client(tmp_path, runtime)
+
+    client.post(
+        "/v1/jobs",
+        headers=_auth(),
+        json={
+            "session_id": "session-1",
+            "job_id": "job-1",
+            "image": "codex:latest",
+            "command": ["true"],
+        },
+    )
+    response = client.get("/v1/jobs/job-1/logs?limit=2&offset=1", headers=_auth())
+
+    assert response.status_code == 200
+    assert response.text == "two\nthree\n"
+    assert response.headers["x-agent-sandbox-log-paged"] == "true"
+    assert response.headers["x-agent-sandbox-log-returned-lines"] == "2"
+    assert response.headers["x-agent-sandbox-log-has-more-before"] == "true"
+
+
 def test_logs_recover_codex_messages_from_session_jsonl(tmp_path: Path) -> None:
     thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
     runtime = FakeContainerRuntime()
@@ -798,6 +822,66 @@ def test_logs_recover_codex_messages_from_session_jsonl(tmp_path: Path) -> None:
     assert response.text.count("I am checking the repo now.") == 1
     log_path = tmp_path / "worker-root" / "sessions" / "session-1" / "logs" / "job-1.log"
     assert log_path.read_text(encoding="utf-8") == f"session id: {thread_id}\n"
+
+
+def test_logs_recover_live_codex_messages_without_thread_id_in_container_output(
+    tmp_path: Path,
+) -> None:
+    thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    runtime = FakeContainerRuntime()
+    runtime.logs["job-1"] = ""
+    client = _client(tmp_path, runtime)
+
+    created = client.post(
+        "/v1/jobs",
+        headers=_auth(),
+        json={
+            "session_id": "session-1",
+            "job_id": "job-1",
+            "image": "codex:latest",
+            "command": ["true"],
+        },
+    )
+    assert created.status_code == 201
+    session_dir = (
+        tmp_path
+        / "worker-root"
+        / "sessions"
+        / "session-1"
+        / "agent_home"
+        / ".config"
+        / "agent-sandbox"
+        / "codex"
+        / "sessions"
+        / "2026"
+        / "05"
+        / "05"
+    )
+    session_dir.mkdir(parents=True)
+    rollout = session_dir / f"rollout-2026-05-05T08-19-00-{thread_id}.jsonl"
+    rollout.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "session_meta", "payload": {"id": thread_id}},
+                {
+                    "timestamp": "2026-05-05T08:19:10Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "agent_message",
+                        "message": "I am reading the repo.",
+                    },
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    response = client.get("/v1/jobs/job-1/logs?limit=10", headers=_auth())
+
+    assert response.status_code == 200
+    assert response.text == "I am reading the repo.\n"
 
 
 def test_logs_show_active_codex_exec_command_from_session_jsonl(tmp_path: Path) -> None:

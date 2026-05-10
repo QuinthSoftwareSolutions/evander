@@ -192,6 +192,41 @@ class ContainerWorkerVmExecutionBackend:
             "\n" if text.endswith("\n") and text.splitlines() else ""
         )
 
+    def get_log_page(
+        self,
+        target: ExecutionTarget,
+        *,
+        limit: int = 200,
+        offset: int = 0,
+        query: str | None = None,
+        mode: str | None = None,
+    ) -> dict[str, object]:
+        mapping = self._mapping_for_target(target)
+        text, metadata = self.client.logs_page(
+            mapping.worker_job_id,
+            mode=mode,
+            limit=limit,
+            offset=offset,
+            query=query,
+        )
+        if metadata.get("paged"):
+            return {
+                "text": text,
+                "limit": int(metadata.get("limit") or limit),
+                "offset": int(metadata.get("offset") or offset),
+                "returned_lines": int(
+                    metadata.get("returned_lines")
+                    if metadata.get("returned_lines") is not None
+                    else len(text.splitlines())
+                ),
+                "total_lines": metadata.get("total_lines"),
+                "start_line": metadata.get("start_line"),
+                "end_line": metadata.get("end_line"),
+                "has_more_before": bool(metadata.get("has_more_before")),
+                "query": str(query or "").strip() or None,
+            }
+        return _log_page_from_end(text, limit=limit, offset=offset, query=query)
+
     def prepare_session(
         self,
         *,
@@ -386,3 +421,34 @@ class ContainerWorkerVmExecutionBackend:
         if normalized == "removed":
             return ExecutionStatusKind.DESTROYED
         return ExecutionStatusKind.UNKNOWN
+
+
+def _log_page_from_end(
+    text: str,
+    *,
+    limit: int,
+    offset: int,
+    query: str | None = None,
+) -> dict[str, object]:
+    lines = text.splitlines()
+    normalized_query = str(query or "").strip()
+    if normalized_query:
+        needle = normalized_query.casefold()
+        lines = [line for line in lines if needle in line.casefold()]
+    total_lines = len(lines)
+    normalized_limit = max(1, int(limit))
+    normalized_offset = max(0, int(offset))
+    end_index = max(0, total_lines - normalized_offset)
+    start_index = max(0, end_index - normalized_limit)
+    page_lines = lines[start_index:end_index]
+    return {
+        "text": "\n".join(page_lines) + ("\n" if page_lines else ""),
+        "limit": normalized_limit,
+        "offset": normalized_offset,
+        "returned_lines": len(page_lines),
+        "total_lines": total_lines,
+        "start_line": start_index + 1 if page_lines else 0,
+        "end_line": end_index if page_lines else 0,
+        "has_more_before": start_index > 0,
+        "query": normalized_query or None,
+    }

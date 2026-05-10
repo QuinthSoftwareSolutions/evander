@@ -162,10 +162,34 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         if record is None:
             return JSONResponse({"error": "job not found"}, status_code=404)
         try:
-            text = daemon.get_logs(
-                record,
-                mode=str(request.query_params.get("mode") or "augmented"),
-            )
+            limit_text = request.query_params.get("limit")
+            offset_text = request.query_params.get("offset")
+            query_text = request.query_params.get("query")
+            if limit_text is not None or offset_text is not None or query_text is not None:
+                page = daemon.get_log_page(
+                    record,
+                    mode=str(request.query_params.get("mode") or "augmented"),
+                    limit=int(limit_text or "200"),
+                    offset=int(offset_text or "0"),
+                    query=query_text,
+                )
+                headers = {
+                    "x-agent-sandbox-log-paged": "true",
+                    "x-agent-sandbox-log-limit": str(page["limit"]),
+                    "x-agent-sandbox-log-offset": str(page["offset"]),
+                    "x-agent-sandbox-log-returned-lines": str(page["returned_lines"]),
+                    "x-agent-sandbox-log-has-more-before": (
+                        "true" if page["has_more_before"] else "false"
+                    ),
+                }
+                if page["total_lines"] is not None:
+                    headers["x-agent-sandbox-log-total-lines"] = str(page["total_lines"])
+                if page["start_line"] is not None:
+                    headers["x-agent-sandbox-log-start-line"] = str(page["start_line"])
+                if page["end_line"] is not None:
+                    headers["x-agent-sandbox-log-end-line"] = str(page["end_line"])
+                return PlainTextResponse(str(page["text"]), headers=headers)
+            text = daemon.get_logs(record, mode=str(request.query_params.get("mode") or "augmented"))
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         return PlainTextResponse(text)

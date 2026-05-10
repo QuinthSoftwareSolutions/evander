@@ -66,10 +66,10 @@
     state: present
   when: agent_sandbox_worker_mssql_enabled | bool
 
-- name: Check whether SQL Server has been configured
+- name: Check whether SQL Server has been initialized
   ansible.builtin.stat:
-    path: /var/opt/mssql/mssql.conf
-  register: agent_sandbox_worker_mssql_conf
+    path: /var/opt/mssql/data/master.mdf
+  register: agent_sandbox_worker_mssql_master_database
   when: agent_sandbox_worker_mssql_enabled | bool
 
 - name: Run initial SQL Server setup
@@ -85,7 +85,7 @@
   no_log: true
   when:
     - agent_sandbox_worker_mssql_enabled | bool
-    - not agent_sandbox_worker_mssql_conf.stat.exists
+    - not agent_sandbox_worker_mssql_master_database.stat.exists
 
 - name: Reconcile SQL Server SA password
   ansible.builtin.command:
@@ -99,7 +99,7 @@
   changed_when: false
   when:
     - agent_sandbox_worker_mssql_enabled | bool
-    - agent_sandbox_worker_mssql_conf.stat.exists
+    - agent_sandbox_worker_mssql_master_database.stat.exists
 
 - name: Configure SQL Server TCP port
   ansible.builtin.command:
