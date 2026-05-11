@@ -6,6 +6,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import unquote
 
 
 @dataclass(frozen=True)
@@ -51,13 +52,14 @@ class ContainerGitMirrorResolver:
             raise ValueError("repo_source is required")
 
         resolved_repo_path = self._resolve_repo_path(original_repo_source)
-        repo_name = self._resolve_repo_name(original_repo_source)
+        raw_repo_name = self._resolve_repo_name(original_repo_source)
+        repo_name = _safe_worker_repo_name(raw_repo_name)
         canonical_hash_source = (
             original_repo_source
             if _is_remote_git_source(original_repo_source)
             else str(Path(resolved_repo_path).resolve(strict=False))
         )
-        mirror_name = _mirror_name(repo_name, canonical_hash_source)
+        mirror_name = _mirror_name(raw_repo_name, canonical_hash_source)
         mirror_path = self.git_root_path / f"{mirror_name}.git"
         canonical_repo_source = self._canonical_repo_source(
             original_repo_source=original_repo_source,
@@ -263,6 +265,13 @@ def _mirror_name(repo_name: str, canonical_source: str) -> str:
     safe_name = safe_name or "repo"
     source_hash = hashlib.sha256(canonical_source.encode("utf-8")).hexdigest()[:12]
     return f"{safe_name}-{source_hash}"
+
+
+def _safe_worker_repo_name(repo_name: str) -> str:
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", unquote(repo_name.strip())).strip(".-")
+    if not safe_name or safe_name in {".", ".."}:
+        return "repo"
+    return safe_name
 
 
 def _git_remote_url(

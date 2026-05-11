@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_sandbox.git_mirror import ContainerGitMirrorResolver
+from agent_sandbox.git_mirror import ContainerGitMirrorResolver, _safe_worker_repo_name
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -111,6 +111,19 @@ def test_container_git_mirror_uses_hash_to_avoid_same_basename_collisions(
     assert second_mirror.repo_name == "repo"
     assert first_mirror.mirror_name != second_mirror.mirror_name
     assert first_mirror.mirror_path != second_mirror.mirror_path
+
+
+def test_container_git_mirror_sanitizes_worker_repo_name(tmp_path: Path) -> None:
+    source = _source_repo(tmp_path / "example_backup")
+
+    mirror = _resolver(tmp_path).resolve(repo_source=str(source), clone_branch="main")
+
+    assert mirror.repo_name == "example_backup"
+    assert mirror.worker_repo_source.startswith("ssh://agent-sandbox-git-host")
+
+
+def test_safe_worker_repo_name_decodes_url_escaped_segments() -> None:
+    assert _safe_worker_repo_name("OT%20Backup") == "example_backup"
 
 
 def test_container_git_mirror_missing_branch_fails_before_worker_clone(
