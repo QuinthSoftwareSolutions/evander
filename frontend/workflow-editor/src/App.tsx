@@ -55,11 +55,18 @@ type GraphNodeData = {
   description: string;
   inputPorts: ReadonlyArray<WorkflowEditorNodePortDefinition>;
   outputPorts: ReadonlyArray<WorkflowEditorNodePortDefinition>;
-  activeRunCount: number;
   dominantStatus: string | null;
-  statusLabel: string | null;
+  statusBadges: ReadonlyArray<GraphNodeStatusBadge>;
   diagnosticCount: number;
   hasDiagnostics: boolean;
+};
+
+type GraphNodeStatusBadge = {
+  status: string;
+  count: number;
+  label: string;
+  title: string;
+  compact: boolean;
 };
 
 type SaveState = "idle" | "saving" | "saved";
@@ -268,11 +275,16 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
                 <div className="node-diagnostic-badge">{nodeData.diagnosticCount}</div>
               </Tooltip>
             ) : null}
-            {nodeData.activeRunCount > 0 && nodeData.statusLabel ? (
-              <div className={`node-runtime-badge status-${nodeData.dominantStatus ?? "active"}`}>
-                {nodeData.statusLabel}
-              </div>
-            ) : null}
+            {nodeData.statusBadges.map((badge) => (
+              <Tooltip key={badge.status} content={badge.title}>
+                <div
+                  className={`node-runtime-badge status-${badge.status}${badge.compact ? " compact" : ""}`}
+                  aria-label={badge.title}
+                >
+                  {badge.label}
+                </div>
+              </Tooltip>
+            ))}
           </div>
         </div>
         <Tooltip content={typeDescription}>
@@ -515,21 +527,43 @@ function inboundLimit(node: WorkflowNodeConfig): number | null {
   return 1;
 }
 
-function dominantNodeStatus(activity: WorkflowNodeActivityCounts | undefined): string | null {
-  if (!activity) return null;
+function nodeStatusBuckets(
+  activity: WorkflowNodeActivityCounts | undefined,
+): Array<{ status: string; count: number }> {
+  if (!activity) return [];
+  const orderedStatuses = new Set<string>(NODE_STATUS_ORDER);
+  const buckets: Array<{ status: string; count: number }> = [];
   for (const status of NODE_STATUS_ORDER) {
-    if ((activity[status] ?? 0) > 0) return status;
+    const count = activity[status] ?? 0;
+    if (count > 0) {
+      buckets.push({ status, count });
+    }
   }
-  const [fallback] = Object.keys(activity);
-  return fallback ?? null;
+  for (const [status, count] of Object.entries(activity)) {
+    if (!orderedStatuses.has(status) && count > 0) {
+      buckets.push({ status, count });
+    }
+  }
+  return buckets;
 }
 
-function nodeStatusLabel(activity: WorkflowNodeActivityCounts | undefined): string | null {
-  if (!activity) return null;
-  const status = dominantNodeStatus(activity);
-  if (!status) return null;
-  const count = Object.values(activity).reduce((total, value) => total + value, 0);
-  return `${count} ${status}`;
+function dominantNodeStatus(activity: WorkflowNodeActivityCounts | undefined): string | null {
+  return nodeStatusBuckets(activity)[0]?.status ?? null;
+}
+
+function nodeStatusBadges(activity: WorkflowNodeActivityCounts | undefined): GraphNodeStatusBadge[] {
+  const buckets = nodeStatusBuckets(activity);
+  const compact = buckets.length > 1;
+  return buckets.map(({ status, count }) => {
+    const title = `${count} ${status}`;
+    return {
+      status,
+      count,
+      title,
+      compact,
+      label: compact ? `${count}` : title,
+    };
+  });
 }
 
 function buildNodes(
@@ -569,9 +603,8 @@ function buildNodes(
           : NODE_TYPE_DESCRIPTIONS[node.type] || `${node.type} node.`,
         inputPorts: catalogEntry?.input_ports ?? [],
         outputPorts: catalogEntry?.output_ports ?? [],
-        activeRunCount: Object.values(activity ?? {}).reduce((total, value) => total + value, 0),
         dominantStatus: dominantNodeStatus(activity),
-        statusLabel: nodeStatusLabel(activity),
+        statusBadges: nodeStatusBadges(activity),
         diagnosticCount,
         hasDiagnostics: diagnosticCount > 0,
       },
@@ -2872,9 +2905,7 @@ export default function App() {
     return (
       <div className="inspector-field" key="effect-target">
         <div className="field-toolbar">
-          <div className="field-header">
-            <span>Target</span>
-          </div>
+          {renderFieldHeader({ ...effectTargetField, label: "Target" })}
           {renderModeSelect(effectTargetField, mode, (nextMode) => {
             updateFieldMode(effectTargetKey, nextMode);
             if (nextMode === "bind") {
@@ -2966,6 +2997,24 @@ export default function App() {
     );
   }
 
+  function renderFieldHeader(field: WorkflowEditorFieldDefinition) {
+    return (
+      <div className="field-header">
+        <span>{field.label}</span>
+        {field.description ? (
+          <Tooltip
+            content={field.description}
+            ariaLabel={`${field.label} field help`}
+            focusable
+            triggerClassName="workflow-field-tooltip-trigger"
+          >
+            <span className="workflow-field-tooltip-icon" aria-hidden="true">i</span>
+          </Tooltip>
+        ) : null}
+      </div>
+    );
+  }
+
   function updateStringListField(key: string, value: string) {
     setInspectorStringListDrafts((current) => ({ ...current, [key]: value }));
   }
@@ -3016,9 +3065,7 @@ export default function App() {
       return (
         <div key={field.key} className="inspector-field">
           <div className="field-toolbar">
-            <div className="field-header">
-              <span>{field.label}</span>
-            </div>
+            {renderFieldHeader(field)}
             {renderModeSelect(field, mode, (nextMode) => {
               updateFieldMode(field.key, nextMode);
               if (nextMode === "bind") {
@@ -3030,7 +3077,6 @@ export default function App() {
               }
             }, isDisabled)}
           </div>
-          {field.description ? <p className="field-description">{field.description}</p> : null}
           {mode === "bind"
             ? renderBindingSelect(field, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(field.key, nextValue))
             : mode === "template"
@@ -3084,9 +3130,7 @@ export default function App() {
       return (
         <div key={field.key} className="inspector-field">
           <div className="field-toolbar">
-            <div className="field-header">
-              <span>{field.label}</span>
-            </div>
+            {renderFieldHeader(field)}
             {renderModeSelect(field, mode, (nextMode) => {
               updateFieldMode(field.key, nextMode);
               if (nextMode === "bind") {
@@ -3096,7 +3140,6 @@ export default function App() {
               }
             }, isDisabled)}
           </div>
-          {field.description ? <p className="field-description">{field.description}</p> : null}
           {mode === "bind"
             ? renderBindingSelect(field, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(field.key, nextValue))
             : (
@@ -3118,9 +3161,7 @@ export default function App() {
       return (
         <div key={field.key} className="inspector-field">
           <div className="field-toolbar">
-            <div className="field-header">
-              <span>{field.label}</span>
-            </div>
+            {renderFieldHeader(field)}
             {renderModeSelect(field, mode, (nextMode) => {
               updateFieldMode(field.key, nextMode);
               if (nextMode === "bind") {
@@ -3130,7 +3171,6 @@ export default function App() {
               }
             }, isDisabled)}
           </div>
-          {field.description ? <p className="field-description">{field.description}</p> : null}
           {mode === "bind"
             ? renderBindingSelect(field, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(field.key, nextValue))
             : (
@@ -3152,11 +3192,8 @@ export default function App() {
       return (
         <label key={field.key} className="inspector-field">
           <div className="field-toolbar">
-            <div className="field-header">
-              <span>{field.label}</span>
-            </div>
+            {renderFieldHeader(field)}
           </div>
-          {field.description ? <p className="field-description">{field.description}</p> : null}
           <select
             value={typeof value === "string" ? value : ""}
             onChange={(event) => updateKnownField(field.key, event.target.value)}
@@ -3186,11 +3223,8 @@ export default function App() {
         return (
           <div key={field.key} className="inspector-field">
             <div className="field-toolbar">
-              <div className="field-header">
-                <span>{field.label}</span>
-              </div>
+              {renderFieldHeader(field)}
             </div>
-            {field.description ? <p className="field-description">{field.description}</p> : null}
             <div className="option-checkbox-list">
               {field.options.map((option) => {
                 const checked = selectedValues.has(option.value);
@@ -3221,11 +3255,8 @@ export default function App() {
       return (
         <label key={field.key} className="inspector-field">
           <div className="field-toolbar">
-            <div className="field-header">
-              <span>{field.label}</span>
-            </div>
+            {renderFieldHeader(field)}
           </div>
-          {field.description ? <p className="field-description">{field.description}</p> : null}
           <textarea
             value={listValue}
             rows={4}
@@ -3241,9 +3272,7 @@ export default function App() {
       return (
         <div key={field.key} className="inspector-field">
           <div className="field-toolbar">
-            <div className="field-header">
-              <span>{field.label}</span>
-            </div>
+            {renderFieldHeader(field)}
             {renderModeSelect(field, mode, (nextMode) => {
               updateFieldMode(field.key, nextMode);
               if (nextMode === "bind") {
@@ -3253,7 +3282,6 @@ export default function App() {
               }
             }, isDisabled)}
           </div>
-          {field.description ? <p className="field-description">{field.description}</p> : null}
           {mode === "bind"
             ? renderBindingSelect(field, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(field.key, nextValue))
             : (
@@ -3275,9 +3303,7 @@ export default function App() {
       return (
         <div key={field.key} className="inspector-field">
           <div className="field-toolbar">
-            <div className="field-header">
-              <span>{field.label}</span>
-            </div>
+            {renderFieldHeader(field)}
           </div>
           {items.map((item, index) => {
             const itemValue = isRecord(item) ? item : {};
@@ -3296,12 +3322,10 @@ export default function App() {
                   return (
                     <div key={itemField.key} className="nested-field">
                       <div className="field-toolbar">
-                        <div className="field-header">
-                          <span>{itemField.label}</span>
-                        </div>
+                        {renderFieldHeader(itemField)}
                         {itemField.bindable ? (
                           <label className="mode-select">
-                            <span>Mode</span>
+                            <span>Value mode</span>
                             <select
                               value={currentMode}
                               onChange={(event) => {

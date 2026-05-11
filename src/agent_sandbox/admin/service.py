@@ -1430,31 +1430,76 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="effect:agent:copy-files",
         label="Agent copy files",
         fields=[
-            _field("target", "Target", "string", bindable=True),
-            _field("session_id", "Session ID", "string", bindable=True),
-            _field("vm_name", "VM name", "string", bindable=True),
-            _field("vm_user", "VM user", "string", bindable=True),
+            _field(
+                "target",
+                "Target",
+                "string",
+                bindable=True,
+                description="Agent session selector. Usually bind this to an upstream session_id.",
+            ),
+            _field(
+                "session_id",
+                "Session ID",
+                "string",
+                bindable=True,
+                description="Explicit session id to copy into when Target is not used.",
+            ),
+            _field(
+                "vm_name",
+                "VM name",
+                "string",
+                bindable=True,
+                description="Legacy VM selector for libvirt-backed agent sessions.",
+            ),
+            _field(
+                "vm_user",
+                "VM user",
+                "string",
+                bindable=True,
+                description="Guest user for libvirt-backed copies. Defaults to agent.",
+            ),
             _field(
                 "files",
                 "Files",
                 "object_list",
                 required=True,
+                description=(
+                    "Files to write into the agent session. Each item needs either "
+                    "Source path or Content."
+                ),
                 item_fields=[
-                    _field("source_path", "Source path", "string", bindable=True),
+                    _field(
+                        "source_path",
+                        "Source path",
+                        "string",
+                        bindable=True,
+                        description="Host-side file path to copy. Mutually exclusive with Content.",
+                    ),
                     _field(
                         "source_format",
                         "Source format",
                         "enum",
+                        description=(
+                            "How to read Source path. File copies the source; Template renders "
+                            "workflow bindings before writing."
+                        ),
                         options=[
                             _field_option("file", "File"),
                             _field_option("template", "Template"),
                         ],
                     ),
-                    _field("content", "Content", "string", bindable=True),
+                    _field(
+                        "content",
+                        "Content",
+                        "string",
+                        bindable=True,
+                        description="Inline file content. Mutually exclusive with Source path.",
+                    ),
                     _field(
                         "content_format",
                         "Content format",
                         "enum",
+                        description="How to serialize inline Content before writing it.",
                         options=[
                             _field_option("text", "Text"),
                             _field_option("json", "JSON"),
@@ -1467,9 +1512,31 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                         "string",
                         required=True,
                         bindable=True,
+                        description=(
+                            "Absolute destination path inside the agent session. "
+                            "Container-backed sessions require /home/agent/..."
+                        ),
                     ),
-                    _field("mode", "Mode", "string", bindable=True),
-                    _field("overwrite", "Overwrite", "boolean", bindable=True),
+                    _field(
+                        "mode",
+                        "Mode",
+                        "string",
+                        bindable=True,
+                        description=(
+                            "Optional Unix file permissions to apply after copying, "
+                            'for example "0644" or "0755".'
+                        ),
+                    ),
+                    _field(
+                        "overwrite",
+                        "Overwrite",
+                        "boolean",
+                        bindable=True,
+                        description=(
+                            "When enabled, replace an existing destination file. "
+                            "When disabled, fail if the destination already exists."
+                        ),
+                    ),
                 ],
             ),
         ],

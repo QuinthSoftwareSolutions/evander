@@ -183,6 +183,33 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "timeout_seconds",
         "check",
     ]
+    agent_copy_files = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "effect:agent:copy-files"
+    )
+    agent_copy_fields = {field["key"]: field for field in agent_copy_files["fields"]}
+    assert all(
+        agent_copy_fields[key]["description"]
+        for key in ["target", "session_id", "vm_name", "vm_user", "files"]
+    )
+    agent_copy_file_fields = {
+        field["key"]: field for field in agent_copy_fields["files"]["item_fields"]
+    }
+    assert all(
+        agent_copy_file_fields[key]["description"]
+        for key in [
+            "source_path",
+            "source_format",
+            "content",
+            "content_format",
+            "destination_path",
+            "mode",
+            "overwrite",
+        ]
+    )
+    assert "/home/agent" in agent_copy_file_fields["destination_path"]["description"]
+    assert "0644" in agent_copy_file_fields["mode"]["description"]
     vm_delete = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:delete-files"
     )
