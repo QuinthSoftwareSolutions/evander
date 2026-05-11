@@ -425,8 +425,8 @@ def test_azure_publish_provider_submits_review_and_inline_comments(
                 "status": "active",
                 "threadContext": {
                     "filePath": "src/app.py",
-                    "rightFileStart": {"line": 17},
-                    "rightFileEnd": {"line": 17},
+                    "rightFileStart": {"line": 17, "offset": 1},
+                    "rightFileEnd": {"line": 17, "offset": 1},
                 },
             }
             return httpx.Response(
@@ -583,8 +583,8 @@ def test_azure_publish_provider_maps_left_side_inline_comment(
             "status": "active",
             "threadContext": {
                 "filePath": "src/app.py",
-                "leftFileStart": {"line": 14},
-                "leftFileEnd": {"line": 17},
+                "leftFileStart": {"line": 14, "offset": 1},
+                "leftFileEnd": {"line": 17, "offset": 1},
             },
         }
         return httpx.Response(

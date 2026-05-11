@@ -3670,8 +3670,8 @@ def _azure_devops_thread_context_for_review_comment(comment: dict[str, Any]) -> 
     side = str(comment.get("side") or "RIGHT").strip().upper()
     position_prefix = "leftFile" if side == "LEFT" else "rightFile"
     start_line = comment.get("start_line") or line
-    thread_context[f"{position_prefix}Start"] = {"line": start_line}
-    thread_context[f"{position_prefix}End"] = {"line": line}
+    thread_context[f"{position_prefix}Start"] = {"line": start_line, "offset": 1}
+    thread_context[f"{position_prefix}End"] = {"line": line, "offset": 1}
     return thread_context
 
 
