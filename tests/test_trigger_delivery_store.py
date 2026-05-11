@@ -49,6 +49,34 @@ def test_trigger_delivery_store_suppresses_initial_history(tmp_path: Path) -> No
     assert next(iter(deliveries.values()))["status"] == "suppressed_initial_history"
 
 
+def test_trigger_delivery_store_keeps_first_snapshot_items_after_cutoff_deliverable(
+    tmp_path: Path,
+) -> None:
+    store = TriggerDeliveryStore(tmp_path / "trigger-deliveries.json")
+    subscription = _subscription()
+    initialized_at = datetime(2026, 4, 3, 12, 5, tzinfo=UTC)
+    existing = [
+        _item("review-old", initialized_at),
+        _item("review-concurrent", initialized_at + timedelta(microseconds=1)),
+    ]
+
+    assert store.initialize_subscription_if_new(
+        subscription,
+        existing,
+        now=initialized_at,
+    )
+
+    assert store.list_undelivered(subscription, existing) == [existing[1]]
+
+    raw = store.read_raw()
+    deliveries = raw["deliveries"]
+    assert isinstance(deliveries, dict)
+    assert len(deliveries) == 1
+    suppressed = next(iter(deliveries.values()))
+    assert suppressed["source_item_id"] == "review-old"
+    assert suppressed["status"] == "suppressed_initial_history"
+
+
 def test_trigger_delivery_store_delivers_per_trigger_subscription(tmp_path: Path) -> None:
     store = TriggerDeliveryStore(tmp_path / "trigger-deliveries.json")
     first_subscription = _subscription("trigger-a")
