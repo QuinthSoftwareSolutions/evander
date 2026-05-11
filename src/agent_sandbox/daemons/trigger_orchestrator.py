@@ -20,7 +20,11 @@ from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.runtime import RuntimeContext
 from agent_sandbox.app_bootstrap import build_runtime
 from agent_sandbox.platform_integrations import PlatformServiceBundle, RuntimeAssemblyInterface
-from agent_sandbox.events.models import TriggerDefinitionDiscriminated, validate_output_mapping_keys
+from agent_sandbox.events.models import (
+    TriggerDefinitionDiscriminated,
+    TriggerEvent,
+    validate_output_mapping_keys,
+)
 from agent_sandbox.orchestration.adapters import (
     TriggerCompletionPublisherAdapter,
     TriggerDependencyResolverAdapter,
@@ -174,6 +178,8 @@ class TriggerOrchestratorWorker:
                 return None
             already_queued = self.event_queue.contains(event.event_id)
             record = self.event_queue.publish(event)
+            if record.event_id == event.event_id:
+                _acknowledge_provider_event_published(providers.get(trigger.id), event)
             if not already_queued and record.event_id == event.event_id:
                 logger.debug(
                     "Trigger event published trigger_id=%s trigger_type=%s event_id=%s trace_id=%s",
@@ -246,6 +252,21 @@ def _normalize_trace_id(value: str | None) -> str:
         return str(uuid4())
     normalized = value.strip()
     return normalized or str(uuid4())
+
+
+def _acknowledge_provider_event_published(provider: Any | None, event: TriggerEvent) -> None:
+    acknowledge = getattr(provider, "acknowledge_published_event", None)
+    if not callable(acknowledge):
+        return
+    try:
+        acknowledge(event)
+    except Exception:
+        logger.exception(
+            "Trigger provider delivery acknowledgement failed trigger_id=%s trigger_type=%s event_id=%s",
+            event.trigger_id,
+            event.trigger_type,
+            event.event_id,
+        )
 
 
 def _is_system_trigger(trigger: TriggerDefinitionDiscriminated) -> bool:

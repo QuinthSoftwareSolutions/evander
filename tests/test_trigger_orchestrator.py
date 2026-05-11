@@ -24,6 +24,15 @@ class _StaticProvider:
         return list(self._events)
 
 
+class _AcknowledgingProvider(_StaticProvider):
+    def __init__(self, events: list[TriggerEvent]) -> None:
+        super().__init__(events)
+        self.acknowledged_event_ids: list[str] = []
+
+    def acknowledge_published_event(self, event: TriggerEvent) -> None:
+        self.acknowledged_event_ids.append(event.event_id)
+
+
 class _StaticReloader:
     def __init__(self, config: TriggerOrchestratorWorkerGlobalConfig, *, changed: bool) -> None:
         self._config = config
@@ -107,6 +116,42 @@ def test_trigger_orchestrator_run_once_publishes_and_updates_cursor(tmp_path: Pa
         worker_config.event_queue_cursor_store_path.read_text(encoding="utf-8")
     )
     assert cursor_payload["triggers"]["cron-1"]["last_event_id"] == "event-1"
+
+
+def test_trigger_orchestrator_acknowledges_provider_after_queue_publish(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    event = TriggerEvent(
+        event_id="event-1",
+        trigger_id="cron-1",
+        trigger_type="trigger:cron",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"kind": "tick"},
+    )
+    provider = _AcknowledgingProvider([event])
+    worker.provider_factory.build = lambda trigger: provider  # type: ignore[assignment]
+
+    worker.run_once()
+
+    assert provider.acknowledged_event_ids == ["event-1"]
 
 
 def test_trigger_orchestrator_main_once_uses_single_cycle(
