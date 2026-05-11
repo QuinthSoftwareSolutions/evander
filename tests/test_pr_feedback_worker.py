@@ -414,6 +414,62 @@ def test_ado_mapping_extracts_html_inline_images_and_attachment_links() -> None:
     assert media[1].metadata["source"] == "ado_attachment_link"
 
 
+def test_ado_mapping_extracts_markdown_pr_attachment_images() -> None:
+    adapter = AzureDevOpsFeedbackAdapter("https://dev.azure.com/example", "proj", pat="test-pat")
+    attachment_url = (
+        "https://dev.azure.com/exampleindustry/70a1569b-16ac-476e-a6b5-44830b54dcc7/"
+        "_apis/git/repositories/d30d0ddf-69c9-4a6b-98e4-1bc60506b8a1/"
+        "pullRequests/6690/attachments/image%20%282%29.png"
+    )
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "value": [
+                    {
+                        "id": 33772,
+                        "status": "active",
+                        "comments": [
+                            {
+                                "id": 8,
+                                "author": {"displayName": "Jonathan Quinth"},
+                                "content": (
+                                    "Are you able to load this screenshot into your workspace and view it?\n"
+                                    f"![image (2).png]({attachment_url})\n"
+                                    "![external](https://example.test/uploads/attachment.png)"
+                                ),
+                                "publishedDate": "2026-05-11T09:33:42.277000Z",
+                                "isDeleted": False,
+                            },
+                        ],
+                    }
+                ]
+            }
+
+    class FakeClient:
+        def get(self, *args: object, **kwargs: object) -> FakeResponse:
+            return FakeResponse()
+
+    result = adapter.poll(client=FakeClient(), repo="repo-1", pr_id="6690", cursor=None)
+
+    assert len(result.feedback) == 1
+    media = result.feedback[0].inline_media
+    assert len(media) == 1
+    assert media[0].source_kind == "pr_feedback"
+    assert media[0].provider == "azure_devops"
+    assert media[0].resource_id == "azure_devops:thread_comment:33772:8"
+    assert media[0].comment_id == "8"
+    assert media[0].media_id == "ado-markdown-image-0"
+    assert media[0].filename == "image (2).png"
+    assert media[0].mime_type == "image/png"
+    assert media[0].url == attachment_url
+    assert media[0].metadata["source"] == "ado_markdown_image"
+    assert media[0].metadata["alt"] == "image (2).png"
+
+
 def test_ado_mapping_thread_edge_cases() -> None:
     adapter = AzureDevOpsFeedbackAdapter("https://dev.azure.com/example", "proj", pat="test-pat")
 

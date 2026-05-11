@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Any, Iterable, Protocol
+from typing import Any, Callable, Iterable, Protocol
 from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 _FEEDBACK_RETENTION = timedelta(days=90)
 
 
-_GITHUB_MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 _INLINE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 
 
@@ -91,7 +91,11 @@ class _HtmlInlineMediaParser(HTMLParser):
 def _looks_like_ado_attachment_url(url: str) -> bool:
     parsed = urlparse(url)
     path = parsed.path.lower()
-    return "attachment" in path or "_apis/wit/attachments" in path
+    return "/_apis/wit/attachments/" in path or (
+        "/_apis/git/repositories/" in path
+        and "/pullrequests/" in path
+        and "/attachments/" in path
+    )
 
 
 def _filename_from_url(url: str, *, fallback: str) -> str:
@@ -241,6 +245,42 @@ def _inline_media_refs_from_items(
     return refs
 
 
+def _extract_markdown_inline_media(
+    *,
+    body: str,
+    provider: str,
+    feedback_id: str,
+    comment_id: str | None,
+    media_id_prefix: str = "markdown-image",
+    fallback_prefix: str = "github-inline-image",
+    metadata_source: str = "markdown_image",
+    url_filter: Callable[[str], bool] | None = None,
+) -> list[InlineMediaRef]:
+    refs: list[InlineMediaRef] = []
+    for index, match in enumerate(_MARKDOWN_IMAGE_RE.finditer(body)):
+        alt_text = match.group(1).strip()
+        url = match.group(2).strip()
+        if url_filter is not None and not url_filter(url):
+            continue
+        fallback = alt_text or f"{fallback_prefix}-{index}"
+        filename = _filename_from_url(url, fallback=fallback)
+        refs.append(
+            _media_ref(
+                provider=provider,
+                feedback_id=feedback_id,
+                comment_id=comment_id,
+                media_id=f"{media_id_prefix}-{index}",
+                url=url,
+                filename=filename,
+                mime_type=_mime_type_from_filename(filename),
+                metadata=sanitize_inline_media_metadata(
+                    {"source": metadata_source, "alt": alt_text}
+                ),
+            )
+        )
+    return refs
+
+
 def _extract_github_markdown_inline_media(
     *,
     body: str,
@@ -248,27 +288,12 @@ def _extract_github_markdown_inline_media(
     feedback_id: str,
     comment_id: str | None,
 ) -> list[InlineMediaRef]:
-    refs: list[InlineMediaRef] = []
-    for index, match in enumerate(_GITHUB_MARKDOWN_IMAGE_RE.finditer(body)):
-        alt_text = match.group(1).strip()
-        url = match.group(2).strip()
-        fallback = alt_text or f"github-inline-image-{index}"
-        filename = _filename_from_url(url, fallback=fallback)
-        refs.append(
-            _media_ref(
-                provider=provider,
-                feedback_id=feedback_id,
-                comment_id=comment_id,
-                media_id=f"markdown-image-{index}",
-                url=url,
-                filename=filename,
-                mime_type=_mime_type_from_filename(filename),
-                metadata=sanitize_inline_media_metadata(
-                    {"source": "markdown_image", "alt": alt_text}
-                ),
-            )
-        )
-    return refs
+    return _extract_markdown_inline_media(
+        body=body,
+        provider=provider,
+        feedback_id=feedback_id,
+        comment_id=comment_id,
+    )
 
 
 def _extract_ado_inline_media(
@@ -281,8 +306,10 @@ def _extract_ado_inline_media(
     parser = _HtmlInlineMediaParser()
     parser.feed(content)
     refs: list[InlineMediaRef] = []
+    seen_urls: set[str] = set()
     for index, item in enumerate(parser.items):
         url = item["url"].strip()
+        seen_urls.add(url)
         fallback = (
             item.get("alt")
             or item.get("title")
@@ -314,6 +341,17 @@ def _extract_ado_inline_media(
                 ),
             )
         )
+    markdown_refs = _extract_markdown_inline_media(
+        body=content,
+        provider=provider,
+        feedback_id=feedback_id,
+        comment_id=comment_id,
+        media_id_prefix="ado-markdown-image",
+        fallback_prefix="ado-markdown-image",
+        metadata_source="ado_markdown_image",
+        url_filter=lambda url: _looks_like_ado_attachment_url(url) and url not in seen_urls,
+    )
+    refs.extend(markdown_refs)
     return refs
 
 
