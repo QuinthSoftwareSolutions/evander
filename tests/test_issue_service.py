@@ -650,6 +650,16 @@ def test_query_backlog_items_can_include_relations_for_pr_coverage() -> None:
                             "System.State": "Active",
                             "System.WorkItemType": "Task",
                         },
+                    }
+                ]
+            },
+        ),
+        httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": 101,
                         "relations": [
                             {
                                 "rel": "ArtifactLink",
@@ -673,7 +683,12 @@ def test_query_backlog_items_can_include_relations_for_pr_coverage() -> None:
 
     batch_payload = calls[1]["json"]
     assert isinstance(batch_payload, dict)
-    assert batch_payload["$expand"] == "Relations"
+    assert "$expand" not in batch_payload
+    assert "fields" in batch_payload
+    relation_batch_payload = calls[2]["json"]
+    assert isinstance(relation_batch_payload, dict)
+    assert relation_batch_payload["$expand"] == "Relations"
+    assert "fields" not in relation_batch_payload
     assert result["items"][0]["relations"][0]["attributes"]["name"] == "Pull Request"
 
 

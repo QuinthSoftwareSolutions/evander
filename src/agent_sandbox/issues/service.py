@@ -1520,8 +1520,6 @@ class AzureDevOpsIssueAdapter:
                     "fields": select_fields,
                     "errorPolicy": "Omit",
                 }
-                if include_relations:
-                    batch_body["$expand"] = "Relations"
                 batch_response = client.post(
                     batch_url,
                     params={"api-version": "7.1"},
@@ -1533,6 +1531,39 @@ class AzureDevOpsIssueAdapter:
                         action="fetch backlog items batch", response=batch_response
                     )
                 batch_payload = batch_response.json()
+                relations_by_id: dict[str, list[dict[str, Any]]] = {}
+                if include_relations:
+                    relations_response = client.post(
+                        batch_url,
+                        params={"api-version": "7.1"},
+                        headers={"Authorization": auth_header, "Content-Type": "application/json"},
+                        json={
+                            "ids": chunk_ids,
+                            "$expand": "Relations",
+                            "errorPolicy": "Omit",
+                        },
+                    )
+                    if relations_response.is_error:
+                        self._raise_ado_http_error(
+                            action="fetch backlog item relations batch",
+                            response=relations_response,
+                        )
+                    relations_payload = relations_response.json()
+                    relation_values = (
+                        relations_payload.get("value")
+                        if isinstance(relations_payload, dict)
+                        else None
+                    )
+                    for relation_item in relation_values or []:
+                        if not isinstance(relation_item, dict):
+                            continue
+                        relation_item_id = str(relation_item.get("id") or "").strip()
+                        if not relation_item_id:
+                            continue
+                        relations_by_id[relation_item_id] = self._normalize_relations(
+                            relation_item.get("relations"),
+                            resource_id=relation_item_id,
+                        )
                 values = batch_payload.get("value") if isinstance(batch_payload, dict) else None
                 for raw_item in values or []:
                     if not isinstance(raw_item, dict):
@@ -1560,9 +1591,7 @@ class AzureDevOpsIssueAdapter:
                         "fields": {k: v for k, v in raw_fields.items()},
                     }
                     if include_relations:
-                        item["relations"] = self._normalize_relations(
-                            raw_item.get("relations"), resource_id=item["id"]
-                        )
+                        item["relations"] = relations_by_id.get(item["id"], [])
                     items.append(item)
         id_order = {str(item_id): index for index, item_id in enumerate(paged_ids)}
         items.sort(key=lambda item: id_order.get(str(item.get("id") or ""), len(id_order)))
