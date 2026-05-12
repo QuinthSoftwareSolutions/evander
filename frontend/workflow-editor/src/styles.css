@@ -1931,6 +1931,143 @@ select {
   color: rgba(32, 93, 84, 0.72);
 }
 
+.pending-connection-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.pending-connection-line {
+  stroke: #6b7280;
+  stroke-width: 2.5;
+  stroke-dasharray: 7 5;
+  stroke-linecap: round;
+}
+
+.pending-connection-line.route-started {
+  stroke: #2d5fa8;
+}
+
+.pending-connection-line.route-completed {
+  stroke: #2d7b46;
+}
+
+.pending-connection-line.route-loop {
+  stroke: #a56a18;
+}
+
+.pending-connection-line.route-error {
+  stroke: #b23b1a;
+}
+
+.pending-connection-label {
+  paint-order: stroke;
+  stroke: #fffdf8;
+  stroke-width: 4px;
+  fill: #2b3940;
+  font-family: "Avenir Next Condensed", "Franklin Gothic Medium", sans-serif;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.node-context-menu {
+  position: absolute;
+  z-index: 20;
+  min-width: 12rem;
+  padding: 0.35rem;
+  border: 1px solid rgba(45, 63, 68, 0.18);
+  border-radius: 8px;
+  background: #fffdf8;
+  box-shadow: 0 18px 45px rgba(22, 45, 52, 0.2);
+}
+
+.node-context-menu-heading {
+  padding: 0.35rem 0.45rem 0.45rem;
+  color: #607176;
+  font-family: "Avenir Next Condensed", "Franklin Gothic Medium", sans-serif;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.node-context-menu-item {
+  display: flex;
+  width: 100%;
+  justify-content: flex-start;
+  margin: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #26383d;
+  text-align: left;
+}
+
+.node-context-menu-item:hover,
+.node-context-menu-item:focus-visible {
+  background: rgba(224, 234, 231, 0.86);
+}
+
+.node-context-menu-item.route-started {
+  color: #244f8d;
+}
+
+.node-context-menu-item.route-completed {
+  color: #23633a;
+}
+
+.node-context-menu-item.route-loop {
+  color: #8b5712;
+}
+
+.node-context-menu-item.route-error {
+  color: #9a3418;
+}
+
+.react-flow__edge.workflow-edge .react-flow__edge-path {
+  stroke-width: 2.2;
+}
+
+.react-flow__edge.workflow-edge-route-default .react-flow__edge-path {
+  stroke: #6f7d80;
+}
+
+.react-flow__edge.workflow-edge-route-started .react-flow__edge-path {
+  stroke: #2d5fa8;
+}
+
+.react-flow__edge.workflow-edge-route-completed .react-flow__edge-path {
+  stroke: #2d7b46;
+}
+
+.react-flow__edge.workflow-edge-route-loop .react-flow__edge-path {
+  stroke: #a56a18;
+}
+
+.react-flow__edge.workflow-edge-route-error .react-flow__edge-path {
+  stroke: #b23b1a;
+}
+
+.react-flow__edge.workflow-edge-route-named .react-flow__edge-path {
+  stroke: #7b4aa8;
+}
+
+.react-flow__edge.workflow-edge .react-flow__edge-text {
+  fill: #2b3940;
+  font-family: "Avenir Next Condensed", "Franklin Gothic Medium", sans-serif;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.react-flow__edge.workflow-edge .react-flow__edge-textbg {
+  fill: #fffdf8;
+  stroke: rgba(45, 63, 68, 0.12);
+  stroke-width: 1;
+}
+
 .snap-guide {
   position: absolute;
   z-index: 6;
@@ -1991,85 +2128,29 @@ select {
 }
 
 .workflow-handle {
-  width: 14px;
-  height: 14px;
-  border: 2px solid #fff7eb;
-  background: #23594f;
-  box-shadow: 0 0 0 2px rgba(35, 89, 79, 0.18);
-}
-
-.workflow-port-stack {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  --workflow-port-offset: 4.9rem;
-}
-
-.workflow-port {
-  position: absolute;
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  width: var(--workflow-port-offset);
+  width: 2px;
+  height: 2px;
+  border: 0;
+  background: transparent;
+  opacity: 0;
   pointer-events: none;
 }
 
-.workflow-port .workflow-handle {
-  pointer-events: auto;
+.workflow-technical-handle {
+  min-width: 2px;
+  min-height: 2px;
 }
 
-.workflow-port-tooltip,
-.workflow-port-tooltip .admin-tooltip-trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  pointer-events: auto;
+.node-card.connection-source {
+  outline: 2px solid #215d6b;
 }
 
-.port-stack-input .workflow-port {
-  left: calc(-1 * var(--workflow-port-offset));
+.node-card.connection-valid-target {
+  box-shadow: 0 0 0 3px rgba(28, 127, 116, 0.22), 0 14px 36px rgba(48, 38, 25, 0.14);
 }
 
-.port-stack-output .workflow-port {
-  right: calc(-1 * var(--workflow-port-offset));
-}
-
-.workflow-port-output {
-  justify-content: flex-end;
-}
-
-.workflow-port-label {
-  min-width: 3rem;
-  font-family: "Avenir Next Condensed", "Franklin Gothic Medium", sans-serif;
-  font-size: 0.68rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: #7d5d34;
-  text-align: right;
-}
-
-.port-stack-input .workflow-port-label {
-  text-align: left;
-}
-
-.node-trigger .workflow-handle {
-  background: #9f6a21;
-  box-shadow: 0 0 0 2px rgba(159, 106, 33, 0.16);
-}
-
-.node-gate .workflow-handle {
-  background: #2d7b46;
-  box-shadow: 0 0 0 2px rgba(45, 123, 70, 0.16);
-}
-
-.node-effect .workflow-handle {
-  background: #2d5fa8;
-  box-shadow: 0 0 0 2px rgba(45, 95, 168, 0.16);
-}
-
-.node-query .workflow-handle {
-  background: #7b4aa8;
-  box-shadow: 0 0 0 2px rgba(123, 74, 168, 0.18);
+.node-card.connection-invalid-target {
+  opacity: 0.48;
 }
 
 .node-trigger {

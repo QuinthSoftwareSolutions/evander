@@ -5,6 +5,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from agent_sandbox.ado_reports import DEFAULT_EFFORT_FIELDS
 from agent_sandbox.issues.service import AzureDevOpsIssueAdapter
 
 
@@ -684,7 +685,8 @@ def test_query_backlog_items_can_include_relations_for_pr_coverage() -> None:
     batch_payload = calls[1]["json"]
     assert isinstance(batch_payload, dict)
     assert "$expand" not in batch_payload
-    assert "fields" in batch_payload
+    assert isinstance(batch_payload["fields"], list)
+    assert set(DEFAULT_EFFORT_FIELDS).issubset(batch_payload["fields"])
     relation_batch_payload = calls[2]["json"]
     assert isinstance(relation_batch_payload, dict)
     assert relation_batch_payload["$expand"] == "Relations"

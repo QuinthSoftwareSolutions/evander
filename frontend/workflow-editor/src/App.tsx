@@ -55,6 +55,13 @@ import {
   type ParsedBindingExpression,
   type ParsedBindingReference,
 } from "./workflowBindings";
+import {
+  normalizeWorkflowSourcePort,
+  workflowConnectionRouteOptions,
+  workflowEdgeRouteLabel,
+  workflowRouteClass,
+  type WorkflowConnectionRouteOption,
+} from "./workflowRoutes";
 
 type GraphNodeData = {
   id: string;
@@ -68,6 +75,7 @@ type GraphNodeData = {
   statusBadges: ReadonlyArray<GraphNodeStatusBadge>;
   diagnosticCount: number;
   hasDiagnostics: boolean;
+  pendingConnectionRole?: PendingConnectionRole | null;
 };
 
 type GraphNodeStatusBadge = {
@@ -106,6 +114,29 @@ type WorkflowGraphLabel = {
 };
 
 type WorkflowGraphView = "directory" | "private";
+
+type CanvasPoint = {
+  x: number;
+  y: number;
+};
+
+type PendingConnectionState = {
+  sourceId: string;
+  sourcePort: string | null;
+  routeLabel: string;
+  routeClass: string;
+  sourcePoint: CanvasPoint;
+  cursorPoint: CanvasPoint;
+};
+
+type NodeConnectionMenuState = {
+  nodeId: string;
+  position: CanvasPoint;
+  sourcePoint: CanvasPoint;
+  routes: WorkflowConnectionRouteOption[];
+};
+
+type PendingConnectionRole = "source" | "valid-target" | "invalid-target";
 
 type CopiedWorkflowNode = {
   node: WorkflowNodeConfig;
@@ -252,26 +283,20 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
     <div
       className={`node-card node-${nodeData.kind}${selected ? " selected" : ""}${
         nodeData.dominantStatus ? ` runtime-${nodeData.dominantStatus}` : ""
-      }${nodeData.hasDiagnostics ? " invalid" : ""}`}
+      }${nodeData.hasDiagnostics ? " invalid" : ""}${
+        nodeData.pendingConnectionRole ? ` connection-${nodeData.pendingConnectionRole}` : ""
+      }`}
     >
-      {nodeData.inputPorts.length > 0 ? (
-        <div className="workflow-port-stack port-stack-input">
-          {nodeData.inputPorts.map((port, index) => (
-            <div
-              key={`input-${port.key}`}
-              className="workflow-port"
-              style={{ top: `${30 + index * 24}px` }}
-            >
-              <Tooltip content={port.description ?? `${port.label} input port.`} className="workflow-port-tooltip" inline={false}>
-                <Handle id={port.key} type="target" position={Position.Left} className="workflow-handle" />
-                <span className="workflow-port-label">{port.label}</span>
-              </Tooltip>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <Handle type="target" position={Position.Left} className="workflow-handle" />
-      )}
+      <Handle type="target" position={Position.Left} className="workflow-handle workflow-technical-handle" />
+      {nodeData.inputPorts.map((port) => (
+        <Handle
+          key={`input-${port.key}`}
+          id={port.key}
+          type="target"
+          position={Position.Left}
+          className="workflow-handle workflow-technical-handle"
+        />
+      ))}
       <div className="node-drag-surface">
         <div className="node-heading">
           <Tooltip content={`${kindDescription} ${typeDescription}`}>
@@ -300,24 +325,16 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
         </Tooltip>
         <div className="node-id">{nodeData.id}</div>
       </div>
-      {nodeData.outputPorts.length > 0 ? (
-        <div className="workflow-port-stack port-stack-output">
-          {nodeData.outputPorts.map((port, index) => (
-            <div
-              key={`output-${port.key}`}
-              className="workflow-port workflow-port-output"
-              style={{ top: `${30 + index * 24}px` }}
-            >
-              <Tooltip content={port.description ?? `${port.label} output port.`} className="workflow-port-tooltip" inline={false}>
-                <span className="workflow-port-label">{port.label}</span>
-                <Handle id={port.key} type="source" position={Position.Right} className="workflow-handle" />
-              </Tooltip>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <Handle type="source" position={Position.Right} className="workflow-handle" />
-      )}
+      <Handle type="source" position={Position.Right} className="workflow-handle workflow-technical-handle" />
+      {nodeData.outputPorts.map((port) => (
+        <Handle
+          key={`output-${port.key}`}
+          id={port.key}
+          type="source"
+          position={Position.Right}
+          className="workflow-handle workflow-technical-handle"
+        />
+      ))}
     </div>
   );
 }
@@ -646,15 +663,24 @@ function wouldCreateCycle(config: WorkflowConfig, sourceId: string, targetId: st
   return false;
 }
 
-function buildEdges(config: WorkflowConfig): Edge[] {
-  return config.edges.map((edge) => ({
-    id: edgeId(edge),
-    source: edge.source_id,
-    sourceHandle: edge.source_port,
-    target: edge.target_id,
-    label: edge.source_port ?? undefined,
-    animated: Boolean(edge.allow_cycle),
-  }));
+function buildEdges(config: WorkflowConfig, catalog: WorkflowEditorCatalog): Edge[] {
+  return config.edges.map((edge) => {
+    const sourceNode = nodeById(config, edge.source_id);
+    const sourceCatalogEntry = sourceNode ? getCatalogEntry(catalog, sourceNode.type) : undefined;
+    const siblingSourcePorts = config.edges
+      .filter((candidate) => candidate.source_id === edge.source_id)
+      .map((candidate) => candidate.source_port);
+    const routeClass = workflowRouteClass(edge.source_port);
+    return {
+      id: edgeId(edge),
+      source: edge.source_id,
+      sourceHandle: edge.source_port,
+      target: edge.target_id,
+      label: workflowEdgeRouteLabel(edge.source_port, sourceCatalogEntry?.output_ports ?? [], siblingSourcePorts),
+      animated: Boolean(edge.allow_cycle),
+      className: `workflow-edge workflow-edge-route-${routeClass}`,
+    };
+  });
 }
 
 function renderStringInput(
@@ -1731,6 +1757,8 @@ export default function App() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [selectedGraphId, setSelectedGraphId] = useState<string | null>(null);
+  const [nodeConnectionMenu, setNodeConnectionMenu] = useState<NodeConnectionMenuState | null>(null);
+  const [pendingConnection, setPendingConnection] = useState<PendingConnectionState | null>(null);
   const [workflowGraphView, setWorkflowGraphView] = useState<WorkflowGraphView>("directory");
   const [graphNameDraft, setGraphNameDraft] = useState("");
   const [graphDescriptionDraft, setGraphDescriptionDraft] = useState("");
@@ -1762,7 +1790,32 @@ export default function App() {
   const visibleRuns = (runSnapshot?.runs ?? []).filter((run) =>
     run.active_nodes.some((activity) => visibleGraphNodeIds.has(activity.node_id)),
   );
-  const displayedFlowNodes = flowNodes.filter((node) => visibleGraphNodeIds.has(node.id));
+  const baseDisplayedFlowNodes = flowNodes.filter((node) => visibleGraphNodeIds.has(node.id));
+  const displayedFlowNodes = pendingConnection && document
+    ? baseDisplayedFlowNodes.map((node) => {
+        let pendingConnectionRole: PendingConnectionRole;
+        if (node.id === pendingConnection.sourceId) {
+          pendingConnectionRole = "source";
+        } else {
+          pendingConnectionRole = validateConnection(
+            document.config,
+            catalog,
+            pendingConnection.sourceId,
+            node.id,
+            pendingConnection.sourcePort,
+          )
+            ? "invalid-target"
+            : "valid-target";
+        }
+        return {
+          ...node,
+          data: {
+            ...node.data,
+            pendingConnectionRole,
+          },
+        };
+      })
+    : baseDisplayedFlowNodes;
   const displayedFlowEdges = flowEdges.filter(
     (edge) => visibleGraphNodeIds.has(edge.source) && visibleGraphNodeIds.has(edge.target),
   );
@@ -1779,6 +1832,14 @@ export default function App() {
           visibleGraphNodeIds.has(edge.target_id),
       )
     : undefined;
+  const selectedEdgeSourceNode = selectedEdge ? nodeById(config, selectedEdge.source_id) : undefined;
+  const selectedEdgeSourceCatalogEntry = selectedEdgeSourceNode
+    ? getCatalogEntry(catalog, selectedEdgeSourceNode.type)
+    : undefined;
+  const selectedEdgeRouteLabel = selectedEdge
+    ? workflowEdgeRouteLabel(selectedEdge.source_port, selectedEdgeSourceCatalogEntry?.output_ports ?? [])
+      ?? (selectedEdge.source_port ? selectedEdge.source_port : "Default")
+    : null;
   const selectedGraph = selectedGraphId
     ? visibleWorkflowGraphs.find((graph) => graph.id === selectedGraphId)
     : undefined;
@@ -1900,7 +1961,7 @@ export default function App() {
         setValidationDiagnostics(nextDiagnostics);
         setDocument(normalizedDocument);
         setFlowNodes(buildNodes(normalizedConfig, payload.layout, catalogPayload, runSnapshotPayload.node_activity, nextDiagnostics));
-        setFlowEdges(buildEdges(normalizedConfig));
+        setFlowEdges(buildEdges(normalizedConfig, catalogPayload));
       })
       .catch((reason: unknown) => {
         if (cancelled) return;
@@ -2028,7 +2089,7 @@ export default function App() {
         currentNodes.filter((node) => node.selected).map((node) => node.id),
       );
     });
-    setFlowEdges(buildEdges(document.config));
+    setFlowEdges(buildEdges(document.config, catalog));
   }, [catalog, document, runSnapshot, validationDiagnostics]);
 
   useEffect(() => {
@@ -2180,7 +2241,7 @@ export default function App() {
         selectedNodeIdsAfterPatch ?? currentNodes.filter((node) => node.selected).map((node) => node.id),
       ),
     );
-    setFlowEdges(buildEdges(normalizedConfig));
+    setFlowEdges(buildEdges(normalizedConfig, catalog));
     setSaveState("idle");
   }
 
@@ -2239,6 +2300,15 @@ export default function App() {
     };
   }
 
+  function canvasPointFromScreenPoint(clientX: number, clientY: number): CanvasPoint | null {
+    const canvasRect = canvasShellRef.current?.getBoundingClientRect();
+    if (!canvasRect) return null;
+    return {
+      x: clientX - canvasRect.left,
+      y: clientY - canvasRect.top,
+    };
+  }
+
   function nodePositionCenteredOnFlowPoint(flowPosition: { x: number; y: number }): { x: number; y: number } {
     return {
       x: flowPosition.x - FALLBACK_NODE_WIDTH / 2,
@@ -2258,6 +2328,78 @@ export default function App() {
       canvasRect.left + canvasRect.width / 2,
       canvasRect.top + canvasRect.height / 2,
     );
+  }
+
+  function nodeCenterCanvasPoint(node: Node<GraphNodeData>): CanvasPoint {
+    const bounds = nodeBounds(node);
+    return {
+      x: (bounds.centerX * canvasViewport.zoom) + canvasViewport.x,
+      y: (bounds.centerY * canvasViewport.zoom) + canvasViewport.y,
+    };
+  }
+
+  function closeConnectionUi() {
+    setNodeConnectionMenu(null);
+    setPendingConnection(null);
+  }
+
+  function startPendingConnection(route: WorkflowConnectionRouteOption) {
+    if (!nodeConnectionMenu || editLocked) return;
+    setPendingConnection({
+      sourceId: nodeConnectionMenu.nodeId,
+      sourcePort: route.sourcePort,
+      routeLabel: route.label,
+      routeClass: route.routeClass,
+      sourcePoint: nodeConnectionMenu.sourcePoint,
+      cursorPoint: nodeConnectionMenu.position,
+    });
+    setNodeConnectionMenu(null);
+    setSelectedEdgeId(null);
+    setError(null);
+    appShellRef.current?.focus();
+  }
+
+  function updatePendingConnectionCursor(clientX: number, clientY: number) {
+    const cursorPoint = canvasPointFromScreenPoint(clientX, clientY);
+    if (!cursorPoint) return;
+    setPendingConnection((current) => current ? { ...current, cursorPoint } : current);
+  }
+
+  function addWorkflowEdge(sourceId: string, targetId: string, sourcePort?: string | null): boolean {
+    if (!document || editLocked) return false;
+    const normalizedSourcePort = normalizeWorkflowSourcePort(sourcePort);
+    const validationError = validateConnection(
+      document.config,
+      catalog,
+      sourceId,
+      targetId,
+      normalizedSourcePort,
+    );
+    if (validationError) {
+      setError(validationError);
+      return false;
+    }
+    const targetNode = nodeById(document.config, targetId);
+    const allowCycle = targetNode?.type === "gate:for" && wouldCreateCycle(document.config, sourceId, targetId);
+    const nextConfig = cloneConfig(document.config);
+    const nextEdge: WorkflowEdge = {
+      source_id: sourceId,
+      target_id: targetId,
+    };
+    if (normalizedSourcePort) {
+      nextEdge.source_port = normalizedSourcePort;
+    }
+    if (allowCycle) {
+      nextEdge.allow_cycle = true;
+    }
+    nextConfig.edges = [
+      ...nextConfig.edges,
+      nextEdge,
+    ];
+    patchDocument(nextConfig, cloneLayout(document.layout));
+    setSelectedEdgeId(null);
+    setError(null);
+    return true;
   }
 
   function startNodeTypeDrag(
@@ -2289,6 +2431,59 @@ export default function App() {
     event.preventDefault();
     event.stopPropagation();
     addNode(payload.kind, payload.type, nodePositionFromScreenPoint(event.clientX, event.clientY));
+  }
+
+  function handleNodeContextMenu(event: React.MouseEvent, node: Node<GraphNodeData>) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (editLocked) return;
+    const position = canvasPointFromScreenPoint(event.clientX, event.clientY);
+    if (!position) return;
+    setProgrammaticSelection([node.id], node.id);
+    setSelectedEdgeId(null);
+    setNodeConnectionMenu({
+      nodeId: node.id,
+      position,
+      sourcePoint: nodeCenterCanvasPoint(node),
+      routes: workflowConnectionRouteOptions(node.data.outputPorts),
+    });
+    setPendingConnection(null);
+    setError(null);
+    appShellRef.current?.focus();
+  }
+
+  function handleWorkflowNodeClick(event: React.MouseEvent, node: Node<GraphNodeData>) {
+    if (pendingConnection) {
+      event.stopPropagation();
+      if (addWorkflowEdge(pendingConnection.sourceId, node.id, pendingConnection.sourcePort)) {
+        setPendingConnection(null);
+      }
+      appShellRef.current?.focus();
+      return;
+    }
+    setNodeConnectionMenu(null);
+    setSelectedNodeId(node.id);
+    setSelectedEdgeId(null);
+    appShellRef.current?.focus();
+  }
+
+  function handleCanvasPointerMove(event: ReactPointerEvent<HTMLElement>) {
+    if (!pendingConnection) return;
+    updatePendingConnectionCursor(event.clientX, event.clientY);
+  }
+
+  function handlePaneClick() {
+    if (pendingConnection || nodeConnectionMenu) {
+      closeConnectionUi();
+    }
+    setSelectedEdgeId(null);
+    setSnapGuides([]);
+  }
+
+  function handlePaneContextMenu(event: MouseEvent | React.MouseEvent) {
+    if (!pendingConnection && !nodeConnectionMenu) return;
+    event.preventDefault();
+    closeConnectionUi();
   }
 
   function deleteSelectedEdge() {
@@ -2416,6 +2611,11 @@ export default function App() {
 
   function handleAppShellKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
     if (isEditableEventTarget(event.target)) return;
+    if (event.key === "Escape" && (pendingConnection || nodeConnectionMenu)) {
+      event.preventDefault();
+      closeConnectionUi();
+      return;
+    }
     const isCopy = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c";
     const isPaste = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v";
     if (isCopy) {
@@ -2643,37 +2843,7 @@ export default function App() {
 
   function onConnect(connection: Connection) {
     if (!document || !connection.source || !connection.target || editLocked) return;
-    const validationError = validateConnection(
-      document.config,
-      catalog,
-      connection.source,
-      connection.target,
-      connection.sourceHandle,
-    );
-    if (validationError) {
-      setError(validationError);
-      return;
-    }
-    const targetNode = nodeById(document.config, connection.target);
-    const allowCycle = targetNode?.type === "gate:for" && wouldCreateCycle(document.config, connection.source, connection.target);
-    const nextConfig = cloneConfig(document.config);
-    const nextEdge: WorkflowEdge = {
-      source_id: connection.source,
-      target_id: connection.target,
-    };
-    if (connection.sourceHandle) {
-      nextEdge.source_port = connection.sourceHandle;
-    }
-    if (allowCycle) {
-      nextEdge.allow_cycle = true;
-    }
-    nextConfig.edges = [
-      ...nextConfig.edges,
-      nextEdge,
-    ];
-    patchDocument(nextConfig, cloneLayout(document.layout));
-    setSelectedEdgeId(null);
-    setError(null);
+    addWorkflowEdge(connection.source, connection.target, connection.sourceHandle);
   }
 
   function onEdgesDelete(deletedEdges: Edge[]) {
@@ -3632,7 +3802,7 @@ export default function App() {
                 <div className="section-label">Edge</div>
                 <div className="inspector-summary">
                   <div>{selectedEdge.source_id}</div>
-                  {selectedEdge.source_port ? <div>Port: {selectedEdge.source_port}</div> : null}
+                  <div>Route: {selectedEdgeRouteLabel}</div>
                   <div>{selectedEdge.target_id}</div>
                   {selectedEdge.allow_cycle ? <div>Cycle return</div> : null}
                 </div>
@@ -3663,6 +3833,7 @@ export default function App() {
             ref={canvasShellRef}
             onDragOver={handleNodeTypeDragOver}
             onDrop={handleNodeTypeDrop}
+            onPointerMove={handleCanvasPointerMove}
           >
             <ReactFlow
               nodes={displayedFlowNodes}
@@ -3672,21 +3843,18 @@ export default function App() {
               onMove={(_, viewport) => setCanvasViewport(viewport)}
               onNodesChange={updateNodePositions}
               onEdgesChange={updateEdgeChanges}
-              onNodeClick={(_, node) => {
-                setSelectedNodeId(node.id);
-                setSelectedEdgeId(null);
-                appShellRef.current?.focus();
-              }}
+              onNodeClick={handleWorkflowNodeClick}
+              onNodeContextMenu={handleNodeContextMenu}
               onEdgeClick={(_, edge) => {
+                setNodeConnectionMenu(null);
+                setPendingConnection(null);
                 setProgrammaticSelection([]);
                 setSelectedEdgeId(edge.id);
               }}
               onNodeDrag={(_, node, nodes) => updateDraggedNodePositions(node, nodes.length > 0 ? nodes : [node])}
               onNodeDragStop={(_, node, nodes) => persistNodePositions(nodes.length > 0 ? nodes : [node])}
-              onPaneClick={() => {
-                setSelectedEdgeId(null);
-                setSnapGuides([]);
-              }}
+              onPaneClick={handlePaneClick}
+              onPaneContextMenu={handlePaneContextMenu}
               onConnect={onConnect}
               onEdgesDelete={onEdgesDelete}
               onNodesDelete={onNodesDelete}
@@ -3699,6 +3867,50 @@ export default function App() {
             >
               <Background gap={20} size={1} />
             </ReactFlow>
+            {pendingConnection ? (
+              <svg className="pending-connection-layer" aria-hidden="true">
+                <line
+                  className={`pending-connection-line route-${pendingConnection.routeClass}`}
+                  x1={pendingConnection.sourcePoint.x}
+                  y1={pendingConnection.sourcePoint.y}
+                  x2={pendingConnection.cursorPoint.x}
+                  y2={pendingConnection.cursorPoint.y}
+                />
+                {pendingConnection.sourcePort ? (
+                  <text
+                    className="pending-connection-label"
+                    x={(pendingConnection.sourcePoint.x + pendingConnection.cursorPoint.x) / 2}
+                    y={(pendingConnection.sourcePoint.y + pendingConnection.cursorPoint.y) / 2 - 8}
+                  >
+                    {pendingConnection.routeLabel}
+                  </text>
+                ) : null}
+              </svg>
+            ) : null}
+            {nodeConnectionMenu ? (
+              <div
+                className="node-context-menu"
+                style={{
+                  left: `${nodeConnectionMenu.position.x}px`,
+                  top: `${nodeConnectionMenu.position.y}px`,
+                }}
+                role="menu"
+              >
+                <div className="node-context-menu-heading">Add connection</div>
+                {nodeConnectionMenu.routes.map((route) => (
+                  <button
+                    key={route.sourcePort ?? "__default"}
+                    type="button"
+                    className={`node-context-menu-item route-${route.routeClass}`}
+                    onClick={() => startPendingConnection(route)}
+                    title={route.description ?? undefined}
+                    role="menuitem"
+                  >
+                    {route.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
             <div className="workflow-graph-label-layer" aria-hidden="true">
               {graphLabels.map((label) => (
                 <div

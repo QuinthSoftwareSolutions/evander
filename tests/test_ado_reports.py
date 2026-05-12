@@ -101,6 +101,20 @@ def test_elapsed_percent_uses_swedish_work_time_and_public_holidays() -> None:
     assert {"date": "2026-05-14", "name": "Ascension Day"} in elapsed["excluded_dates"]
 
 
+def test_sprint_length_uses_work_week_label_for_monday_to_friday_two_week_sprint() -> None:
+    payload = build_ado_daily_status_report_data(
+        items=[],
+        project="Example",
+        team="Platform",
+        iteration_path="Example\\2026w19",
+        iteration_start_date="2026-05-04T00:00:00Z",
+        iteration_finish_date="2026-05-15T00:00:00Z",
+        now=datetime(2026, 5, 12, 8, 0, tzinfo=UTC),
+    )
+
+    assert payload["template_data"]["sprintLength"] == "2-week sprint"
+
+
 def test_elapsed_percent_can_include_common_swedish_non_working_eves() -> None:
     payload = build_ado_daily_status_report_data(
         items=[],

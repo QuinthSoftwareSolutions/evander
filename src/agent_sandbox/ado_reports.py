@@ -584,6 +584,14 @@ def _sprint_length_from_dates(start_value: str | None, finish_value: str | None)
     finish = _parse_datetime(finish_value)
     if start is None or finish is None or finish <= start:
         return None
+    weekdays = _weekday_count_inclusive(start.date(), finish.date())
+    if 4 <= weekdays <= 6:
+        return "1-week sprint"
+    if 9 <= weekdays <= 11:
+        return "2-week sprint"
+    if weekdays >= 4 and weekdays % 5 == 0:
+        weeks = weekdays // 5
+        return f"{weeks}-week sprint"
     days = max(int(round((finish - start).total_seconds() / 86400)), 1)
     if 13 <= days <= 15:
         return "2-week sprint"
@@ -593,6 +601,18 @@ def _sprint_length_from_dates(start_value: str | None, finish_value: str | None)
         weeks = days // 7
         return f"{weeks}-week sprint"
     return f"{days}-day sprint"
+
+
+def _weekday_count_inclusive(start: date, finish: date) -> int:
+    if finish < start:
+        return 0
+    total = 0
+    current = start
+    while current <= finish:
+        if current.weekday() < 5:
+            total += 1
+        current += timedelta(days=1)
+    return total
 
 
 def _percent(value: float | int, total: float | int) -> float:

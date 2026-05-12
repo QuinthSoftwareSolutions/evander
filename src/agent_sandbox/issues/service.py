@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
 
+from agent_sandbox.ado_reports import DEFAULT_EFFORT_FIELDS
 from agent_sandbox.inline_media import (
     InlineMediaDownload,
     download_url_with_limit,
@@ -1492,6 +1493,7 @@ class AzureDevOpsIssueAdapter:
             "System.AssignedTo",
             "System.Tags",
             "System.ChangedDate",
+            *DEFAULT_EFFORT_FIELDS,
         ]
         wiql_response = client.post(
             wiql_url,
