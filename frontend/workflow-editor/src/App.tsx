@@ -46,6 +46,15 @@ import {
 } from "./types";
 import { useAdminUi } from "./features/admin/AdminContext";
 import { Tooltip } from "./features/admin/Tooltip";
+import {
+  BindingParseError,
+  isParsedBindingExpression,
+  isParsedBindingReference,
+  parseBindingExpression,
+  rewriteWorkflowNodeConfigBindings,
+  type ParsedBindingExpression,
+  type ParsedBindingReference,
+} from "./workflowBindings";
 
 type GraphNodeData = {
   id: string;
@@ -123,7 +132,6 @@ const SYSTEM_BINDING_OPTIONS: ReadonlyArray<BindingOption> = [
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const BINDING_EXACT_RE = /^\$\{\{([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}$/;
-const BINDING_REFERENCE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
 const EFFECT_TARGET_KEYS = ["target", "session_id", "vm_name"] as const;
 type EffectTargetKey = (typeof EFFECT_TARGET_KEYS)[number];
 
@@ -1374,26 +1382,6 @@ function flattenOutputPaths(prefix: string, schema: unknown): string[] {
   return paths;
 }
 
-type ParsedBindingReference = {
-  nodeId: string;
-  outputPath: string;
-};
-
-type ParsedBindingExpression = {
-  primary: ParsedBindingReference;
-  fallback?: ParsedBindingReference | ParsedBindingExpression | unknown;
-  hasFallback: boolean;
-};
-
-class BindingParseError extends Error {
-  readonly code: "malformed_binding" | "malformed_binding_fallback";
-
-  constructor(code: "malformed_binding" | "malformed_binding_fallback", message: string) {
-    super(message);
-    this.code = code;
-  }
-}
-
 function validateWorkflowBindingDiagnostics(
   config: WorkflowConfig,
   outputSchemas: WorkflowOutputSchemas = deriveWorkflowOutputSchemas(config),
@@ -1623,91 +1611,6 @@ function resolveAvailableBindingReference(
     }
   }
   return reference;
-}
-
-function parseBindingExpression(expression: string, sourceText: string): ParsedBindingExpression {
-  const text = expression.trim();
-  if (!text) {
-    throw new BindingParseError("malformed_binding", "Binding expression is empty");
-  }
-  const [primaryText, fallbackText] = splitFallbackExpression(text);
-  const primary = parseBindingReference(primaryText, sourceText);
-  if (fallbackText === null) return { primary, hasFallback: false };
-  return {
-    primary,
-    fallback: parseFallbackValue(fallbackText, sourceText),
-    hasFallback: true,
-  };
-}
-
-function splitFallbackExpression(expression: string): [string, string | null] {
-  let inString = false;
-  let quoteChar = "";
-  let escape = false;
-  for (let index = 0; index < expression.length; index += 1) {
-    const char = expression[index];
-    if (inString) {
-      if (escape) {
-        escape = false;
-        continue;
-      }
-      if (char === "\\") {
-        escape = true;
-        continue;
-      }
-      if (char === quoteChar) {
-        inString = false;
-        quoteChar = "";
-      }
-      continue;
-    }
-    if (char === "\"" || char === "'") {
-      inString = true;
-      quoteChar = char;
-      continue;
-    }
-    if (expression.slice(index, index + 2) === "??") {
-      return [expression.slice(0, index).trim(), expression.slice(index + 2).trim()];
-    }
-  }
-  return [expression.trim(), null];
-}
-
-function parseBindingReference(reference: string, sourceText: string): ParsedBindingReference {
-  if (!BINDING_REFERENCE_RE.test(reference)) {
-    throw new BindingParseError("malformed_binding", `Malformed output reference in ${sourceText}`);
-  }
-  const separator = reference.indexOf(".");
-  return {
-    nodeId: reference.slice(0, separator),
-    outputPath: reference.slice(separator + 1),
-  };
-}
-
-function parseFallbackValue(value: string, sourceText: string): ParsedBindingReference | ParsedBindingExpression | unknown {
-  if (!value) {
-    throw new BindingParseError("malformed_binding_fallback", `Malformed fallback in ${sourceText}`);
-  }
-  const [_fallbackPrimary, nestedFallbackText] = splitFallbackExpression(value);
-  if (nestedFallbackText !== null) {
-    return parseBindingExpression(value, sourceText);
-  }
-  if (BINDING_REFERENCE_RE.test(value)) {
-    return parseBindingReference(value, sourceText);
-  }
-  try {
-    return JSON.parse(value);
-  } catch {
-    throw new BindingParseError("malformed_binding_fallback", `Malformed fallback in ${sourceText}`);
-  }
-}
-
-function isParsedBindingReference(value: unknown): value is ParsedBindingReference {
-  return isRecord(value) && typeof value.nodeId === "string" && typeof value.outputPath === "string";
-}
-
-function isParsedBindingExpression(value: unknown): value is ParsedBindingExpression {
-  return isRecord(value) && isParsedBindingReference(value.primary) && typeof value.hasFallback === "boolean";
 }
 
 function fieldValueMode(field: WorkflowEditorFieldDefinition, value: unknown): "literal" | "bind" | "template" {
@@ -2459,6 +2362,7 @@ export default function App() {
     nextConfig.effects ??= [];
     nextConfig.queries ??= [];
     const idMap = new Map<string, string>();
+    const duplicatedNodes: Array<{ kind: WorkflowNodeKind; node: WorkflowNodeConfig }> = [];
     for (const copiedNode of copiedSelection.nodes) {
       const templateNode = copiedNode.node;
       const templateKind = nodeKindFromType(templateNode.type);
@@ -2468,6 +2372,13 @@ export default function App() {
       duplicatedNode.display_name = `${templateNode.display_name} Copy`;
       nextConfig[kindCollectionKey(templateKind)].push(duplicatedNode);
       idMap.set(templateNode.id, nextId);
+      duplicatedNodes.push({ kind: templateKind, node: duplicatedNode });
+    }
+    for (const duplicatedNode of duplicatedNodes) {
+      const collection = nextConfig[kindCollectionKey(duplicatedNode.kind)];
+      const nodeIndex = collection.findIndex((node) => node.id === duplicatedNode.node.id);
+      if (nodeIndex === -1) continue;
+      collection[nodeIndex] = rewriteWorkflowNodeConfigBindings(duplicatedNode.node, idMap);
     }
     const duplicatedEdges = copiedSelection.edges
       .map((edge) => {
