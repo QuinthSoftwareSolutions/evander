@@ -331,6 +331,7 @@ class IssueProviderAdapter(Protocol):
         area_path: str | None = None,
         states: list[str] | None = None,
         types: list[str] | None = None,
+        exclude_types: list[str] | None = None,
         tags_any: list[str] | None = None,
         text_search: str | None = None,
         top: int = 50,
@@ -347,6 +348,7 @@ class IssueProviderAdapter(Protocol):
         area_path: str | None = None,
         states: list[str] | None = None,
         types: list[str] | None = None,
+        exclude_types: list[str] | None = None,
         tags_any: list[str] | None = None,
         text_search: str | None = None,
         top: int = 50,
@@ -509,6 +511,11 @@ class AzureDevOpsIssueAdapter:
         quoted = ", ".join(cls._wiql_quote(item) for item in normalized)
         return f"[{field_name}] IN ({quoted})"
 
+    @classmethod
+    def _wiql_not_equals_clauses(cls, field_name: str, values: list[str]) -> list[str]:
+        normalized = [str(value).strip() for value in values if str(value).strip()]
+        return [f"[{field_name}] <> {cls._wiql_quote(value)}" for value in normalized]
+
     @staticmethod
     def _is_safe_wiql_field_reference(value: str) -> bool:
         return bool(re.fullmatch(r"[A-Za-z0-9_.]+", value))
@@ -537,6 +544,7 @@ class AzureDevOpsIssueAdapter:
         team_field_values: list[_AdoTeamFieldValue] | None = None,
         states: list[str] | None = None,
         types: list[str] | None = None,
+        exclude_types: list[str] | None = None,
         tags_any: list[str] | None = None,
         text_search: str | None = None,
     ) -> str:
@@ -554,6 +562,9 @@ class AzureDevOpsIssueAdapter:
         type_clause = self._wiql_in_clause("System.WorkItemType", types or [])
         if type_clause:
             where_clauses.append(type_clause)
+        where_clauses.extend(
+            self._wiql_not_equals_clauses("System.WorkItemType", exclude_types or [])
+        )
         if tags_any:
             tag_clauses = [
                 f"[System.Tags] CONTAINS {self._wiql_quote(tag)}"
@@ -1178,6 +1189,7 @@ class AzureDevOpsIssueAdapter:
         area_path: str | None = None,
         states: list[str] | None = None,
         types: list[str] | None = None,
+        exclude_types: list[str] | None = None,
         tags_any: list[str] | None = None,
         text_search: str | None = None,
         top: int = 50,
@@ -1200,6 +1212,7 @@ class AzureDevOpsIssueAdapter:
                 area_path=area_path,
                 states=states,
                 types=types,
+                exclude_types=exclude_types,
                 tags_any=tags_any,
                 text_search=text_search,
                 top=top,
@@ -1216,6 +1229,7 @@ class AzureDevOpsIssueAdapter:
         area_path: str | None = None,
         states: list[str] | None = None,
         types: list[str] | None = None,
+        exclude_types: list[str] | None = None,
         tags_any: list[str] | None = None,
         text_search: str | None = None,
         top: int = 50,
@@ -1254,6 +1268,7 @@ class AzureDevOpsIssueAdapter:
                 team_field_values=team_field_values,
                 states=states,
                 types=types,
+                exclude_types=exclude_types,
                 tags_any=tags_any,
                 text_search=text_search,
                 top=top,
@@ -1444,6 +1459,7 @@ class AzureDevOpsIssueAdapter:
         team_field_values: list[_AdoTeamFieldValue] | None = None,
         states: list[str] | None = None,
         types: list[str] | None = None,
+        exclude_types: list[str] | None = None,
         tags_any: list[str] | None = None,
         text_search: str | None = None,
         top: int = 50,
@@ -1461,6 +1477,7 @@ class AzureDevOpsIssueAdapter:
                 team_field_values=team_field_values,
                 states=states,
                 types=types,
+                exclude_types=exclude_types,
                 tags_any=tags_any,
                 text_search=text_search,
             )
@@ -1916,6 +1933,7 @@ class IssueService:
         area_path: str | None = None,
         states: list[str] | None = None,
         types: list[str] | None = None,
+        exclude_types: list[str] | None = None,
         tags_any: list[str] | None = None,
         text_search: str | None = None,
         top: int = 50,
@@ -1933,6 +1951,7 @@ class IssueService:
             area_path=area_path,
             states=states,
             types=types,
+            exclude_types=exclude_types,
             tags_any=tags_any,
             text_search=text_search,
             top=top,
@@ -1950,6 +1969,7 @@ class IssueService:
         area_path: str | None = None,
         states: list[str] | None = None,
         types: list[str] | None = None,
+        exclude_types: list[str] | None = None,
         tags_any: list[str] | None = None,
         text_search: str | None = None,
         top: int = 50,
@@ -1966,6 +1986,7 @@ class IssueService:
             area_path=area_path,
             states=states,
             types=types,
+            exclude_types=exclude_types,
             tags_any=tags_any,
             text_search=text_search,
             top=top,

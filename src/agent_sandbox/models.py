@@ -154,6 +154,7 @@ class SessionManifest(BaseModel):
     allowed_script_names: list[str] = Field(default_factory=list)
     discord_channel_allowlist: list[str] = Field(default_factory=list)
     teams_channel_allowlist: list[str] = Field(default_factory=list)
+    teams_user_allowlist: list[str] = Field(default_factory=list)
     email_folder_allowlist: list[str] = Field(default_factory=list)
     email_mailbox_allowlist: list[str] = Field(default_factory=list)
     email_folder_allowlist_by_mailbox: dict[str, list[str]] = Field(default_factory=dict)
@@ -1469,6 +1470,9 @@ class AdoDailyStatusReportRequest(BaseModel):
     area_path: str | None = None
     states: list[str] = Field(default_factory=list)
     types: list[AdoBacklogItemType] = Field(default_factory=list)
+    exclude_types: list[AdoBacklogItemType] = Field(
+        default_factory=lambda: [AdoBacklogItemType.TASK]
+    )
     tags_any: list[str] = Field(default_factory=list)
     text_search: str | None = None
     title: str = "Daily Sprint Status"
@@ -1533,7 +1537,7 @@ class AdoDailyStatusReportRequest(BaseModel):
             deduped.append(normalized)
         return deduped
 
-    @field_validator("types", mode="before")
+    @field_validator("types", "exclude_types", mode="before")
     @classmethod
     def normalize_types(cls, value: object) -> list[AdoBacklogItemType]:
         if value is None:

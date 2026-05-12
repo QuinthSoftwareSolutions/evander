@@ -677,6 +677,26 @@ def test_query_backlog_items_can_include_relations_for_pr_coverage() -> None:
     assert result["items"][0]["relations"][0]["attributes"]["name"] == "Pull Request"
 
 
+def test_query_backlog_items_can_exclude_work_item_types() -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(200, json={"workItems": []}),
+    ]
+
+    adapter._query_backlog_items_core(
+        _RecordingClient(calls, responses.copy()),
+        organization_url="https://dev.azure.com/example",
+        project="project-x",
+        auth_header="Basic secret",
+        exclude_types=["Task"],
+    )
+
+    wiql_payload = calls[0]["json"]
+    assert isinstance(wiql_payload, dict)
+    assert "[System.WorkItemType] <> 'Task'" in wiql_payload["query"]
+
+
 def test_list_current_iteration_uses_project_default_team_when_team_omitted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

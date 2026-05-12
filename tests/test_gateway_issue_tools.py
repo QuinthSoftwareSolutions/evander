@@ -780,6 +780,7 @@ def test_get_ado_daily_status_report_data_fetches_pages_and_calculates_template_
             "area_path": None,
             "states": [],
             "types": [],
+            "exclude_types": ["Task"],
             "tags_any": [],
             "text_search": None,
             "top": 2,
@@ -794,6 +795,7 @@ def test_get_ado_daily_status_report_data_fetches_pages_and_calculates_template_
             "area_path": None,
             "states": [],
             "types": [],
+            "exclude_types": ["Task"],
             "tags_any": [],
             "text_search": None,
             "top": 1,
@@ -812,6 +814,7 @@ def test_get_ado_daily_status_report_data_fetches_pages_and_calculates_template_
     assert result["template_data"]["elapsedSprintPercent"] == 50
     assert result["source"]["truncated"] is False
     assert result["source"]["iteration_path"] == "Project\\Sprint 12"
+    assert result["source"]["excluded_types"] == ["Task"]
 
 
 def test_get_ado_backlog_item_requires_permission(tmp_path: Path) -> None:

@@ -443,6 +443,8 @@ class TeamsService(Protocol):
         thread_id: str | None = None,
     ) -> dict[str, Any]: ...
 
+    def ensure_one_on_one_chat(self, user_ref: str) -> str: ...
+
     def list_attachments(
         self, message_id: str, *, channel_target: str | None = None
     ) -> list[dict[str, Any]]: ...
@@ -569,11 +571,12 @@ class TeamsAuthenticationError(httpx.HTTPError):
 
 @dataclass(frozen=True)
 class TeamsTarget:
-    kind: Literal["channel", "chat"]
+    kind: Literal["channel", "chat", "user"]
     normalized: str
     team_id: str | None = None
     channel_id: str | None = None
     chat_id: str | None = None
+    user_ref: str | None = None
 
 
 class StubDiscordService:
@@ -1170,20 +1173,33 @@ def _graph_error_details(response: httpx.Response) -> str:
     return ", ".join(parts)
 
 
+_TEAMS_TARGET_ERROR = (
+    "expected 'team-id/channel-id', 'chat:<chat-id>', or 'user:<user-id-or-upn>'."
+)
+
+
+def normalize_teams_user_target(target: str) -> str:
+    normalized = str(target or "").strip().strip("/")
+    user_ref = normalized.removeprefix("user:").strip()
+    if not user_ref:
+        raise ValueError(f"Invalid Teams user target {target!r}: {_TEAMS_TARGET_ERROR}")
+    if "/" in user_ref or any(character.isspace() for character in user_ref):
+        raise ValueError(f"Invalid Teams user target {target!r}: {_TEAMS_TARGET_ERROR}")
+    return f"user:{user_ref.casefold()}"
+
+
 def normalize_teams_target(target: str) -> str:
     normalized = str(target or "").strip().strip("/")
     if normalized.startswith("chat:"):
         chat_id = normalized.removeprefix("chat:").strip()
         if not chat_id:
-            raise ValueError(
-                f"Invalid Teams target {target!r}: expected 'team-id/channel-id' or 'chat:<chat-id>'."
-            )
+            raise ValueError(f"Invalid Teams target {target!r}: {_TEAMS_TARGET_ERROR}")
         return f"chat:{chat_id}"
+    if normalized.startswith("user:"):
+        return normalize_teams_user_target(normalized)
     team_id, separator, channel_id = normalized.partition("/")
     if not separator or not team_id or not channel_id:
-        raise ValueError(
-            f"Invalid Teams target {target!r}: expected 'team-id/channel-id' or 'chat:<chat-id>'."
-        )
+        raise ValueError(f"Invalid Teams target {target!r}: {_TEAMS_TARGET_ERROR}")
     return f"{team_id}/{channel_id}"
 
 
@@ -1193,6 +1209,12 @@ def parse_teams_target(target: str) -> TeamsTarget:
         return TeamsTarget(
             kind="chat", normalized=normalized, chat_id=normalized.removeprefix("chat:")
         )
+    if normalized.startswith("user:"):
+        return TeamsTarget(
+            kind="user",
+            normalized=normalized,
+            user_ref=normalized.removeprefix("user:"),
+        )
     team_id, _, channel_id = normalized.partition("/")
     return TeamsTarget(
         kind="channel",
@@ -1200,6 +1222,16 @@ def parse_teams_target(target: str) -> TeamsTarget:
         team_id=team_id,
         channel_id=channel_id,
     )
+
+
+def resolve_teams_send_target(service: TeamsService, channel_target: str) -> str:
+    parsed_target = parse_teams_target(channel_target)
+    if parsed_target.kind != "user":
+        return parsed_target.normalized
+    ensure_chat = getattr(service, "ensure_one_on_one_chat", None)
+    if not callable(ensure_chat):
+        raise ValueError("Configured Teams adapter does not support user targets.")
+    return normalize_teams_target(str(ensure_chat(parsed_target.user_ref or "")))
 
 
 def teams_target_from_message(
@@ -1226,10 +1258,26 @@ class StubTeamsService:
         self,
         message_store: TeamsRecordsRepository,
         *,
+        allowed_user_targets_provider: Callable[[], list[str]] = lambda: [],
         read_reaction_emoji: str = "👀",
     ) -> None:
         self.message_store = message_store
+        self.allowed_user_targets_provider = allowed_user_targets_provider
         self.read_reaction_emoji = read_reaction_emoji
+
+    def _allowed_user_targets(self) -> set[str]:
+        return {
+            normalize_teams_user_target(target)
+            for target in self.allowed_user_targets_provider()
+            if str(target or "").strip()
+        }
+
+    def ensure_one_on_one_chat(self, user_ref: str) -> str:
+        user_target = normalize_teams_user_target(user_ref)
+        if user_target not in self._allowed_user_targets():
+            raise ValueError(f"Teams user target is not allowlisted: {user_target}")
+        stub_chat_id = user_target.removeprefix("user:").replace("@", "_at_")
+        return f"chat:stub-user-{stub_chat_id}"
 
     def get_messages(
         self,
@@ -1308,6 +1356,8 @@ class StubTeamsService:
         thread_id: str | None = None,
     ) -> dict[str, Any]:
         target = parse_teams_target(channel_target)
+        if target.kind == "user":
+            raise ValueError("Teams user targets must be resolved before posting.")
         normalized_thread_id = str(thread_id or "").strip() or None
         result: dict[str, Any] = {
             "status": "stubbed",
@@ -1384,6 +1434,8 @@ class StubTeamsService:
         session_id: str,
     ) -> dict[str, Any]:
         target = parse_teams_target(channel_target)
+        if target.kind == "user":
+            raise ValueError("Teams user targets must be resolved before adding reactions.")
         normalized_reaction = str(reaction).strip()
         result: dict[str, Any] = {
             "status": "stubbed",
@@ -1417,6 +1469,9 @@ class GraphTeamsService:
         retry_base_backoff_seconds: float = 0.5,
         retry_max_backoff_seconds: float = 5.0,
         allowed_channel_targets_provider: Callable[[], list[str]] = lambda: [],
+        allowed_user_targets_provider: Callable[[], list[str]] = lambda: [],
+        user_chat_cache: dict[str, str] | None = None,
+        user_chat_cache_namespace: str = "default",
         read_reaction_emoji: str = "👀",
     ) -> None:
         self.message_store = message_store
@@ -1435,6 +1490,9 @@ class GraphTeamsService:
             for attempt in range(self.retry_count)
         )
         self.allowed_channel_targets_provider = allowed_channel_targets_provider
+        self.allowed_user_targets_provider = allowed_user_targets_provider
+        self.user_chat_cache = user_chat_cache if user_chat_cache is not None else {}
+        self.user_chat_cache_namespace = str(user_chat_cache_namespace or "default")
         self.read_reaction_emoji = read_reaction_emoji
 
     def _resolve_token(self) -> str:
@@ -1458,13 +1516,104 @@ class GraphTeamsService:
         }
 
     def _allowed_channel_targets(self) -> list[str]:
+        targets = {
+            normalize_teams_target(target)
+            for target in self.allowed_channel_targets_provider()
+            if target.strip()
+        }
+        for user_target in self._allowed_user_targets():
+            chat_id = self.user_chat_cache.get(self._user_chat_cache_key(user_target))
+            if chat_id:
+                targets.add(normalize_teams_target(f"chat:{chat_id}"))
+        return sorted(targets)
+
+    def _allowed_user_targets(self) -> list[str]:
         return sorted(
             {
-                normalize_teams_target(target)
-                for target in self.allowed_channel_targets_provider()
-                if target.strip()
+                normalize_teams_user_target(target)
+                for target in self.allowed_user_targets_provider()
+                if str(target or "").strip()
             }
         )
+
+    def _user_chat_cache_key(self, user_target: str) -> str:
+        normalized_user_target = normalize_teams_user_target(user_target)
+        return f"{self.user_chat_cache_namespace}:{normalized_user_target}"
+
+    def _current_user_cache_key(self) -> str:
+        return f"{self.user_chat_cache_namespace}:me"
+
+    @staticmethod
+    def _graph_user_bind_url(api_base_url: str, user_ref: str) -> str:
+        escaped_ref = str(user_ref).replace("'", "''")
+        return f"{api_base_url}/users('{escaped_ref}')"
+
+    def _require_allowed_user_target(self, user_ref: str) -> str:
+        normalized = normalize_teams_user_target(user_ref)
+        if normalized not in set(self._allowed_user_targets()):
+            raise ValueError(f"Teams user target is not allowlisted: {normalized}")
+        return normalized
+
+    def _current_user_ref(self, client: httpx.Client) -> str:
+        cache_key = self._current_user_cache_key()
+        cached = self.user_chat_cache.get(cache_key)
+        if cached:
+            return cached
+        response = self._request_with_retries(
+            client,
+            "GET",
+            f"{self.api_base_url}/me",
+            params={"$select": "id,userPrincipalName"},
+        )
+        payload = response.json()
+        user_ref = str(payload.get("id") or payload.get("userPrincipalName") or "").strip()
+        if not user_ref:
+            raise ValueError("Teams Graph /me response did not include id or userPrincipalName.")
+        self.user_chat_cache[cache_key] = user_ref
+        return user_ref
+
+    def ensure_one_on_one_chat(self, user_ref: str) -> str:
+        normalized_user_target = self._require_allowed_user_target(user_ref)
+        target_user_ref = normalized_user_target.removeprefix("user:")
+        cache_key = self._user_chat_cache_key(normalized_user_target)
+        cached_chat_id = self.user_chat_cache.get(cache_key)
+        if cached_chat_id:
+            return normalize_teams_target(f"chat:{cached_chat_id}")
+
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            current_user_ref = self._current_user_ref(client)
+            if current_user_ref.casefold() == target_user_ref.casefold():
+                raise ValueError("Cannot create a one-on-one Teams chat with the signed-in user.")
+            response = self._request_with_retries(
+                client,
+                "POST",
+                f"{self.api_base_url}/chats",
+                json={
+                    "chatType": "oneOnOne",
+                    "members": [
+                        {
+                            "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                            "roles": ["owner"],
+                            "user@odata.bind": self._graph_user_bind_url(
+                                self.api_base_url, current_user_ref
+                            ),
+                        },
+                        {
+                            "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                            "roles": ["owner"],
+                            "user@odata.bind": self._graph_user_bind_url(
+                                self.api_base_url, target_user_ref
+                            ),
+                        },
+                    ],
+                },
+            )
+        payload = response.json()
+        chat_id = str(payload.get("id") or "").strip()
+        if not chat_id:
+            raise ValueError("Teams Graph create chat response did not include an id.")
+        self.user_chat_cache[cache_key] = chat_id
+        return normalize_teams_target(f"chat:{chat_id}")
 
     def _request_with_retries(
         self,
@@ -1759,6 +1908,8 @@ class GraphTeamsService:
                 ):
                     target_cursor = before_cursor_parts[1]
                     target_mode = "before"
+                if parsed_target.kind == "user":
+                    raise ValueError("Teams user targets must be resolved before reading messages.")
                 if parsed_target.kind == "chat":
                     iterator = self._iter_chat_messages(
                         client,
@@ -1860,7 +2011,10 @@ class GraphTeamsService:
         allowed = set(self._allowed_channel_targets())
         if allowed and normalized not in allowed:
             raise ValueError(f"Teams target is not allowlisted: {normalized}")
-        return parse_teams_target(normalized)
+        target = parse_teams_target(normalized)
+        if target.kind == "user":
+            raise ValueError("Teams user targets must be resolved before this operation.")
+        return target
 
     def _find_message_record(
         self, message_id: str, *, channel_target: str | None = None
@@ -2073,6 +2227,8 @@ class GraphTeamsService:
             if thread_id:
                 raise ValueError("Teams chat targets do not support thread replies.")
             return f"{self.api_base_url}/chats/{quote(target.chat_id or '', safe='')}/messages"
+        if target.kind == "user":
+            raise ValueError("Teams user targets must be resolved before posting files.")
         encoded_team_id = quote(target.team_id or "", safe="")
         encoded_channel_id = quote(target.channel_id or "", safe="")
         if not thread_id:
@@ -2203,6 +2359,8 @@ class GraphTeamsService:
         thread_id: str | None = None,
     ) -> dict[str, Any]:
         target = parse_teams_target(channel_target)
+        if target.kind == "user":
+            raise ValueError("Teams user targets must be resolved before posting.")
         normalized_thread_id = str(thread_id or "").strip() or None
         if target.kind == "chat":
             if normalized_thread_id is not None:
@@ -2263,6 +2421,8 @@ class GraphTeamsService:
         session_id: str,
     ) -> dict[str, Any]:
         target = parse_teams_target(channel_target)
+        if target.kind == "user":
+            raise ValueError("Teams user targets must be resolved before adding reactions.")
         normalized_reaction = str(reaction).strip()
         graph_reaction_type = _normalize_graph_teams_reaction_type(normalized_reaction)
         encoded_message_id = quote(message_id, safe="")

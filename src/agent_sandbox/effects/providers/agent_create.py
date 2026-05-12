@@ -44,6 +44,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "allowed_script_names": effect.allowed_script_names,
             "discord_channels": effect.discord_channels,
             "teams_channel_allowlist": effect.teams_channel_allowlist,
+            "teams_user_allowlist": effect.teams_user_allowlist,
             "email_mailboxes": effect.email_mailboxes,
             "email_folders": effect.email_folders,
             "communication_file_receive_enabled": effect.communication_file_receive_enabled,
@@ -109,6 +110,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             allowed_script_names=as_string_list(payload.get("allowed_script_names")),
             discord_channels=as_string_list(payload.get("discord_channels")),
             teams_channel_allowlist=as_string_list(payload.get("teams_channel_allowlist")),
+            teams_user_allowlist=as_string_list(payload.get("teams_user_allowlist")),
             email_mailboxes=as_string_list(payload.get("email_mailboxes")),
             email_folders=as_string_list(payload.get("email_folders")),
             communication_file_receive_enabled=as_bool_or_none(
@@ -196,6 +198,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             allowed_script_names=as_string_list(payload.get("allowed_script_names")),
             discord_channels=as_string_list(payload.get("discord_channels")),
             teams_channel_allowlist=as_string_list(payload.get("teams_channel_allowlist")),
+            teams_user_allowlist=as_string_list(payload.get("teams_user_allowlist")),
             email_mailboxes=as_string_list(payload.get("email_mailboxes")),
             email_folders=as_string_list(payload.get("email_folders")),
             communication_file_receive_enabled=as_bool_or_none(

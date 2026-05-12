@@ -27,6 +27,11 @@ class FakeTeamsService:
         self.reaction_calls: list[tuple[str, str, str, str]] = []
         self.reaction_error_by_message_id: dict[str, Exception] = {}
         self.read_reaction_emoji = "👀"
+        self.ensure_chat_calls: list[str] = []
+
+    def ensure_one_on_one_chat(self, user_ref: str) -> str:
+        self.ensure_chat_calls.append(user_ref)
+        return "chat:chat-created-1"
 
     def get_messages(
         self,
@@ -943,6 +948,63 @@ def test_teams_post_status_rejects_non_allowlisted_channel(tmp_path: Path) -> No
                 {
                     "session_id": "session-1",
                     "channel_target": "team-b/channel-9",
+                    "message": "This should be denied.",
+                },
+            )
+        )
+
+
+def test_teams_post_status_resolves_allowlisted_user_target(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_POST_STATUS],
+            teams_user_allowlist=["user:operator@example.com"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    fake_teams = FakeTeamsService(messages=[])
+    context.teams_service = fake_teams
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "teams_post_status",
+        {
+            "session_id": "session-1",
+            "channel_target": "user:operator@example.com",
+            "message": "Host relay is healthy.",
+        },
+    )
+
+    assert result["status"] == "posted"
+    assert fake_teams.ensure_chat_calls == ["operator@example.com"]
+    assert fake_teams.post_calls == [
+        ("Host relay is healthy.", "chat:chat-created-1", "session-1", None),
+    ]
+
+
+def test_teams_post_status_rejects_non_allowlisted_user_target(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_POST_STATUS],
+            teams_user_allowlist=["user:operator@example.com"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    context.teams_service = FakeTeamsService(messages=[])
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="Teams user target is not allowlisted"):
+        asyncio.run(
+            server.call_tool(
+                "teams_post_status",
+                {
+                    "session_id": "session-1",
+                    "channel_target": "user:other@example.com",
                     "message": "This should be denied.",
                 },
             )

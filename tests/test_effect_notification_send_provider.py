@@ -90,6 +90,34 @@ def test_notification_send_posts_to_teams_target(tmp_path: Path) -> None:
     assert output["thread_id"] == "thread-1"
 
 
+def test_notification_send_posts_to_teams_user_target(tmp_path: Path) -> None:
+    _write_targets(
+        tmp_path,
+        [
+            {
+                "id": "teams-operator",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "user:operator@example.com",
+                "policy": {"capabilities": ["notify"]},
+            }
+        ],
+    )
+
+    output = _execute(
+        project_dir=tmp_path,
+        runtime=_runtime(tmp_path),
+        target_id="teams-operator",
+        message="Done.",
+        severity="success",
+    )
+
+    assert output["success"] is True
+    assert output["provider"] == "teams"
+    assert output["communication_target_id"] == "teams-operator"
+    assert output["channel_target"] == "chat:stub-user-operator_at_example.com"
+
+
 def test_notification_send_posts_to_discord_channel(tmp_path: Path) -> None:
     _write_targets(
         tmp_path,

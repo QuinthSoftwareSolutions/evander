@@ -14,7 +14,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.runtime import allowed_tools_for_capability_profile
-from agent_sandbox.services import normalize_teams_target
+from agent_sandbox.services import normalize_teams_target, normalize_teams_user_target
 from agent_sandbox.execution import (
     ExecutionBackendKind,
     ExecutionStatusKind,
@@ -103,6 +103,25 @@ def normalize_teams_channel_allowlist(value: list[str] | None) -> list[str]:
         if not text:
             continue
         target = normalize_teams_target(text)
+        if target.startswith("user:"):
+            raise ValueError(
+                "teams_channel_allowlist accepts channel/chat targets only; use teams_user_allowlist for user targets"
+            )
+        if target in seen:
+            continue
+        seen.add(target)
+        normalized.append(target)
+    return normalized
+
+
+def normalize_teams_user_allowlist(value: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_target in value or []:
+        text = str(raw_target).strip()
+        if not text:
+            continue
+        target = normalize_teams_user_target(text)
         if target in seen:
             continue
         seen.add(target)
@@ -350,6 +369,7 @@ def build_container_session_manifest(
     allowed_script_names: list[str] | None,
     discord_channels: list[str] | None,
     teams_channel_allowlist: list[str] | None = None,
+    teams_user_allowlist: list[str] | None = None,
     email_mailboxes: list[str] | None,
     email_folders: list[str] | None,
     communication_file_receive_enabled: bool | None = None,
@@ -390,6 +410,7 @@ def build_container_session_manifest(
     resolved_teams_channel_allowlist = normalize_teams_channel_allowlist(
         teams_channel_allowlist
     )
+    resolved_teams_user_allowlist = normalize_teams_user_allowlist(teams_user_allowlist)
     resolved_email_mailboxes = email_mailboxes or (
         config.email_mailbox_allowlist if email_requested else []
     )
@@ -414,6 +435,7 @@ def build_container_session_manifest(
         allowed_script_names=normalize_allowed_script_names(allowed_script_names),
         discord_channel_allowlist=discord_channels or [],
         teams_channel_allowlist=resolved_teams_channel_allowlist,
+        teams_user_allowlist=resolved_teams_user_allowlist,
         email_folder_allowlist=resolved_email_folders,
         email_mailbox_allowlist=resolved_email_mailboxes,
         email_folder_allowlist_by_mailbox=config.email_folder_allowlist_by_mailbox,

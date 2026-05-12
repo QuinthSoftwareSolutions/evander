@@ -146,6 +146,7 @@ from agent_sandbox.services import (
     normalize_pr_feedback_provider,
     normalize_teams_target,
     parse_teams_target,
+    resolve_teams_send_target,
     teams_target_from_message,
 )
 
@@ -760,6 +761,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 area_path=request_model.area_path,
                 states=request_model.states,
                 types=[item_type.value for item_type in request_model.types],
+                exclude_types=[item_type.value for item_type in request_model.exclude_types],
                 tags_any=request_model.tags_any,
                 text_search=request_model.text_search,
                 top=top,
@@ -3716,6 +3718,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         area_path: str | None = None,
         states: list[str] | None = None,
         types: list[str] | None = None,
+        exclude_types: list[str] | None = None,
         tags_any: list[str] | None = None,
         text_search: str | None = None,
         title: str = "Daily Sprint Status",
@@ -3746,6 +3749,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             "area_path": area_path,
             "states": states,
             "types": types,
+            "exclude_types": exclude_types,
             "tags_any": tags_any,
             "text_search": text_search,
             "title": title,
@@ -3772,6 +3776,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 area_path=area_path,
                 states=states or [],
                 types=types or [],
+                exclude_types=exclude_types if exclude_types is not None else ["Task"],
                 tags_any=tags_any or [],
                 text_search=text_search,
                 title=title,
@@ -3823,6 +3828,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 page_count=page_count,
                 max_items=request_model.max_items,
             )
+            payload["source"]["excluded_types"] = [
+                item_type.value for item_type in request_model.exclude_types
+            ]
             template_items = payload["template_data"]["items"]
             audit_success(
                 session_id,
@@ -5830,10 +5838,14 @@ def create_server(context: RuntimeContext) -> FastMCP:
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.TEAMS_POST_STATUS)
-            normalized_target = context.policy.require_teams_channel_target(session, channel_target)
-            result = context.teams_service_for_session(session_id).post_status(
+            normalized_target = context.policy.require_teams_send_target(session, channel_target)
+            if parse_teams_target(normalized_target).kind == "user" and thread_id is not None:
+                raise PolicyError("Teams user targets do not support thread replies")
+            service = context.teams_service_for_session(session_id)
+            send_target = resolve_teams_send_target(service, normalized_target)
+            result = service.post_status(
                 message,
-                normalized_target,
+                send_target,
                 session_id,
                 thread_id=thread_id,
             )
@@ -6982,9 +6994,15 @@ def create_server(context: RuntimeContext) -> FastMCP:
             artifacts = _artifact_payloads(artifact_ids)
             args["artifacts"] = _artifact_audit_summaries(artifact_ids)
             context.policy.require_communication_file_artifacts(
-                session, artifacts, provider="teams", channel_target=channel_target
+                session,
+                artifacts,
+                provider="teams",
+                channel_target=channel_target,
+                allow_teams_user_target=True,
             )
-            target = context.policy.require_teams_channel_target(session, channel_target)
+            target = context.policy.require_teams_send_target(session, channel_target)
+            if parse_teams_target(target).kind == "user" and thread_id is not None:
+                raise PolicyError("Teams user targets do not support thread replies")
             approval_payload = request.model_dump(
                 mode="json", exclude={"request_id"}, exclude_none=True
             )
@@ -6994,7 +7012,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
             service = context.teams_service_for_session(session_id)
             if not hasattr(service, "post_file"):
                 raise ToolError("Configured Teams adapter does not support file posts")
-            result = service.post_file(message, target, session_id, artifacts, thread_id=thread_id)
+            send_target = resolve_teams_send_target(service, target)
+            result = service.post_file(
+                message, send_target, session_id, artifacts, thread_id=thread_id
+            )
             response = CommunicationSendMessageWithAttachmentsResponse(
                 provider="teams",
                 status=str(result.get("status", "posted")),

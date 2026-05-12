@@ -15,7 +15,7 @@ from agent_sandbox.runtime import (
     _build_email_provider,
     _build_teams_service,
 )
-from agent_sandbox.services import EmailService, parse_teams_target
+from agent_sandbox.services import EmailService, parse_teams_target, resolve_teams_send_target
 
 NotificationSeverity = Literal["info", "success", "warning", "error"]
 
@@ -101,12 +101,13 @@ class NotificationSender:
         sender_session_id: str,
     ) -> Mapping[str, Any]:
         parsed_target = parse_teams_target(target.address)
-        if parsed_target.kind == "chat" and thread_id is not None:
+        if parsed_target.kind in {"chat", "user"} and thread_id is not None:
             raise ValueError("Teams chat notification targets do not support thread replies.")
         service = self._teams_service(target.address)
+        send_target = resolve_teams_send_target(service, parsed_target.normalized)
         return service.post_status(
             message,
-            parsed_target.normalized,
+            send_target,
             sender_session_id,
             thread_id=thread_id,
         )
@@ -151,13 +152,18 @@ class NotificationSender:
         )
 
     def _teams_service(self, target_address: str) -> Any:
-        normalized_target = parse_teams_target(target_address).normalized
+        parsed_target = parse_teams_target(target_address)
+        normalized_target = parsed_target.normalized
+        allowed_channel_targets = [] if parsed_target.kind == "user" else [normalized_target]
+        allowed_user_targets = [normalized_target] if parsed_target.kind == "user" else []
         return _build_teams_service(
             self._resolved_config(),
             self.runtime.teams_messages,
             self.runtime.session_repository,
             directory_path=self.directory_path,
-            allowed_channel_targets_provider=lambda: [normalized_target],
+            allowed_channel_targets_provider=lambda: allowed_channel_targets,
+            allowed_user_targets_provider=lambda: allowed_user_targets,
+            user_chat_cache=getattr(self.runtime, "teams_user_chat_cache", None),
         )
 
     def _email_service(self) -> EmailService:

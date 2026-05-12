@@ -14,7 +14,12 @@ from agent_sandbox.models import (
     ToolName,
     digest_payload,
 )
-from agent_sandbox.services import normalize_teams_target, teams_target_from_message
+from agent_sandbox.services import (
+    normalize_teams_target,
+    normalize_teams_user_target,
+    parse_teams_target,
+    teams_target_from_message,
+)
 from agent_sandbox.policy_config import EffectivePolicyConfig, PolicyConfigResolver
 from agent_sandbox.repositories.session_manifests import (
     SessionManifestRepository,
@@ -278,6 +283,33 @@ class PolicyEngine:
             normalized_target = normalize_teams_target(channel_target)
         except ValueError as exc:
             raise PolicyError(str(exc)) from exc
+        if parse_teams_target(normalized_target).kind == "user":
+            raise PolicyError("Teams user targets are only supported for send operations")
+        if normalized_target not in {
+            normalize_teams_target(value)
+            for value in session.teams_channel_allowlist
+            if value.strip()
+        }:
+            raise PolicyError(f"Teams target is not allowlisted for session {session.session_id}")
+        return normalized_target
+
+    def require_teams_send_target(self, session: SessionManifest, channel_target: str) -> str:
+        try:
+            normalized_target = normalize_teams_target(channel_target)
+        except ValueError as exc:
+            raise PolicyError(str(exc)) from exc
+        parsed_target = parse_teams_target(normalized_target)
+        if parsed_target.kind == "user":
+            allowed_users = {
+                normalize_teams_user_target(value)
+                for value in session.teams_user_allowlist
+                if value.strip()
+            }
+            if normalized_target not in allowed_users:
+                raise PolicyError(
+                    f"Teams user target is not allowlisted for session {session.session_id}"
+                )
+            return normalized_target
         if normalized_target not in {
             normalize_teams_target(value)
             for value in session.teams_channel_allowlist
@@ -412,12 +444,16 @@ class PolicyEngine:
         mailbox_id: str | None = None,
         channel_id: str | None = None,
         channel_target: str | None = None,
+        allow_teams_user_target: bool = False,
     ) -> str:
         normalized_provider = str(provider or "").strip().lower()
         if normalized_provider == "discord":
             self.require_discord_channel(session, str(channel_id or "").strip())
         elif normalized_provider == "teams":
-            self.require_teams_channel_target(session, str(channel_target or "").strip())
+            if allow_teams_user_target:
+                self.require_teams_send_target(session, str(channel_target or "").strip())
+            else:
+                self.require_teams_channel_target(session, str(channel_target or "").strip())
         elif normalized_provider == "email":
             self.require_email_mailbox(session, str(mailbox_id or "").strip())
         else:
@@ -491,6 +527,7 @@ class PolicyEngine:
         mailbox_id: str | None = None,
         channel_id: str | None = None,
         channel_target: str | None = None,
+        allow_teams_user_target: bool = False,
     ) -> None:
         self.require_communication_file_send_enabled(session)
         self.require_communication_file_scope(
@@ -499,6 +536,7 @@ class PolicyEngine:
             mailbox_id=mailbox_id,
             channel_id=channel_id,
             channel_target=channel_target,
+            allow_teams_user_target=allow_teams_user_target,
         )
         for artifact in artifacts:
             artifact_session_id = _artifact_field(artifact, "session_id")

@@ -125,7 +125,7 @@ from agent_sandbox.workflow.validation import (
     derive_workflow_output_schemas,
     validate_workflow_binding_diagnostics,
 )
-from agent_sandbox.services import normalize_teams_target
+from agent_sandbox.services import normalize_teams_target, normalize_teams_user_target
 
 _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("ado", "ADO Worker", "agent-sandbox-ado-worker.service"),
@@ -1342,6 +1342,12 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Teams targets",
                 "string_list",
                 placeholder="team-id/channel-id or chat:<chat-id>",
+            ),
+            _field(
+                "teams_user_allowlist",
+                "Teams users",
+                "string_list",
+                placeholder="user:<user-id-or-upn>",
             ),
             _field("email_mailboxes", "Email mailboxes", "string_list"),
             _field("email_folders", "Email folders", "string_list"),
@@ -3250,6 +3256,7 @@ def _build_issue_session_manifest(
     allowed_script_names: list[str] | None = None,
     discord_channels: list[str],
     teams_channel_allowlist: list[str] | None = None,
+    teams_user_allowlist: list[str] | None = None,
     email_mailboxes: list[str],
     email_folders: list[str],
     communication_file_receive_enabled: bool | None = None,
@@ -3314,6 +3321,9 @@ def _build_issue_session_manifest(
         discord_channel_allowlist=discord_channels,
         teams_channel_allowlist=_normalize_teams_channel_allowlist(
             teams_channel_allowlist or [], field_name="teams_channel_allowlist"
+        ),
+        teams_user_allowlist=_normalize_teams_user_allowlist(
+            teams_user_allowlist or [], field_name="teams_user_allowlist"
         ),
         email_folder_allowlist=resolved_email_folders,
         email_mailbox_allowlist=resolved_email_mailboxes,
@@ -3414,6 +3424,22 @@ def _normalize_teams_channel_allowlist(value: object, *, field_name: str) -> lis
     seen: set[str] = set()
     for target in _normalize_plain_string_list(value, field_name=field_name):
         normalized_target = normalize_teams_target(target)
+        if normalized_target.startswith("user:"):
+            raise ValueError(
+                f"{field_name} accepts channel/chat targets only; use teams_user_allowlist for user targets"
+            )
+        if normalized_target in seen:
+            continue
+        seen.add(normalized_target)
+        normalized.append(normalized_target)
+    return normalized
+
+
+def _normalize_teams_user_allowlist(value: object, *, field_name: str) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for target in _normalize_plain_string_list(value, field_name=field_name):
+        normalized_target = normalize_teams_user_target(target)
         if normalized_target in seen:
             continue
         seen.add(normalized_target)
@@ -3489,6 +3515,7 @@ def _session_policy_update_from_payload(
         "discord_channels",
         "teams_channel_allowlist",
         "teams_channels",
+        "teams_user_allowlist",
         "metadata",
         *COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
     }
@@ -3528,6 +3555,11 @@ def _session_policy_update_from_payload(
         update["teams_channel_allowlist"] = _normalize_teams_channel_allowlist(
             payload.get(teams_field),
             field_name=teams_field,
+        )
+    if "teams_user_allowlist" in payload:
+        update["teams_user_allowlist"] = _normalize_teams_user_allowlist(
+            payload.get("teams_user_allowlist"),
+            field_name="teams_user_allowlist",
         )
 
     update.update(_communication_file_session_policy_update(payload))
@@ -4893,6 +4925,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "discord_channels": list(session.discord_channel_allowlist),
             "discord_channel_allowlist": list(session.discord_channel_allowlist),
             "teams_channel_allowlist": list(session.teams_channel_allowlist),
+            "teams_user_allowlist": list(session.teams_user_allowlist),
             "email_mailboxes": list(session.email_mailbox_allowlist),
             "email_folders": list(session.email_folder_allowlist),
             "communication_file_receive_enabled": session.communication_file_receive_enabled,
@@ -5239,6 +5272,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 teams_channel_allowlist=self._agent_string_list(
                     payload, "teams_channel_allowlist"
                 ),
+                teams_user_allowlist=self._agent_string_list(payload, "teams_user_allowlist"),
                 email_mailboxes=self._agent_string_list(payload, "email_mailboxes"),
                 email_folders=self._agent_string_list(payload, "email_folders"),
                 communication_file_receive_enabled=(
@@ -5340,6 +5374,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             discord_channels=self._agent_string_list(payload, "discord_channels") or [],
             teams_channel_allowlist=self._agent_string_list(payload, "teams_channel_allowlist")
             or [],
+            teams_user_allowlist=self._agent_string_list(payload, "teams_user_allowlist") or [],
             email_mailboxes=self._agent_string_list(payload, "email_mailboxes") or [],
             email_folders=self._agent_string_list(payload, "email_folders") or [],
             communication_file_receive_enabled=(
@@ -5666,6 +5701,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "discord_channel_allowlist",
             "teams_channels",
             "teams_channel_allowlist",
+            "teams_user_allowlist",
             "metadata",
             "email_mailboxes",
             "email_folders",
@@ -5704,6 +5740,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "discord_channel_allowlist",
                 "teams_channels",
                 "teams_channel_allowlist",
+                "teams_user_allowlist",
                 "metadata",
                 *COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
             )
@@ -9038,6 +9075,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         allowed_script_names: list[str] | None = None,
         discord_channels: list[str] | None = None,
         teams_channel_allowlist: list[str] | None = None,
+        teams_user_allowlist: list[str] | None = None,
         email_mailboxes: list[str] | None = None,
         email_folders: list[str] | None = None,
         communication_file_receive_enabled: bool | None = None,
@@ -9057,6 +9095,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             payload["provider"] = provider
         if teams_channel_allowlist is not None:
             payload["teams_channel_allowlist"] = teams_channel_allowlist
+        if teams_user_allowlist is not None:
+            payload["teams_user_allowlist"] = teams_user_allowlist
         if communication_file_receive_enabled is not None:
             payload["communication_file_receive_enabled"] = communication_file_receive_enabled
         if communication_file_send_enabled is not None:

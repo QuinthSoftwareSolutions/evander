@@ -150,12 +150,14 @@ class TeamsIngestWorker:
         active_sessions: list[SessionManifest],
     ) -> list[str]:
         targets = {
-            normalize_teams_target(target)
+            normalized
             for session in active_sessions
             if ToolName.TEAMS_GET_MESSAGES in session.allowed_tools
             and _directory_is_within_scope(session.directory_path, directory_path)
             for target in session.teams_channel_allowlist
             if target.strip()
+            for normalized in [normalize_teams_target(target)]
+            if not normalized.startswith("user:")
         }
         return sorted(targets)
 

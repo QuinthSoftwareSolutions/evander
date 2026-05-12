@@ -156,7 +156,10 @@ def _message_payload(message: TeamsInboxMessage) -> dict[str, object]:
 
 
 def _normalize_channel_target(value: str) -> str:
-    return normalize_teams_target(value)
+    target = normalize_teams_target(value)
+    if target.startswith("user:"):
+        raise ValueError("trigger:teams:new-message targets must be channel or chat targets")
+    return target
 
 
 def _parse_dt(value: object) -> datetime | None:

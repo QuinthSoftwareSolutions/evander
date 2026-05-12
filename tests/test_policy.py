@@ -491,6 +491,26 @@ def test_require_teams_channel_target_validates_allowlist_and_shape(tmp_path: Pa
         engine.require_teams_channel_target(session, "channel-1")
     with pytest.raises(PolicyError, match="not allowlisted"):
         engine.require_teams_channel_target(session, "team-b/channel-9")
+    with pytest.raises(PolicyError, match="only supported for send operations"):
+        engine.require_teams_channel_target(session, "user:operator@example.com")
+
+
+def test_require_teams_send_target_allows_declared_user_targets(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.TEAMS_POST_STATUS],
+        teams_channel_allowlist=["team-a/channel-1"],
+        teams_user_allowlist=["operator@example.com"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    assert engine.require_teams_send_target(session, "team-a/channel-1") == "team-a/channel-1"
+    assert engine.require_teams_send_target(session, "user:operator@example.com") == (
+        "user:operator@example.com"
+    )
+    with pytest.raises(PolicyError, match="Teams user target is not allowlisted"):
+        engine.require_teams_send_target(session, "user:other@example.com")
 
 
 def test_require_email_mailbox_and_folder_for_mailbox(tmp_path: Path) -> None:

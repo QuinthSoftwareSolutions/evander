@@ -52,6 +52,72 @@ def test_teams_services_default_and_override_read_reaction_emoji(tmp_path: Path)
     assert graph_override.read_reaction_emoji == "heart"
 
 
+def test_graph_teams_service_creates_one_on_one_chat_for_allowlisted_user(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/v1.0/me":
+            return httpx.Response(200, json={"id": "sender-user-id"}, request=request)
+        if request.url.path == "/v1.0/chats":
+            payload = json.loads(request.content.decode("utf-8"))
+            assert payload["chatType"] == "oneOnOne"
+            assert [
+                member["user@odata.bind"] for member in payload["members"]
+            ] == [
+                "https://graph.microsoft.com/v1.0/users('sender-user-id')",
+                "https://graph.microsoft.com/v1.0/users('operator@example.com')",
+            ]
+            return httpx.Response(201, json={"id": "19:one-on-one@thread.v2"}, request=request)
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    cache: dict[str, str] = {}
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_user_targets_provider=lambda: ["user:operator@example.com"],
+        user_chat_cache=cache,
+        user_chat_cache_namespace="test-identity",
+    )
+
+    assert service.ensure_one_on_one_chat("operator@example.com") == (
+        "chat:19:one-on-one@thread.v2"
+    )
+    assert service.ensure_one_on_one_chat("user:operator@example.com") == (
+        "chat:19:one-on-one@thread.v2"
+    )
+    assert [request.url.path for request in requests] == ["/v1.0/me", "/v1.0/chats"]
+
+
+def test_graph_teams_service_rejects_non_allowlisted_user_chat_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = httpx.MockTransport(lambda request: pytest.fail(f"Unexpected request: {request.url}"))
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_user_targets_provider=lambda: ["user:operator@example.com"],
+    )
+
+    with pytest.raises(ValueError, match="Teams user target is not allowlisted"):
+        service.ensure_one_on_one_chat("other@example.com")
+
+
 def test_graph_teams_service_polls_allowlisted_channels_and_flattens_replies(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

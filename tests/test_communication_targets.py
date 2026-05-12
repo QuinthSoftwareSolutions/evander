@@ -44,7 +44,7 @@ def test_communication_targets_reject_incompatible_provider_kind() -> None:
 
 
 def test_communication_targets_apply_provider_address_validation() -> None:
-    with pytest.raises(ValueError, match="expected 'team-id/channel-id' or 'chat:<chat-id>'"):
+    with pytest.raises(ValueError, match="expected 'team-id/channel-id'"):
         CommunicationTargetsConfig.model_validate(
             {
                 "targets": [
@@ -52,6 +52,21 @@ def test_communication_targets_apply_provider_address_validation() -> None:
                 ]
             }
         )
+
+    config = CommunicationTargetsConfig.model_validate(
+        {
+            "targets": [
+                {
+                    "id": "teams-user",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "user:operator@example.com",
+                    "policy": {"capabilities": ["notify"]},
+                },
+            ]
+        }
+    )
+    assert config.targets[0].address == "user:operator@example.com"
 
     with pytest.raises(ValueError, match="discord address must be"):
         CommunicationTargetsConfig.model_validate(

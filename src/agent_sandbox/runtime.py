@@ -11,7 +11,6 @@ from agent_sandbox.directories import DirectoryStore
 from agent_sandbox.models import (
     ApprovalRequest,
     DraftMessage,
-    SessionManifest,
     ToolName,
 )
 from agent_sandbox.migrations import migrate_local_issues_to_unified_schema
@@ -30,7 +29,6 @@ from agent_sandbox.reviews.request_service import (
     ReviewRequestService,
     _build_review_request_service,
 )
-from agent_sandbox.reviews.request_store import ReviewRequestStore
 from agent_sandbox.repositories.records import (
     DiscordRecordsRepository,
     EmailRecordsRepository,
@@ -67,6 +65,7 @@ from agent_sandbox.services import (
     StubTeamsService,
     TeamsService,
     normalize_teams_target,
+    normalize_teams_user_target,
 )
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.messaging.teams_auth import (
@@ -142,6 +141,7 @@ class RuntimeContext:
     email_cursors: EmailCursorRepository
     discord_commands: DiscordRecordsRepository
     teams_messages: TeamsRecordsRepository
+    teams_user_chat_cache: dict[str, str]
     wake_store: WakeRequestRepository
     agent_prompt_store: AgentPromptStore
     script_run_request_store: ScriptRunRequestRepository
@@ -236,6 +236,13 @@ class RuntimeContext:
                     session_id,
                 )
             ),
+            allowed_user_targets_provider=lambda: (
+                _resolve_allowed_teams_user_targets_for_session(
+                    self.session_repository,
+                    session_id,
+                )
+            ),
+            user_chat_cache=self.teams_user_chat_cache,
         )
 
 
@@ -263,6 +270,7 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
     )
     discord_commands = JsonDiscordRecordsRepository(config.discord_command_store_path)
     teams_messages = JsonTeamsRecordsRepository(config.teams_message_store_path)
+    teams_user_chat_cache: dict[str, str] = {}
     discord_inbox_service = DiscordInboxService(config.runtime_dir / "discord-inbox-store.json")
     wake_store = WakeRequestStore(config.runtime_dir / "wake-requests-store.json")
     agent_prompt_store = AgentPromptStore(config.runtime_dir / "agent-prompt-store.json")
@@ -283,6 +291,7 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         teams_messages,
         session_repository,
         directory_path="root",
+        user_chat_cache=teams_user_chat_cache,
     )
 
     return RuntimeContext(
@@ -315,6 +324,7 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         email_cursors=email_cursors,
         discord_commands=discord_commands,
         teams_messages=teams_messages,
+        teams_user_chat_cache=teams_user_chat_cache,
         wake_store=wake_store,
         agent_prompt_store=agent_prompt_store,
         script_run_request_store=script_run_request_store,
@@ -456,10 +466,13 @@ def _build_teams_service(
     *,
     directory_path: str | None = None,
     allowed_channel_targets_provider: Callable[[], list[str]] | None = None,
+    allowed_user_targets_provider: Callable[[], list[str]] | None = None,
+    user_chat_cache: dict[str, str] | None = None,
 ) -> TeamsService:
     if config.teams_backend == "stub":
         return StubTeamsService(
             message_store,
+            allowed_user_targets_provider=allowed_user_targets_provider or (lambda: []),
             read_reaction_emoji=config.teams_read_reaction_emoji,
         )
     if config.teams_backend == "graph_api":
@@ -487,6 +500,11 @@ def _build_teams_service(
             retry_max_backoff_seconds=config.teams_retry_max_backoff_seconds,
             allowed_channel_targets_provider=allowed_channel_targets_provider
             or (lambda: _resolve_allowed_teams_channel_targets(sessions)),
+            allowed_user_targets_provider=allowed_user_targets_provider or (lambda: []),
+            user_chat_cache=user_chat_cache,
+            user_chat_cache_namespace=(
+                f"graph_api:{config.teams_graph_access_token_env}:{directory_path or 'root'}"
+            ),
             read_reaction_emoji=config.teams_read_reaction_emoji,
         )
     if config.teams_backend == "delegated_graph_api":
@@ -504,6 +522,12 @@ def _build_teams_service(
             retry_max_backoff_seconds=config.teams_retry_max_backoff_seconds,
             allowed_channel_targets_provider=allowed_channel_targets_provider
             or (lambda: _resolve_allowed_teams_channel_targets(sessions)),
+            allowed_user_targets_provider=allowed_user_targets_provider or (lambda: []),
+            user_chat_cache=user_chat_cache,
+            user_chat_cache_namespace=(
+                f"delegated:{config.teams_delegated_identity_id or 'default'}:"
+                f"{directory_path or 'root'}"
+            ),
             read_reaction_emoji=config.teams_read_reaction_emoji,
         )
     raise RuntimeError(
@@ -638,7 +662,15 @@ def _resolve_allowed_teams_channel_targets(
         if ToolName.TEAMS_GET_MESSAGES not in session.allowed_tools:
             continue
         targets.update(session.teams_channel_allowlist)
-    return sorted({normalize_teams_target(target) for target in targets if target.strip()})
+    return sorted(
+        {
+            normalized
+            for target in targets
+            if target.strip()
+            for normalized in [normalize_teams_target(target)]
+            if not normalized.startswith("user:")
+        }
+    )
 
 
 def _resolve_allowed_teams_channel_targets_for_session(
@@ -655,8 +687,29 @@ def _resolve_allowed_teams_channel_targets_for_session(
         return []
     return sorted(
         {
-            normalize_teams_target(target)
+            normalized
             for target in session.teams_channel_allowlist
+            if target.strip()
+            for normalized in [normalize_teams_target(target)]
+            if not normalized.startswith("user:")
+        }
+    )
+
+
+def _resolve_allowed_teams_user_targets_for_session(
+    session_store: SessionManifestRepository,
+    session_id: str,
+) -> list[str]:
+    session_store = as_session_manifest_repository(session_store)
+    session = session_store.get_session(session_id)
+    if session is None:
+        return []
+    if session.expires_at <= datetime.now(UTC):
+        return []
+    return sorted(
+        {
+            normalize_teams_user_target(target)
+            for target in session.teams_user_allowlist
             if target.strip()
         }
     )

@@ -759,10 +759,11 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   `acceptance_criteria`, `description_artifact_ids`, and `acceptance_criteria_artifact_ids`.
 - `get_ado_daily_status_report_data` accepts optional `project`, `team`, `area_path`, `states`,
   `types`, `tags_any`, `text_search`, report-label overrides, state-group overrides,
-  `effort_fields`, `max_items`, and elapsed-time options. By default elapsed sprint time uses
-  Swedish working time (`Europe/Stockholm`, weekdays 08:00-17:00, Swedish public holidays and
-  common non-working eves excluded), with `calendar_time` and manual `elapsed_sprint_percent`
-  available as overrides.
+  `effort_fields`, `max_items`, `exclude_types`, and elapsed-time options. It excludes `Task`
+  work items by default so the report tracks backlog-level delivery rather than implementation
+  subtasks. By default elapsed sprint time uses Swedish working time (`Europe/Stockholm`,
+  weekdays 08:00-17:00, Swedish public holidays and common non-working eves excluded), with
+  `calendar_time` and manual `elapsed_sprint_percent` available as overrides.
 - Session allowlisting is required: include `create_ado_backlog_item` in the session manifest
   `allowed_tools`, or the call is denied by policy. The same applies to every ADO backlog tool.
 

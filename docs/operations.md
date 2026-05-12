@@ -326,12 +326,19 @@ Storage layout for directory config:
   host, using the same delegated Teams identity/configuration. That polling path is separate from
   PR and chat wakeups, which are handled by the ADO worker, Discord wake worker, and scheduled wake
   worker. The old `agent-sandbox-host-heartbeat.service` is retired.
-- Teams targets can be channel threads or group chats:
+- Teams targets can be channel threads, group chats, or explicitly allowlisted one-on-one users:
   - channel targets use `team-id/channel-id`
   - chat targets use `chat:<chat-id>`
+  - user targets use `user:<user-id-or-upn>` and are resolved host-side into a one-on-one
+    `chat:<chat-id>` before sending. User targets require `session.teams_user_allowlist` or a
+    declared communication target; they are not valid for message reads, reactions, or attachment
+    downloads.
 - The host-side Teams adapter reads channel threads from
   `GET /teams/{team-id}/channels/{channel-id}/messages` and group chats from
   `GET /chats/{chat-id}/messages`.
+- The host-side Teams adapter creates or reuses one-on-one chats with `POST /chats`. The default
+  delegated `Chat.ReadWrite` scope is sufficient; a narrower deployment can grant `Chat.Create`
+  for first-contact one-on-one chat creation.
 - `teams_get_messages` accepts an optional `channel_target` so agents can read the specific
   channel or chat that woke them. Cursorless reads still stay on a bounded recent path: the gateway
   applies `teams_poll_limit` as the default message limit, and the Graph adapter caps each history
@@ -499,6 +506,7 @@ A transport-terminated warning without client-visible failure can be expected fo
   - `project` (optional when `azure_devops_project` is configured)
   - `team` (optional; when omitted, the helper resolves the Azure DevOps project's default team)
   - optional filters: `area_path`, `states`, `types`, `tags_any`, `text_search`
+  - optional type exclusions: `exclude_types`, defaulting to `["Task"]`
   - optional report overrides: `title`, `report_date`, `sprint_label`, `sprint_length`,
     `elapsed_sprint_percent`
   - optional elapsed-time options: `elapsed_time_mode` (`swedish_work_time` or
@@ -509,6 +517,8 @@ A transport-terminated warning without client-visible failure can be expected fo
 - By default, elapsed time uses Swedish working time in `Europe/Stockholm`, counts only weekdays
   inside the configured workday window, excludes Swedish public holidays, and also excludes common
   non-working eves such as Midsummer Eve, Christmas Eve, and New Year's Eve.
+- By default, the query excludes `Task` work items so the report is based on backlog-level items
+  rather than implementation subtasks. Pass `exclude_types: []` to include Tasks.
 - Response payload includes:
   - `template_data`: the exact JSON object to paste into the template's `report-data` block
   - `template_data_json`: formatted JSON for agents that are editing the HTML directly
@@ -728,7 +738,9 @@ Audit/result behavior:
   - `discord_operator_user_allowlist` does not override post destination checks.
 - Reaction precedence for `add_message_reaction`:
   - `provider=discord` requires `channel_id` in `session.discord_channel_allowlist`.
-  - `provider=teams` requires `channel_target` in `session.teams_channel_allowlist`.
+  - `provider=teams` requires `channel_target` in `session.teams_channel_allowlist` for reads and
+    downloads. Send tools can also target entries declared in `session.teams_user_allowlist` with
+    `user:<user-id-or-upn>`.
   - Message reads do not apply automatic read reactions; agents must call this tool explicitly.
 - Retry/backoff and failure handling:
   - The Discord `bot_api` adapter retries transient failures with exponential backoff and jitter.
