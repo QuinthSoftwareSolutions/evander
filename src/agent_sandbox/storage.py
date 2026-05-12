@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 import fcntl
 import json
@@ -14,6 +14,7 @@ from typing import Generic, TypeVar
 from pydantic import BaseModel
 
 T = TypeVar("T", bound=BaseModel)
+R = TypeVar("R")
 
 
 class JsonStore(Generic[T]):
@@ -40,6 +41,14 @@ class JsonStore(Generic[T]):
         with self._lock:
             with self._file_lock():
                 self._write_all_unlocked(items)
+
+    def update_all(self, updater: Callable[[dict[str, T]], R]) -> R:
+        with self._lock:
+            with self._file_lock():
+                items = self._read_all_unlocked()
+                result = updater(items)
+                self._write_all_unlocked(items)
+                return result
 
     @contextmanager
     def _file_lock(self) -> Iterator[None]:

@@ -63,6 +63,10 @@ type AgentPolicyFormState = {
   emailFolders: string;
 };
 
+type AgentSkillInstallFormState = {
+  codexSkills: string[];
+};
+
 const REFRESH_MS = 5000;
 const LOG_PAGE_LIMIT = 300;
 const LOG_SCROLL_BOTTOM_THRESHOLD = 24;
@@ -139,6 +143,12 @@ function emptyPolicyForm(): AgentPolicyFormState {
     teamsChannels: "",
     emailMailboxes: "",
     emailFolders: "",
+  };
+}
+
+function emptySkillInstallForm(): AgentSkillInstallFormState {
+  return {
+    codexSkills: [],
   };
 }
 
@@ -343,6 +353,13 @@ function labelsForAgent(agent: AgentRecord | null): Array<[string, string]> {
   );
 }
 
+function installedCodexSkillsForAgent(agent: AgentRecord | null): string[] {
+  const directMetadata = metadataForAgent(agent);
+  const policyMetadata = hostRecord(hostRecord(agent?.host, "session_policy"), "metadata");
+  const skills = hostStringList(directMetadata, "codex_skills");
+  return skills.length > 0 ? skills : hostStringList(policyMetadata, "codex_skills");
+}
+
 function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | null {
   const rawPolicy = hostRecord(agent?.host, "session_policy");
   if (!rawPolicy) return null;
@@ -543,6 +560,17 @@ function EditIcon() {
   );
 }
 
+function SkillIcon() {
+  return (
+    <AgentIcon>
+      <path d="M6.5 5.5h8.2L18 8.8v9.7H6.5z" />
+      <path d="M14.7 5.5v3.3H18" />
+      <path d="M9 12h6" />
+      <path d="M9 15h4" />
+    </AgentIcon>
+  );
+}
+
 export function AgentsPage() {
   const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
   const [items, setItems] = useState<AgentRecord[]>([]);
@@ -567,6 +595,10 @@ export function AgentsPage() {
   const [skillOptions, setSkillOptions] = useState<SkillLibraryItem[]>([]);
   const [showEditForm, setShowEditForm] = useState(false);
   const [editForm, setEditForm] = useState<AgentPolicyFormState>(() => emptyPolicyForm());
+  const [showSkillInstallForm, setShowSkillInstallForm] = useState(false);
+  const [skillInstallForm, setSkillInstallForm] = useState<AgentSkillInstallFormState>(() =>
+    emptySkillInstallForm(),
+  );
   const [inlineValidation, setInlineValidation] = useState("");
   const [selectionHydrated, setSelectionHydrated] = useState(false);
   const logViewRef = useRef<HTMLPreElement | null>(null);
@@ -916,6 +948,18 @@ export function AgentsPage() {
     });
   }
 
+  function toggleInstallSkill(skillName: string, selected: boolean) {
+    setSkillInstallForm((current) => {
+      const selectedSkills = new Set(current.codexSkills);
+      if (selected) {
+        selectedSkills.add(skillName);
+      } else {
+        selectedSkills.delete(skillName);
+      }
+      return { ...current, codexSkills: Array.from(selectedSkills) };
+    });
+  }
+
   async function handleCreateAgent() {
     if (createForm.backend === "libvirt_vm" && !createForm.vmName.trim()) {
       setInlineValidation("VM name is required.");
@@ -965,7 +1009,57 @@ export function AgentsPage() {
     setEditForm(policyFormFromAgent(selectedAgent));
     setShowEditForm(true);
     setShowResumeForm(false);
+    setShowSkillInstallForm(false);
     setInlineValidation("");
+  }
+
+  function openSkillInstallForm() {
+    if (!selectedAgent) return;
+    const policy = sessionPolicyForAgent(selectedAgent);
+    if (!policy) {
+      setError("The selected agent does not have an unambiguous linked session.");
+      return;
+    }
+    setSkillInstallForm({ codexSkills: installedCodexSkillsForAgent(selectedAgent) });
+    setShowSkillInstallForm(true);
+    setShowEditForm(false);
+    setShowResumeForm(false);
+    setInlineValidation("");
+  }
+
+  async function handleInstallSkills() {
+    if (!selectedAgent) return;
+    if (skillInstallForm.codexSkills.length === 0) {
+      setInlineValidation("Select at least one skill.");
+      return;
+    }
+    setBusyAction("install-skills");
+    setInlineValidation("");
+    try {
+      const query = new URLSearchParams({ backend: selectedAgent.backend });
+      const payload = await fetchJson<AgentActionResponse>(
+        `/api/admin/agents/${encodeURIComponent(selectedAgent.agent_id)}/actions/install-skills?${query.toString()}`,
+        {
+          method: "POST",
+          body: JSON.stringify({ codex_skills: skillInstallForm.codexSkills }),
+        },
+      );
+      const message = `${selectedAgent.target_name}: ${payload.message}`;
+      setActionLog((current) => [{ at: new Date().toISOString(), message, tone: "info" as const }, ...current].slice(0, 30));
+      setStatus(payload.message);
+      setError(null);
+      setShowSkillInstallForm(false);
+      await refreshAgents();
+      setSelectedKey(agentKey(selectedAgent));
+    } catch (reason: unknown) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setError(message);
+      setStatus(null);
+      setInlineValidation(message);
+      setActionLog((current) => [{ at: new Date().toISOString(), message: `${selectedAgent.target_name}: ${message}`, tone: "error" as const }, ...current].slice(0, 30));
+    } finally {
+      setBusyAction(null);
+    }
   }
 
   async function handleEditAgent() {
@@ -1045,6 +1139,7 @@ export function AgentsPage() {
   const showContainerStop = selectedAgent?.backend === "container_worker_vm" && selectedAgent.capabilities.stop;
   const showDestroy = Boolean(selectedAgent?.capabilities.destroy);
   const canEditPolicy = Boolean(selectedAgent && sessionPolicyForAgent(selectedAgent));
+  const canInstallSkills = canEditPolicy && skillOptions.length > 0;
   const logTitle = selectedAgent?.backend === "container_worker_vm"
     ? selectedExecutions.length > 0
       ? `${selectedExecutions.length} execution${selectedExecutions.length === 1 ? "" : "s"}`
@@ -1073,6 +1168,7 @@ export function AgentsPage() {
                 setCreateForm(emptyCreateForm(selectedDirectoryPath));
                 setShowCreateForm(true);
                 setShowEditForm(false);
+                setShowSkillInstallForm(false);
                 setInlineValidation("");
               }}
               disabled={busyAction !== null || !privilegedUnlocked}
@@ -1118,6 +1214,7 @@ export function AgentsPage() {
                       setSelectedKey(agentKey(item));
                       setShowResumeForm(false);
                       setShowEditForm(false);
+                      setShowSkillInstallForm(false);
                     }}
                   >
                     <div className="feature-list-title-row vm-list-item-row">
@@ -1164,6 +1261,17 @@ export function AgentsPage() {
                   aria-label="Edit policy"
                 >
                   {busyAction === "edit-agent" ? "..." : <EditIcon />}
+                </button>
+              </Tooltip>
+              <Tooltip content="Copy managed Codex skills into the selected session.">
+                <button
+                  type="button"
+                  className={showSkillInstallForm ? "primary" : ""}
+                  onClick={openSkillInstallForm}
+                  disabled={!canMutate || !canInstallSkills}
+                  aria-label="Install skills"
+                >
+                  {busyAction === "install-skills" ? "..." : <SkillIcon />}
                 </button>
               </Tooltip>
               {showStart ? (
@@ -1246,7 +1354,16 @@ export function AgentsPage() {
               ) : null}
               {showResume ? (
                 <Tooltip content={showResumeForm ? "Close the resume form." : "Open the resume form."}>
-                  <button type="button" className={showResumeForm ? "primary" : ""} onClick={() => setShowResumeForm((current) => !current)} disabled={!canMutate} aria-label="Resume agent">
+                  <button
+                    type="button"
+                    className={showResumeForm ? "primary" : ""}
+                    onClick={() => {
+                      setShowResumeForm((current) => !current);
+                      setShowSkillInstallForm(false);
+                    }}
+                    disabled={!canMutate}
+                    aria-label="Resume agent"
+                  >
                     <ResumeIcon />
                   </button>
                 </Tooltip>
@@ -1582,6 +1699,51 @@ export function AgentsPage() {
                 <div className="inline-actions compact-actions">
                   <button className="primary" type="button" disabled={!privilegedUnlocked || busyAction === "edit-agent"} onClick={() => void handleEditAgent()}>
                     {busyAction === "edit-agent" ? "Saving..." : "Save"}
+                  </button>
+                </div>
+              </div>
+            </section>
+          </div>
+        ) : null}
+
+        {showSkillInstallForm && selectedAgent ? (
+          <div className="modal-backdrop" role="presentation">
+            <section className="modal-card agent-crud-modal" role="dialog" aria-modal="true" aria-label="Install skills">
+              <div className="modal-header">
+                <div>
+                  <h2>Install skills</h2>
+                  <p>{selectedAgent.session_id ?? selectedAgent.agent_id}</p>
+                </div>
+                <button type="button" onClick={() => setShowSkillInstallForm(false)} disabled={busyAction === "install-skills"}>
+                  Close
+                </button>
+              </div>
+              <div className="modal-body">
+                {inlineValidation ? <div className="callout error-callout">{inlineValidation}</div> : null}
+                <div className="field-stack">
+                  <span>Codex skills</span>
+                  <div className="checkbox-grid skill-checkbox-grid">
+                    {skillOptions.map((skill) => (
+                      <label key={skill.name} className="checkbox-row agent-checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={skillInstallForm.codexSkills.includes(skill.name)}
+                          onChange={(event) => toggleInstallSkill(skill.name, event.target.checked)}
+                        />
+                        <span>{skill.name}</span>
+                      </label>
+                    ))}
+                    {skillOptions.length === 0 ? <div className="empty-state">No managed skills.</div> : null}
+                  </div>
+                </div>
+                <div className="inline-actions compact-actions">
+                  <button
+                    className="primary"
+                    type="button"
+                    disabled={!privilegedUnlocked || busyAction === "install-skills" || skillInstallForm.codexSkills.length === 0}
+                    onClick={() => void handleInstallSkills()}
+                  >
+                    {busyAction === "install-skills" ? "Installing..." : "Install"}
                   </button>
                 </div>
               </div>

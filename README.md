@@ -839,6 +839,10 @@ Response:
   `get_phone_call_result` reads results.
 - Configure Retell under directory-scoped `providers.json` with `retell_api_key_env`,
   `retell_from_number`, `retell_default_agent_id`, and `retell_phonebook`.
+- The Retell agent/LLM used by `retell_default_agent_id` or a contact-specific `agent_id`
+  must reference `{{agent_question}}` in its Retell prompt or begin message. The gateway sends
+  the tool `prompt` as `retell_llm_dynamic_variables.agent_question`; Retell does not treat it as
+  a standalone prompt override.
 - Put the actual Retell API key in the gateway host environment; the systemd gateway unit already
   loads repo-root `secrets.env`.
 - The gateway webhook endpoint is `POST /retell/webhook`; it verifies `X-Retell-Signature` and

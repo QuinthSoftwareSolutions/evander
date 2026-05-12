@@ -49,36 +49,43 @@ class TriggerEventQueue:
     ) -> TriggerQueueRecord:
         normalized_key = self._normalize_idempotency_key(idempotency_key)
         trace_id = self._normalize_trace_id(event.trace_id)
+        published = False
         with self._lock:
-            items = self._store.read_all()
-            if normalized_key is not None:
-                for record in items.values():
-                    if record.idempotency_key == normalized_key:
-                        return record
-            existing = items.get(event.event_id)
-            if existing is not None:
-                return existing
+            def update(items: dict[str, TriggerQueueRecord]) -> TriggerQueueRecord:
+                nonlocal published
+                if normalized_key is not None:
+                    for record in items.values():
+                        if record.idempotency_key == normalized_key:
+                            return record
+                existing = items.get(event.event_id)
+                if existing is not None:
+                    return existing
 
-            created = TriggerQueueRecord(
-                event_id=event.event_id,
-                trigger_id=event.trigger_id,
-                trigger_type=event.trigger_type,
-                trace_id=trace_id,
-                occurred_at=event.occurred_at,
-                payload=event.payload,
-                delivery_state="pending",
-                delivered_at=None,
-                idempotency_key=normalized_key,
-            )
-            items[event.event_id] = created
-            self._store.write_all(items)
+                created = TriggerQueueRecord(
+                    event_id=event.event_id,
+                    trigger_id=event.trigger_id,
+                    trigger_type=event.trigger_type,
+                    trace_id=trace_id,
+                    occurred_at=event.occurred_at,
+                    payload=event.payload,
+                    delivery_state="pending",
+                    delivered_at=None,
+                    idempotency_key=normalized_key,
+                )
+                items[event.event_id] = created
+                published = True
+                return created
+
+            record = self._store.update_all(update)
+            if not published:
+                return record
             self._journal.append(
                 "workflow.trigger_event.published",
                 source="trigger_queue",
                 subject_id=event.event_id,
                 payload={"trigger_id": event.trigger_id, "trigger_type": event.trigger_type},
             )
-            return created
+            return record
 
     def contains(self, event_id: str) -> bool:
         normalized_event_id = event_id.strip()
@@ -117,19 +124,28 @@ class TriggerEventQueue:
         if not normalized_event_id:
             return False
 
+        delivered = False
         with self._lock:
-            items = self._store.read_all()
-            record = items.get(normalized_event_id)
-            if record is None:
-                return False
-            if record.delivery_state == "delivered":
+            def update(items: dict[str, TriggerQueueRecord]) -> bool:
+                nonlocal delivered
+                record = items.get(normalized_event_id)
+                if record is None:
+                    return False
+                if record.delivery_state == "delivered":
+                    return True
+
+                record.delivery_state = "delivered"
+                record.inflight_at = None
+                record.delivered_at = delivered_at or datetime.now(UTC)
+                items[normalized_event_id] = record
+                delivered = True
                 return True
 
-            record.delivery_state = "delivered"
-            record.inflight_at = None
-            record.delivered_at = delivered_at or datetime.now(UTC)
-            items[normalized_event_id] = record
-            self._store.write_all(items)
+            found = self._store.update_all(update)
+            if not found:
+                return False
+            if not delivered:
+                return True
             self._journal.append(
                 "workflow.trigger_event.delivered",
                 source="trigger_queue",
@@ -142,19 +158,27 @@ class TriggerEventQueue:
         if not normalized_event_id:
             return False
 
+        marked = False
         with self._lock:
-            items = self._store.read_all()
-            record = items.get(normalized_event_id)
-            if record is None:
-                return False
-            if record.delivery_state == "delivered":
-                return False
+            def update(items: dict[str, TriggerQueueRecord]) -> bool:
+                nonlocal marked
+                record = items.get(normalized_event_id)
+                if record is None:
+                    return False
+                if record.delivery_state == "delivered":
+                    return False
 
-            record.delivery_state = "inflight"
-            record.inflight_at = inflight_at or datetime.now(UTC)
-            record.delivered_at = None
-            items[normalized_event_id] = record
-            self._store.write_all(items)
+                record.delivery_state = "inflight"
+                record.inflight_at = inflight_at or datetime.now(UTC)
+                record.delivered_at = None
+                items[normalized_event_id] = record
+                marked = True
+                return True
+
+            if not self._store.update_all(update):
+                return False
+            if not marked:
+                return False
             self._journal.append(
                 "workflow.trigger_event.inflight",
                 source="trigger_queue",
@@ -163,19 +187,21 @@ class TriggerEventQueue:
             return True
 
     def reset_inflight(self) -> int:
-        reset_count = 0
         with self._lock:
-            items = self._store.read_all()
-            for event_id, record in items.items():
-                if record.delivery_state != "inflight":
-                    continue
-                record.delivery_state = "pending"
-                record.inflight_at = None
-                record.delivered_at = None
-                items[event_id] = record
-                reset_count += 1
+            def update(items: dict[str, TriggerQueueRecord]) -> int:
+                reset_count = 0
+                for event_id, record in items.items():
+                    if record.delivery_state != "inflight":
+                        continue
+                    record.delivery_state = "pending"
+                    record.inflight_at = None
+                    record.delivered_at = None
+                    items[event_id] = record
+                    reset_count += 1
+                return reset_count
+
+            reset_count = self._store.update_all(update)
             if reset_count > 0:
-                self._store.write_all(items)
                 self._journal.append(
                     "workflow.trigger_event.reset_inflight",
                     source="trigger_queue",

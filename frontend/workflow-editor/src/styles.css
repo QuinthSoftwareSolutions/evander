@@ -2979,6 +2979,26 @@ select {
   margin-top: 0.25rem;
 }
 
+.configuration-json-panel-header {
+  align-items: flex-start;
+}
+
+.configuration-json-toggle {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.configuration-json-toggle > div {
+  min-width: 0;
+}
+
+.configuration-json-panel-header .feature-toolbar-actions {
+  flex: 0 0 auto;
+}
+
 .diagnostic-item {
   padding: 0.75rem 0.85rem;
   border-radius: 12px;

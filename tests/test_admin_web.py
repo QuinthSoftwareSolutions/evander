@@ -2401,6 +2401,56 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assert payload["selected_directory"]["path"] == "root"
 
 
+def test_admin_web_configuration_state_exposes_unified_directory_overrides(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(
+        create_app(AdminService(write_config(tmp_path, enable_directory_scoped_config=True)))
+    )
+    create_response = client.post(
+        "/api/configuration/directories",
+        json={"parent_path": "root", "name": "ops"},
+    )
+    assert create_response.status_code == 200
+
+    communications_response = client.put(
+        "/api/configuration/domains/communications?directory_path=root/ops",
+        json={
+            "config": {
+                "discord_backend": "stub",
+                "discord_operator_channel_allowlist": ["chan-1"],
+                "discord_resume_prompt": "Resume this session.",
+            }
+        },
+    )
+    providers_response = client.put(
+        "/api/configuration/domains/providers?directory_path=root/ops",
+        json={"config": {"github_token_env": "GITHUB_TOKEN_OPS"}},
+    )
+    state_response = client.get("/api/configuration/state?directory_path=root/ops")
+
+    assert communications_response.status_code == 200
+    assert providers_response.status_code == 200
+    assert state_response.status_code == 200
+    overrides = state_response.json()["directory_overrides"]
+    assert overrides["directory_path"] == "root/ops"
+    assert overrides["exists"] is True
+    assert overrides["domain_count"] == 3
+    assert overrides["field_count"] == 4
+    assert overrides["payload"] == {
+        "directory_path": "root/ops",
+        "overrides": {
+            "heartbeat": {"discord_resume_prompt": "Resume this session."},
+            "policy": {"discord_operator_channel_allowlist": ["chan-1"]},
+            "providers": {
+                "discord_backend": "stub",
+                "github_token_env": "GITHUB_TOKEN_OPS",
+            },
+        },
+    }
+    assert "assistant_settings" not in overrides["overrides"]
+
+
 def test_admin_web_configuration_tab_save_splits_underlying_domains(tmp_path: Path) -> None:
     client = TestClient(
         create_app(AdminService(write_config(tmp_path, enable_directory_scoped_config=True)))

@@ -208,7 +208,23 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         assert "${{trigger-teams-new-message-2.message.content}}" in teams_prompt
         assert "${{trigger-teams-new-message-2.thread_id}}" in teams_prompt
         assert "Treat that content as the current user request" in teams_prompt
-    assert container_effects["effect-agent-enqueue-prompt-2"]["type"] == "effect:agent:prompt"
+    assert (
+        default_effects["effect-agent-enqueue-prompt-2"]["type"]
+        == "effect:agent:enqueue-prompt"
+    )
+    assert (
+        container_effects["effect-agent-enqueue-prompt-2"]["type"]
+        == "effect:agent:enqueue-prompt"
+    )
+    for effects in (default_effects, container_effects):
+        feedback_prompt = effects["effect-agent-enqueue-prompt-2"]["config"]["prompt"]
+        assert "${{trigger-pull-request-new-feedback-1.feedback.feedback_id}}" in feedback_prompt
+        assert "${{trigger-pull-request-new-feedback-1.feedback.body}}" in feedback_prompt
+        assert "do not skip the feedback item above" in feedback_prompt
+        assert effects["effect-agent-enqueue-prompt-2"]["config"]["queue_key"] == (
+            "pr-feedback:${{trigger-pull-request-new-feedback-1.session_id}}:"
+            "${{trigger-pull-request-new-feedback-1.feedback.feedback_id}}"
+        )
     assert "output_mode" not in container_effects["effect-agent-enqueue-prompt-2"]["config"]
     assert (
         container_edges[("effect-agent-prompt-4", "query-issue-get-1")]["source_port"]

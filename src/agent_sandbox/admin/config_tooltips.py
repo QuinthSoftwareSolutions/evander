@@ -282,7 +282,8 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Retell-owned outbound caller number used by make_phone_call. Stored host-side only."
     ),
     "retell_default_agent_id": (
-        "Default Retell agent id used as override_agent_id unless a phonebook contact sets agent_id."
+        "Default Retell agent id used as override_agent_id unless a phonebook contact sets agent_id. "
+        "The Retell prompt should reference {{agent_question}}."
     ),
     "retell_request_timeout_seconds": (
         "HTTP timeout in seconds for host-side Retell create-call and get-call requests."

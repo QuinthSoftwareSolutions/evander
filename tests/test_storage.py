@@ -80,6 +80,24 @@ def test_json_store_delete_preserves_concurrent_updates(tmp_path: Path, monkeypa
     assert set(store.read_all()) == {"c"}
 
 
+def test_json_store_update_all_preserves_concurrent_updates(tmp_path: Path) -> None:
+    store = JsonStore(tmp_path / "store.json", SampleRecord)
+    start = Barrier(3)
+
+    def update_key(key: str) -> None:
+        start.wait()
+
+        def mutate(items: dict[str, SampleRecord]) -> None:
+            time.sleep(0.05)
+            items[key] = SampleRecord(value=key)
+
+        store.update_all(mutate)
+
+    _run_concurrently(lambda: update_key("a"), lambda: update_key("b"), lambda: start.wait())
+
+    assert set(store.read_all()) == {"a", "b"}
+
+
 def test_json_store_put_preserves_updates_across_processes(tmp_path: Path) -> None:
     path = tmp_path / "store.json"
     process_count = 4

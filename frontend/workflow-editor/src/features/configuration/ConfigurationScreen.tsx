@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { fetchJson } from "../admin/api";
 import type { AdminResult } from "../admin/AdminContext";
 import { useAdminUi } from "../admin/AdminContext";
-import { SaveIcon } from "../admin/PageActionIcons";
+import { CopyIcon, SaveIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 
 type Diagnostic = { code: string; message: string; field?: string | null };
@@ -52,6 +52,16 @@ type TabSnapshot = {
   };
 };
 
+type DirectoryOverridesSnapshot = {
+  directory_path: string;
+  exists: boolean;
+  domain_count: number;
+  field_count: number;
+  overrides: Record<string, Record<string, unknown>>;
+  errors: Diagnostic[];
+  payload: unknown;
+};
+
 type ConfigurationState = {
   directory_scoped_config_enabled: boolean;
   selected_directory_path: string;
@@ -63,6 +73,7 @@ type ConfigurationState = {
   };
   tabs: ConfigurationTab[];
   tab_snapshots: Record<string, TabSnapshot>;
+  directory_overrides: DirectoryOverridesSnapshot;
 };
 
 type DraftFieldState = {
@@ -379,6 +390,23 @@ export function ConfigurationScreen() {
     }
   }
 
+  async function copyDirectoryOverrides() {
+    const payload = state?.directory_overrides.payload ?? {
+      directory_path: selectedDirectoryPath,
+      overrides: {},
+    };
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Clipboard API is not available in this browser.");
+      }
+      await navigator.clipboard.writeText(formatJson(payload));
+      setStatusMessage(`Copied unified override JSON for ${selectedDirectoryPath}.`);
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
   function updateFieldState(fieldName: string, next: Partial<DraftFieldState>) {
     setDrafts((current) => ({
       ...current,
@@ -549,6 +577,8 @@ export function ConfigurationScreen() {
                 <div><span>Config mode</span><strong>{state?.directory_scoped_config_enabled ? "Writable" : "Read only"}</strong></div>
                 <div><span>Selected tab</span><strong>{selectedTabDefinition?.title ?? "None"}</strong></div>
                 <div><span>Underlying domains</span><strong>{selectedTabDefinition?.underlying_domains.join(", ") || "n/a"}</strong></div>
+                <div><span>Override domains</span><strong>{state?.directory_overrides.domain_count ?? 0}</strong></div>
+                <div><span>Override fields</span><strong>{state?.directory_overrides.field_count ?? 0}</strong></div>
               </div>
             </div>
           </article>
@@ -692,6 +722,40 @@ export function ConfigurationScreen() {
         </article>
 
         <div className="feature-grid configuration-diagnostics-grid">
+          <article className="panel section-panel">
+            <div className="panel-header configuration-json-panel-header">
+              <button
+                type="button"
+                className="panel-toggle configuration-json-toggle"
+                onClick={() => toggleSection("__directory_overrides")}
+                aria-expanded={!isSectionCollapsed("__directory_overrides")}
+              >
+                <div>
+                  <h3>Directory override JSON</h3>
+                  <p className="muted-text">
+                    Unified explicit overrides for {selectedDirectoryPath}, grouped by config domain.
+                  </p>
+                </div>
+                <span className="panel-toggle-indicator">{isSectionCollapsed("__directory_overrides") ? "Show" : "Hide"}</span>
+              </button>
+              <div className="feature-toolbar-actions icon-actions">
+                <Tooltip content="Copy unified directory override JSON.">
+                  <button
+                    type="button"
+                    onClick={() => void copyDirectoryOverrides()}
+                    disabled={!state}
+                    aria-label="Copy directory override JSON"
+                  >
+                    <CopyIcon />
+                  </button>
+                </Tooltip>
+              </div>
+            </div>
+            {!isSectionCollapsed("__directory_overrides") ? (
+              <pre className="json-view">{formatJson(state?.directory_overrides.payload ?? {})}</pre>
+            ) : null}
+          </article>
+
           <article className="panel section-panel">
             <button
               type="button"

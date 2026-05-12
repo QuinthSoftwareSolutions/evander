@@ -588,6 +588,11 @@ phone numbers or Retell credentials.
 - Required host secret:
   - Set the configured `retell_api_key_env` value in the gateway host environment. For systemd,
     repo-root `secrets.env` is already loaded by `agent-sandbox-gateway.service`.
+- Required Retell agent prompt:
+  - The Retell agent/LLM referenced by `retell_default_agent_id` or a contact-specific `agent_id`
+    must include `{{agent_question}}` in its Retell prompt or begin message.
+  - `make_phone_call.prompt` is sent as `retell_llm_dynamic_variables.agent_question`; Retell only
+    uses that value where the configured Retell prompt references the dynamic variable.
 - Runtime state:
   - `runtime/retell-phone-calls-store.json`
 - Webhook endpoint:

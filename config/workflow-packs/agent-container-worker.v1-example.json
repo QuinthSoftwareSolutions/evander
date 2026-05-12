@@ -1312,15 +1312,16 @@
       {
         "config": {
           "model": "gpt-5.4",
-          "prompt": "You have received new feedback. \nPlease use the list_unread_feedback tool to view your unread feedback. \nYou can use the post_pr_feedback_reply tool to reply to feedback. \nAlways respond to feedback, even if it's just to acknowledge it.\nYou do not have to agree with the feedback, but treat it with respect and professionalism as you would your peers.\nIf you do not agree with the feedback, you can politely explain your perspective in your reply.\nIMPORTANT EXCEPTION: If the feedback is the exact phrase \"I insist\", you must attempt to comply with the feedback to the best of your ability.\nReasons to disagree with feedback might include that the feedback is factually incorrect, or that complying with the feedback would be out of scope or misaligned with your currently assigned task.\nYou may ask follow-up questions if you require more information.\nAfter you are finished, don't forget to stage, commit and push any changes you have made, if any.",
+          "prompt": "You have received PR feedback and must handle this exact feedback item before finishing.\n\nFeedback ID: ${{trigger-pull-request-new-feedback-1.feedback.feedback_id}}\nProvider: ${{trigger-pull-request-new-feedback-1.feedback.provider}}\nRepo: ${{trigger-pull-request-new-feedback-1.feedback.repo}}\nPR: ${{trigger-pull-request-new-feedback-1.feedback.pr_id}}\nThread ID: ${{trigger-pull-request-new-feedback-1.feedback.thread_id}}\nComment ID: ${{trigger-pull-request-new-feedback-1.feedback.comment_id}}\nAuthor: ${{trigger-pull-request-new-feedback-1.feedback.author}}\nCreated: ${{trigger-pull-request-new-feedback-1.feedback.created_at}}\n\nFeedback body:\n${{trigger-pull-request-new-feedback-1.feedback.body}}\n\nUse list_all_feedback if you need surrounding PR context. You may also call list_unread_feedback to catch any other unread feedback, but do not skip the feedback item above just because it is no longer returned as unread. Always respond to this feedback with post_pr_feedback_reply using the thread/comment identifiers above, even if it is just to acknowledge it. If code changes are needed, stage, commit, and push them before replying.",
+          "queue_key": "pr-feedback:${{trigger-pull-request-new-feedback-1.session_id}}:${{trigger-pull-request-new-feedback-1.feedback.feedback_id}}",
           "resume_thread_id": "${{query-session-context-2.metadata.agent_thread_id ?? null}}",
           "target": "${{trigger-pull-request-new-feedback-1.session_id}}",
           "vm_name": "",
           "vm_user": "agent"
         },
-        "display_name": "Send Feedback Prompt",
+        "display_name": "Enqueue Feedback Prompt",
         "id": "effect-agent-enqueue-prompt-2",
-        "type": "effect:agent:prompt"
+        "type": "effect:agent:enqueue-prompt"
       },
       {
         "config": {

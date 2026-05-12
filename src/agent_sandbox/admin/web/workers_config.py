@@ -916,6 +916,38 @@ def _aggregate_tab_snapshot(
     }
 
 
+def _directory_overrides_snapshot(
+    directory_path: str, domain_snapshots: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    overrides: dict[str, dict[str, Any]] = {}
+    errors: list[dict[str, Any]] = []
+    for domain in DIRECTORY_CONFIG_DOMAIN_FILENAMES:
+        snapshot = domain_snapshots.get(domain)
+        if snapshot is None:
+            continue
+        raw = snapshot["raw"]
+        raw_result = raw.get("result")
+        if raw_result is not None and not raw_result["ok"]:
+            errors.extend(raw_result["errors"])
+            continue
+        if not raw["exists"]:
+            continue
+        overrides[domain] = raw["config"]
+    payload = {
+        "directory_path": directory_path,
+        "overrides": overrides,
+    }
+    return {
+        "directory_path": directory_path,
+        "exists": bool(overrides),
+        "domain_count": len(overrides),
+        "field_count": sum(len(config) for config in overrides.values()),
+        "overrides": overrides,
+        "errors": errors,
+        "payload": payload,
+    }
+
+
 def _split_tab_payload(tab_key: str, config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     field_sources = {
         field_name: source_domain
@@ -1057,6 +1089,9 @@ def worker_config_routes(service: AdminService, auth: AdminWebAuth) -> list[Base
             "domains": list(DIRECTORY_CONFIG_DOMAIN_FILENAMES.keys()),
             "tabs": tabs,
             "tab_snapshots": tab_snapshots,
+            "directory_overrides": _directory_overrides_snapshot(
+                selected_path, domain_snapshots
+            ),
             "snapshots": domain_snapshots,
         }
         if tree_result.ok and tree_result.data is not None:

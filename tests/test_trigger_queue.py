@@ -48,6 +48,19 @@ def test_publish_honors_idempotency_key(tmp_path) -> None:
     assert [item.event_id for item in queue.list_pending()] == ["evt-1"]
 
 
+def test_publish_uses_single_store_update(tmp_path, monkeypatch) -> None:
+    queue = TriggerEventQueue(tmp_path / "events.json")
+
+    def fail_split_write(*_args, **_kwargs):
+        raise AssertionError("publish must not use split read/write store updates")
+
+    monkeypatch.setattr(queue._store, "write_all", fail_split_write)
+
+    queue.publish(_event(event_id="evt-1"))
+
+    assert [item.event_id for item in queue.list_pending()] == ["evt-1"]
+
+
 def test_publish_normalizes_blank_idempotency_key(tmp_path) -> None:
     queue = TriggerEventQueue(tmp_path / "events.json")
 
@@ -115,3 +128,18 @@ def test_mark_inflight_and_reset_inflight(tmp_path) -> None:
     assert payload["evt-1"]["delivery_state"] == "pending"
     assert payload["evt-1"]["inflight_at"] is None
     assert [item.event_id for item in queue.list_pending()] == ["evt-1"]
+
+
+def test_state_transitions_use_single_store_update(tmp_path, monkeypatch) -> None:
+    queue = TriggerEventQueue(tmp_path / "events.json")
+    queue.publish(_event(event_id="evt-1"))
+
+    def fail_split_write(*_args, **_kwargs):
+        raise AssertionError("state transitions must not use split read/write store updates")
+
+    monkeypatch.setattr(queue._store, "write_all", fail_split_write)
+
+    assert queue.mark_inflight("evt-1") is True
+    assert queue.reset_inflight() == 1
+    assert queue.mark_delivered("evt-1") is True
+    assert queue.list_pending() == []

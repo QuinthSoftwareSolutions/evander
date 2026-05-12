@@ -456,6 +456,146 @@ def test_create_container_agent_rejects_unknown_codex_skill_before_prepare(
         )
 
 
+def test_install_admin_agent_skills_copies_managed_skill_to_container_session(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.create_skill({"name": "demo.skill", "content": "# Demo\n"})
+    expires_at = datetime.now(UTC) + timedelta(hours=1)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[],
+            expires_at=expires_at,
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+            },
+        )
+    )
+    written: list[tuple[str, list[dict[str, object]]]] = []
+
+    class FakeContainerBackend:
+        def write_files(
+            self,
+            *,
+            session_id: str,
+            files: list[dict[str, object]],
+        ) -> WorkerFileWriteRecord:
+            written.append((session_id, files))
+            return WorkerFileWriteRecord(
+                session_id=session_id,
+                copied_count=len(files),
+                copied_paths=[str(file["destination_path"]) for file in files],
+            )
+
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        lambda **_kwargs: FakeContainerBackend(),
+    )
+
+    result = service.run_admin_agent_action(
+        "container-session",
+        "install-skills",
+        backend="container_worker_vm",
+        payload={"codex_skills": ["demo.skill"]},
+    )
+
+    assert result["success"] is True
+    assert result["session_id"] == "container-session"
+    assert written == [
+        (
+            "container-session",
+            [
+                {
+                    "destination_path": (
+                        "/home/agent/.config/agent-sandbox/codex/skills/"
+                        "demo.skill/SKILL.md"
+                    ),
+                    "mode": "0644",
+                    "content": "# Demo\n",
+                }
+            ],
+        )
+    ]
+    updated = service.runtime.session_repository.get_session("container-session")
+    assert updated is not None
+    assert updated.metadata["codex_skills"] == ["demo.skill"]
+
+
+def test_install_admin_agent_skills_copies_managed_skill_to_vm_codex_home(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.create_skill({"name": "demo.skill", "content": "# Demo\n"})
+    expires_at = datetime.now(UTC) + timedelta(hours=1)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="lab-session",
+            vm_id="lab-vm",
+            allowed_tools=[],
+            expires_at=expires_at,
+        )
+    )
+    copied: list[tuple[str, list[dict[str, object]], str]] = []
+
+    def fake_vm_exec(
+        self: AdminService, target: str, **kwargs: object
+    ) -> dict[str, object]:
+        assert target == "lab-session"
+        assert (
+            kwargs["command"]
+            == 'printf "%s" "${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"'
+        )
+        return {"success": True, "stdout": "/custom/codex\n"}
+
+    def fake_vm_copy_files(
+        self: AdminService,
+        target: str,
+        *,
+        files: list[dict[str, object]],
+        vm_user: str = "agent",
+    ) -> dict[str, object]:
+        copied.append((target, files, vm_user))
+        return {
+            "success": True,
+            "copied_paths": [str(file["destination_path"]) for file in files],
+        }
+
+    monkeypatch.setattr(service, "vm_exec", MethodType(fake_vm_exec, service))
+    monkeypatch.setattr(service, "vm_copy_files", MethodType(fake_vm_copy_files, service))
+
+    result = service.run_admin_agent_action(
+        "lab-vm",
+        "install-skills",
+        backend="libvirt_vm",
+        payload={"codex_skills": ["demo.skill"], "vm_user": "agent"},
+    )
+
+    assert result["success"] is True
+    assert result["session_id"] == "lab-session"
+    assert copied == [
+        (
+            "lab-session",
+            [
+                {
+                    "destination_path": "/custom/codex/skills/demo.skill/SKILL.md",
+                    "mode": "0644",
+                    "content": "# Demo\n",
+                    "overwrite": True,
+                }
+            ],
+            "agent",
+        )
+    ]
+    updated = service.runtime.session_repository.get_session("lab-session")
+    assert updated is not None
+    assert updated.metadata["codex_skills"] == ["demo.skill"]
+
+
 def test_teams_auth_list_channels_resolves_exact_channel_matches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

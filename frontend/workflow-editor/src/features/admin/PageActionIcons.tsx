@@ -18,6 +18,15 @@ export function SaveIcon() {
   );
 }
 
+export function CopyIcon() {
+  return (
+    <ActionIcon>
+      <rect x="8" y="8" width="10.5" height="10.5" rx="1.5" />
+      <path d="M5.5 14.5h-.8A1.2 1.2 0 0 1 3.5 13.3V5.7a1.2 1.2 0 0 1 1.2-1.2h7.6a1.2 1.2 0 0 1 1.2 1.2v.8" />
+    </ActionIcon>
+  );
+}
+
 export function EditIcon() {
   return (
     <ActionIcon>
