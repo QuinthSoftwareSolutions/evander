@@ -67,10 +67,6 @@
         "target_id": "query-session-context-1"
       },
       {
-        "source_id": "query-session-context-1",
-        "target_id": "query-git-pr-note-1"
-      },
-      {
         "source_id": "trigger-pull-request-new-feedback-1",
         "target_id": "query-session-context-2"
       },
@@ -196,6 +192,34 @@
       {
         "source_id": "query-session-context-2",
         "target_id": "effect-agent-enqueue-prompt-2"
+      },
+      {
+        "source_id": "query-session-context-1",
+        "target_id": "gate-filter-issue-pr"
+      },
+      {
+        "source_id": "gate-filter-issue-pr",
+        "target_id": "query-git-pr-note-1"
+      },
+      {
+        "source_id": "query-session-context-1",
+        "target_id": "gate-filter-standalone-pr"
+      },
+      {
+        "source_id": "gate-filter-standalone-pr",
+        "target_id": "query-git-pr-note-standalone"
+      },
+      {
+        "source_id": "query-git-pr-note-standalone",
+        "target_id": "effect-pr-create-standalone"
+      },
+      {
+        "source_id": "effect-pr-create-standalone",
+        "target_id": "gate-filter-standalone-pr-preflight"
+      },
+      {
+        "source_id": "gate-filter-standalone-pr-preflight",
+        "target_id": "effect-agent-enqueue-prompt-standalone-pr"
       }
     ],
     "nodes": [
@@ -670,16 +694,28 @@
           "when": {
             "all": [
               {
-                "left": "${{trigger-git-push-1.branch_name}}",
+                "left": "${{trigger-git-push-1.branch_name ?? \"\"}}",
                 "starts_with": "agents/"
               },
               {
                 "is_not_null": true,
-                "left": "${{trigger-git-push-1.trusted_repo_path}}"
+                "left": "${{trigger-git-push-1.session_id ?? null}}"
               },
               {
                 "is_not_null": true,
-                "left": "${{trigger-git-push-1.base_branch}}"
+                "left": "${{trigger-git-push-1.trusted_repo_path ?? null}}"
+              },
+              {
+                "is_not_null": true,
+                "left": "${{trigger-git-push-1.base_branch ?? null}}"
+              },
+              {
+                "is_not_null": true,
+                "left": "${{trigger-git-push-1.review_branch ?? null}}"
+              },
+              {
+                "is_not_null": true,
+                "left": "${{trigger-git-push-1.canonical_origin_url ?? null}}"
               }
             ]
           }
@@ -697,6 +733,9 @@
             "type": "string"
           },
           "commit_hash": {
+            "type": "string"
+          },
+          "notes_ref": {
             "type": "string"
           },
           "old_commit_hash": {
@@ -718,6 +757,60 @@
             "type": "string"
           },
           "trusted_repo_path": {
+            "type": "string"
+          }
+        },
+        "type": "gate:filter"
+      },
+      {
+        "config": {
+          "when": {
+            "all": [
+              {
+                "left": "${{query-session-context-1.metadata.pr_workflow ?? null}}",
+                "not_equals": "standalone"
+              },
+              {
+                "is_not_null": true,
+                "left": "${{query-session-context-1.metadata.issue_number ?? null}}"
+              },
+              {
+                "is_not_null": true,
+                "left": "${{query-session-context-1.metadata.issue_title ?? null}}"
+              }
+            ]
+          }
+        },
+        "display_name": "Filter issue PR sessions",
+        "id": "gate-filter-issue-pr",
+        "outputs": {
+          "metadata": {
+            "type": "object"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        },
+        "type": "gate:filter"
+      },
+      {
+        "config": {
+          "when": {
+            "all": [
+              {
+                "equals": "standalone",
+                "left": "${{query-session-context-1.metadata.pr_workflow ?? null}}"
+              }
+            ]
+          }
+        },
+        "display_name": "Filter standalone PR sessions",
+        "id": "gate-filter-standalone-pr",
+        "outputs": {
+          "metadata": {
+            "type": "object"
+          },
+          "session_id": {
             "type": "string"
           }
         },
@@ -992,6 +1085,70 @@
       },
       {
         "config": {
+          "base_branch": "${{trigger-git-push-1.base_branch}}",
+          "body": "---\n\nThank you for your contribution to the ${{query-session-context-1.metadata.ado_project ?? \"target\"}} repo. \nBefore submitting this PR, please make sure:\n\n- [ ] Your code builds clean without any errors or warnings\n- [ ] You have added unit tests\n- [ ] You are using approved terminology\n- [ ] You have read and follow our contribution and development guidelines\n- [ ] You have merged *from* main\n- [ ] Version history and relevant documentation is updated\n\n---\n\n## Agent Summary\n\n${{query-git-pr-note-standalone.body}}",
+          "canonical_origin_url": "${{gate-filter-2.canonical_origin_url}}",
+          "draft": true,
+          "fill": true,
+          "host_repo_path": "${{effect-git-promote-agent-branch-1.host_repo_path}}",
+          "local_branch": "${{effect-git-promote-agent-branch-1.review_branch}}",
+          "provider": "azure_devops",
+          "session_id": "${{trigger-git-push-1.session_id}}",
+          "title": "${{query-session-context-1.metadata.pr_title_prefix ?? trigger-git-push-1.session_id}}: ${{trigger-git-push-1.branch_name}}"
+        },
+        "display_name": "Create standalone PR",
+        "id": "effect-pr-create-standalone",
+        "type": "effect:pr:create"
+      },
+      {
+        "config": {
+          "when": {
+            "all": [
+              {
+                "equals": false,
+                "left": "${{effect-pr-create-standalone.success}}"
+              }
+            ]
+          }
+        },
+        "display_name": "Filter standalone PR preflight failures",
+        "id": "gate-filter-standalone-pr-preflight",
+        "outputs": {
+          "destination_ahead_count": {
+            "type": "integer"
+          },
+          "destination_commit": {
+            "type": "string"
+          },
+          "local_ahead_count": {
+            "type": "integer"
+          },
+          "local_branch": {
+            "type": "string"
+          },
+          "local_commit": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "origin_branch": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "gate:filter"
+      },
+      {
+        "config": {
           "model": "gpt-5.4",
           "prompt": "Your latest push was accepted into the agent branch, but the PR destination branch could not be updated because ${{effect-pr-create-1.origin_branch}} has commits that are not in your promoted branch.\n\nPlease fetch and merge the destination branch into your current work branch, resolve any conflicts, commit the merge if needed, update your PR summary with git agent-pr-note, and run git push-agent again.\n\nSuggested commands:\n\n```bash\ngit fetch origin ${{effect-pr-create-1.origin_branch}}\ngit merge origin/${{effect-pr-create-1.origin_branch}}\n# resolve conflicts, then:\ngit status\ngit add <resolved files>\ngit commit\ngit agent-pr-note append \"Merged ${{effect-pr-create-1.origin_branch}} and resolved promotion conflict.\"\ngit push-agent\n```",
           "queue_key": "pr-create-preflight:${{trigger-git-push-1.session_id}}:${{effect-pr-create-1.origin_branch}}",
@@ -1001,6 +1158,19 @@
         },
         "display_name": "Prompt agent to merge PR destination",
         "id": "effect-agent-enqueue-prompt-3",
+        "type": "effect:agent:enqueue-prompt"
+      },
+      {
+        "config": {
+          "model": "gpt-5.4",
+          "prompt": "Your latest push was accepted into the agent branch, but the PR destination branch could not be updated because ${{effect-pr-create-standalone.origin_branch}} has commits that are not in your promoted branch.\n\nPlease fetch and merge the destination branch into your current work branch, resolve any conflicts, commit the merge if needed, update your PR summary with git agent-pr-note, and run git push-agent again.\n\nSuggested commands:\n\n```bash\ngit fetch origin ${{effect-pr-create-standalone.origin_branch}}\ngit merge origin/${{effect-pr-create-standalone.origin_branch}}\n# resolve conflicts, then:\ngit status\ngit add <resolved files>\ngit commit\ngit agent-pr-note append \"Merged ${{effect-pr-create-standalone.origin_branch}} and resolved promotion conflict.\"\ngit push-agent\n```",
+          "queue_key": "pr-create-preflight:${{trigger-git-push-1.session_id}}:${{effect-pr-create-standalone.origin_branch}}",
+          "resume_thread_id": "${{query-session-context-1.metadata.agent_thread_id ?? null}}",
+          "target": "${{trigger-git-push-1.session_id}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Prompt standalone agent to merge PR destination",
+        "id": "effect-agent-enqueue-prompt-standalone-pr",
         "type": "effect:agent:enqueue-prompt"
       },
       {
@@ -1332,6 +1502,17 @@
         },
         "display_name": "Git PR note",
         "id": "query-git-pr-note-1",
+        "type": "query:git:pr-note"
+      },
+      {
+        "config": {
+          "host_repo_path": "${{effect-git-promote-agent-branch-1.host_repo_path}}",
+          "local_branch": "${{effect-git-promote-agent-branch-1.review_branch}}",
+          "notes_ref": "${{trigger-git-push-1.notes_ref}}",
+          "remote_name": "${{effect-git-promote-agent-branch-1.remote_name}}"
+        },
+        "display_name": "Standalone Git PR note",
+        "id": "query-git-pr-note-standalone",
         "type": "query:git:pr-note"
       },
       {

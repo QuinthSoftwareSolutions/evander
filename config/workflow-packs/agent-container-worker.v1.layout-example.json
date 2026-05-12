@@ -203,6 +203,30 @@
     "query-session-context-4": {
       "x": 1466,
       "y": 774
+    },
+    "gate-filter-issue-pr": {
+      "x": 1112,
+      "y": 260
+    },
+    "gate-filter-standalone-pr": {
+      "x": 1112,
+      "y": 430
+    },
+    "query-git-pr-note-standalone": {
+      "x": 1362,
+      "y": 430
+    },
+    "effect-pr-create-standalone": {
+      "x": 1618,
+      "y": 430
+    },
+    "gate-filter-standalone-pr-preflight": {
+      "x": 1878,
+      "y": 430
+    },
+    "effect-agent-enqueue-prompt-standalone-pr": {
+      "x": 2148,
+      "y": 430
     }
   }
 }

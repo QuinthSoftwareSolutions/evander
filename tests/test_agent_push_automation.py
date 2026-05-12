@@ -11,6 +11,9 @@ def test_bare_repo_flow_includes_hook_and_azure_support() -> None:
     open_pr = (root / "scripts/open_agent_pr.sh").read_text(encoding="utf-8")
 
     assert "hooks/post-receive" in create_remote
+    assert "handle_git_push_trigger.sh" in create_remote
+    assert "handle_agent_push.sh" not in create_remote
+    assert 'status="\\${trigger_status}"' in create_remote
     assert "agent-sandbox.trustedRepoPath" in mirror_issue
     assert "agent-sandbox.baseBranch" in mirror_issue
     assert "runtime/agent-events.log" in handle_push

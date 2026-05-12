@@ -39,7 +39,6 @@ GIT_ROOT="${AGENT_SANDBOX_GIT_ROOT:-${ROOT_DIR}/git-remotes}"
 GIT_HOST="${AGENT_SANDBOX_GIT_HOST:-192.168.250.1}"
 GIT_USER="${AGENT_SANDBOX_GIT_USER:-${USER}}"
 GIT_SSH_ALIAS="${AGENT_SANDBOX_GIT_SSH_ALIAS:-agent-sandbox-git-host}"
-HOOK_SCRIPT="${ROOT_DIR}/scripts/handle_agent_push.sh"
 TRIGGER_HOOK_SCRIPT="${ROOT_DIR}/scripts/handle_git_push_trigger.sh"
 
 case "${REPO_NAME}" in
@@ -75,15 +74,8 @@ mkdir -p "\${LOG_DIR}"
     fi
   fi
 
-  if cat "\${updates_file}" | "${HOOK_SCRIPT}" "${REPO_DIR}"; then
-    status=0
-  else
-    status=\$?
-  fi
+  status="\${trigger_status}"
   rm -f "\${updates_file}"
-  if [[ "\${trigger_status}" -ne 0 ]]; then
-    status="\${trigger_status}"
-  fi
   printf '=== %s post-receive exit=%s ===\n' "\$(date -Iseconds)" "\${status}"
   exit "\${status}"
 } >> "\${LOG_FILE}" 2>&1 || true

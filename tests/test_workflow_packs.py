@@ -250,6 +250,37 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         container_queries["query-git-pr-note-1"]["config"]["notes_ref"]
         == "${{trigger-git-push-1.notes_ref}}"
     )
+    expected_git_push_filter = {
+        "all": [
+            {
+                "left": '${{trigger-git-push-1.branch_name ?? ""}}',
+                "starts_with": "agents/",
+            },
+            {
+                "is_not_null": True,
+                "left": "${{trigger-git-push-1.session_id ?? null}}",
+            },
+            {
+                "is_not_null": True,
+                "left": "${{trigger-git-push-1.trusted_repo_path ?? null}}",
+            },
+            {
+                "is_not_null": True,
+                "left": "${{trigger-git-push-1.base_branch ?? null}}",
+            },
+            {
+                "is_not_null": True,
+                "left": "${{trigger-git-push-1.review_branch ?? null}}",
+            },
+            {
+                "is_not_null": True,
+                "left": "${{trigger-git-push-1.canonical_origin_url ?? null}}",
+            },
+        ]
+    }
+    for gates in (default_gates, container_gates):
+        assert gates["gate-filter-2"]["config"]["when"] == expected_git_push_filter
+        assert gates["gate-filter-2"]["outputs"]["notes_ref"] == {"type": "string"}
     assert default_gates["gate-filter-8"]["config"]["when"] == {
         "all": [{"equals": False, "left": "${{effect-pr-create-1.success}}"}]
     }
@@ -268,6 +299,110 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         container_effects["effect-agent-enqueue-prompt-3"]["config"]["target"]
         == "${{trigger-git-push-1.session_id}}"
     )
+    expected_issue_pr_filter = {
+        "all": [
+            {
+                "left": "${{query-session-context-1.metadata.pr_workflow ?? null}}",
+                "not_equals": "standalone",
+            },
+            {
+                "is_not_null": True,
+                "left": "${{query-session-context-1.metadata.issue_number ?? null}}",
+            },
+            {
+                "is_not_null": True,
+                "left": "${{query-session-context-1.metadata.issue_title ?? null}}",
+            },
+        ]
+    }
+    expected_standalone_pr_filter = {
+        "all": [
+            {
+                "equals": "standalone",
+                "left": "${{query-session-context-1.metadata.pr_workflow ?? null}}",
+            }
+        ]
+    }
+    expected_standalone_preflight_filter = {
+        "all": [{"equals": False, "left": "${{effect-pr-create-standalone.success}}"}]
+    }
+    for gates in (default_gates, container_gates):
+        assert gates["gate-filter-issue-pr"]["config"]["when"] == expected_issue_pr_filter
+        assert (
+            gates["gate-filter-standalone-pr"]["config"]["when"]
+            == expected_standalone_pr_filter
+        )
+        assert (
+            gates["gate-filter-standalone-pr-preflight"]["config"]["when"]
+            == expected_standalone_preflight_filter
+        )
+    for edges in (default_edges, container_edges):
+        assert ("query-session-context-1", "query-git-pr-note-1") not in edges
+        assert (
+            edges[("query-session-context-1", "gate-filter-issue-pr")]["target_id"]
+            == "gate-filter-issue-pr"
+        )
+        assert (
+            edges[("gate-filter-issue-pr", "query-git-pr-note-1")]["target_id"]
+            == "query-git-pr-note-1"
+        )
+        assert (
+            edges[("query-session-context-1", "gate-filter-standalone-pr")]["target_id"]
+            == "gate-filter-standalone-pr"
+        )
+        assert (
+            edges[("gate-filter-standalone-pr", "query-git-pr-note-standalone")][
+                "target_id"
+            ]
+            == "query-git-pr-note-standalone"
+        )
+        assert (
+            edges[("query-git-pr-note-standalone", "effect-pr-create-standalone")][
+                "target_id"
+            ]
+            == "effect-pr-create-standalone"
+        )
+        assert (
+            edges[("effect-pr-create-standalone", "gate-filter-standalone-pr-preflight")][
+                "target_id"
+            ]
+            == "gate-filter-standalone-pr-preflight"
+        )
+        assert (
+            edges[
+                (
+                    "gate-filter-standalone-pr-preflight",
+                    "effect-agent-enqueue-prompt-standalone-pr",
+                )
+            ]["target_id"]
+            == "effect-agent-enqueue-prompt-standalone-pr"
+        )
+    for queries in (default_queries, container_queries):
+        assert (
+            queries["query-git-pr-note-standalone"]["config"]["notes_ref"]
+            == "${{trigger-git-push-1.notes_ref}}"
+        )
+    for effects in (default_effects, container_effects):
+        standalone_pr = effects["effect-pr-create-standalone"]
+        expected_standalone_title = (
+            "${{query-session-context-1.metadata.pr_title_prefix "
+            "?? trigger-git-push-1.session_id}}: ${{trigger-git-push-1.branch_name}}"
+        )
+        assert standalone_pr["type"] == "effect:pr:create"
+        assert standalone_pr["config"]["title"] == expected_standalone_title
+        assert "issue_number" not in standalone_pr["config"]["title"]
+        assert "issue_title" not in standalone_pr["config"]["title"]
+        assert "${{query-git-pr-note-standalone.body}}" in standalone_pr["config"]["body"]
+        standalone_prompt = effects["effect-agent-enqueue-prompt-standalone-pr"]
+        expected_standalone_queue_key = (
+            "pr-create-preflight:${{trigger-git-push-1.session_id}}:"
+            "${{effect-pr-create-standalone.origin_branch}}"
+        )
+        assert standalone_prompt["type"] == "effect:agent:enqueue-prompt"
+        assert standalone_prompt["config"]["queue_key"] == expected_standalone_queue_key
+        assert (
+            standalone_prompt["config"]["target"] == "${{trigger-git-push-1.session_id}}"
+        )
     assert not any(effect["type"].startswith("effect:vm:") for effect in container.effects)
 
     assert container_effects["effect-agent-create-2"]["type"] == "effect:agent:create"
