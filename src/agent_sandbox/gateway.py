@@ -30,6 +30,12 @@ from agent_sandbox.bootstrap import (
 )
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.chat import ChatStore, admin_chat_store_path
+from agent_sandbox.ado_reports import (
+    DEFAULT_DONE_STATES,
+    DEFAULT_EFFORT_FIELDS,
+    DEFAULT_IN_PROGRESS_STATES,
+    build_ado_daily_status_report_data,
+)
 from agent_sandbox.directory_config import DIRECTORY_CONFIG_DOMAIN_FILENAMES
 from agent_sandbox.messaging.agent_prompt_store import AgentPromptRecord
 from agent_sandbox.messaging.agent_prompt_tokens import (
@@ -73,6 +79,7 @@ from agent_sandbox.models import (
     AdoBacklogCommentRequest,
     AdoCurrentIterationBacklogRequest,
     AdoCurrentIterationBacklogResponse,
+    AdoDailyStatusReportRequest,
     AdoBacklogGetRequest,
     AdoBacklogGetResponse,
     AdoBacklogQueryRequest,
@@ -731,6 +738,62 @@ def create_server(context: RuntimeContext) -> FastMCP:
             error,
             error_class,
         )
+
+    def _fetch_ado_current_iteration_report_pages(
+        issue_service: IssueService,
+        *,
+        directory_path: str,
+        request_model: AdoDailyStatusReportRequest,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], int, bool]:
+        items: list[dict[str, Any]] = []
+        first_payload: dict[str, Any] = {}
+        page_count = 0
+        truncated = False
+        skip = 0
+        while len(items) < request_model.max_items:
+            top = min(200, request_model.max_items - len(items))
+            remote_payload = issue_service.list_remote_current_iteration_backlog_items(
+                provider="azure_devops",
+                directory_path=directory_path,
+                project=request_model.project,
+                team=request_model.team,
+                area_path=request_model.area_path,
+                states=request_model.states,
+                types=[item_type.value for item_type in request_model.types],
+                tags_any=request_model.tags_any,
+                text_search=request_model.text_search,
+                top=top,
+                skip=skip,
+                include_relations=True,
+            )
+            if not first_payload:
+                first_payload = dict(remote_payload)
+            page_count += 1
+            page_items = [
+                item for item in (remote_payload.get("items") or []) if isinstance(item, dict)
+            ]
+            items.extend(page_items)
+            paging = (
+                remote_payload.get("paging")
+                if isinstance(remote_payload.get("paging"), dict)
+                else {}
+            )
+            total_matches = paging.get("total_matches")
+            next_skip = paging.get("next_skip")
+            if len(items) >= request_model.max_items:
+                if isinstance(total_matches, int):
+                    truncated = total_matches > len(items)
+                else:
+                    truncated = len(page_items) >= top
+                break
+            if isinstance(next_skip, int) and next_skip > skip:
+                skip = next_skip
+                continue
+            if len(page_items) >= top and top > 0:
+                skip += len(page_items)
+                continue
+            break
+        return first_payload, items[: request_model.max_items], page_count, truncated
 
 
     def _container_worker_backend_for_session(session_id: str) -> ContainerWorkerVmExecutionBackend:
@@ -3639,6 +3702,150 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def get_ado_daily_status_report_data(
+        project: str | None = None,
+        team: str | None = None,
+        area_path: str | None = None,
+        states: list[str] | None = None,
+        types: list[str] | None = None,
+        tags_any: list[str] | None = None,
+        text_search: str | None = None,
+        title: str = "Daily Sprint Status",
+        report_date: str | None = None,
+        sprint_label: str | None = None,
+        sprint_length: str | None = None,
+        elapsed_sprint_percent: float | None = None,
+        elapsed_time_mode: str = "swedish_work_time",
+        workday_start: str = "08:00",
+        workday_end: str = "17:00",
+        include_common_swedish_non_working_days: bool = True,
+        done_states: list[str] | None = None,
+        in_progress_states: list[str] | None = None,
+        effort_fields: list[str] | None = None,
+        max_items: int = 1000,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Build the JSON data block for templates/daily-status-report.html from ADO."""
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {
+            "session_id": session_id,
+            "project": project,
+            "team": team,
+            "area_path": area_path,
+            "states": states,
+            "types": types,
+            "tags_any": tags_any,
+            "text_search": text_search,
+            "title": title,
+            "report_date": report_date,
+            "sprint_label": sprint_label,
+            "sprint_length": sprint_length,
+            "elapsed_sprint_percent": elapsed_sprint_percent,
+            "elapsed_time_mode": elapsed_time_mode,
+            "workday_start": workday_start,
+            "workday_end": workday_end,
+            "include_common_swedish_non_working_days": include_common_swedish_non_working_days,
+            "done_states": done_states,
+            "in_progress_states": in_progress_states,
+            "effort_fields": effort_fields,
+            "max_items": max_items,
+        }
+        try:
+            session = context.policy.require_tool(
+                session_id, ToolName.GET_ADO_DAILY_STATUS_REPORT_DATA
+            )
+            request_model = AdoDailyStatusReportRequest(
+                project=project,
+                team=team,
+                area_path=area_path,
+                states=states or [],
+                types=types or [],
+                tags_any=tags_any or [],
+                text_search=text_search,
+                title=title,
+                report_date=report_date,
+                sprint_label=sprint_label,
+                sprint_length=sprint_length,
+                elapsed_sprint_percent=elapsed_sprint_percent,
+                elapsed_time_mode=elapsed_time_mode,
+                workday_start=workday_start,
+                workday_end=workday_end,
+                include_common_swedish_non_working_days=(
+                    include_common_swedish_non_working_days
+                ),
+                done_states=done_states or [],
+                in_progress_states=in_progress_states or [],
+                effort_fields=effort_fields or [],
+                max_items=max_items,
+            )
+            args = {"session_id": session_id, **request_model.model_dump(mode="json")}
+            issue_service = IssueService(context.provider_config)
+            first_payload, items, page_count, truncated = _fetch_ado_current_iteration_report_pages(
+                issue_service,
+                directory_path=session.directory_path,
+                request_model=request_model,
+            )
+            payload = build_ado_daily_status_report_data(
+                items=items,
+                project=first_payload.get("project") or request_model.project,
+                team=first_payload.get("team") or request_model.team,
+                iteration_path=first_payload.get("iteration_path"),
+                iteration_start_date=first_payload.get("iteration_start_date"),
+                iteration_finish_date=first_payload.get("iteration_finish_date"),
+                report_date=request_model.report_date,
+                title=request_model.title,
+                sprint_label=request_model.sprint_label,
+                sprint_length=request_model.sprint_length,
+                elapsed_sprint_percent=request_model.elapsed_sprint_percent,
+                elapsed_time_mode=request_model.elapsed_time_mode,
+                workday_start=request_model.workday_start,
+                workday_end=request_model.workday_end,
+                include_common_swedish_non_working_days=(
+                    request_model.include_common_swedish_non_working_days
+                ),
+                done_states=request_model.done_states or DEFAULT_DONE_STATES,
+                in_progress_states=request_model.in_progress_states
+                or DEFAULT_IN_PROGRESS_STATES,
+                effort_fields=request_model.effort_fields or DEFAULT_EFFORT_FIELDS,
+                truncated=truncated,
+                page_count=page_count,
+                max_items=request_model.max_items,
+            )
+            template_items = payload["template_data"]["items"]
+            audit_success(
+                session_id,
+                ToolName.GET_ADO_DAILY_STATUS_REPORT_DATA,
+                args,
+                {
+                    "project": payload["source"].get("project"),
+                    "team": payload["source"].get("team"),
+                    "iteration_path": payload["source"].get("iteration_path"),
+                    "item_count": template_items.get("total"),
+                    "done_count": template_items.get("done"),
+                    "with_pr_count": template_items.get("withPrs"),
+                    "directory_path": session.directory_path,
+                },
+            )
+            return payload
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.GET_ADO_DAILY_STATUS_REPORT_DATA, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.GET_ADO_DAILY_STATUS_REPORT_DATA,
                 args,
                 str(exc),
                 decision="error",

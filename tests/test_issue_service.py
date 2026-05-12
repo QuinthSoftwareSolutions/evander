@@ -634,6 +634,49 @@ def test_query_backlog_items_can_use_explicit_wiql() -> None:
     }
 
 
+def test_query_backlog_items_can_include_relations_for_pr_coverage() -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(200, json={"workItems": [{"id": 101}]}),
+        httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": 101,
+                        "fields": {
+                            "System.Title": "Backlog item",
+                            "System.State": "Active",
+                            "System.WorkItemType": "Task",
+                        },
+                        "relations": [
+                            {
+                                "rel": "ArtifactLink",
+                                "url": "vstfs:///Git/PullRequestId/project%2Frepo%2F42",
+                                "attributes": {"name": "Pull Request"},
+                            }
+                        ],
+                    }
+                ]
+            },
+        ),
+    ]
+
+    result = adapter._query_backlog_items_core(
+        _RecordingClient(calls, responses.copy()),
+        organization_url="https://dev.azure.com/example",
+        project="project-x",
+        auth_header="Basic secret",
+        include_relations=True,
+    )
+
+    batch_payload = calls[1]["json"]
+    assert isinstance(batch_payload, dict)
+    assert batch_payload["$expand"] == "Relations"
+    assert result["items"][0]["relations"][0]["attributes"]["name"] == "Pull Request"
+
+
 def test_list_current_iteration_uses_project_default_team_when_team_omitted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -646,7 +689,20 @@ def test_list_current_iteration_uses_project_default_team_when_team_omitted(
     calls: list[dict[str, object]] = []
     responses = [
         httpx.Response(200, json={"defaultTeam": {"name": "TechForce"}}),
-        httpx.Response(200, json={"value": [{"path": "My Project\\Sprint 1"}]}),
+        httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "path": "My Project\\Sprint 1",
+                        "attributes": {
+                            "startDate": "2026-05-04T00:00:00Z",
+                            "finishDate": "2026-05-18T00:00:00Z",
+                        },
+                    }
+                ]
+            },
+        ),
         httpx.Response(
             200,
             json={
@@ -675,6 +731,8 @@ def test_list_current_iteration_uses_project_default_team_when_team_omitted(
     )
     assert result["iteration_path"] == "My Project\\Sprint 1"
     assert result["team"] == "TechForce"
+    assert result["iteration_start_date"] == "2026-05-04T00:00:00Z"
+    assert result["iteration_finish_date"] == "2026-05-18T00:00:00Z"
 
 
 def test_list_current_iteration_explicit_team_skips_project_default_lookup(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from enum import Enum
 from hashlib import sha256
@@ -36,6 +37,7 @@ class ToolName(str, Enum):
     CREATE_ADO_BACKLOG_ITEM = "create_ado_backlog_item"
     QUERY_ADO_BACKLOG_ITEMS = "query_ado_backlog_items"
     LIST_ADO_CURRENT_ITERATION_BACKLOG_ITEMS = "list_ado_current_iteration_backlog_items"
+    GET_ADO_DAILY_STATUS_REPORT_DATA = "get_ado_daily_status_report_data"
     GET_ADO_BACKLOG_ITEM = "get_ado_backlog_item"
     POST_ADO_BACKLOG_COMMENT = "post_ado_backlog_comment"
     UPDATE_ADO_BACKLOG_TEXT = "update_ado_backlog_text"
@@ -1459,6 +1461,119 @@ class AdoCurrentIterationBacklogResponse(BaseModel):
     iteration_path: str
     items: list[AdoBacklogQueryItem] = Field(default_factory=list)
     count: int = 0
+
+
+class AdoDailyStatusReportRequest(BaseModel):
+    project: str | None = None
+    team: str | None = None
+    area_path: str | None = None
+    states: list[str] = Field(default_factory=list)
+    types: list[AdoBacklogItemType] = Field(default_factory=list)
+    tags_any: list[str] = Field(default_factory=list)
+    text_search: str | None = None
+    title: str = "Daily Sprint Status"
+    report_date: str | None = None
+    sprint_label: str | None = None
+    sprint_length: str | None = None
+    elapsed_sprint_percent: float | None = Field(default=None, ge=0, le=100)
+    elapsed_time_mode: str = "swedish_work_time"
+    workday_start: str = "08:00"
+    workday_end: str = "17:00"
+    include_common_swedish_non_working_days: bool = True
+    done_states: list[str] = Field(default_factory=list)
+    in_progress_states: list[str] = Field(default_factory=list)
+    effort_fields: list[str] = Field(default_factory=list)
+    max_items: int = Field(default=1000, ge=1, le=5000)
+
+    @field_validator(
+        "project",
+        "team",
+        "area_path",
+        "text_search",
+        "title",
+        "report_date",
+        "sprint_label",
+        "sprint_length",
+        "elapsed_time_mode",
+        "workday_start",
+        "workday_end",
+        mode="before",
+    )
+    @classmethod
+    def trim_optional_strings(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator(
+        "states",
+        "tags_any",
+        "done_states",
+        "in_progress_states",
+        "effort_fields",
+        mode="before",
+    )
+    @classmethod
+    def normalize_string_lists(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("filter must be a list of strings")
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            normalized = str(item).strip()
+            if not normalized:
+                continue
+            dedupe_key = normalized.casefold()
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            deduped.append(normalized)
+        return deduped
+
+    @field_validator("types", mode="before")
+    @classmethod
+    def normalize_types(cls, value: object) -> list[AdoBacklogItemType]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("types must be a list of item types")
+        normalized: list[AdoBacklogItemType] = []
+        seen: set[AdoBacklogItemType] = set()
+        for item in value:
+            resolved = (
+                item
+                if isinstance(item, AdoBacklogItemType)
+                else AdoBacklogItemType.from_raw(str(item))
+            )
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            normalized.append(resolved)
+        return normalized
+
+    @field_validator("elapsed_time_mode")
+    @classmethod
+    def validate_elapsed_time_mode(cls, value: str | None) -> str:
+        normalized = str(value or "").strip().lower()
+        if normalized in {"calendar", "calendar_time", "raw"}:
+            return "calendar_time"
+        if normalized in {"swedish_work_time", "sweden_work_time", ""}:
+            return "swedish_work_time"
+        raise ValueError("elapsed_time_mode must be calendar_time or swedish_work_time")
+
+    @field_validator("workday_start", "workday_end")
+    @classmethod
+    def validate_workday_time(cls, value: str | None) -> str:
+        normalized = str(value or "").strip()
+        if not re.match(r"^[0-2]?\d:[0-5]\d$", normalized):
+            raise ValueError("workday time must use HH:MM format")
+        hour = int(normalized.split(":", 1)[0])
+        if hour > 23:
+            raise ValueError("workday time must use HH:MM format")
+        return f"{hour:02d}:{normalized.split(':', 1)[1]}"
 
 
 class AdoBacklogGetRequest(BaseModel):

@@ -263,6 +263,14 @@ class _AdoTeamFieldValue:
     include_children: bool
 
 
+@dataclass(frozen=True)
+class _AdoCurrentIteration:
+    team: str
+    path: str
+    start_date: str | None = None
+    finish_date: str | None = None
+
+
 class IssueProviderAdapter(Protocol):
     provider_name: str
 
@@ -327,6 +335,7 @@ class IssueProviderAdapter(Protocol):
         text_search: str | None = None,
         top: int = 50,
         skip: int = 0,
+        include_relations: bool = False,
     ) -> dict[str, Any]: ...
 
     def list_current_iteration_backlog_items(
@@ -342,6 +351,7 @@ class IssueProviderAdapter(Protocol):
         text_search: str | None = None,
         top: int = 50,
         skip: int = 0,
+        include_relations: bool = False,
     ) -> dict[str, Any]: ...
 
     def get_backlog_item_by_id(
@@ -1172,6 +1182,7 @@ class AzureDevOpsIssueAdapter:
         text_search: str | None = None,
         top: int = 50,
         skip: int = 0,
+        include_relations: bool = False,
     ) -> dict[str, Any]:
         organization_url, configured_project, pat = self._resolve_connection(directory_path)
         normalized_project = str(project or configured_project).strip()
@@ -1193,6 +1204,7 @@ class AzureDevOpsIssueAdapter:
                 text_search=text_search,
                 top=top,
                 skip=skip,
+                include_relations=include_relations,
             )
 
     def list_current_iteration_backlog_items(
@@ -1208,6 +1220,7 @@ class AzureDevOpsIssueAdapter:
         text_search: str | None = None,
         top: int = 50,
         skip: int = 0,
+        include_relations: bool = False,
     ) -> dict[str, Any]:
         organization_url, configured_project, pat = self._resolve_connection(directory_path)
         normalized_project = str(project or configured_project).strip()
@@ -1217,7 +1230,7 @@ class AzureDevOpsIssueAdapter:
             )
         auth_header = self._auth_header(pat)
         with httpx.Client(timeout=self.timeout_seconds) as client:
-            normalized_team, iteration_path = self._resolve_current_iteration_path(
+            current_iteration = self._resolve_current_iteration(
                 client,
                 organization_url=organization_url,
                 project=normalized_project,
@@ -1229,14 +1242,14 @@ class AzureDevOpsIssueAdapter:
                 organization_url=organization_url,
                 project=normalized_project,
                 auth_header=auth_header,
-                team=normalized_team,
+                team=current_iteration.team,
             )
             query_result = self._query_backlog_items_core(
                 client,
                 organization_url=organization_url,
                 project=normalized_project,
                 auth_header=auth_header,
-                iteration=iteration_path,
+                iteration=current_iteration.path,
                 area_path=area_path,
                 team_field_values=team_field_values,
                 states=states,
@@ -1245,14 +1258,18 @@ class AzureDevOpsIssueAdapter:
                 text_search=text_search,
                 top=top,
                 skip=skip,
+                include_relations=include_relations,
             )
         return {
             "provider": self.provider_name,
             "project": normalized_project,
-            "team": normalized_team,
-            "iteration_path": iteration_path,
+            "team": current_iteration.team,
+            "iteration_path": current_iteration.path,
+            "iteration_start_date": current_iteration.start_date,
+            "iteration_finish_date": current_iteration.finish_date,
             "items": query_result.get("items") or [],
             "count": int(query_result.get("count") or 0),
+            "paging": query_result.get("paging"),
         }
 
     @staticmethod
@@ -1271,6 +1288,24 @@ class AzureDevOpsIssueAdapter:
         auth_header: str,
         team: str | None = None,
     ) -> tuple[str, str]:
+        current_iteration = self._resolve_current_iteration(
+            client,
+            organization_url=organization_url,
+            project=project,
+            auth_header=auth_header,
+            team=team,
+        )
+        return current_iteration.team, current_iteration.path
+
+    def _resolve_current_iteration(
+        self,
+        client: httpx.Client,
+        *,
+        organization_url: str,
+        project: str,
+        auth_header: str,
+        team: str | None = None,
+    ) -> _AdoCurrentIteration:
         normalized_team = self._normalize_ado_team_name(team)
         if normalized_team is None:
             normalized_team = (
@@ -1305,7 +1340,17 @@ class AzureDevOpsIssueAdapter:
             raise RuntimeError(
                 f"Azure DevOps team '{normalized_team}' in project '{project}' returned no current iteration path."
             )
-        return normalized_team, iteration_path
+        attrs = (
+            first_iteration.get("attributes")
+            if isinstance(first_iteration.get("attributes"), dict)
+            else {}
+        )
+        return _AdoCurrentIteration(
+            team=normalized_team,
+            path=iteration_path,
+            start_date=self._normalize_datetime(str(attrs.get("startDate") or "")),
+            finish_date=self._normalize_datetime(str(attrs.get("finishDate") or "")),
+        )
 
     def _resolve_project_default_team_name(
         self,
@@ -1403,6 +1448,7 @@ class AzureDevOpsIssueAdapter:
         text_search: str | None = None,
         top: int = 50,
         skip: int = 0,
+        include_relations: bool = False,
     ) -> dict[str, Any]:
         normalized_top = max(1, min(int(top), 200))
         normalized_skip = max(0, int(skip))
@@ -1452,15 +1498,18 @@ class AzureDevOpsIssueAdapter:
             batch_url = f"{organization_url}/_apis/wit/workitemsbatch"
             for index in range(0, len(paged_ids), 200):
                 chunk_ids = paged_ids[index : index + 200]
+                batch_body: dict[str, Any] = {
+                    "ids": chunk_ids,
+                    "fields": select_fields,
+                    "errorPolicy": "Omit",
+                }
+                if include_relations:
+                    batch_body["$expand"] = "Relations"
                 batch_response = client.post(
                     batch_url,
                     params={"api-version": "7.1"},
                     headers={"Authorization": auth_header, "Content-Type": "application/json"},
-                    json={
-                        "ids": chunk_ids,
-                        "fields": select_fields,
-                        "errorPolicy": "Omit",
-                    },
+                    json=batch_body,
                 )
                 if batch_response.is_error:
                     self._raise_ado_http_error(
@@ -1474,27 +1523,30 @@ class AzureDevOpsIssueAdapter:
                     raw_fields = (
                         raw_item.get("fields") if isinstance(raw_item.get("fields"), dict) else {}
                     )
-                    items.append(
-                        {
-                            "id": str(raw_item.get("id") or "").strip(),
-                            "title": str(raw_fields.get("System.Title") or "").strip(),
-                            "state": str(raw_fields.get("System.State") or "").strip() or None,
-                            "type": str(raw_fields.get("System.WorkItemType") or "").strip()
-                            or None,
-                            "iteration": str(raw_fields.get("System.IterationPath") or "").strip()
-                            or None,
-                            "area": str(raw_fields.get("System.AreaPath") or "").strip() or None,
-                            "assigned_to": self._normalize_assigned_to(
-                                raw_fields.get("System.AssignedTo")
-                            ),
-                            "url": str(
-                                (raw_item.get("_links") or {}).get("web", {}).get("href") or ""
-                            ).strip()
-                            or str(raw_item.get("url") or "").strip()
-                            or None,
-                            "fields": {k: v for k, v in raw_fields.items()},
-                        }
-                    )
+                    item = {
+                        "id": str(raw_item.get("id") or "").strip(),
+                        "title": str(raw_fields.get("System.Title") or "").strip(),
+                        "state": str(raw_fields.get("System.State") or "").strip() or None,
+                        "type": str(raw_fields.get("System.WorkItemType") or "").strip()
+                        or None,
+                        "iteration": str(raw_fields.get("System.IterationPath") or "").strip()
+                        or None,
+                        "area": str(raw_fields.get("System.AreaPath") or "").strip() or None,
+                        "assigned_to": self._normalize_assigned_to(
+                            raw_fields.get("System.AssignedTo")
+                        ),
+                        "url": str(
+                            (raw_item.get("_links") or {}).get("web", {}).get("href") or ""
+                        ).strip()
+                        or str(raw_item.get("url") or "").strip()
+                        or None,
+                        "fields": {k: v for k, v in raw_fields.items()},
+                    }
+                    if include_relations:
+                        item["relations"] = self._normalize_relations(
+                            raw_item.get("relations"), resource_id=item["id"]
+                        )
+                    items.append(item)
         id_order = {str(item_id): index for index, item_id in enumerate(paged_ids)}
         items.sort(key=lambda item: id_order.get(str(item.get("id") or ""), len(id_order)))
         returned_count = len(items)
@@ -1868,6 +1920,7 @@ class IssueService:
         text_search: str | None = None,
         top: int = 50,
         skip: int = 0,
+        include_relations: bool = False,
     ) -> dict[str, Any]:
         adapter = self.adapters.get(provider)
         if adapter is None:
@@ -1884,6 +1937,7 @@ class IssueService:
             text_search=text_search,
             top=top,
             skip=skip,
+            include_relations=include_relations,
         )
 
     def list_remote_current_iteration_backlog_items(
@@ -1900,6 +1954,7 @@ class IssueService:
         text_search: str | None = None,
         top: int = 50,
         skip: int = 0,
+        include_relations: bool = False,
     ) -> dict[str, Any]:
         adapter = self.adapters.get(provider)
         if adapter is None:
@@ -1915,6 +1970,7 @@ class IssueService:
             text_search=text_search,
             top=top,
             skip=skip,
+            include_relations=include_relations,
         )
 
     def get_remote_backlog_item_by_id(

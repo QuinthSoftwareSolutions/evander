@@ -487,6 +487,34 @@ A transport-terminated warning without client-visible failure can be expected fo
   - `items`
   - `count`
 
+## Host-Side Azure DevOps Daily Status Report Tool
+
+- Gateway tool name: `get_ado_daily_status_report_data`.
+- The tool is policy-gated: each session manifest must include
+  `get_ado_daily_status_report_data` in `allowed_tools` before calls are accepted.
+- It resolves the team current iteration in Azure DevOps, fetches the work items with relation
+  metadata, calculates item counts, PR coverage, effort totals, elapsed sprint time, and the
+  percentages used by `templates/daily-status-report.html`.
+- MCP arguments:
+  - `project` (optional when `azure_devops_project` is configured)
+  - `team` (optional; when omitted, the helper resolves the Azure DevOps project's default team)
+  - optional filters: `area_path`, `states`, `types`, `tags_any`, `text_search`
+  - optional report overrides: `title`, `report_date`, `sprint_label`, `sprint_length`,
+    `elapsed_sprint_percent`
+  - optional elapsed-time options: `elapsed_time_mode` (`swedish_work_time` or
+    `calendar_time`), `workday_start`, `workday_end`, and
+    `include_common_swedish_non_working_days`
+  - optional calculation overrides: `done_states`, `in_progress_states`, `effort_fields`,
+    `max_items`
+- By default, elapsed time uses Swedish working time in `Europe/Stockholm`, counts only weekdays
+  inside the configured workday window, excludes Swedish public holidays, and also excludes common
+  non-working eves such as Midsummer Eve, Christmas Eve, and New Year's Eve.
+- Response payload includes:
+  - `template_data`: the exact JSON object to paste into the template's `report-data` block
+  - `template_data_json`: formatted JSON for agents that are editing the HTML directly
+  - `percentages`: derived percentage values for auditability
+  - `source`: resolved project/team/iteration metadata plus state and effort diagnostics
+
 ## Host-Side Azure DevOps Backlog Get-by-ID Tool
 
 - Gateway tool name: `get_ado_backlog_item`.
@@ -509,6 +537,7 @@ Example session tool allowlist entry:
     "post_ado_backlog_comment",
     "update_ado_backlog_text",
     "query_ado_backlog_items",
+    "get_ado_daily_status_report_data",
     "get_ado_backlog_item"
   ]
 }

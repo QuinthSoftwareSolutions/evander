@@ -648,6 +648,172 @@ def test_list_ado_current_iteration_backlog_items_errors_when_no_iteration_confi
         )
 
 
+def test_get_ado_daily_status_report_data_requires_permission(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not allowed"):
+        asyncio.run(
+            server.call_tool("get_ado_daily_status_report_data", {"session_id": "session-1"})
+        )
+
+
+def test_get_ado_daily_status_report_data_fetches_pages_and_calculates_template_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.GET_ADO_DAILY_STATUS_REPORT_DATA],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    captured: dict[str, object] = {"requests": []}
+
+    class StubIssueService:
+        def __init__(self, provider_config: object) -> None:
+            captured["provider_config"] = provider_config
+
+        def list_remote_current_iteration_backlog_items(
+            self, **kwargs: object
+        ) -> dict[str, object]:
+            requests = captured["requests"]
+            assert isinstance(requests, list)
+            requests.append(kwargs)
+            if kwargs["skip"] == 0:
+                return {
+                    "provider": "azure_devops",
+                    "project": "example-project",
+                    "team": "Platform Team",
+                    "iteration_path": "Project\\Sprint 12",
+                    "iteration_start_date": "2026-05-04T00:00:00Z",
+                    "iteration_finish_date": "2026-05-18T00:00:00Z",
+                    "items": [
+                        {
+                            "id": "101",
+                            "title": "Active task",
+                            "state": "Active",
+                            "type": "Task",
+                            "assigned_to": "Ada",
+                            "fields": {"Microsoft.VSTS.Scheduling.Effort": 3},
+                            "relations": [
+                                {
+                                    "rel": "ArtifactLink",
+                                    "url": "vstfs:///Git/PullRequestId/project%2Frepo%2F42",
+                                    "attributes": {"name": "Pull Request"},
+                                }
+                            ],
+                        }
+                    ],
+                    "count": 1,
+                    "paging": {
+                        "skip": 0,
+                        "top": 2,
+                        "returned_count": 1,
+                        "total_matches": 2,
+                        "has_more": True,
+                        "next_skip": 1,
+                    },
+                }
+            return {
+                "provider": "azure_devops",
+                "project": "example-project",
+                "team": "Platform Team",
+                "iteration_path": "Project\\Sprint 12",
+                "iteration_start_date": "2026-05-04T00:00:00Z",
+                "iteration_finish_date": "2026-05-18T00:00:00Z",
+                "items": [
+                    {
+                        "id": "102",
+                        "title": "Done bug",
+                        "state": "Done",
+                        "type": "Bug",
+                        "assigned_to": None,
+                        "fields": {"Microsoft.VSTS.Scheduling.Effort": 2},
+                        "relations": [],
+                    }
+                ],
+                "count": 1,
+                "paging": {
+                    "skip": 1,
+                    "top": 1,
+                    "returned_count": 1,
+                    "total_matches": 2,
+                    "has_more": False,
+                    "next_skip": None,
+                },
+            }
+
+    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "get_ado_daily_status_report_data",
+        {
+            "session_id": "session-1",
+            "project": "example-project",
+            "team": "Platform Team",
+            "report_date": "2026-05-12",
+            "elapsed_sprint_percent": 50,
+            "max_items": 2,
+        },
+    )
+
+    assert captured["provider_config"] == context.provider_config
+    assert captured["requests"] == [
+        {
+            "provider": "azure_devops",
+            "directory_path": "root/team-a",
+            "project": "example-project",
+            "team": "Platform Team",
+            "area_path": None,
+            "states": [],
+            "types": [],
+            "tags_any": [],
+            "text_search": None,
+            "top": 2,
+            "skip": 0,
+            "include_relations": True,
+        },
+        {
+            "provider": "azure_devops",
+            "directory_path": "root/team-a",
+            "project": "example-project",
+            "team": "Platform Team",
+            "area_path": None,
+            "states": [],
+            "types": [],
+            "tags_any": [],
+            "text_search": None,
+            "top": 1,
+            "skip": 1,
+            "include_relations": True,
+        },
+    ]
+    assert result["template_data"]["items"] == {
+        "unassigned": 1,
+        "inProgress": 1,
+        "withPrs": 1,
+        "done": 1,
+        "total": 2,
+    }
+    assert result["template_data"]["effort"] == {"done": 2, "total": 5}
+    assert result["template_data"]["elapsedSprintPercent"] == 50
+    assert result["source"]["truncated"] is False
+    assert result["source"]["iteration_path"] == "Project\\Sprint 12"
+
+
 def test_get_ado_backlog_item_requires_permission(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
