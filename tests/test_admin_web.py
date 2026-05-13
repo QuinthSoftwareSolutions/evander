@@ -2478,10 +2478,62 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     )
     assert {field["field_name"] for field in contact_list["fields"]} == {
         "contacts",
-        "user_contact_links",
     }
     assert "communications" in payload["tab_snapshots"]
     assert payload["selected_directory"]["path"] == "root"
+
+
+def test_admin_web_contacts_tab_save_preserves_user_contact_links(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.write_directory_domain_config(
+        "root",
+        "contacts",
+        {
+            "contacts": {
+                "ops": {
+                    "name": "Ops Duty",
+                    "phone_numbers": [
+                        {"label": "mobile", "number": "+15550000002", "primary": True}
+                    ],
+                }
+            },
+            "user_contact_links": {"operator@example.com": "ops"},
+        },
+    )
+    client = TestClient(create_app(service))
+
+    response = client.put(
+        "/api/configuration/domains/contacts?directory_path=root",
+        json={
+            "config": {
+                "contacts": {
+                    "ops": {
+                        "name": "Ops Duty",
+                        "phone_numbers": [
+                            {
+                                "label": "mobile",
+                                "number": "+15550000002",
+                                "primary": True,
+                            }
+                        ],
+                    },
+                    "support": {
+                        "name": "Support",
+                        "email_addresses": ["support@example.com"],
+                        "phone_numbers": [],
+                    },
+                }
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    saved = service.read_directory_domain_config("root", "contacts")
+    assert saved.ok
+    assert saved.data.config["contacts"]["support"]["name"] == "Support"
+    assert saved.data.config["user_contact_links"] == {"operator@example.com": "ops"}
 
 
 def test_admin_web_configuration_state_exposes_unified_directory_overrides(

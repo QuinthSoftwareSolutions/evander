@@ -85,6 +85,164 @@ type DraftFieldState = {
 type TabDraft = Record<string, DraftFieldState>;
 type TabDrafts = Record<string, TabDraft>;
 
+const CONTACTS_TAB_KEY = "contacts";
+const CONTACTS_FIELD_NAME = "contacts";
+
+type ContactPhoneDraft = {
+  label: string;
+  number: string;
+  primary: boolean;
+};
+
+type ContactDraftEntry = {
+  id: string;
+  name: string;
+  description: string;
+  emailAddresses: string[];
+  phoneNumbers: ContactPhoneDraft[];
+};
+
+type ContactDraftParseResult = {
+  entries: ContactDraftEntry[];
+  error: string | null;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isContactsConfigField(field: ConfigurationField): boolean {
+  return field.source_domain === CONTACTS_TAB_KEY && field.field_name === CONTACTS_FIELD_NAME;
+}
+
+function stringListFromValue(value: unknown): string[] {
+  if (value == null) return [];
+  if (Array.isArray(value)) return value.map((item) => String(item ?? ""));
+  if (typeof value === "string") return [value];
+  return [];
+}
+
+function phoneDraftsFromValue(value: unknown): ContactPhoneDraft[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    const record = isRecord(item) ? item : {};
+    return {
+      label: String(record.label ?? ""),
+      number: String(record.number ?? ""),
+      primary: Boolean(record.primary),
+    };
+  });
+}
+
+function contactsValueToDraftEntries(value: unknown): ContactDraftEntry[] {
+  if (value == null) return [];
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      const record = isRecord(item) ? item : {};
+      return {
+        id: String(record.id ?? ""),
+        name: String(record.name ?? ""),
+        description: String(record.description ?? ""),
+        emailAddresses: stringListFromValue(record.emailAddresses ?? record.email_addresses),
+        phoneNumbers: phoneDraftsFromValue(record.phoneNumbers ?? record.phone_numbers),
+      };
+    });
+  }
+  if (!isRecord(value)) return [];
+  return Object.entries(value).map(([id, rawContact]) => {
+    const contact = isRecord(rawContact) ? rawContact : {};
+    return {
+      id,
+      name: String(contact.name ?? ""),
+      description: String(contact.description ?? ""),
+      emailAddresses: stringListFromValue(contact.email_addresses),
+      phoneNumbers: phoneDraftsFromValue(contact.phone_numbers),
+    };
+  });
+}
+
+function parseContactDraftValue(value: string | boolean): ContactDraftParseResult {
+  if (typeof value === "boolean") {
+    return { entries: [], error: null };
+  }
+  const text = String(value).trim();
+  if (!text) {
+    return { entries: [], error: null };
+  }
+  try {
+    return { entries: contactsValueToDraftEntries(JSON.parse(text)), error: null };
+  } catch (reason) {
+    return {
+      entries: [],
+      error: reason instanceof Error ? reason.message : String(reason),
+    };
+  }
+}
+
+function contactsDraftValue(entries: ContactDraftEntry[]): string {
+  return JSON.stringify(entries, null, 2);
+}
+
+function contactsDraftEntriesToConfig(entries: ContactDraftEntry[]): Record<string, unknown> {
+  const contacts: Record<string, unknown> = {};
+  const seenContactIds = new Set<string>();
+  entries.forEach((entry, index) => {
+    const contactId = entry.id.trim();
+    if (!contactId) {
+      throw new Error(`Contact ${index + 1} id is required.`);
+    }
+    if (seenContactIds.has(contactId)) {
+      throw new Error(`Duplicate contact id: ${contactId}.`);
+    }
+    seenContactIds.add(contactId);
+    const name = entry.name.trim();
+    if (!name) {
+      throw new Error(`Contact ${contactId} name is required.`);
+    }
+
+    const emailAddresses: string[] = [];
+    const seenEmails = new Set<string>();
+    for (const rawAddress of entry.emailAddresses) {
+      const address = rawAddress.trim();
+      if (!address) continue;
+      const key = address.toLowerCase();
+      if (seenEmails.has(key)) {
+        throw new Error(`Contact ${contactId} has a duplicate email address: ${address}.`);
+      }
+      seenEmails.add(key);
+      emailAddresses.push(address);
+    }
+
+    const phoneNumbers: ContactPhoneDraft[] = [];
+    const seenPhoneLabels = new Set<string>();
+    for (const rawPhone of entry.phoneNumbers) {
+      const label = rawPhone.label.trim();
+      const number = rawPhone.number.trim();
+      if (!label && !number) continue;
+      if (!label || !number) {
+        throw new Error(`Contact ${contactId} phone numbers require both label and number.`);
+      }
+      const key = label.toLowerCase();
+      if (seenPhoneLabels.has(key)) {
+        throw new Error(`Contact ${contactId} has a duplicate phone label: ${label}.`);
+      }
+      seenPhoneLabels.add(key);
+      phoneNumbers.push({ label, number, primary: Boolean(rawPhone.primary) });
+    }
+    if (phoneNumbers.filter((phone) => phone.primary).length > 1) {
+      throw new Error(`Contact ${contactId} can have only one primary phone number.`);
+    }
+
+    contacts[contactId] = {
+      name,
+      description: entry.description.trim(),
+      email_addresses: emailAddresses,
+      phone_numbers: phoneNumbers,
+    };
+  });
+  return contacts;
+}
+
 function formatJson(value: unknown): string {
   return JSON.stringify(value ?? {}, null, 2);
 }
@@ -92,6 +250,9 @@ function formatJson(value: unknown): string {
 function normalizeFieldValue(field: ConfigurationField, value: unknown): string | boolean {
   if (field.kind === "bool") {
     return Boolean(value);
+  }
+  if (isContactsConfigField(field)) {
+    return JSON.stringify(contactsValueToDraftEntries(value), null, 2);
   }
   if (field.kind === "string_list") {
     return Array.isArray(value) ? value.map((item) => String(item)).join("\n") : value == null ? "" : String(value);
@@ -143,6 +304,13 @@ function buildTabDraft(tab: ConfigurationTab | undefined, snapshot: TabSnapshot 
 function parseFieldValue(field: ConfigurationField, rawValue: string | boolean): unknown {
   if (field.kind === "bool") {
     return Boolean(rawValue);
+  }
+  if (isContactsConfigField(field)) {
+    const parsed = parseContactDraftValue(rawValue);
+    if (parsed.error) {
+      throw new Error(`${field.label} contains an invalid draft payload: ${parsed.error}`);
+    }
+    return contactsDraftEntriesToConfig(parsed.entries);
   }
   if (field.kind === "int") {
     const text = String(rawValue).trim();
@@ -421,6 +589,309 @@ export function ConfigurationScreen() {
     setDirtyTabs((current) => ({ ...current, [selectedTab]: true }));
   }
 
+  function updateContactsField(fieldName: string, nextEntries: ContactDraftEntry[]) {
+    updateFieldState(fieldName, {
+      include: true,
+      clear: false,
+      value: contactsDraftValue(nextEntries),
+    });
+  }
+
+  function mutateContactsField(
+    field: ConfigurationField,
+    fieldState: DraftFieldState,
+    mutate: (entries: ContactDraftEntry[]) => ContactDraftEntry[],
+  ) {
+    const parsed = parseContactDraftValue(fieldState.value);
+    if (parsed.error) {
+      setError(`Unable to edit contacts: ${parsed.error}`);
+      return;
+    }
+    updateContactsField(field.field_name, mutate(parsed.entries));
+    setError(null);
+  }
+
+  function updateContactEntry(
+    field: ConfigurationField,
+    fieldState: DraftFieldState,
+    contactIndex: number,
+    nextContact: ContactDraftEntry,
+  ) {
+    mutateContactsField(field, fieldState, (entries) =>
+      entries.map((entry, index) => (index === contactIndex ? nextContact : entry)),
+    );
+  }
+
+  function renderContactsEditor(field: ConfigurationField, fieldState: DraftFieldState, disabled: boolean) {
+    const parsed = parseContactDraftValue(fieldState.value);
+    const entries = parsed.entries;
+    return (
+      <div className="contacts-editor">
+        <div className="contacts-editor-header">
+          <p className="muted-text">User attachments are managed from the Users page.</p>
+          <div className="inline-actions contacts-editor-actions">
+            <button
+              type="button"
+              onClick={() =>
+                mutateContactsField(field, fieldState, (current) => [
+                  ...current,
+                  {
+                    id: "",
+                    name: "",
+                    description: "",
+                    emailAddresses: [],
+                    phoneNumbers: [],
+                  },
+                ])
+              }
+              disabled={disabled}
+            >
+              Add contact
+            </button>
+          </div>
+        </div>
+        {parsed.error ? (
+          <div className="callout error-callout">Contacts draft could not be read: {parsed.error}</div>
+        ) : null}
+        {!parsed.error && entries.length === 0 ? (
+          <div className="empty-state">No contacts are configured for this override.</div>
+        ) : null}
+        {!parsed.error
+          ? entries.map((contact, contactIndex) => (
+              <div key={`${contact.id || "contact"}-${contactIndex}`} className="contact-editor-item">
+                <div className="contact-editor-item-header">
+                  <strong>{contact.id.trim() || `Contact ${contactIndex + 1}`}</strong>
+                  <div className="inline-actions compact-actions">
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() =>
+                        mutateContactsField(field, fieldState, (current) =>
+                          current.filter((_, index) => index !== contactIndex),
+                        )
+                      }
+                      disabled={disabled}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+                <div className="contact-editor-grid">
+                  <label className="field-stack">
+                    <span>Contact id</span>
+                    <input
+                      value={contact.id}
+                      onChange={(event) =>
+                        updateContactEntry(field, fieldState, contactIndex, {
+                          ...contact,
+                          id: event.target.value,
+                        })
+                      }
+                      disabled={disabled}
+                      placeholder="ops_duty"
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Name</span>
+                    <input
+                      value={contact.name}
+                      onChange={(event) =>
+                        updateContactEntry(field, fieldState, contactIndex, {
+                          ...contact,
+                          name: event.target.value,
+                        })
+                      }
+                      disabled={disabled}
+                      placeholder="Ops Duty"
+                    />
+                  </label>
+                  <label className="field-stack contact-description-field">
+                    <span>Description</span>
+                    <textarea
+                      value={contact.description}
+                      onChange={(event) =>
+                        updateContactEntry(field, fieldState, contactIndex, {
+                          ...contact,
+                          description: event.target.value,
+                        })
+                      }
+                      disabled={disabled}
+                      placeholder="Optional"
+                    />
+                  </label>
+                </div>
+
+                <div className="contact-subsection">
+                  <div className="contact-subsection-header">
+                    <strong>Email addresses</strong>
+                    <div className="inline-actions compact-actions">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateContactEntry(field, fieldState, contactIndex, {
+                            ...contact,
+                            emailAddresses: [...contact.emailAddresses, ""],
+                          })
+                        }
+                        disabled={disabled}
+                      >
+                        Add email
+                      </button>
+                    </div>
+                  </div>
+                  {contact.emailAddresses.length === 0 ? (
+                    <div className="empty-state compact-empty-state">No email addresses.</div>
+                  ) : null}
+                  {contact.emailAddresses.map((address, emailIndex) => (
+                    <div key={`${contact.id}-email-${emailIndex}`} className="contact-row">
+                      <label className="field-stack">
+                        <span>Email</span>
+                        <input
+                          type="email"
+                          value={address}
+                          onChange={(event) => {
+                            const nextEmails = contact.emailAddresses.map((current, index) =>
+                              index === emailIndex ? event.target.value : current,
+                            );
+                            updateContactEntry(field, fieldState, contactIndex, {
+                              ...contact,
+                              emailAddresses: nextEmails,
+                            });
+                          }}
+                          disabled={disabled}
+                          placeholder="ops@example.com"
+                        />
+                      </label>
+                      <div className="inline-actions compact-actions">
+                        <button
+                          type="button"
+                          className="danger"
+                          onClick={() =>
+                            updateContactEntry(field, fieldState, contactIndex, {
+                              ...contact,
+                              emailAddresses: contact.emailAddresses.filter(
+                                (_, index) => index !== emailIndex,
+                              ),
+                            })
+                          }
+                          disabled={disabled}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="contact-subsection">
+                  <div className="contact-subsection-header">
+                    <strong>Phone numbers</strong>
+                    <div className="inline-actions compact-actions">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateContactEntry(field, fieldState, contactIndex, {
+                            ...contact,
+                            phoneNumbers: [
+                              ...contact.phoneNumbers,
+                              {
+                                label: "",
+                                number: "",
+                                primary: contact.phoneNumbers.length === 0,
+                              },
+                            ],
+                          })
+                        }
+                        disabled={disabled}
+                      >
+                        Add phone
+                      </button>
+                    </div>
+                  </div>
+                  {contact.phoneNumbers.length === 0 ? (
+                    <div className="empty-state compact-empty-state">No phone numbers.</div>
+                  ) : null}
+                  {contact.phoneNumbers.map((phone, phoneIndex) => (
+                    <div key={`${contact.id}-phone-${phoneIndex}`} className="contact-row contact-phone-row">
+                      <label className="field-stack">
+                        <span>Label</span>
+                        <input
+                          value={phone.label}
+                          onChange={(event) => {
+                            const nextPhones = contact.phoneNumbers.map((current, index) =>
+                              index === phoneIndex ? { ...current, label: event.target.value } : current,
+                            );
+                            updateContactEntry(field, fieldState, contactIndex, {
+                              ...contact,
+                              phoneNumbers: nextPhones,
+                            });
+                          }}
+                          disabled={disabled}
+                          placeholder="mobile"
+                        />
+                      </label>
+                      <label className="field-stack">
+                        <span>Number</span>
+                        <input
+                          value={phone.number}
+                          onChange={(event) => {
+                            const nextPhones = contact.phoneNumbers.map((current, index) =>
+                              index === phoneIndex ? { ...current, number: event.target.value } : current,
+                            );
+                            updateContactEntry(field, fieldState, contactIndex, {
+                              ...contact,
+                              phoneNumbers: nextPhones,
+                            });
+                          }}
+                          disabled={disabled}
+                          placeholder="+15551230001"
+                        />
+                      </label>
+                      <label className="checkbox-row contact-primary-row">
+                        <input
+                          type="radio"
+                          checked={phone.primary}
+                          onChange={() => {
+                            const nextPhones = contact.phoneNumbers.map((current, index) => ({
+                              ...current,
+                              primary: index === phoneIndex,
+                            }));
+                            updateContactEntry(field, fieldState, contactIndex, {
+                              ...contact,
+                              phoneNumbers: nextPhones,
+                            });
+                          }}
+                          disabled={disabled}
+                        />
+                        <span>Primary</span>
+                      </label>
+                      <div className="inline-actions compact-actions">
+                        <button
+                          type="button"
+                          className="danger"
+                          onClick={() =>
+                            updateContactEntry(field, fieldState, contactIndex, {
+                              ...contact,
+                              phoneNumbers: contact.phoneNumbers.filter(
+                                (_, index) => index !== phoneIndex,
+                              ),
+                            })
+                          }
+                          disabled={disabled}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))
+          : null}
+      </div>
+    );
+  }
+
   function sectionStorageKey(sectionTitle: string) {
     return `${selectedTabKey}:${sectionTitle}`;
   }
@@ -621,8 +1092,12 @@ export function ConfigurationScreen() {
                       : isRoot
                       ? fieldState.clear
                       : !fieldState.include || fieldState.clear;
+                    const isContactsField = isContactsConfigField(field);
                     return (
-                      <div key={field.field_name} className="config-field-card">
+                      <div
+                        key={field.field_name}
+                        className={`config-field-card${isContactsField ? " contacts-field-card" : ""}`}
+                      >
                         <div className="feature-list-title-row">
                           <div className="config-field-label">
                             <strong>{field.label}</strong>
@@ -666,7 +1141,9 @@ export function ConfigurationScreen() {
                           </div>
                         ) : null}
                         <div className={inputDisabled ? "disabled-block" : ""}>
-                          {renderFieldInput(field, fieldState)}
+                          {isContactsField
+                            ? renderContactsEditor(field, fieldState, inputDisabled || loading || saving || !state?.directory_scoped_config_enabled)
+                            : renderFieldInput(field, fieldState)}
                         </div>
                         {fieldIsGlobal ? (
                           <div className="panel-meta">Runtime-global setting.</div>

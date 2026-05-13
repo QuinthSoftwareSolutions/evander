@@ -2992,6 +2992,10 @@ select {
   background: rgba(255, 250, 241, 0.76);
 }
 
+.contacts-field-card {
+  grid-column: 1 / -1;
+}
+
 .config-field-label {
   display: inline-flex;
   align-items: center;
@@ -3035,6 +3039,81 @@ select {
 
 .disabled-block {
   opacity: 0.55;
+}
+
+.contacts-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.contacts-editor-header,
+.contact-editor-item-header,
+.contact-subsection-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.contacts-editor-header .muted-text {
+  margin: 0;
+}
+
+.contacts-editor-actions {
+  flex: 0 0 auto;
+  padding-top: 0;
+}
+
+.contact-editor-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.contact-editor-item + .contact-editor-item {
+  padding-top: 1rem;
+  border-top: 1px solid rgba(93, 75, 48, 0.14);
+}
+
+.contact-editor-grid {
+  display: grid;
+  grid-template-columns: minmax(10rem, 0.7fr) minmax(12rem, 1fr) minmax(16rem, 1.4fr);
+  gap: 0.85rem;
+}
+
+.contact-description-field textarea {
+  min-height: 4.2rem;
+}
+
+.contact-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.contact-row {
+  display: grid;
+  grid-template-columns: minmax(14rem, 1fr) auto;
+  align-items: end;
+  gap: 0.75rem;
+}
+
+.contact-phone-row {
+  grid-template-columns: minmax(9rem, 0.8fr) minmax(12rem, 1fr) auto auto;
+}
+
+.contact-primary-row {
+  min-height: 2.9rem;
+  padding-bottom: 0.15rem;
+}
+
+.contact-primary-row input[type="radio"] {
+  accent-color: #2d5fa8;
+}
+
+.compact-empty-state {
+  padding: 0.6rem 0;
 }
 
 .section-panel {
@@ -4036,6 +4115,18 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .contact-editor-grid,
+  .contact-row,
+  .contact-phone-row {
+    grid-template-columns: 1fr;
+  }
+
+  .contacts-editor-header,
+  .contact-editor-item-header,
+  .contact-subsection-header {
+    flex-direction: column;
+  }
+
   .admin-topbar,
   .workflow-topbar,
   .feature-toolbar,
@@ -4591,6 +4682,10 @@ select {
   border-color: rgba(128, 106, 66, 0.18);
   background: rgba(29, 26, 21, 0.9);
   box-shadow: 0 14px 38px rgba(0, 0, 0, 0.2);
+}
+
+:root[data-theme="dark"] .contact-editor-item {
+  border-top-color: rgba(128, 106, 66, 0.22);
 }
 
 :root[data-theme="dark"] .config-field-tooltip-icon,
