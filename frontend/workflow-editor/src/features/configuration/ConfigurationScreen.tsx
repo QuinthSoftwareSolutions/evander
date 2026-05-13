@@ -658,7 +658,7 @@ export function ConfigurationScreen() {
         ) : null}
         {!parsed.error
           ? entries.map((contact, contactIndex) => (
-              <div key={`${contact.id || "contact"}-${contactIndex}`} className="contact-editor-item">
+              <div key={`contact-${contactIndex}`} className="contact-editor-item">
                 <div className="contact-editor-item-header">
                   <strong>{contact.id.trim() || `Contact ${contactIndex + 1}`}</strong>
                   <div className="inline-actions compact-actions">
@@ -743,7 +743,7 @@ export function ConfigurationScreen() {
                     <div className="empty-state compact-empty-state">No email addresses.</div>
                   ) : null}
                   {contact.emailAddresses.map((address, emailIndex) => (
-                    <div key={`${contact.id}-email-${emailIndex}`} className="contact-row">
+                    <div key={`contact-${contactIndex}-email-${emailIndex}`} className="contact-row">
                       <label className="field-stack">
                         <span>Email</span>
                         <input
@@ -812,7 +812,7 @@ export function ConfigurationScreen() {
                     <div className="empty-state compact-empty-state">No phone numbers.</div>
                   ) : null}
                   {contact.phoneNumbers.map((phone, phoneIndex) => (
-                    <div key={`${contact.id}-phone-${phoneIndex}`} className="contact-row contact-phone-row">
+                    <div key={`contact-${contactIndex}-phone-${phoneIndex}`} className="contact-row contact-phone-row">
                       <label className="field-stack">
                         <span>Label</span>
                         <input
