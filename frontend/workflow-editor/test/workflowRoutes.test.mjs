@@ -19,13 +19,21 @@ test("multi-route edges use catalog labels", () => {
     { key: "started", label: "Started" },
     { key: "completed", label: "Completed" },
   ];
-  assert.equal(workflowEdgeRouteLabel("started", ports, ["started", "completed"]), "Started");
-  assert.equal(workflowEdgeRouteLabel("completed", ports, ["started", "completed"]), "Completed");
+  assert.equal(workflowEdgeRouteLabel("started", ports), "Started");
+  assert.equal(workflowEdgeRouteLabel("completed", ports), "Completed");
+});
+
+test("multi-route edges stay labeled even when only one edge is connected", () => {
+  const ports = [
+    { key: "started", label: "Started" },
+    { key: "completed", label: "Completed" },
+  ];
+  assert.equal(workflowEdgeRouteLabel("completed", ports), "Completed");
 });
 
 test("single unambiguous non-error route omits a label", () => {
   const ports = [{ key: "completed", label: "Completed" }];
-  assert.equal(workflowEdgeRouteLabel("completed", ports, ["completed"]), undefined);
+  assert.equal(workflowEdgeRouteLabel("completed", ports), undefined);
 });
 
 test("error routes are always labeled", () => {
@@ -33,8 +41,12 @@ test("error routes are always labeled", () => {
     { key: "completed", label: "Completed" },
     { key: "error", label: "Error" },
   ];
-  assert.equal(workflowEdgeRouteLabel("completed", ports, ["completed", "error"]), undefined);
-  assert.equal(workflowEdgeRouteLabel("error", ports, ["completed", "error"]), "Error");
+  assert.equal(workflowEdgeRouteLabel("completed", ports), undefined);
+  assert.equal(workflowEdgeRouteLabel("error", ports), "Error");
+});
+
+test("unknown non-default routes fall back to a humanized label", () => {
+  assert.equal(workflowEdgeRouteLabel("custom-route", []), "Custom Route");
 });
 
 test("route options use named ports when present and default otherwise", () => {

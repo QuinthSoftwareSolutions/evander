@@ -667,16 +667,13 @@ function buildEdges(config: WorkflowConfig, catalog: WorkflowEditorCatalog): Edg
   return config.edges.map((edge) => {
     const sourceNode = nodeById(config, edge.source_id);
     const sourceCatalogEntry = sourceNode ? getCatalogEntry(catalog, sourceNode.type) : undefined;
-    const siblingSourcePorts = config.edges
-      .filter((candidate) => candidate.source_id === edge.source_id)
-      .map((candidate) => candidate.source_port);
     const routeClass = workflowRouteClass(edge.source_port);
     return {
       id: edgeId(edge),
       source: edge.source_id,
       sourceHandle: edge.source_port,
       target: edge.target_id,
-      label: workflowEdgeRouteLabel(edge.source_port, sourceCatalogEntry?.output_ports ?? [], siblingSourcePorts),
+      label: workflowEdgeRouteLabel(edge.source_port, sourceCatalogEntry?.output_ports ?? []),
       animated: Boolean(edge.allow_cycle),
       className: `workflow-edge workflow-edge-route-${routeClass}`,
     };

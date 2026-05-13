@@ -37,7 +37,6 @@ export function workflowConnectionRouteOptions(
 export function workflowEdgeRouteLabel(
   sourcePort: string | null | undefined,
   outputPorts: ReadonlyArray<WorkflowEditorNodePortDefinition>,
-  siblingSourcePorts?: ReadonlyArray<string | null | undefined>,
 ): string | undefined {
   const normalized = normalizeWorkflowSourcePort(sourcePort);
   if (!normalized) return undefined;
@@ -45,12 +44,10 @@ export function workflowEdgeRouteLabel(
   const port = outputPorts.find((candidate) => candidate.key === normalized);
   const fallbackLabel = port?.label || humanizeRouteKey(normalized);
   if (isErrorRoute(normalized)) return fallbackLabel;
+  if (!port) return fallbackLabel;
 
-  const comparableSourcePorts = siblingSourcePorts ?? outputPorts.map((candidate) => candidate.key);
-  const nonErrorSourcePorts = comparableSourcePorts
-    .map((candidate) => normalizeWorkflowSourcePort(candidate))
-    .filter((candidate): candidate is string => candidate !== null && !isErrorRoute(candidate));
-  if (nonErrorSourcePorts.length <= 1) {
+  const nonErrorPorts = outputPorts.filter((candidate) => !isErrorRoute(candidate.key));
+  if (nonErrorPorts.length === 1 && nonErrorPorts[0]?.key === normalized) {
     return undefined;
   }
   return fallbackLabel;
