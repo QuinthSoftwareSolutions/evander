@@ -121,10 +121,7 @@ _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] =
     "email": tuple(
         ("email", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["email"])
     ),
-    "contacts": tuple(
-        ("contacts", field_name)
-        for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["contacts"])
-    ),
+    "contacts": (("contacts", "contacts"),),
     "vm_runtime": tuple(
         ("vm", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["vm"])
     ),
@@ -274,10 +271,7 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
     "contacts": (
         (
             "Contact list",
-            (
-                ("contacts", "contacts"),
-                ("contacts", "user_contact_links"),
-            ),
+            (("contacts", "contacts"),),
             (),
         ),
     ),
@@ -702,6 +696,8 @@ def _directory_tab_help_text(tab_key: str) -> str | None:
             "Directory-level guardrails for approvals, recipients, mailboxes, "
             "communication files, and audit redaction defaults."
         )
+    if tab_key == "contacts":
+        return "Directory contacts available to host-side communication integrations."
     if tab_key == "vm_runtime":
         return "VM network and relay endpoint settings used when launching and wiring guest runtime access."
     if tab_key == "automation":
