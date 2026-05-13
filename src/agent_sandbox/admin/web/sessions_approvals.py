@@ -31,7 +31,7 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
         "Build the daily status report JSON from Azure DevOps current-iteration data."
     ),
     ToolName.MAKE_PHONE_CALL: (
-        "Start Retell phone calls to directory-configured contact aliases."
+        "Start Retell phone calls to directory-configured contact ids."
     ),
     ToolName.GET_PHONE_CALL_RESULT: (
         "Read Retell phone call status and transcripts for calls owned by the session."

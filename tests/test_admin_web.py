@@ -2260,6 +2260,81 @@ def test_admin_web_user_api_prevents_last_admin_delete_and_demotion(tmp_path: Pa
     assert delete_second.status_code == 200
 
 
+def test_admin_web_user_api_attaches_directory_contact(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.write_directory_domain_config(
+        "root",
+        "contacts",
+        {
+            "contacts": {
+                "ops": {
+                    "name": "Ops Duty",
+                    "description": "Deployment window escalation contact",
+                    "phone_numbers": [
+                        {"label": "mobile", "number": "+15550000002", "primary": True}
+                    ],
+                }
+            }
+        },
+    )
+    client = TestClient(create_app(service))
+
+    created = client.post(
+        "/api/admin/users?directory_path=root",
+        json={"login": "operator@example.com", "role": "admin", "contact_id": "ops"},
+    )
+    listed = client.get("/api/admin/users?directory_path=root")
+    cleared = client.patch(
+        "/api/admin/users/operator@example.com?directory_path=root",
+        json={"contact_id": None},
+    )
+
+    assert created.status_code == 200
+    assert created.json()["user"]["contact_id"] == "ops"
+    assert created.json()["user"]["contact"]["name"] == "Ops Duty"
+    assert listed.json()["contacts"][0]["id"] == "ops"
+    assert listed.json()["users"][0]["contact_id"] == "ops"
+    assert cleared.status_code == 200
+    assert cleared.json()["user"]["contact_id"] is None
+
+
+def test_admin_web_user_api_clears_inherited_directory_contact(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.create_directory_child("root", "team")
+    service.write_directory_domain_config(
+        "root",
+        "contacts",
+        {
+            "contacts": {
+                "ops": {
+                    "name": "Ops Duty",
+                    "phone_numbers": [
+                        {"label": "mobile", "number": "+15550000002", "primary": True}
+                    ],
+                }
+            },
+            "user_contact_links": {"operator@example.com": "ops"},
+        },
+    )
+    client = TestClient(create_app(service))
+    client.post(
+        "/api/admin/users?directory_path=root",
+        json={"login": "operator@example.com", "role": "admin"},
+    )
+
+    inherited = client.get("/api/admin/users?directory_path=root/team")
+    cleared = client.patch(
+        "/api/admin/users/operator@example.com?directory_path=root/team",
+        json={"contact_id": None},
+    )
+    listed = client.get("/api/admin/users?directory_path=root/team")
+
+    assert inherited.json()["users"][0]["contact_id"] == "ops"
+    assert cleared.status_code == 200
+    assert cleared.json()["user"]["contact_id"] is None
+    assert listed.json()["users"][0]["contact_id"] is None
+
+
 def test_admin_web_user_api_rejects_regular_azure_user(tmp_path: Path, monkeypatch) -> None:
     config_path = write_config(tmp_path)
     store = _admin_web_user_store(tmp_path)
@@ -2396,7 +2471,14 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         "retell_from_number",
         "retell_default_agent_id",
         "retell_request_timeout_seconds",
-        "retell_phonebook",
+    }
+    contacts = next(tab for tab in payload["tabs"] if tab["key"] == "contacts")
+    contact_list = next(
+        section for section in contacts["sections"] if section["title"] == "Contact list"
+    )
+    assert {field["field_name"] for field in contact_list["fields"]} == {
+        "contacts",
+        "user_contact_links",
     }
     assert "communications" in payload["tab_snapshots"]
     assert payload["selected_directory"]["path"] == "root"

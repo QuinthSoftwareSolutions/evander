@@ -41,12 +41,33 @@ GIT_USER="${AGENT_SANDBOX_GIT_USER:-${USER}}"
 GIT_SSH_ALIAS="${AGENT_SANDBOX_GIT_SSH_ALIAS:-agent-sandbox-git-host}"
 TRIGGER_HOOK_SCRIPT="${ROOT_DIR}/scripts/handle_git_push_trigger.sh"
 
+repair_git_remote_ownership_if_root() {
+  local path="$1"
+  local target_user="$2"
+  local recursive="${3:-1}"
+  local target_group
+
+  if [[ "$(id -u)" != "0" || -z "${target_user}" || "${target_user}" == "root" ]]; then
+    return 0
+  fi
+  if ! target_group="$(id -gn "${target_user}" 2>/dev/null)"; then
+    echo "Cannot resolve group for Git remote owner '${target_user}'." >&2
+    exit 1
+  fi
+  if [[ "${recursive}" == "1" ]]; then
+    chown -R "${target_user}:${target_group}" "${path}"
+  else
+    chown "${target_user}:${target_group}" "${path}"
+  fi
+}
+
 case "${REPO_NAME}" in
   *.git) REPO_DIR="${GIT_ROOT}/${REPO_NAME}" ;;
   *) REPO_DIR="${GIT_ROOT}/${REPO_NAME}.git" ;;
 esac
 
 mkdir -p "${GIT_ROOT}"
+repair_git_remote_ownership_if_root "${GIT_ROOT}" "${GIT_USER}" 0
 
 if [[ ! -d "${REPO_DIR}" ]]; then
   git init --bare "${REPO_DIR}" >/dev/null
@@ -81,6 +102,7 @@ mkdir -p "\${LOG_DIR}"
 } >> "\${LOG_FILE}" 2>&1 || true
 HOOK
 chmod +x "${REPO_DIR}/hooks/post-receive"
+repair_git_remote_ownership_if_root "${REPO_DIR}" "${GIT_USER}"
 
 echo "Bare remote ready: ${REPO_DIR}"
 echo

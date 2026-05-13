@@ -228,12 +228,6 @@ def test_directory_config_store_allows_retell_provider_fields(tmp_path: Path) ->
             "retell_from_number": "+15550000001",
             "retell_default_agent_id": "agent-default",
             "retell_request_timeout_seconds": 12.5,
-            "retell_phonebook": {
-                "ops": {
-                    "display_name": "Ops Duty",
-                    "phone_number": "+15550000002",
-                }
-            },
         },
     )
 
@@ -246,7 +240,86 @@ def test_directory_config_store_allows_retell_provider_fields(tmp_path: Path) ->
 
     assert resolution.effective_config["retell_api_base_url"] == "https://retell.test"
     assert resolution.effective_config["retell_api_key_env"] == "TEAM_RETELL_API_KEY"
-    assert resolution.effective_config["retell_phonebook"]["ops"]["display_name"] == "Ops Duty"
+    assert "retell_phonebook" not in resolution.effective_config
+    assert resolution.validation_errors == []
+
+
+def test_directory_config_store_allows_directory_contacts(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    config_store.write(
+        team.path,
+        domain="contacts",
+        payload={
+            "contacts": {
+                "ops": {
+                    "name": "Ops Duty",
+                    "description": "Deployment window escalation contact",
+                    "email_addresses": ["ops@example.com"],
+                    "phone_numbers": [
+                        {"label": "mobile", "number": "+15550000002", "primary": True}
+                    ],
+                }
+            },
+            "user_contact_links": {"Operator@Example.com": "ops"},
+        },
+    )
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="contacts",
+        base_config=get_domain_base_config(GatewayConfig(), "contacts"),
+        validator=lambda candidate: validate_effective_domain_payload("contacts", candidate),
+    )
+
+    assert resolution.effective_config["contacts"]["ops"]["name"] == "Ops Duty"
+    assert resolution.effective_config["user_contact_links"]["operator@example.com"] == "ops"
+    assert resolution.validation_errors == []
+
+
+def test_directory_contact_links_support_inherited_clear(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    config_store.write(
+        "root",
+        domain="contacts",
+        payload={
+            "contacts": {
+                "ops": {
+                    "name": "Ops Duty",
+                    "phone_numbers": [
+                        {"label": "mobile", "number": "+15550000002", "primary": True}
+                    ],
+                }
+            },
+            "user_contact_links": {"operator@example.com": "ops"},
+        },
+    )
+    config_store.write(
+        team.path,
+        domain="contacts",
+        payload={"user_contact_links": {"operator@example.com": None}},
+    )
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="contacts",
+        base_config=get_domain_base_config(GatewayConfig(), "contacts"),
+        validator=lambda candidate: validate_effective_domain_payload("contacts", candidate),
+    )
+
+    assert resolution.effective_config["contacts"]["ops"]["name"] == "Ops Duty"
+    assert resolution.effective_config["user_contact_links"]["operator@example.com"] is None
     assert resolution.validation_errors == []
 
 

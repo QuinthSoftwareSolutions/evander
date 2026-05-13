@@ -211,8 +211,10 @@ class RuntimeContext:
 
     def retell_phone_call_service_for_session(self, session_id: str) -> RetellPhoneCallService:
         resolved_config = self.resolve_provider_config_for_session(session_id)
+        contacts_config = self.provider_config.resolve_contacts_for_session_id(session_id)
         return RetellPhoneCallService(
             config=resolved_config,
+            contacts_config=contacts_config,
             store=self.retell_phone_call_store,
         )
 

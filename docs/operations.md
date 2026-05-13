@@ -602,9 +602,9 @@ Example MCP call:
 
 ## Host-Side Retell Phone Calls
 
-Use this only when agents should call configured contact aliases. The gateway owns the Retell API
-key, phonebook, API requests, webhook verification, and transcript store. Guests never receive raw
-phone numbers or Retell credentials.
+Use this only when agents should call configured directory contacts. The gateway owns the Retell API
+key, contact resolution, API requests, webhook verification, and transcript store. Guests never
+receive raw phone numbers or Retell credentials.
 
 - Gateway tool names:
   - `make_phone_call`
@@ -621,15 +621,15 @@ phone numbers or Retell credentials.
     a different env-var name.
 - Required provider config:
   - `retell_from_number`
-  - `retell_default_agent_id` or per-contact `agent_id`
-  - `retell_phonebook`, mapping contact alias to `display_name`, `phone_number`, and optional
-    `agent_id`
+- Required contact config:
+  - `contacts.json`, with callable contact ids under `contacts`
+  - Each callable contact needs one phone number marked `"primary": true`
 - Required host secret:
   - Set the configured `retell_api_key_env` value in the gateway host environment. For systemd,
     repo-root `secrets.env` is already loaded by `agent-sandbox-gateway.service`.
 - Required Retell agent prompt:
-  - The Retell agent/LLM referenced by `retell_default_agent_id` or a contact-specific `agent_id`
-    must include `{{agent_question}}` in its Retell prompt or begin message.
+  - The Retell agent/LLM referenced by `retell_default_agent_id` must include
+    `{{agent_question}}` in its Retell prompt or begin message.
   - `make_phone_call.prompt` is sent as `retell_llm_dynamic_variables.agent_question`; Retell only
     uses that value where the configured Retell prompt references the dynamic variable.
 - Runtime state:
@@ -645,11 +645,22 @@ Example directory-scoped `providers.json` overlay:
 {
   "retell_api_key_env": "RETELL_API_KEY",
   "retell_from_number": "+15551230000",
-  "retell_default_agent_id": "agent_123",
-  "retell_phonebook": {
+  "retell_default_agent_id": "agent_123"
+}
+```
+
+Example directory-scoped `contacts.json` overlay:
+
+```json
+{
+  "contacts": {
     "ops_duty": {
-      "display_name": "Ops Duty",
-      "phone_number": "+15551230001"
+      "name": "Ops Duty",
+      "description": "Deployment window escalation contact",
+      "email_addresses": ["ops@example.com"],
+      "phone_numbers": [
+        {"label": "mobile", "number": "+15551230001", "primary": true}
+      ]
     }
   }
 }
@@ -670,10 +681,10 @@ Then poll:
 Audit/result behavior:
 
 - Tool audit redacts `prompt` through the existing `redacted_keys` policy.
-- Agent-facing results include contact alias/display name, status, timestamps, disconnection
+- Agent-facing results include contact id/name, status, timestamps, disconnection
   reason, transcript fields, call analysis, and sanitized Retell metadata.
 - Agent-facing responses and audit results do not include `from_number`, `to_number`, configured
-  phonebook numbers, or Retell credentials.
+  contact phone numbers, or Retell credentials.
 
 ### Required provider config and environment
 

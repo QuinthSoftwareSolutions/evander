@@ -5676,7 +5676,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         metadata: dict[str, Any] | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        """Start a host-side Retell phone call to a configured contact alias."""
+        """Start a host-side Retell phone call to a directory contact id."""
         resolved_session_id = _resolve_session_id_from_context(
             session_id, ctx, transport_session_map=transport_session_map
         )

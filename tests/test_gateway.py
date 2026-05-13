@@ -12,6 +12,7 @@ from starlette.testclient import TestClient
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.gateway import (
     _assistant_mutation_audit_result,
     _filter_discord_commands_for_session,
@@ -714,13 +715,22 @@ def test_make_phone_call_enforces_policy_contact_alias_and_audit_redaction(
             retell_api_base_url="https://retell.test",
             retell_from_number="+15550000001",
             retell_default_agent_id="agent-default",
-            retell_phonebook={
-                "ops": {
-                    "display_name": "Ops Duty",
-                    "phone_number": "+15550000002",
-                }
-            },
         )
+    )
+    DirectoryConfigStore(context.directories, runtime_dir=tmp_path).write(
+        "root",
+        domain="contacts",
+        payload={
+            "contacts": {
+                "ops": {
+                    "name": "Ops Duty",
+                    "description": "Deployment window escalation contact",
+                    "phone_numbers": [
+                        {"label": "mobile", "number": "+15550000002", "primary": True}
+                    ],
+                }
+            }
+        },
     )
     context.session_repository.upsert_session(
         SessionManifest(
@@ -749,7 +759,7 @@ def test_make_phone_call_enforces_policy_contact_alias_and_audit_redaction(
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
-    with pytest.raises(ToolError, match="Unknown Retell phonebook contact alias"):
+    with pytest.raises(ToolError, match="Unknown contact id for Retell phone call"):
         _call_tool(
             server,
             "make_phone_call",
@@ -827,12 +837,6 @@ def test_get_phone_call_result_denies_cross_session_reads(tmp_path: Path) -> Non
             retell_api_base_url="https://retell.test",
             retell_from_number="+15550000001",
             retell_default_agent_id="agent-default",
-            retell_phonebook={
-                "ops": {
-                    "display_name": "Ops Duty",
-                    "phone_number": "+15550000002",
-                }
-            },
         )
     )
     context.retell_phone_call_store.prepare_call(

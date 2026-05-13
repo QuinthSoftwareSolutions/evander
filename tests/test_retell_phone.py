@@ -35,13 +35,6 @@ def _config(tmp_path: Path, **kwargs: object) -> GatewayConfig:
         retell_api_base_url="https://retell.test",
         retell_from_number="+15550000001",
         retell_default_agent_id="agent-default",
-        retell_phonebook={
-            "ops": {
-                "display_name": "Ops Duty",
-                "phone_number": "+15550000002",
-                "agent_id": "agent-contact",
-            }
-        },
         **kwargs,
     )
 

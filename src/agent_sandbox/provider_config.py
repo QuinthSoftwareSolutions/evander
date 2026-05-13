@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from agent_sandbox.config import GatewayConfig, load_config
 from agent_sandbox.directory_config import (
+    ContactDirectoryConfig,
     DirectoryConfigResolver,
     DirectoryConfigStore,
     get_domain_base_config,
@@ -116,6 +117,20 @@ class ProviderConfigResolver:
             payload.update(resolution.effective_config)
         return GatewayConfig.model_validate(payload)
 
+    def resolve_contacts_for_directory(
+        self, directory_path: str | None
+    ) -> ContactDirectoryConfig:
+        normalized_path = self._normalize_directory_path(directory_path)
+        resolution = self.resolver.resolve_domain(
+            normalized_path,
+            domain="contacts",
+            base_config=get_domain_base_config(self.config, "contacts"),
+            validator=lambda candidate: validate_effective_domain_payload(
+                "contacts", candidate
+            ),
+        )
+        return ContactDirectoryConfig.model_validate(resolution.effective_config)
+
     def resolve_for_session_id(self, session_id: str) -> GatewayConfig:
         session = self.session_store.get_session(session_id)
         if session is None:
@@ -123,6 +138,14 @@ class ProviderConfigResolver:
         if session is None:
             raise ValueError(f"unknown session: {session_id}")
         return self.resolve_for_session_manifest(session)
+
+    def resolve_contacts_for_session_id(self, session_id: str) -> ContactDirectoryConfig:
+        session = self.session_store.get_session(session_id)
+        if session is None:
+            session = self.provider_session_store.get(session_id)
+        if session is None:
+            raise ValueError(f"unknown session: {session_id}")
+        return self.resolve_contacts_for_directory(session.directory_path)
 
     def get_session_manifest(self, session_id: str) -> SessionManifest:
         session = self.session_store.get_session(session_id)

@@ -124,6 +124,16 @@ clear_staged_mirror_refs() {
   } | git --git-dir="${bare_repo_path}" update-ref --stdin
 }
 
+is_preserved_local_mirror_ref() {
+  local ref="$1"
+  case "${ref}" in
+    refs/heads/agents/*|refs/heads/review/*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 stage_mirror_fetch_refspec() {
   local refspec="$1"
   local stage_namespace="$2"
@@ -175,6 +185,9 @@ apply_staged_mirror_refs() {
   {
     for ref in "${!current_refs[@]}"; do
       if [[ -z "${staged_refs[${ref}]+x}" ]]; then
+        if is_preserved_local_mirror_ref "${ref}"; then
+          continue
+        fi
         printf 'delete %s %s\n' "${ref}" "${current_refs[${ref}]}"
       fi
     done

@@ -549,7 +549,8 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `execution_backend`, `container_worker_base_url`, `container_worker_token_env`, `container_worker_default_image`, `container_worker_job_timeout_seconds`, `container_worker_request_timeout_seconds`, `container_worker_workspace_persistence` | root `providers.json` | `src/agent_sandbox/execution/container_worker_backend.py` and portable `effect:agent:*` container worker routing. |
 | `container_worker_guest_openai_base_url`, `container_worker_guest_gateway_url`, `container_worker_guest_nuget_relay_base_url`, `container_worker_guest_pypi_index_url`, `container_worker_guest_npm_registry_url` | root `providers.json` | Container session bootstrap files under `/home/agent` for Codex, MCP gateway, NuGet restore traffic, and Nexus-backed PyPI/npm restores. |
 | `container_worker_mssql_enabled`, `container_worker_mssql_host`, `container_worker_mssql_port` | root `providers.json` | Gateway-side enablement and advertised worker SQL Server endpoint for `mssql_*` MCP provisioning tools. |
-| `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds`, `retell_phonebook` | root or directory `providers.json` | `src/agent_sandbox/retell_phone.py` and `src/agent_sandbox/gateway.py` for host-side Retell phone calls and webhook verification. |
+| `retell_api_base_url`, `retell_api_key_env`, `retell_from_number`, `retell_default_agent_id`, `retell_request_timeout_seconds` | root or directory `providers.json` | `src/agent_sandbox/retell_phone.py` and `src/agent_sandbox/gateway.py` for host-side Retell phone calls and webhook verification. |
+| `contacts`, `user_contact_links` | root or directory `contacts.json` | `src/agent_sandbox/directory_config.py`, `src/agent_sandbox/retell_phone.py`, and the admin Users API for directory-scoped contacts and user attachments. |
 | `redacted_keys` | legacy gateway YAML (optional) | `src/agent_sandbox/gateway.py` request/response redaction in logs. |
 
 ### OpenAI relay keys
@@ -568,9 +569,15 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `retell_api_base_url` | provider config overlays | Optional override for Retell create-call, get-call, and webhook signature configuration; defaults to `https://api.retellai.com` and normally does not need to be set. |
 | `retell_api_key_env` | provider config overlays | Host env-var name lookup for the Retell API key; default `RETELL_API_KEY`. |
 | `retell_from_number` | provider config overlays | Outbound Retell caller number used only by the host-side create-call request. |
-| `retell_default_agent_id` | provider config overlays | Default Retell `override_agent_id` when a phonebook contact does not set `agent_id`. |
+| `retell_default_agent_id` | provider config overlays | Retell `override_agent_id` used for directory-contact phone calls. |
 | `retell_request_timeout_seconds` | provider config overlays | HTTP timeout in seconds for Retell create-call and get-call requests. |
-| `retell_phonebook` | provider config overlays | Directory-scoped alias map. Each alias contains `display_name`, `phone_number`, and optional `agent_id`. |
+
+### Directory contact keys
+
+| Key | Found in | Consumed by |
+|---|---|---|
+| `contacts` | contact config overlays | Directory-scoped contact map keyed by stable contact id. Entries include `name`, `description`, optional `email_addresses`, and `phone_numbers`; Retell requires exactly one primary phone number on callable contacts. |
+| `user_contact_links` | contact config overlays | Directory-scoped mapping from normalized admin user login to one contact id; a `null` value clears an inherited attachment for that directory. |
 
 ### HTTP target relay keys
 
@@ -678,6 +685,7 @@ Supported directory config domains:
 |---|---|---|
 | `policy.json` | Session/policy defaults and operator restrictions | `approval_ttl_seconds`, `default_session_ttl_seconds`, Discord/email allowlists, `email_send_enabled`, `pr_reply_require_approval`, `redacted_keys` |
 | `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, HTTP target relay, NuGet, GitHub, Azure DevOps, Teams, container worker, Retell |
+| `contacts.json` | Directory contact list and admin-user contact attachments | `contacts`, `user_contact_links` |
 | `email.json` | Mailbox provider definitions and email provider runtime settings | `email_mailboxes`, `email_provider_timeout_seconds` |
 | `heartbeat.json` | Directory-scoped wake prompt behavior | `host_heartbeat_pr_resume_prompt`, `discord_resume_prompt` |
 | `ado-worker.json` | Azure DevOps backlog worker setup/bootstrap behavior | `ado_area_filters`, `ado_team_filters`, `ado_project_or_solution`, `ado_prewarm_target`, `ado_repo_source`, `create_prs_automatically`, `create_prs_as_draft`, `ado_bootstrap_*`, `ado_mssql_sa_password_env`, frontend bootstrap fields |

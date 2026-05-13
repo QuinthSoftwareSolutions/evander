@@ -1,5 +1,43 @@
 # Configuration Migrations
 
+## Retell Phonebook To Directory Contacts
+
+Retell-specific `retell_phonebook` entries in `providers.json` are retired. Move each old
+phonebook alias into directory-scoped `contacts.json`.
+
+Before:
+
+```json
+{
+  "retell_phonebook": {
+    "ops_duty": {
+      "display_name": "Ops Duty",
+      "phone_number": "+15551230001",
+      "agent_id": "agent_old"
+    }
+  }
+}
+```
+
+After:
+
+```json
+{
+  "contacts": {
+    "ops_duty": {
+      "name": "Ops Duty",
+      "description": "",
+      "email_addresses": [],
+      "phone_numbers": [
+        {"label": "primary", "number": "+15551230001", "primary": true}
+      ]
+    }
+  }
+}
+```
+
+Do not carry over per-contact `agent_id`; Retell now uses `retell_default_agent_id`.
+
 ## Trigger/Effect Orchestrator Core Config Split
 
 As of this change, `config/trigger-orchestrator/config.json` is interpreted as:

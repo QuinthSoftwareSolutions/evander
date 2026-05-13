@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import type {
+  AdminContactSummary,
   AdminUserListResponse,
   AdminUserMutationResponse,
   AdminWebUserRecord,
@@ -13,12 +14,16 @@ type UserFormState = {
   login: string;
   displayName: string;
   role: AdminWebUserRole;
+  contactId: string;
+  initialContactId: string;
 };
 
 const EMPTY_FORM: UserFormState = {
   login: "",
   displayName: "",
   role: "regular",
+  contactId: "",
+  initialContactId: "",
 };
 
 function userLabel(user: AdminWebUserRecord): string {
@@ -26,8 +31,14 @@ function userLabel(user: AdminWebUserRecord): string {
 }
 
 export function UsersPage() {
-  const { canManageUsers, currentUserId } = useAdminUi();
+  const {
+    canManageUsers,
+    currentUserId,
+    directoryScopedConfigEnabled,
+    selectedDirectoryPath,
+  } = useAdminUi();
   const [users, setUsers] = useState<AdminWebUserRecord[]>([]);
+  const [contacts, setContacts] = useState<AdminContactSummary[]>([]);
   const [selectedLogin, setSelectedLogin] = useState<string | null>(null);
   const [form, setForm] = useState<UserFormState>(EMPTY_FORM);
   const [loading, setLoading] = useState(false);
@@ -57,8 +68,11 @@ export function UsersPage() {
     }
     setLoading(true);
     try {
-      const payload = await fetchJson<AdminUserListResponse>("/api/admin/users");
+      const payload = await fetchJson<AdminUserListResponse>(
+        `/api/admin/users?directory_path=${encodeURIComponent(selectedDirectoryPath)}`,
+      );
       setUsers(payload.users);
+      setContacts(payload.contacts);
       setSelectedLogin((current) => {
         if (current && payload.users.some((user) => user.login === current)) return current;
         return payload.users[0]?.login ?? null;
@@ -73,7 +87,7 @@ export function UsersPage() {
 
   useEffect(() => {
     void loadUsers();
-  }, [canManageUsers]);
+  }, [canManageUsers, selectedDirectoryPath]);
 
   useEffect(() => {
     if (!selectedUser) {
@@ -84,6 +98,8 @@ export function UsersPage() {
       login: selectedUser.login,
       displayName: selectedUser.display_name ?? "",
       role: selectedUser.role,
+      contactId: selectedUser.contact_id ?? "",
+      initialContactId: selectedUser.contact_id ?? "",
     });
   }, [selectedUser]);
 
@@ -104,20 +120,36 @@ export function UsersPage() {
     setStatus(null);
     setError(null);
     try {
-      const body = JSON.stringify({
+      const requestPayload: {
+        login: string;
+        role: AdminWebUserRole;
+        display_name: string | null;
+        contact_id?: string | null;
+      } = {
         login,
         role: form.role,
         display_name: form.displayName.trim() || null,
-      });
+      };
+      const contactChanged = form.contactId !== form.initialContactId;
+      if (
+        directoryScopedConfigEnabled &&
+        (selectedUser ? contactChanged : Boolean(form.contactId))
+      ) {
+        requestPayload.contact_id = form.contactId || null;
+      }
+      const body = JSON.stringify(requestPayload);
       const payload = selectedUser
         ? await fetchJson<AdminUserMutationResponse>(
-            `/api/admin/users/${encodeURIComponent(selectedUser.login)}`,
+            `/api/admin/users/${encodeURIComponent(selectedUser.login)}?directory_path=${encodeURIComponent(selectedDirectoryPath)}`,
             { method: "PATCH", body },
           )
-        : await fetchJson<AdminUserMutationResponse>("/api/admin/users", {
-            method: "POST",
-            body,
-          });
+        : await fetchJson<AdminUserMutationResponse>(
+            `/api/admin/users?directory_path=${encodeURIComponent(selectedDirectoryPath)}`,
+            {
+              method: "POST",
+              body,
+            },
+          );
       await loadUsers();
       setSelectedLogin(payload.user.login);
       setStatus(`Saved ${payload.user.login}.`);
@@ -137,7 +169,7 @@ export function UsersPage() {
     setError(null);
     try {
       await fetchJson<AdminUserMutationResponse>(
-        `/api/admin/users/${encodeURIComponent(login)}`,
+        `/api/admin/users/${encodeURIComponent(login)}?directory_path=${encodeURIComponent(selectedDirectoryPath)}`,
         { method: "DELETE" },
       );
       await loadUsers();
@@ -193,6 +225,9 @@ export function UsersPage() {
                 </span>
               </div>
               <div className="feature-list-meta">{user.login}</div>
+              <div className="feature-list-meta">
+                {user.contact ? `Contact: ${user.contact.name}` : "No contact attached"}
+              </div>
             </button>
           ))}
           {canManageUsers && loading && users.length === 0 ? <div className="empty-state">Loading users...</div> : null}
@@ -207,6 +242,7 @@ export function UsersPage() {
             <p className="muted-text">
               {selectedUser ? selectedUser.login : "Create an Azure SSO user record."}
             </p>
+            <p className="muted-text">Directory: {selectedDirectoryPath}</p>
           </div>
           {selectedUser ? (
             <div className="feature-toolbar-actions">
@@ -270,6 +306,23 @@ export function UsersPage() {
                 <option value="regular">Regular</option>
               </select>
             </label>
+            <label className="field-stack">
+              <span>Contact</span>
+              <select
+                value={form.contactId}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, contactId: event.target.value }))
+                }
+                disabled={actionDisabled || !directoryScopedConfigEnabled}
+              >
+                <option value="">None</option>
+                {contacts.map((contact) => (
+                  <option key={contact.id} value={contact.id}>
+                    {contact.name} ({contact.id})
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
           <div className="inline-actions">
             <button type="button" className="primary" onClick={() => void saveUser()} disabled={actionDisabled}>
@@ -290,6 +343,7 @@ export function UsersPage() {
                   <th>Login</th>
                   <th>Role</th>
                   <th>Display name</th>
+                  <th>Contact</th>
                   <th>Last login</th>
                   <th>Updated</th>
                 </tr>
@@ -308,13 +362,14 @@ export function UsersPage() {
                       </span>
                     </td>
                     <td>{user.display_name || "None"}</td>
+                    <td>{user.contact ? user.contact.name : "None"}</td>
                     <td>{formatTimestamp(user.last_login_at)}</td>
                     <td>{formatTimestamp(user.updated_at)}</td>
                   </tr>
                 ))}
                 {sortedUsers.length === 0 ? (
                   <tr>
-                    <td className="empty-state-cell" colSpan={5}>
+                    <td className="empty-state-cell" colSpan={6}>
                       No user records.
                     </td>
                   </tr>

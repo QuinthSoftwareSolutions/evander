@@ -2246,12 +2246,27 @@ def _publish_directory_pr_feedback_events(
                 pat_env_name=pat_env_name,
             )
             stream_key = _stream_key("azure_devops", repo, pr_id)
-            result = adapter.poll(
-                client=client,
-                repo=repo,
-                pr_id=pr_id,
-                cursor=previous_cursors.get(stream_key),
-            )
+            try:
+                result = adapter.poll(
+                    client=client,
+                    repo=repo,
+                    pr_id=pr_id,
+                    cursor=previous_cursors.get(stream_key),
+                )
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code if exc.response is not None else None
+                if status_code == 404:
+                    _LOG.warning(
+                        "Skipping Azure PR feedback stream after 404 "
+                        "directory=%s trigger_id=%s repo=%s pr_id=%s project=%s",
+                        directory_path,
+                        trigger.id,
+                        repo,
+                        pr_id,
+                        adapter.project,
+                    )
+                    continue
+                raise
             for envelope in result.feedback:
                 discovered.append(
                     (

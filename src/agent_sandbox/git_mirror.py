@@ -210,6 +210,16 @@ class ContainerGitMirrorResolver:
                     f"refs/heads/{default_base_branch}",
                 ]
             )
+        self._repair_mirror_ownership_if_root(mirror_path)
+
+    def _repair_mirror_ownership_if_root(self, mirror_path: Path) -> None:
+        if os.geteuid() != 0 or not self.git_user or self.git_user == "root":
+            return
+        group_result = self._run(["id", "-gn", self.git_user])
+        target_group = group_result.stdout.strip()
+        if not target_group:
+            raise RuntimeError(f"Cannot resolve group for Git remote owner {self.git_user!r}")
+        self._run(["chown", "-R", f"{self.git_user}:{target_group}", str(mirror_path)])
 
     def _canonical_repo_source(
         self,

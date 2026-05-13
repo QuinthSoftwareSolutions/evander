@@ -842,15 +842,17 @@ Response:
 
 ## Retell Phone Call Tools
 
-- `make_phone_call` starts an outbound Retell call to a configured contact alias. Agents pass
+- `make_phone_call` starts an outbound Retell call to a configured directory contact id. Agents pass
   `contact` and `prompt`; they never pass raw phone numbers.
 - `get_phone_call_result` reads the call state/transcript by `request_id` or `call_id`.
 - Each tool is gated by its matching session permission: `make_phone_call` starts calls and
   `get_phone_call_result` reads results.
 - Configure Retell under directory-scoped `providers.json` with `retell_api_key_env`,
-  `retell_from_number`, `retell_default_agent_id`, and `retell_phonebook`.
-- The Retell agent/LLM used by `retell_default_agent_id` or a contact-specific `agent_id`
-  must reference `{{agent_question}}` in its Retell prompt or begin message. The gateway sends
+  `retell_from_number`, and `retell_default_agent_id`.
+- Configure callable contacts under directory-scoped `contacts.json`. Retell uses the contact's
+  explicitly marked primary phone number; contacts without one cannot be called.
+- The Retell agent/LLM used by `retell_default_agent_id` must reference `{{agent_question}}` in
+  its Retell prompt or begin message. The gateway sends
   the tool `prompt` as `retell_llm_dynamic_variables.agent_question`; Retell does not treat it as
   a standalone prompt override.
 - Put the actual Retell API key in the gateway host environment; the systemd gateway unit already

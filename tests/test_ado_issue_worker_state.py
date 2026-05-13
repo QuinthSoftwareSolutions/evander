@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -2589,6 +2590,136 @@ def test_publish_directory_pr_feedback_events_uses_session_ado_project(
 
     assert published == 0
     assert observed_projects == ["Scanspac"]
+
+
+def test_publish_directory_pr_feedback_events_skips_missing_pr_stream_and_continues(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+
+    (worker_config.runtime_dir / "sessions.json").write_text(
+        json.dumps(
+            {
+                "session-100": {
+                    "session_id": "session-100",
+                    "directory_path": "root/team-a",
+                    "allowed_tools": [],
+                    "expires_at": "2026-05-13T00:00:00Z",
+                },
+                "session-200": {
+                    "session_id": "session-200",
+                    "directory_path": "root/team-a",
+                    "allowed_tools": [],
+                    "expires_at": "2026-05-13T00:00:00Z",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    pr_map_path = worker_config.runtime_dir / "pr-map.json"
+    pr_map_path.write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "azure_devops:org/repo:100": {
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "100",
+                        "session_id": "session-100",
+                    },
+                    "azure_devops:org/repo:200": {
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "200",
+                        "session_id": "session-200",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime_gateway_config = ado_worker.GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(worker_config.runtime_dir),
+            "session_store_path": str(worker_config.runtime_dir / "sessions.json"),
+            "approval_store_path": str(worker_config.runtime_dir / "approvals.json"),
+            "draft_store_path": str(worker_config.runtime_dir / "drafts.json"),
+            "email_store_path": str(worker_config.runtime_dir / "emails.json"),
+            "discord_command_store_path": str(worker_config.runtime_dir / "discord_commands.json"),
+            "audit_log_path": str(worker_config.runtime_dir / "audit.jsonl"),
+            "pr_map_path": str(pr_map_path),
+            "azure_devops_pr_pat_env": "AZURE_DEVOPS_PR_PAT",
+        }
+    )
+    trigger = PullRequestNewFeedbackTriggerDefinition.model_validate(
+        {
+            "id": "trigger-pr-feedback",
+            "display_name": "PR feedback",
+            "type": "trigger:pull-request:new-feedback",
+            "provider": "ado",
+            "organization_url": "https://dev.azure.com/example-org",
+            "project": "Example Project",
+        }
+    )
+
+    monkeypatch.setattr(ado_worker, "_load_ado_pr_feedback_triggers", lambda _config: [trigger])
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
+    calls: list[tuple[str, str]] = []
+
+    def fake_poll(self, *, client, repo, pr_id, cursor):
+        calls.append((repo, pr_id))
+        if pr_id == "100":
+            request = httpx.Request("GET", "https://dev.azure.com/example-org/project")
+            response = httpx.Response(404, request=request)
+            raise httpx.HTTPStatusError("not found", request=request, response=response)
+        return SimpleNamespace(
+            feedback=[
+                FeedbackEnvelope(
+                    feedback_id="azure_devops:thread_comment:200:1",
+                    provider="azure_devops",
+                    repo=repo,
+                    pr_id=pr_id,
+                    thread_id="200",
+                    comment_id="1",
+                    author="jonathan",
+                    body="Still needs work",
+                    created_at="2026-05-13T09:00:00Z",
+                )
+            ],
+            next_cursor="2026-05-13T09:00:00Z",
+        )
+
+    monkeypatch.setattr(ado_worker.AzureDevOpsFeedbackAdapter, "poll", fake_poll)
+    caplog.set_level(logging.WARNING, logger=ado_worker.__name__)
+
+    with httpx.Client() as client:
+        published = _publish_directory_pr_feedback_events(
+            client=client,
+            config=WorkerConfig(**{**worker_config.__dict__, "directory_path": "root/team-a"}),
+            runtime_gateway_config=runtime_gateway_config,
+            directory_path="root/team-a",
+        )
+
+    assert calls == [("org/repo", "100"), ("org/repo", "200")]
+    assert published == 1
+    assert "Skipping Azure PR feedback stream after 404" in caplog.text
+    queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
+    events = queue.list_pending(trigger_id="trigger-pr-feedback")
+    assert len(events) == 1
+    assert events[0].payload["session_id"] == "session-200"
+    assert events[0].payload["pr"]["pr_id"] == "200"
+    cursor_payload = json.loads(
+        (worker_config.runtime_dir / "trigger-cursors-pr-feedback.json").read_text(encoding="utf-8")
+    )
+    assert "azure_devops:org/repo:100" not in cursor_payload["trigger-pr-feedback"][
+        "stream_cursors"
+    ]
+    assert (
+        cursor_payload["trigger-pr-feedback"]["stream_cursors"]["azure_devops:org/repo:200"]
+        == "2026-05-13T09:00:00Z"
+    )
 
 
 def test_publish_directory_pr_feedback_events_skips_ignored_feedback_ids(

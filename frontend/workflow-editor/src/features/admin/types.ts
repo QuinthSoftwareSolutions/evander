@@ -15,12 +15,26 @@ export type AdminWebUserRecord = {
   login: string;
   role: AdminWebUserRole;
   display_name: string | null;
+  contact_id: string | null;
+  contact: AdminContactSummary | null;
   created_at: string;
   updated_at: string;
   last_login_at: string | null;
 };
 
+export type AdminContactSummary = {
+  id: string;
+  name: string;
+  description: string;
+  email_address_count: number;
+  phone_number_count: number;
+  primary_phone_label: string | null;
+};
+
 export type AdminUserListResponse = {
+  directory_path: string;
+  directory_scoped_config_enabled: boolean;
+  contacts: AdminContactSummary[];
   users: AdminWebUserRecord[];
 };
 

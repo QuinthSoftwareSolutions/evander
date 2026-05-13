@@ -14,7 +14,12 @@ from uuid import uuid4
 import httpx
 from pydantic import BaseModel, Field, field_validator
 
-from agent_sandbox.config import GatewayConfig, RetellPhonebookContact
+from agent_sandbox.config import GatewayConfig
+from agent_sandbox.directory_config import (
+    ContactDirectoryConfig,
+    DirectoryContactEntry,
+    DirectoryContactPhoneNumber,
+)
 from agent_sandbox.email.http_utils import ProviderRequestError
 from agent_sandbox.models import DirectoryPath, SessionManifest
 
@@ -385,10 +390,12 @@ class RetellPhoneCallService:
         self,
         *,
         config: GatewayConfig,
+        contacts_config: ContactDirectoryConfig | None = None,
         store: RetellPhoneCallStore,
         client: RetellPhoneClient | None = None,
     ) -> None:
         self.config = config
+        self.contacts_config = contacts_config or ContactDirectoryConfig()
         self.store = store
         self._client = client
 
@@ -407,13 +414,13 @@ class RetellPhoneCallService:
         normalized_prompt = str(prompt or "").strip()
         if not normalized_prompt:
             raise ValueError("prompt is required")
-        contact_entry = self._resolve_contact(normalized_contact)
+        contact_entry, phone_number = self._resolve_contact(normalized_contact)
         prompt_metadata = _prompt_metadata(normalized_prompt)
         record, _created = self.store.prepare_call(
             session_id=session.session_id,
             directory_path=session.directory_path,
             contact_alias=normalized_contact,
-            contact_display_name=contact_entry.display_name,
+            contact_display_name=contact_entry.name,
             prompt_metadata=prompt_metadata,
             metadata=metadata or {},
             request_id=request_id,
@@ -432,8 +439,8 @@ class RetellPhoneCallService:
         try:
             retell_payload = client.create_phone_call(
                 from_number=self._require_from_number(),
-                to_number=contact_entry.phone_number,
-                override_agent_id=self._resolve_agent_id(contact_entry),
+                to_number=phone_number.number,
+                override_agent_id=self._resolve_agent_id(),
                 metadata=retell_metadata,
                 agent_question=normalized_prompt,
             )
@@ -496,11 +503,22 @@ class RetellPhoneCallService:
         if record.session_id != session.session_id or record.directory_path != session.directory_path:
             raise ValueError("Phone call request is outside this session scope")
 
-    def _resolve_contact(self, alias: str) -> RetellPhonebookContact:
-        contact = self.config.retell_phonebook.get(alias)
+    def _resolve_contact(
+        self, alias: str
+    ) -> tuple[DirectoryContactEntry, DirectoryContactPhoneNumber]:
+        contact = self.contacts_config.contacts.get(alias)
         if contact is None:
-            raise ValueError(f"Unknown Retell phonebook contact alias: {alias}")
-        return contact
+            raise ValueError(f"Unknown contact id for Retell phone call: {alias}")
+        primary_numbers = [phone for phone in contact.phone_numbers if phone.primary]
+        if not primary_numbers:
+            raise ValueError(
+                f"Contact {alias!r} does not have a primary phone number configured"
+            )
+        if len(primary_numbers) > 1:
+            raise ValueError(
+                f"Contact {alias!r} has more than one primary phone number configured"
+            )
+        return contact, primary_numbers[0]
 
     def _require_from_number(self) -> str:
         value = str(self.config.retell_from_number or "").strip()
@@ -508,10 +526,10 @@ class RetellPhoneCallService:
             raise ValueError("retell_from_number is not configured")
         return value
 
-    def _resolve_agent_id(self, contact: RetellPhonebookContact) -> str:
-        value = str(contact.agent_id or self.config.retell_default_agent_id or "").strip()
+    def _resolve_agent_id(self) -> str:
+        value = str(self.config.retell_default_agent_id or "").strip()
         if not value:
-            raise ValueError("retell_default_agent_id or contact agent_id is required")
+            raise ValueError("retell_default_agent_id is required")
         return value
 
     def _client_or_create(self) -> RetellPhoneClient:
@@ -608,8 +626,8 @@ def phone_call_result_payload(record: RetellPhoneCallRecord) -> dict[str, Any]:
         "request_id": record.request_id,
         "call_id": record.call_id,
         "contact": {
-            "alias": record.contact_alias,
-            "display_name": record.contact_display_name,
+            "id": record.contact_alias,
+            "name": record.contact_display_name,
         },
         "status": record.status,
         "created_at": record.created_at.isoformat(),

@@ -7,7 +7,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directories import DirectoryService, DirectoryStore
@@ -22,6 +22,7 @@ DIRECTORY_CONFIG_ROOT_DIRNAME = "directory-config"
 DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
     "policy": "policy.json",
     "providers": "providers.json",
+    "contacts": "contacts.json",
     "email": "email.json",
     "heartbeat": "heartbeat.json",
     "ado_worker": "ado-worker.json",
@@ -115,7 +116,6 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "retell_api_key_env",
             "retell_default_agent_id",
             "retell_from_number",
-            "retell_phonebook",
             "retell_request_timeout_seconds",
             "teams_backend",
             "teams_delegated_authority_base_url",
@@ -135,6 +135,12 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "teams_timeout_seconds",
             "teams_read_reaction_emoji",
             "provider_state",
+        }
+    ),
+    "contacts": frozenset(
+        {
+            "contacts",
+            "user_contact_links",
         }
     ),
     "email": frozenset(
@@ -293,6 +299,132 @@ class EffectiveAutomationDirectoryConfig(BaseModel):
     worker_roles: list[str] = Field(default_factory=list)
 
 
+class DirectoryContactPhoneNumber(BaseModel):
+    label: str = Field(min_length=1)
+    number: str = Field(min_length=1)
+    primary: bool = False
+
+    @field_validator("label", "number", mode="before")
+    @classmethod
+    def normalize_required_text(cls, value: object) -> object:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        return text
+
+
+class DirectoryContactEntry(BaseModel):
+    name: str = Field(min_length=1)
+    description: str = ""
+    email_addresses: list[str] = Field(default_factory=list)
+    phone_numbers: list[DirectoryContactPhoneNumber] = Field(default_factory=list)
+
+    @field_validator("name", "description", mode="before")
+    @classmethod
+    def normalize_text(cls, value: object) -> object:
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    @field_validator("email_addresses", mode="before")
+    @classmethod
+    def normalize_email_addresses(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("email_addresses must be a JSON array of strings")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            address = str(item or "").strip()
+            if not address:
+                raise ValueError("email_addresses cannot contain empty values")
+            key = address.lower()
+            if key in seen:
+                raise ValueError(f"duplicate email address: {address!r}")
+            seen.add(key)
+            normalized.append(address)
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_phone_numbers(self) -> "DirectoryContactEntry":
+        primary_count = sum(1 for phone in self.phone_numbers if phone.primary)
+        if primary_count > 1:
+            raise ValueError("contact phone_numbers can contain at most one primary number")
+        seen_labels: set[str] = set()
+        for phone in self.phone_numbers:
+            key = phone.label.casefold()
+            if key in seen_labels:
+                raise ValueError(f"duplicate phone number label: {phone.label!r}")
+            seen_labels.add(key)
+        return self
+
+
+class ContactDirectoryConfig(BaseModel):
+    contacts: dict[str, DirectoryContactEntry] = Field(default_factory=dict)
+    user_contact_links: dict[str, str | None] = Field(default_factory=dict)
+
+    @field_validator("contacts", mode="before")
+    @classmethod
+    def normalize_contacts(cls, value: object) -> object:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("contacts must be a JSON object")
+        normalized: dict[str, object] = {}
+        seen: set[str] = set()
+        for raw_contact_id, contact in value.items():
+            contact_id = str(raw_contact_id or "").strip()
+            if not contact_id:
+                raise ValueError("contact ids must be non-empty")
+            if contact_id in seen:
+                raise ValueError(f"duplicate contact id: {contact_id!r}")
+            seen.add(contact_id)
+            normalized[contact_id] = contact
+        return normalized
+
+    @field_validator("user_contact_links", mode="before")
+    @classmethod
+    def normalize_user_contact_links(cls, value: object) -> object:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("user_contact_links must be a JSON object")
+        normalized: dict[str, str | None] = {}
+        for raw_login, raw_contact_id in value.items():
+            login = str(raw_login or "").strip().lower()
+            if not login:
+                raise ValueError("user_contact_links logins must be non-empty")
+            if raw_contact_id is None:
+                normalized[login] = None
+                continue
+            contact_id = str(raw_contact_id or "").strip()
+            if not contact_id:
+                raise ValueError("user_contact_links contact ids must be non-empty")
+            normalized[login] = contact_id
+        return normalized
+
+
+class EffectiveContactDirectoryConfig(ContactDirectoryConfig):
+    @model_validator(mode="after")
+    def validate_user_links(self) -> "EffectiveContactDirectoryConfig":
+        unknown_contacts = sorted(
+            {
+                contact_id
+                for contact_id in self.user_contact_links.values()
+                if contact_id is not None and contact_id not in self.contacts
+            }
+        )
+        if unknown_contacts:
+            raise ValueError(
+                "user_contact_links reference unknown contacts: "
+                + ", ".join(unknown_contacts)
+            )
+        return self
+
+
 LEGACY_DOMAIN_FIELD_SUBSETS: dict[str, dict[str, frozenset[str]]] = {
     "providers": {
         "providers": DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"],
@@ -357,6 +489,8 @@ def get_domain_base_config(config: GatewayConfig, domain: str) -> dict[str, Any]
             "openai_relay_host": config.openai_relay_host,
             "openai_relay_port": config.openai_relay_port,
         }
+    if domain == "contacts":
+        return {"contacts": {}, "user_contact_links": {}}
     if domain == "pr_template":
         return {"pr_template_markdown": ""}
     return {key: payload[key] for key in sorted(allowed_fields) if key in payload}
@@ -376,6 +510,9 @@ def validate_effective_domain_payload(domain: str, payload: dict[str, Any]) -> d
         from agent_sandbox.vm.defaults_config import EffectiveVmDefaultsConfig
 
         validated = EffectiveVmDefaultsConfig.model_validate(payload)
+        return validated.model_dump(mode="json")
+    if domain == "contacts":
+        validated = EffectiveContactDirectoryConfig.model_validate(payload)
         return validated.model_dump(mode="json")
     if domain == "pr_template":
         validated = PrTemplateDirectoryConfig.model_validate(payload)
@@ -535,6 +672,9 @@ class DirectoryConfigStore:
             from agent_sandbox.vm.defaults_config import EffectiveVmDefaultsConfig
 
             validated = EffectiveVmDefaultsConfig.model_validate(payload)
+            return validated.model_dump(mode="json", include=set(payload))
+        if domain == "contacts":
+            validated = ContactDirectoryConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
         if domain == "issue_setup":
             validated = IssueSetupDirectoryConfig.model_validate(payload)

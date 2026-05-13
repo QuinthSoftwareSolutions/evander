@@ -289,6 +289,10 @@ def test_directory_config_tab_sections_match_expected_groupings() -> None:
         section.title: section.field_sources
         for section in admin_app._directory_config_tab_sections("providers")
     }
+    contacts_sections = {
+        section.title: section.field_sources
+        for section in admin_app._directory_config_tab_sections("contacts")
+    }
     issue_setup_sections = {
         section.title: section.field_sources
         for section in admin_app._directory_config_tab_sections("issue_setup")
@@ -336,7 +340,10 @@ def test_directory_config_tab_sections_match_expected_groupings() -> None:
         ("providers", "retell_from_number"),
         ("providers", "retell_default_agent_id"),
         ("providers", "retell_request_timeout_seconds"),
-        ("providers", "retell_phonebook"),
+    }
+    assert set(contacts_sections["Contact list"]) == {
+        ("contacts", "contacts"),
+        ("contacts", "user_contact_links"),
     }
 
     assert ("issue_setup", "git_root") in issue_setup_sections["Git transport"]

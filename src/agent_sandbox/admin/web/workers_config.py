@@ -29,6 +29,7 @@ from agent_sandbox.config import (
 from agent_sandbox.directory_config import (
     AdoWorkerDirectoryConfig,
     AutomationDirectoryConfig,
+    ContactDirectoryConfig,
     DIRECTORY_CONFIG_DOMAIN_FILENAMES,
     DIRECTORY_CONFIG_DOMAIN_FIELDS,
     IssueSetupDirectoryConfig,
@@ -120,6 +121,10 @@ _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] =
     "email": tuple(
         ("email", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["email"])
     ),
+    "contacts": tuple(
+        ("contacts", field_name)
+        for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["contacts"])
+    ),
     "vm_runtime": tuple(
         ("vm", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["vm"])
     ),
@@ -145,6 +150,7 @@ _DIRECTORY_CONFIG_UI_TAB_TITLES: dict[str, str] = {
     "access_policy": "Access Policy",
     "providers": "Provider Integrations",
     "email": "Email",
+    "contacts": "Contacts",
     "vm_runtime": "VM Runtime",
     "issue_setup": "Issue Setup",
     "ado_worker": "ADO Worker",
@@ -260,11 +266,20 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
                 ("providers", "retell_from_number"),
                 ("providers", "retell_default_agent_id"),
                 ("providers", "retell_request_timeout_seconds"),
-                ("providers", "retell_phonebook"),
             ),
             ("retell_",),
         ),
         ("State", (("providers", "provider_state"),), ()),
+    ),
+    "contacts": (
+        (
+            "Contact list",
+            (
+                ("contacts", "contacts"),
+                ("contacts", "user_contact_links"),
+            ),
+            (),
+        ),
     ),
     "email": (
         (
@@ -717,6 +732,7 @@ def _directory_config_field_metadata(
             TriggerOrchestratorWorkerGlobalConfig.model_fields,
             AdoWorkerDirectoryConfig.model_fields,
             AutomationDirectoryConfig.model_fields,
+            ContactDirectoryConfig.model_fields,
             IssueSetupDirectoryConfig.model_fields,
             PrTemplateDirectoryConfig.model_fields,
             AssistantSettingsConfig.model_fields,

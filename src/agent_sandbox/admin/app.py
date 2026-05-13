@@ -29,6 +29,7 @@ from agent_sandbox.config import (
 from agent_sandbox.directory_config import (
     AdoWorkerDirectoryConfig,
     AutomationDirectoryConfig,
+    ContactDirectoryConfig,
     DIRECTORY_CONFIG_DOMAIN_FIELDS,
     DIRECTORY_CONFIG_DOMAIN_FILENAMES,
     IssueSetupDirectoryConfig,
@@ -92,6 +93,10 @@ _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] =
     "email": tuple(
         ("email", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["email"])
     ),
+    "contacts": tuple(
+        ("contacts", field_name)
+        for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["contacts"])
+    ),
     "vm_runtime": tuple(
         ("vm", field_name) for field_name in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["vm"])
     ),
@@ -118,6 +123,7 @@ _DIRECTORY_CONFIG_UI_TAB_TITLES: dict[str, str] = {
     "access_policy": "Access Policy",
     "providers": "Provider Integrations",
     "email": "Email",
+    "contacts": "Contacts",
     "vm_runtime": "VM Runtime",
     "issue_setup": "Issue Setup",
     "ado_worker": "ADO Worker",
@@ -248,7 +254,6 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[str, tuple[_ConfigTabSectionSpec, ...]] = {
                 ("providers", "retell_from_number"),
                 ("providers", "retell_default_agent_id"),
                 ("providers", "retell_request_timeout_seconds"),
-                ("providers", "retell_phonebook"),
             ),
             ("retell_",),
         ),
@@ -265,6 +270,15 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[str, tuple[_ConfigTabSectionSpec, ...]] = {
                 ("email", "email_provider_timeout_seconds"),
             ),
             ("email_",),
+        ),
+    ),
+    "contacts": (
+        _ConfigTabSectionSpec(
+            "Contact list",
+            (
+                ("contacts", "contacts"),
+                ("contacts", "user_contact_links"),
+            ),
         ),
     ),
     "vm_runtime": (
@@ -972,6 +986,7 @@ def _config_field_kind(field_name: str) -> tuple[str, tuple[Any, ...]]:
         TriggerOrchestratorWorkerGlobalConfig.model_fields,
         AdoWorkerDirectoryConfig.model_fields,
         AutomationDirectoryConfig.model_fields,
+        ContactDirectoryConfig.model_fields,
         IssueSetupDirectoryConfig.model_fields,
         PrTemplateDirectoryConfig.model_fields,
         EffectiveVmDefaultsConfig.model_fields,

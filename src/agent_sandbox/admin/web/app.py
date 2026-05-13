@@ -304,7 +304,7 @@ def create_app(service: AdminService) -> Starlette:
     routes.extend(vm_issue_routes(service, auth))
     routes.extend(session_approval_routes(service, auth))
     routes.extend(worker_config_routes(service, auth))
-    routes.extend(admin_user_routes(admin_user_store, auth))
+    routes.extend(admin_user_routes(admin_user_store, auth, service))
     routes.extend(chat_routes(service, auth))
     if dist_dir.exists():
         routes.append(Mount("/", app=StaticFiles(directory=dist_dir, html=True)))

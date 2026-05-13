@@ -282,15 +282,18 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Retell-owned outbound caller number used by make_phone_call. Stored host-side only."
     ),
     "retell_default_agent_id": (
-        "Default Retell agent id used as override_agent_id unless a phonebook contact sets agent_id. "
+        "Retell agent id used as override_agent_id for directory-contact phone calls. "
         "The Retell prompt should reference {{agent_question}}."
     ),
     "retell_request_timeout_seconds": (
         "HTTP timeout in seconds for host-side Retell create-call and get-call requests."
     ),
-    "retell_phonebook": (
-        "Directory-scoped contact aliases for Retell calls. Each alias maps to display_name, "
-        "phone_number, and optional agent_id."
+    "contacts": (
+        "Directory-scoped contact entries keyed by stable contact id. Entries include name, "
+        "description, email_addresses, and phone_numbers with one optional primary phone number."
+    ),
+    "user_contact_links": (
+        "Directory-scoped mapping from admin user login to one contact id."
     ),
     "http_target_relay_timeout_seconds": (
         "Upstream request timeout in seconds for the generic HTTP target relay."
