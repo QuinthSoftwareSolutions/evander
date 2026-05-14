@@ -94,6 +94,7 @@ class EffectProviderFactory:
         )
         runtime_context = EffectRuntimeContext(
             provider_config=effect_provider_config_blob(resolved_config),
+            provider_config_resolver=self.provider_config_resolver,
             vm_creator=self._provider_runtime_ports.vm_creator,
             vm_repo_cloner=self._provider_runtime_ports.vm_repo_cloner,
             vm_python_bootstrapper=self._provider_runtime_ports.vm_python_bootstrapper,

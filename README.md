@@ -11,6 +11,7 @@
 - A host-side workflow orchestrator that polls provider triggers, evaluates gates, and persists durable queue events for downstream workers/hooks
 - A host-side Teams ingest worker that polls Microsoft Graph and feeds `trigger:teams:new-message` orchestration
 - A host-side shared NuGet cache that can be mounted read-only into guests for faster cold restores
+- Optional host-local Qdrant semantic store primitives for workflow-visible health, collection setup, and explicit-ID text point upsert/search/get/delete
 - File-backed session, approval, audit, and draft storage for local development
 - A small CLI for bootstrapping state and creating session manifests
 - Additive directory ownership and directory-scoped configuration support with inherited overrides
@@ -95,7 +96,7 @@ Directory-scoped config is rooted at `root`:
    sudo ./scripts/apply_firewall.sh
    ```
 
-  The default firewall policy allows host ports `22`, `8000`, `11434`, `11666`, `11777`, `8081`, and `3142` so VMs can use SSH for Git remotes, MCP on `8000`, the OpenAI relay on `11434`, the NuGet relay on `11666`, the session-scoped HTTP target relay on `11777` for approved external web endpoints such as APP demo environments, the Nexus package cache on `8081` for PyPI/npm package restores, and the apt-cacher-ng relay on `3142` for worker apt provisioning.
+  The default firewall policy allows host ports `22`, `8000`, `11434`, `11666`, `11777`, `8081`, and `3142` so VMs can use SSH for Git remotes, MCP on `8000`, the OpenAI relay on `11434`, the NuGet relay on `11666`, the session-scoped HTTP target relay on `11777` for approved external web endpoints such as APP demo environments, the Nexus package cache on `8081` for PyPI/npm package restores, and the apt-cacher-ng relay on `3142` for worker apt provisioning. The optional Qdrant semantic store binds to `127.0.0.1:6333` by default and is not exposed to guests.
 
 6. Start the host-side services:
 

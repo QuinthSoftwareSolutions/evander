@@ -425,7 +425,7 @@ Storage layout for directory config:
 ## Host-Side LLM Access
 
 - The firewall allows only the host TCP ports listed in `ALLOWED_TCP_PORTS`.
-- Defaults: `22` for host SSH/Git, `8000` for the MCP gateway, `11434` for the host-side OpenAI relay or a local OpenAI-compatible LLM endpoint such as Ollama, `11666` for the host-side NuGet relay, `11777` for the host-side HTTP target relay used to reach approved external web endpoints such as APP demo environments, `8081` for the host-side Nexus package cache used by worker PyPI/npm restores, and `3142` for the host-side apt-cacher-ng relay used by worker apt provisioning.
+- Defaults: `22` for host SSH/Git, `8000` for the MCP gateway, `11434` for the host-side OpenAI relay or a local OpenAI-compatible LLM endpoint such as Ollama, `11666` for the host-side NuGet relay, `11777` for the host-side HTTP target relay used to reach approved external web endpoints such as APP demo environments, `8081` for the host-side Nexus package cache used by worker PyPI/npm restores, and `3142` for the host-side apt-cacher-ng relay used by worker apt provisioning. The optional Qdrant semantic store binds to `127.0.0.1:6333` by default and is intentionally host-local in this slice.
 - Override when applying firewall rules, for example:
 
   ```bash

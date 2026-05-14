@@ -179,6 +179,13 @@ class GatewayConfig(BaseModel):
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_key_env: str = "OPENAI_API_KEY"
     openai_relay_timeout_seconds: float = 300.0
+    semantic_store_provider: Literal["qdrant"] = "qdrant"
+    qdrant_base_url: str = "http://127.0.0.1:6333"
+    qdrant_api_key_env: str | None = "QDRANT_API_KEY"
+    semantic_embedding_provider: Literal["openai"] = "openai"
+    semantic_embedding_model: str = Field(default="text-embedding-3-small", min_length=1)
+    semantic_embedding_dimensions: int = Field(default=1536, ge=1)
+    semantic_vector_distance: Literal["Cosine", "Dot", "Euclid", "Manhattan"] = "Cosine"
     http_target_relay_host: str = "0.0.0.0"
     http_target_relay_port: int = 11777
     http_target_relay_timeout_seconds: float = 300.0
@@ -280,6 +287,7 @@ class GatewayConfig(BaseModel):
             "prompt",
             "authorization",
             "token",
+            "api_key",
             "response_token",
             "parameters",
             "password",
@@ -300,6 +308,7 @@ class GatewayConfig(BaseModel):
         "container_worker_guest_pypi_index_url",
         "container_worker_guest_npm_registry_url",
         "openai_api_base_url",
+        "qdrant_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",
         "retell_api_base_url",
@@ -325,6 +334,7 @@ class GatewayConfig(BaseModel):
         "container_worker_guest_pypi_index_url",
         "container_worker_guest_npm_registry_url",
         "openai_api_base_url",
+        "qdrant_base_url",
         "nuget_public_feed_base_url",
         "nuget_azure_feed_base_url",
         "retell_api_base_url",
@@ -340,6 +350,21 @@ class GatewayConfig(BaseModel):
                 f"{info.field_name} must be a valid http(s) URL, got {value!r}"
             ) from exc
         return value
+
+    @field_validator("semantic_vector_distance", mode="before")
+    @classmethod
+    def normalize_semantic_vector_distance(cls, value: object) -> object:
+        from agent_sandbox.semantic.settings import normalize_vector_distance
+
+        return normalize_vector_distance(value)
+
+    @field_validator("qdrant_api_key_env", mode="before")
+    @classmethod
+    def normalize_qdrant_api_key_env(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
     @field_validator("retell_from_number", "retell_default_agent_id", mode="before")
     @classmethod

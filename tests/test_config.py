@@ -146,6 +146,7 @@ def test_teams_delegated_scopes_default_includes_channel_and_chat_access() -> No
             " http://nexus.test:8081/repository/npm-all/ ",
         ),
         ("openai_api_base_url", " https://api.openai.com/v1/ "),
+        ("qdrant_base_url", " http://127.0.0.1:6333/ "),
         ("nuget_public_feed_base_url", " https://api.nuget.org/ "),
         (
             "nuget_azure_feed_base_url",
@@ -172,6 +173,7 @@ def test_http_url_fields_are_trimmed_and_trailing_slash_is_removed(
         ("container_worker_guest_pypi_index_url", "nexus.test:8081/repository/pypi-all/simple"),
         ("container_worker_guest_npm_registry_url", "ftp://nexus.test/repository/npm-all/"),
         ("openai_api_base_url", "not-a-url"),
+        ("qdrant_base_url", "qdrant.local:6333"),
         ("nuget_public_feed_base_url", "://missing-scheme"),
         ("nuget_azure_feed_base_url", ""),
     ],
@@ -233,6 +235,25 @@ def test_container_worker_mssql_config_fields_are_validated_and_redacted_by_defa
     assert config.container_worker_mssql_port == 1433
     assert "password" in config.redacted_keys
     assert "connection_string" in config.redacted_keys
+
+
+def test_semantic_store_config_defaults_and_normalization() -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "qdrant_base_url": " http://127.0.0.1:6333/ ",
+            "qdrant_api_key_env": " ",
+            "semantic_vector_distance": "cosine",
+        }
+    )
+
+    assert config.semantic_store_provider == "qdrant"
+    assert config.qdrant_base_url == "http://127.0.0.1:6333"
+    assert config.qdrant_api_key_env is None
+    assert config.semantic_embedding_provider == "openai"
+    assert config.semantic_embedding_model == "text-embedding-3-small"
+    assert config.semantic_embedding_dimensions == 1536
+    assert config.semantic_vector_distance == "Cosine"
+    assert "api_key" in config.redacted_keys
 
 
 @pytest.mark.parametrize(

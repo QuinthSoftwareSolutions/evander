@@ -1,0 +1,17 @@
+[Unit]
+Description=Agent Sandbox Qdrant Semantic Store
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/docker rm -f agent-sandbox-qdrant
+ExecStart=/usr/bin/docker run --name agent-sandbox-qdrant --rm --publish {{ agent_sandbox_qdrant_bind_host }}:{{ agent_sandbox_qdrant_port }}:6333 --volume {{ agent_sandbox_qdrant_data_dir }}:/qdrant/storage {{ agent_sandbox_qdrant_image }}
+ExecStop=/usr/bin/docker stop agent-sandbox-qdrant
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

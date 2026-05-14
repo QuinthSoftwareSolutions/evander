@@ -183,6 +183,35 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "timeout_seconds",
         "check",
     ]
+    semantic_ensure = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "effect:semantic:ensure-collection"
+    )
+    assert [field["key"] for field in semantic_ensure["fields"]] == [
+        "collection_name",
+        "directory_path",
+    ]
+    semantic_upsert = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:semantic:upsert"
+    )
+    assert [field["key"] for field in semantic_upsert["fields"]] == [
+        "collection_name",
+        "point_id",
+        "text",
+        "payload",
+        "directory_path",
+        "wait",
+    ]
+    semantic_delete = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:semantic:delete"
+    )
+    assert [field["key"] for field in semantic_delete["fields"]] == [
+        "collection_name",
+        "point_ids",
+        "directory_path",
+        "wait",
+    ]
     agent_copy_files = next(
         node
         for node in catalog_payload["nodes"]
@@ -400,6 +429,34 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     ]
     issue_get = next(node for node in catalog_payload["nodes"] if node["type"] == "query:issue:get")
     assert [field["key"] for field in issue_get["fields"]] == ["issue_id"]
+    semantic_status = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "query:semantic:store-status"
+    )
+    assert [field["key"] for field in semantic_status["fields"]] == [
+        "collection_name",
+        "directory_path",
+    ]
+    semantic_search = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "query:semantic:search"
+    )
+    assert [field["key"] for field in semantic_search["fields"]] == [
+        "collection_name",
+        "query_text",
+        "filter",
+        "limit",
+        "score_threshold",
+        "directory_path",
+    ]
+    semantic_get = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "query:semantic:get"
+    )
+    assert [field["key"] for field in semantic_get["fields"]] == [
+        "collection_name",
+        "point_ids",
+        "directory_path",
+    ]
     artifact_text = next(
         node
         for node in catalog_payload["nodes"]
@@ -2501,6 +2558,18 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     container_worker_fields = {field["field_name"] for field in container_worker["fields"]}
     assert "container_worker_base_url" in container_worker_fields
     assert "container_worker_mssql_enabled" in container_worker_fields
+    semantic_store = next(
+        section for section in providers["sections"] if section["title"] == "Semantic store"
+    )
+    assert {field["field_name"] for field in semantic_store["fields"]} == {
+        "semantic_store_provider",
+        "qdrant_base_url",
+        "qdrant_api_key_env",
+        "semantic_embedding_provider",
+        "semantic_embedding_model",
+        "semantic_embedding_dimensions",
+        "semantic_vector_distance",
+    }
     retell = next(section for section in providers["sections"] if section["title"] == "Retell")
     assert {field["field_name"] for field in retell["fields"]} == {
         "retell_api_base_url",

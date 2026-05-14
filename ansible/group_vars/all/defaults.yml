@@ -173,6 +173,13 @@ agent_sandbox_worker_package_cache_probe_url: >-
     ~ agent_sandbox_nexus_pypi_probe_asset_path
   }}
 
+# Optional host-local semantic store. Qdrant is bound to localhost by default and is
+# intentionally not added to guest/worker firewall allowances in this first slice.
+agent_sandbox_qdrant_image: "qdrant/qdrant:v1.18.0"
+agent_sandbox_qdrant_data_dir: "/var/lib/agent-sandbox/qdrant"
+agent_sandbox_qdrant_bind_host: "127.0.0.1"
+agent_sandbox_qdrant_port: 6333
+
 # Host prerequisites.
 agent_sandbox_host_packages: >-
   {{
@@ -357,6 +364,7 @@ agent_sandbox_services:
   nuget_relay: true
   package_cache: true
   apt_cache: true
+  semantic_store: true
   http_target_relay: true
   ado_worker: true
   discord_ingest: true

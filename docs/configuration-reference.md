@@ -296,6 +296,9 @@ Type-specific keys:
 | `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `outputs` |
 | `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `vm_user`, `resume_thread_id`, `queue_key`, `outputs` |
 | `effect:agent:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
+| `effect:semantic:ensure-collection` | `collection_name` | `directory_path`, `outputs` |
+| `effect:semantic:upsert` | `collection_name`, `point_id`, `text` | `payload`, `directory_path`, `wait`, `outputs` |
+| `effect:semantic:delete` | `collection_name`, `point_ids` | `directory_path`, `wait`, `outputs` |
 | `effect:agent:destroy` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `execution_backend`, `directory_path`, `outputs` |
 | `effect:bash:script` | `script_path` | `args`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
@@ -325,6 +328,9 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:ado:work-items` | _none beyond envelope_ | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top`, `skip`, `outputs` |
 | `query:git:pr-note` | `host_repo_path`, `local_branch` | `remote_name`, `notes_ref`, `outputs` |
 | `query:issue:get` | `issue_id` | `outputs` |
+| `query:semantic:store-status` | _none beyond envelope_ | `collection_name`, `directory_path`, `outputs` |
+| `query:semantic:search` | `collection_name`, `query_text` | `filter`, `limit`, `score_threshold`, `directory_path`, `outputs` |
+| `query:semantic:get` | `collection_name`, `point_ids` | `directory_path`, `outputs` |
 | `query:session-context` | one of `target`, `session_id`, `vm_name` | `outputs` |
 | `query:vm:run-state` | one of `session_id`, `vm_name` | `outputs` |
 
@@ -589,6 +595,28 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `openai_api_base_url` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` upstream URL base. |
 | `openai_api_key_env` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` env-var name lookup for API key. |
 | `openai_relay_timeout_seconds` | legacy gateway YAML | `src/agent_sandbox/relays/openai.py` upstream request timeout. |
+
+### Semantic store keys
+
+| Key | Found in | Consumed by |
+|---|---|---|
+| `semantic_store_provider` | root or directory `providers.json` | Semantic collection/data effects and queries; currently only `qdrant` is supported. |
+| `qdrant_base_url` | root or directory `providers.json` | Host-side Qdrant HTTP client for semantic store management; default `http://127.0.0.1:6333`. |
+| `qdrant_api_key_env` | root or directory `providers.json` | Optional host env-var name lookup for a Qdrant API key. The key value itself remains host-side. |
+| `semantic_embedding_provider` | root or directory `providers.json` | Embedding backend used by semantic upsert/search; currently only `openai` is supported. |
+| `semantic_embedding_model` | root or directory `providers.json` | OpenAI embedding model, default `text-embedding-3-small`. |
+| `semantic_embedding_dimensions` | root or directory `providers.json` | Vector size used when ensuring Qdrant collections and when requesting embeddings; default `1536`. |
+| `semantic_vector_distance` | root or directory `providers.json` | Qdrant vector distance for managed collections; default `Cosine`. |
+
+`effect:semantic:ensure-collection` creates a missing Qdrant collection and treats an existing
+matching collection as success. `effect:semantic:upsert` embeds one text string, stores it as one
+unnamed-vector Qdrant point using the caller-supplied point ID, and adds reserved payload key
+`_semantic_text`. Point IDs must be unsigned 64-bit integers or UUID strings. Caller payloads may not
+set that reserved key. `query:semantic:search` embeds `query_text` and returns payload-bearing
+points without vectors. `query:semantic:get` and `effect:semantic:delete` operate only on explicit
+point IDs; filter-based delete is intentionally not supported. If an existing collection uses
+different dimensions, distance, or named vectors, schema-sensitive operations fail and do not delete
+or recreate anything.
 
 ### Retell phone-call keys
 

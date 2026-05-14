@@ -308,6 +308,11 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
             provider_models.ChatAssistantEnsureSessionEffectDefinition
         ),
         "effect:agent:exec": provider_models.AgentExecEffectDefinition,
+        "effect:semantic:ensure-collection": (
+            provider_models.SemanticEnsureCollectionEffectDefinition
+        ),
+        "effect:semantic:upsert": provider_models.SemanticUpsertEffectDefinition,
+        "effect:semantic:delete": provider_models.SemanticDeleteEffectDefinition,
         "effect:bash:script": provider_models.BashScriptEffectDefinition,
         "effect:vm:exec": provider_models.VmExecEffectDefinition,
         "effect:vm:copy-files": provider_models.VmCopyFilesEffectDefinition,
@@ -324,6 +329,9 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "query:agent:artifact-text": provider_models.AgentArtifactTextQueryDefinition,
         "query:issue:get": provider_models.IssueGetQueryDefinition,
         "query:ado:work-items": provider_models.AdoWorkItemsQueryDefinition,
+        "query:semantic:store-status": provider_models.SemanticStoreStatusQueryDefinition,
+        "query:semantic:search": provider_models.SemanticSearchQueryDefinition,
+        "query:semantic:get": provider_models.SemanticGetQueryDefinition,
     }
     return {
         node_type: (lambda node, model=model: _materialize_with_model(model, node))
