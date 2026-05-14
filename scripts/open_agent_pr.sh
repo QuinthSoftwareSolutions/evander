@@ -972,6 +972,7 @@ session_id = os.environ.get("SESSION_ID", "").strip()
 pat = os.environ["AZURE_DEVOPS_PR_PAT_VALUE"]
 work_item_id = os.environ.get("WORK_ITEM_ID", "").strip()
 create_prs_as_draft = os.environ.get("CREATE_PRS_AS_DRAFT", "").strip() in {"1", "true", "yes", "on"}
+azure_pr_description_max_chars = 4000
 
 ssh_match = re.match(r"^git@ssh\.dev\.azure\.com:v3/([^/]+)/([^/]+)/([^/]+)$", origin_url)
 https_match = re.match(
@@ -1136,6 +1137,17 @@ def append_markdown_attachment_links(text: str, attachments: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def truncate_pr_description(text: str) -> str:
+    if len(text) <= azure_pr_description_max_chars:
+        return text
+    print(
+        f"Warning: Azure DevOps PR description truncated from {len(text)} "
+        f"to {azure_pr_description_max_chars} characters.",
+        file=sys.stderr,
+    )
+    return text[:azure_pr_description_max_chars]
+
+
 body_artifacts = load_body_artifacts()
 
 
@@ -1200,7 +1212,11 @@ if payload.get("count", 0):
     pr = payload["value"][0]
     pr_id = str(pr.get("pullRequestId", ""))
     uploaded_attachments = upload_pr_body_attachments(pr_id, body_artifacts)
-    update_doc = {"description": append_markdown_attachment_links(body, uploaded_attachments)}
+    update_doc = {
+        "description": truncate_pr_description(
+            append_markdown_attachment_links(body, uploaded_attachments)
+        )
+    }
     if title_explicit:
         update_doc["title"] = title
     pr = request_json(
@@ -1229,7 +1245,7 @@ pr = request_json(
         "sourceRefName": f"refs/heads/{origin_branch}",
         "targetRefName": f"refs/heads/{base_branch}",
         "title": title,
-        "description": body,
+        "description": truncate_pr_description(body),
         "isDraft": create_prs_as_draft,
     },
     method="POST",
@@ -1239,7 +1255,11 @@ uploaded_attachments = upload_pr_body_attachments(pr_id, body_artifacts)
 if uploaded_attachments:
     pr = request_json(
         f"{base_url}/{urllib.parse.quote(pr_id)}?api-version=7.1",
-        payload={"description": append_markdown_attachment_links(body, uploaded_attachments)},
+        payload={
+            "description": truncate_pr_description(
+                append_markdown_attachment_links(body, uploaded_attachments)
+            )
+        },
         method="PATCH",
     )
 ensure_work_item_link(pr)

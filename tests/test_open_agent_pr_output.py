@@ -749,6 +749,172 @@ printf '%s\\n' "$*" >> "{attach_log}"
     assert "session-123" in attach_args
 
 
+def test_open_agent_pr_truncates_existing_azure_pr_description(tmp_path: Path) -> None:
+    script = Path(__file__).resolve().parents[1] / "scripts/open_agent_pr.sh"
+    host_repo = tmp_path / "repo"
+    host_repo.mkdir()
+    (host_repo / ".git").mkdir()
+    body_file = tmp_path / "body.md"
+    body_file.write_text("A" * 4500, encoding="utf-8")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    request_log = tmp_path / "requests.jsonl"
+    sitecustomize_dir = tmp_path / "pythonpath"
+    sitecustomize_dir.mkdir()
+
+    (fake_bin / "git").write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+if [[ "${args[0]}" == "-C" ]]; then
+  args=("${args[@]:2}")
+fi
+while [[ "${args[0]:-}" == "-c" ]]; do
+  args=("${args[@]:2}")
+done
+case "${args[0]:-}" in
+  rev-parse)
+    ;;
+  remote)
+    if [[ "${args[1]:-}" == "get-url" ]]; then
+      echo "https://dev.azure.com/example-org/example-project/_git/example-repo"
+    else
+      echo "unexpected git remote invocation: $*" >&2
+      exit 1
+    fi
+    ;;
+  push)
+    ;;
+  ls-remote)
+    exit 2
+    ;;
+  symbolic-ref)
+    echo "origin/main"
+    ;;
+  log)
+    echo "Latest commit title"
+    ;;
+  *)
+    echo "unexpected git invocation: $*" >&2
+    exit 1
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    (fake_bin / "python3").write_text(
+        f'#!/usr/bin/env bash\nexec "{sys.executable}" "$@"\n',
+        encoding="utf-8",
+    )
+    (fake_bin / "agent-sandbox-cli").write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n",
+        encoding="utf-8",
+    )
+    (sitecustomize_dir / "sitecustomize.py").write_text(
+        f"""
+import io
+import json
+import urllib.request
+
+log_path = {str(request_log)!r}
+
+
+class Response(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+def response(payload):
+    return Response(json.dumps(payload).encode("utf-8"))
+
+
+def fake_urlopen(request):
+    method = request.get_method()
+    url = request.full_url
+    data = request.data or b""
+    with open(log_path, "a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {{
+                    "method": method,
+                    "url": url,
+                    "body": data.decode("utf-8", "replace"),
+                }},
+                sort_keys=True,
+            )
+            + "\\n"
+        )
+    if "searchCriteria.status=active" in url:
+        return response(
+            {{
+                "count": 1,
+                "value": [
+                    {{
+                        "pullRequestId": 42,
+                        "repository": {{"id": "repo-guid", "project": {{"id": "project-guid"}}}},
+                    }}
+                ],
+            }}
+        )
+    if method == "PATCH" and url.endswith("/pullrequests/42?api-version=7.1"):
+        return response(
+            {{
+                "pullRequestId": 42,
+                "_links": {{
+                    "web": {{
+                        "href": "https://dev.azure.com/example-org/example-project/_git/example-repo/pullrequest/42"
+                    }}
+                }},
+            }}
+        )
+    raise AssertionError(f"unexpected request: {{method}} {{url}}")
+
+
+urllib.request.urlopen = fake_urlopen
+""",
+        encoding="utf-8",
+    )
+    os.chmod(fake_bin / "git", 0o755)
+    os.chmod(fake_bin / "python3", 0o755)
+    os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["PYTHONPATH"] = str(sitecustomize_dir)
+    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
+    env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
+    env["AZURE_DEVOPS_PR_PAT"] = "test-pat"
+
+    subprocess.run(
+        [
+            str(script),
+            "--create-pr",
+            "--provider",
+            "azure_devops",
+            "--body-file",
+            str(body_file),
+            str(host_repo),
+            "review/session-123/work",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    requests = [
+        json.loads(line)
+        for line in request_log.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    patch_payload = json.loads(next(item for item in requests if item["method"] == "PATCH")["body"])
+    assert patch_payload["description"] == "A" * 4000
+
+
 def test_open_agent_pr_associates_azure_pr_with_work_item_derived_from_session_id(
     tmp_path: Path,
 ) -> None:
