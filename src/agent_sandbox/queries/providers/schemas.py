@@ -35,6 +35,13 @@ class SessionContextQueryDefinition(QueryDefinition):
         return self
 
 
+class AgentArtifactTextQueryDefinition(QueryDefinition):
+    type: Literal["query:agent:artifact-text"]
+    session_id: ConfigValue
+    path: ConfigValue
+    vm_user: ConfigValue | None = None
+
+
 class IssueGetQueryDefinition(QueryDefinition):
     type: Literal["query:issue:get"]
     issue_id: ConfigValue

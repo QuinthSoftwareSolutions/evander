@@ -268,6 +268,14 @@ class ContainerWorkerVmExecutionBackend:
             WorkerFileWriteRequest.model_validate({"files": files}),
         )
 
+    def read_session_artifact_text(
+        self,
+        *,
+        session_id: str,
+        relative_path: str,
+    ) -> str:
+        return self.client.read_session_artifact_text(session_id, relative_path)
+
     def provision_mssql_database(
         self,
         *,

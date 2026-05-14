@@ -126,7 +126,8 @@ Each session contains:
 
 - `agent_home/`: mounted into containers at `/home/agent`
 - `agent_home/repos/`: in-container repository root at `/home/agent/repos`
-- `artifacts/`: mounted into containers at `/artifacts`
+- `artifacts/`: mounted into containers at `/artifacts`; agents should write
+  workflow-readable text artifacts here
 - `logs/`: platform-owned job logs
 - `metadata.json`: platform bookkeeping for paths and creation time
 
@@ -241,6 +242,10 @@ Routes:
 - `DELETE /v1/jobs/{id}`
 - `GET /v1/jobs/{id}/logs`
 - `GET /v1/jobs/{id}/artifacts`
+- `POST /v1/sessions`
+- `POST /v1/sessions/{session_id}/repo`
+- `POST /v1/sessions/{session_id}/files`
+- `GET /v1/sessions/{session_id}/artifacts/{relative_path}`
 - `POST /v1/sessions/{session_id}/mssql/databases`
 - `GET /v1/sessions/{session_id}/mssql/databases`
 - `DELETE /v1/sessions/{session_id}/mssql/databases/{logical_name}`

@@ -37,6 +37,8 @@ def test_bootstrap_script_enforces_codex_config_and_placeholder_key() -> None:
     assert 'SSH_USER="${VM_SSH_USER:-agent-admin}"' in script
     assert 'GUEST_BOOTSTRAP_WAIT_SECONDS="${GUEST_BOOTSTRAP_WAIT_SECONDS:-180}"' in script
     assert "cloud-init status --wait" in script
+    assert 'install -d -m 0775 -o "${VM_USER}" -g "${agent_group}" /artifacts' in script
+    assert 'ln -sfn /artifacts "${agent_home}/artifacts"' in script
     assert 'chown -R "${VM_USER}:${agent_group}" "${agent_home}"' in script
     assert "prepare_guest_home" in script
     assert 'export CODEX_HOME="${CODEX_HOME:-$HOME/.config/agent-sandbox/codex}"' in script

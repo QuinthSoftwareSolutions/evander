@@ -96,6 +96,7 @@ type ContactPhoneDraft = {
 
 type ContactDraftEntry = {
   id: string;
+  isNew: boolean;
   name: string;
   description: string;
   emailAddresses: string[];
@@ -134,13 +135,55 @@ function phoneDraftsFromValue(value: unknown): ContactPhoneDraft[] {
   });
 }
 
+function contactIdSlug(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return slug || "contact";
+}
+
+function reserveGeneratedContactId(name: string, reservedIds: Set<string>): string {
+  const base = contactIdSlug(name);
+  let candidate = base;
+  let suffix = 2;
+  while (reservedIds.has(candidate)) {
+    candidate = `${base}_${suffix}`;
+    suffix += 1;
+  }
+  reservedIds.add(candidate);
+  return candidate;
+}
+
+function contactDraftResolvedIds(entries: ContactDraftEntry[]): string[] {
+  const reservedIds = new Set<string>();
+  for (const entry of entries) {
+    if (!entry.isNew) {
+      const existingId = entry.id.trim();
+      if (existingId) {
+        reservedIds.add(existingId);
+      }
+    }
+  }
+  return entries.map((entry) => {
+    if (!entry.isNew) {
+      return entry.id.trim();
+    }
+    return reserveGeneratedContactId(entry.name, reservedIds);
+  });
+}
+
 function contactsValueToDraftEntries(value: unknown): ContactDraftEntry[] {
   if (value == null) return [];
   if (Array.isArray(value)) {
     return value.map((item) => {
       const record = isRecord(item) ? item : {};
+      const id = String(record.id ?? "");
       return {
-        id: String(record.id ?? ""),
+        id,
+        isNew: Boolean(record.isNew) || !id.trim(),
         name: String(record.name ?? ""),
         description: String(record.description ?? ""),
         emailAddresses: stringListFromValue(record.emailAddresses ?? record.email_addresses),
@@ -153,6 +196,7 @@ function contactsValueToDraftEntries(value: unknown): ContactDraftEntry[] {
     const contact = isRecord(rawContact) ? rawContact : {};
     return {
       id,
+      isNew: false,
       name: String(contact.name ?? ""),
       description: String(contact.description ?? ""),
       emailAddresses: stringListFromValue(contact.email_addresses),
@@ -185,20 +229,26 @@ function contactsDraftValue(entries: ContactDraftEntry[]): string {
 
 function contactsDraftEntriesToConfig(entries: ContactDraftEntry[]): Record<string, unknown> {
   const contacts: Record<string, unknown> = {};
-  const seenContactIds = new Set<string>();
+  const reservedIds = new Set<string>();
   entries.forEach((entry, index) => {
-    const contactId = entry.id.trim();
-    if (!contactId) {
-      throw new Error(`Contact ${index + 1} id is required.`);
+    if (entry.isNew) return;
+    const existingId = entry.id.trim();
+    if (!existingId) {
+      throw new Error(`Contact ${index + 1} id is missing.`);
     }
-    if (seenContactIds.has(contactId)) {
-      throw new Error(`Duplicate contact id: ${contactId}.`);
+    if (reservedIds.has(existingId)) {
+      throw new Error(`Duplicate contact id: ${existingId}.`);
     }
-    seenContactIds.add(contactId);
+    reservedIds.add(existingId);
+  });
+  entries.forEach((entry, index) => {
     const name = entry.name.trim();
     if (!name) {
-      throw new Error(`Contact ${contactId} name is required.`);
+      throw new Error(`Contact ${entry.id.trim() || index + 1} name is required.`);
     }
+    const contactId = entry.isNew
+      ? reserveGeneratedContactId(name, reservedIds)
+      : entry.id.trim();
 
     const emailAddresses: string[] = [];
     const seenEmails = new Set<string>();
@@ -625,6 +675,7 @@ export function ConfigurationScreen() {
   function renderContactsEditor(field: ConfigurationField, fieldState: DraftFieldState, disabled: boolean) {
     const parsed = parseContactDraftValue(fieldState.value);
     const entries = parsed.entries;
+    const resolvedContactIds = contactDraftResolvedIds(entries);
     return (
       <div className="contacts-editor">
         <div className="contacts-editor-header">
@@ -637,6 +688,7 @@ export function ConfigurationScreen() {
                   ...current,
                   {
                     id: "",
+                    isNew: true,
                     name: "",
                     description: "",
                     emailAddresses: [],
@@ -660,7 +712,7 @@ export function ConfigurationScreen() {
           ? entries.map((contact, contactIndex) => (
               <div key={`contact-${contactIndex}`} className="contact-editor-item">
                 <div className="contact-editor-item-header">
-                  <strong>{contact.id.trim() || `Contact ${contactIndex + 1}`}</strong>
+                  <strong>{contact.name.trim() || contact.id.trim() || `Contact ${contactIndex + 1}`}</strong>
                   <div className="inline-actions compact-actions">
                     <button
                       type="button"
@@ -677,20 +729,10 @@ export function ConfigurationScreen() {
                   </div>
                 </div>
                 <div className="contact-editor-grid">
-                  <label className="field-stack">
+                  <div className="contact-id-field">
                     <span>Contact id</span>
-                    <input
-                      value={contact.id}
-                      onChange={(event) =>
-                        updateContactEntry(field, fieldState, contactIndex, {
-                          ...contact,
-                          id: event.target.value,
-                        })
-                      }
-                      disabled={disabled}
-                      placeholder="ops_duty"
-                    />
-                  </label>
+                    <strong>{resolvedContactIds[contactIndex] || "contact"}</strong>
+                  </div>
                   <label className="field-stack">
                     <span>Name</span>
                     <input

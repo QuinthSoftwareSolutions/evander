@@ -566,6 +566,7 @@ def build_container_session_files(
         "AGENT_SANDBOX_GATEWAY_URL": gateway_url,
         "AGENT_SANDBOX_LLM_BASE_URL": openai_base_url,
         "OPENAI_BASE_URL": openai_base_url,
+        "AGENT_SANDBOX_ARTIFACTS_DIR": "/artifacts",
         "NUGET_RELAY_BASE_URL": nuget_relay_base_url,
         "AGENT_SANDBOX_NUGET_FALLBACK_PACKAGES": ("/opt/agent-sandbox/nuget-cache-ro"),
         "GIT_HTTP_LOW_SPEED_LIMIT": "1",

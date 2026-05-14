@@ -36,6 +36,9 @@ runcmd:
   - mkdir -p /home/agent/.nuget/packages-local
   - mkdir -p /home/agent/.nuget/http-cache
   - install -d -m 0700 -o agent -g agent /home/agent/.agent-sandbox
+  - install -d -m 0775 -o agent -g agent /artifacts
+  - ln -sfn /artifacts /home/agent/artifacts
+  - chown -h agent:agent /home/agent/artifacts
   - install -d -m 0700 -o root -g root /var/log/agent-sandbox/agent-runs
   - mount -t __NUGET_CACHE_FS_TYPE__ -o __NUGET_CACHE_MOUNT_OPTIONS__ __NUGET_CACHE_TAG__ /opt/agent-sandbox/nuget-cache-ro || true
   - grep -q '^__NUGET_CACHE_TAG__ /opt/agent-sandbox/nuget-cache-ro __NUGET_CACHE_FS_TYPE__ __NUGET_CACHE_MOUNT_OPTIONS__ 0 0$' /etc/fstab || printf '%s\n' '__NUGET_CACHE_TAG__ /opt/agent-sandbox/nuget-cache-ro __NUGET_CACHE_FS_TYPE__ __NUGET_CACHE_MOUNT_OPTIONS__ 0 0' >> /etc/fstab
@@ -50,6 +53,7 @@ write_files:
       HTTP_TARGET_RELAY_BASE_URL=__HTTP_TARGET_RELAY_BASE_URL__
       AGENT_SANDBOX_LLM_BASE_URL=__LLM_BASE_URL__
       OPENAI_BASE_URL=__LLM_BASE_URL__
+      AGENT_SANDBOX_ARTIFACTS_DIR=/artifacts
       AGENT_SANDBOX_NUGET_FALLBACK_PACKAGES=__NUGET_FALLBACK_PACKAGES__
       NUGET_PACKAGES=__NUGET_PACKAGES__
       NUGET_HTTP_CACHE_PATH=__NUGET_HTTP_CACHE_PATH__

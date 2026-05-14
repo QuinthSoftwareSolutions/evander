@@ -457,6 +457,9 @@ inside the guest by default. `sync-base` merges the latest configured base branc
 while `push-agent` verifies the destination and base branches before using the safe
 session-namespaced push pattern. The guest-side PID and state files live under
 `/home/agent/.agent-sandbox/`; root-owned transcript logs live under `/var/log/agent-sandbox/agent-runs/`.
+VM and container agents share `/artifacts` as the workflow-readable artifacts
+folder. Workflow query nodes can read UTF-8 text files from this folder by
+session id and relative path.
 When `--python` is enabled, the guest repo also gets a repo-local `.venv`. Activate it with
 `. .venv/bin/activate`, then run `python -m pytest -q` and `python -m ruff check` from inside
 the guest clone.

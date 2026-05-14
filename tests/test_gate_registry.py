@@ -71,9 +71,11 @@ def test_default_registry_includes_all_known_gate_types() -> None:
     assert set(DEFAULT_GATE_PROVIDER_REGISTRY) == {
         "gate:await-agent",
         "gate:debounce",
+        "gate:deserialize",
         "gate:dedupe",
         "gate:filter",
         "gate:for",
         "gate:map",
         "gate:merge",
+        "gate:serialize",
     }

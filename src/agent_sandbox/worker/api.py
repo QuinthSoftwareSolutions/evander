@@ -84,6 +84,18 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse(record.model_dump(mode="json"))
 
+    async def read_session_artifact(request: Request) -> Response:
+        try:
+            text = daemon.read_session_artifact_text(
+                request.path_params["session_id"],
+                request.path_params["artifact_path"],
+            )
+        except FileNotFoundError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=404)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return PlainTextResponse(text)
+
     async def delete_session(request: Request) -> JSONResponse:
         try:
             deleted = daemon.delete_session(request.path_params["session_id"])
@@ -207,6 +219,11 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
             Route("/v1/sessions", prepare_session, methods=["POST"]),
             Route("/v1/sessions/{session_id}/repo", clone_session_repo, methods=["POST"]),
             Route("/v1/sessions/{session_id}/files", write_session_files, methods=["POST"]),
+            Route(
+                "/v1/sessions/{session_id}/artifacts/{artifact_path:path}",
+                read_session_artifact,
+                methods=["GET"],
+            ),
             Route(
                 "/v1/sessions/{session_id}/mssql/databases",
                 provision_mssql_database,

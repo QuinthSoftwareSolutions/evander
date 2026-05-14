@@ -3082,6 +3082,29 @@ select {
   gap: 0.85rem;
 }
 
+.contact-id-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.42rem;
+  min-width: 0;
+  padding: 0.78rem 0.88rem;
+  border: 1px solid rgba(42, 76, 90, 0.12);
+  border-radius: 14px;
+  background: rgba(244, 248, 246, 0.62);
+}
+
+.contact-id-field span {
+  color: #5f717c;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.contact-id-field strong {
+  min-width: 0;
+  color: #1f3340;
+  overflow-wrap: anywhere;
+}
+
 .contact-description-field textarea {
   min-height: 4.2rem;
 }
@@ -4686,6 +4709,19 @@ select {
 
 :root[data-theme="dark"] .contact-editor-item {
   border-top-color: rgba(128, 106, 66, 0.22);
+}
+
+:root[data-theme="dark"] .contact-id-field {
+  border-color: rgba(125, 170, 190, 0.14);
+  background: rgba(16, 28, 36, 0.58);
+}
+
+:root[data-theme="dark"] .contact-id-field span {
+  color: #9cb1bd;
+}
+
+:root[data-theme="dark"] .contact-id-field strong {
+  color: #d7e3ea;
 }
 
 :root[data-theme="dark"] .config-field-tooltip-icon,

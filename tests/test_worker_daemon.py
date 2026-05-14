@@ -181,6 +181,34 @@ def test_session_prepare_and_file_write_surface_targets_durable_paths(tmp_path: 
     ).read_text(encoding="utf-8") == "task: test\n"
 
 
+def test_session_artifact_text_endpoint_reads_utf8_artifact_and_rejects_escape(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    prepared = client.post(
+        "/v1/sessions",
+        headers=_auth(),
+        json={"session_id": "session-1"},
+    )
+    assert prepared.status_code == 201
+    artifact_dir = tmp_path / "worker-root" / "sessions" / "session-1" / "artifacts" / "reports"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "summary.txt").write_text("daily summary\n", encoding="utf-8")
+
+    response = client.get(
+        "/v1/sessions/session-1/artifacts/reports/summary.txt",
+        headers=_auth(),
+    )
+    escaped = client.get(
+        "/v1/sessions/session-1/artifacts/%2E%2E/metadata.json",
+        headers=_auth(),
+    )
+
+    assert response.status_code == 200
+    assert response.text == "daily summary\n"
+    assert escaped.status_code == 400
+
+
 def test_session_prepare_copies_restricted_git_ssh_into_agent_home(tmp_path: Path) -> None:
     ssh_source = tmp_path / "worker-ssh"
     ssh_source.mkdir()

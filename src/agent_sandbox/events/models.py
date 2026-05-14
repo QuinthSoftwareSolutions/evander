@@ -92,6 +92,34 @@ class GateMapDefinition(GateDefinition):
         return value
 
 
+class GateDeserializeDefinition(GateDefinition):
+    type: Literal["gate:deserialize"]
+    content: ConfigValue
+    format: Literal["auto", "json", "yaml"] = "auto"
+
+    @field_validator("content")
+    @classmethod
+    def validate_content_present(cls, value: ConfigValue) -> ConfigValue:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ValueError("gate:deserialize content must be a non-empty string or binding")
+        return value
+
+
+class GateSerializeDefinition(GateDefinition):
+    type: Literal["gate:serialize"]
+    value: ConfigValue
+    format: Literal["json", "yaml"] = "json"
+
+    @field_validator("value")
+    @classmethod
+    def validate_value_present(cls, value: ConfigValue) -> ConfigValue:
+        if value is None:
+            raise ValueError("gate:serialize value is required")
+        if isinstance(value, str) and not value.strip():
+            raise ValueError("gate:serialize value must be a non-empty string or binding")
+        return value
+
+
 class GateMergeDefinition(GateDefinition):
     type: Literal["gate:merge"]
 
@@ -255,6 +283,8 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "trigger:agent:prompt:new": provider_models.AgentPromptNewTriggerDefinition,
         "gate:filter": GateFilterDefinition,
         "gate:map": GateMapDefinition,
+        "gate:deserialize": GateDeserializeDefinition,
+        "gate:serialize": GateSerializeDefinition,
         "gate:merge": GateMergeDefinition,
         "gate:debounce": GateDebounceDefinition,
         "gate:dedupe": GateDedupeDefinition,
@@ -291,6 +321,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "query:vm:run-state": provider_models.VmRunStateQueryDefinition,
         "query:git:pr-note": provider_models.GitPrNoteQueryDefinition,
         "query:session-context": provider_models.SessionContextQueryDefinition,
+        "query:agent:artifact-text": provider_models.AgentArtifactTextQueryDefinition,
         "query:issue:get": provider_models.IssueGetQueryDefinition,
         "query:ado:work-items": provider_models.AdoWorkItemsQueryDefinition,
     }

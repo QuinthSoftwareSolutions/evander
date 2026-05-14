@@ -361,6 +361,33 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         node for node in catalog_payload["nodes"] if node["type"] == "trigger:teams:new-message"
     )
     assert [field["key"] for field in teams_message["fields"]] == ["targets", "user_ids"]
+    deserialize_gate = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "gate:deserialize"
+    )
+    assert [field["key"] for field in deserialize_gate["fields"]] == [
+        "content",
+        "format",
+        "outputs",
+    ]
+    assert deserialize_gate["fields"][0]["bindable"]
+    assert [option["value"] for option in deserialize_gate["fields"][1]["options"]] == [
+        "auto",
+        "json",
+        "yaml",
+    ]
+    serialize_gate = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "gate:serialize"
+    )
+    assert [field["key"] for field in serialize_gate["fields"]] == [
+        "value",
+        "format",
+        "outputs",
+    ]
+    assert serialize_gate["fields"][0]["bindable"]
+    assert [option["value"] for option in serialize_gate["fields"][1]["options"]] == [
+        "json",
+        "yaml",
+    ]
     await_agent = next(
         node for node in catalog_payload["nodes"] if node["type"] == "gate:await-agent"
     )
@@ -373,6 +400,16 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     ]
     issue_get = next(node for node in catalog_payload["nodes"] if node["type"] == "query:issue:get")
     assert [field["key"] for field in issue_get["fields"]] == ["issue_id"]
+    artifact_text = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "query:agent:artifact-text"
+    )
+    assert [field["key"] for field in artifact_text["fields"]] == [
+        "session_id",
+        "path",
+        "vm_user",
+    ]
     ado_work_items = next(
         node for node in catalog_payload["nodes"] if node["type"] == "query:ado:work-items"
     )

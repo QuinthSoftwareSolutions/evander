@@ -1190,6 +1190,10 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
     )
     assert (
+        "AGENT_SANDBOX_ARTIFACTS_DIR=/artifacts"
+        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+    )
+    assert (
         "PIP_INDEX_URL=http://nexus.test:8081/repository/pypi-all/simple"
         in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
     )

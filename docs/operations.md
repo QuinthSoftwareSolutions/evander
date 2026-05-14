@@ -98,10 +98,18 @@ Troubleshooting checklist:
      inbound payload remembered for each source, and the emitted `outputs` for the specific event.
    - Verify the configured shared `outputs` projection matches the keys that should be forwarded
      from each inbound event.
-5. **Unexpected duplicate behavior**
+5. **Deserialize output is not bindable**
+   - If `content` is bound to an upstream string, declare the expected `outputs` schema on the
+     `gate:deserialize` node so editor binding validation can see those keys before runtime.
+   - Inspect the gate execution record to confirm the parsed object was recorded under `outputs`.
+6. **Serialized text is missing**
+   - Bind downstream nodes to `gate:serialize` output `content`, not the input field `value`.
+   - Inspect the gate execution record to confirm the serialized string was recorded under
+     `outputs.content`.
+7. **Unexpected duplicate behavior**
    - Check idempotency collisions in `gate-orchestrator-executions.json` using
      `idempotency_key=<event_id>::<node_id>`.
-6. **Cycle-like configs**
+8. **Cycle-like configs**
    - Direct cycles are marked `skipped` with `error: cycle_detected`; break the loop by changing
      the edge wiring between nodes.
 
@@ -1459,6 +1467,12 @@ When `--python` is enabled, the guest clone also gets a repo-local `.venv`. Acti
 `. .venv/bin/activate`, then run `python -m pytest -q` and `python -m ruff check` from inside
 the guest clone. These checks validate the repo contents in-guest, but they do not replace
 host-side libvirt, firewall, or systemd verification for this scaffold.
+
+VM and container agents share `/artifacts` as the workflow-readable artifacts
+folder. Container workers mount it from durable session storage; VM setup creates
+it as an agent-writable guest directory and exports `AGENT_SANDBOX_ARTIFACTS_DIR`.
+Use `query:agent:artifact-text` with a session id and relative path to read a
+UTF-8 text file from that folder.
 
 After the initial guest provider command run exits, setup triggers one
 provider-specific verification pass. Customize that verification
