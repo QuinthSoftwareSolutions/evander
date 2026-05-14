@@ -62,6 +62,10 @@ import {
   workflowRouteClass,
   type WorkflowConnectionRouteOption,
 } from "./workflowRoutes";
+import {
+  compareWorkflowNodeCatalogEntries,
+  groupWorkflowNodeCatalogEntries,
+} from "./workflowCatalogGroups";
 
 type GraphNodeData = {
   id: string;
@@ -1791,16 +1795,6 @@ function activeEffectTargetKey(values: Record<string, unknown>): EffectTargetKey
   if (typeof values.session_id === "string" && values.session_id.trim()) return "session_id";
   if (typeof values.vm_name === "string" && values.vm_name.trim()) return "vm_name";
   return "target";
-}
-
-function compareNodeCatalogEntries(
-  left: WorkflowEditorNodeCatalogEntry,
-  right: WorkflowEditorNodeCatalogEntry,
-): number {
-  return (
-    left.label.localeCompare(right.label, undefined, { sensitivity: "base", numeric: true }) ||
-    left.type.localeCompare(right.type, undefined, { sensitivity: "base", numeric: true })
-  );
 }
 
 function isWorkflowNodeKind(value: unknown): value is WorkflowNodeKind {
@@ -3572,12 +3566,16 @@ export default function App() {
     return null;
   }
 
-  const createEntriesByKind = NODE_GROUPS.map((group) => ({
-    ...group,
-    entries: catalog.nodes
+  const createEntriesByKind = NODE_GROUPS.map((group) => {
+    const entries = catalog.nodes
       .filter((entry) => entry.kind === group.kind)
-      .sort(compareNodeCatalogEntries),
-  }));
+      .sort(compareWorkflowNodeCatalogEntries);
+    return {
+      ...group,
+      entries,
+      subgroups: groupWorkflowNodeCatalogEntries(entries, group.kind),
+    };
+  });
   const appShellStyle = {
     "--workflow-sidebar-width": `${sidebarWidth}px`,
   } as CSSProperties;
@@ -3772,19 +3770,31 @@ export default function App() {
                     <span className="create-group-count">{group.entries.length}</span>
                   </summary>
                   <p className="create-group-description">{group.description}</p>
-                  <div className="create-group-actions">
-                    {group.entries.map((entry) => (
-                      <Tooltip key={entry.type} content={nodeTypeDescription(entry)} inline={false}>
-                        <button
-                          type="button"
-                          draggable={!editLocked}
-                          onDragStart={(event) => startNodeTypeDrag(event, entry)}
-                          onClick={() => addNode(entry.kind, entry.type)}
-                          disabled={editLocked}
-                        >
-                          {entry.label}
-                        </button>
-                      </Tooltip>
+                  <div className="create-subgroups">
+                    {group.subgroups.map((subgroup) => (
+                      <details key={subgroup.key} className="create-subgroup" open>
+                        <summary className="create-subgroup-summary">
+                          <Tooltip content={subgroup.description}>
+                            <span>{subgroup.label}</span>
+                          </Tooltip>
+                          <span className="create-subgroup-count">{subgroup.entries.length}</span>
+                        </summary>
+                        <div className="create-group-actions create-subgroup-actions">
+                          {subgroup.entries.map((entry) => (
+                            <Tooltip key={entry.type} content={nodeTypeDescription(entry)} inline={false}>
+                              <button
+                                type="button"
+                                draggable={!editLocked}
+                                onDragStart={(event) => startNodeTypeDrag(event, entry)}
+                                onClick={() => addNode(entry.kind, entry.type)}
+                                disabled={editLocked}
+                              >
+                                {entry.label}
+                              </button>
+                            </Tooltip>
+                          ))}
+                        </div>
+                      </details>
                     ))}
                   </div>
                 </details>
