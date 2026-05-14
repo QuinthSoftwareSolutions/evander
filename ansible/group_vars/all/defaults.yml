@@ -364,7 +364,7 @@ agent_sandbox_services:
   nuget_relay: true
   package_cache: true
   apt_cache: true
-  semantic_store: false
+  semantic_store: true
   http_target_relay: true
   ado_worker: true
   discord_ingest: true
