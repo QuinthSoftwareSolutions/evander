@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-14 - Workflow Editor Node Palette Grouping
+
+Touched areas: `frontend/workflow-editor/`.
+
+- Grouped workflow node types within the existing Triggers, Gates, Effects, and
+  Queries create sections by related functionality, with namespace-based
+  fallback grouping for future catalog entries.
+
 ## 2026-05-14 - Agent Artifact Text Query
 
 Touched areas: workflow query providers, Admin Web catalog, worker API,

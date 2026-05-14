@@ -1425,6 +1425,50 @@ select {
   padding: 0 0.7rem 0.2rem;
 }
 
+.create-subgroups {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0 0.7rem 0.7rem;
+}
+
+.create-subgroup {
+  border: 1px solid rgba(91, 67, 37, 0.1);
+  border-radius: 12px;
+  background: rgba(250, 246, 238, 0.74);
+}
+
+.create-subgroup-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.62rem 0.68rem;
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #705536;
+}
+
+.create-subgroup-summary::-webkit-details-marker {
+  display: none;
+}
+
+.create-subgroup-count {
+  min-width: 1.55rem;
+  padding: 0.12rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(91, 67, 37, 0.08);
+  text-align: center;
+  font-size: 0.68rem;
+}
+
+.create-subgroup-actions {
+  padding: 0 0.45rem 0.05rem;
+}
+
 .create-group-actions .admin-tooltip,
 .create-group-actions .admin-tooltip-trigger {
   display: block;
@@ -4495,6 +4539,7 @@ select {
 
 :root[data-theme="dark"] .sidebar-section,
 :root[data-theme="dark"] .create-group,
+:root[data-theme="dark"] .create-subgroup,
 :root[data-theme="dark"] .panel,
 :root[data-theme="dark"] .feature-list-item,
 :root[data-theme="dark"] .object-list-item,
@@ -4635,6 +4680,7 @@ select {
 }
 
 :root[data-theme="dark"] .create-group-count,
+:root[data-theme="dark"] .create-subgroup-count,
 :root[data-theme="dark"] .current-runs-count {
   background: rgba(224, 187, 116, 0.16);
   color: #e8c98f;
@@ -4645,6 +4691,7 @@ select {
 }
 
 :root[data-theme="dark"] .create-group-summary,
+:root[data-theme="dark"] .create-subgroup-summary,
 :root[data-theme="dark"] .create-group-description,
 :root[data-theme="dark"] .inspector-label span,
 :root[data-theme="dark"] .field-header,
