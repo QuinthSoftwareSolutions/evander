@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -110,10 +111,12 @@ def effective_node_output_schema(node: Any) -> dict[str, dict[str, Any]]:
         node_type = str(node.get("type") or "").strip()
         raw_outputs = node.get("outputs")
         template = node.get("template")
+        content = node.get("content")
     else:
         node_type = str(getattr(node, "type", "") or "").strip()
         raw_outputs = getattr(node, "outputs", None)
         template = getattr(node, "template", None)
+        content = getattr(node, "content", None)
 
     schema: dict[str, dict[str, Any]] = {}
     static_schema = _NODE_OUTPUT_SCHEMA_REGISTRY.get(node_type, {})
@@ -127,6 +130,11 @@ def effective_node_output_schema(node: Any) -> dict[str, dict[str, Any]]:
                 continue
             schema[name] = _infer_schema_from_template_value(value)
         return schema
+
+    if node_type == "gate:deserialize":
+        literal_schema = _infer_schema_from_deserialized_content(content)
+        if literal_schema is not None:
+            return literal_schema
 
     if isinstance(raw_outputs, Mapping):
         schema.update(
@@ -223,6 +231,36 @@ def _infer_schema_from_template_value(value: Any) -> dict[str, Any]:
     if isinstance(value, list):
         return {"type": "array"}
     return {"type": "object"}
+
+
+def _infer_schema_from_deserialized_content(value: Any) -> dict[str, dict[str, Any]] | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or "${{" in text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            import yaml
+        except ImportError:
+            return None
+        try:
+            parsed = yaml.safe_load(text)
+        except yaml.YAMLError:
+            return None
+    if not isinstance(parsed, Mapping):
+        return None
+    schema: dict[str, dict[str, Any]] = {}
+    for key, item in parsed.items():
+        if not isinstance(key, str):
+            return None
+        name = key.strip()
+        if not name:
+            return None
+        schema[name] = _infer_schema_from_template_value(item)
+    return schema
 
 
 def _ensure_output_schema_bootstrap() -> None:

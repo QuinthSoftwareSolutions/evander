@@ -288,6 +288,10 @@ _GATE_OUTPUT_SCHEMAS = {
         "item_count": {"type": "integer"},
         "is_done": {"type": "boolean"},
     },
+    "gate:serialize": {
+        "content": {"type": "string"},
+        "format": {"type": "string"},
+    },
 }
 
 _EFFECT_OUTPUT_SCHEMAS = {
@@ -579,6 +583,14 @@ _QUERY_OUTPUT_SCHEMAS = {
         "created_at": {"type": "string"},
         "expires_at": {"type": "string"},
         "model": {"type": "string"},
+    },
+    "query:agent:artifact-text": {
+        "session_id": {"type": "string"},
+        "path": {"type": "string"},
+        "content": {"type": "string"},
+        "byte_count": {"type": "integer"},
+        "artifacts_root": {"type": "string"},
+        "execution_backend": {"type": "string"},
     },
     "query:issue:get": {
         "issue_id": {"type": "string"},

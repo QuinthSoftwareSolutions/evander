@@ -82,6 +82,9 @@ class AdminServiceProviderAdapter:
     def session_context_query(self, **kwargs: Any) -> Any:
         return self._admin_service.session_context_query(**kwargs)
 
+    def read_session_artifact_text(self, **kwargs: Any) -> Any:
+        return self._admin_service.read_session_artifact_text(**kwargs)
+
 
 class GateProviderAdapter:
     """Narrow gate-runtime adapter over a host runtime object."""
@@ -125,6 +128,7 @@ def build_provider_runtime_ports(
         git_pr_note_reader=_pick(provider_runtime, "git_pr_note_reader", admin_adapter),
         issue_reader=_pick(provider_runtime, "issue_reader", admin_adapter),
         session_context_reader=_pick(provider_runtime, "session_context_reader", admin_adapter),
+        session_artifact_reader=_pick(provider_runtime, "session_artifact_reader", admin_adapter),
         admin_service=_pick(provider_runtime, "admin_service", admin_service, admin_adapter),
         metadata=provider_metadata,
     )

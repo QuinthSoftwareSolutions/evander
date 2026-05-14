@@ -94,6 +94,7 @@ class QueryProviderFactory:
             git_pr_note_reader=self._provider_runtime_ports.git_pr_note_reader,
             issue_reader=self._provider_runtime_ports.issue_reader,
             session_context_reader=self._provider_runtime_ports.session_context_reader,
+            session_artifact_reader=self._provider_runtime_ports.session_artifact_reader,
             env=self.env,
             secret_resolver=self.secret_resolver,
             metadata={"directory_path": directory_path or "root"},

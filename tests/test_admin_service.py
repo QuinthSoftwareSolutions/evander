@@ -128,6 +128,91 @@ def test_list_agents_includes_session_only_container_worker_targets(
     assert agents[0].host["labels"] == {"role": "demo"}
 
 
+def test_read_session_artifact_text_routes_container_sessions_to_worker_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "worker_url": "http://worker.test",
+            },
+        )
+    )
+    calls: list[dict[str, object]] = []
+
+    class FakeContainerBackend:
+        def read_session_artifact_text(self, **kwargs: object) -> str:
+            calls.append(kwargs)
+            return "daily summary\n"
+
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        lambda **kwargs: calls.append({"backend_kwargs": kwargs}) or FakeContainerBackend(),
+    )
+
+    result = service.read_session_artifact_text(
+        session_id="container-session",
+        path="reports/summary.txt",
+    )
+
+    assert calls == [
+        {
+            "backend_kwargs": {
+                "directory_path": "root",
+                "worker_url": "http://worker.test",
+            }
+        },
+        {"session_id": "container-session", "relative_path": "reports/summary.txt"},
+    ]
+    assert result["content"] == "daily summary\n"
+    assert result["execution_backend"] == "container_worker_vm"
+
+
+def test_read_session_artifact_text_routes_vm_sessions_to_vm_exec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="vm-session",
+            vm_id="vm-1",
+            vm_provider="libvirt",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_vm_exec(target: str, **kwargs: object) -> dict[str, object]:
+        calls.append({"target": target, **kwargs})
+        return {"success": True, "stdout": "vm summary\n", "vm_name": "vm-1"}
+
+    monkeypatch.setattr(service, "vm_exec", fake_vm_exec)
+
+    result = service.read_session_artifact_text(
+        session_id="vm-session",
+        path="reports/summary.txt",
+    )
+
+    assert calls[0]["target"] == "vm-session"
+    assert calls[0]["environment"] == {
+        "AGENT_SANDBOX_ARTIFACT_RELATIVE_PATH": "reports/summary.txt"
+    }
+    assert "/artifacts" in str(calls[0]["command"])
+    assert result["content"] == "vm summary\n"
+    assert result["execution_backend"] == "libvirt_vm"
+
+
 def test_list_agents_groups_container_executions_under_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2664,6 +2749,107 @@ def test_workflow_editor_validation_derives_filter_outputs_server_side(tmp_path:
         "message": {"type": "string"},
         "vm_name": {"type": "string"},
     }
+
+
+def test_workflow_editor_validation_derives_deserialize_outputs_server_side(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    result = service.validate_workflow_editor_document(
+        config={
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "cron-15m",
+                    "display_name": "Every 15 minutes",
+                    "type": "trigger:cron",
+                    "expression": "*/15 * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-deserialize-1",
+                    "display_name": "Deserialize",
+                    "type": "gate:deserialize",
+                    "content": '{"title":"Fix relay","metadata":{"priority":"P1"}}',
+                    "format": "json",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "prompt-agent",
+                    "display_name": "Prompt agent",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "Review ${{gate-deserialize-1.metadata.priority}}",
+                }
+            ],
+            "edges": [
+                {"source_id": "cron-15m", "target_id": "gate-deserialize-1"},
+                {"source_id": "gate-deserialize-1", "target_id": "prompt-agent"},
+            ],
+        },
+        layout={},
+    )
+
+    gate = next(item for item in result.config["gates"] if item["id"] == "gate-deserialize-1")
+    assert gate["outputs"] == {
+        "title": {"type": "string"},
+        "metadata": {"type": "object"},
+    }
+    assert result.validation_diagnostics == []
+
+
+def test_workflow_editor_validation_derives_serialize_outputs_server_side(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    result = service.validate_workflow_editor_document(
+        config={
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "cron-15m",
+                    "display_name": "Every 15 minutes",
+                    "type": "trigger:cron",
+                    "expression": "*/15 * * * *",
+                    "outputs": {"ticket": {"type": "object"}},
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-serialize-1",
+                    "display_name": "Serialize",
+                    "type": "gate:serialize",
+                    "value": "${{cron-15m.ticket}}",
+                    "format": "json",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "prompt-agent",
+                    "display_name": "Prompt agent",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "Serialized ${{gate-serialize-1.content}}",
+                }
+            ],
+            "edges": [
+                {"source_id": "cron-15m", "target_id": "gate-serialize-1"},
+                {"source_id": "gate-serialize-1", "target_id": "prompt-agent"},
+            ],
+        },
+        layout={},
+    )
+
+    gate = next(item for item in result.config["gates"] if item["id"] == "gate-serialize-1")
+    assert gate["outputs"] == {
+        "content": {"type": "string"},
+        "format": {"type": "string"},
+    }
+    assert result.validation_diagnostics == []
 
 
 def test_workflow_editor_save_allows_disconnected_draft_nodes(tmp_path: Path) -> None:

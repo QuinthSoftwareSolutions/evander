@@ -157,6 +157,8 @@ def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
                 json={"deleted": True, "session_id": "session-1"},
                 request=request,
             )
+        if request.method == "GET" and request.url.path.endswith("/artifacts/reports/summary.txt"):
+            return httpx.Response(200, text="daily summary\n", request=request)
         return httpx.Response(
             200,
             json={
@@ -200,11 +202,15 @@ def test_container_worker_client_prepares_session_clones_repo_and_writes_files(
         ).copied_count
         == 1
     )
+    assert worker.read_session_artifact_text("session-1", "reports/summary.txt") == (
+        "daily summary\n"
+    )
     assert worker.delete_session("session-1") == {"deleted": True, "session_id": "session-1"}
     assert seen == [
         ("POST", "/v1/sessions"),
         ("POST", "/v1/sessions/session-1/repo"),
         ("POST", "/v1/sessions/session-1/files"),
+        ("GET", "/v1/sessions/session-1/artifacts/reports/summary.txt"),
         ("DELETE", "/v1/sessions/session-1"),
     ]
 

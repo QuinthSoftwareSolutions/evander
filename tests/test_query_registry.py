@@ -8,6 +8,7 @@ import pytest
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.events.provider_models import (
     AdoWorkItemsQueryDefinition,
+    AgentArtifactTextQueryDefinition,
     GitPrNoteQueryDefinition,
     IssueGetQueryDefinition,
     SessionContextQueryDefinition,
@@ -34,6 +35,8 @@ class _AdminServiceStub:
     pr_note_calls: list[dict[str, object]] | None = None
     issue_result: dict[str, object] | None = None
     issue_calls: list[dict[str, object]] | None = None
+    artifact_result: dict[str, object] | None = None
+    artifact_calls: list[dict[str, object]] | None = None
 
     def list_vms(self, *, include_inactive: bool = True, omit_state: bool = False):
         del include_inactive, omit_state
@@ -53,6 +56,13 @@ class _AdminServiceStub:
             raise RuntimeError("issue_result not configured")
         return dict(self.issue_result)
 
+    def read_session_artifact_text(self, **kwargs):
+        if self.artifact_calls is not None:
+            self.artifact_calls.append(kwargs)
+        if self.artifact_result is None:
+            raise RuntimeError("artifact_result not configured")
+        return dict(self.artifact_result)
+
 
 class _RecordingProvider(QueryProviderBase):
     pass
@@ -63,6 +73,7 @@ def test_default_registry_includes_known_query_types() -> None:
         "query:vm:run-state",
         "query:git:pr-note",
         "query:session-context",
+        "query:agent:artifact-text",
         "query:issue:get",
         "query:ado:work-items",
     }
@@ -223,6 +234,40 @@ def test_issue_get_query_provider_returns_current_issue_payload(tmp_path: Path) 
 
     assert admin_service.issue_calls == [{"issue_id": "root:issue-42"}]
     assert output["metadata"]["steps"] == ["analyze", "implement"]
+
+
+def test_agent_artifact_text_query_provider_returns_artifact_content() -> None:
+    query = AgentArtifactTextQueryDefinition(
+        id="query-artifact",
+        display_name="Artifact text",
+        type="query:agent:artifact-text",
+        session_id="session-1",
+        path="reports/summary.txt",
+    )
+    admin_service = _AdminServiceStub(
+        vms=[],
+        artifact_result={
+            "session_id": "session-1",
+            "path": "reports/summary.txt",
+            "content": "daily summary\n",
+            "byte_count": 14,
+            "artifacts_root": "/artifacts",
+            "execution_backend": "container_worker_vm",
+        },
+        artifact_calls=[],
+    )
+
+    factory = QueryProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+    provider = factory.build(query)
+    output = provider.execute()
+
+    assert admin_service.artifact_calls == [
+        {"session_id": "session-1", "path": "reports/summary.txt", "vm_user": "agent"}
+    ]
+    assert output["content"] == "daily summary\n"
+    assert output["byte_count"] == 14
 
 
 def test_ado_work_items_query_provider_uses_wiql_and_directory_path(

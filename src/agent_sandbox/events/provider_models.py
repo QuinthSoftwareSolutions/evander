@@ -37,6 +37,7 @@ from agent_sandbox.events.provider_types import (
 )
 from agent_sandbox.queries.providers.schemas import (
     AdoWorkItemsQueryDefinition,
+    AgentArtifactTextQueryDefinition,
     GitPrNoteQueryDefinition,
     IssueGetQueryDefinition,
     SessionContextQueryDefinition,

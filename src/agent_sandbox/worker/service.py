@@ -16,6 +16,8 @@ from urllib.parse import unquote, urlparse
 
 from starlette.applications import Starlette
 
+from agent_sandbox.session_artifacts import resolve_artifact_file
+
 from .docker_runtime import DockerContainerRuntime
 from .models import (
     DEFAULT_WORKER_ROOT,
@@ -439,6 +441,21 @@ class WorkerDaemon:
             copied_paths=copied_paths,
             roots={"agent_home": "/home/agent", "repo_root": "/home/agent/repos"},
         )
+
+    def read_session_artifact_text(self, session_id: str, relative_path: str) -> str:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("session_id is required")
+        if not SAFE_ID_PATTERN.fullmatch(normalized_session_id):
+            raise ValueError(
+                "session_id must contain only letters, numbers, dots, underscores, or dashes"
+            )
+        root = self.worker_root / "sessions" / normalized_session_id / "artifacts"
+        artifact_path = resolve_artifact_file(root, relative_path)
+        try:
+            return artifact_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("artifact file is not valid UTF-8 text") from exc
 
     def provision_mssql_database(
         self,

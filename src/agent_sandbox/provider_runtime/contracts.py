@@ -92,6 +92,10 @@ class SessionContextReader(Protocol):
     def session_context_query(self, **kwargs: Any) -> Any: ...
 
 
+class SessionArtifactReader(Protocol):
+    def read_session_artifact_text(self, **kwargs: Any) -> Any: ...
+
+
 @dataclass(frozen=True)
 class ProviderRuntimePorts:
     vm_creator: VmCreator | None = None
@@ -113,6 +117,7 @@ class ProviderRuntimePorts:
     git_pr_note_reader: GitPrNoteReader | None = None
     issue_reader: IssueReader | None = None
     session_context_reader: SessionContextReader | None = None
+    session_artifact_reader: SessionArtifactReader | None = None
     admin_service: Any | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 

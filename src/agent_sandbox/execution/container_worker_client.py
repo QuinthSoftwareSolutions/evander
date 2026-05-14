@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -92,6 +93,14 @@ class ContainerWorkerClient:
         return WorkerFileWriteRecord.model_validate(
             self._json_dict(response, operation="write files")
         )
+
+    def read_session_artifact_text(self, session_id: str, relative_path: str) -> str:
+        encoded_path = quote(str(relative_path or "").strip(), safe="/")
+        response = self._request(
+            "GET",
+            f"/v1/sessions/{session_id}/artifacts/{encoded_path}",
+        )
+        return response.text
 
     def provision_mssql_database(
         self,

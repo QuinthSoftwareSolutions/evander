@@ -231,6 +231,8 @@ Type-specific keys:
 |---|---|---|
 | `gate:filter` | `predicate` | `outputs` |
 | `gate:map` | `mapping` | `outputs` |
+| `gate:deserialize` | `content` | `format`, `outputs` |
+| `gate:serialize` | `value` | `format`, `outputs` |
 | `gate:merge` | _none beyond envelope_ | `outputs` |
 | `gate:debounce` | `key`, `quiet_period`, `max_delay` | `outputs` |
 | `gate:dedupe` | `key`, `ttl` | `outputs` |
@@ -240,6 +242,15 @@ nodes, then atomically records the key for the ISO-8601 `ttl` window (for exampl
 or `PT1H`). The first activation for a key is forwarded; duplicate activations inside the
 TTL are recorded as dropped and do not publish downstream completion events. Expired keys are
 cleaned up opportunistically during later dedupe checks.
+
+`gate:deserialize` resolves `content` with workflow bindings, parses it as JSON or YAML
+(`format` defaults to `auto`), and emits the decoded object's top-level keys as downstream
+outputs. Literal object content is used to infer bindable outputs automatically; for dynamic
+content, declare `outputs` so downstream references such as `${{gate-deserialize-1.title}}`
+validate in the editor.
+
+`gate:serialize` resolves `value` with workflow bindings, serializes it as JSON or YAML
+(`format` defaults to `json`), and emits `content` plus `format` for downstream nodes.
 
 `gate:merge` uses Reactive Extensions `merge` semantics: every inbound event is forwarded as it
 arrives. When `outputs` is declared, the gate projects each inbound payload to that shared key set.
@@ -302,6 +313,23 @@ should be prompted to fetch and merge the destination branch.
 `effect:agent:prompt` and `effect:agent:enqueue-prompt` have two named outgoing
 ports: `started` emits after the prompt is dispatched, and `completed` emits
 after the agent run completes.
+
+### Query definition schema keys
+
+Each query entry uses the same `id`, `display_name`, `type`, and optional
+`outputs` envelope as effects.
+
+| `type` | Required keys | Optional keys |
+|---|---|---|
+| `query:agent:artifact-text` | `session_id`, `path` | `vm_user`, `outputs` |
+| `query:ado:work-items` | _none beyond envelope_ | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top`, `skip`, `outputs` |
+| `query:git:pr-note` | `host_repo_path`, `local_branch` | `remote_name`, `notes_ref`, `outputs` |
+| `query:issue:get` | `issue_id` | `outputs` |
+| `query:session-context` | one of `target`, `session_id`, `vm_name` | `outputs` |
+| `query:vm:run-state` | one of `session_id`, `vm_name` | `outputs` |
+
+`query:agent:artifact-text` reads a UTF-8 text file from the resolved session's
+artifacts folder. The `path` value must be relative and stay inside that folder.
 
 `effect:notification:send` delivers through a declared communication target in
 `config/communication-targets/config.json`. The target must include the `notify`

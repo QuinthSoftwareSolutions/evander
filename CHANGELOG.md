@@ -5,6 +5,18 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-14 - Agent Artifact Text Query
+
+Touched areas: workflow query providers, Admin Web catalog, worker API,
+VM/container bootstrap, docs, tests.
+
+- Added `query:agent:artifact-text`, which reads a UTF-8 text file from an
+  agent session's artifacts folder by `session_id` and relative `path`.
+- Standardized `/artifacts` as the agent-visible artifacts folder for both
+  container workers and VM guests. Container workers expose a session artifact
+  read endpoint; VM setup creates an agent-writable `/artifacts` directory and
+  exports `AGENT_SANDBOX_ARTIFACTS_DIR`.
+
 ## 2026-05-06 - Queued Prompt Thread ID Handling
 
 Touched areas: `src/agent_sandbox/effects/providers/lifecycle_hooks.py`,

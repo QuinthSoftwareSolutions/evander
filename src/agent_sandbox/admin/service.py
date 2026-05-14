@@ -58,6 +58,11 @@ from agent_sandbox.policy_config import EffectivePolicyConfig
 from agent_sandbox.daemons.pr_feedback_worker import PrFeedbackStore
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.repositories.session_manifests import as_session_manifest_repository
+from agent_sandbox.session_artifacts import (
+    AGENT_ARTIFACTS_ENV,
+    DEFAULT_AGENT_ARTIFACTS_DIR,
+    normalize_artifact_relative_path,
+)
 from agent_sandbox.repositories.skills_library import (
     SkillLibraryEntry,
     SkillLibraryMetadata,
@@ -788,6 +793,10 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "gate:filter": "Allow only matching events to continue downstream.",
     "gate:debounce": "Wait for a quiet period, then forward the latest activation.",
     "gate:map": "Project upstream outputs into a new payload shape.",
+    "gate:deserialize": (
+        "Parse a JSON or YAML string into object properties for downstream bindings."
+    ),
+    "gate:serialize": "Serialize a bindable value as JSON or YAML text for downstream nodes.",
     "gate:dedupe": "Suppress duplicate activations for the same key until a TTL expires.",
     "gate:merge": "Merge compatible inbound event streams into one downstream path.",
     "gate:await-agent": "Pause the workflow until a selected agent session completes.",
@@ -822,9 +831,42 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "query:vm:run-state": "Read the current run state for a VM-backed agent target.",
     "query:git:pr-note": "Read pull-request note context from a host checkout.",
     "query:session-context": "Read session context and metadata.",
+    "query:agent:artifact-text": "Read a UTF-8 text file from an agent session artifacts folder.",
     "query:issue:get": "Read a local issue record by id.",
     "query:ado:work-items": "Query Azure DevOps work items.",
 }
+
+_VM_ARTIFACT_TEXT_READ_COMMAND = f"""python3 - <<'PY'
+from pathlib import Path, PurePosixPath
+import os
+import sys
+
+root = Path(os.environ.get({AGENT_ARTIFACTS_ENV!r}) or {DEFAULT_AGENT_ARTIFACTS_DIR!r})
+relative_text = os.environ.get("AGENT_SANDBOX_ARTIFACT_RELATIVE_PATH") or ""
+relative = PurePosixPath(relative_text)
+if not relative_text or relative.is_absolute() or any(part in {{"", ".", ".."}} for part in relative.parts):
+    print("artifact path must be relative and must not contain dot or parent segments", file=sys.stderr)
+    raise SystemExit(64)
+try:
+    root_resolved = root.resolve(strict=True)
+    target = (root / relative.as_posix()).resolve(strict=True)
+    target.relative_to(root_resolved)
+except FileNotFoundError:
+    print(f"artifact file not found: {{relative.as_posix()}}", file=sys.stderr)
+    raise SystemExit(66)
+except ValueError:
+    print("artifact path must stay within the session artifacts folder", file=sys.stderr)
+    raise SystemExit(64)
+if not target.is_file():
+    print(f"artifact path is not a regular file: {{relative.as_posix()}}", file=sys.stderr)
+    raise SystemExit(66)
+try:
+    sys.stdout.write(target.read_text(encoding="utf-8"))
+except UnicodeDecodeError:
+    print("artifact file is not valid UTF-8 text", file=sys.stderr)
+    raise SystemExit(65)
+PY
+"""
 
 
 _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
@@ -1099,6 +1141,79 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "json",
                 read_only=True,
                 description="Derived from the top-level keys in the map template.",
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
+        type="gate:deserialize",
+        label="Deserialize",
+        fields=[
+            _field(
+                "content",
+                "Content",
+                "string",
+                required=True,
+                bindable=True,
+                multiline=True,
+                description=(
+                    "JSON or YAML string to parse. Bind to an upstream string when content "
+                    "is produced by another node."
+                ),
+                placeholder="${{node.payload_text}}",
+            ),
+            _field(
+                "format",
+                "Format",
+                "enum",
+                options=[
+                    _field_option("auto", "Auto"),
+                    _field_option("json", "JSON"),
+                    _field_option("yaml", "YAML"),
+                ],
+                description="Parser to use. Auto tries JSON first, then YAML.",
+            ),
+            _field(
+                "outputs",
+                "Outputs",
+                "json",
+                description=(
+                    "Optional output schema for binding validation when Content is dynamic. "
+                    "Literal object content is inferred automatically."
+                ),
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
+        type="gate:serialize",
+        label="Serialize",
+        fields=[
+            _field(
+                "value",
+                "Value",
+                "json",
+                required=True,
+                bindable=True,
+                description="Value to serialize. Use an exact binding to serialize an upstream object unchanged.",
+                placeholder='{"title":"${{gate-map-1.title}}"}',
+            ),
+            _field(
+                "format",
+                "Format",
+                "enum",
+                options=[
+                    _field_option("json", "JSON"),
+                    _field_option("yaml", "YAML"),
+                ],
+                description="Serializer to use. JSON emits compact text; YAML emits block-style text.",
+            ),
+            _field(
+                "outputs",
+                "Outputs",
+                "json",
+                read_only=True,
+                description="Emits content and format for downstream bindings.",
             ),
         ],
     ),
@@ -1845,6 +1960,24 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("target", "Target", "string", bindable=True),
             _field("session_id", "Session ID", "string", bindable=True),
             _field("vm_name", "VM name", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:agent:artifact-text",
+        label="Agent artifact text",
+        fields=[
+            _field("session_id", "Session ID", "string", required=True, bindable=True),
+            _field(
+                "path",
+                "Artifact path",
+                "string",
+                required=True,
+                bindable=True,
+                description="Relative path inside the resolved session artifacts folder.",
+                placeholder="report/summary.txt",
+            ),
+            _field("vm_user", "VM user", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -6477,6 +6610,74 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def session_context_query(self, *, target: str) -> dict[str, Any]:
         return self.issue_git_admin.session_context_query(target=target)
 
+    def read_session_artifact_text(
+        self,
+        *,
+        session_id: str,
+        path: str,
+        vm_user: str = "agent",
+    ) -> dict[str, Any]:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("session_id is required")
+        relative_path = normalize_artifact_relative_path(path)
+        session = self.runtime.session_repository.get_session(normalized_session_id)
+        if session is None:
+            raise ValueError(f"Unknown session: {normalized_session_id}")
+
+        metadata = session.metadata if isinstance(session.metadata, Mapping) else {}
+        provider = str(
+            metadata.get("execution_backend")
+            or session.vm_provider
+            or metadata.get("vm_provider")
+            or ""
+        ).strip()
+        is_container_session = provider == "container_worker_vm"
+        if is_container_session:
+            worker_url = self._container_worker_url_for_target(session=session)
+            backend = self._container_worker_backend(
+                directory_path=session.directory_path,
+                worker_url=worker_url,
+            )
+            content = backend.read_session_artifact_text(
+                session_id=normalized_session_id,
+                relative_path=relative_path,
+            )
+            return {
+                "session_id": normalized_session_id,
+                "path": relative_path,
+                "content": content,
+                "byte_count": len(content.encode("utf-8")),
+                "artifacts_root": DEFAULT_AGENT_ARTIFACTS_DIR,
+                "execution_backend": "container_worker_vm",
+            }
+
+        result = self.vm_exec(
+            normalized_session_id,
+            command=_VM_ARTIFACT_TEXT_READ_COMMAND,
+            vm_user=(str(vm_user or "").strip() or "agent"),
+            environment={"AGENT_SANDBOX_ARTIFACT_RELATIVE_PATH": relative_path},
+            timeout_seconds=30.0,
+            check=True,
+        )
+        if not bool(result.get("success")):
+            raise RuntimeError(
+                str(result.get("stderr") or result.get("stdout") or result.get("message") or "")
+                .strip()
+                or "VM artifact read failed"
+            )
+        content = str(result.get("stdout") or "")
+        return {
+            "session_id": normalized_session_id,
+            "path": relative_path,
+            "content": content,
+            "byte_count": len(content.encode("utf-8")),
+            "artifacts_root": DEFAULT_AGENT_ARTIFACTS_DIR,
+            "execution_backend": "libvirt_vm",
+            "vm_name": result.get("vm_name") or session.vm_id,
+            "vm_provider": session.vm_provider,
+        }
+
     @staticmethod
     def _derive_local_pr_notes_ref(remote_url: str) -> str:
 
@@ -8331,6 +8532,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if gate_type in {
                 "gate:filter",
                 "gate:debounce",
+                "gate:deserialize",
+                "gate:serialize",
                 "gate:map",
                 "gate:dedupe",
                 "gate:await-agent",

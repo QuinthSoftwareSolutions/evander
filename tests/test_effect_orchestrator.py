@@ -10,6 +10,7 @@ from threading import Event
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from agent_sandbox.execution import ExecutionStatusKind
@@ -3946,6 +3947,298 @@ def test_map_gate_records_failed_status_on_unresolved_reference(tmp_path: Path) 
     if effect_path.exists():
         effect_payload = json.loads(effect_path.read_text(encoding="utf-8"))
         assert effect_payload == {}
+
+
+def test_deserialize_gate_emits_parsed_object_outputs(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"payload_text": {"type": "string"}},
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-deserialize",
+                    "display_name": "Deserialize",
+                    "type": "gate:deserialize",
+                    "content": "${{trigger-1.payload_text}}",
+                    "format": "auto",
+                    "outputs": {
+                        "title": {"type": "string"},
+                        "metadata": {"type": "object"},
+                        "count": {"type": "integer"},
+                    },
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": (
+                        "Review ${{gate-deserialize.title}} "
+                        "${{gate-deserialize.metadata.priority}}"
+                    ),
+                }
+            ],
+            "edges": [
+                _edge("trigger-1", "gate-deserialize"),
+                _edge("gate-deserialize", "effect-1"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(  # type: ignore[arg-type]
+        config=config,
+        worker_config=worker_config,
+        runtime=None,
+    )
+    worker.provider_factory = _Factory({"effect-1": {"ok": True}})
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-deserialize",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={
+                "payload_text": (
+                    '{"title":"Fix relay","metadata":{"priority":"P1"},"count":2}'
+                )
+            },
+        )
+    )
+
+    for _ in range(4):
+        worker.run_once()
+
+    gate_payload = json.loads(
+        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    gate_record = next(iter(gate_payload.values()))
+    assert gate_record["status"] == "succeeded"
+    assert gate_record["outputs"] == {
+        "title": "Fix relay",
+        "metadata": {"priority": "P1"},
+        "count": 2,
+    }
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    effect_record = next(iter(effect_payload.values()))
+    assert effect_record["resolved_config"]["prompt"] == "Review Fix relay P1"
+
+
+def test_deserialize_gate_records_failed_status_when_content_is_not_object(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-deserialize",
+                    "display_name": "Deserialize",
+                    "type": "gate:deserialize",
+                    "content": "['not', 'an', 'object']",
+                    "format": "yaml",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "prompt": "Review ${{gate-deserialize.title}}",
+                }
+            ],
+            "edges": [
+                _edge("trigger-1", "gate-deserialize"),
+                _edge("gate-deserialize", "effect-1"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(  # type: ignore[arg-type]
+        config=config,
+        worker_config=worker_config,
+        runtime=None,
+    )
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-deserialize-fail",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    worker.run_once()
+
+    gate_payload = json.loads(
+        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    record = next(iter(gate_payload.values()))
+    assert record["status"] == "failed"
+    assert record["error"] == "gate:deserialize content must decode to an object"
+
+
+def test_serialize_gate_emits_json_content_for_downstream_bindings(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {
+                        "title": {"type": "string"},
+                        "priority": {"type": "string"},
+                    },
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-serialize",
+                    "display_name": "Serialize",
+                    "type": "gate:serialize",
+                    "value": {
+                        "title": "${{trigger-1.title}}",
+                        "metadata": {"priority": "${{trigger-1.priority}}"},
+                    },
+                    "format": "json",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "Payload ${{gate-serialize.content}}",
+                }
+            ],
+            "edges": [
+                _edge("trigger-1", "gate-serialize"),
+                _edge("gate-serialize", "effect-1"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(  # type: ignore[arg-type]
+        config=config,
+        worker_config=worker_config,
+        runtime=None,
+    )
+    worker.provider_factory = _Factory({"effect-1": {"ok": True}})
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-serialize",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"title": "Fix relay", "priority": "P1"},
+        )
+    )
+
+    for _ in range(4):
+        worker.run_once()
+
+    gate_payload = json.loads(
+        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    gate_record = next(iter(gate_payload.values()))
+    assert gate_record["status"] == "succeeded"
+    assert gate_record["outputs"] == {
+        "content": '{"title":"Fix relay","metadata":{"priority":"P1"}}',
+        "format": "json",
+    }
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    effect_record = next(iter(effect_payload.values()))
+    assert (
+        effect_record["resolved_config"]["prompt"]
+        == 'Payload {"title":"Fix relay","metadata":{"priority":"P1"}}'
+    )
+
+
+def test_serialize_gate_emits_yaml_content(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"ticket": {"type": "object"}},
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-serialize",
+                    "display_name": "Serialize",
+                    "type": "gate:serialize",
+                    "value": "${{trigger-1.ticket}}",
+                    "format": "yaml",
+                }
+            ],
+            "edges": [_edge("trigger-1", "gate-serialize")],
+        }
+    )
+    worker = EffectOrchestratorWorker(  # type: ignore[arg-type]
+        config=config,
+        worker_config=worker_config,
+        runtime=None,
+    )
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-serialize-yaml",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"ticket": {"title": "Fix relay", "metadata": {"priority": "P1"}}},
+        )
+    )
+
+    worker.run_once()
+
+    gate_payload = json.loads(
+        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    gate_record = next(iter(gate_payload.values()))
+    assert gate_record["status"] == "succeeded"
+    assert yaml.safe_load(gate_record["outputs"]["content"]) == {
+        "title": "Fix relay",
+        "metadata": {"priority": "P1"},
+    }
+    assert gate_record["outputs"]["format"] == "yaml"
 
 
 def test_merge_gate_re_emits_shared_payload_keys(tmp_path: Path) -> None:

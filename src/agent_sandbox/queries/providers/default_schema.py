@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from agent_sandbox.queries.providers.schemas import (
     AdoWorkItemsQueryDefinition,
+    AgentArtifactTextQueryDefinition,
     GitPrNoteQueryDefinition,
     IssueGetQueryDefinition,
     SessionContextQueryDefinition,
@@ -18,6 +19,7 @@ _QUERY_MODEL_BY_TYPE = {
     "query:vm:run-state": VmRunStateQueryDefinition,
     "query:git:pr-note": GitPrNoteQueryDefinition,
     "query:session-context": SessionContextQueryDefinition,
+    "query:agent:artifact-text": AgentArtifactTextQueryDefinition,
     "query:issue:get": IssueGetQueryDefinition,
     "query:ado:work-items": AdoWorkItemsQueryDefinition,
 }

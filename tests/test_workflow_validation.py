@@ -218,3 +218,142 @@ def test_output_schema_derivation_handles_nested_node_config() -> None:
     }
     assert output_schemas["gate-filter-1"] == output_schemas["gate-map-1"]
     assert diagnostics == []
+
+
+def test_output_schema_derivation_infers_deserialize_outputs_from_literal_yaml() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-event-main",
+                "display_name": "Event",
+                "type": "trigger:event",
+                "event_type": "payload",
+            }
+        ],
+        "gates": [
+            {
+                "id": "gate-deserialize-1",
+                "display_name": "Deserialize",
+                "type": "gate:deserialize",
+                "content": "title: Fix relay\nmetadata:\n  priority: P1\ncount: 2\nactive: true\n",
+                "format": "yaml",
+            }
+        ],
+        "effects": [
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": (
+                    "Review ${{gate-deserialize-1.title}} "
+                    "${{gate-deserialize-1.metadata.priority}}"
+                ),
+            }
+        ],
+        "edges": [
+            {"source_id": "trigger-event-main", "target_id": "gate-deserialize-1"},
+            {"source_id": "gate-deserialize-1", "target_id": "prompt-agent"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["gate-deserialize-1"] == {
+        "title": {"type": "string"},
+        "metadata": {"type": "object"},
+        "count": {"type": "integer"},
+        "active": {"type": "boolean"},
+    }
+    assert diagnostics == []
+
+
+def test_output_schema_derivation_uses_declared_deserialize_outputs_for_bound_content() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-event-main",
+                "display_name": "Event",
+                "type": "trigger:event",
+                "event_type": "payload",
+                "outputs": {"payload_text": {"type": "string"}},
+            }
+        ],
+        "gates": [
+            {
+                "id": "gate-deserialize-1",
+                "display_name": "Deserialize",
+                "type": "gate:deserialize",
+                "content": "${{trigger-event-main.payload_text}}",
+                "outputs": {"title": {"type": "string"}, "metadata": {"type": "object"}},
+            }
+        ],
+        "effects": [
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": "Review ${{gate-deserialize-1.title}}",
+            }
+        ],
+        "edges": [
+            {"source_id": "trigger-event-main", "target_id": "gate-deserialize-1"},
+            {"source_id": "gate-deserialize-1", "target_id": "prompt-agent"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["gate-deserialize-1"] == {
+        "title": {"type": "string"},
+        "metadata": {"type": "object"},
+    }
+    assert diagnostics == []
+
+
+def test_output_schema_derivation_exposes_static_serialize_outputs() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-event-main",
+                "display_name": "Event",
+                "type": "trigger:event",
+                "event_type": "payload",
+                "outputs": {"ticket": {"type": "object"}},
+            }
+        ],
+        "gates": [
+            {
+                "id": "gate-serialize-1",
+                "display_name": "Serialize",
+                "type": "gate:serialize",
+                "value": "${{trigger-event-main.ticket}}",
+                "format": "json",
+            }
+        ],
+        "effects": [
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": "Serialized ${{gate-serialize-1.content}}",
+            }
+        ],
+        "edges": [
+            {"source_id": "trigger-event-main", "target_id": "gate-serialize-1"},
+            {"source_id": "gate-serialize-1", "target_id": "prompt-agent"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["gate-serialize-1"] == {
+        "content": {"type": "string"},
+        "format": {"type": "string"},
+    }
+    assert diagnostics == []

@@ -199,6 +199,8 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "trigger:agent:run:completed": "Start when a guest agent run completes.",
   "gate:filter": "Allow only matching events to continue downstream.",
   "gate:map": "Project upstream outputs into a new payload shape.",
+  "gate:deserialize": "Parse a JSON or YAML string into object properties for downstream bindings.",
+  "gate:serialize": "Serialize a bindable value as JSON or YAML text for downstream nodes.",
   "gate:merge": "Merge compatible inbound event streams into one downstream path.",
   "gate:debounce": "Wait for a quiet period, then forward the latest activation.",
   "gate:dedupe": "Suppress duplicate activations for the same key until a TTL expires.",
@@ -224,6 +226,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "query:vm:run-state": "Read the current run state for a VM.",
   "query:git:pr-note": "Read pull-request note context from a host checkout.",
   "query:session-context": "Read session context and metadata.",
+  "query:agent:artifact-text": "Read a UTF-8 text file from an agent session artifacts folder.",
   "query:issue:get": "Read a local issue record by id.",
   "query:ado:work-items": "Query Azure DevOps work items.",
 };
@@ -816,6 +819,26 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   if (kind === "gate" && type === "gate:map") {
     return { id, display_name: "New map", type, outputs: {}, template: {} };
   }
+  if (kind === "gate" && type === "gate:deserialize") {
+    return {
+      id,
+      display_name: "Deserialize",
+      type,
+      content: "${{node.payload_text}}",
+      format: "auto",
+      outputs: {},
+    };
+  }
+  if (kind === "gate" && type === "gate:serialize") {
+    return {
+      id,
+      display_name: "Serialize",
+      type,
+      value: {},
+      format: "json",
+      outputs: { content: { type: "string" }, format: { type: "string" } },
+    };
+  }
   if (kind === "gate" && type === "gate:merge") {
     return { id, display_name: "New merge", type, outputs: {} };
   }
@@ -959,6 +982,14 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       id,
       display_name: "Session context",
       type,
+    };
+  }
+  if (kind === "query" && type === "query:agent:artifact-text") {
+    return {
+      id,
+      display_name: "Agent artifact text",
+      type,
+      path: "report/summary.txt",
     };
   }
   if (kind === "query" && type === "query:issue:get") {
@@ -1324,6 +1355,10 @@ function normalizeDerivedNodeFields(
     if (gate.type === "gate:filter") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:map") {
+      gate.outputs = declaredOutputsForNode(gate, outputSchemas);
+    } else if (gate.type === "gate:deserialize") {
+      gate.outputs = declaredOutputsForNode(gate, outputSchemas);
+    } else if (gate.type === "gate:serialize") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:dedupe") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);

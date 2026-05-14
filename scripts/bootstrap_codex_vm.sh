@@ -199,6 +199,9 @@ if [[ -z "${agent_home}" ]]; then
 fi
 agent_group="$(id -gn "${VM_USER}")"
 install -d -m 0755 -o "${VM_USER}" -g "${agent_group}" "${agent_home}"
+install -d -m 0775 -o "${VM_USER}" -g "${agent_group}" /artifacts
+ln -sfn /artifacts "${agent_home}/artifacts"
+chown -h "${VM_USER}:${agent_group}" "${agent_home}/artifacts"
 chown -R "${VM_USER}:${agent_group}" "${agent_home}"
 EOF
 }
