@@ -112,11 +112,13 @@ def effective_node_output_schema(node: Any) -> dict[str, dict[str, Any]]:
         raw_outputs = node.get("outputs")
         template = node.get("template")
         content = node.get("content")
+        content_format = node.get("format")
     else:
         node_type = str(getattr(node, "type", "") or "").strip()
         raw_outputs = getattr(node, "outputs", None)
         template = getattr(node, "template", None)
         content = getattr(node, "content", None)
+        content_format = getattr(node, "format", None)
 
     schema: dict[str, dict[str, Any]] = {}
     static_schema = _NODE_OUTPUT_SCHEMA_REGISTRY.get(node_type, {})
@@ -132,7 +134,10 @@ def effective_node_output_schema(node: Any) -> dict[str, dict[str, Any]]:
         return schema
 
     if node_type == "gate:deserialize":
-        literal_schema = _infer_schema_from_deserialized_content(content)
+        literal_schema = _infer_schema_from_deserialized_content(
+            content,
+            format_name=content_format,
+        )
         if literal_schema is not None:
             return literal_schema
 
@@ -233,23 +238,31 @@ def _infer_schema_from_template_value(value: Any) -> dict[str, Any]:
     return {"type": "object"}
 
 
-def _infer_schema_from_deserialized_content(value: Any) -> dict[str, dict[str, Any]] | None:
+def _infer_schema_from_deserialized_content(
+    value: Any,
+    *,
+    format_name: Any = None,
+) -> dict[str, dict[str, Any]] | None:
     if not isinstance(value, str):
         return None
     text = value.strip()
     if not text or "${{" in text:
         return None
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
+    parser_format = str(format_name or "auto").strip().lower()
+    if parser_format not in {"auto", "json", "yaml"}:
+        return None
+    if parser_format == "json":
         try:
-            import yaml
-        except ImportError:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
             return None
+    elif parser_format == "yaml":
+        parsed = _safe_load_yaml_for_schema_inference(text)
+    else:
         try:
-            parsed = yaml.safe_load(text)
-        except yaml.YAMLError:
-            return None
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = _safe_load_yaml_for_schema_inference(text)
     if not isinstance(parsed, Mapping):
         return None
     schema: dict[str, dict[str, Any]] = {}
@@ -261,6 +274,17 @@ def _infer_schema_from_deserialized_content(value: Any) -> dict[str, dict[str, A
             return None
         schema[name] = _infer_schema_from_template_value(item)
     return schema
+
+
+def _safe_load_yaml_for_schema_inference(text: str) -> Any:
+    try:
+        import yaml
+    except ImportError:
+        return None
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
 
 
 def _ensure_output_schema_bootstrap() -> None:

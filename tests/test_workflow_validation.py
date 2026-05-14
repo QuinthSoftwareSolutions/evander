@@ -269,6 +269,56 @@ def test_output_schema_derivation_infers_deserialize_outputs_from_literal_yaml()
     assert diagnostics == []
 
 
+def test_output_schema_derivation_respects_explicit_deserialize_json_format() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-event-main",
+                "display_name": "Event",
+                "type": "trigger:event",
+                "event_type": "payload",
+            }
+        ],
+        "gates": [
+            {
+                "id": "gate-deserialize-1",
+                "display_name": "Deserialize",
+                "type": "gate:deserialize",
+                "content": "title: Fix relay\n",
+                "format": "json",
+            }
+        ],
+        "effects": [
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": "Review ${{gate-deserialize-1.title}}",
+            }
+        ],
+        "edges": [
+            {"source_id": "trigger-event-main", "target_id": "gate-deserialize-1"},
+            {"source_id": "gate-deserialize-1", "target_id": "prompt-agent"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["gate-deserialize-1"] == {}
+    assert [diagnostic.model_dump() for diagnostic in diagnostics] == [
+        {
+            "code": "missing_binding_output",
+            "message": "prompt references missing output gate-deserialize-1.title",
+            "node_id": "prompt-agent",
+            "node_type": "effect:agent:prompt",
+            "field_path": "prompt",
+            "reference": "gate-deserialize-1.title",
+        }
+    ]
+
+
 def test_output_schema_derivation_uses_declared_deserialize_outputs_for_bound_content() -> None:
     config = {
         "triggers": [
