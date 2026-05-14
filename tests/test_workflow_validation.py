@@ -35,6 +35,85 @@ def test_validate_workflow_graph_runs_with_empty_capability_map() -> None:
     assert errors == []
 
 
+def test_semantic_management_outputs_are_bindable() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-cron-1",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "*/15 * * * *",
+            }
+        ],
+        "effects": [
+            {
+                "id": "semantic-ensure-1",
+                "display_name": "Ensure semantic collection",
+                "type": "effect:semantic:ensure-collection",
+                "collection_name": "agent_memory",
+            },
+            {
+                "id": "semantic-upsert-1",
+                "display_name": "Semantic upsert",
+                "type": "effect:semantic:upsert",
+                "collection_name": "${{semantic-ensure-1.collection_name}}",
+                "point_id": "point-1",
+                "text": "remember this",
+                "payload": {"source": "test"},
+            },
+            {
+                "id": "semantic-delete-1",
+                "display_name": "Semantic delete",
+                "type": "effect:semantic:delete",
+                "collection_name": "${{semantic-ensure-1.collection_name}}",
+                "point_ids": ["point-1"],
+            }
+        ],
+        "queries": [
+            {
+                "id": "semantic-status-1",
+                "display_name": "Semantic status",
+                "type": "query:semantic:store-status",
+                "collection_name": "${{semantic-ensure-1.collection_name}}",
+            },
+            {
+                "id": "semantic-search-1",
+                "display_name": "Semantic search",
+                "type": "query:semantic:search",
+                "collection_name": "${{semantic-upsert-1.collection_name}}",
+                "query_text": "find it",
+                "filter": {"must": [{"key": "source", "match": {"value": "test"}}]},
+            },
+            {
+                "id": "semantic-get-1",
+                "display_name": "Semantic get",
+                "type": "query:semantic:get",
+                "collection_name": "${{semantic-upsert-1.collection_name}}",
+                "point_ids": "${{semantic-delete-1.point_ids}}",
+            }
+        ],
+        "edges": [
+            {"source_id": "trigger-cron-1", "target_id": "semantic-ensure-1"},
+            {"source_id": "semantic-ensure-1", "target_id": "semantic-upsert-1"},
+            {"source_id": "semantic-upsert-1", "target_id": "semantic-status-1"},
+            {"source_id": "semantic-upsert-1", "target_id": "semantic-search-1"},
+            {"source_id": "semantic-status-1", "target_id": "semantic-delete-1"},
+            {"source_id": "semantic-delete-1", "target_id": "semantic-get-1"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["semantic-ensure-1"]["collection_name"] == {"type": "string"}
+    assert output_schemas["semantic-upsert-1"]["payload"] == {"type": "object"}
+    assert output_schemas["semantic-delete-1"]["point_ids"] == {"type": "array"}
+    assert output_schemas["semantic-status-1"]["reachable"] == {"type": "boolean"}
+    assert output_schemas["semantic-search-1"]["points"] == {"type": "array"}
+    assert output_schemas["semantic-get-1"]["missing_ids"] == {"type": "array"}
+    assert diagnostics == []
+
+
 def test_binding_diagnostics_accept_filter_derived_outputs() -> None:
     config = {
         "triggers": [

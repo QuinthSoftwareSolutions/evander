@@ -75,7 +75,8 @@ Core defaults:
   `control_plane_only`
 - `agent_sandbox_allowed_tcp_ports`: `22`, `8000`, `11434`, `11666`, `11777`, plus `8081`
   when `agent_sandbox_services.package_cache` is enabled and `3142` when
-  `agent_sandbox_services.apt_cache` is enabled
+  `agent_sandbox_services.apt_cache` is enabled. The optional Qdrant semantic store binds to
+  localhost and is not added to guest firewall allowances.
 
 Service profiles:
 
@@ -97,6 +98,7 @@ Service toggles:
 - `agent_sandbox_services.nuget_relay`
 - `agent_sandbox_services.package_cache`
 - `agent_sandbox_services.apt_cache`
+- `agent_sandbox_services.semantic_store`
 - `agent_sandbox_services.http_target_relay`
 - `agent_sandbox_services.ado_worker`
 - `agent_sandbox_services.discord_ingest`
@@ -168,6 +170,12 @@ The apt cache relay uses the Ubuntu `apt-cacher-ng` package and does not share N
 Worker VM apt provisioning points at
 `http://{{ agent_sandbox_control_plane_private_ip }}:{{ agent_sandbox_apt_cache_port }}` before
 the worker playbook's first `apt update`.
+
+The optional semantic store uses `agent-sandbox-qdrant.service`, a systemd-managed Docker container
+running `agent_sandbox_qdrant_image` (`qdrant/qdrant:v1.18.0` by default). It persists data under
+`agent_sandbox_qdrant_data_dir` (`/var/lib/agent-sandbox/qdrant`) and binds to
+`agent_sandbox_qdrant_bind_host:agent_sandbox_qdrant_port` (`127.0.0.1:6333` by default). The role
+verifies Qdrant readiness through `/healthz`.
 
 Worker/global JSON files are also editable from the Admin GUI. Set
 `agent_sandbox_force_render_worker_config: false` for hosts where operators own those settings

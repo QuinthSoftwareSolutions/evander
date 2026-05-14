@@ -244,6 +244,44 @@ def test_directory_config_store_allows_retell_provider_fields(tmp_path: Path) ->
     assert resolution.validation_errors == []
 
 
+def test_directory_config_store_allows_semantic_provider_fields(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = DirectoryConfigResolver(service, config_store=config_store)
+
+    team = service.create(parent="root", name="team")
+    written = config_store.write(
+        team.path,
+        domain="providers",
+        payload={
+            "semantic_store_provider": "qdrant",
+            "qdrant_base_url": "http://qdrant.internal:6333/",
+            "qdrant_api_key_env": "TEAM_QDRANT_API_KEY",
+            "semantic_embedding_provider": "openai",
+            "semantic_embedding_model": "text-embedding-3-small",
+            "semantic_embedding_dimensions": 1536,
+            "semantic_vector_distance": "cosine",
+        },
+    )
+
+    assert written["qdrant_base_url"] == "http://qdrant.internal:6333"
+    assert written["semantic_vector_distance"] == "Cosine"
+
+    resolution = resolver.resolve_domain(
+        team.path,
+        domain="providers",
+        base_config=get_domain_base_config(GatewayConfig(), "providers"),
+        validator=lambda candidate: validate_effective_domain_payload("providers", candidate),
+    )
+
+    assert resolution.effective_config["semantic_store_provider"] == "qdrant"
+    assert resolution.effective_config["qdrant_api_key_env"] == "TEAM_QDRANT_API_KEY"
+    assert resolution.effective_config["semantic_embedding_dimensions"] == 1536
+    assert resolution.validation_errors == []
+
+
 def test_directory_config_store_allows_directory_contacts(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     store = DirectoryStore(runtime_dir / "directories.json")

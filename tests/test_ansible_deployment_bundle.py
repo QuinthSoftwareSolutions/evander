@@ -23,6 +23,7 @@ def test_ansible_bundle_exists_with_expected_roles() -> None:
         "service_runtime",
         "apt_cache_relay",
         "package_cache_nexus",
+        "semantic_store_qdrant",
         "worker_apt_proxy",
         "worker_git_access",
         "verification",
@@ -51,11 +52,14 @@ def test_ansible_site_uses_repo_native_bootstrap_order() -> None:
     assert "- role: network_vm_bootstrap" in site
     assert "- role: service_runtime" in site
     assert "- role: package_cache_nexus" in site
+    assert "- role: semantic_store_qdrant" in site
     assert "- role: verification" in site
     assert site.index("- role: host_prereqs") < site.index("- role: apt_cache_relay")
     assert site.index("- role: apt_cache_relay") < site.index("- role: repo_checkout")
     assert site.index("- role: frontend_build") < site.index("- role: admin_web_caddy")
     assert site.index("- role: admin_web_caddy") < site.index("- role: service_runtime")
+    assert site.index("- role: package_cache_nexus") < site.index("- role: semantic_store_qdrant")
+    assert site.index("- role: semantic_store_qdrant") < site.index("- role: verification")
 
 
 def test_ansible_admin_web_caddy_role_serves_static_assets_directly() -> None:
@@ -144,6 +148,18 @@ def test_ansible_apt_cache_relay_role_is_control_plane_only() -> None:
     assert (role / "tasks" / "main.yml").exists()
 
 
+def test_ansible_qdrant_semantic_store_role_is_control_plane_only() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    site = (repo / "ansible" / "site.yml").read_text(encoding="utf-8")
+    worker = (repo / "ansible" / "worker.yml").read_text(encoding="utf-8")
+    role = repo / "ansible" / "roles" / "semantic_store_qdrant"
+
+    assert "- role: semantic_store_qdrant" in site
+    assert "semantic_store_qdrant" not in worker
+    assert (role / "tasks" / "main.yml").exists()
+    assert (role / "templates" / "agent-sandbox-qdrant.service.j2").exists()
+
+
 def test_ansible_host_prereqs_can_install_azure_cli_for_control_plane() -> None:
     repo = Path(__file__).resolve().parents[1]
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
@@ -179,6 +195,19 @@ def test_ansible_nexus_package_cache_tasks_are_not_ignored_by_git() -> None:
 def test_ansible_apt_cache_role_tasks_are_not_ignored_by_git() -> None:
     repo = Path(__file__).resolve().parents[1]
     role_task_path = "ansible/roles/apt_cache_relay/tasks/main.yml"
+
+    result = subprocess.run(
+        ["git", "check-ignore", "--quiet", "--", role_task_path],
+        cwd=repo,
+        check=False,
+    )
+
+    assert result.returncode == 1
+
+
+def test_ansible_qdrant_semantic_store_tasks_are_not_ignored_by_git() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    role_task_path = "ansible/roles/semantic_store_qdrant/tasks/main.yml"
 
     result = subprocess.run(
         ["git", "check-ignore", "--quiet", "--", role_task_path],
@@ -352,6 +381,61 @@ def test_ansible_apt_cache_relay_defaults_and_role_contract() -> None:
     assert "apt-cacher-ng.service" in verification
     assert "agent_sandbox_apt_cache_port" in verification
     assert "http://127.0.0.1:{{ agent_sandbox_apt_cache_port }}/acng-report.html" in verification
+
+
+def test_ansible_qdrant_semantic_store_defaults_and_role_contract() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    tasks = (
+        repo / "ansible" / "roles" / "semantic_store_qdrant" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    unit = (
+        repo
+        / "ansible"
+        / "roles"
+        / "semantic_store_qdrant"
+        / "templates"
+        / "agent-sandbox-qdrant.service.j2"
+    ).read_text(encoding="utf-8")
+    verification = (
+        repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "semantic_store: false" in defaults
+    assert 'agent_sandbox_qdrant_image: "qdrant/qdrant:v1.18.0"' in defaults
+    assert 'agent_sandbox_qdrant_data_dir: "/var/lib/agent-sandbox/qdrant"' in defaults
+    assert 'agent_sandbox_qdrant_bind_host: "127.0.0.1"' in defaults
+    assert "agent_sandbox_qdrant_port: 6333" in defaults
+    assert "guest/worker firewall allowances" in defaults
+
+    assert "Stop Qdrant semantic store when disabled" in tasks
+    assert "agent-sandbox-qdrant.service" in tasks
+    assert "Install Docker for Qdrant semantic store" in tasks
+    assert "name: docker.io" in tasks
+    assert "Pull pinned Qdrant semantic store image" in tasks
+    assert "docker\n          - pull" in tasks
+    assert "agent_sandbox_qdrant_image" in tasks
+    assert "Wait for Qdrant semantic store listener" in tasks
+    assert "Verify Qdrant semantic store health endpoint" in tasks
+    assert "/healthz" in tasks
+
+    assert "Requires=docker.service" in unit
+    assert "docker run --name agent-sandbox-qdrant" in unit
+    assert (
+        "--publish {{ agent_sandbox_qdrant_bind_host }}:{{ agent_sandbox_qdrant_port }}:6333"
+        in unit
+    )
+    assert "--volume {{ agent_sandbox_qdrant_data_dir }}:/qdrant/storage" in unit
+
+    assert "agent-sandbox-qdrant.service" in verification
+    assert "agent_sandbox_qdrant_bind_host" in verification
+    assert "agent_sandbox_qdrant_port" in verification
+    assert (
+        "http://{{ agent_sandbox_qdrant_bind_host }}:{{ agent_sandbox_qdrant_port }}/healthz"
+        in verification
+    )
 
 
 def test_ansible_azure_inventory_maps_nexus_password_from_vault() -> None:

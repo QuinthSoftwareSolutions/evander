@@ -16,6 +16,7 @@ def test_ansible_readme_covers_ubuntu_azure_and_repo_native_entrypoints() -> Non
     assert "agent_sandbox_admin_web_caddy_enabled" in text
     assert "agent_sandbox_services.package_cache" in text
     assert "agent_sandbox_services.apt_cache" in text
+    assert "agent_sandbox_services.semantic_store" in text
     assert "agent_sandbox_nexus_admin_password" in text
     assert "agent_sandbox_nexus_accept_community_eula" in text
     assert "agent-sandbox-nexus.service" in text
@@ -26,6 +27,11 @@ def test_ansible_readme_covers_ubuntu_azure_and_repo_native_entrypoints() -> Non
     assert "service/rest/v1/status" in text
     assert "registry.npmjs.org" in text
     assert "Ubuntu mirrors" in text
+    assert "agent-sandbox-qdrant.service" in text
+    assert "qdrant/qdrant:v1.18.0" in text
+    assert "/var/lib/agent-sandbox/qdrant" in text
+    assert "127.0.0.1:6333" in text
+    assert "/healthz" in text
     assert "agent-sandbox-cli status --runtime-dir runtime" in text
 
 

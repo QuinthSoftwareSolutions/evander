@@ -76,6 +76,9 @@ def test_default_registry_includes_known_query_types() -> None:
         "query:agent:artifact-text",
         "query:issue:get",
         "query:ado:work-items",
+        "query:semantic:store-status",
+        "query:semantic:search",
+        "query:semantic:get",
     }
 
 

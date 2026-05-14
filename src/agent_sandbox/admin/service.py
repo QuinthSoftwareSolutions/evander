@@ -815,6 +815,11 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:agent:prompt": "Dispatch a prompt to an agent session and wait for completion.",
     "effect:agent:enqueue-prompt": "Queue a prompt for asynchronous agent-session execution.",
     "effect:agent:exec": "Run a shell command inside an agent session workspace.",
+    "effect:semantic:ensure-collection": (
+        "Ensure a host-side semantic collection exists with the configured vector schema."
+    ),
+    "effect:semantic:upsert": "Embed one text string and upsert it as one Qdrant point.",
+    "effect:semantic:delete": "Delete semantic points by explicit point IDs.",
     "effect:bash:script": "Run a host-side Bash script from the effect orchestrator.",
     "effect:vm:exec": "Run a shell command inside a VM-backed agent target.",
     "effect:vm:copy-files": "Copy rendered file content into a VM-backed agent target.",
@@ -834,6 +839,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "query:agent:artifact-text": "Read a UTF-8 text file from an agent session artifacts folder.",
     "query:issue:get": "Read a local issue record by id.",
     "query:ado:work-items": "Query Azure DevOps work items.",
+    "query:semantic:store-status": "Read Qdrant health and semantic collection status.",
+    "query:semantic:search": "Search a semantic collection with an embedded text query.",
+    "query:semantic:get": "Retrieve semantic points by explicit point IDs.",
 }
 
 _VM_ARTIFACT_TEXT_READ_COMMAND = f"""python3 - <<'PY'
@@ -1734,6 +1742,79 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="effect",
+        type="effect:semantic:ensure-collection",
+        label="Semantic ensure collection",
+        fields=[
+            _field(
+                "collection_name",
+                "Collection name",
+                "string",
+                required=True,
+                bindable=True,
+                description="Qdrant collection name to create if missing.",
+            ),
+            _field(
+                "directory_path",
+                "Directory path",
+                "string",
+                bindable=True,
+                description="Directory-scoped provider config to use for semantic settings.",
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:semantic:upsert",
+        label="Semantic upsert",
+        fields=[
+            _field(
+                "collection_name",
+                "Collection name",
+                "string",
+                required=True,
+                bindable=True,
+                description="Qdrant collection name to create if missing and upsert into.",
+            ),
+            _field(
+                "point_id",
+                "Point ID",
+                "string",
+                required=True,
+                bindable=True,
+                description="Caller-supplied Qdrant point ID used for idempotent updates.",
+            ),
+            _field("text", "Text", "string", required=True, bindable=True, multiline=True),
+            _field(
+                "payload",
+                "Payload",
+                "json",
+                bindable=True,
+                description="Optional Qdrant payload. The _semantic_text key is reserved.",
+            ),
+            _field("directory_path", "Directory path", "string", bindable=True),
+            _field("wait", "Wait", "boolean", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:semantic:delete",
+        label="Semantic delete",
+        fields=[
+            _field("collection_name", "Collection name", "string", required=True, bindable=True),
+            _field(
+                "point_ids",
+                "Point IDs",
+                "string_list",
+                required=True,
+                bindable=True,
+                description="Explicit Qdrant point IDs to delete. Filter deletes are not supported.",
+            ),
+            _field("directory_path", "Directory path", "string", bindable=True),
+            _field("wait", "Wait", "boolean", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
         type="effect:bash:script",
         label="Bash script",
         fields=[
@@ -2019,6 +2100,38 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("text_search", "Text search", "string", bindable=True),
             _field("top", "Top", "number", bindable=True),
             _field("skip", "Skip", "number", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:semantic:store-status",
+        label="Semantic store status",
+        fields=[
+            _field("collection_name", "Collection name", "string", bindable=True),
+            _field("directory_path", "Directory path", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:semantic:search",
+        label="Semantic search",
+        fields=[
+            _field("collection_name", "Collection name", "string", required=True, bindable=True),
+            _field("query_text", "Query text", "string", required=True, bindable=True),
+            _field("filter", "Filter", "json", bindable=True),
+            _field("limit", "Limit", "number", bindable=True),
+            _field("score_threshold", "Score threshold", "number", bindable=True),
+            _field("directory_path", "Directory path", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:semantic:get",
+        label="Semantic get",
+        fields=[
+            _field("collection_name", "Collection name", "string", required=True, bindable=True),
+            _field("point_ids", "Point IDs", "string_list", required=True, bindable=True),
+            _field("directory_path", "Directory path", "string", bindable=True),
         ],
     ),
 )

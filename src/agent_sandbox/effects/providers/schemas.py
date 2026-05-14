@@ -237,6 +237,30 @@ class AgentExecEffectDefinition(EffectDefinition):
     check: ConfigValue | None = True
 
 
+class SemanticEnsureCollectionEffectDefinition(EffectDefinition):
+    type: Literal["effect:semantic:ensure-collection"]
+    collection_name: ConfigValue
+    directory_path: ConfigValue | None = None
+
+
+class SemanticUpsertEffectDefinition(EffectDefinition):
+    type: Literal["effect:semantic:upsert"]
+    collection_name: ConfigValue
+    point_id: ConfigValue
+    text: ConfigValue
+    payload: ConfigValue | None = None
+    directory_path: ConfigValue | None = None
+    wait: ConfigValue | None = None
+
+
+class SemanticDeleteEffectDefinition(EffectDefinition):
+    type: Literal["effect:semantic:delete"]
+    collection_name: ConfigValue
+    point_ids: ConfigValue
+    directory_path: ConfigValue | None = None
+    wait: ConfigValue | None = None
+
+
 class BashScriptEffectDefinition(EffectDefinition):
     type: Literal["effect:bash:script"]
     script_path: ConfigValue

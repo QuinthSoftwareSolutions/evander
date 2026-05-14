@@ -8,6 +8,9 @@ __all__ = [
     "IssueGetQueryProvider",
     "QueryProviderBase",
     "QueryRuntimeContext",
+    "SemanticGetQueryProvider",
+    "SemanticSearchQueryProvider",
+    "SemanticStoreStatusQueryProvider",
     "VmRunStateQueryProvider",
 ]
 
@@ -16,6 +19,9 @@ _EXPORT_MODULES = {
     "IssueGetQueryProvider": ".issue_get",
     "QueryProviderBase": ".base",
     "QueryRuntimeContext": ".base",
+    "SemanticGetQueryProvider": ".semantic_get",
+    "SemanticSearchQueryProvider": ".semantic_search",
+    "SemanticStoreStatusQueryProvider": ".semantic_store_status",
     "VmRunStateQueryProvider": ".vm_run_state",
 }
 

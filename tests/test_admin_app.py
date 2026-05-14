@@ -324,6 +324,7 @@ def test_directory_config_tab_sections_match_expected_groupings() -> None:
         "NuGet",
         "OpenAI",
         "Retell",
+        "Semantic store",
         "State",
     }
     assert ("providers", "execution_backend") in provider_sections["Container worker"]
@@ -334,6 +335,15 @@ def test_directory_config_tab_sections_match_expected_groupings() -> None:
     ) in provider_sections["Container worker"]
     assert ("providers", "nuget_azure_pat_env") in provider_sections["NuGet"]
     assert ("providers", "openai_api_key_env") in provider_sections["OpenAI"]
+    assert set(provider_sections["Semantic store"]) == {
+        ("providers", "semantic_store_provider"),
+        ("providers", "qdrant_base_url"),
+        ("providers", "qdrant_api_key_env"),
+        ("providers", "semantic_embedding_provider"),
+        ("providers", "semantic_embedding_model"),
+        ("providers", "semantic_embedding_dimensions"),
+        ("providers", "semantic_vector_distance"),
+    }
     assert set(provider_sections["Retell"]) == {
         ("providers", "retell_api_base_url"),
         ("providers", "retell_api_key_env"),

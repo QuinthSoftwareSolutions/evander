@@ -62,3 +62,26 @@ class AdoWorkItemsQueryDefinition(QueryDefinition):
     text_search: ConfigValue | None = None
     top: ConfigValue | None = None
     skip: ConfigValue | None = None
+
+
+class SemanticStoreStatusQueryDefinition(QueryDefinition):
+    type: Literal["query:semantic:store-status"]
+    collection_name: ConfigValue | None = None
+    directory_path: ConfigValue | None = None
+
+
+class SemanticSearchQueryDefinition(QueryDefinition):
+    type: Literal["query:semantic:search"]
+    collection_name: ConfigValue
+    query_text: ConfigValue
+    filter: ConfigValue | None = None
+    limit: ConfigValue | None = None
+    score_threshold: ConfigValue | None = None
+    directory_path: ConfigValue | None = None
+
+
+class SemanticGetQueryDefinition(QueryDefinition):
+    type: Literal["query:semantic:get"]
+    collection_name: ConfigValue
+    point_ids: ConfigValue
+    directory_path: ConfigValue | None = None

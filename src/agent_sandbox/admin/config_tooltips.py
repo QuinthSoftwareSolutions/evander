@@ -271,6 +271,27 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Name of the host environment variable that holds the upstream OpenAI API key."
     ),
     "openai_relay_timeout_seconds": ("Upstream request timeout in seconds for the OpenAI relay."),
+    "semantic_store_provider": (
+        "Semantic store backend used by workflow semantic primitives. Currently only qdrant is supported."
+    ),
+    "qdrant_base_url": (
+        "Host-side Qdrant HTTP base URL used for semantic store management and later semantic data effects."
+    ),
+    "qdrant_api_key_env": (
+        "Optional host environment variable name containing the Qdrant API key. Leave unset for unauthenticated local Qdrant."
+    ),
+    "semantic_embedding_provider": (
+        "Embedding provider used by semantic workflows. Currently only openai is supported."
+    ),
+    "semantic_embedding_model": (
+        "OpenAI embedding model used when semantic data effects generate vectors."
+    ),
+    "semantic_embedding_dimensions": (
+        "Vector dimensions expected for semantic collections and embedding requests."
+    ),
+    "semantic_vector_distance": (
+        "Qdrant vector distance used for semantic collections, for example Cosine."
+    ),
     "retell_api_base_url": (
         "Optional override for Retell API requests made by the host gateway. "
         "Leave the default for the public Retell API."

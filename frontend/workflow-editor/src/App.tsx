@@ -209,6 +209,9 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:agent:prompt": "Send a prompt to an agent session.",
   "effect:agent:exec": "Run a shell command in an agent session.",
   "effect:agent:destroy": "Destroy an agent session and its backend target.",
+  "effect:semantic:ensure-collection": "Ensure a semantic collection exists with the configured vector schema.",
+  "effect:semantic:upsert": "Embed one text string and upsert it as one semantic point.",
+  "effect:semantic:delete": "Delete semantic points by explicit point IDs.",
   "effect:vm:create": "Create a VM for the workflow.",
   "effect:vm:clone-repo": "Clone a repository into a target VM.",
   "effect:vm:bootstrap-python": "Bootstrap a Python checkout and environment in a VM.",
@@ -229,6 +232,9 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "query:agent:artifact-text": "Read a UTF-8 text file from an agent session artifacts folder.",
   "query:issue:get": "Read a local issue record by id.",
   "query:ado:work-items": "Query Azure DevOps work items.",
+  "query:semantic:store-status": "Read semantic store health and collection status.",
+  "query:semantic:search": "Search a semantic collection with an embedded text query.",
+  "query:semantic:get": "Retrieve semantic points by explicit point IDs.",
 };
 
 const RUNTIME_POLL_INTERVAL_MS = 5000;
@@ -875,6 +881,29 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   if (kind === "effect" && type === "effect:agent:destroy") {
     return { id, display_name: "Agent destroy", type, session_id: "session-id" };
   }
+  if (kind === "effect" && type === "effect:semantic:ensure-collection") {
+    return { id, display_name: "Ensure semantic collection", type, collection_name: "agent_memory" };
+  }
+  if (kind === "effect" && type === "effect:semantic:upsert") {
+    return {
+      id,
+      display_name: "Semantic upsert",
+      type,
+      collection_name: "agent_memory",
+      point_id: "memory-1",
+      text: "Important context to remember.",
+      payload: {},
+    };
+  }
+  if (kind === "effect" && type === "effect:semantic:delete") {
+    return {
+      id,
+      display_name: "Semantic delete",
+      type,
+      collection_name: "agent_memory",
+      point_ids: ["memory-1"],
+    };
+  }
   if (kind === "effect" && type === "effect:vm:create") {
     return { id, display_name: "New VM effect", type };
   }
@@ -1007,6 +1036,28 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       type,
       top: 50,
       skip: 0,
+    };
+  }
+  if (kind === "query" && type === "query:semantic:store-status") {
+    return { id, display_name: "Semantic store status", type, collection_name: "agent_memory" };
+  }
+  if (kind === "query" && type === "query:semantic:search") {
+    return {
+      id,
+      display_name: "Semantic search",
+      type,
+      collection_name: "agent_memory",
+      query_text: "What context is relevant?",
+      limit: 10,
+    };
+  }
+  if (kind === "query" && type === "query:semantic:get") {
+    return {
+      id,
+      display_name: "Semantic get",
+      type,
+      collection_name: "agent_memory",
+      point_ids: ["memory-1"],
     };
   }
   return { id, display_name: "New node", type };

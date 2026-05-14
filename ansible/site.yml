@@ -72,6 +72,7 @@
     - role: network_vm_bootstrap
     - role: service_runtime
     - role: package_cache_nexus
+    - role: semantic_store_qdrant
     - role: verification
 
   post_tasks:

@@ -256,6 +256,19 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
             ("openai_",),
         ),
         (
+            "Semantic store",
+            (
+                ("providers", "semantic_store_provider"),
+                ("providers", "qdrant_base_url"),
+                ("providers", "qdrant_api_key_env"),
+                ("providers", "semantic_embedding_provider"),
+                ("providers", "semantic_embedding_model"),
+                ("providers", "semantic_embedding_dimensions"),
+                ("providers", "semantic_vector_distance"),
+            ),
+            ("semantic_", "qdrant_"),
+        ),
+        (
             "Retell",
             (
                 ("providers", "retell_api_base_url"),

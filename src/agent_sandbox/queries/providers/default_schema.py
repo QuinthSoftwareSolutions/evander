@@ -9,6 +9,9 @@ from agent_sandbox.queries.providers.schemas import (
     AgentArtifactTextQueryDefinition,
     GitPrNoteQueryDefinition,
     IssueGetQueryDefinition,
+    SemanticGetQueryDefinition,
+    SemanticSearchQueryDefinition,
+    SemanticStoreStatusQueryDefinition,
     SessionContextQueryDefinition,
     VmRunStateQueryDefinition,
 )
@@ -22,6 +25,9 @@ _QUERY_MODEL_BY_TYPE = {
     "query:agent:artifact-text": AgentArtifactTextQueryDefinition,
     "query:issue:get": IssueGetQueryDefinition,
     "query:ado:work-items": AdoWorkItemsQueryDefinition,
+    "query:semantic:store-status": SemanticStoreStatusQueryDefinition,
+    "query:semantic:search": SemanticSearchQueryDefinition,
+    "query:semantic:get": SemanticGetQueryDefinition,
 }
 
 

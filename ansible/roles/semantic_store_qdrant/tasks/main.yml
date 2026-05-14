@@ -1,0 +1,72 @@
+---
+- name: Stop Qdrant semantic store when disabled
+  ansible.builtin.systemd:
+    name: agent-sandbox-qdrant.service
+    enabled: false
+    state: stopped
+  failed_when: false
+  when: not (agent_sandbox_services.semantic_store | default(false) | bool)
+
+- name: Configure Qdrant semantic store
+  when: agent_sandbox_services.semantic_store | default(false) | bool
+  block:
+    - name: Install Docker for Qdrant semantic store
+      ansible.builtin.apt:
+        name: docker.io
+        state: present
+
+    - name: Ensure Docker service is enabled and running for Qdrant
+      ansible.builtin.systemd:
+        name: docker.service
+        enabled: true
+        state: started
+
+    - name: Ensure Qdrant semantic store data directory exists
+      ansible.builtin.file:
+        path: "{{ agent_sandbox_qdrant_data_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Pull pinned Qdrant semantic store image
+      ansible.builtin.command:
+        argv:
+          - docker
+          - pull
+          - "{{ agent_sandbox_qdrant_image }}"
+      register: agent_sandbox_qdrant_image_pull
+      changed_when: "'Image is up to date' not in agent_sandbox_qdrant_image_pull.stdout"
+
+    - name: Install Qdrant semantic store systemd unit
+      ansible.builtin.template:
+        src: agent-sandbox-qdrant.service.j2
+        dest: /etc/systemd/system/agent-sandbox-qdrant.service
+        owner: root
+        group: root
+        mode: "0644"
+      register: agent_sandbox_qdrant_unit
+
+    - name: Reconcile Qdrant semantic store service
+      ansible.builtin.systemd:
+        name: agent-sandbox-qdrant.service
+        enabled: true
+        state: "{{ 'restarted' if agent_sandbox_qdrant_unit.changed else 'started' }}"
+        daemon_reload: true
+
+    - name: Wait for Qdrant semantic store listener
+      ansible.builtin.wait_for:
+        host: "{{ agent_sandbox_qdrant_bind_host }}"
+        port: "{{ agent_sandbox_qdrant_port }}"
+        timeout: 120
+
+    - name: Verify Qdrant semantic store health endpoint
+      ansible.builtin.uri:
+        url: "http://{{ agent_sandbox_qdrant_bind_host }}:{{ agent_sandbox_qdrant_port }}/healthz"
+        method: GET
+        return_content: true
+        status_code: 200
+      register: agent_sandbox_qdrant_health
+      retries: 12
+      delay: 5
+      until: agent_sandbox_qdrant_health.status == 200

@@ -54,10 +54,30 @@ class EffectProviderConfig(BaseModel):
     container_worker_mssql_enabled: bool = False
     container_worker_mssql_host: str | None = None
     container_worker_mssql_port: int = 1433
+    semantic_store_provider: str = "qdrant"
+    qdrant_base_url: str = "http://127.0.0.1:6333"
+    qdrant_api_key_env: str | None = "QDRANT_API_KEY"
+    semantic_embedding_provider: str = "openai"
+    semantic_embedding_model: str = "text-embedding-3-small"
+    semantic_embedding_dimensions: int = 1536
+    semantic_vector_distance: str = "Cosine"
+    openai_api_base_url: str = "https://api.openai.com/v1"
+    openai_api_key_env: str = "OPENAI_API_KEY"
+    openai_relay_timeout_seconds: float = 300.0
 
 
 class QueryProviderConfig(BaseModel):
     runtime_dir: Path
+    semantic_store_provider: str = "qdrant"
+    qdrant_base_url: str = "http://127.0.0.1:6333"
+    qdrant_api_key_env: str | None = "QDRANT_API_KEY"
+    semantic_embedding_provider: str = "openai"
+    semantic_embedding_model: str = "text-embedding-3-small"
+    semantic_embedding_dimensions: int = 1536
+    semantic_vector_distance: str = "Cosine"
+    openai_api_base_url: str = "https://api.openai.com/v1"
+    openai_api_key_env: str = "OPENAI_API_KEY"
+    openai_relay_timeout_seconds: float = 300.0
 
 
 class GateProviderConfig(BaseModel):

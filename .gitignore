@@ -38,6 +38,8 @@ tasks/
 !ansible/roles/apt_cache_relay/tasks/main.yml
 !ansible/roles/package_cache_nexus/tasks/
 !ansible/roles/package_cache_nexus/tasks/main.yml
+!ansible/roles/semantic_store_qdrant/tasks/
+!ansible/roles/semantic_store_qdrant/tasks/main.yml
 !ansible/roles/admin_web_caddy/tasks/
 !ansible/roles/admin_web_caddy/tasks/main.yml
 !ansible/roles/worker_apt_proxy/tasks/
