@@ -57,7 +57,7 @@ def test_semantic_management_outputs_are_bindable() -> None:
                 "display_name": "Semantic upsert",
                 "type": "effect:semantic:upsert",
                 "collection_name": "${{semantic-ensure-1.collection_name}}",
-                "point_id": "point-1",
+                "point_id": "00000000-0000-4000-8000-000000000001",
                 "text": "remember this",
                 "payload": {"source": "test"},
             },
@@ -66,7 +66,7 @@ def test_semantic_management_outputs_are_bindable() -> None:
                 "display_name": "Semantic delete",
                 "type": "effect:semantic:delete",
                 "collection_name": "${{semantic-ensure-1.collection_name}}",
-                "point_ids": ["point-1"],
+                "point_ids": ["00000000-0000-4000-8000-000000000001"],
             }
         ],
         "queries": [

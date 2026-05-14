@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 import httpx
 
@@ -42,6 +43,7 @@ class QdrantEnsureCollectionResult:
 
 
 QdrantPointId = int | str
+_MAX_UINT64_POINT_ID = 2**64 - 1
 
 
 @dataclass(frozen=True)
@@ -283,18 +285,28 @@ class QdrantClient:
 
 def normalize_point_id(value: object) -> QdrantPointId:
     if isinstance(value, bool) or value is None:
-        raise ValueError("Qdrant point ID must be a non-empty string or integer")
+        raise ValueError("Qdrant point ID must be an unsigned 64-bit integer or UUID string")
     if isinstance(value, int):
-        if value < 0:
-            raise ValueError("Qdrant integer point IDs must be non-negative")
+        if value < 0 or value > _MAX_UINT64_POINT_ID:
+            raise ValueError("Qdrant integer point IDs must fit in unsigned 64 bits")
         return value
     text = str(value).strip()
     if not text:
-        raise ValueError("Qdrant point ID must be a non-empty string or integer")
-    return text
+        raise ValueError("Qdrant point ID must be an unsigned 64-bit integer or UUID string")
+    if text.isdecimal():
+        return normalize_point_id(int(text))
+    try:
+        return str(UUID(text))
+    except ValueError as exc:
+        raise ValueError(
+            "Qdrant string point IDs must be UUIDs; use an unsigned 64-bit integer "
+            "for numeric point IDs"
+        ) from exc
 
 
-def normalize_point_ids(values: list[QdrantPointId] | tuple[QdrantPointId, ...]) -> list[QdrantPointId]:
+def normalize_point_ids(
+    values: list[QdrantPointId] | tuple[QdrantPointId, ...],
+) -> list[QdrantPointId]:
     ids = [normalize_point_id(value) for value in values]
     if not ids:
         raise ValueError("Qdrant point ID list must not be empty")

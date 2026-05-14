@@ -1781,7 +1781,10 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string",
                 required=True,
                 bindable=True,
-                description="Caller-supplied Qdrant point ID used for idempotent updates.",
+                description=(
+                    "Caller-supplied Qdrant point ID used for idempotent updates. "
+                    "Use an unsigned 64-bit integer or UUID string."
+                ),
             ),
             _field("text", "Text", "string", required=True, bindable=True, multiline=True),
             _field(
@@ -1807,7 +1810,10 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string_list",
                 required=True,
                 bindable=True,
-                description="Explicit Qdrant point IDs to delete. Filter deletes are not supported.",
+                description=(
+                    "Explicit Qdrant point IDs to delete. IDs must be unsigned "
+                    "64-bit integers or UUID strings. Filter deletes are not supported."
+                ),
             ),
             _field("directory_path", "Directory path", "string", bindable=True),
             _field("wait", "Wait", "boolean", bindable=True),
@@ -2130,7 +2136,14 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         label="Semantic get",
         fields=[
             _field("collection_name", "Collection name", "string", required=True, bindable=True),
-            _field("point_ids", "Point IDs", "string_list", required=True, bindable=True),
+            _field(
+                "point_ids",
+                "Point IDs",
+                "string_list",
+                required=True,
+                bindable=True,
+                description="Explicit Qdrant point IDs as unsigned 64-bit integers or UUID strings.",
+            ),
             _field("directory_path", "Directory path", "string", bindable=True),
         ],
     ),

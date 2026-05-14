@@ -430,6 +430,8 @@ def test_ansible_qdrant_semantic_store_defaults_and_role_contract() -> None:
     assert "--volume {{ agent_sandbox_qdrant_data_dir }}:/qdrant/storage" in unit
 
     assert "agent-sandbox-qdrant.service" in verification
+    assert "agent_sandbox_services.get(item.key, false) | bool" in verification
+    assert "agent_sandbox_services[item.key]" not in verification
     assert "agent_sandbox_qdrant_bind_host" in verification
     assert "agent_sandbox_qdrant_port" in verification
     assert (

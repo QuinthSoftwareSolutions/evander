@@ -27,7 +27,11 @@ from agent_sandbox.semantic.qdrant import (
     QdrantCollectionSchemaMismatch,
     QdrantOperationResult,
     QdrantPoint,
+    normalize_point_id,
 )
+
+POINT_ID_1 = "123e4567-e89b-42d3-a456-426614174000"
+POINT_ID_2 = "123e4567-e89b-42d3-a456-426614174001"
 
 
 def _collection_payload(*, size: int = 1536, distance: str = "Cosine") -> dict[str, object]:
@@ -147,6 +151,17 @@ def test_qdrant_create_collection_surfaces_http_failure() -> None:
         client.ensure_collection("memory", vector_size=1536, distance="Cosine")
 
 
+def test_qdrant_point_id_normalization_rejects_arbitrary_strings() -> None:
+    assert normalize_point_id(42) == 42
+    assert normalize_point_id("42") == 42
+    assert normalize_point_id(POINT_ID_1.upper()) == POINT_ID_1
+
+    with pytest.raises(ValueError, match="UUID"):
+        normalize_point_id("point-1")
+    with pytest.raises(ValueError, match="unsigned 64 bits"):
+        normalize_point_id(2**64)
+
+
 def test_qdrant_upsert_point_request_shape() -> None:
     requests: list[httpx.Request] = []
 
@@ -161,7 +176,7 @@ def test_qdrant_upsert_point_request_shape() -> None:
 
     result = client.upsert_point(
         "memory",
-        point_id="point-1",
+        point_id=POINT_ID_1,
         vector=[0.1, 0.2],
         payload={"source": "test"},
         wait=True,
@@ -176,7 +191,7 @@ def test_qdrant_upsert_point_request_shape() -> None:
     assert json.loads(request.content.decode("utf-8")) == {
         "points": [
             {
-                "id": "point-1",
+                "id": POINT_ID_1,
                 "vector": [0.1, 0.2],
                 "payload": {"source": "test"},
             }
@@ -191,19 +206,19 @@ def test_qdrant_retrieve_points_request_shape() -> None:
         requests.append(request)
         return httpx.Response(
             200,
-            json={"result": [{"id": "point-1", "payload": {"source": "test"}}]},
+            json={"result": [{"id": POINT_ID_1, "payload": {"source": "test"}}]},
         )
 
     client = QdrantClient("http://qdrant.test", transport=httpx.MockTransport(handler))
 
-    points = client.retrieve_points("memory", point_ids=["point-1"])
+    points = client.retrieve_points("memory", point_ids=[POINT_ID_1])
 
-    assert points == [QdrantPoint(id="point-1", payload={"source": "test"}, raw=points[0].raw)]
+    assert points == [QdrantPoint(id=POINT_ID_1, payload={"source": "test"}, raw=points[0].raw)]
     request = requests[0]
     assert request.method == "POST"
     assert request.url.path == "/collections/memory/points"
     assert json.loads(request.content.decode("utf-8")) == {
-        "ids": ["point-1"],
+        "ids": [POINT_ID_1],
         "with_payload": True,
         "with_vector": False,
     }
@@ -220,7 +235,7 @@ def test_qdrant_query_points_request_shape() -> None:
                 "result": {
                     "points": [
                         {
-                            "id": "point-1",
+                            "id": POINT_ID_1,
                             "score": 0.92,
                             "payload": {"source": "test"},
                         }
@@ -239,7 +254,7 @@ def test_qdrant_query_points_request_shape() -> None:
         score_threshold=0.7,
     )
 
-    assert points[0].id == "point-1"
+    assert points[0].id == POINT_ID_1
     assert points[0].score == 0.92
     request = requests[0]
     assert request.method == "POST"
@@ -266,7 +281,7 @@ def test_qdrant_delete_points_request_shape() -> None:
 
     client = QdrantClient("http://qdrant.test", transport=httpx.MockTransport(handler))
 
-    result = client.delete_points("memory", point_ids=["point-1", "point-2"], wait=True)
+    result = client.delete_points("memory", point_ids=[POINT_ID_1, POINT_ID_2], wait=True)
 
     assert result.status == "acknowledged"
     assert result.operation_id == 456
@@ -274,7 +289,7 @@ def test_qdrant_delete_points_request_shape() -> None:
     assert request.method == "POST"
     assert request.url.path == "/collections/memory/points/delete"
     assert request.url.params["wait"] == "true"
-    assert json.loads(request.content.decode("utf-8")) == {"points": ["point-1", "point-2"]}
+    assert json.loads(request.content.decode("utf-8")) == {"points": [POINT_ID_1, POINT_ID_2]}
 
 
 def test_openai_embedding_client_request_shape() -> None:
@@ -388,7 +403,7 @@ class _FakeQdrantClient:
         self.query_calls.append({"collection_name": collection_name, **kwargs})
         return [
             QdrantPoint(
-                id="point-1",
+                id=POINT_ID_1,
                 score=0.91,
                 payload={"source": "test", "_semantic_text": "stored"},
             )
@@ -438,7 +453,7 @@ def test_semantic_upsert_provider_embeds_ensures_and_upserts(monkeypatch) -> Non
             display_name="Upsert",
             type="effect:semantic:upsert",
             collection_name="memory",
-            point_id="point-1",
+            point_id=POINT_ID_1,
             text="remember this",
             payload={"source": "test"},
             wait=True,
@@ -455,7 +470,7 @@ def test_semantic_upsert_provider_embeds_ensures_and_upserts(monkeypatch) -> Non
     assert qdrant.upsert_calls == [
         {
             "collection_name": "memory",
-            "point_id": "point-1",
+            "point_id": POINT_ID_1,
             "vector": [0.11, 0.22],
             "payload": {"source": "test", "_semantic_text": "remember this"},
             "wait": True,
@@ -474,7 +489,7 @@ def test_semantic_upsert_rejects_reserved_payload_key() -> None:
             display_name="Upsert",
             type="effect:semantic:upsert",
             collection_name="memory",
-            point_id="point-1",
+            point_id=POINT_ID_1,
             text="remember this",
             payload={"_semantic_text": "caller value"},
         ),
@@ -493,7 +508,7 @@ def test_semantic_upsert_requires_text() -> None:
             display_name="Upsert",
             type="effect:semantic:upsert",
             collection_name="memory",
-            point_id="point-1",
+            point_id=POINT_ID_1,
             text="initial",
         ),
         _effect_context(),
@@ -541,7 +556,7 @@ def test_semantic_search_provider_embeds_and_queries(monkeypatch) -> None:
     ]
     assert output["points"] == [
         {
-            "id": "point-1",
+            "id": POINT_ID_1,
             "payload": {"source": "test", "_semantic_text": "stored"},
             "score": 0.91,
         }
@@ -588,7 +603,7 @@ def test_semantic_get_provider_retrieves_explicit_ids(monkeypatch) -> None:
             display_name="Get",
             type="query:semantic:get",
             collection_name="memory",
-            point_ids=["point-1", "point-2"],
+            point_ids=[POINT_ID_1, POINT_ID_2],
         ),
         _query_context(),
     )
@@ -597,10 +612,10 @@ def test_semantic_get_provider_retrieves_explicit_ids(monkeypatch) -> None:
 
     qdrant = _FakeQdrantClient.instances[0]
     assert qdrant.retrieve_calls == [
-        {"collection_name": "memory", "point_ids": ["point-1", "point-2"]}
+        {"collection_name": "memory", "point_ids": [POINT_ID_1, POINT_ID_2]}
     ]
-    assert output["point_ids"] == ["point-1", "point-2"]
-    assert output["missing_ids"] == ["point-2"]
+    assert output["point_ids"] == [POINT_ID_1, POINT_ID_2]
+    assert output["missing_ids"] == [POINT_ID_2]
 
 
 def test_semantic_delete_provider_deletes_only_explicit_ids(monkeypatch) -> None:
@@ -615,7 +630,7 @@ def test_semantic_delete_provider_deletes_only_explicit_ids(monkeypatch) -> None
             display_name="Delete",
             type="effect:semantic:delete",
             collection_name="memory",
-            point_ids=["point-1", "point-2"],
+            point_ids=[POINT_ID_1, POINT_ID_2],
             wait=True,
         ),
         _effect_context(),
@@ -625,7 +640,7 @@ def test_semantic_delete_provider_deletes_only_explicit_ids(monkeypatch) -> None
 
     qdrant = _FakeQdrantClient.instances[0]
     assert qdrant.delete_calls == [
-        {"collection_name": "memory", "point_ids": ["point-1", "point-2"], "wait": True}
+        {"collection_name": "memory", "point_ids": [POINT_ID_1, POINT_ID_2], "wait": True}
     ]
     assert output["deleted_count"] == 2
     assert output["operation_status"] == "completed"

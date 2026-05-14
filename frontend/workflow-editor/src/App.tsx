@@ -164,6 +164,7 @@ const SYSTEM_BINDING_OPTIONS: ReadonlyArray<BindingOption> = [
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const BINDING_EXACT_RE = /^\$\{\{([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}$/;
 const EFFECT_TARGET_KEYS = ["target", "session_id", "vm_name"] as const;
+const SEMANTIC_SAMPLE_POINT_ID = "00000000-0000-4000-8000-000000000001";
 type EffectTargetKey = (typeof EFFECT_TARGET_KEYS)[number];
 
 const NODE_GROUPS: ReadonlyArray<{
@@ -890,7 +891,7 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       display_name: "Semantic upsert",
       type,
       collection_name: "agent_memory",
-      point_id: "memory-1",
+      point_id: SEMANTIC_SAMPLE_POINT_ID,
       text: "Important context to remember.",
       payload: {},
     };
@@ -901,7 +902,7 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       display_name: "Semantic delete",
       type,
       collection_name: "agent_memory",
-      point_ids: ["memory-1"],
+      point_ids: [SEMANTIC_SAMPLE_POINT_ID],
     };
   }
   if (kind === "effect" && type === "effect:vm:create") {
@@ -1057,7 +1058,7 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       display_name: "Semantic get",
       type,
       collection_name: "agent_memory",
-      point_ids: ["memory-1"],
+      point_ids: [SEMANTIC_SAMPLE_POINT_ID],
     };
   }
   return { id, display_name: "New node", type };

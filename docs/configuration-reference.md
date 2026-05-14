@@ -611,11 +611,12 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 `effect:semantic:ensure-collection` creates a missing Qdrant collection and treats an existing
 matching collection as success. `effect:semantic:upsert` embeds one text string, stores it as one
 unnamed-vector Qdrant point using the caller-supplied point ID, and adds reserved payload key
-`_semantic_text`. Caller payloads may not set that reserved key. `query:semantic:search` embeds
-`query_text` and returns payload-bearing points without vectors. `query:semantic:get` and
-`effect:semantic:delete` operate only on explicit point IDs; filter-based delete is intentionally
-not supported. If an existing collection uses different dimensions, distance, or named vectors,
-schema-sensitive operations fail and do not delete or recreate anything.
+`_semantic_text`. Point IDs must be unsigned 64-bit integers or UUID strings. Caller payloads may not
+set that reserved key. `query:semantic:search` embeds `query_text` and returns payload-bearing
+points without vectors. `query:semantic:get` and `effect:semantic:delete` operate only on explicit
+point IDs; filter-based delete is intentionally not supported. If an existing collection uses
+different dimensions, distance, or named vectors, schema-sensitive operations fail and do not delete
+or recreate anything.
 
 ### Retell phone-call keys
 

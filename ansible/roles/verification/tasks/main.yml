@@ -46,7 +46,7 @@
     fail_msg: "{{ item.unit }} should be enabled and running."
     success_msg: "{{ item.unit }} is enabled and running."
   loop: "{{ agent_sandbox_verification_units }}"
-  when: agent_sandbox_services[item.key] | bool
+  when: agent_sandbox_services.get(item.key, false) | bool
 
 - name: Verify disabled services are not enabled
   ansible.builtin.assert:
@@ -56,7 +56,7 @@
     fail_msg: "{{ item.unit }} should remain installed but not enabled/running."
     success_msg: "{{ item.unit }} remains installed without being enabled/running."
   loop: "{{ agent_sandbox_verification_units }}"
-  when: not (agent_sandbox_services[item.key] | bool)
+  when: not (agent_sandbox_services.get(item.key, false) | bool)
 
 - name: Verify managed Admin Web Caddy is active
   ansible.builtin.assert:
@@ -127,7 +127,7 @@
       port: "{{ agent_sandbox_apt_cache_port }}"
     - key: http_target_relay
       port: 11777
-  when: agent_sandbox_services[item.key] | bool
+  when: agent_sandbox_services.get(item.key, false) | bool
 
 - name: Verify enabled relay health endpoints
   ansible.builtin.uri:
@@ -150,7 +150,7 @@
       url: "http://127.0.0.1:{{ agent_sandbox_apt_cache_port }}/acng-report.html"
     - key: http_target_relay
       url: "http://127.0.0.1:11777/healthz"
-  when: agent_sandbox_services[item.key] | bool
+  when: agent_sandbox_services.get(item.key, false) | bool
 
 - name: Verify managed Admin Web Caddy serves frontend and proxies health
   ansible.builtin.shell: |

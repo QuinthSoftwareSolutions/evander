@@ -169,7 +169,7 @@ def required_point_id(value: Any, *, node_type: str, field_name: str) -> QdrantP
     try:
         return normalize_point_id(value)
     except ValueError as exc:
-        raise ValueError(f"{node_type} requires {field_name}") from exc
+        raise ValueError(f"{node_type} {field_name}: {exc}") from exc
 
 
 def required_point_ids(value: Any, *, node_type: str, field_name: str) -> list[QdrantPointId]:
@@ -181,7 +181,8 @@ def required_point_ids(value: Any, *, node_type: str, field_name: str) -> list[Q
         ids = [normalize_point_id(item) for item in raw_values]
     except ValueError as exc:
         raise ValueError(
-            f"{node_type} {field_name} must be one point ID or a non-empty list of point IDs"
+            f"{node_type} {field_name}: each point ID must be an unsigned "
+            f"64-bit integer or UUID string: {exc}"
         ) from exc
     if not ids:
         raise ValueError(f"{node_type} requires {field_name}")
