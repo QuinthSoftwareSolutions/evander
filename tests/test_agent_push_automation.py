@@ -33,6 +33,9 @@ def test_bare_repo_flow_includes_hook_and_azure_support() -> None:
     assert '"api-version": "7.1"' in open_pr or "?api-version=7.1" in open_pr
     assert "AGENT_PR_RESULT " in open_pr
     assert "runtime/pr-map.json" in open_pr
+    assert "fcntl.flock" in open_pr
+    assert 'lock_path = path.with_name(f".{path.name}.lock")' in open_pr
+    assert "os.replace(temp_path, path)" in open_pr
 
 
 def test_issue_vm_setup_configures_agent_remote_for_push_alias() -> None:

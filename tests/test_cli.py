@@ -3186,6 +3186,46 @@ def test_delete_session_removes_targeted_session(tmp_path: Path) -> None:
     assert "Deleted session session-a" in result.stdout
 
 
+def test_delete_session_rejects_agent_session(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    sessions_path = tmp_path / "runtime" / "sessions.json"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "agent-session": {
+                    "session_id": "agent-session",
+                    "vm_id": "vm-200",
+                    "allowed_tools": ["approval_submit"],
+                    "discord_channel_allowlist": [],
+                    "email_folder_allowlist": [],
+                    "email_mailbox_allowlist": [],
+                    "email_folder_allowlist_by_mailbox": {},
+                    "email_draft_recipient_allowlist": [],
+                    "email_draft_domain_allowlist": [],
+                    "email_send_enabled": False,
+                    "quotas": {},
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "metadata": {},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["delete-session", "--config", str(config_path), "agent-session"])
+
+    assert result.exit_code == 1
+    sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
+    assert set(sessions) == {"agent-session"}
+    assert "Delete the agent instead" in result.stderr
+
+
 def test_delete_expired_sessions_removes_all_expired(tmp_path: Path) -> None:
     config_path = write_config(tmp_path)
     runner = CliRunner()
@@ -3215,7 +3255,6 @@ def test_delete_expired_sessions_removes_all_expired(tmp_path: Path) -> None:
                 },
                 "expired-a": {
                     "session_id": "expired-a",
-                    "vm_id": "vm-200",
                     "allowed_tools": ["approval_submit"],
                     "discord_channel_allowlist": [],
                     "email_folder_allowlist": [],
@@ -3231,7 +3270,6 @@ def test_delete_expired_sessions_removes_all_expired(tmp_path: Path) -> None:
                 },
                 "expired-b": {
                     "session_id": "expired-b",
-                    "vm_id": "vm-300",
                     "allowed_tools": ["approval_submit"],
                     "discord_channel_allowlist": [],
                     "email_folder_allowlist": [],
@@ -3256,6 +3294,55 @@ def test_delete_expired_sessions_removes_all_expired(tmp_path: Path) -> None:
     sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
     assert set(sessions) == {"active-session"}
     assert "Deleted 2 expired session(s)" in result.stdout
+
+
+def test_delete_expired_sessions_skips_agent_sessions(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runner = CliRunner()
+
+    init_result = runner.invoke(app, ["init-state", "--config", str(config_path)])
+    assert init_result.exit_code == 0
+
+    sessions_path = tmp_path / "runtime" / "sessions.json"
+    base_session = {
+        "allowed_tools": ["approval_submit"],
+        "discord_channel_allowlist": [],
+        "email_folder_allowlist": [],
+        "email_mailbox_allowlist": [],
+        "email_folder_allowlist_by_mailbox": {},
+        "email_draft_recipient_allowlist": [],
+        "email_draft_domain_allowlist": [],
+        "email_send_enabled": False,
+        "quotas": {},
+        "expires_at": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
+        "metadata": {},
+    }
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "expired-detached": {
+                    **base_session,
+                    "session_id": "expired-detached",
+                },
+                "expired-agent": {
+                    **base_session,
+                    "session_id": "expired-agent",
+                    "vm_id": "vm-300",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["delete-expired-sessions", "--config", str(config_path)])
+
+    assert result.exit_code == 0
+    sessions = json.loads(sessions_path.read_text(encoding="utf-8"))
+    assert set(sessions) == {"expired-agent"}
+    assert "Deleted 1 expired session(s)" in result.stdout
+    assert "Skipped 1 associated expired session(s)" in result.stderr
+    assert "Delete the agent instead" in result.stderr
 
 
 def test_renew_session_rejects_invalid_duration(tmp_path: Path) -> None:

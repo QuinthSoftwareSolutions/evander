@@ -2420,12 +2420,13 @@ def delete_session(
     target: str,
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    cfg = _load_runtime_config_from_option(config)
-    runtime = build_runtime(cfg)
-    sessions = _runtime_sessions_by_id(runtime)
-    session_id, _ = _resolve_session_target(target, sessions)
-    _runtime_session_repository(runtime).delete_session(session_id)
-    typer.echo(f"Deleted session {session_id}")
+    service = AdminService(config)
+    try:
+        result = service.delete_session(target)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    _echo_action_result_or_exit(result)
 
 
 @app.command(
@@ -2436,17 +2437,29 @@ def delete_session(
 def delete_expired_sessions(
     config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
 ) -> None:
-    cfg = _load_runtime_config_from_option(config)
-    runtime = build_runtime(cfg)
-    session_repository = _runtime_session_repository(runtime)
-    sessions = {session.session_id: session for session in session_repository.list_sessions()}
+    service = AdminService(config)
+    sessions = {
+        session.session_id: session
+        for session in service.runtime.session_repository.list_sessions()
+    }
     now = datetime.now(UTC)
     expired_session_ids = [
         session_id for session_id, session in sessions.items() if session.expires_at <= now
     ]
+    deleted = 0
+    skipped: list[str] = []
     for session_id in expired_session_ids:
-        session_repository.delete_session(session_id)
-    typer.echo(f"Deleted {len(expired_session_ids)} expired session(s)")
+        try:
+            service.delete_session(session_id)
+        except ValueError as exc:
+            skipped.append(f"{session_id}: {exc}")
+            continue
+        deleted += 1
+    typer.echo(f"Deleted {deleted} expired session(s)")
+    if skipped:
+        typer.echo(f"Skipped {len(skipped)} associated expired session(s):", err=True)
+        for item in skipped:
+            typer.echo(f"  {item}", err=True)
 
 
 @app.command(

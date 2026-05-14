@@ -6,7 +6,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.events.models import TriggerEvent
@@ -16,6 +16,8 @@ DeliveryState = Literal["pending", "inflight", "delivered"]
 
 
 class TriggerQueueRecord(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     event_id: str = Field(min_length=1)
     trigger_id: str = Field(min_length=1)
     trigger_type: str
@@ -26,6 +28,8 @@ class TriggerQueueRecord(BaseModel):
     inflight_at: datetime | None = None
     delivered_at: datetime | None = None
     idempotency_key: str | None = None
+    clear_reason: str | None = None
+    error: str | None = None
 
 
 class TriggerEventQueue:
