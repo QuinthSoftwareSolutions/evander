@@ -3423,12 +3423,11 @@ def test_revoke_session_expires_immediately(tmp_path: Path) -> None:
     assert before <= revoked.expires_at <= after
 
 
-def test_delete_session_removes_latest_matching_target(tmp_path: Path) -> None:
+def test_delete_session_removes_detached_session(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
-            session_id="issue-13301-older",
-            vm_id="vm-13301",
+            session_id="session-a",
             allowed_tools=[],
             created_at=datetime(2026, 3, 25, 8, 0, tzinfo=UTC),
             expires_at=datetime.now(UTC) + timedelta(hours=1),
@@ -3436,20 +3435,108 @@ def test_delete_session_removes_latest_matching_target(tmp_path: Path) -> None:
     )
     service.runtime.session_repository.upsert_session(
         SessionManifest(
-            session_id="issue-13301-newer",
-            vm_id="vm-13301",
+            session_id="session-b",
             allowed_tools=[],
             created_at=datetime(2026, 3, 25, 9, 0, tzinfo=UTC),
             expires_at=datetime.now(UTC) + timedelta(hours=2),
         ),
     )
 
-    result = service.delete_session("vm-13301")
+    result = service.delete_session("session-a")
 
     remaining = service.runtime.session_repository.read_all()
     assert result.success is True
-    assert result.session_id == "issue-13301-newer"
-    assert set(remaining) == {"issue-13301-older"}
+    assert result.session_id == "session-a"
+    assert set(remaining) == {"session-b"}
+
+
+def test_delete_session_rejects_vm_linked_agent_session(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-13301-session",
+            vm_id="vm-13301",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Delete the agent instead"):
+        service.delete_session("issue-13301-session")
+
+    assert service.runtime.session_repository.get_session("issue-13301-session") is not None
+
+
+def test_delete_session_rejects_container_agent_session(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+            },
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Delete the agent instead"):
+        service.delete_session("container-session")
+
+    assert service.runtime.session_repository.get_session("container-session") is not None
+
+
+def test_delete_session_cleans_detached_worker_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="detached-session",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-1",
+            session_id="detached-session",
+            worker_job_id="job-1",
+            worker_url="http://worker.test",
+            target_name="detached-target",
+            last_status="exited",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.deleted_sessions: list[str] = []
+
+        def delete_session(self, session_id: str) -> dict[str, object]:
+            self.deleted_sessions.append(session_id)
+            return {"deleted": True, "session_id": session_id}
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    result = service.delete_session("detached-session")
+
+    assert result.success is True
+    assert fake_backend.deleted_sessions == ["detached-session"]
+    assert service.runtime.session_repository.get_session("detached-session") is None
+    assert repository.read_all() == {}
+    assert "worker_session_deleted=1" in result.message
+    assert "removed_mappings=1" in result.message
 
 
 def test_set_session_allowed_tools_updates_manifest(tmp_path: Path) -> None:

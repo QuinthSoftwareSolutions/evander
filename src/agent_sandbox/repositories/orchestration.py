@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
@@ -9,11 +10,13 @@ from typing import Any, Generic, Protocol, TypeVar
 
 from pydantic import BaseModel
 
+from agent_sandbox.storage import JsonStore
 from agent_sandbox.workflow.events import WorkflowEventJournal
 
 logger = logging.getLogger(__name__)
 
 TRecord = TypeVar("TRecord", bound=BaseModel)
+R = TypeVar("R")
 
 
 class EffectExecutionRepository(Protocol):
@@ -30,6 +33,8 @@ class EffectExecutionRepository(Protocol):
     def put(self, record: Any) -> None: ...
 
     def find_by_idempotency_key(self, idempotency_key: str) -> Any | None: ...
+
+    def update_all(self, updater: Callable[[dict[str, Any]], R]) -> R: ...
 
 
 class GateExecutionRepository(EffectExecutionRepository, Protocol):
@@ -193,17 +198,14 @@ class JsonExecutionRepository(Generic[TRecord]):
     ) -> None:
         self.path = path
         self.model = model
+        self._store = JsonStore(path, model)
         self._journal = WorkflowEventJournal(journal_path) if journal_path is not None else None
         self._journal_source = source
         self._lock = RLock()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
-            self.path.write_text("{}", encoding="utf-8")
 
     def read_all(self) -> dict[str, TRecord]:
         with self._lock:
-            payload = self._read_payload()
-            return {key: self.model.model_validate(value) for key, value in payload.items()}
+            return self._store.read_all()
 
     def get_execution(self, execution_id: str) -> TRecord | None:
         return self.read_all().get(execution_id)
@@ -215,10 +217,11 @@ class JsonExecutionRepository(Generic[TRecord]):
         self.put(record)
 
     def put(self, record: TRecord) -> None:
+        def _put_record(payload: dict[str, TRecord]) -> None:
+            payload[getattr(record, "execution_id")] = record
+
         with self._lock:
-            payload = self._read_payload()
-            payload[getattr(record, "execution_id")] = record.model_dump(mode="json")
-            self.path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+            self._store.update_all(_put_record)
         if self._journal is not None and self._journal_source is not None:
             self._journal.append(
                 "workflow.execution.updated",
@@ -232,8 +235,7 @@ class JsonExecutionRepository(Generic[TRecord]):
 
     def find_by_idempotency_key(self, idempotency_key: str) -> TRecord | None:
         with self._lock:
-            for value in self._read_payload().values():
-                record = self.model.model_validate(value)
+            for record in self._store.read_all().values():
                 if getattr(record, "idempotency_key") == idempotency_key:
                     return record
         return None
@@ -241,8 +243,6 @@ class JsonExecutionRepository(Generic[TRecord]):
     def find_execution_by_idempotency_key(self, idempotency_key: str) -> TRecord | None:
         return self.find_by_idempotency_key(idempotency_key)
 
-    def _read_payload(self) -> dict[str, Any]:
-        payload = json.loads(self.path.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            return {}
-        return payload
+    def update_all(self, updater: Callable[[dict[str, TRecord]], R]) -> R:
+        with self._lock:
+            return self._store.update_all(updater)

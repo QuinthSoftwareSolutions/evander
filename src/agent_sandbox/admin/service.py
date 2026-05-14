@@ -124,7 +124,7 @@ from agent_sandbox.events.models import (
     TriggerDefinitionDiscriminated,
     materialize_node_definition,
 )
-from agent_sandbox.triggers.queue import TriggerEventQueue
+from agent_sandbox.triggers.queue import TriggerEventQueue, TriggerQueueRecord
 from agent_sandbox.workflow.validation import (
     WorkflowValidationDiagnostic,
     derive_workflow_output_schemas,
@@ -4793,7 +4793,33 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         return self.operations_admin.revoke_session(target)
 
     def delete_session(self, target: str) -> SessionActionResult:
-        return self.operations_admin.delete_session(target)
+        sessions = {
+            session.session_id: session
+            for session in self.runtime.session_repository.list_sessions()
+        }
+        session_id, manifest = _resolve_session_target(target, sessions)
+        associated_agent = self._session_associated_agent_description(session_id, manifest)
+        if associated_agent:
+            raise ValueError(
+                f"Session {session_id!r} is associated with {associated_agent}. "
+                "Delete the agent instead so backend cleanup can run."
+            )
+
+        worker_session_deleted, removed_mappings = self._delete_detached_worker_session_state(
+            session_id
+        )
+        result = self.operations_admin.delete_session(session_id)
+        removed_approvals = _prune_approvals_for_sessions(self.runtime, session_ids={session_id})
+        cleanup_parts: list[str] = []
+        if worker_session_deleted:
+            cleanup_parts.append("worker_session_deleted=1")
+        if removed_mappings:
+            cleanup_parts.append(f"removed_mappings={removed_mappings}")
+        if removed_approvals:
+            cleanup_parts.append(f"removed_approvals={removed_approvals}")
+        if cleanup_parts:
+            result.message = f"{result.message}; " + " ".join(cleanup_parts)
+        return result
 
     def set_session_allowed_tools(
         self, target: str, allowed_tools: list[str | ToolName]
@@ -5643,6 +5669,52 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             key=self._container_execution_sort_key,
         )
 
+    def _session_associated_agent_description(
+        self,
+        session_id: str,
+        session: SessionManifest,
+    ) -> str | None:
+        if self._is_container_session(session):
+            target_name = self._container_session_target_name(session)
+            return f"container worker agent {target_name!r}"
+        vm_name = str(session.vm_id or "").strip()
+        if vm_name:
+            return f"VM agent {vm_name!r}"
+        return None
+
+    def _delete_detached_worker_session_state(self, session_id: str) -> tuple[bool, int]:
+        execution_records = self._container_execution_records_for_session(session_id)
+        if not execution_records:
+            return False, 0
+        latest_record = sorted(
+            execution_records,
+            key=self._container_execution_sort_key,
+            reverse=True,
+        )[0]
+        worker_backend = self._container_worker_backend(
+            directory_path=getattr(latest_record, "directory_path", None),
+            worker_url=self._container_worker_url_for_target(
+                record=latest_record,
+                records=execution_records,
+            ),
+        )
+        worker_session_deleted = self._worker_delete_session_removed(
+            worker_backend.delete_session(session_id)
+        )
+        container_repository = self._container_worker_execution_repository()
+        removed_mappings = 0
+        for execution_id, candidate in list(container_repository.read_all().items()):
+            if candidate.session_id == session_id:
+                container_repository.delete(execution_id)
+                removed_mappings += 1
+        return worker_session_deleted, removed_mappings
+
+    @staticmethod
+    def _worker_delete_session_removed(result: Any) -> bool:
+        if isinstance(result, Mapping) and "deleted" in result:
+            return bool(result["deleted"])
+        return bool(result)
+
     def _resolve_vm_agent_session(self, agent_id: str) -> SessionManifest:
         direct_session = self.runtime.session_repository.get_session(agent_id)
         if direct_session is not None:
@@ -5979,6 +6051,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if record is not None:
             worker_backend.destroy(record.execution_id)
         worker_session_deleted = worker_backend.delete_session(session_id)
+        worker_session_removed = self._worker_delete_session_removed(worker_session_deleted)
         container_repository = self._container_worker_execution_repository()
         removed_mappings = 0
         for execution_id, candidate in list(container_repository.read_all().items()):
@@ -5998,7 +6071,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 f"removed_mappings={removed_mappings} "
                 f"removed_session={int(removed_session)} "
                 f"removed_approvals={removed_approvals} "
-                f"worker_session_deleted={int(bool(worker_session_deleted))}"
+                f"worker_session_deleted={int(worker_session_removed)}"
             ),
             "status": "deleted",
             "session_id": session_id,
@@ -8169,76 +8242,66 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         legacy_await_agent_store_path = stores["legacy_await_agent_store_path"]
 
         cleared_at = _utc_now()
-        cleared_at_text = cleared_at.isoformat()
         clear_reason = "manual_clear_stale_workflow_runs"
         clear_error = "Manually cleared stale workflow run from editor state."
 
-        queue_payload = _read_json_object(event_queue_store_path)
-        queue_records_updated = 0
-        for record_key, raw_record in queue_payload.items():
-            if not isinstance(raw_record, dict):
-                continue
-            record_event_id = str(raw_record.get("event_id") or record_key).strip()
-            if record_event_id != normalized_event_id:
-                continue
-            delivery_state = str(raw_record.get("delivery_state") or "").strip()
-            if delivery_state == "delivered":
-                continue
-            raw_record["delivery_state"] = "delivered"
-            raw_record["delivered_at"] = cleared_at_text
-            raw_record["clear_reason"] = clear_reason
-            raw_record["error"] = clear_error
-            queue_records_updated += 1
+        def _clear_queue_records(records: dict[str, TriggerQueueRecord]) -> int:
+            updated = 0
+            for record_key, record in records.items():
+                record_event_id = str(record.event_id or record_key).strip()
+                if record_event_id != normalized_event_id:
+                    continue
+                if record.delivery_state == "delivered":
+                    continue
+                record.delivery_state = "delivered"
+                record.delivered_at = cleared_at
+                record.clear_reason = clear_reason
+                record.error = clear_error
+                records[record_key] = record
+                updated += 1
+            return updated
 
-        effect_payload = _read_json_object(effect_execution_store_path)
-        effect_records_updated = 0
-        for execution_id, raw_record in effect_payload.items():
-            if not isinstance(raw_record, dict):
-                continue
-            record_event_id = str(raw_record.get("event_id") or execution_id).strip()
-            if record_event_id != normalized_event_id:
-                continue
-            status = str(raw_record.get("status") or "").strip()
-            if status == "failed":
-                raw_record["dismissed_at"] = cleared_at_text
-                raw_record["dismiss_reason"] = "manual_dismiss_errored_workflow_run"
-                effect_records_updated += 1
-                continue
-            if status not in {"running", "waiting"}:
-                continue
-            raw_record["status"] = "failed"
-            raw_record["finished_at"] = cleared_at_text
-            raw_record["cleared_at"] = cleared_at_text
-            raw_record["clear_reason"] = clear_reason
-            raw_record["error"] = clear_error
-            raw_record["dismissed_at"] = cleared_at_text
-            raw_record["dismiss_reason"] = "manual_clear_stale_workflow_runs"
-            effect_records_updated += 1
+        from agent_sandbox.daemons.effect_orchestrator import (
+            JsonExecutionStore,
+            JsonGateExecutionStore,
+        )
 
-        gate_payload = _read_json_object(gate_execution_store_path)
-        gate_records_updated = 0
-        for execution_id, raw_record in gate_payload.items():
-            if not isinstance(raw_record, dict):
-                continue
-            record_event_id = str(raw_record.get("event_id") or execution_id).strip()
-            if record_event_id != normalized_event_id:
-                continue
-            status = str(raw_record.get("status") or "").strip()
-            if status == "failed":
-                raw_record["dismissed_at"] = cleared_at_text
-                raw_record["dismiss_reason"] = "manual_dismiss_errored_workflow_run"
-                gate_records_updated += 1
-                continue
-            if status not in {"running", "waiting"}:
-                continue
-            raw_record["status"] = "failed"
-            raw_record["finished_at"] = cleared_at_text
-            raw_record["cleared_at"] = cleared_at_text
-            raw_record["clear_reason"] = clear_reason
-            raw_record["error"] = clear_error
-            raw_record["dismissed_at"] = cleared_at_text
-            raw_record["dismiss_reason"] = "manual_clear_stale_workflow_runs"
-            gate_records_updated += 1
+        queue_records_updated = JsonStore(
+            event_queue_store_path, TriggerQueueRecord
+        ).update_all(_clear_queue_records)
+
+        def _clear_execution_records(records: dict[str, Any]) -> int:
+            updated = 0
+            for execution_id, record in records.items():
+                record_event_id = str(getattr(record, "event_id", execution_id) or "").strip()
+                if record_event_id != normalized_event_id:
+                    continue
+                status = str(getattr(record, "status", "") or "").strip()
+                if status == "failed":
+                    record.dismissed_at = cleared_at
+                    record.dismiss_reason = "manual_dismiss_errored_workflow_run"
+                    records[execution_id] = record
+                    updated += 1
+                    continue
+                if status not in {"running", "waiting"}:
+                    continue
+                record.status = "failed"
+                record.finished_at = cleared_at
+                record.cleared_at = cleared_at
+                record.clear_reason = clear_reason
+                record.error = clear_error
+                record.dismissed_at = cleared_at
+                record.dismiss_reason = "manual_clear_stale_workflow_runs"
+                records[execution_id] = record
+                updated += 1
+            return updated
+
+        effect_records_updated = JsonExecutionStore(effect_execution_store_path).update_all(
+            _clear_execution_records
+        )
+        gate_records_updated = JsonGateExecutionStore(gate_execution_store_path).update_all(
+            _clear_execution_records
+        )
 
         await_agent_records_removed = 0
         await_agent_payload = _read_json_object(await_agent_store_path)
@@ -8277,9 +8340,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         ):
             raise ValueError(f"Workflow run not found or already inactive: {normalized_event_id}")
 
-        self._write_json_file_atomic(event_queue_store_path, queue_payload)
-        self._write_json_file_atomic(effect_execution_store_path, effect_payload)
-        self._write_json_file_atomic(gate_execution_store_path, gate_payload)
         await_agent_store_path.parent.mkdir(parents=True, exist_ok=True)
         self._write_json_file_atomic(await_agent_store_path, await_agent_payload)
         if legacy_await_agent_store_path.exists() or legacy_await_agent_payload:

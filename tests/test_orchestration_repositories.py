@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import fcntl
+import json
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -130,3 +133,56 @@ def test_execution_repository_supports_semantic_idempotency_and_gate_queries(
     assert execution_store.find_execution_by_idempotency_key("idem-1") == running
     assert execution_store.get_execution("exec-1") == running
     assert gate_store.find_latest_execution_for_gate("merge-1") == newer_gate
+
+
+def test_execution_repository_put_uses_shared_file_lock(tmp_path: Path) -> None:
+    path = tmp_path / "effect-executions.json"
+    execution_store = JsonExecutionStore(path)
+    lock_path = path.with_name(f".{path.name}.lock")
+    writer_entered = threading.Event()
+    writer_finished = threading.Event()
+
+    def write_record() -> None:
+        writer_entered.set()
+        execution_store.record_execution(
+            _effect_record(execution_id="exec-locked", idempotency_key="idem-locked")
+        )
+        writer_finished.set()
+
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        writer = threading.Thread(target=write_record)
+        writer.start()
+        assert writer_entered.wait(timeout=1)
+        assert not writer_finished.wait(timeout=0.1)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    writer.join(timeout=1)
+    assert writer_finished.is_set()
+    assert execution_store.get_execution("exec-locked") is not None
+
+
+def test_execution_repository_update_all_preserves_records_written_after_stale_snapshot(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "effect-executions.json"
+    execution_store = JsonExecutionStore(path)
+    execution_store.record_execution(_effect_record(execution_id="exec-old", idempotency_key="old"))
+
+    stale_snapshot = json.loads(path.read_text(encoding="utf-8"))
+    assert list(stale_snapshot) == ["exec-old"]
+
+    execution_store.record_execution(_effect_record(execution_id="exec-new", idempotency_key="new"))
+
+    def fail_old_record(records: dict[str, EffectExecutionRecord]) -> int:
+        record = records["exec-old"]
+        record.status = "failed"
+        records["exec-old"] = record
+        return 1
+
+    assert execution_store.update_all(fail_old_record) == 1
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["exec-old"]["status"] == "failed"
+    assert payload["exec-new"]["status"] == "running"

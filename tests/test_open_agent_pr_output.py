@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -71,18 +72,27 @@ printf '%s\\n' "$*" >> "{attach_log}"
     os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
 
     pr_map = tmp_path / "runtime" / "pr-map.json"
+    pr_map.parent.mkdir(parents=True)
+    pr_map.write_text(
+        json.dumps({"version": 1, "entries": {"seed": {"kept": True}}}) + "\n",
+        encoding="utf-8",
+    )
+    pr_map.chmod(0o444)
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["AGENT_SANDBOX_PR_MAP_PATH"] = str(pr_map)
     env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
 
-    result = subprocess.run(
-        [str(script), "--create-pr", str(host_repo), "review/session-123/work"],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
+    try:
+        result = subprocess.run(
+            [str(script), "--create-pr", str(host_repo), "review/session-123/work"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+    finally:
+        pr_map.chmod(0o644)
 
     lines = [line for line in result.stdout.splitlines() if line.startswith("AGENT_PR_RESULT ")]
     assert lines, result.stdout
@@ -98,6 +108,7 @@ printf '%s\\n' "$*" >> "{attach_log}"
     }
 
     mapping = json.loads(pr_map.read_text(encoding="utf-8"))
+    assert mapping["entries"]["seed"] == {"kept": True}
     entry = mapping["entries"]["github:example/repo:42"]
     assert entry["provider"] == "github"
     assert entry["repo"] == "example/repo"
@@ -174,18 +185,23 @@ esac
     os.chmod(fake_bin / "gh", 0o755)
     os.chmod(fake_bin / "agent-sandbox-cli", 0o755)
 
+    pr_map = tmp_path / "runtime" / "pr-map.json"
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
-    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(tmp_path / "runtime" / "pr-map.json")
+    env["AGENT_SANDBOX_PR_MAP_PATH"] = str(pr_map)
     env["AGENT_SANDBOX_CLI_BIN"] = str(fake_bin / "agent-sandbox-cli")
 
-    result = subprocess.run(
-        [str(script), "--create-pr", str(host_repo), "review/issue-14084-abc/work"],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
+    old_umask = os.umask(0o027)
+    try:
+        result = subprocess.run(
+            [str(script), "--create-pr", str(host_repo), "review/issue-14084-abc/work"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+    finally:
+        os.umask(old_umask)
 
     lines = [line for line in result.stdout.splitlines() if line.startswith("AGENT_PR_RESULT ")]
     assert lines, result.stdout
@@ -199,6 +215,7 @@ esac
         "push origin review/issue-14084-abc/work:refs/heads/feature/issue-14084" in command
         for command in commands
     )
+    assert stat.S_IMODE(pr_map.stat().st_mode) == 0o640
 
 
 def test_open_agent_pr_preflight_reports_destination_branch_ahead(tmp_path: Path) -> None:

@@ -306,6 +306,25 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
     assert updated.metadata == {"keep": "new-value"}
 
 
+def test_admin_web_rejects_direct_delete_for_agent_session(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-14085-session",
+            vm_id="vm-14085",
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    client = TestClient(create_app(service))
+
+    response = client.delete("/api/admin/sessions/issue-14085-session")
+
+    assert response.status_code == 400
+    assert "Delete the agent instead" in response.json()["error"]
+    assert service.runtime.session_repository.get_session("issue-14085-session") is not None
+
+
 def test_admin_web_rejects_blank_session_model(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(

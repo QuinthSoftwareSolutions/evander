@@ -709,37 +709,94 @@ write_pr_mapping() {
   SESSION_ID="${session_id}" \
   LOCAL_BRANCH="${local_branch}" \
   python3 - <<'PY'
+import fcntl
 import json
 import os
+import stat
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 path = Path(os.environ["MAP_PATH"])
-if path.exists():
+path.parent.mkdir(parents=True, exist_ok=True)
+lock_path = path.with_name(f".{path.name}.lock")
+
+
+def _load_payload() -> dict:
+    if not path.exists():
+        return {"version": 1, "entries": {}}
     payload = json.loads(path.read_text(encoding="utf-8"))
-else:
-    payload = {"version": 1, "entries": {}}
+    return payload if isinstance(payload, dict) else {"version": 1, "entries": {}}
 
-entries = payload.setdefault("entries", {})
-timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
-provider = os.environ["PROVIDER"]
-repo_slug = os.environ["REPO_SLUG"]
-pr_id = os.environ["PR_ID"]
-key = f"{provider}:{repo_slug}:{pr_id}"
-entries[key] = {
-    "provider": provider,
-    "repo": repo_slug,
-    "pr_id": pr_id,
-    "pr_url": os.environ["PR_URL"],
-    "origin_branch": os.environ["ORIGIN_BRANCH"],
-    "base_branch": os.environ["BASE_BRANCH"],
-    "session_id": os.environ["SESSION_ID"],
-    "local_branch": os.environ["LOCAL_BRANCH"],
-    "updated_at": timestamp,
-}
-payload["updated_at"] = timestamp
-path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+def _umask_respecting_default_mode() -> int:
+    current_umask = os.umask(0)
+    try:
+        return 0o666 & ~current_umask
+    finally:
+        os.umask(current_umask)
+
+
+def _write_payload(payload: dict) -> None:
+    serialized = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    owner_source = path if path.exists() else path.parent
+    owner_stat = owner_source.stat()
+    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else _umask_respecting_default_mode()
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        text=True,
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_path, mode)
+        if os.geteuid() == 0:
+            os.chown(temp_path, owner_stat.st_uid, owner_stat.st_gid)
+        os.replace(temp_path, path)
+        dir_fd = os.open(path.parent, getattr(os, "O_DIRECTORY", 0) | os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+with lock_path.open("a+", encoding="utf-8") as lock_file:
+    if os.geteuid() == 0:
+        owner_stat = (path if path.exists() else path.parent).stat()
+        os.fchown(lock_file.fileno(), owner_stat.st_uid, owner_stat.st_gid)
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    try:
+        payload = _load_payload()
+        entries = payload.setdefault("entries", {})
+        timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+        provider = os.environ["PROVIDER"]
+        repo_slug = os.environ["REPO_SLUG"]
+        pr_id = os.environ["PR_ID"]
+        key = f"{provider}:{repo_slug}:{pr_id}"
+        entries[key] = {
+            "provider": provider,
+            "repo": repo_slug,
+            "pr_id": pr_id,
+            "pr_url": os.environ["PR_URL"],
+            "origin_branch": os.environ["ORIGIN_BRANCH"],
+            "base_branch": os.environ["BASE_BRANCH"],
+            "session_id": os.environ["SESSION_ID"],
+            "local_branch": os.environ["LOCAL_BRANCH"],
+            "updated_at": timestamp,
+        }
+        payload["updated_at"] = timestamp
+        _write_payload(payload)
+    finally:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 PY
 }
 

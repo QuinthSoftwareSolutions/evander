@@ -14,7 +14,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from agent_sandbox.config import (
     GatewayConfig,
@@ -115,6 +115,8 @@ class _Sleeper:
 
 
 class EffectExecutionRecord(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     execution_id: str = Field(min_length=1)
     idempotency_key: str = Field(min_length=1)
     event_id: str = Field(min_length=1)
@@ -134,9 +136,15 @@ class EffectExecutionRecord(BaseModel):
     error: str | None = None
     completion_event_enqueued_at: datetime | None = None
     config_revision: str | None = None
+    cleared_at: datetime | None = None
+    clear_reason: str | None = None
+    dismissed_at: datetime | None = None
+    dismiss_reason: str | None = None
 
 
 class GateExecutionRecord(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     execution_id: str = Field(min_length=1)
     idempotency_key: str = Field(min_length=1)
     event_id: str = Field(min_length=1)
@@ -159,6 +167,10 @@ class GateExecutionRecord(BaseModel):
     error: str | None = None
     completion_event_enqueued_at: datetime | None = None
     config_revision: str | None = None
+    cleared_at: datetime | None = None
+    clear_reason: str | None = None
+    dismissed_at: datetime | None = None
+    dismiss_reason: str | None = None
 
 
 @dataclass(frozen=True)
