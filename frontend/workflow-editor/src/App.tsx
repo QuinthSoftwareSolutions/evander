@@ -3478,10 +3478,13 @@ export default function App() {
                             </label>
                           )
                           : (
-                            <input
-                              value={typeof currentValue === "string" ? currentValue : ""}
-                              onChange={(event) => updateObjectListItem(field.key, index, itemField.key, event.target.value)}
-                            />
+                            renderStringInput(
+                              itemField,
+                              currentValue,
+                              (nextValue) => updateObjectListItem(field.key, index, itemField.key, nextValue),
+                              isDisabled,
+                              "",
+                            )
                           )}
                     </div>
                   );

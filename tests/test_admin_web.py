@@ -237,6 +237,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
             "overwrite",
         ]
     )
+    assert agent_copy_file_fields["content"]["multiline"]
     assert "/home/agent" in agent_copy_file_fields["destination_path"]["description"]
     assert "0644" in agent_copy_file_fields["mode"]["description"]
     vm_delete = next(
