@@ -181,6 +181,135 @@ def test_upsert_ado_proxy_issue_materializes_yaml_and_reads_ado_field_tags(
     assert payload["comments"] == [{"id": "c1", "text": "cached comment"}]
 
 
+def test_upsert_ado_proxy_issue_reuses_local_issue_linked_from_approval_reason(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 5, 15, 12, 0, tzinfo=UTC)
+    local_yaml = tmp_path / "issues" / "21.yaml"
+    local_yaml.parent.mkdir(parents=True)
+    local_yaml.write_text(
+        "issue_number: 21\n"
+        'title: "Remote 101"\n'
+        "body: Local body\n"
+        "state: Committed\n"
+        "source: local_gui\n",
+        encoding="utf-8",
+    )
+    local_issue = LocalIssueRecord(
+        issue_id="root/team::local::21",
+        issue_number="21",
+        title="Remote 101",
+        body="Local body",
+        yaml_path=str(local_yaml),
+        directory_path="root/team",
+        source_type="local_manual",
+        source="local_gui",
+        state="Committed",
+        metadata={
+            "fields": {
+                "Reason": (
+                    "Committed after approval as Azure DevOps Bug 101: "
+                    "https://ado.example/101"
+                )
+            }
+        },
+    )
+    _store_issue(tmp_path, local_issue)
+
+    issue = upsert_ado_proxy_issue_from_remote_payload(
+        runtime_dir=tmp_path,
+        directory_path="root/team",
+        project="Project",
+        organization_url="https://dev.azure.com/example",
+        now=now,
+        remote_payload={
+            "remote_issue_id": "101",
+            "title": "Remote 101",
+            "description": "Remote body 101",
+            "state": "In Progress",
+            "url": "https://ado.example/101",
+            "updated_at": "2026-05-15T11:00:00Z",
+            "fields": {"System.State": "In Progress"},
+        },
+    )
+
+    assert issue.issue_id == local_issue.issue_id
+    assert issue.issue_number == "21"
+    assert issue.source_type == "local_manual"
+    assert issue.source == "local_gui"
+    assert issue.state == "In Progress"
+    assert issue.remote_reference is not None
+    assert issue.remote_reference.work_item_id == "101"
+    assert issue.metadata["remote"]["issue_id"] == "101"
+    assert local_yaml.read_text(encoding="utf-8") == (
+        "issue_number: 21\n"
+        'title: "Remote 101"\n'
+        "body: Local body\n"
+        "state: Committed\n"
+        "source: local_gui\n"
+    )
+    stored = JsonStore(tmp_path / "local-issues.json", LocalIssueRecord).read_all()
+    assert list(stored) == [local_issue.issue_id]
+
+
+def test_upsert_ado_proxy_issue_prunes_generated_duplicate_when_local_issue_is_canonical(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 5, 15, 12, 0, tzinfo=UTC)
+    local_issue = LocalIssueRecord(
+        issue_id="root/team::local::21",
+        issue_number="21",
+        title="Remote 101",
+        body="Local body",
+        yaml_path=str(tmp_path / "issues" / "21.yaml"),
+        directory_path="root/team",
+        source_type="local_manual",
+        source="local_gui",
+        state="Committed",
+        metadata={
+            "fields": {
+                "Reason": (
+                    "Committed after approval as Azure DevOps Bug 101: "
+                    "https://ado.example/101"
+                )
+            }
+        },
+    )
+    proxy_yaml = tmp_path / "issues" / "proxy-azure-devops-101-test.yaml"
+    proxy_yaml.parent.mkdir(parents=True)
+    proxy_yaml.write_text("issue_number: 101\n", encoding="utf-8")
+    proxy_issue = _proxy_issue(
+        "101",
+        issue_id="root/team::azure_devops::https://dev.azure.com/example::Project::101",
+        directory_path="root/team",
+    )
+    proxy_issue.yaml_path = str(proxy_yaml)
+    _store_issue(tmp_path, local_issue)
+    _store_issue(tmp_path, proxy_issue)
+
+    issue = upsert_ado_proxy_issue_from_remote_payload(
+        runtime_dir=tmp_path,
+        directory_path="root/team",
+        project="Project",
+        organization_url="https://dev.azure.com/example",
+        now=now,
+        remote_payload={
+            "remote_issue_id": "101",
+            "title": "Remote 101",
+            "description": "Remote body 101",
+            "state": "In Progress",
+            "url": "https://ado.example/101",
+            "updated_at": "2026-05-15T11:00:00Z",
+            "fields": {"System.State": "In Progress"},
+        },
+    )
+
+    assert issue.issue_id == local_issue.issue_id
+    stored = JsonStore(tmp_path / "local-issues.json", LocalIssueRecord).read_all()
+    assert list(stored) == [local_issue.issue_id]
+    assert not proxy_yaml.exists()
+
+
 def test_proxy_issue_sync_respects_freshness_window(tmp_path: Path) -> None:
     now = datetime(2026, 5, 15, 12, 0, tzinfo=UTC)
     _store_issue(

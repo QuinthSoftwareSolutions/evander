@@ -15,7 +15,7 @@ from agent_sandbox.admin.services.issue_git_service import (
     IssueGitAdminDependencies,
     IssueGitAdminService,
 )
-from agent_sandbox.models import LocalIssueRecord, SessionManifest, ToolName
+from agent_sandbox.models import LocalIssueRecord, RemoteIssueReference, SessionManifest, ToolName
 
 
 class FakeStore:
@@ -286,6 +286,111 @@ def test_issue_git_admin_service_list_actionable_local_issues_filters_proxy_reco
     actionable = service.list_actionable_local_issues(directory_path="root")
 
     assert [issue.issue_id for issue in actionable] == [local_issue.issue_id]
+
+
+def test_issue_git_admin_service_get_issue_passes_remote_reference_project(
+    tmp_path: Path,
+) -> None:
+    admin, store = _build_issue_admin(tmp_path)
+    remote_calls: list[dict[str, object]] = []
+    admin.issue_service = SimpleNamespace(
+        read_remote_issue=lambda **kwargs: remote_calls.append(kwargs)
+        or {
+            "title": "Remote",
+            "description": "Body",
+            "state": "In Progress",
+        },
+        post_remote_comment=lambda **kwargs: {"comment_added": True},
+        update_remote_issue=lambda **kwargs: {"updated": True},
+    )
+    admin._proxy_target_for_issue = lambda issue: ("azure_devops", "15446")
+    service = IssueGitAdminService(_issue_git_dependencies(admin))
+    issue = LocalIssueRecord(
+        issue_id="root::azure_devops::15446",
+        issue_number="15446",
+        title="Issue",
+        body="Body",
+        yaml_path=str(tmp_path / "issues" / "15446.yaml"),
+        directory_path="root/example/truman/auto-dev",
+        source_type="remote_proxy",
+        remote_reference=RemoteIssueReference(
+            provider="azure_devops",
+            organization="https://dev.azure.com/exampleindustry",
+            project="Example Industry APP",
+            work_item_id="15446",
+        ),
+    )
+    store.put(issue.issue_id, issue)
+
+    service.get_issue(issue.issue_id)
+
+    assert remote_calls == [
+        {
+            "provider": "azure_devops",
+            "remote_issue_id": "15446",
+            "directory_path": "root/example/truman/auto-dev",
+            "project": "Example Industry APP",
+            "include_comments": True,
+        }
+    ]
+
+
+def test_issue_git_admin_service_update_issue_passes_remote_reference_project(
+    tmp_path: Path,
+) -> None:
+    admin, store = _build_issue_admin(tmp_path)
+    update_calls: list[dict[str, object]] = []
+    read_calls: list[dict[str, object]] = []
+    admin.issue_service = SimpleNamespace(
+        read_remote_issue=lambda **kwargs: read_calls.append(kwargs)
+        or {
+            "title": "Remote",
+            "description": "Body",
+            "state": "In Progress",
+        },
+        post_remote_comment=lambda **kwargs: {"comment_added": True},
+        update_remote_issue=lambda **kwargs: update_calls.append(kwargs) or {"updated": True},
+    )
+    admin._proxy_target_for_issue = lambda issue: ("azure_devops", "15446")
+    service = IssueGitAdminService(_issue_git_dependencies(admin))
+    issue = LocalIssueRecord(
+        issue_id="root::azure_devops::15446",
+        issue_number="15446",
+        title="Issue",
+        body="Body",
+        yaml_path=str(tmp_path / "issues" / "15446.yaml"),
+        directory_path="root/example/truman/auto-dev",
+        source_type="remote_proxy",
+        remote_reference=RemoteIssueReference(
+            provider="azure_devops",
+            organization="https://dev.azure.com/exampleindustry",
+            project="Example Industry APP",
+            work_item_id="15446",
+        ),
+    )
+    store.put(issue.issue_id, issue)
+
+    service.update_issue(issue.issue_id, state="In Progress")
+
+    assert update_calls == [
+        {
+            "provider": "azure_devops",
+            "remote_issue_id": "15446",
+            "directory_path": "root/example/truman/auto-dev",
+            "project": "Example Industry APP",
+            "state": "In Progress",
+            "fields": None,
+        }
+    ]
+    assert read_calls == [
+        {
+            "provider": "azure_devops",
+            "remote_issue_id": "15446",
+            "directory_path": "root/example/truman/auto-dev",
+            "project": "Example Industry APP",
+            "include_comments": True,
+        }
+    ]
 
 
 def test_admin_service_delegates_issue_git_methods() -> None:
