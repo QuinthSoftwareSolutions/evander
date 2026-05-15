@@ -5,7 +5,6 @@ import hashlib
 import logging
 import os
 import random
-import time
 from uuid import uuid4
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,22 +37,12 @@ from agent_sandbox.workflow.runtime_config import (
     TriggerOrchestratorWorkerGlobalConfigReloader,
     load_trigger_orchestrator_worker_global_config,
 )
-from agent_sandbox.messaging.wake_dispatch import single_instance_lock
+from agent_sandbox.orchestration.host_polling import HostFileLockManager, HostSleeper
 from agent_sandbox.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
 from agent_sandbox.orchestration.wiring import TriggerWorkerWiring, build_trigger_worker_wiring
 from agent_sandbox.repositories.orchestration import GateCursorRepository
 
 logger = logging.getLogger(__name__)
-
-
-class _LockManager:
-    def lock(self, path: Path):
-        return single_instance_lock(path)
-
-
-class _Sleeper:
-    def sleep(self, seconds: float) -> None:
-        time.sleep(seconds)
 
 
 @dataclass(frozen=True)
@@ -106,8 +95,8 @@ class TriggerOrchestratorWorker:
                 jitter_seconds=self.worker_config.jitter_seconds,
                 lock_path=self.worker_config.lock_path,
             ),
-            lock_manager=_LockManager(),
-            sleeper=_Sleeper(),
+            lock_manager=HostFileLockManager(),
+            sleeper=HostSleeper(),
             run_cycle=self.run_once,
             get_sleep_seconds=lambda result: result.next_sleep_seconds,
         )

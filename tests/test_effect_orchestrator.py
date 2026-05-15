@@ -34,6 +34,7 @@ from agent_sandbox.messaging.agent_prompt_queue import (
     AgentPromptQueueStore,
     QueuedAgentPromptRecord,
 )
+from agent_sandbox.orchestration.host_polling import HostFileLockManager
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.models import SessionManifest, ToolName, VmSummary
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
@@ -267,6 +268,36 @@ def test_effect_orchestrator_run_once_uses_reloaded_worker_config_for_sleep(tmp_
     result = worker.run_once()
 
     assert result.next_sleep_seconds == 13
+
+
+def test_effect_orchestrator_uses_shared_host_lock_manager(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [],
+            "effects": [],
+            "gates": [],
+            "queries": [],
+            "edges": [],
+        }
+    )
+    worker = EffectOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+
+    assert isinstance(worker._kernel._lock_manager, HostFileLockManager)
+    assert worker._kernel.config.lock_path == worker.lock_path
+
+    sentinel = object()
+    worker._kernel.run_once_with_lock = lambda: sentinel  # type: ignore[method-assign]
+
+    assert worker.run_once_with_lock() is sentinel
 
 
 def test_effect_orchestrator_logs_graph_revision_changes(tmp_path: Path, caplog) -> None:

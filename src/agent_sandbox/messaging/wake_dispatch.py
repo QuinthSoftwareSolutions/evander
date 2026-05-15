@@ -18,10 +18,13 @@ from agent_sandbox.admin.service import (
 from agent_sandbox.agent_control import AgentControlStore
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.models import WakeDispatchRecord, WakeResumePromptPayload
+from agent_sandbox.orchestration.host_polling import single_instance_lock
 from agent_sandbox.runtime import RuntimeContext
 from agent_sandbox.worker_directory_context import WorkerDirectoryContextResolver
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["single_instance_lock"]
 
 
 @dataclass(frozen=True)
