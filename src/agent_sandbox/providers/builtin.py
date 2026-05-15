@@ -71,6 +71,9 @@ from agent_sandbox.triggers.providers.issue_comment_created import IssueCommentC
 from agent_sandbox.triggers.providers.pull_request_new_feedback import (
     PullRequestNewFeedbackTriggerProvider,
 )
+from agent_sandbox.triggers.providers.pull_request_completed import (
+    PullRequestCompletedTriggerProvider,
+)
 from agent_sandbox.triggers.providers.review_new_request import ReviewNewRequestTriggerProvider
 from agent_sandbox.triggers.providers.script_run_request import ScriptRunRequestTriggerProvider
 from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
@@ -96,6 +99,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "trigger:teams-meeting:new-transcript": TeamsMeetingNewTranscriptTriggerProvider,
             "trigger:email:new-message": EmailNewMessageTriggerProvider,
             "trigger:pull-request:new-feedback": PullRequestNewFeedbackTriggerProvider,
+            "trigger:pull-request:completed": PullRequestCompletedTriggerProvider,
             "trigger:review:new-request": ReviewNewRequestTriggerProvider,
             "trigger:git:push": GitPushTriggerProvider,
             "trigger:agent:prompt:new": AgentPromptNewTriggerProvider,

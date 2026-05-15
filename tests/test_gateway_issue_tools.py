@@ -376,6 +376,95 @@ def test_query_ado_backlog_items_requires_permission(tmp_path: Path) -> None:
         asyncio.run(server.call_tool("query_ado_backlog_items", {"session_id": "session-1"}))
 
 
+def test_update_ado_backlog_tags_merges_existing_tags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.UPDATE_ADO_BACKLOG_TAGS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    calls: list[dict[str, object]] = []
+
+    class StubIssueService:
+        def __init__(self, provider_config: object) -> None:
+            calls.append({"provider_config": provider_config})
+
+        def read_remote_issue(self, **kwargs: object) -> dict[str, object]:
+            calls.append({"read": kwargs})
+            return {
+                "remote_issue_id": "15446",
+                "fields": {"System.Tags": "auto-dev; truman"},
+            }
+
+        def update_remote_issue(self, **kwargs: object) -> dict[str, object]:
+            calls.append({"update": kwargs})
+            return {
+                "provider": "azure_devops",
+                "remote_issue_id": "15446",
+                "updated": True,
+                "fields": kwargs.get("fields"),
+            }
+
+    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "update_ado_backlog_tags",
+        {
+            "session_id": "session-1",
+            "id": 15446,
+            "project": "Example Industry APP",
+            "add_tags": ["auto-dev-approved", "truman"],
+        },
+    )
+
+    assert calls[1]["read"] == {
+        "provider": "azure_devops",
+        "remote_issue_id": "15446",
+        "directory_path": "root/team-a",
+        "project": "Example Industry APP",
+        "include_comments": False,
+    }
+    assert calls[2]["update"] == {
+        "provider": "azure_devops",
+        "remote_issue_id": "15446",
+        "directory_path": "root/team-a",
+        "project": "Example Industry APP",
+        "state": None,
+        "fields": {"System.Tags": "auto-dev; truman; auto-dev-approved"},
+    }
+    assert result["tags"] == ["auto-dev", "truman", "auto-dev-approved"]
+    assert result["added_tags"] == ["auto-dev-approved"]
+    assert result["removed_tags"] == []
+
+
+def test_update_ado_backlog_tags_requires_permission(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="not allowed"):
+        asyncio.run(
+            server.call_tool(
+                "update_ado_backlog_tags",
+                {"session_id": "session-1", "id": 15446, "add_tags": ["auto-dev-approved"]},
+            )
+        )
+
+
 def test_query_ado_backlog_items_maps_request_into_issue_service(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

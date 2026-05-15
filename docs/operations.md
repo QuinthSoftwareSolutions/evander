@@ -467,6 +467,12 @@ A transport-terminated warning without client-visible failure can be expected fo
   - Required MCP argument: `id`; at least one text field or artifact list must be present.
   - Optional MCP arguments: `project`, `description`, `acceptance_criteria`,
     `description_artifact_ids`, `acceptance_criteria_artifact_ids`, `request_id`.
+- Gateway tool name: `update_ado_backlog_tags`.
+  - Policy-gated with `update_ado_backlog_tags`.
+  - Required MCP argument: `id`; at least one tag must be present in `add_tags` or `remove_tags`.
+  - Optional MCP arguments: `project`, `add_tags`, `remove_tags`.
+  - The tool reads the current `System.Tags`, merges the requested changes, and writes the full
+    tag field back to ADO.
 - Artifact arguments use opaque IDs returned by `communication_stage_workspace_file` or inbound
   media download tools. When `communication_file_require_approval_for_send` is enabled, the call
   must include a matching approved `request_id`.
@@ -617,12 +623,17 @@ key, contact resolution, API requests, webhook verification, and transcript stor
 receive raw phone numbers or Retell credentials.
 
 - Gateway tool names:
+  - `list_contacts`
   - `make_phone_call`
   - `get_phone_call_result`
+  - `update_ado_backlog_tags` when the call result should approve ADO items by tag
 - Policy gating:
+  - Add `list_contacts` to the session manifest `allowed_tools` to list visible contact ids and safe
+    summaries.
   - Add `make_phone_call` to the session manifest `allowed_tools` to start calls.
   - Add `get_phone_call_result` to read call status and transcripts.
   - `get_phone_call_result` only returns calls owned by the same session and directory path.
+  - Add `update_ado_backlog_tags` only for sessions that may change ADO item tags.
 - Provider config with defaults:
   - `retell_api_base_url` defaults to `https://api.retellai.com`; leave the default in the GUI or
     omit the key from JSON unless Retell gives you a different endpoint or you intentionally route
@@ -678,6 +689,14 @@ Example directory-scoped `contacts.json` overlay:
 
 Example call sequence from an agent:
 
+First list available contacts:
+
+```json
+{"session_id":"session-1"}
+```
+
+Use the returned contact `id` as the `contact` field:
+
 ```json
 {"session_id":"session-1","contact":"ops_duty","prompt":"Ask whether the deployment window is still approved.","request_id":"deploy-window-1"}
 ```
@@ -688,9 +707,19 @@ Then poll:
 {"session_id":"session-1","request_id":"deploy-window-1"}
 ```
 
+For verbal ADO approval flows, have the agent read the call transcript, identify the explicitly
+approved work item IDs, and call:
+
+```json
+{"session_id":"session-1","id":15446,"project":"Example Industry APP","add_tags":["auto-dev-approved"]}
+```
+
 Audit/result behavior:
 
 - Tool audit redacts `prompt` through the existing `redacted_keys` policy.
+- `list_contacts` returns contact ids, names, descriptions, address counts, phone counts, primary
+  phone labels, and whether the contact is callable. It does not return phone numbers or email
+  addresses.
 - Agent-facing results include contact id/name, status, timestamps, disconnection
   reason, transcript fields, call analysis, and sanitized Retell metadata.
 - Agent-facing responses and audit results do not include `from_number`, `to_number`, configured
@@ -974,7 +1003,10 @@ without exposing provider credentials in the VM.
 
 - `agent-sandbox-cli discord-wake` owns Discord inbox wakeups and resumes.
 - `agent-sandbox-cli scheduled-wake` owns scheduled resume dispatch.
-- Azure DevOps PR feedback ingestion is owned by `agent-sandbox-ado-worker`, which writes `runtime/pr-feedback-store.json` and publishes `trigger:pull-request:new-feedback` events directly.
+- Azure DevOps PR feedback ingestion and PR completion polling are owned by
+  `agent-sandbox-ado-worker`. It writes `runtime/pr-feedback-store.json`, updates
+  `runtime/pr-map.json` PR status fields, and publishes `trigger:pull-request:new-feedback` and
+  `trigger:pull-request:completed` events directly.
 - Recommended service lifecycle commands:
   - `sudo systemctl start agent-sandbox-discord-wake.service`
   - `sudo systemctl stop agent-sandbox-discord-wake.service`
@@ -1182,9 +1214,12 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
   `agent-sandbox-cli poll-ado-backlog`.
 - The worker polls Azure DevOps work items in `Committed` state tagged `truman`, writes YAML
   payloads under `ADO_YAML_OUTPUT_DIR`, and invokes `scripts/setup_vm.sh`.
-- The same worker now owns Azure DevOps PR feedback ingestion for configured PR streams; it
-  updates `runtime/pr-feedback-store.json` and publishes `trigger:pull-request:new-feedback`
-  events without depending on `agent-sandbox-host-heartbeat`.
+- The same worker now owns Azure DevOps PR feedback ingestion and PR completion polling for
+  configured PR streams; it updates `runtime/pr-feedback-store.json`, records PR status in
+  `runtime/pr-map.json`, and publishes `trigger:pull-request:new-feedback` plus
+  `trigger:pull-request:completed` events without depending on `agent-sandbox-host-heartbeat`.
+- For merged-PR cleanup workflows, wire `trigger:pull-request:completed.session_id` into
+  `effect:agent:destroy.session_id`.
 - A polled ADO work item is represented in the unified local issue store as a proxy issue
   (`source: proxy_azure_devops`) keyed by local issue number with remote linkage in
   `metadata.remote` and a last-seen cache in `metadata.proxy_cache`.

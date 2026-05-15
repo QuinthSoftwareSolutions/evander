@@ -39,7 +39,7 @@ def test_sessions_screen_groups_voice_calling_and_workspace_staging_tools() -> N
     ).read_text(encoding="utf-8")
 
     assert '"Voice calling"' in source
-    assert '"make_phone_call", "get_phone_call_result"' in source
+    assert '"list_contacts", "make_phone_call", "get_phone_call_result"' in source
     assert '"communication_copy_artifact_to_workspace",\n    "communication_stage_workspace_file",' in source
 
 
@@ -219,6 +219,7 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert {
         "add_message_reaction",
         "get_phone_call_result",
+        "list_contacts",
         "make_phone_call",
         "post_pr_inline_comment",
         "teams_meeting_get_events",
@@ -226,6 +227,7 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
         "teams_meeting_stop",
     }.issubset(catalog_tool_values)
     tool_options = {item["value"]: item for item in catalog_payload["tool_options"]}
+    assert "List directory-configured contact ids" in tool_options["list_contacts"]["description"]
     assert "Start Retell phone calls" in tool_options["make_phone_call"]["description"]
     assert "Read Retell phone call status" in tool_options["get_phone_call_result"]["description"]
     assert list_response.status_code == 200

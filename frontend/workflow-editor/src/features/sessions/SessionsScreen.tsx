@@ -134,6 +134,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   teams_meeting_get_events: "Read Teams meeting transcript and status events captured for this session.",
   teams_meeting_speak: "Speak into the active Teams meeting through the host-managed meeting bridge.",
   teams_meeting_stop: "Leave the active Teams meeting and close the host-side meeting binding.",
+  list_contacts: "List directory contact ids and safe contact summaries without exposing phone numbers or email addresses.",
   email_list_unread: "List unread email messages available to the session through the host email provider.",
   email_get_message: "Open a specific email message that the session is allowed to inspect.",
   email_create_draft: "Create an email draft on the host without sending it yet.",
@@ -314,7 +315,7 @@ function groupToolOption(tool: ToolOption): string {
   if (["add_message_reaction"].includes(value)) {
     return "Messaging";
   }
-  if (["make_phone_call", "get_phone_call_result"].includes(value)) {
+  if (["list_contacts", "make_phone_call", "get_phone_call_result"].includes(value)) {
     return "Voice calling";
   }
   if (["mssql_provision_database", "mssql_list_databases", "mssql_drop_database"].includes(value)) {

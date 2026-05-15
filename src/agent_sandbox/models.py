@@ -41,6 +41,7 @@ class ToolName(str, Enum):
     GET_ADO_BACKLOG_ITEM = "get_ado_backlog_item"
     POST_ADO_BACKLOG_COMMENT = "post_ado_backlog_comment"
     UPDATE_ADO_BACKLOG_TEXT = "update_ado_backlog_text"
+    UPDATE_ADO_BACKLOG_TAGS = "update_ado_backlog_tags"
     CREATE_LOCAL_ISSUE = "create_local_issue"
     LIST_ISSUES = "list_issues"
     GET_ISSUE = "get_issue"
@@ -68,6 +69,7 @@ class ToolName(str, Enum):
     TEAMS_MEETING_SPEAK = "teams_meeting_speak"
     TEAMS_MEETING_STOP = "teams_meeting_stop"
     ADD_MESSAGE_REACTION = "add_message_reaction"
+    LIST_CONTACTS = "list_contacts"
     MAKE_PHONE_CALL = "make_phone_call"
     GET_PHONE_CALL_RESULT = "get_phone_call_result"
     EMAIL_LIST_UNREAD = "email_list_unread"
@@ -1310,6 +1312,58 @@ class AdoBacklogTextUpdateRequest(BaseModel):
             raise ValueError("description or acceptance_criteria update is required")
 
 
+class AdoBacklogTagsUpdateRequest(BaseModel):
+    id: int | str
+    project: str | None = None
+    add_tags: list[str] = Field(default_factory=list)
+    remove_tags: list[str] = Field(default_factory=list)
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def normalize_id(cls, value: object) -> str:
+        if value is None:
+            raise ValueError("id is required")
+        if isinstance(value, bool):
+            raise ValueError("id must be an integer")
+        normalized = str(value).strip()
+        if not normalized or not normalized.isdigit():
+            raise ValueError("id must be a numeric backlog item id")
+        return normalized
+
+    @field_validator("project", mode="before")
+    @classmethod
+    def trim_optional_strings(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator("add_tags", "remove_tags", mode="before")
+    @classmethod
+    def normalize_tag_list(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        raw_values = [value] if isinstance(value, str) else value
+        if not isinstance(raw_values, list):
+            raise ValueError("tags must be a list of strings")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_tag in raw_values:
+            tag = str(raw_tag).strip()
+            if not tag:
+                continue
+            key = tag.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(tag)
+        return normalized
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.add_tags and not self.remove_tags:
+            raise ValueError("add_tags or remove_tags is required")
+
+
 class AdoBacklogQueryRequest(BaseModel):
     project: str | None = None
     wiql: str | None = None
@@ -1863,6 +1917,31 @@ class MakePhoneCallResponse(BaseModel):
     call_id: str | None = None
     contact: str = Field(min_length=1)
     status: str = Field(min_length=1)
+
+
+class ListContactsRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+
+    @field_validator("session_id", mode="before")
+    @classmethod
+    def normalize_session_id(cls, value: object) -> object:
+        text = str(value or "").strip()
+        return text or None
+
+
+class ContactSummary(BaseModel):
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    description: str = ""
+    email_address_count: int = Field(default=0, ge=0)
+    phone_number_count: int = Field(default=0, ge=0)
+    primary_phone_label: str | None = None
+    callable: bool = False
+
+
+class ListContactsResponse(BaseModel):
+    directory_path: str = Field(min_length=1)
+    contacts: list[ContactSummary] = Field(default_factory=list)
 
 
 class GetPhoneCallResultRequest(BaseModel):

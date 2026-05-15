@@ -751,6 +751,8 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   artifacts when outbound communication file send is enabled for the session.
 - Use `update_ado_backlog_text` to update the work item description or acceptance criteria and
   append staged artifact links/images to those fields.
+- Use `update_ado_backlog_tags` to merge Azure DevOps backlog item tags, such as adding
+  `auto-dev-approved` after an operator review.
 - Use `query_ado_backlog_items` to list/filter Azure DevOps backlog work items.
 - Use `get_ado_backlog_item` when you need a single normalized Azure DevOps work item by numeric
   id, with optional comments/relations/updates expansion.
@@ -766,6 +768,7 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   `artifact_ids`.
 - `update_ado_backlog_text` accepts `id`, optional `project`, `description`,
   `acceptance_criteria`, `description_artifact_ids`, and `acceptance_criteria_artifact_ids`.
+- `update_ado_backlog_tags` accepts `id`, optional `project`, `add_tags`, and `remove_tags`.
 - `get_ado_daily_status_report_data` accepts optional `project`, `team`, `area_path`, `states`,
   `types`, `tags_any`, `text_search`, report-label overrides, state-group overrides,
   `effort_fields`, `max_items`, `exclude_types`, and elapsed-time options. It excludes `Task`
@@ -851,11 +854,14 @@ Response:
 
 ## Retell Phone Call Tools
 
+- `list_contacts` lists the directory contact ids and safe summaries visible to the session. It does
+  not return phone numbers or email addresses.
 - `make_phone_call` starts an outbound Retell call to a configured directory contact id. Agents pass
   `contact` and `prompt`; they never pass raw phone numbers.
 - `get_phone_call_result` reads the call state/transcript by `request_id` or `call_id`.
-- Each tool is gated by its matching session permission: `make_phone_call` starts calls and
-  `get_phone_call_result` reads results.
+- Each tool is gated by its matching session permission: `list_contacts` discovers contact ids,
+  `make_phone_call` starts calls, and `get_phone_call_result` reads results.
+- Phone-review agents that approve ADO work items by voice also need `update_ado_backlog_tags`.
 - Configure Retell under directory-scoped `providers.json` with `retell_api_key_env`,
   `retell_from_number`, and `retell_default_agent_id`.
 - Configure callable contacts under directory-scoped `contacts.json`. Retell uses the contact's
@@ -891,7 +897,7 @@ Use this when you want the guest to wake only for new review feedback and post t
 
 1. Include PR feedback tools/stream metadata in the session manifest (same `session_id` the guest uses).
 2. Bootstrap a provider runtime in the guest (`./scripts/bootstrap_codex_vm.sh <vm-name>` or `./scripts/bootstrap_copilot_vm.sh <vm-name>`).
-3. For Azure DevOps PR feedback, keep `agent-sandbox-ado-worker` running; it now owns Azure DevOps feedback ingestion and trigger publication.
+3. For Azure DevOps PR feedback and completion cleanup, keep `agent-sandbox-ado-worker` running; it owns Azure DevOps feedback ingestion, PR status tracking, and trigger publication.
 4. `agent-sandbox-discord-wake.service` and `agent-sandbox-scheduled-wake.service` cover Discord inbox wakeups and scheduled resumes. No separate heartbeat worker is required for Azure DevOps PR feedback ingestion.
 5. Use MCP calls from the agent in this order:
    `has_pending_feedback` → `list_unread_feedback` → `post_pr_feedback_reply` (with an idempotency key).
@@ -925,7 +931,7 @@ Example `get_pull_request` result shape (Azure DevOps):
 
 ### Expected timing behavior
 
-- Azure DevOps feedback pickup is driven by `agent-sandbox-ado-worker` cadence and updates the shared host feedback store plus trigger queue.
+- Azure DevOps feedback and completion pickup is driven by `agent-sandbox-ado-worker` cadence and updates the shared host feedback store, `runtime/pr-map.json` status fields, and trigger queue.
 - `agent-sandbox-discord-wake` and `agent-sandbox-scheduled-wake` do not poll Azure DevOps PR feedback streams.
 - Guests consume pending feedback via MCP tools by default.
 - Provider bootstrap scripts default `ENABLE_GUEST_HEARTBEAT=0`, which keeps

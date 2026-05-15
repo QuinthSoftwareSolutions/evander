@@ -277,6 +277,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         ),
         "trigger:email:new-message": provider_models.EmailNewMessageTriggerDefinition,
         "trigger:pull-request:new-feedback": provider_models.PullRequestNewFeedbackTriggerDefinition,
+        "trigger:pull-request:completed": provider_models.PullRequestCompletedTriggerDefinition,
         "trigger:review:new-request": provider_models.ReviewNewRequestTriggerDefinition,
         "trigger:git:push": provider_models.GitPushTriggerDefinition,
         "trigger:agent:run:completed": provider_models.AgentRunCompletedTriggerDefinition,

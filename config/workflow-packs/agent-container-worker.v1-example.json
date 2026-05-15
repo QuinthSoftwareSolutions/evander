@@ -62,6 +62,38 @@
         "target_id": "effect-event-emit-auto-dev-scan-complete-1"
       },
       {
+        "source_id": "trigger-cron-auto-dev-approval-call-1",
+        "target_id": "query-ado-auto-dev-awaiting-approval-1"
+      },
+      {
+        "source_id": "query-ado-auto-dev-awaiting-approval-1",
+        "target_id": "gate-filter-auto-dev-approval-backlog-threshold-1"
+      },
+      {
+        "source_id": "gate-filter-auto-dev-approval-backlog-threshold-1",
+        "target_id": "gate-dedupe-auto-dev-approval-call-1"
+      },
+      {
+        "source_id": "gate-dedupe-auto-dev-approval-call-1",
+        "target_id": "gate-serialize-auto-dev-approval-items-1"
+      },
+      {
+        "source_id": "gate-serialize-auto-dev-approval-items-1",
+        "target_id": "effect-agent-create-auto-dev-approval-caller-1"
+      },
+      {
+        "source_id": "effect-agent-create-auto-dev-approval-caller-1",
+        "target_id": "query-session-context-auto-dev-approval-caller-1"
+      },
+      {
+        "source_id": "query-session-context-auto-dev-approval-caller-1",
+        "target_id": "effect-agent-enqueue-prompt-auto-dev-approval-caller-1"
+      },
+      {
+        "source_id": "effect-agent-enqueue-prompt-auto-dev-approval-caller-1",
+        "target_id": "effect-session-update-metadata-auto-dev-approval-caller-thread-1"
+      },
+      {
         "source_id": "gate-merge-1",
         "target_id": "effect-agent-create-1"
       },
@@ -359,6 +391,14 @@
       },
       {
         "config": {
+          "expression": "*/15 * * * *"
+        },
+        "display_name": "Auto-dev ADO approval call poll",
+        "id": "trigger-cron-auto-dev-approval-call-1",
+        "type": "trigger:cron"
+      },
+      {
+        "config": {
           "current_iteration": false,
           "directory_path": "root/example/truman",
           "project": "Example Industry APP",
@@ -376,6 +416,29 @@
         "outputs": {
           "items": {
             "type": "array"
+          }
+        },
+        "type": "query:ado:work-items"
+      },
+      {
+        "config": {
+          "directory_path": "root/example/truman/auto-dev",
+          "project": "Example Industry APP",
+          "skip": 0,
+          "top": 50,
+          "wiql": "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = 'Example Industry APP' AND [System.Tags] CONTAINS 'auto-dev' AND [System.Tags] NOT CONTAINS 'auto-dev-approved' AND [System.State] IN ('New', 'To Do') ORDER BY [System.ChangedDate] DESC, [System.Id] DESC"
+        },
+        "display_name": "Find auto-dev ADO items awaiting approval",
+        "id": "query-ado-auto-dev-awaiting-approval-1",
+        "outputs": {
+          "count": {
+            "type": "integer"
+          },
+          "items": {
+            "type": "array"
+          },
+          "paging": {
+            "type": "object"
           }
         },
         "type": "query:ado:work-items"
@@ -443,6 +506,55 @@
       },
       {
         "config": {
+          "when": {
+            "all": [
+              {
+                "is_not_null": true,
+                "left": "${{query-ado-auto-dev-awaiting-approval-1.paging.total_matches}}"
+              },
+              {
+                "left": "${{query-ado-auto-dev-awaiting-approval-1.paging.total_matches}}",
+                "not_in": [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5,
+                  6,
+                  7,
+                  8,
+                  9,
+                  10
+                ]
+              }
+            ]
+          }
+        },
+        "display_name": "More than 10 auto-dev ADO items await approval",
+        "id": "gate-filter-auto-dev-approval-backlog-threshold-1",
+        "type": "gate:filter"
+      },
+      {
+        "config": {
+          "key": "auto-dev-ado-approval-call:${{query-ado-auto-dev-awaiting-approval-1.paging.total_matches}}:${{query-ado-auto-dev-awaiting-approval-1.items.0.id}}",
+          "ttl": "PT4H"
+        },
+        "display_name": "Suppress repeated auto-dev approval calls",
+        "id": "gate-dedupe-auto-dev-approval-call-1",
+        "type": "gate:dedupe"
+      },
+      {
+        "config": {
+          "format": "json",
+          "value": "${{gate-dedupe-auto-dev-approval-call-1.items}}"
+        },
+        "display_name": "Serialize approval backlog items",
+        "id": "gate-serialize-auto-dev-approval-items-1",
+        "type": "gate:serialize"
+      },
+      {
+        "config": {
           "template": {
             "ado_project": "Example Industry APP",
             "agents_template_path": "/home/jonathan/agent-sandbox/templates/guest-AGENTS-new.md.tmpl",
@@ -501,6 +613,65 @@
         "display_name": "Auto-dev poll complete",
         "id": "effect-event-emit-auto-dev-scan-complete-1",
         "type": "effect:event:emit"
+      },
+      {
+        "config": {
+          "allowed_script_names": [],
+          "allowed_tools": [
+            "list_contacts",
+            "make_phone_call",
+            "get_phone_call_result",
+            "query_ado_backlog_items",
+            "get_ado_backlog_item",
+            "update_ado_backlog_tags"
+          ],
+          "codex_skills": [],
+          "directory_path": "root/example/truman/auto-dev",
+          "discord_channels": [],
+          "dotnet": false,
+          "email_folders": [],
+          "email_mailboxes": [],
+          "execution_backend": "container_worker_vm",
+          "labels": {
+            "auto-dev-role": "ado_approval_caller",
+            "vm-type": "auto-dev-approval-caller"
+          },
+          "model": "gpt-5.5",
+          "nuget": false,
+          "playwright": false,
+          "session_id": "auto-dev-ado-approval-caller-root-example-truman-auto-dev",
+          "ttl_hours": 720,
+          "vm_user": "agent"
+        },
+        "display_name": "Ensure auto-dev ADO approval caller",
+        "id": "effect-agent-create-auto-dev-approval-caller-1",
+        "type": "effect:agent:create"
+      },
+      {
+        "config": {
+          "model": "gpt-5.5",
+          "prompt": "You are the dedicated Truman auto-dev ADO approval caller.\n\nThere are ${{query-ado-auto-dev-awaiting-approval-1.paging.total_matches}} Azure DevOps work items awaiting human approval. These items are tagged auto-dev, are in New or To Do, and do not yet have auto-dev-approved.\n\nCandidate items JSON:\n${{gate-serialize-auto-dev-approval-items-1.content}}\n\nCall Jonathan using contact id \"jonathan_quinth\". In the call, give a concise spoken summary of the candidates using ID, title, state, and type. Keep the summary short enough to be useful over the phone. Ask which work item IDs should be approved.\n\nCall protocol:\n- Use make_phone_call with contact=\"jonathan_quinth\" and request_id=\"auto-dev-ado-approval:${{query-ado-auto-dev-awaiting-approval-1.paging.total_matches}}:${{query-ado-auto-dev-awaiting-approval-1.items.0.id}}:${{system.now.utc_timestamp_compact}}\".\n- In the phone prompt, tell Jonathan that replying with issue numbers approves only those ADO work items.\n- Poll get_phone_call_result for that request_id until the call reaches a terminal status and a transcript or call analysis is available. If needed, wait about 15 seconds between polls.\n- Parse only explicit numeric work item IDs from the candidate list. If the spoken response is unclear, says none, or names an ID not in the candidate list, do not approve that item.\n- For each explicitly approved candidate ID, call update_ado_backlog_tags with project=\"Example Industry APP\" and add_tags=[\"auto-dev-approved\"].\n- Do not change System.State. Do not approve any item outside the candidate JSON.\n\nWhen finished, summarize which IDs were tagged and which candidate IDs were left unchanged.",
+          "queue_key": "auto-dev-ado-approval-call:${{query-ado-auto-dev-awaiting-approval-1.paging.total_matches}}:${{query-ado-auto-dev-awaiting-approval-1.items.0.id}}",
+          "resume_thread_id": "${{query-session-context-auto-dev-approval-caller-1.metadata.agent_thread_id ?? null}}",
+          "target": "${{effect-agent-create-auto-dev-approval-caller-1.session_id}}",
+          "vm_user": "agent"
+        },
+        "display_name": "Call for auto-dev ADO approvals",
+        "id": "effect-agent-enqueue-prompt-auto-dev-approval-caller-1",
+        "type": "effect:agent:enqueue-prompt"
+      },
+      {
+        "config": {
+          "metadata": {
+            "agent_thread_id": "${{effect-agent-enqueue-prompt-auto-dev-approval-caller-1.thread_id ?? query-session-context-auto-dev-approval-caller-1.metadata.agent_thread_id ?? null}}",
+            "last_ado_approval_call_at": "${{system.now.utc_timestamp}}",
+            "last_ado_approval_call_item_count": "${{query-ado-auto-dev-awaiting-approval-1.paging.total_matches}}"
+          },
+          "target": "${{effect-agent-create-auto-dev-approval-caller-1.session_id}}"
+        },
+        "display_name": "Store auto-dev approval caller thread",
+        "id": "effect-session-update-metadata-auto-dev-approval-caller-thread-1",
+        "type": "effect:session:update-metadata"
       },
       {
         "config": {
@@ -1717,6 +1888,14 @@
         },
         "display_name": "Session context",
         "id": "query-session-context-2",
+        "type": "query:session-context"
+      },
+      {
+        "config": {
+          "target": "${{effect-agent-create-auto-dev-approval-caller-1.session_id}}"
+        },
+        "display_name": "Auto-dev approval caller session context",
+        "id": "query-session-context-auto-dev-approval-caller-1",
         "type": "query:session-context"
       },
       {
