@@ -1,13 +1,16 @@
+import json
 import os
 import stat
 import time
+import tempfile
 from multiprocessing import get_context
 from pathlib import Path
 from threading import Barrier, Thread
 
+import pytest
 from pydantic import BaseModel
 
-from agent_sandbox.storage import JsonStore
+from agent_sandbox.storage import JsonObjectStore, JsonStore
 
 
 class SampleRecord(BaseModel):
@@ -19,6 +22,21 @@ def _process_put_key(path: str, key: str, barrier, errors) -> None:
         barrier.wait(timeout=5)
         store = JsonStore(Path(path), SampleRecord)
         store.put(key, SampleRecord(value=key))
+    except BaseException as exc:
+        errors.put(repr(exc))
+        raise
+
+
+def _process_update_object_section(path: str, section: str, key: str, barrier, errors) -> None:
+    try:
+        barrier.wait(timeout=5)
+        store = JsonObjectStore(Path(path), {"messages": {}, "cursors": {}})
+
+        def mutate(payload: dict[str, object]) -> None:
+            time.sleep(0.05)
+            payload[section][key] = section
+
+        store.update_object(mutate)
     except BaseException as exc:
         errors.put(repr(exc))
         raise
@@ -164,3 +182,105 @@ def test_json_store_file_mode_applies_to_initial_and_replacement_files(
         assert store.read_all() == {"a": SampleRecord(value="a")}
     finally:
         os.umask(old_umask)
+
+
+def test_json_object_store_preserves_concurrent_section_updates(tmp_path: Path) -> None:
+    path = tmp_path / "object-store.json"
+    process_count = 2
+    context = get_context("spawn")
+    start = context.Barrier(process_count + 1)
+    errors = context.Queue()
+    processes = [
+        context.Process(
+            target=_process_update_object_section,
+            args=(str(path), section, key, start, errors),
+        )
+        for section, key in [("messages", "message-a"), ("cursors", "cursor-b")]
+    ]
+
+    for process in processes:
+        process.start()
+    start.wait(timeout=5)
+    for process in processes:
+        process.join(timeout=5)
+
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=2)
+        assert process.exitcode == 0
+    assert errors.empty()
+
+    store = JsonObjectStore(path, {"messages": {}, "cursors": {}})
+    assert store.read_object() == {
+        "messages": {"message-a": "messages"},
+        "cursors": {"cursor-b": "cursors"},
+    }
+
+
+def test_json_object_store_empty_file_behavior_is_configurable(tmp_path: Path) -> None:
+    path = tmp_path / "object-store.json"
+    store = JsonObjectStore(
+        path,
+        {"messages": {}, "cursors": {}},
+        empty_file_factory=lambda: {"messages": {}, "cursors": {}},
+    )
+
+    path.write_text("", encoding="utf-8")
+
+    assert store.read_object() == {"messages": {}, "cursors": {}}
+
+    store.update_object(lambda payload: payload["messages"].__setitem__("a", {"text": "a"}))
+
+    assert store.read_object() == {
+        "messages": {"a": {"text": "a"}},
+        "cursors": {},
+    }
+
+
+def test_json_object_store_empty_file_without_override_raises(tmp_path: Path) -> None:
+    path = tmp_path / "object-store.json"
+    store = JsonObjectStore(path, {"messages": {}, "cursors": {}})
+
+    path.write_text("", encoding="utf-8")
+
+    with pytest.raises(json.JSONDecodeError):
+        store.read_object()
+
+
+def test_json_object_store_file_mode_applies_to_initial_and_replacement_files(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "secret-object-store.json"
+    old_umask = os.umask(0)
+    try:
+        store = JsonObjectStore(path, {"messages": {}, "cursors": {}}, file_mode=0o600)
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+        store.write_object({"messages": {"a": {"text": "a"}}, "cursors": {}})
+
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert store.read_object() == {"messages": {"a": {"text": "a"}}, "cursors": {}}
+    finally:
+        os.umask(old_umask)
+
+
+def test_json_object_store_uses_unique_temp_files(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "object-store.json"
+    created_paths: list[Path] = []
+    real_mkstemp = tempfile.mkstemp
+
+    def recording_mkstemp(*, prefix: str, suffix: str, dir: str | None):
+        fd, name = real_mkstemp(prefix=prefix, suffix=suffix, dir=dir)
+        created_paths.append(Path(name))
+        return fd, name
+
+    monkeypatch.setattr(tempfile, "mkstemp", recording_mkstemp)
+
+    store = JsonObjectStore(path, {"messages": {}, "cursors": {}})
+    store.write_object({"messages": {"a": {"text": "a"}}, "cursors": {}})
+
+    assert created_paths
+    assert all(temp_path.name != f"{path.name}.tmp" for temp_path in created_paths)
+    assert all(temp_path.name.startswith(f".{path.name}.") for temp_path in created_paths)
+    assert all(temp_path.name.endswith(".tmp") for temp_path in created_paths)

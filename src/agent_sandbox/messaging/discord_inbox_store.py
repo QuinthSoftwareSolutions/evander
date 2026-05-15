@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Lock
 from typing import Any
 
 from agent_sandbox.models import DiscordMessageEnvelope
+from agent_sandbox.storage import JsonObjectStore, _no_write
 
 _DISCORD_MESSAGE_RETENTION = timedelta(days=90)
 
@@ -23,73 +22,68 @@ class DiscordInboxStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._lock = Lock()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
-            self._atomic_write({"cursors": {}, "messages": {}, "session_reads": {}})
+        self._store = JsonObjectStore(
+            path, {"cursors": {}, "messages": {}, "session_reads": {}}
+        )
 
     def get_cursor(self, channel_id: str) -> str | None:
-        with self._lock:
-            payload = self._read_raw()
-            cursor = payload.get("cursors", {}).get(channel_id)
-            return str(cursor) if cursor is not None else None
+        payload = self._store.read_object()
+        cursor = payload.get("cursors", {}).get(channel_id)
+        return str(cursor) if cursor is not None else None
 
     def set_cursor(self, channel_id: str, cursor: str | None) -> None:
-        with self._lock:
-            payload = self._read_raw()
+        def update(payload: dict[str, Any]) -> None:
             cursors = payload.setdefault("cursors", {})
             if cursor is None:
                 cursors.pop(channel_id, None)
             else:
                 cursors[channel_id] = cursor
             self._compact_messages(payload)
-            self._atomic_write(payload)
+
+        self._store.update_object(update)
 
     def add_message_if_new(self, envelope: DiscordMessageEnvelope) -> bool:
-        with self._lock:
-            payload = self._read_raw()
+        def update(payload: dict[str, Any]) -> bool | None:
             stored_messages = payload.setdefault("messages", {})
             if envelope.message_id in stored_messages:
-                return False
+                return _no_write(False)
             stored_messages[envelope.message_id] = envelope.model_dump(mode="json")
             self._compact_messages(payload)
-            self._atomic_write(payload)
+
             return True
 
+        return bool(self._store.update_object(update))
+
     def get_session_cursor(self, session_id: str, channel_id: str) -> str | None:
-        with self._lock:
-            payload = self._read_raw()
-            return self._get_session_cursor_from_payload(payload, session_id, channel_id)
+        payload = self._store.read_object()
+        return self._get_session_cursor_from_payload(payload, session_id, channel_id)
 
     def advance_session_cursor(
         self, session_id: str, channel_id: str, cursor: str | None
     ) -> str | None:
-        with self._lock:
-            payload = self._read_raw()
+        def update(payload: dict[str, Any]) -> str | None:
             next_cursor = self._advance_session_cursor_in_payload(
                 payload, session_id, channel_id, cursor
             )
             self._compact_messages(payload)
-            self._atomic_write(payload)
             return next_cursor
 
+        return self._store.update_object(update)
+
     def has_unread_messages(self, *, session_id: str, channel_ids: list[str]) -> bool:
-        with self._lock:
-            payload = self._read_raw()
-            message_items = payload.get("messages", {})
-            if not isinstance(message_items, dict):
-                return False
-            for channel_id in channel_ids:
-                session_cursor = self._get_session_cursor_from_payload(
-                    payload, session_id, channel_id
-                )
-                if self._channel_has_unread_messages(
-                    message_items=message_items,
-                    channel_id=channel_id,
-                    cursor=session_cursor,
-                ):
-                    return True
+        payload = self._store.read_object()
+        message_items = payload.get("messages", {})
+        if not isinstance(message_items, dict):
             return False
+        for channel_id in channel_ids:
+            session_cursor = self._get_session_cursor_from_payload(payload, session_id, channel_id)
+            if self._channel_has_unread_messages(
+                message_items=message_items,
+                channel_id=channel_id,
+                cursor=session_cursor,
+            ):
+                return True
+        return False
 
     def list_unread_messages(
         self,
@@ -99,8 +93,7 @@ class DiscordInboxStore:
         cursor: str | None = None,
         limit: int | None = None,
     ) -> DiscordInboxListResult:
-        with self._lock:
-            payload = self._read_raw()
+        def update(payload: dict[str, Any]) -> DiscordInboxListResult:
             result = self._list_messages(
                 payload,
                 channel_ids=channel_ids,
@@ -118,8 +111,9 @@ class DiscordInboxStore:
                     result.next_cursor if result.next_cursor is not None else cursor,
                 )
             self._compact_messages(payload)
-            self._atomic_write(payload)
             return result
+
+        return self._store.update_object(update)
 
     def list_all_messages(
         self,
@@ -127,19 +121,17 @@ class DiscordInboxStore:
         channel_ids: list[str],
         limit: int | None = None,
     ) -> DiscordInboxListResult:
-        with self._lock:
-            payload = self._read_raw()
-            return self._list_messages(
-                payload,
-                channel_ids=channel_ids,
-                session_id=None,
-                cursor=None,
-                limit=limit,
-            )
+        payload = self._store.read_object()
+        return self._list_messages(
+            payload,
+            channel_ids=channel_ids,
+            session_id=None,
+            cursor=None,
+            limit=limit,
+        )
 
     def read_raw(self) -> dict[str, Any]:
-        with self._lock:
-            return self._read_raw()
+        return self._store.read_object()
 
     def _list_messages(
         self,
@@ -185,14 +177,6 @@ class DiscordInboxStore:
             else self._max_cursors(effective_cursors.values())
         )
         return DiscordInboxListResult(messages=messages, next_cursor=next_cursor)
-
-    def _read_raw(self) -> dict[str, Any]:
-        return json.loads(self.path.read_text(encoding="utf-8"))
-
-    def _atomic_write(self, payload: dict[str, Any]) -> None:
-        tmp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp_path.replace(self.path)
 
     def _compact_messages(self, payload: dict[str, Any]) -> None:
         messages = payload.get("messages")
