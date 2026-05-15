@@ -596,13 +596,29 @@ class EffectOrchestratorWorker:
         reconciled = 0
         graph = self._build_execution_graph()
         for hook in self._lifecycle_reconciliation_hooks:
-            reconciled += int(hook.reconcile(worker=self, graph=graph) or 0)
+            hook_name = hook.__class__.__name__
+            try:
+                reconciled += int(hook.reconcile(worker=self, graph=graph) or 0)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Effect orchestrator maintenance reconciliation failed "
+                    "phase=waiting_reconciliation hook=%s",
+                    hook_name,
+                )
         return reconciled
 
     def _run_post_completion_dispatch_hooks(self) -> int:
         dispatched = 0
         for hook in self._completion_dispatch_hooks:
-            dispatched += int(hook.dispatch(worker=self) or 0)
+            hook_name = hook.__class__.__name__
+            try:
+                dispatched += int(hook.dispatch(worker=self) or 0)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Effect orchestrator maintenance reconciliation failed "
+                    "phase=post_completion_dispatch hook=%s",
+                    hook_name,
+                )
         return dispatched
 
     def _run_special_event_handlers(
@@ -687,10 +703,20 @@ class EffectOrchestratorWorker:
     def _reconcile_gate_providers(self, *, graph: ExecutionGraph) -> int:
         reconciled = 0
         for gate_type in {gate.type for gate in graph.gates_by_id.values()}:
-            provider = self._get_gate_provider(gate_type)
-            if provider is None:
-                continue
-            reconciled += int(provider.reconcile(worker=self, graph=graph) or 0)
+            provider: Any | None = None
+            try:
+                provider = self._get_gate_provider(gate_type)
+                if provider is None:
+                    continue
+                reconciled += int(provider.reconcile(worker=self, graph=graph) or 0)
+            except Exception:  # noqa: BLE001
+                provider_name = provider.__class__.__name__ if provider is not None else None
+                logger.exception(
+                    "Effect orchestrator maintenance reconciliation failed "
+                    "phase=gate_reconciliation gate_type=%s provider=%s",
+                    gate_type,
+                    provider_name,
+                )
         return reconciled
 
     @staticmethod
