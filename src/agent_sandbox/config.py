@@ -113,6 +113,7 @@ class GatewayConfig(BaseModel):
     container_worker_workspace_persistence: str = Field(default="session", min_length=1)
     container_worker_guest_openai_base_url: str | None = None
     container_worker_guest_gateway_url: str | None = None
+    container_worker_guest_http_target_relay_base_url: str | None = None
     container_worker_guest_nuget_relay_base_url: str | None = None
     container_worker_guest_pypi_index_url: str | None = None
     container_worker_guest_npm_registry_url: str | None = None
@@ -304,6 +305,7 @@ class GatewayConfig(BaseModel):
         "teams_delegated_authority_base_url",
         "container_worker_guest_openai_base_url",
         "container_worker_guest_gateway_url",
+        "container_worker_guest_http_target_relay_base_url",
         "container_worker_guest_nuget_relay_base_url",
         "container_worker_guest_pypi_index_url",
         "container_worker_guest_npm_registry_url",
@@ -330,6 +332,7 @@ class GatewayConfig(BaseModel):
         "teams_delegated_authority_base_url",
         "container_worker_guest_openai_base_url",
         "container_worker_guest_gateway_url",
+        "container_worker_guest_http_target_relay_base_url",
         "container_worker_guest_nuget_relay_base_url",
         "container_worker_guest_pypi_index_url",
         "container_worker_guest_npm_registry_url",

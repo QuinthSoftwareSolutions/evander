@@ -512,6 +512,17 @@ def container_worker_guest_nuget_relay_base_url(config: GatewayConfig) -> str:
     return _service_url_from_gateway_url(config.gateway_url, port=config.nuget_relay_port, path="")
 
 
+def container_worker_guest_http_target_relay_base_url(config: GatewayConfig) -> str:
+    configured = normalize_optional_string(
+        config.container_worker_guest_http_target_relay_base_url
+    )
+    if configured:
+        return configured
+    return _service_url_from_gateway_url(
+        config.gateway_url, port=config.http_target_relay_port, path=""
+    )
+
+
 def container_worker_guest_pypi_index_url(config: GatewayConfig) -> str:
     configured = normalize_optional_string(config.container_worker_guest_pypi_index_url)
     if configured:
@@ -556,6 +567,7 @@ def build_container_session_files(
     resolved_model = model or "gpt-5.4"
     openai_base_url = container_worker_guest_openai_base_url(config)
     gateway_url = container_worker_guest_gateway_url(config)
+    http_target_relay_base_url = container_worker_guest_http_target_relay_base_url(config)
     nuget_relay_base_url = container_worker_guest_nuget_relay_base_url(config)
     pypi_index_url = container_worker_guest_pypi_index_url(config)
     npm_registry_url = container_worker_guest_npm_registry_url(config)
@@ -564,8 +576,10 @@ def build_container_session_files(
     session_env_values = {
         "AGENT_SANDBOX_SESSION_ID": session_id,
         "AGENT_SANDBOX_GATEWAY_URL": gateway_url,
+        "AGENT_SANDBOX_HTTP_TARGET_RELAY_BASE_URL": http_target_relay_base_url,
         "AGENT_SANDBOX_LLM_BASE_URL": openai_base_url,
         "OPENAI_BASE_URL": openai_base_url,
+        "HTTP_TARGET_RELAY_BASE_URL": http_target_relay_base_url,
         "AGENT_SANDBOX_ARTIFACTS_DIR": "/artifacts",
         "NUGET_RELAY_BASE_URL": nuget_relay_base_url,
         "AGENT_SANDBOX_NUGET_FALLBACK_PACKAGES": ("/opt/agent-sandbox/nuget-cache-ro"),

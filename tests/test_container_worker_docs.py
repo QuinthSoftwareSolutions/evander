@@ -24,6 +24,7 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     assert "--security-opt no-new-privileges" in docs
     assert "--sandbox-profile strict" in docs
     assert "--tmpfs /tmp:rw,noexec,nosuid,size=512m" in docs
+    assert "container_worker_guest_http_target_relay_base_url" in docs
     assert "container_worker_guest_pypi_index_url" in docs
     assert "container_worker_guest_npm_registry_url" in docs
     assert "/home/agent/.config/pip/pip.conf" in docs

@@ -1327,6 +1327,9 @@ sudo journalctl -u agent-sandbox-trigger-orchestrator.service -f
 - Guests authenticate to the selected APP environment themselves through the relay-backed URL for
   the appropriate API or UI alias. The generic HTTP target relay no longer injects host-side APP
   authorization headers.
+- Container-backed agents receive `HTTP_TARGET_RELAY_BASE_URL` and should build relay URLs as
+  `$HTTP_TARGET_RELAY_BASE_URL/session/<session-id>/target/<alias>/` rather than calling the public
+  Azure URL directly.
 
 You can run the wrapper directly on the host for validation:
 
