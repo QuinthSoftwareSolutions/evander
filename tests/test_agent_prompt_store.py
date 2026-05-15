@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import time
+from threading import Barrier, Thread
 
 import pytest
 
 from agent_sandbox.messaging.agent_prompt_store import AgentPromptRecord, AgentPromptStore
+from agent_sandbox.storage import JsonObjectStore
 
 
 def _prompt(
@@ -143,3 +147,83 @@ def test_agent_prompt_store_compacts_old_closed_messages(tmp_path: Path) -> None
     payload = store.read_raw()
     assert "old" not in payload["messages"]
     assert "token-old" not in payload["token_index"]
+
+
+def test_agent_prompt_store_initializes_missing_file(tmp_path: Path) -> None:
+    path = tmp_path / "agent-prompt-store.json"
+
+    store = AgentPromptStore(path)
+
+    assert store.read_raw() == {
+        "messages": {},
+        "token_index": {},
+        "consumed_tokens": {},
+        "idempotency_index": {},
+    }
+
+
+def test_agent_prompt_store_consumes_token_once_across_store_instances(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "agent-prompt-store.json"
+    first_store = AgentPromptStore(path)
+    second_store = AgentPromptStore(path)
+    created = datetime(2026, 4, 10, 0, 0, 1, tzinfo=timezone.utc)
+    first_store.create_prompt_message(_prompt("m-1", created_at=created, token_hash="token-1"))
+
+    original_write = JsonObjectStore._write_json_payload
+
+    def delayed_write(self, payload):
+        time.sleep(0.05)
+        return original_write(self, payload)
+
+    monkeypatch.setattr(JsonObjectStore, "_write_json_payload", delayed_write)
+
+    barrier = Barrier(3)
+    results: dict[str, AgentPromptRecord | None] = {}
+    consumed_at = datetime(2026, 4, 10, 0, 1, 0, tzinfo=timezone.utc)
+
+    def consume(store: AgentPromptStore, name: str) -> None:
+        barrier.wait(timeout=5)
+        results[name] = store.validate_and_consume_token(
+            "token-1", expected_message_id="m-1", consumed_at=consumed_at
+        )
+
+    threads = [
+        Thread(target=consume, args=(first_store, "first")),
+        Thread(target=consume, args=(second_store, "second")),
+    ]
+
+    for thread in threads:
+        thread.start()
+    barrier.wait(timeout=5)
+    for thread in threads:
+        thread.join(timeout=5)
+
+    for thread in threads:
+        assert not thread.is_alive()
+
+    assert sum(result is not None for result in results.values()) == 1
+    assert sum(result is None for result in results.values()) == 1
+    store = AgentPromptStore(path)
+    assert store.read_raw()["consumed_tokens"]["token-1"] == "2026-04-10T00:01:00Z"
+
+
+@pytest.mark.parametrize("payload_text", ["", "{not json"])
+def test_agent_prompt_store_raises_on_empty_or_invalid_json(
+    tmp_path: Path,
+    payload_text: str,
+) -> None:
+    path = tmp_path / "agent-prompt-store.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload_text, encoding="utf-8")
+
+    store = AgentPromptStore(path)
+
+    with pytest.raises(json.JSONDecodeError):
+        store.read_raw()
+
+    with pytest.raises(json.JSONDecodeError):
+        store.create_prompt_message(
+            _prompt("m-1", created_at=datetime(2026, 4, 10, 0, 0, 1, tzinfo=timezone.utc))
+        )

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
+from multiprocessing import get_context
 from pathlib import Path
+
+import pytest
 
 from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
 from agent_sandbox.models import DiscordMessageEnvelope
+from agent_sandbox.storage import JsonObjectStore
 
 
 def _message(
@@ -28,6 +33,34 @@ def _message(
         in_reply_to=in_reply_to,
         raw={"id": message_id, "channel_id": channel_id, "content": content},
     )
+
+
+def _process_add_discord_message(
+    path: str,
+    message_id: str,
+    created_at_iso: str,
+    barrier,
+    errors,
+) -> None:
+    try:
+        barrier.wait(timeout=5)
+        original_write = JsonObjectStore._write_json_payload
+
+        def delayed_write(self, payload):
+            time.sleep(0.05)
+            return original_write(self, payload)
+
+        JsonObjectStore._write_json_payload = delayed_write
+        store = DiscordInboxStore(Path(path))
+        store.add_message_if_new(
+            _message(
+                message_id,
+                created_at=datetime.fromisoformat(created_at_iso),
+            )
+        )
+    except BaseException as exc:  # pragma: no cover - exercised in subprocesses
+        errors.put(repr(exc))
+        raise
 
 
 def test_discord_message_envelope_preserves_raw_metadata() -> None:
@@ -139,3 +172,69 @@ def test_discord_inbox_store_keeps_recent_messages_even_when_channel_cursor_has_
 
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert list(payload["messages"]) == ["msg-1"]
+
+
+def test_discord_inbox_store_preserves_concurrent_independent_updates(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "runtime" / "discord-inbox-store.json"
+    context = get_context("spawn")
+    start = context.Barrier(3)
+    errors = context.Queue()
+    processes = [
+        context.Process(
+            target=_process_add_discord_message,
+            args=(
+                str(path),
+                "msg-a",
+                "2026-03-21T00:00:00+00:00",
+                start,
+                errors,
+            ),
+        ),
+        context.Process(
+            target=_process_add_discord_message,
+            args=(
+                str(path),
+                "msg-b",
+                "2026-03-21T00:00:01+00:00",
+                start,
+                errors,
+            ),
+        ),
+    ]
+
+    for process in processes:
+        process.start()
+    start.wait(timeout=5)
+    for process in processes:
+        process.join(timeout=5)
+
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=2)
+        assert process.exitcode == 0
+    assert errors.empty()
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert set(payload["messages"]) == {"msg-a", "msg-b"}
+
+
+@pytest.mark.parametrize("payload_text", ["", "{not json"])
+def test_discord_inbox_store_raises_on_empty_or_invalid_json(
+    tmp_path: Path,
+    payload_text: str,
+) -> None:
+    path = tmp_path / "runtime" / "discord-inbox-store.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload_text, encoding="utf-8")
+    store = DiscordInboxStore(path)
+
+    with pytest.raises(json.JSONDecodeError):
+        store.read_raw()
+
+    with pytest.raises(json.JSONDecodeError):
+        store.add_message_if_new(
+            _message("msg-1", created_at=datetime(2026, 3, 21, tzinfo=timezone.utc))
+        )
