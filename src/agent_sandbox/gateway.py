@@ -4330,7 +4330,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {
             "session_id": resolved_session_id,
             "issue_id": issue_id,
@@ -4378,7 +4380,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {
             "session_id": resolved_session_id,
             "vm_name": vm_name,
@@ -4439,7 +4443,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {
             "session_id": resolved_session_id,
             "vm_name": vm_name,
@@ -4491,7 +4497,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {"session_id": resolved_session_id, "logical_name": logical_name}
         try:
             context.policy.require_tool(
@@ -4535,7 +4543,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {"session_id": resolved_session_id}
         try:
             context.policy.require_tool(resolved_session_id, ToolName.MSSQL_LIST_DATABASES)
@@ -4574,7 +4584,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {"session_id": resolved_session_id, "logical_name": logical_name}
         try:
             context.policy.require_tool(resolved_session_id, ToolName.MSSQL_DROP_DATABASE)
