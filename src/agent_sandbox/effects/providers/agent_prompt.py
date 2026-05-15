@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -33,6 +34,8 @@ from .agent_session import (
     selected_execution_backend_for_target,
 )
 from .base import EffectProviderBase
+
+logger = logging.getLogger(__name__)
 
 _AWAIT_AGENT_STALE_GRACE_SECONDS = 120
 _DEFAULT_CONTAINER_WORKER_JOB_TIMEOUT_SECONDS = 1800.0
@@ -241,6 +244,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
         try:
             summaries = list_vm_summaries_for_agent_reconciliation(worker)
         except Exception:
+            logger.exception(
+                "AgentPromptEffectProvider inventory reconciliation skipped "
+                "phase=waiting_reconciliation waiting_vm_records=%d",
+                len(vm_records),
+            )
             return completed
         for record in vm_records:
             queue_record = cls._build_completion_queue_record_for_waiting_record(

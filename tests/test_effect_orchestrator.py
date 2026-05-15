@@ -28,6 +28,7 @@ from agent_sandbox.daemons.effect_orchestrator import (
     _matching_outbound_edges,
     build_effect_orchestrator_worker,
     EffectExecutionRecord,
+    EffectOrchestratorCycleResult,
     main,
 )
 from agent_sandbox.messaging.agent_prompt_queue import (
@@ -95,6 +96,11 @@ class _AgentRunStatusPortStub:
 
     def list_vm_summaries(self) -> list[object]:
         return list(self.summaries)
+
+
+class _FailingAgentRunStatusPortStub:
+    def list_vm_summaries(self) -> list[object]:
+        raise RuntimeError("virsh list failed")
 
 
 class _AgentPromptDispatchPortStub:
@@ -2397,6 +2403,80 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
     assert waiting_records[0].outputs["thread_id"] == "thread-queued"
 
 
+def test_agent_enqueue_prompt_queue_dispatch_skips_and_retries_when_inventory_fails(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="vm-1",
+            target="vm-1",
+            vm_name="vm-1",
+            session_id=None,
+            prompt="hello",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            effect_id="effect-1",
+        )
+    )
+    execution_store = JsonExecutionStore(runtime_dir / "effect-orchestrator-executions.json")
+    resume_calls: list[dict[str, object]] = []
+    worker = SimpleNamespace(
+        queued_agent_prompt_store=queue_store,
+        agent_run_status_port=_FailingAgentRunStatusPortStub(),
+        agent_prompt_dispatch_port=_AgentPromptDispatchPortStub(
+            resume_calls,
+            type("Result", (), {"success": True, "thread_id": "thread-queued"})(),
+        ),
+        execution_store=execution_store,
+        _build_execution_graph=lambda: SimpleNamespace(
+            effects_by_id={
+                "effect-1": SimpleNamespace(type="effect:agent:enqueue-prompt"),
+            }
+        ),
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: None,
+        _update_event_delivery_state=lambda event_id: None,
+    )
+
+    caplog.set_level(logging.ERROR, logger="agent_sandbox.effects.providers.lifecycle_hooks")
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
+
+    assert dispatched == 0
+    assert resume_calls == []
+    queued_store_path = runtime_dir / "queued-agent-prompts.json"
+    queued_payload = json.loads(queued_store_path.read_text(encoding="utf-8"))
+    assert queued_payload["vm-1"]["prompt"] == "hello"
+    assert "AgentEnqueuePromptQueueDispatchHook" in caplog.text
+    assert "queued_non_container_records=1" in caplog.text
+    assert "virsh list failed" in caplog.text
+
+    caplog.clear()
+    worker.agent_run_status_port = _AgentRunStatusPortStub(
+        [
+            VmSummary(
+                vm_name="vm-1",
+                libvirt_state="running",
+                agent_state="idle",
+                session_ids=[],
+            )
+        ]
+    )
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
+
+    assert dispatched == 1
+    assert len(resume_calls) == 1
+    assert resume_calls[0]["target"] == "vm-1"
+    assert queue_store.read_all() == {}
+    waiting_records = list(execution_store.read_all().values())
+    assert len(waiting_records) == 1
+    assert waiting_records[0].status == "waiting"
+    assert waiting_records[0].effect_type == "effect:agent:enqueue-prompt"
+
+
 def test_agent_enqueue_prompt_dispatch_does_not_publish_dispatch_id_as_thread_id(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -3756,6 +3836,59 @@ def test_waiting_agent_prompt_reconciliation_completes_idle_summary_without_disp
     assert by_effect["effect-2"]["status"] == "succeeded"
 
 
+def test_waiting_agent_prompt_reconciliation_skips_and_retries_when_inventory_fails(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    execution_store = JsonExecutionStore(runtime_dir / "effect-orchestrator-executions.json")
+    record = EffectExecutionRecord(
+        execution_id="exec-waiting",
+        idempotency_key="event-1::effect-1",
+        event_id="event-1",
+        trace_id="trace-1",
+        source_node_id="trigger-1",
+        source_trigger_type="trigger:cron",
+        effect_id="effect-1",
+        effect_type="effect:agent:prompt",
+        status="waiting",
+        started_at=datetime(2026, 4, 4, 11, 55, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 4, 4, 11, 55, tzinfo=timezone.utc),
+        resolved_config_hash="hash",
+        resolved_config={
+            "session_id": "session-42",
+            "directory_path": "root/team-a",
+            "vm_user": "agent",
+        },
+        input_payload={},
+        outputs={
+            "dispatch_id": "dispatch-effect-1-abc123",
+            "thread_id": "thread-1",
+            "success": True,
+        },
+    )
+    execution_store.put(record)
+    worker = SimpleNamespace(
+        execution_store=execution_store,
+        agent_run_status_port=_FailingAgentRunStatusPortStub(),
+    )
+
+    caplog.set_level(logging.ERROR, logger="agent_sandbox.effects.providers.agent_prompt")
+
+    reconciled = AgentPromptEffectProvider.reconcile_waiting(worker=worker)
+
+    assert reconciled == 0
+    stored_record = execution_store.get_execution("exec-waiting")
+    assert stored_record is not None
+    assert stored_record.status == "waiting"
+    assert stored_record.outputs["dispatch_id"] == "dispatch-effect-1-abc123"
+    assert "AgentPromptEffectProvider" in caplog.text
+    assert "phase=waiting_reconciliation" in caplog.text
+    assert "waiting_vm_records=1" in caplog.text
+    assert "inventory reconciliation skipped" in caplog.text
+    assert "virsh list failed" in caplog.text
+
+
 def test_await_agent_gate_releases_when_settled_summary_lacks_dispatch_id(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -4006,6 +4139,98 @@ def test_await_agent_reconciliation_keeps_pending_record_without_matching_summar
     worker.run_once()
 
     assert _await_agent_store(worker).read_all() == {"await-agent-1:dispatch-missing": pending}
+
+
+def test_await_agent_reconciliation_skips_and_retries_when_inventory_fails(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "await-agent-1",
+                    "display_name": "Await agent",
+                    "type": "gate:await-agent",
+                    "session_id": "session-42",
+                    "vm_name": "vm-issue-42",
+                    "outputs": {},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-42",
+                    "prompt": "Continue main task",
+                }
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+                _edge("effect-1", "await-agent-1", source_port="started"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    pending = AwaitAgentPendingRecord(
+        gate_id="await-agent-1",
+        dispatch_id="dispatch-failing",
+        prompt_event_id="effect:effect-agent-prompt-1:failing",
+        prompt_source_node_id="effect-agent-prompt-1",
+        trace_id="trace-failing",
+        session_id="session-42",
+        vm_name="vm-issue-42",
+        payload={},
+        occurred_at=datetime(2026, 4, 4, 11, 50, tzinfo=timezone.utc),
+    )
+    pending_key = "await-agent-1:dispatch-failing"
+    _await_agent_store(worker).put(pending_key, pending)
+    worker.agent_run_status_port = _FailingAgentRunStatusPortStub()
+
+    caplog.set_level(logging.ERROR, logger="agent_sandbox.gates.providers.await_agent")
+
+    worker.run_once()
+
+    assert _await_agent_store(worker).read_all() == {pending_key: pending}
+    assert "AwaitAgentGateProvider" in caplog.text
+    assert "phase=stale_pending_cleanup" in caplog.text
+    assert "pending_records=1" in caplog.text
+    assert "phase=completion_event_build" in caplog.text
+    assert f"key={pending_key}" in caplog.text
+    assert f"dispatch_id={pending.dispatch_id}" in caplog.text
+    assert "virsh list failed" in caplog.text
+
+    caplog.clear()
+    worker.agent_run_status_port = _AgentRunStatusPortStub(
+        [
+            VmSummary(
+                vm_name="vm-issue-42",
+                session_ids=["session-42"],
+                labels={},
+                directory_paths=["root/team-a"],
+                libvirt_state="running",
+                ip_address="192.0.2.10",
+                agent_state="idle",
+                last_state_update_at=datetime(2026, 4, 4, 12, 5, tzinfo=timezone.utc),
+                dispatch_id=None,
+            )
+        ]
+    )
+
+    worker.run_once()
+
+    assert _await_agent_store(worker).read_all() == {}
 
 
 def test_await_agent_reconciliation_keeps_settled_current_dispatch_record(
@@ -4622,6 +4847,91 @@ def test_event_emit_effect_evaluates_payload_and_writes_internal_event(tmp_path:
     assert emitted["source"]["node_id"] == "emit-plan"
     journal = worker_config.workflow_event_journal_path.read_text(encoding="utf-8")
     assert "workflow.internal_event.published" in journal
+
+
+def test_run_once_processes_unrelated_event_when_inventory_reconciliation_fails(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Trigger",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"issue_id": {"type": "string"}, "metadata": {"type": "object"}},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "emit-plan",
+                    "display_name": "Emit plan",
+                    "type": "effect:event:emit",
+                    "event_type": "issue.plan_committed",
+                    "correlation_key": "issue:${{trigger-1.issue_id}}",
+                    "payload": {
+                        "issue_id": "${{trigger-1.issue_id}}",
+                        "plan_version": "${{trigger-1.metadata.plan.version}}",
+                    },
+                }
+            ],
+            "gates": [
+                {
+                    "id": "await-agent-1",
+                    "display_name": "Await agent",
+                    "type": "gate:await-agent",
+                    "session_id": "session-42",
+                    "vm_name": "vm-issue-42",
+                    "outputs": {},
+                }
+            ],
+            "edges": [
+                _edge("trigger-1", "emit-plan"),
+                _edge("emit-plan", "await-agent-1", source_port="started"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    pending = AwaitAgentPendingRecord(
+        gate_id="await-agent-1",
+        dispatch_id="dispatch-cycle-failure",
+        prompt_event_id="effect:effect-agent-prompt-1:cycle-failure",
+        prompt_source_node_id="effect-agent-prompt-1",
+        trace_id="trace-cycle-failure",
+        session_id="session-42",
+        vm_name="vm-issue-42",
+        payload={},
+        occurred_at=datetime(2026, 4, 4, 11, 50, tzinfo=timezone.utc),
+    )
+    pending_key = "await-agent-1:dispatch-cycle-failure"
+    _await_agent_store(worker).put(pending_key, pending)
+    worker.agent_run_status_port = _FailingAgentRunStatusPortStub()
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="input-event-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime.now(timezone.utc),
+            trace_id="trace-cycle-failure",
+            payload={"issue_id": "ISSUE-1", "metadata": {"plan": {"version": 7}}},
+        )
+    )
+
+    caplog.set_level(logging.ERROR, logger="agent_sandbox.gates.providers.await_agent")
+
+    result = worker.run_once()
+
+    assert isinstance(result, EffectOrchestratorCycleResult)
+    assert result.events_processed == 1
+    assert _await_agent_store(worker).read_all() == {pending_key: pending}
+    assert "AwaitAgentGateProvider" in caplog.text
+    assert "virsh list failed" in caplog.text
 
 
 def test_event_emit_effect_can_start_event_trigger_workflow(tmp_path: Path) -> None:
