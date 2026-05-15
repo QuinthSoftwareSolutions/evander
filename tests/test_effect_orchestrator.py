@@ -3835,6 +3835,59 @@ def test_waiting_agent_prompt_reconciliation_completes_idle_summary_without_disp
     assert by_effect["effect-2"]["status"] == "succeeded"
 
 
+def test_waiting_agent_prompt_reconciliation_skips_and_retries_when_inventory_fails(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    execution_store = JsonExecutionStore(runtime_dir / "effect-orchestrator-executions.json")
+    record = EffectExecutionRecord(
+        execution_id="exec-waiting",
+        idempotency_key="event-1::effect-1",
+        event_id="event-1",
+        trace_id="trace-1",
+        source_node_id="trigger-1",
+        source_trigger_type="trigger:cron",
+        effect_id="effect-1",
+        effect_type="effect:agent:prompt",
+        status="waiting",
+        started_at=datetime(2026, 4, 4, 11, 55, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 4, 4, 11, 55, tzinfo=timezone.utc),
+        resolved_config_hash="hash",
+        resolved_config={
+            "session_id": "session-42",
+            "directory_path": "root/team-a",
+            "vm_user": "agent",
+        },
+        input_payload={},
+        outputs={
+            "dispatch_id": "dispatch-effect-1-abc123",
+            "thread_id": "thread-1",
+            "success": True,
+        },
+    )
+    execution_store.put(record)
+    worker = SimpleNamespace(
+        execution_store=execution_store,
+        agent_run_status_port=_FailingAgentRunStatusPortStub(),
+    )
+
+    caplog.set_level(logging.ERROR, logger="agent_sandbox.effects.providers.agent_prompt")
+
+    reconciled = AgentPromptEffectProvider.reconcile_waiting(worker=worker)
+
+    assert reconciled == 0
+    stored_record = execution_store.get_execution("exec-waiting")
+    assert stored_record is not None
+    assert stored_record.status == "waiting"
+    assert stored_record.outputs["dispatch_id"] == "dispatch-effect-1-abc123"
+    assert "AgentPromptEffectProvider" in caplog.text
+    assert "phase=waiting_reconciliation" in caplog.text
+    assert "waiting_vm_records=1" in caplog.text
+    assert "inventory reconciliation skipped" in caplog.text
+    assert "virsh list failed" in caplog.text
+
+
 def test_await_agent_gate_releases_when_settled_summary_lacks_dispatch_id(
     tmp_path: Path, monkeypatch
 ) -> None:
