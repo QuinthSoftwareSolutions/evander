@@ -1547,6 +1547,123 @@ def test_get_agent_logs_returns_tail_from_service(
     assert result["log"] == "log-line-1\nlog-line-2"
 
 
+def test_get_agent_status_and_logs_reuse_mapped_transport_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            vm_id="vm-123",
+            allowed_tools=[ToolName.GET_AGENT_STATUS, ToolName.GET_AGENT_LOGS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    class StubAdminService:
+        def __init__(self, runtime_dir: Path) -> None:
+            captured["runtime_dir"] = runtime_dir
+
+        def list_vms(
+            self,
+            *,
+            include_inactive: bool,
+            vm_user: str,
+            directory_path: str | None = None,
+            direct_only: bool = False,
+        ) -> list[SimpleNamespace]:
+            captured["list_args"] = {
+                "include_inactive": include_inactive,
+                "vm_user": vm_user,
+                "directory_path": directory_path,
+                "direct_only": direct_only,
+            }
+            return [
+                SimpleNamespace(
+                    vm_name="vm-123",
+                    agent_state="running",
+                    libvirt_state="running",
+                    ip_address="10.0.0.12",
+                    agent_repo_names=["repo-a"],
+                    last_state_update_at=datetime(2026, 3, 29, 12, 0, tzinfo=UTC),
+                ),
+                SimpleNamespace(
+                    vm_name="vm-peer",
+                    agent_state="running",
+                    libvirt_state="running",
+                    ip_address="10.0.0.13",
+                    agent_repo_names=["repo-a"],
+                    last_state_update_at=datetime(2026, 3, 29, 12, 5, tzinfo=UTC),
+                ),
+            ]
+
+        def get_agent_log_snapshot(
+            self, target: str, *, lines: int, repo_name: str | None, vm_user: str
+        ) -> str:
+            captured["payload"] = {
+                "target": target,
+                "lines": lines,
+                "repo_name": repo_name,
+                "vm_user": vm_user,
+            }
+            return "log-line-1\nlog-line-2"
+
+    monkeypatch.setattr("agent_sandbox.gateway.AdminService", StubAdminService)
+    server = create_server(context)
+
+    seeded_status = call_tool_with_context(
+        server,
+        "get_agent_status",
+        {"vm_name": "vm-123"},
+        make_request_context(session_id="session-1", transport_session_id="transport-1"),
+    )
+    mapped_status = call_tool_with_context(
+        server,
+        "get_agent_status",
+        {"vm_name": "vm-123"},
+        make_request_context(transport_session_id="transport-1"),
+    )
+    mapped_logs = call_tool_with_context(
+        server,
+        "get_agent_logs",
+        {"vm_name": "vm-peer", "lines": 20, "repo_name": "repo-a"},
+        make_request_context(transport_session_id="transport-1"),
+    )
+
+    assert captured["runtime_dir"] == context.config.runtime_dir
+    assert captured["list_args"] == {
+        "include_inactive": True,
+        "vm_user": "agent",
+        "directory_path": "root/team-a",
+        "direct_only": True,
+    }
+    assert captured["payload"] == {
+        "target": "vm-peer",
+        "lines": 20,
+        "repo_name": "repo-a",
+        "vm_user": "agent",
+    }
+    assert seeded_status["status"] == "active"
+    assert seeded_status["agent_state"] == "running"
+    assert seeded_status["last_state_update_at"] == "2026-03-29T12:00:00+00:00"
+    assert mapped_status["status"] == "active"
+    assert mapped_status["agent_state"] == "running"
+    assert mapped_status["last_state_update_at"] == "2026-03-29T12:00:00+00:00"
+    assert mapped_logs["lines"] == 20
+    assert mapped_logs["log"] == "log-line-1\nlog-line-2"
+
+    events = [
+        event
+        for event in read_audit_events(context.config.audit_log_path)
+        if event["tool_name"] in {ToolName.GET_AGENT_STATUS.value, ToolName.GET_AGENT_LOGS.value}
+    ]
+    assert [event["session_id"] for event in events] == ["session-1", "session-1", "session-1"]
+    assert all(event["decision"] == "allowed" for event in events)
+    assert "session_id is required" not in context.config.audit_log_path.read_text(encoding="utf-8")
+
+
 def test_create_server_uses_configured_host_and_port(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.config.host = "0.0.0.0"
