@@ -400,6 +400,24 @@ def test_azure_publish_provider_submits_review_and_inline_comments(
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        if request.method == "GET" and request.url.path.endswith("/pullRequests/17/iterations"):
+            return httpx.Response(200, json={"value": [{"id": 1}, {"id": 3}]})
+        if request.method == "GET" and request.url.path.endswith(
+            "/pullRequests/17/iterations/3/changes"
+        ):
+            assert request.url.params["$top"] == "2000"
+            return httpx.Response(
+                200,
+                json={
+                    "changeEntries": [
+                        {
+                            "changeTrackingId": 77,
+                            "changeType": "edit",
+                            "item": {"path": "/src/app.py"},
+                        }
+                    ]
+                },
+            )
         payload = json.loads(request.content.decode("utf-8"))
         if (
             request.url.path.endswith("/pullRequests/17/threads")
@@ -424,9 +442,16 @@ def test_azure_publish_provider_submits_review_and_inline_comments(
                 ],
                 "status": "active",
                 "threadContext": {
-                    "filePath": "src/app.py",
+                    "filePath": "/src/app.py",
                     "rightFileStart": {"line": 17, "offset": 1},
                     "rightFileEnd": {"line": 17, "offset": 1},
+                },
+                "pullRequestThreadContext": {
+                    "changeTrackingId": 77,
+                    "iterationContext": {
+                        "firstComparingIteration": 1,
+                        "secondComparingIteration": 3,
+                    },
                 },
             }
             return httpx.Response(
@@ -458,8 +483,9 @@ def test_azure_publish_provider_submits_review_and_inline_comments(
         "azure_devops:thread_comment:44:10",
         "azure_devops:thread_comment:45:11",
     ]
-    assert len(requests) == 2
-    payloads = [json.loads(request.content.decode("utf-8")) for request in requests]
+    post_requests = [request for request in requests if request.method == "POST"]
+    assert len(post_requests) == 2
+    payloads = [json.loads(request.content.decode("utf-8")) for request in post_requests]
     assert payloads[0]["comments"][0]["content"] == "Fix this line"
     assert payloads[1]["comments"][0]["content"] == "Summary"
 
@@ -472,6 +498,28 @@ def test_azure_publish_provider_failed_inline_comment_does_not_post_summary(
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        if request.method == "GET" and request.url.path.endswith("/pullRequests/17/iterations"):
+            return httpx.Response(200, json={"value": [{"id": 1}, {"id": 2}]})
+        if request.method == "GET" and request.url.path.endswith(
+            "/pullRequests/17/iterations/2/changes"
+        ):
+            return httpx.Response(
+                200,
+                json={
+                    "changeEntries": [
+                        {
+                            "changeTrackingId": 77,
+                            "changeType": "edit",
+                            "item": {"path": "/src/app.py"},
+                        },
+                        {
+                            "changeTrackingId": 78,
+                            "changeType": "edit",
+                            "item": {"path": "/src/other.py"},
+                        },
+                    ]
+                },
+            )
         payload = json.loads(request.content.decode("utf-8"))
         assert payload["comments"][0]["content"] != "Summary"
         return httpx.Response(
@@ -504,7 +552,8 @@ def test_azure_publish_provider_failed_inline_comment_does_not_post_summary(
             ],
         )
 
-    assert len(requests) == 1
+    post_requests = [request for request in requests if request.method == "POST"]
+    assert len(post_requests) == 1
     error_text = str(exc_info.value)
     assert "inline comment 1/2 path=src/app.py line=17" in error_text
     assert "The pull request thread position is invalid." in error_text
@@ -520,6 +569,28 @@ def test_azure_publish_provider_reports_failed_inline_after_partial_success(
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        if request.method == "GET" and request.url.path.endswith("/pullRequests/17/iterations"):
+            return httpx.Response(200, json={"value": [{"id": 1}, {"id": 2}]})
+        if request.method == "GET" and request.url.path.endswith(
+            "/pullRequests/17/iterations/2/changes"
+        ):
+            return httpx.Response(
+                200,
+                json={
+                    "changeEntries": [
+                        {
+                            "changeTrackingId": 77,
+                            "changeType": "edit",
+                            "item": {"path": "/src/app.py"},
+                        },
+                        {
+                            "changeTrackingId": 78,
+                            "changeType": "edit",
+                            "item": {"path": "/src/other.py"},
+                        },
+                    ]
+                },
+            )
         payload = json.loads(request.content.decode("utf-8"))
         content = payload["comments"][0]["content"]
         if content == "First finding":
@@ -557,10 +628,11 @@ def test_azure_publish_provider_reports_failed_inline_after_partial_success(
             ],
         )
 
-    assert len(requests) == 2
+    post_requests = [request for request in requests if request.method == "POST"]
+    assert len(post_requests) == 2
     posted_contents = [
         json.loads(request.content.decode("utf-8"))["comments"][0]["content"]
-        for request in requests
+        for request in post_requests
     ]
     assert posted_contents == [
         "First finding",
@@ -575,6 +647,23 @@ def test_azure_publish_provider_maps_left_side_inline_comment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path.endswith("/pullRequests/17/iterations"):
+            return httpx.Response(200, json={"value": [{"id": 1}, {"id": 2}]})
+        if request.method == "GET" and request.url.path.endswith(
+            "/pullRequests/17/iterations/2/changes"
+        ):
+            return httpx.Response(
+                200,
+                json={
+                    "changeEntries": [
+                        {
+                            "changeTrackingId": 77,
+                            "changeType": "delete",
+                            "item": {"path": "/src/app.py"},
+                        }
+                    ]
+                },
+            )
         payload = json.loads(request.content.decode("utf-8"))
         assert payload == {
             "comments": [
@@ -582,9 +671,16 @@ def test_azure_publish_provider_maps_left_side_inline_comment(
             ],
             "status": "active",
             "threadContext": {
-                "filePath": "src/app.py",
+                "filePath": "/src/app.py",
                 "leftFileStart": {"line": 14, "offset": 1},
                 "leftFileEnd": {"line": 17, "offset": 1},
+            },
+            "pullRequestThreadContext": {
+                "changeTrackingId": 77,
+                "iterationContext": {
+                    "firstComparingIteration": 1,
+                    "secondComparingIteration": 2,
+                },
             },
         }
         return httpx.Response(
@@ -619,3 +715,50 @@ def test_azure_publish_provider_maps_left_side_inline_comment(
     )
 
     assert result["comment_ids"] == ["11"]
+
+
+def test_azure_publish_provider_prevalidates_inline_paths_before_posting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET" and request.url.path.endswith("/pullRequests/17/iterations"):
+            return httpx.Response(200, json={"value": [{"id": 1}, {"id": 2}]})
+        if request.method == "GET" and request.url.path.endswith(
+            "/pullRequests/17/iterations/2/changes"
+        ):
+            return httpx.Response(
+                200,
+                json={
+                    "changeEntries": [
+                        {
+                            "changeTrackingId": 77,
+                            "changeType": "edit",
+                            "item": {"path": "/src/app.py"},
+                        }
+                    ]
+                },
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url.path}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrPublishProvider(
+        organization_url="https://dev.azure.com/example",
+        project="proj",
+        pat="secret",
+    )
+
+    with pytest.raises(ValueError, match="not present in the latest PR iteration"):
+        provider.submit_review(
+            repo="repo1",
+            pr_id="17",
+            body_text="Summary",
+            comments=[
+                {"path": "src/app.py", "line": 17, "body": "First finding"},
+                {"path": "src/missing.py", "line": 23, "body": "Second finding"},
+            ],
+        )
+
+    assert [request.method for request in requests] == ["GET", "GET"]
