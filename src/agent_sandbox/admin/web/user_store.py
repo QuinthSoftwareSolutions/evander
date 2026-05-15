@@ -71,24 +71,25 @@ class AdminWebUserStore:
         return self._json_store().get(normalized)
 
     def bootstrap_admins(self, logins: set[str] | frozenset[str]) -> list[AdminWebUserRecord]:
-        items = self._json_store().read_all()
-        if items:
-            return []
-        now = utc_now()
-        records: dict[str, AdminWebUserRecord] = {}
-        for raw_login in sorted(logins):
-            login = normalize_admin_web_login(raw_login)
-            if login is None:
-                continue
-            records[login] = AdminWebUserRecord(
-                login=login,
-                role="admin",
-                created_at=now,
-                updated_at=now,
-            )
-        if records:
-            self._json_store().write_all(records)
-        return sorted(records.values(), key=lambda user: user.login)
+        def update(items: dict[str, AdminWebUserRecord]) -> list[AdminWebUserRecord]:
+            if items:
+                return []
+            now = utc_now()
+            records: dict[str, AdminWebUserRecord] = {}
+            for raw_login in sorted(logins):
+                login = normalize_admin_web_login(raw_login)
+                if login is None:
+                    continue
+                records[login] = AdminWebUserRecord(
+                    login=login,
+                    role="admin",
+                    created_at=now,
+                    updated_at=now,
+                )
+            items.update(records)
+            return sorted(records.values(), key=lambda user: user.login)
+
+        return self._json_store().update_all(update)
 
     def upsert_user(
         self,
@@ -102,29 +103,31 @@ class AdminWebUserStore:
             raise ValueError("login is required")
         if role not in {"admin", "regular"}:
             raise ValueError("role must be admin or regular")
-        items = self._json_store().read_all()
-        existing = items.get(normalized)
-        if existing is None and not items and role != "admin":
-            raise ValueError("First admin web user must have the admin role")
-        self._ensure_not_last_admin_demotion(items, existing=existing, next_role=role)
-        now = utc_now()
-        record = AdminWebUserRecord(
-            login=normalized,
-            role=role,
-            display_name=(
-                existing.display_name
-                if display_name is _UNSET and existing is not None
-                else None
-                if display_name is _UNSET
-                else _normalize_display_name(display_name)
-            ),
-            created_at=existing.created_at if existing is not None else now,
-            updated_at=now,
-            last_login_at=existing.last_login_at if existing is not None else None,
-        )
-        items[normalized] = record
-        self._json_store().write_all(items)
-        return record
+
+        def update(items: dict[str, AdminWebUserRecord]) -> AdminWebUserRecord:
+            existing = items.get(normalized)
+            if existing is None and not items and role != "admin":
+                raise ValueError("First admin web user must have the admin role")
+            self._ensure_not_last_admin_demotion(items, existing=existing, next_role=role)
+            now = utc_now()
+            record = AdminWebUserRecord(
+                login=normalized,
+                role=role,
+                display_name=(
+                    existing.display_name
+                    if display_name is _UNSET and existing is not None
+                    else None
+                    if display_name is _UNSET
+                    else _normalize_display_name(display_name)
+                ),
+                created_at=existing.created_at if existing is not None else now,
+                updated_at=now,
+                last_login_at=existing.last_login_at if existing is not None else None,
+            )
+            items[normalized] = record
+            return record
+
+        return self._json_store().update_all(update)
 
     def update_user(
         self,
@@ -138,41 +141,45 @@ class AdminWebUserStore:
             raise ValueError("login is required")
         if role is not None and role not in {"admin", "regular"}:
             raise ValueError("role must be admin or regular")
-        items = self._json_store().read_all()
-        existing = items.get(normalized)
-        if existing is None:
-            return None
-        next_role = role or existing.role
-        self._ensure_not_last_admin_demotion(items, existing=existing, next_role=next_role)
-        record = AdminWebUserRecord(
-            login=existing.login,
-            role=next_role,
-            display_name=(
-                existing.display_name
-                if display_name is _UNSET
-                else _normalize_display_name(display_name)
-            ),
-            created_at=existing.created_at,
-            updated_at=utc_now(),
-            last_login_at=existing.last_login_at,
-        )
-        items[normalized] = record
-        self._json_store().write_all(items)
-        return record
+
+        def update(items: dict[str, AdminWebUserRecord]) -> AdminWebUserRecord | None:
+            existing = items.get(normalized)
+            if existing is None:
+                return None
+            next_role = role or existing.role
+            self._ensure_not_last_admin_demotion(items, existing=existing, next_role=next_role)
+            record = AdminWebUserRecord(
+                login=existing.login,
+                role=next_role,
+                display_name=(
+                    existing.display_name
+                    if display_name is _UNSET
+                    else _normalize_display_name(display_name)
+                ),
+                created_at=existing.created_at,
+                updated_at=utc_now(),
+                last_login_at=existing.last_login_at,
+            )
+            items[normalized] = record
+            return record
+
+        return self._json_store().update_all(update)
 
     def delete_user(self, login: object) -> AdminWebUserRecord | None:
         normalized = normalize_admin_web_login(login)
         if normalized is None:
             raise ValueError("login is required")
-        items = self._json_store().read_all()
-        existing = items.get(normalized)
-        if existing is None:
-            return None
-        if existing.role == "admin" and self._admin_count(items) <= 1:
-            raise ValueError("Cannot remove the last admin user")
-        del items[normalized]
-        self._json_store().write_all(items)
-        return existing
+
+        def update(items: dict[str, AdminWebUserRecord]) -> AdminWebUserRecord | None:
+            existing = items.get(normalized)
+            if existing is None:
+                return None
+            if existing.role == "admin" and self._admin_count(items) <= 1:
+                raise ValueError("Cannot remove the last admin user")
+            del items[normalized]
+            return existing
+
+        return self._json_store().update_all(update)
 
     def record_login(
         self, *, login: object, display_name: object | None = None
@@ -180,22 +187,24 @@ class AdminWebUserStore:
         normalized = normalize_admin_web_login(login)
         if normalized is None:
             return None
-        items = self._json_store().read_all()
-        existing = items.get(normalized)
-        if existing is None:
-            return None
-        now = utc_now()
-        record = AdminWebUserRecord(
-            login=existing.login,
-            role=existing.role,
-            display_name=existing.display_name or _normalize_display_name(display_name),
-            created_at=existing.created_at,
-            updated_at=now,
-            last_login_at=now,
-        )
-        items[normalized] = record
-        self._json_store().write_all(items)
-        return record
+
+        def update(items: dict[str, AdminWebUserRecord]) -> AdminWebUserRecord | None:
+            existing = items.get(normalized)
+            if existing is None:
+                return None
+            now = utc_now()
+            record = AdminWebUserRecord(
+                login=existing.login,
+                role=existing.role,
+                display_name=existing.display_name or _normalize_display_name(display_name),
+                created_at=existing.created_at,
+                updated_at=now,
+                last_login_at=now,
+            )
+            items[normalized] = record
+            return record
+
+        return self._json_store().update_all(update)
 
     def _ensure_not_last_admin_demotion(
         self,
