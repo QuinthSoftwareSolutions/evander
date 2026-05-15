@@ -397,6 +397,7 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
         vm_name="lab-vm",
         session_id="lab-session",
         teams_channel_allowlist=["team-a/channel-1", "chat:chat-1"],
+        teams_chat_allowlist=[" chat:chat-2 ", "chat:chat-2"],
         communication_file_receive_enabled=True,
         communication_file_send_enabled=False,
         communication_file_max_bytes=4096,
@@ -419,6 +420,10 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
     assert admin_service.create_vm_calls[0]["teams_channel_allowlist"] == [
         "team-a/channel-1",
         "chat:chat-1",
+    ]
+    assert admin_service.create_vm_calls[0]["teams_chat_allowlist"] == [
+        "chat:chat-2",
+        "chat:chat-2",
     ]
     assert admin_service.create_vm_calls[0]["communication_file_receive_enabled"] is True
     assert admin_service.create_vm_calls[0]["communication_file_send_enabled"] is False
@@ -1119,6 +1124,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
             model="gpt-5.4",
             allowed_tools=["set_issue_plan"],
             teams_channel_allowlist=["team-a/channel-1", " chat:chat-1 "],
+            teams_chat_allowlist=[" chat:chat-2 ", "chat:chat-2"],
             communication_file_receive_enabled=True,
             communication_file_send_enabled=True,
             communication_file_max_bytes=2048,
@@ -1164,6 +1170,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert manifest.vm_provider == "container_worker_vm"
     assert ToolName.SET_ISSUE_PLAN in manifest.allowed_tools
     assert manifest.teams_channel_allowlist == ["team-a/channel-1", "chat:chat-1"]
+    assert manifest.teams_chat_allowlist == ["chat:chat-2"]
     assert manifest.communication_file_receive_enabled is True
     assert manifest.communication_file_send_enabled is True
     assert manifest.communication_file_max_bytes == 2048

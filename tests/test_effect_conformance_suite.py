@@ -107,6 +107,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "type": "effect:agent:create",
             "session_id": "session-1",
             "teams_channel_allowlist": ["team-a/channel-1", "chat:chat-1"],
+            "teams_chat_allowlist": ["chat:chat-2"],
             "communication_file_receive_enabled": True,
             "communication_file_send_enabled": True,
             "communication_file_max_bytes": 4096,
@@ -251,6 +252,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert vm_stop.type == "effect:vm:stop"
     assert agent_create.type == "effect:agent:create"
     assert agent_create.teams_channel_allowlist == ["team-a/channel-1", "chat:chat-1"]
+    assert agent_create.teams_chat_allowlist == ["chat:chat-2"]
     assert agent_create.communication_file_receive_enabled is True
     assert agent_create.communication_file_send_enabled is True
     assert agent_create.communication_file_max_bytes == 4096

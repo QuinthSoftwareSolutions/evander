@@ -3882,6 +3882,7 @@ def test_update_session_policy_updates_allowlists_and_metadata(
             allowed_script_names=["old-script"],
             discord_channel_allowlist=["old-discord"],
             teams_channel_allowlist=["team-a/channel-1"],
+            teams_chat_allowlist=["chat:chat-old"],
             expires_at=datetime.now(UTC) + timedelta(hours=2),
             metadata={"agent_thread_id": "old-thread", "keep": "value"},
         ),
@@ -3893,6 +3894,7 @@ def test_update_session_policy_updates_allowlists_and_metadata(
             "allowed_script_names": [" deploy-review ", "deploy-review", "collect-logs"],
             "discord_channel_allowlist": [" chan-a ", "chan-a", "chan-b"],
             "teams_channel_allowlist": [" team-b/channel-2 ", "chat:chat-1"],
+            "teams_chat_allowlist": [" chat:chat-2 ", "chat:chat-2", "chat:chat-3 "],
             "communication_file_receive_enabled": True,
             "communication_file_send_enabled": True,
             "communication_file_max_bytes": 2048,
@@ -3911,6 +3913,7 @@ def test_update_session_policy_updates_allowlists_and_metadata(
     assert updated.allowed_script_names == ["deploy-review", "collect-logs"]
     assert updated.discord_channel_allowlist == ["chan-a", "chan-b"]
     assert updated.teams_channel_allowlist == ["team-b/channel-2", "chat:chat-1"]
+    assert updated.teams_chat_allowlist == ["chat:chat-2", "chat:chat-3"]
     assert updated.communication_file_receive_enabled is True
     assert updated.communication_file_send_enabled is True
     assert updated.communication_file_max_bytes == 2048
@@ -3919,6 +3922,28 @@ def test_update_session_policy_updates_allowlists_and_metadata(
     assert updated.communication_file_blocked_extensions == [".exe", "exe"]
     assert updated.communication_file_require_approval_for_send is True
     assert updated.metadata == {"keep": "new-value"}
+
+
+def test_update_admin_agent_updates_chat_allowlist(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="agent-13304",
+            vm_id="vm-13304",
+            allowed_tools=[ToolName.CLAIM_NEXT_ISSUE],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+
+    result = service.update_admin_agent(
+        "agent-13304",
+        payload={"teams_chat_allowlist": [" chat:chat-4 ", "chat:chat-4"]},
+    )
+
+    updated = service.runtime.session_repository.get_session("agent-13304")
+    assert result["status"] == "updated"
+    assert updated is not None
+    assert updated.teams_chat_allowlist == ["chat:chat-4"]
 
 
 def test_set_session_model_updates_manifest(tmp_path: Path) -> None:
