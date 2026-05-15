@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from agent_sandbox.config import GatewayConfig
@@ -55,13 +55,13 @@ def _assert_payload(
     assert message["target_type"] == target_type
 
 
-def test_teams_trigger_emits_once_per_poll_when_any_matching_messages_arrive_and_persists_cursor(
+def test_teams_trigger_emits_one_event_per_matching_message_when_messages_share_timestamp_and_persists_cursor(
     tmp_path: Path,
 ) -> None:
     context = _runtime_context(tmp_path)
     store = TeamsInboxStore(context.resolved_config.runtime_dir / "teams-inbox-store.json")
     created_at = datetime(2026, 4, 9, 9, 30, tzinfo=UTC)
-    for message in (
+    messages = (
         TeamsInboxMessage(
             cursor="team-a/channel-1/msg-1",
             message_id="msg-1",
@@ -86,14 +86,9 @@ def test_teams_trigger_emits_once_per_poll_when_any_matching_messages_arrive_and
             created_at=created_at,
             metadata={"source": "teams_graph_api"},
         ),
-    ):
-        store.add_message_if_new(message)
-
-    store.set_cursor(
-        "team-a/channel-1",
-        "team-a/channel-1/msg-2",
-        created_at=created_at,
     )
+    for message in messages:
+        store.add_message_if_new(message)
 
     provider = TeamsNewMessageTriggerProvider()
     provider.initialize(_trigger_definition(), context)
@@ -119,12 +114,22 @@ def test_teams_trigger_emits_once_per_poll_when_any_matching_messages_arrive_and
     third = provider.poll()
     fourth = provider.poll()
 
-    assert [event.event_id for event in first] == ["teams-trigger:team-a/channel-1/msg-2"]
+    assert [event.event_id for event in first] == [
+        "teams-trigger:team-a/channel-1/msg-1",
+        "teams-trigger:team-a/channel-1/msg-2",
+    ]
     assert second == []
     assert [event.event_id for event in third] == ["teams-trigger:team-a/channel-1/msg-3"]
     assert fourth == []
     _assert_payload(
         first[0].payload,
+        channel_target="team-a/channel-1",
+        cursor="team-a/channel-1/msg-1",
+        message_id="msg-1",
+        target_type="channel",
+    )
+    _assert_payload(
+        first[1].payload,
         channel_target="team-a/channel-1",
         cursor="team-a/channel-1/msg-2",
         message_id="msg-2",
@@ -148,6 +153,54 @@ def test_teams_trigger_emits_once_per_poll_when_any_matching_messages_arrive_and
         "team-a/channel-1/msg-1",
         "team-a/channel-1/msg-2",
         "team-a/channel-1/msg-3",
+    ]
+
+
+def test_teams_trigger_emits_all_matching_messages_in_timestamp_order_and_trims_recent_cursors(
+    tmp_path: Path,
+) -> None:
+    context = _runtime_context(tmp_path)
+    store = TeamsInboxStore(context.resolved_config.runtime_dir / "teams-inbox-store.json")
+    base_created_at = datetime(2026, 4, 9, 10, 0, tzinfo=UTC)
+    limit = TeamsNewMessageTriggerProvider._RECENT_CURSOR_LIMIT
+    messages: list[TeamsInboxMessage] = []
+    for index in range(limit + 1):
+        message = TeamsInboxMessage(
+            cursor=f"team-a/channel-1/msg-{index:03d}",
+            message_id=f"msg-{index:03d}",
+            author_id="user-a",
+            author_name="User A",
+            team_id="team-a",
+            channel_id="channel-1",
+            thread_id="msg-1",
+            content=f"message {index:03d}",
+            created_at=base_created_at + timedelta(seconds=index),
+            metadata={"source": "teams_graph_api"},
+        )
+        messages.append(message)
+        store.add_message_if_new(message)
+
+    provider = TeamsNewMessageTriggerProvider()
+    provider.initialize(_trigger_definition(), context)
+
+    events = provider.poll()
+
+    assert [event.event_id for event in events] == [
+        f"teams-trigger:{message.cursor}" for message in messages
+    ]
+    for event, message in zip(events, messages, strict=True):
+        assert event.occurred_at == message.created_at
+
+    cursor_payload = json.loads(
+        (context.resolved_config.runtime_dir / "trigger-cursors-teams.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert cursor_payload["teams-trigger"]["last_created_at"] == (
+        base_created_at + timedelta(seconds=limit)
+    ).isoformat().replace("+00:00", "Z")
+    assert cursor_payload["teams-trigger"]["recent_cursors"] == [
+        message.cursor for message in messages[-limit:]
     ]
 
 

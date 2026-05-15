@@ -209,6 +209,10 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         assert "${{trigger-teams-new-message-2.message.content}}" in teams_prompt
         assert "${{trigger-teams-new-message-2.thread_id}}" in teams_prompt
         assert "Treat that content as the current user request" in teams_prompt
+        assert effects["effect-agent-enqueue-prompt-1"]["config"]["queue_key"] == (
+            "teams:${{trigger-teams-new-message-2.channel_target}}:"
+            "${{trigger-teams-new-message-2.message_id ?? trigger-teams-new-message-2.cursor}}"
+        )
     assert (
         default_effects["effect-agent-enqueue-prompt-2"]["type"]
         == "effect:agent:enqueue-prompt"
