@@ -110,8 +110,6 @@ type WorkflowGraphLabel = {
   top: number;
 };
 
-type WorkflowGraphView = "directory" | "private";
-
 type CanvasPoint = {
   x: number;
   y: number;
@@ -221,6 +219,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:vm:delete-files": "Delete files from a VM.",
   "effect:event:emit": "Emit an internal workflow event for other graphs.",
   "effect:issue:update-metadata": "Patch metadata on a tracked issue.",
+  "effect:ado:update-work-item": "Update an Azure DevOps work item with an optional state guard.",
   "effect:session:update-metadata": "Patch session metadata on the host.",
   "effect:git:promote-agent-branch": "Promote an agent branch into a trusted host checkout.",
   "effect:pr:create": "Create a pull request from the host side.",
@@ -443,7 +442,6 @@ function normalizeWorkflowGraphs(
   config: WorkflowConfig,
   graphs: ReadonlyArray<WorkflowGraphMetadata> = [],
   defaultDirectoryPath = "root",
-  defaultUserId = "",
 ): WorkflowGraphMetadata[] {
   const components = connectedWorkflowGraphNodeIds(config);
   const validNodeIds = new Set(workflowNodeIds(config));
@@ -499,7 +497,7 @@ function normalizeWorkflowGraphs(
       name: graph?.name ?? defaultWorkflowGraphName(config, component, index),
       description: graph?.description ?? null,
       directory_paths: graph?.directory_paths.length ? graph.directory_paths : [defaultDirectoryPath],
-      user_ids: graph?.user_ids ?? (defaultUserId.trim() ? [defaultUserId.trim()] : []),
+      user_ids: graph?.user_ids ?? [],
       node_ids: component,
     };
   });
@@ -509,23 +507,6 @@ function graphVisibleInDirectory(graph: WorkflowGraphMetadata, selectedDirectory
   const selectedPath = selectedDirectoryPath.trim() || "root";
   const directoryPaths = graph.directory_paths.length > 0 ? graph.directory_paths : ["root"];
   return directoryPaths.includes(selectedPath);
-}
-
-function graphVisibleForUser(graph: WorkflowGraphMetadata, currentUserId: string): boolean {
-  const userId = currentUserId.trim();
-  if (!userId) return false;
-  return graph.user_ids.includes(userId);
-}
-
-function graphVisibleInView(
-  graph: WorkflowGraphMetadata,
-  view: WorkflowGraphView,
-  selectedDirectoryPath: string,
-  currentUserId: string,
-): boolean {
-  return view === "private"
-    ? graphVisibleForUser(graph, currentUserId)
-    : graphVisibleInDirectory(graph, selectedDirectoryPath);
 }
 
 function fallbackPosition(index: number): { x: number; y: number } {
@@ -965,6 +946,19 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       type,
       issue_id: "issue-1",
       patch: { "fields.workflow_status": "updated" },
+      sync_proxy_cache: true,
+    };
+  }
+  if (kind === "effect" && type === "effect:ado:update-work-item") {
+    return {
+      id,
+      display_name: "ADO update work item",
+      type,
+      directory_path: "root",
+      project: "Project name",
+      work_item_id: "12345",
+      state: "In Progress",
+      expected_states: ["New", "To Do"],
       sync_proxy_cache: true,
     };
   }
@@ -1729,7 +1723,7 @@ function parseNodeTypeDragPayload(dataTransfer: DataTransfer): NodeTypeDragPaylo
 }
 
 export default function App() {
-  const { privilegedUnlocked, selectedDirectoryPath, currentUserId, currentUserLabel } = useAdminUi();
+  const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const canvasShellRef = useRef<HTMLElement | null>(null);
   const hasAutoFitRef = useRef(false);
@@ -1750,7 +1744,6 @@ export default function App() {
   const [selectedGraphId, setSelectedGraphId] = useState<string | null>(null);
   const [nodeConnectionMenu, setNodeConnectionMenu] = useState<NodeConnectionMenuState | null>(null);
   const [pendingConnection, setPendingConnection] = useState<PendingConnectionState | null>(null);
-  const [workflowGraphView, setWorkflowGraphView] = useState<WorkflowGraphView>("directory");
   const [graphNameDraft, setGraphNameDraft] = useState("");
   const [graphDescriptionDraft, setGraphDescriptionDraft] = useState("");
   const [graphDirectoriesDraft, setGraphDirectoriesDraft] = useState("");
@@ -1774,7 +1767,7 @@ export default function App() {
   const config = document?.config ?? emptyConfig();
   const workflowGraphs = document?.graphs ?? [];
   const visibleWorkflowGraphs = workflowGraphs.filter((graph) =>
-    graphVisibleInView(graph, workflowGraphView, selectedDirectoryPath, currentUserId),
+    graphVisibleInDirectory(graph, selectedDirectoryPath),
   );
   const visibleGraphNodeIds = new Set(visibleWorkflowGraphs.flatMap((graph) => graph.node_ids));
   const visibleGraphNodeIdKey = workflowGraphKey([...visibleGraphNodeIds]);
@@ -1835,10 +1828,7 @@ export default function App() {
     ? visibleWorkflowGraphs.find((graph) => graph.id === selectedGraphId)
     : undefined;
   const graphLabels = workflowGraphLabels(visibleWorkflowGraphs, displayedFlowNodes, canvasViewport);
-  const graphViewContext =
-    workflowGraphView === "private"
-      ? `User: ${currentUserLabel}`
-      : `Directory: ${selectedDirectoryPath}`;
+  const graphViewContext = `Directory: ${selectedDirectoryPath}`;
   const selectedNodeBindingOptions = selectedNode
     ? upstreamBindingOptions(config, selectedNode.id, document?.output_schemas ?? {})
     : [];
@@ -2085,7 +2075,7 @@ export default function App() {
 
   useEffect(() => {
     hasAutoFitRef.current = false;
-  }, [selectedDirectoryPath, workflowGraphView, currentUserId]);
+  }, [selectedDirectoryPath]);
 
   useEffect(() => {
     if (!flowInstance || displayedFlowNodes.length === 0 || hasAutoFitRef.current) return;
@@ -2209,7 +2199,6 @@ export default function App() {
       normalizedConfig,
       nextGraphs ?? document.graphs ?? [],
       selectedDirectoryPath,
-      workflowGraphView === "private" ? currentUserId : "",
     );
     const nextDocument = {
       ...document,
@@ -2750,21 +2739,6 @@ export default function App() {
     );
     patchDocument(document.config, document.layout, nextGraphs);
     setError(null);
-  }
-
-  function addCurrentUserToGraphDraft() {
-    const normalizedUserId = currentUserId.trim();
-    if (!normalizedUserId) return;
-    const nextUserIds = Array.from(
-      new Set([
-        ...graphUsersDraft
-          .split("\n")
-          .map((userId) => userId.trim())
-          .filter(Boolean),
-        normalizedUserId,
-      ]),
-    );
-    setGraphUsersDraft(nextUserIds.join("\n"));
   }
 
   function applyInspectorChanges() {
@@ -3596,30 +3570,10 @@ export default function App() {
 
             <div className="sidebar-section workflow-graphs-section">
               <div className="section-label">Graphs</div>
-              <div className="workflow-graph-view-toggle" role="group" aria-label="Workflow graph view">
-                <button
-                  type="button"
-                  className={workflowGraphView === "directory" ? "selected" : ""}
-                  onClick={() => setWorkflowGraphView("directory")}
-                >
-                  Directory
-                </button>
-                <button
-                  type="button"
-                  className={workflowGraphView === "private" ? "selected" : ""}
-                  onClick={() => setWorkflowGraphView("private")}
-                >
-                  Mine
-                </button>
-              </div>
               <p className="runtime-summary">{graphViewContext}</p>
               <div className="workflow-graph-list">
                 {visibleWorkflowGraphs.length === 0 ? (
-                  <p className="runtime-summary">
-                    {workflowGraphView === "private"
-                      ? "No private workflows associated with this user."
-                      : "No graphs associated with this directory."}
-                  </p>
+                  <p className="runtime-summary">No graphs associated with this directory.</p>
                 ) : (
                   visibleWorkflowGraphs.map((graph) => (
                     <button
@@ -3666,23 +3620,14 @@ export default function App() {
                     />
                   </label>
                   <label className="inspector-label">
-                    <span>Private users</span>
+                    <span>User IDs</span>
                     <textarea
                       value={graphUsersDraft}
                       rows={3}
-                      placeholder={currentUserId}
                       onChange={(event) => setGraphUsersDraft(event.target.value)}
                       disabled={editLocked}
                     />
                   </label>
-                  <button
-                    type="button"
-                    className="subtle-button"
-                    onClick={addCurrentUserToGraphDraft}
-                    disabled={editLocked || !currentUserId.trim()}
-                  >
-                    Add current user
-                  </button>
                   <button
                     type="button"
                     className="primary"

@@ -272,6 +272,20 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "expected_updated_at",
         "sync_proxy_cache",
     ]
+    ado_update = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "effect:ado:update-work-item"
+    )
+    assert [field["key"] for field in ado_update["fields"]] == [
+        "directory_path",
+        "project",
+        "work_item_id",
+        "state",
+        "fields",
+        "expected_states",
+        "sync_proxy_cache",
+    ]
     event_emit = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:event:emit"
     )
@@ -2466,6 +2480,7 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(tmp_path: Path) -> None:
         "users": client.get("/api/admin/users"),
         "workers": client.get("/api/workers"),
         "configuration": client.get("/api/configuration/state"),
+        "reports": client.get("/api/admin/reports/workflow-graph-activity"),
     }
 
     assert responses["agents"].status_code == 200
@@ -2484,6 +2499,8 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(tmp_path: Path) -> None:
     assert "workers" in responses["workers"].json()
     assert responses["configuration"].status_code == 200
     assert responses["configuration"].json()["selected_directory_path"] == "root"
+    assert responses["reports"].status_code == 200
+    assert isinstance(responses["reports"].json()["graphs"], list)
 
 
 def test_admin_web_workers_expose_config_schema(tmp_path: Path) -> None:

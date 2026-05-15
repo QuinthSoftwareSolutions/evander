@@ -9,6 +9,7 @@ import type { AdminResult, DirectoryTreeNode } from "./features/admin/AdminConte
 import { AgentsPage } from "./features/agents/AgentsPage";
 import { ConfigurationScreen } from "./features/configuration/ConfigurationScreen";
 import { IssuesPage } from "./features/issues/IssuesPage";
+import { ReportsPage } from "./features/reports/ReportsPage";
 import { SessionsScreen } from "./features/sessions/SessionsScreen";
 import { SkillsPage } from "./features/skills/SkillsPage";
 import { UsersPage } from "./features/users/UsersPage";
@@ -81,6 +82,7 @@ type AdminTab =
   | "issues"
   | "sessions"
   | "configuration"
+  | "reports"
   | "users"
   | "workers"
   | "workflow";
@@ -105,6 +107,7 @@ const TABS: ReadonlyArray<AdminTabDefinition> = [
   { key: "issues", label: "Issues", shortLabel: "Issues", description: "Local issue intake and VM creation." },
   { key: "sessions", label: "Sessions", shortLabel: "Sessions", description: "Session state, tools, and wake schedules." },
   { key: "configuration", label: "Configuration", shortLabel: "Config", description: "Directory-scoped config and policy." },
+  { key: "reports", label: "Reports", shortLabel: "Reports", description: "Workflow activity and operational reporting." },
   { key: "users", label: "Users", shortLabel: "Users", description: "Azure SSO users and roles." },
   { key: "workers", label: "Workers", shortLabel: "Workers", description: "Background worker state, logs, and settings." },
   { key: "workflow", label: "Workflow", shortLabel: "Flow", description: "Workflow editor and runtime activity." },
@@ -1603,6 +1606,8 @@ export default function AdminRoot() {
               <IssuesPage />
             ) : renderedTab === "configuration" ? (
               <ConfigurationScreen />
+            ) : renderedTab === "reports" ? (
+              <ReportsPage />
             ) : renderedTab === "users" ? (
               <UsersPage />
             ) : renderedTab === "workers" ? (

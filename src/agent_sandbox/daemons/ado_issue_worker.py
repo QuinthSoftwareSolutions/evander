@@ -1558,6 +1558,7 @@ def _upsert_unified_issue_record(
     issue_number = str(work_item_id)
     description = str(work_item.get("description", "") or "")
     metadata = _preserved_local_issue_metadata(existing_record=existing_record, yaml_path=yaml_path)
+    metadata["proxy_cache"] = _proxy_cache_from_work_item(work_item)
 
     remote_reference = RemoteIssueReference(
         provider="azure_devops",
@@ -1594,6 +1595,20 @@ def _upsert_unified_issue_record(
     )
     store.put(record.issue_id, record)
     return record
+
+
+def _proxy_cache_from_work_item(work_item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "title": str(work_item.get("title", "") or ""),
+        "description": str(work_item.get("description", "") or ""),
+        "state": str(work_item.get("state", "") or ""),
+        "url": str(work_item.get("url", "") or ""),
+        "updated_at": str(work_item.get("updated_date", "") or ""),
+        "tags": [str(tag) for tag in work_item.get("tags", []) if str(tag).strip()],
+        "comments": [
+            dict(comment) for comment in work_item.get("comments", []) if isinstance(comment, dict)
+        ],
+    }
 
 
 def _build_issue_payload(record: LocalIssueRecord) -> dict[str, Any]:
@@ -1996,8 +2011,18 @@ def process_work_item(
         else:
             now = datetime.now(timezone.utc)
             record.state = "In Progress"
+            record.metadata = dict(record.metadata)
+            proxy_cache = (
+                dict(record.metadata.get("proxy_cache"))
+                if isinstance(record.metadata.get("proxy_cache"), dict)
+                else {}
+            )
+            proxy_cache["state"] = "In Progress"
+            proxy_cache["updated_at"] = now.isoformat().replace("+00:00", "Z")
+            record.metadata["proxy_cache"] = proxy_cache
             if record.remote_reference is not None:
                 record.remote_reference.last_synced_at = now
+                record.remote_reference.last_remote_updated_at = now
                 record.remote_reference.last_known_remote_state = "In Progress"
             record.updated_at = now
             _persist_unified_issue_record(config, record, yaml_path)

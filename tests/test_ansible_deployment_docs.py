@@ -17,6 +17,7 @@ def test_ansible_readme_covers_ubuntu_azure_and_repo_native_entrypoints() -> Non
     assert "agent_sandbox_services.package_cache" in text
     assert "agent_sandbox_services.apt_cache" in text
     assert "agent_sandbox_services.semantic_store" in text
+    assert "agent_sandbox_services.proxy_issue_sync" in text
     assert "agent_sandbox_nexus_admin_password" in text
     assert "agent_sandbox_nexus_accept_community_eula" in text
     assert "agent-sandbox-nexus.service" in text

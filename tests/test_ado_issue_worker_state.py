@@ -387,6 +387,11 @@ def test_process_work_item_upserts_unified_issue_and_refreshes_yaml(
     assert records[0].comments == [
         {"text": "Second", "author": "Bob", "created_date": "", "modified_date": ""}
     ]
+    assert records[0].metadata["proxy_cache"]["title"] == "Updated title"
+    assert records[0].metadata["proxy_cache"]["state"] == "In Progress"
+    assert records[0].metadata["proxy_cache"]["comments"] == [
+        {"text": "Second", "author": "Bob", "created_date": "", "modified_date": ""}
+    ]
     assert records[0].remote_reference is not None
     assert records[0].remote_reference.work_item_id == "990"
 
@@ -792,8 +797,10 @@ def test_process_work_item_refreshes_local_proxy_state_after_success(
     assert len(records) == 1
     assert records[0].issue_number == "14382"
     assert records[0].state == "In Progress"
+    assert records[0].metadata["proxy_cache"]["state"] == "In Progress"
     assert records[0].remote_reference is not None
     assert records[0].remote_reference.last_known_remote_state == "In Progress"
+    assert records[0].remote_reference.last_remote_updated_at is not None
 
     yaml_payload = yaml.safe_load(
         (worker_config.yaml_output_dir / "work-item-14382.yaml").read_text(encoding="utf-8")

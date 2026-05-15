@@ -177,6 +177,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         workflow_packs=["agent-container-worker.v1-example"],
     )
 
+    container_triggers = {trigger["id"]: trigger for trigger in container.triggers}
     default_effects = {effect["id"]: effect for effect in default.effects}
     container_effects = {effect["id"]: effect for effect in container.effects}
     default_gates = {gate["id"]: gate for gate in default.gates}
@@ -470,6 +471,70 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         in container_effects["effect-agent-prompt-5"]["config"]["prompt"]
     )
     assert "--no-restore" in container_effects["effect-agent-prompt-5"]["config"]["prompt"]
+
+    assert (
+        container_triggers["trigger-cron-auto-dev-1"]["config"]["expression"]
+        == "*/5 * * * *"
+    )
+    auto_dev_query = container_queries["query-ado-auto-dev-1"]
+    assert auto_dev_query["type"] == "query:ado:work-items"
+    assert auto_dev_query["config"]["directory_path"] == "root/example/truman"
+    assert auto_dev_query["config"]["project"] == "Example Industry APP"
+    assert auto_dev_query["config"]["states"] == ["New", "To Do"]
+    assert auto_dev_query["config"]["tags_any"] == ["auto-dev"]
+    assert auto_dev_query["config"]["current_iteration"] is False
+    auto_dev_claim = container_effects["effect-ado-update-work-item-auto-dev-1"]
+    assert auto_dev_claim["type"] == "effect:ado:update-work-item"
+    assert auto_dev_claim["config"]["work_item_id"] == (
+        "${{gate-for-auto-dev-1.current_element.id}}"
+    )
+    assert auto_dev_claim["config"]["expected_states"] == ["New", "To Do"]
+    assert auto_dev_claim["config"]["state"] == "In Progress"
+    assert auto_dev_claim["config"]["sync_proxy_cache"] is True
+    assert (
+        container_edges[("query-ado-auto-dev-1", "gate-for-auto-dev-1")]["target_id"]
+        == "gate-for-auto-dev-1"
+    )
+    assert (
+        container_edges[
+            ("gate-for-auto-dev-1", "effect-ado-update-work-item-auto-dev-1")
+        ]["source_port"]
+        == "body"
+    )
+    assert (
+        container_edges[
+            ("effect-ado-update-work-item-auto-dev-1", "gate-for-auto-dev-1")
+        ]["allow_cycle"]
+        is True
+    )
+    assert (
+        container_edges[
+            ("effect-ado-update-work-item-auto-dev-1", "gate-filter-auto-dev-claimed-1")
+        ]["target_id"]
+        == "gate-filter-auto-dev-claimed-1"
+    )
+    assert container_gates["gate-filter-auto-dev-claimed-1"]["config"]["when"] == {
+        "all": [
+            {
+                "equals": True,
+                "left": "${{effect-ado-update-work-item-auto-dev-1.updated}}",
+            }
+        ]
+    }
+    assert (
+        container_gates["gate-map-auto-dev-ticket-1"]["config"]["template"]["ticket"]
+        == "${{effect-ado-update-work-item-auto-dev-1.ticket}}"
+    )
+    assert (
+        container_edges[("gate-map-auto-dev-ticket-1", "gate-merge-1")]["target_id"]
+        == "gate-merge-1"
+    )
+    assert (
+        container_edges[
+            ("gate-for-auto-dev-1", "effect-event-emit-auto-dev-scan-complete-1")
+        ]["source_port"]
+        == "done"
+    )
 
     all_node_ids = {
         *(trigger["id"] for trigger in container.triggers),

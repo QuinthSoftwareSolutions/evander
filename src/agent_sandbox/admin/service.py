@@ -37,6 +37,7 @@ from agent_sandbox.config import (
     DiscordWakeWorkerGlobalConfig,
     DiscordIngestWorkerGlobalConfig,
     GatewayConfig,
+    ProxyIssueSyncWorkerGlobalConfig,
     ScheduledWakeWorkerGlobalConfig,
     TeamsIngestWorkerGlobalConfig,
     TeamsMeetingIngestWorkerGlobalConfig,
@@ -134,6 +135,11 @@ from agent_sandbox.services import normalize_teams_target, normalize_teams_user_
 
 _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("ado", "ADO Worker", "agent-sandbox-ado-worker.service"),
+    (
+        "proxy-issue-sync",
+        "Proxy Issue Sync Worker",
+        "agent-sandbox-proxy-issue-sync.service",
+    ),
     ("discord-ingest", "Discord Ingest Worker", "agent-sandbox-discord-ingest.service"),
     ("discord-wake", "Discord Wake Worker", "agent-sandbox-discord-wake.service"),
     ("scheduled-wake", "Scheduled Wake Worker", "agent-sandbox-scheduled-wake.service"),
@@ -157,6 +163,7 @@ _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
 
 _WORKER_GLOBAL_CONFIG_PATHS: dict[str, str] = {
     "ado": "config/ado-worker/config.json",
+    "proxy-issue-sync": "config/proxy-issue-sync/config.json",
     "discord-ingest": "config/discord-ingest/config.json",
     "discord-wake": "config/discord-wake/config.json",
     "scheduled-wake": "config/scheduled-wake/config.json",
@@ -168,6 +175,7 @@ _WORKER_GLOBAL_CONFIG_PATHS: dict[str, str] = {
 
 _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "ado": AdoWorkerGlobalConfig,
+    "proxy-issue-sync": ProxyIssueSyncWorkerGlobalConfig,
     "discord-ingest": DiscordIngestWorkerGlobalConfig,
     "discord-wake": DiscordWakeWorkerGlobalConfig,
     "scheduled-wake": ScheduledWakeWorkerGlobalConfig,
@@ -414,6 +422,43 @@ class WorkflowRunSnapshotPayload(BaseModel):
     generated_at: datetime
     runs: list[WorkflowRunSummaryPayload] = Field(default_factory=list)
     node_activity: dict[str, dict[str, int]] = Field(default_factory=dict)
+
+
+class WorkflowGraphActivityNodePayload(BaseModel):
+    node_id: str
+    node_type: str | None = None
+    display_name: str | None = None
+    activity_count: int = 0
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    first_activity_at: datetime | None = None
+    latest_activity_at: datetime | None = None
+
+
+class WorkflowGraphActivityGraphPayload(BaseModel):
+    graph_id: str
+    name: str
+    description: str | None = None
+    directory_paths: list[str] = Field(default_factory=list)
+    user_ids: list[str] = Field(default_factory=list)
+    node_ids: list[str] = Field(default_factory=list)
+    node_count: int = 0
+    run_count: int = 0
+    activity_count: int = 0
+    trigger_event_count: int = 0
+    gate_execution_count: int = 0
+    effect_execution_count: int = 0
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    first_activity_at: datetime | None = None
+    latest_activity_at: datetime | None = None
+    nodes: list[WorkflowGraphActivityNodePayload] = Field(default_factory=list)
+
+
+class WorkflowGraphActivityReportPayload(BaseModel):
+    worker_id: str = "trigger-orchestrator"
+    generated_at: datetime
+    period_start: datetime
+    period_end: datetime
+    graphs: list[WorkflowGraphActivityGraphPayload] = Field(default_factory=list)
 
 
 class WorkflowRunClearPayload(BaseModel):
@@ -826,6 +871,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:vm:delete-files": "Delete files from a VM-backed agent target.",
     "effect:issue:update-state": "Update the workflow state for a tracked issue.",
     "effect:issue:update-metadata": "Patch metadata on a tracked issue.",
+    "effect:ado:update-work-item": (
+        "Update an Azure DevOps work item with an optional expected-state guard."
+    ),
     "effect:event:emit": "Emit an internal workflow event for other graphs.",
     "effect:notification:send": "Send a notification through a configured communication target.",
     "effect:session:update-metadata": "Patch metadata on a host-side session record.",
@@ -1939,6 +1987,20 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("patch", "Patch", "json", bindable=True),
             _field("merge_patch", "Merge patch", "json", bindable=True),
             _field("expected_updated_at", "Expected updated at", "string", bindable=True),
+            _field("sync_proxy_cache", "Sync proxy cache", "boolean", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:ado:update-work-item",
+        label="ADO update work item",
+        fields=[
+            _field("directory_path", "Directory path", "string", required=True, bindable=True),
+            _field("project", "Project", "string", required=True, bindable=True),
+            _field("work_item_id", "Work item ID", "string", required=True, bindable=True),
+            _field("state", "State", "string", bindable=True),
+            _field("fields", "Fields", "json", bindable=True),
+            _field("expected_states", "Expected states", "string_list", bindable=True),
             _field("sync_proxy_cache", "Sync proxy cache", "boolean", bindable=True),
         ],
     ),
@@ -7280,6 +7342,19 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
         return self.workflow_config_admin.read_workflow_run_snapshot()
 
+    def read_workflow_graph_activity_report(
+        self,
+        *,
+        period_start: datetime | None = None,
+        period_end: datetime | None = None,
+        limit: int | None = None,
+    ) -> WorkflowGraphActivityReportPayload:
+        return self._read_workflow_graph_activity_report(
+            period_start=period_start,
+            period_end=period_end,
+            limit=limit,
+        )
+
     def clear_workflow_run(self, event_id: str) -> WorkflowRunClearPayload:
         return self.workflow_config_admin.clear_workflow_run(event_id)
 
@@ -8578,6 +8653,242 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             / "pending.json",
             "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
         }
+
+    def _read_workflow_graph_activity_report(
+        self,
+        *,
+        period_start: datetime | None = None,
+        period_end: datetime | None = None,
+        limit: int | None = None,
+    ) -> WorkflowGraphActivityReportPayload:
+        now = _utc_now()
+        end_at = (
+            period_end.astimezone(UTC)
+            if period_end is not None and period_end.tzinfo is not None
+            else period_end.replace(tzinfo=UTC)
+            if period_end is not None
+            else now
+        )
+        start_at = (
+            period_start.astimezone(UTC)
+            if period_start is not None and period_start.tzinfo is not None
+            else period_start.replace(tzinfo=UTC)
+            if period_start is not None
+            else end_at - timedelta(days=1)
+        )
+        if start_at > end_at:
+            raise ValueError("Workflow graph activity period_start must be before period_end.")
+
+        document = self._read_workflow_editor_document()
+        node_metadata: dict[str, dict[str, str | None]] = {}
+        for collection_name in ("triggers", "gates", "effects", "queries"):
+            nodes = document.config.get(collection_name)
+            if not isinstance(nodes, list):
+                continue
+            for raw_node in nodes:
+                if not isinstance(raw_node, dict):
+                    continue
+                node_id = str(raw_node.get("id") or "").strip()
+                if not node_id:
+                    continue
+                node_metadata[node_id] = {
+                    "node_type": _coerce_optional_string(raw_node.get("type")),
+                    "display_name": _coerce_optional_string(raw_node.get("display_name")),
+                }
+
+        graph_states: dict[str, dict[str, Any]] = {}
+        node_to_graph_id: dict[str, str] = {}
+        for graph in document.graphs:
+            graph_id = graph.id.strip()
+            if not graph_id:
+                continue
+            graph_states[graph_id] = {
+                "graph": graph,
+                "run_keys": set(),
+                "activity_count": 0,
+                "trigger_event_count": 0,
+                "gate_execution_count": 0,
+                "effect_execution_count": 0,
+                "status_counts": {},
+                "first_activity_at": None,
+                "latest_activity_at": None,
+                "nodes": {},
+            }
+            for node_id in graph.node_ids:
+                node_to_graph_id.setdefault(node_id, graph_id)
+
+        def in_period(timestamp: datetime | None) -> bool:
+            return timestamp is not None and start_at <= timestamp <= end_at
+
+        def update_bounds(state: dict[str, Any], timestamp: datetime) -> None:
+            first_activity_at = state.get("first_activity_at")
+            if not isinstance(first_activity_at, datetime) or timestamp < first_activity_at:
+                state["first_activity_at"] = timestamp
+            latest_activity_at = state.get("latest_activity_at")
+            if not isinstance(latest_activity_at, datetime) or timestamp > latest_activity_at:
+                state["latest_activity_at"] = timestamp
+
+        def increment_status(counts: dict[str, int], status: str) -> None:
+            counts[status] = counts.get(status, 0) + 1
+
+        def register_activity(
+            *,
+            node_id: str,
+            timestamp: datetime | None,
+            source: str,
+            status: str | None,
+            run_key: str | None,
+        ) -> None:
+            normalized_node_id = node_id.strip()
+            if not normalized_node_id or not in_period(timestamp):
+                return
+            graph_id = node_to_graph_id.get(normalized_node_id)
+            if graph_id is None:
+                return
+            assert timestamp is not None
+            state = graph_states[graph_id]
+            state["activity_count"] += 1
+            if source == "trigger":
+                state["trigger_event_count"] += 1
+            elif source == "gate":
+                state["gate_execution_count"] += 1
+            elif source == "effect":
+                state["effect_execution_count"] += 1
+            if run_key:
+                state["run_keys"].add(run_key)
+            normalized_status = (status or "unknown").strip() or "unknown"
+            increment_status(state["status_counts"], normalized_status)
+            update_bounds(state, timestamp)
+
+            nodes = state["nodes"]
+            node_state = nodes.setdefault(
+                normalized_node_id,
+                {
+                    "activity_count": 0,
+                    "status_counts": {},
+                    "first_activity_at": None,
+                    "latest_activity_at": None,
+                },
+            )
+            node_state["activity_count"] += 1
+            increment_status(node_state["status_counts"], normalized_status)
+            update_bounds(node_state, timestamp)
+
+        def latest_datetime(*values: object) -> datetime | None:
+            parsed_values = [
+                parsed for parsed in (_coerce_optional_datetime(value) for value in values) if parsed
+            ]
+            return max(parsed_values) if parsed_values else None
+
+        stores = self._workflow_run_store_paths()
+        queue_payload = _read_json_object(stores["event_queue_store_path"])
+        for record_key, raw_record in queue_payload.items():
+            if not isinstance(raw_record, dict):
+                continue
+            event_id = _coerce_optional_string(raw_record.get("event_id")) or record_key
+            trace_id = _coerce_optional_string(raw_record.get("trace_id"))
+            register_activity(
+                node_id=str(raw_record.get("trigger_id") or ""),
+                timestamp=(
+                    _coerce_optional_datetime(raw_record.get("occurred_at"))
+                    or latest_datetime(raw_record.get("delivered_at"), raw_record.get("inflight_at"))
+                ),
+                source="trigger",
+                status=_coerce_optional_string(raw_record.get("delivery_state")) or "event",
+                run_key=trace_id or event_id,
+            )
+
+        effect_payload = _read_json_object(stores["effect_execution_store_path"])
+        for execution_id, raw_record in effect_payload.items():
+            if not isinstance(raw_record, dict):
+                continue
+            event_id = _coerce_optional_string(raw_record.get("event_id")) or execution_id
+            trace_id = _coerce_optional_string(raw_record.get("trace_id"))
+            register_activity(
+                node_id=str(raw_record.get("effect_id") or ""),
+                timestamp=latest_datetime(raw_record.get("finished_at"), raw_record.get("started_at")),
+                source="effect",
+                status=_coerce_optional_string(raw_record.get("status")),
+                run_key=trace_id or event_id,
+            )
+
+        gate_payload = _read_json_object(stores["gate_execution_store_path"])
+        for execution_id, raw_record in gate_payload.items():
+            if not isinstance(raw_record, dict):
+                continue
+            event_id = _coerce_optional_string(raw_record.get("event_id")) or execution_id
+            trace_id = _coerce_optional_string(raw_record.get("trace_id"))
+            register_activity(
+                node_id=str(raw_record.get("gate_id") or ""),
+                timestamp=latest_datetime(raw_record.get("finished_at"), raw_record.get("started_at")),
+                source="gate",
+                status=_coerce_optional_string(raw_record.get("status")),
+                run_key=trace_id or event_id,
+            )
+
+        graphs: list[WorkflowGraphActivityGraphPayload] = []
+        for graph_id, state in graph_states.items():
+            graph = state["graph"]
+            node_payloads: list[WorkflowGraphActivityNodePayload] = []
+            for node_id, node_state in state["nodes"].items():
+                metadata = node_metadata.get(node_id, {})
+                node_payloads.append(
+                    WorkflowGraphActivityNodePayload(
+                        node_id=node_id,
+                        node_type=metadata.get("node_type"),
+                        display_name=metadata.get("display_name"),
+                        activity_count=node_state["activity_count"],
+                        status_counts=dict(sorted(node_state["status_counts"].items())),
+                        first_activity_at=node_state.get("first_activity_at"),
+                        latest_activity_at=node_state.get("latest_activity_at"),
+                    )
+                )
+            node_payloads.sort(
+                key=lambda node: (
+                    node.activity_count,
+                    node.latest_activity_at or datetime.min.replace(tzinfo=UTC),
+                    node.display_name or node.node_id,
+                ),
+                reverse=True,
+            )
+            graphs.append(
+                WorkflowGraphActivityGraphPayload(
+                    graph_id=graph_id,
+                    name=graph.name,
+                    description=graph.description,
+                    directory_paths=graph.directory_paths,
+                    user_ids=graph.user_ids,
+                    node_ids=graph.node_ids,
+                    node_count=len(graph.node_ids),
+                    run_count=len(state["run_keys"]),
+                    activity_count=state["activity_count"],
+                    trigger_event_count=state["trigger_event_count"],
+                    gate_execution_count=state["gate_execution_count"],
+                    effect_execution_count=state["effect_execution_count"],
+                    status_counts=dict(sorted(state["status_counts"].items())),
+                    first_activity_at=state.get("first_activity_at"),
+                    latest_activity_at=state.get("latest_activity_at"),
+                    nodes=node_payloads,
+                )
+            )
+        graphs.sort(
+            key=lambda graph: (
+                graph.activity_count,
+                graph.run_count,
+                graph.latest_activity_at or datetime.min.replace(tzinfo=UTC),
+                graph.name,
+            ),
+            reverse=True,
+        )
+        if limit is not None and limit > 0:
+            graphs = graphs[:limit]
+
+        return WorkflowGraphActivityReportPayload(
+            generated_at=now,
+            period_start=start_at,
+            period_end=end_at,
+            graphs=graphs,
+        )
 
     def _latest_resumable_failed_workflow_record(
         self,

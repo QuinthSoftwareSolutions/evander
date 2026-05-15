@@ -16,6 +16,8 @@
         unit: agent-sandbox-http-target-relay.service
       - key: ado_worker
         unit: agent-sandbox-ado-worker.service
+      - key: proxy_issue_sync
+        unit: agent-sandbox-proxy-issue-sync.service
       - key: discord_ingest
         unit: agent-sandbox-discord-ingest.service
       - key: discord_wake

@@ -101,6 +101,7 @@ Service toggles:
 - `agent_sandbox_services.semantic_store`
 - `agent_sandbox_services.http_target_relay`
 - `agent_sandbox_services.ado_worker`
+- `agent_sandbox_services.proxy_issue_sync`
 - `agent_sandbox_services.discord_ingest`
 - `agent_sandbox_services.discord_wake`
 - `agent_sandbox_services.scheduled_wake`

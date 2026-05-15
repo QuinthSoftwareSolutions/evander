@@ -22,6 +22,7 @@ from agent_sandbox.admin.web.shared import (
     json_error,
     request_has_privileged_operations,
 )
+from agent_sandbox.admin.web.reports import report_routes
 from agent_sandbox.admin.web.skills import skill_routes
 from agent_sandbox.admin.web.user_store import AdminWebUserStore
 from agent_sandbox.admin.web.users import admin_user_routes
@@ -305,6 +306,7 @@ def create_app(service: AdminService) -> Starlette:
     routes.extend(session_approval_routes(service, auth))
     routes.extend(worker_config_routes(service, auth))
     routes.extend(admin_user_routes(admin_user_store, auth, service))
+    routes.extend(report_routes(service))
     routes.extend(chat_routes(service, auth))
     if dist_dir.exists():
         routes.append(Mount("/", app=StaticFiles(directory=dist_dir, html=True)))

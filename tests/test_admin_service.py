@@ -2637,6 +2637,193 @@ def test_workflow_editor_reads_and_saves_named_graphs_inside_single_pack(
     }
 
 
+def test_workflow_graph_activity_report_groups_runtime_records_by_graph(
+    tmp_path: Path,
+) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    pack_path = packs_dir / "demo.v1.json"
+    pack_path.write_text(
+        json.dumps(
+            {
+                "pack_id": "demo",
+                "pack_version": "v1",
+                "graphs": [
+                    {
+                        "id": "graph-ticket",
+                        "name": "Ticket intake",
+                        "directory_paths": ["root"],
+                        "user_ids": ["alice"],
+                        "node_ids": ["trigger-ticket", "gate-filter", "effect-ticket"],
+                    },
+                    {
+                        "id": "graph-cron",
+                        "name": "Scheduled cleanup",
+                        "directory_paths": ["root"],
+                        "node_ids": ["trigger-cron", "effect-cron"],
+                    },
+                ],
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-ticket",
+                            "display_name": "Ticket created",
+                            "type": "trigger:ticket:created",
+                            "directories": ["root"],
+                        },
+                        {
+                            "id": "gate-filter",
+                            "display_name": "Filter ticket",
+                            "type": "gate:filter",
+                            "when": {
+                                "all": [
+                                    {
+                                        "equals": "root",
+                                        "left": "${{trigger-ticket.ticket.directory_path}}",
+                                    }
+                                ]
+                            },
+                        },
+                        {
+                            "id": "effect-ticket",
+                            "display_name": "Prompt ticket",
+                            "type": "effect:agent:prompt",
+                            "prompt": "Handle ticket",
+                        },
+                        {
+                            "id": "trigger-cron",
+                            "display_name": "Every hour",
+                            "type": "trigger:cron",
+                            "expression": "0 * * * *",
+                        },
+                        {
+                            "id": "effect-cron",
+                            "display_name": "Cleanup",
+                            "type": "effect:bash:script",
+                            "script_path": "/bin/echo",
+                        },
+                    ],
+                    "edges": [
+                        {"source_id": "trigger-ticket", "target_id": "gate-filter"},
+                        {"source_id": "gate-filter", "target_id": "effect-ticket"},
+                        {"source_id": "trigger-cron", "target_id": "effect-cron"},
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "config.json").write_text(
+        json.dumps({"runtime_dir": str(runtime_dir), "workflow_packs": ["demo.v1.json"]}),
+        encoding="utf-8",
+    )
+    (runtime_dir / "trigger-orchestrator-events.json").write_text(
+        json.dumps(
+            {
+                "evt-ticket": {
+                    "event_id": "evt-ticket",
+                    "trigger_id": "trigger-ticket",
+                    "trigger_type": "trigger:ticket:created",
+                    "trace_id": "trace-ticket",
+                    "occurred_at": "2026-05-01T10:00:00Z",
+                    "delivery_state": "delivered",
+                    "payload": {},
+                },
+                "evt-cron": {
+                    "event_id": "evt-cron",
+                    "trigger_id": "trigger-cron",
+                    "trigger_type": "trigger:cron",
+                    "trace_id": "trace-cron",
+                    "occurred_at": "2026-05-01T11:00:00Z",
+                    "delivery_state": "delivered",
+                    "payload": {},
+                },
+                "evt-old": {
+                    "event_id": "evt-old",
+                    "trigger_id": "trigger-ticket",
+                    "trigger_type": "trigger:ticket:created",
+                    "trace_id": "trace-old",
+                    "occurred_at": "2026-04-30T10:00:00Z",
+                    "delivery_state": "delivered",
+                    "payload": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runtime_dir / "gate-orchestrator-executions.json").write_text(
+        json.dumps(
+            {
+                "gate-ticket": {
+                    "execution_id": "gate-ticket",
+                    "event_id": "evt-ticket",
+                    "trace_id": "trace-ticket",
+                    "gate_id": "gate-filter",
+                    "status": "succeeded",
+                    "started_at": "2026-05-01T10:01:00Z",
+                    "finished_at": "2026-05-01T10:01:02Z",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runtime_dir / "effect-orchestrator-executions.json").write_text(
+        json.dumps(
+            {
+                "effect-ticket": {
+                    "execution_id": "effect-ticket",
+                    "event_id": "evt-ticket",
+                    "trace_id": "trace-ticket",
+                    "effect_id": "effect-ticket",
+                    "status": "succeeded",
+                    "started_at": "2026-05-01T10:02:00Z",
+                    "finished_at": "2026-05-01T10:03:00Z",
+                },
+                "effect-cron-old": {
+                    "execution_id": "effect-cron-old",
+                    "event_id": "evt-cron-old",
+                    "trace_id": "trace-cron-old",
+                    "effect_id": "effect-cron",
+                    "status": "succeeded",
+                    "started_at": "2026-04-30T10:02:00Z",
+                    "finished_at": "2026-04-30T10:03:00Z",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = AdminService(write_config(tmp_path))
+
+    report = service.read_workflow_graph_activity_report(
+        period_start=datetime(2026, 5, 1, tzinfo=UTC),
+        period_end=datetime(2026, 5, 2, tzinfo=UTC),
+    )
+
+    assert [graph.graph_id for graph in report.graphs] == ["graph-ticket", "graph-cron"]
+    ticket_graph = report.graphs[0]
+    assert ticket_graph.activity_count == 3
+    assert ticket_graph.run_count == 1
+    assert ticket_graph.trigger_event_count == 1
+    assert ticket_graph.gate_execution_count == 1
+    assert ticket_graph.effect_execution_count == 1
+    assert ticket_graph.status_counts == {"delivered": 1, "succeeded": 2}
+    assert ticket_graph.user_ids == ["alice"]
+    assert [(node.node_id, node.activity_count) for node in ticket_graph.nodes] == [
+        ("effect-ticket", 1),
+        ("gate-filter", 1),
+        ("trigger-ticket", 1),
+    ]
+    cron_graph = report.graphs[1]
+    assert cron_graph.activity_count == 1
+    assert cron_graph.run_count == 1
+    assert cron_graph.effect_execution_count == 0
+
+
 def test_workflow_editor_rejects_graph_metadata_that_crosses_connected_components(
     tmp_path: Path,
 ) -> None:
@@ -3691,6 +3878,17 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
             "ExecMainCode": "1",
             "ExecMainStatus": "0",
         },
+        "agent-sandbox-proxy-issue-sync.service": {
+            "ActiveState": "active",
+            "SubState": "running",
+            "Result": "success",
+            "UnitFileState": "enabled",
+            "Description": "Proxy issue sync worker",
+            "MainPID": "124",
+            "LoadState": "loaded",
+            "ExecMainCode": "1",
+            "ExecMainStatus": "0",
+        },
         "agent-sandbox-discord-ingest.service": {
             "ActiveState": "active",
             "SubState": "running",
@@ -3775,6 +3973,7 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
 
     assert [summary.worker_id for summary in summaries] == [
         "ado",
+        "proxy-issue-sync",
         "discord-ingest",
         "discord-wake",
         "scheduled-wake",
@@ -3789,25 +3988,28 @@ def test_list_background_workers_reads_systemd_state(tmp_path: Path, monkeypatch
     assert summaries[0].unit_file_state == "enabled"
     assert summaries[1].running is True
     assert summaries[1].failed is False
-    assert summaries[1].main_pid == 456
+    assert summaries[1].main_pid == 124
     assert summaries[2].running is True
     assert summaries[2].failed is False
-    assert summaries[2].main_pid == 555
-    assert summaries[3].running is False
-    assert summaries[3].failed is True
-    assert summaries[3].detail == "load=loaded, exec=1:2"
+    assert summaries[2].main_pid == 456
+    assert summaries[3].running is True
+    assert summaries[3].failed is False
+    assert summaries[3].main_pid == 555
     assert summaries[4].running is False
-    assert summaries[4].failed is False
-    assert summaries[4].unit_file_state == "disabled"
+    assert summaries[4].failed is True
+    assert summaries[4].detail == "load=loaded, exec=1:2"
     assert summaries[5].running is False
     assert summaries[5].failed is False
     assert summaries[5].unit_file_state == "disabled"
-    assert summaries[6].running is True
+    assert summaries[6].running is False
     assert summaries[6].failed is False
-    assert summaries[6].main_pid == 777
+    assert summaries[6].unit_file_state == "disabled"
     assert summaries[7].running is True
     assert summaries[7].failed is False
-    assert summaries[7].main_pid == 789
+    assert summaries[7].main_pid == 777
+    assert summaries[8].running is True
+    assert summaries[8].failed is False
+    assert summaries[8].main_pid == 789
 
 
 def test_list_background_workers_marks_unavailable_when_systemctl_fails(

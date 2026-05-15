@@ -5,6 +5,7 @@ from collections.abc import Callable
 from pydantic import BaseModel
 
 from agent_sandbox.effects.providers.schemas import (
+    AdoUpdateWorkItemEffectDefinition,
     AgentBootstrapFrontendEffectDefinition,
     AgentCloneRepoEffectDefinition,
     AgentCopyFilesEffectDefinition,
@@ -64,6 +65,7 @@ _EFFECT_MODEL_BY_TYPE = {
     "effect:vm:delete-files": VmDeleteFilesEffectDefinition,
     "effect:issue:update-state": IssueUpdateStateEffectDefinition,
     "effect:issue:update-metadata": IssueUpdateMetadataEffectDefinition,
+    "effect:ado:update-work-item": AdoUpdateWorkItemEffectDefinition,
     "effect:notification:send": NotificationSendEffectDefinition,
     "effect:session:update-metadata": SessionUpdateMetadataEffectDefinition,
     "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectDefinition,

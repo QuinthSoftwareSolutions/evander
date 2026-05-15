@@ -4,6 +4,7 @@ from agent_sandbox.effects.providers.default_schema import effect_node_schema_re
 from agent_sandbox.gates.providers.default_schema import gate_node_schema_resolvers
 from agent_sandbox.queries.providers.default_schema import query_node_schema_resolvers
 from agent_sandbox.triggers.providers.default_schema import trigger_node_schema_resolvers
+from agent_sandbox.effects.providers.ado_update_work_item import AdoUpdateWorkItemEffectProvider
 from agent_sandbox.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
 from agent_sandbox.effects.providers.agent_bootstrap_frontend import (
     AgentBootstrapFrontendEffectProvider,
@@ -134,6 +135,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:vm:delete-files": VmDeleteFilesEffectProvider,
             "effect:issue:update-state": IssueUpdateStateEffectProvider,
             "effect:issue:update-metadata": IssueUpdateMetadataEffectProvider,
+            "effect:ado:update-work-item": AdoUpdateWorkItemEffectProvider,
             "effect:notification:send": NotificationSendEffectProvider,
             "effect:session:update-metadata": SessionUpdateMetadataEffectProvider,
             "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectProvider,

@@ -370,6 +370,10 @@ render_unit \
   "${SYSTEMD_DIR}/agent-sandbox-ado-worker.service"
 
 render_unit \
+  "${ROOT_DIR}/systemd/agent-sandbox-proxy-issue-sync.service.template" \
+  "${SYSTEMD_DIR}/agent-sandbox-proxy-issue-sync.service"
+
+render_unit \
   "${ROOT_DIR}/systemd/agent-sandbox-discord-ingest.service.template" \
   "${SYSTEMD_DIR}/agent-sandbox-discord-ingest.service"
 
@@ -405,6 +409,7 @@ systemctl enable agent-sandbox-firewall.service
 systemctl enable agent-sandbox-nuget-relay.service
 systemctl enable agent-sandbox-http-target-relay.service
 systemctl enable agent-sandbox-ado-worker.service
+systemctl enable agent-sandbox-proxy-issue-sync.service
 systemctl enable agent-sandbox-discord-ingest.service
 systemctl enable agent-sandbox-discord-wake.service
 systemctl enable agent-sandbox-scheduled-wake.service
@@ -422,6 +427,7 @@ Installed systemd units:
   agent-sandbox-nuget-relay.service
   agent-sandbox-http-target-relay.service
   agent-sandbox-ado-worker.service
+  agent-sandbox-proxy-issue-sync.service
   agent-sandbox-discord-ingest.service
   agent-sandbox-discord-wake.service
   agent-sandbox-scheduled-wake.service
@@ -447,6 +453,7 @@ Next steps:
      sudo systemctl start agent-sandbox-nuget-relay.service
      sudo systemctl start agent-sandbox-http-target-relay.service
      sudo systemctl start agent-sandbox-ado-worker.service
+     sudo systemctl start agent-sandbox-proxy-issue-sync.service
      sudo systemctl start agent-sandbox-discord-ingest.service
      sudo systemctl start agent-sandbox-discord-wake.service
      sudo systemctl start agent-sandbox-scheduled-wake.service

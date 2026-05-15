@@ -24,6 +24,7 @@ test("groups effect node types by related functionality", () => {
     catalogNode("effect", "effect:agent:exec", "Agent exec"),
     catalogNode("effect", "effect:pr:create", "PR create"),
     catalogNode("effect", "effect:issue:update-metadata", "Issue update metadata"),
+    catalogNode("effect", "effect:ado:update-work-item", "ADO update work item"),
     catalogNode("effect", "effect:bash:script", "Bash script"),
     catalogNode("effect", "effect:notification:send", "Send notification"),
   ], "effect");
@@ -52,7 +53,7 @@ test("groups effect node types by related functionality", () => {
       },
       {
         label: "Issues & sessions",
-        types: ["effect:issue:update-metadata"],
+        types: ["effect:ado:update-work-item", "effect:issue:update-metadata"],
       },
       {
         label: "Git & PRs",

@@ -4,6 +4,7 @@ from importlib import import_module
 from typing import Any
 
 __all__ = [
+    "AdoUpdateWorkItemEffectProvider",
     "AgentBootstrapFrontendEffectProvider",
     "AgentCloneRepoEffectProvider",
     "AgentCopyFilesEffectProvider",
@@ -31,6 +32,7 @@ __all__ = [
 ]
 
 _EXPORT_MODULES = {
+    "AdoUpdateWorkItemEffectProvider": ".ado_update_work_item",
     "AgentBootstrapFrontendEffectProvider": ".agent_bootstrap_frontend",
     "AgentCloneRepoEffectProvider": ".agent_clone_repo",
     "AgentCopyFilesEffectProvider": ".agent_copy_files",

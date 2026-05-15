@@ -116,7 +116,7 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       key: "issues-sessions",
       label: "Issues & sessions",
       description: "Update tracked issues or session metadata.",
-      prefixes: ["effect:issue:", "effect:session:"],
+      prefixes: ["effect:issue:", "effect:ado:", "effect:session:"],
     },
     {
       key: "git-pr",

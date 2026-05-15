@@ -31,6 +31,19 @@ _ADO_HTML_MEDIA_FIELDS = (
     "Microsoft.VSTS.TCM.SystemInfo",
     "Microsoft.VSTS.Common.AcceptanceCriteria",
 )
+_ADO_PROXY_SYNC_FIELDS = (
+    "System.Id",
+    "System.Title",
+    "System.Description",
+    "System.State",
+    "System.WorkItemType",
+    "System.AreaPath",
+    "System.IterationPath",
+    "System.AssignedTo",
+    "System.Tags",
+    "System.ChangedDate",
+)
+_ADO_WORK_ITEMS_BATCH_LIMIT = 200
 _IMAGE_EXTENSIONS = {
     ".apng",
     ".avif",
@@ -280,7 +293,17 @@ class IssueProviderAdapter(Protocol):
         *,
         remote_issue_id: str,
         directory_path: str,
+        project: str | None = None,
         include_comments: bool = True,
+    ) -> dict[str, Any]: ...
+
+    def read_issues_batch(
+        self,
+        *,
+        remote_issue_ids: list[str],
+        directory_path: str,
+        project: str | None = None,
+        organization_url: str | None = None,
     ) -> dict[str, Any]: ...
 
     def post_comment(
@@ -301,6 +324,7 @@ class IssueProviderAdapter(Protocol):
         state: str | None,
         fields: dict[str, Any] | None,
         project: str | None = None,
+        expected_state: str | None = None,
         field_attachments: dict[str, list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]: ...
 
@@ -434,6 +458,27 @@ class AzureDevOpsIssueAdapter:
             return None
         normalized = str(value).strip()
         return normalized or None
+
+    @staticmethod
+    def _split_tags(value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            raw_values = value
+        else:
+            raw_values = str(value).split(";")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in raw_values:
+            tag = str(item).strip()
+            if not tag:
+                continue
+            key = tag.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(tag)
+        return normalized
 
     @staticmethod
     def _resolve_work_item_type(issue_type: str) -> str:
@@ -733,14 +778,51 @@ class AzureDevOpsIssueAdapter:
         response.raise_for_status()
         payload = response.json()
         fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+        api_url = str(payload.get("url") or "").strip()
+        web_url = str((payload.get("_links") or {}).get("web", {}).get("href") or "").strip()
         return {
             "provider": self.provider_name,
             "remote_issue_id": str(payload.get("id") or remote_issue_id),
+            "id": str(payload.get("id") or remote_issue_id),
+            "project": str(fields.get("System.TeamProject") or project).strip() or project,
+            "organization_url": organization_url,
+            "rev": payload.get("rev"),
             "title": str(fields.get("System.Title") or ""),
             "description": str(fields.get("System.Description") or ""),
             "state": str(fields.get("System.State") or ""),
-            "url": str(payload.get("url") or ""),
+            "url": web_url or api_url,
+            "web_url": web_url or None,
+            "api_url": api_url or None,
             "updated_at": self._normalize_datetime(str(fields.get("System.ChangedDate") or "")),
+            "fields": {k: v for k, v in fields.items()},
+        }
+
+    def _normalize_work_item_summary(
+        self,
+        raw_item: dict[str, Any],
+        *,
+        fallback_id: str | None = None,
+    ) -> dict[str, Any]:
+        fields = raw_item.get("fields") if isinstance(raw_item.get("fields"), dict) else {}
+        remote_id = str(raw_item.get("id") or fields.get("System.Id") or fallback_id or "").strip()
+        changed_at = self._normalize_datetime(str(fields.get("System.ChangedDate") or ""))
+        web_url = str((raw_item.get("_links") or {}).get("web", {}).get("href") or "").strip()
+        api_url = str(raw_item.get("url") or "").strip()
+        return {
+            "provider": self.provider_name,
+            "remote_issue_id": remote_id,
+            "id": remote_id,
+            "title": str(fields.get("System.Title") or "").strip(),
+            "description": str(fields.get("System.Description") or "").strip(),
+            "state": str(fields.get("System.State") or "").strip() or None,
+            "type": str(fields.get("System.WorkItemType") or "").strip() or None,
+            "area": str(fields.get("System.AreaPath") or "").strip() or None,
+            "iteration": str(fields.get("System.IterationPath") or "").strip() or None,
+            "assigned_to": self._normalize_assigned_to(fields.get("System.AssignedTo")),
+            "tags": self._split_tags(fields.get("System.Tags")),
+            "url": web_url or api_url or None,
+            "updated_at": changed_at,
+            "changed_at": changed_at,
             "fields": {k: v for k, v in fields.items()},
         }
 
@@ -862,15 +944,19 @@ class AzureDevOpsIssueAdapter:
         *,
         remote_issue_id: str,
         directory_path: str,
+        project: str | None = None,
         include_comments: bool = True,
     ) -> dict[str, Any]:
-        organization_url, project, pat = self._resolve_connection(directory_path)
+        organization_url, configured_project, pat = self._resolve_connection(directory_path)
+        normalized_project = str(project or configured_project).strip()
+        if not normalized_project:
+            raise ValueError("project is required for Azure DevOps issue reads.")
         auth_header = self._auth_header(pat)
         with httpx.Client(timeout=self.timeout_seconds) as client:
             issue = self._fetch_issue(
                 client,
                 organization_url=organization_url,
-                project=project,
+                project=normalized_project,
                 auth_header=auth_header,
                 remote_issue_id=remote_issue_id,
             )
@@ -878,13 +964,89 @@ class AzureDevOpsIssueAdapter:
                 issue["comments"] = self._fetch_comments(
                     client,
                     organization_url=organization_url,
-                    project=project,
+                    project=normalized_project,
                     auth_header=auth_header,
                     remote_issue_id=remote_issue_id,
                 )
             else:
                 issue["comments"] = []
         return issue
+
+    def read_issues_batch(
+        self,
+        *,
+        remote_issue_ids: list[str],
+        directory_path: str,
+        project: str | None = None,
+        organization_url: str | None = None,
+    ) -> dict[str, Any]:
+        configured_organization_url, configured_project, pat = self._resolve_connection(
+            directory_path
+        )
+        normalized_organization_url = str(
+            organization_url or configured_organization_url
+        ).rstrip("/")
+        normalized_project = str(project or configured_project).strip()
+        if not normalized_project:
+            raise ValueError("project is required for Azure DevOps batch issue reads.")
+        auth_header = self._auth_header(pat)
+
+        requested_by_numeric_id: dict[int, str] = {}
+        invalid_ids: list[str] = []
+        for raw_id in remote_issue_ids:
+            text = str(raw_id).strip()
+            if not text:
+                continue
+            if not text.isdigit():
+                invalid_ids.append(text)
+                continue
+            requested_by_numeric_id.setdefault(int(text), text)
+
+        items: dict[str, dict[str, Any]] = {}
+        batch_url = f"{normalized_organization_url}/_apis/wit/workitemsbatch"
+        numeric_ids = list(requested_by_numeric_id)
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            for index in range(0, len(numeric_ids), _ADO_WORK_ITEMS_BATCH_LIMIT):
+                chunk_ids = numeric_ids[index : index + _ADO_WORK_ITEMS_BATCH_LIMIT]
+                response = client.post(
+                    batch_url,
+                    params={"api-version": "7.1"},
+                    headers={"Authorization": auth_header, "Content-Type": "application/json"},
+                    json={
+                        "ids": chunk_ids,
+                        "fields": list(_ADO_PROXY_SYNC_FIELDS),
+                        "errorPolicy": "Omit",
+                    },
+                )
+                if response.is_error:
+                    self._raise_ado_http_error(
+                        action="fetch proxy issue summaries batch", response=response
+                    )
+                payload = response.json()
+                values = payload.get("value") if isinstance(payload, dict) else None
+                for raw_item in values or []:
+                    if not isinstance(raw_item, dict):
+                        continue
+                    item_id = str(raw_item.get("id") or "").strip()
+                    if not item_id:
+                        continue
+                    items[item_id] = self._normalize_work_item_summary(
+                        raw_item,
+                        fallback_id=item_id,
+                    )
+
+        requested_ids = [requested_by_numeric_id[item_id] for item_id in numeric_ids]
+        missing_ids = [item_id for item_id in requested_ids if item_id not in items]
+        missing_ids.extend(invalid_ids)
+        return {
+            "provider": self.provider_name,
+            "project": normalized_project,
+            "organization_url": normalized_organization_url,
+            "items": items,
+            "missing_ids": missing_ids,
+            "requested_count": len(remote_issue_ids),
+            "returned_count": len(items),
+        }
 
     def post_comment(
         self,
@@ -955,6 +1117,7 @@ class AzureDevOpsIssueAdapter:
         state: str | None,
         fields: dict[str, Any] | None,
         project: str | None = None,
+        expected_state: str | None = None,
         field_attachments: dict[str, list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
         fields = fields or {}
@@ -979,6 +1142,15 @@ class AzureDevOpsIssueAdapter:
         work_item_url = f"{organization_url}/{normalized_project}/_apis/wit/workitems/{remote_issue_id}"
         uploaded_attachments: list[dict[str, Any]] = []
         operations: list[dict[str, Any]] = []
+        normalized_expected_state = str(expected_state).strip() if expected_state is not None else ""
+        if normalized_expected_state:
+            operations.append(
+                {
+                    "op": "test",
+                    "path": "/fields/System.State",
+                    "value": normalized_expected_state,
+                }
+            )
         if state is not None:
             operations.append({"op": "add", "path": "/fields/System.State", "value": state})
         with httpx.Client(timeout=self.timeout_seconds) as client:
@@ -1008,11 +1180,13 @@ class AzureDevOpsIssueAdapter:
                 },
                 json=operations,
             )
-            response.raise_for_status()
+            if response.is_error:
+                self._raise_ado_http_error(action="update work item", response=response)
         return {
             "provider": self.provider_name,
             "remote_issue_id": str(remote_issue_id),
             "updated": True,
+            "expected_state": normalized_expected_state or None,
             "state": state,
             "fields": fields or {},
             "uploaded_attachments": uploaded_attachments,
@@ -1861,6 +2035,7 @@ class IssueService:
         provider: str,
         remote_issue_id: str,
         directory_path: str,
+        project: str | None = None,
         include_comments: bool = True,
     ) -> dict[str, Any]:
         adapter = self.adapters.get(provider)
@@ -1869,7 +2044,27 @@ class IssueService:
         return adapter.read_issue(
             remote_issue_id=remote_issue_id,
             directory_path=directory_path,
+            project=project,
             include_comments=include_comments,
+        )
+
+    def read_remote_issues_batch(
+        self,
+        *,
+        provider: str,
+        remote_issue_ids: list[str],
+        directory_path: str,
+        project: str | None = None,
+        organization_url: str | None = None,
+    ) -> dict[str, Any]:
+        adapter = self.adapters.get(provider)
+        if adapter is None:
+            raise ValueError(f"Unsupported issue provider: {provider}")
+        return adapter.read_issues_batch(
+            remote_issue_ids=remote_issue_ids,
+            directory_path=directory_path,
+            project=project,
+            organization_url=organization_url,
         )
 
     def post_remote_comment(
@@ -1902,6 +2097,7 @@ class IssueService:
         state: str | None,
         fields: dict[str, Any] | None,
         project: str | None = None,
+        expected_state: str | None = None,
         field_attachments: dict[str, list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
         adapter = self.adapters.get(provider)
@@ -1913,6 +2109,7 @@ class IssueService:
             state=state,
             fields=fields,
             project=project,
+            expected_state=expected_state,
             field_attachments=field_attachments,
         )
 
