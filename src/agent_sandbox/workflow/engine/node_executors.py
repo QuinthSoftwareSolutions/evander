@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Mapping
 from typing import Any, Callable, Protocol, TypeVar
 
@@ -71,7 +72,10 @@ class ProviderEffectNodeExecutor:
         effect = kwargs["effect"]
         resolved_config = kwargs.get("resolved_config")
         provider = self.provider_factory.build(effect)
-        return dict(provider.execute(resolved_config=dict(resolved_config or {})) or {})
+        execute_kwargs: dict[str, Any] = {"resolved_config": dict(resolved_config or {})}
+        if "execution_context" in inspect.signature(provider.execute).parameters:
+            execute_kwargs["execution_context"] = dict(kwargs.get("execution_context") or {})
+        return dict(provider.execute(**execute_kwargs) or {})
 
 
 class ProviderQueryNodeExecutor:

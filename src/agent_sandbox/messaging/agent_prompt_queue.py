@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from agent_sandbox.models import utc_now
 from agent_sandbox.storage import JsonStore
@@ -21,9 +23,24 @@ class QueuedAgentPromptRecord(BaseModel):
     resume_thread_id: str | None = None
     effect_id: str = Field(min_length=1)
     metadata: dict[str, str] = Field(default_factory=dict)
+    workflow_context: dict[str, dict[str, Any]] | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     coalesced_count: int = Field(default=1, ge=1)
+
+    @field_validator("workflow_context", mode="before")
+    @classmethod
+    def normalize_workflow_context(cls, value: Any) -> dict[str, dict[str, Any]] | None:
+        if not isinstance(value, Mapping):
+            return None
+        context: dict[str, dict[str, Any]] = {}
+        for node_id, node_payload in value.items():
+            if not isinstance(node_id, str) or not isinstance(node_payload, Mapping):
+                continue
+            if not all(isinstance(output_name, str) for output_name in node_payload):
+                continue
+            context[node_id] = dict(node_payload)
+        return context or None
 
 
 class AgentPromptQueueStore:

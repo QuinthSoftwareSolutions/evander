@@ -16,6 +16,7 @@ from agent_sandbox.orchestration.effect_extensions import (
     list_vm_summaries_for_agent_reconciliation,
     resolve_agent_prompt_dispatch_port,
 )
+from agent_sandbox.workflow.contracts import NODE_OUTPUTS_CONTEXT_KEY
 from agent_sandbox.workflow.migrations import AGENT_PROMPT_STARTED_PORT
 
 
@@ -278,6 +279,17 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "execution_id": execution_id,
             "queue_key": queue_key,
         }
+        input_payload = {
+            "target": record.target,
+            "vm_name": record.vm_name,
+            "session_id": session_id,
+            "prompt": record.prompt,
+            "model": model,
+            "vm_user": vm_user,
+            "resume_thread_id": record.resume_thread_id,
+            "queue_key": queue_key,
+        }
+        self._restore_workflow_context(input_payload=input_payload, record=record)
         execution_record = EffectExecutionRecord(
             execution_id=(f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}"),
             idempotency_key=idempotency_key,
@@ -292,16 +304,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             finished_at=now,
             resolved_config_hash=self._json_sha256(resolved_config),
             resolved_config=resolved_config,
-            input_payload={
-                "target": record.target,
-                "vm_name": record.vm_name,
-                "session_id": session_id,
-                "prompt": record.prompt,
-                "model": model,
-                "vm_user": vm_user,
-                "resume_thread_id": record.resume_thread_id,
-                "queue_key": queue_key,
-            },
+            input_payload=input_payload,
             outputs=outputs,
             config_revision=getattr(worker, "_last_graph_revision", None),
         )
@@ -373,6 +376,17 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         }
         if effective_thread_id:
             outputs["thread_id"] = effective_thread_id
+        input_payload = {
+            "target": record.target,
+            "vm_name": record.vm_name,
+            "session_id": session_id,
+            "prompt": record.prompt,
+            "model": record.model,
+            "vm_user": vm_user,
+            "resume_thread_id": record.resume_thread_id,
+            "queue_key": queue_key,
+        }
+        self._restore_workflow_context(input_payload=input_payload, record=record)
         execution_record = EffectExecutionRecord(
             execution_id=(
                 f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}"
@@ -389,16 +403,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             finished_at=now,
             resolved_config_hash=self._json_sha256(resolved_config),
             resolved_config=resolved_config,
-            input_payload={
-                "target": record.target,
-                "vm_name": record.vm_name,
-                "session_id": session_id,
-                "prompt": record.prompt,
-                "model": record.model,
-                "vm_user": vm_user,
-                "resume_thread_id": record.resume_thread_id,
-                "queue_key": queue_key,
-            },
+            input_payload=input_payload,
             outputs=outputs,
             config_revision=getattr(worker, "_last_graph_revision", None),
         )
@@ -429,6 +434,25 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             )
         except Exception:
             return
+
+    @staticmethod
+    def _restore_workflow_context(*, input_payload: dict[str, Any], record: Any) -> None:
+        workflow_context = AgentEnqueuePromptQueueDispatchHook._workflow_context_from_record(
+            record
+        )
+        if workflow_context:
+            input_payload[NODE_OUTPUTS_CONTEXT_KEY] = workflow_context
+
+    @staticmethod
+    def _workflow_context_from_record(record: Any) -> dict[str, dict[str, Any]] | None:
+        raw_context = getattr(record, "workflow_context", None)
+        if not isinstance(raw_context, dict):
+            return None
+        workflow_context: dict[str, dict[str, Any]] = {}
+        for node_id, node_payload in raw_context.items():
+            if isinstance(node_id, str) and isinstance(node_payload, dict):
+                workflow_context[node_id] = dict(node_payload)
+        return workflow_context or None
 
     @staticmethod
     def _json_sha256(value: Any) -> str:

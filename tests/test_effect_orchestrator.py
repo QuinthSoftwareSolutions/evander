@@ -2084,6 +2084,241 @@ def test_agent_enqueue_prompt_queues_when_target_agent_is_running(
     assert "vm-1" in queued_payload
 
 
+def test_queued_agent_prompt_record_accepts_optional_workflow_context() -> None:
+    base_payload = {
+        "queue_key": "vm-1",
+        "target": "vm-1",
+        "vm_name": "vm-1",
+        "prompt": "hello",
+        "effect_id": "effect-1",
+    }
+
+    without_context = QueuedAgentPromptRecord.model_validate(base_payload)
+    with_context = QueuedAgentPromptRecord.model_validate(
+        {
+            **base_payload,
+            "workflow_context": {
+                "gate-map": {"ticket": {"issue_id": "ISSUE-1"}},
+                "ignored": "not-a-node-payload",
+            },
+        }
+    )
+
+    assert without_context.workflow_context is None
+    assert with_context.workflow_context == {
+        "gate-map": {"ticket": {"issue_id": "ISSUE-1"}}
+    }
+
+
+def test_agent_prompt_queue_coalescing_keeps_latest_workflow_context(tmp_path: Path) -> None:
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    first = queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="vm-1",
+            target="vm-1",
+            vm_name="vm-1",
+            session_id=None,
+            prompt="old prompt",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            effect_id="effect-1",
+            workflow_context={"gate-map": {"ticket": {"issue_id": "ISSUE-1"}}},
+        )
+    )
+
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="vm-1",
+            target="vm-1",
+            vm_name="vm-1",
+            session_id=None,
+            prompt="new prompt",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            effect_id="effect-1",
+            workflow_context={"gate-map": {"ticket": {"issue_id": "ISSUE-2"}}},
+        )
+    )
+
+    stored = queue_store.get("vm-1")
+    assert stored is not None
+    assert stored.created_at == first.created_at
+    assert stored.coalesced_count == 2
+    assert stored.prompt == "new prompt"
+    assert stored.workflow_context == {"gate-map": {"ticket": {"issue_id": "ISSUE-2"}}}
+
+
+def test_agent_enqueue_prompt_queued_completion_preserves_upstream_workflow_context(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"issue_id": {"type": "string"}},
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-map",
+                    "display_name": "Map",
+                    "type": "gate:map",
+                    "template": {"ticket": {"issue_id": "${{trigger-1.issue_id}}"}},
+                    "outputs": {"ticket": {"type": "object"}},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Enqueue",
+                    "type": "effect:agent:enqueue-prompt",
+                    "vm_name": "vm-1",
+                    "prompt": "Handle ${{gate-map.ticket.issue_id}}",
+                },
+                {
+                    "id": "effect-2",
+                    "display_name": "Record completion",
+                    "type": "effect:session:update-metadata",
+                    "target": "session-1",
+                    "metadata": {
+                        "issue_id": "${{gate-map.ticket.issue_id}}",
+                        "agent_done": True,
+                    },
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "gate-map"),
+                _edge("gate-map", "effect-1"),
+                _edge("effect-1", "effect-2", source_port="completed"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service,
+        "list_vms",
+        lambda **kwargs: [
+            VmSummary(
+                vm_name="vm-1",
+                libvirt_state="running",
+                agent_state="running",
+                session_ids=["session-1"],
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service,
+        "resume_agent",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("resume_agent should only be called by the queued dispatch port")
+        ),
+    )
+    metadata_updates: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        worker.provider_factory.admin_service,
+        "session_update_metadata",
+        lambda **kwargs: metadata_updates.append(kwargs) or {"success": True},
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-queued-context-start",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"issue_id": "ISSUE-123"},
+            trace_id="trace-queued-context",
+        )
+    )
+
+    for _ in range(6):
+        worker.run_once()
+
+    queued_payload = json.loads(
+        (runtime_dir / "queued-agent-prompts.json").read_text(encoding="utf-8")
+    )
+    assert queued_payload["vm-1"]["workflow_context"]["gate-map"] == {
+        "ticket": {"issue_id": "ISSUE-123"}
+    }
+
+    resume_calls: list[dict[str, object]] = []
+    worker.agent_run_status_port = _AgentRunStatusPortStub(
+        [
+            VmSummary(
+                vm_name="vm-1",
+                libvirt_state="running",
+                agent_state="idle",
+                session_ids=["session-1"],
+            )
+        ]
+    )
+    worker.agent_prompt_dispatch_port = _AgentPromptDispatchPortStub(
+        resume_calls,
+        type("Result", (), {"success": True, "thread_id": "thread-queued"})(),
+    )
+
+    worker.run_once()
+
+    assert len(resume_calls) == 1
+    waiting_records = [
+        record
+        for record in worker.execution_store.read_all().values()
+        if record.effect_id == "effect-1" and record.status == "waiting"
+    ]
+    assert len(waiting_records) == 1
+    waiting_record = waiting_records[0]
+    assert waiting_record.input_payload["__node_outputs"]["gate-map"] == {
+        "ticket": {"issue_id": "ISSUE-123"}
+    }
+    dispatch_id = str(waiting_record.outputs["dispatch_id"])
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-queued-context-complete",
+            trigger_id="__await-agent-completion__",
+            trigger_type="trigger:agent:run:completed",
+            occurred_at=datetime(2026, 4, 4, 12, 5, tzinfo=timezone.utc),
+            payload={
+                "dispatch_id": dispatch_id,
+                "thread_id": "thread-queued",
+                "session_id": "session-1",
+                "success": True,
+                "agent_state": "idle",
+            },
+            trace_id="trace-queued-context",
+        )
+    )
+
+    for _ in range(8):
+        worker.run_once()
+
+    assert metadata_updates == [
+        {
+            "target": "session-1",
+            "metadata": {"issue_id": "ISSUE-123", "agent_done": True},
+        }
+    ]
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    effect_2_records = [
+        record for record in effect_payload.values() if record["effect_id"] == "effect-2"
+    ]
+    assert len(effect_2_records) == 1
+    assert effect_2_records[0]["status"] == "succeeded"
+
+
 def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes_idle(
     tmp_path: Path, monkeypatch
 ) -> None:

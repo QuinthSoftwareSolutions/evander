@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
@@ -15,6 +16,7 @@ from agent_sandbox.workflow.migrations import (
     AGENT_PROMPT_COMPLETED_PORT,
     AGENT_PROMPT_STARTED_PORT,
 )
+from agent_sandbox.workflow.contracts import NODE_OUTPUTS_CONTEXT_KEY
 from agent_sandbox.workflow.validation import NodeCapability
 
 from .agent_prompt import AgentPromptEffectProvider
@@ -55,7 +57,12 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
     def lifecycle_hooks(cls) -> tuple[type[AgentEnqueuePromptQueueDispatchHook], ...]:
         return (AgentEnqueuePromptQueueDispatchHook,)
 
-    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    def execute(
+        self,
+        *,
+        resolved_config: Mapping[str, Any] | None = None,
+        execution_context: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         effect = self._effect()
         context = self._context()
 
@@ -71,6 +78,10 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         }
         if resolved_config:
             payload.update(dict(resolved_config))
+        workflow_context = self._workflow_context_from_sources(
+            execution_context=execution_context,
+            input_payload=payload,
+        )
 
         prompt = self._require_string(payload.get("prompt"), field_name="prompt")
         target = self._resolve_target(payload)
@@ -94,6 +105,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 queue_key=queue_key,
                 config=config,
                 effect_id=effect.id,
+                workflow_context=workflow_context,
             )
         if execution_backend != ExecutionBackendKind.LIBVIRT_VM.value:
             raise ValueError(f"Unsupported execution_backend: {execution_backend}")
@@ -122,6 +134,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 resume_thread_id=resume_thread_id,
                 effect_id=effect.id,
                 queue_key=queue_key,
+                workflow_context=workflow_context,
             )
             return {
                 "success": True,
@@ -152,6 +165,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 resume_thread_id=resume_thread_id,
                 effect_id=effect.id,
                 queue_key=queue_key,
+                workflow_context=workflow_context,
             )
             message = self._normalize_optional_string(getattr(result, "message", None)) or "<empty>"
             raise RuntimeError(
@@ -190,6 +204,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         queue_key: str | None,
         config: Any,
         effect_id: str,
+        workflow_context: dict[str, dict[str, Any]] | None,
     ) -> dict[str, Any]:
         context = self._context()
         session_id, session = require_container_session_id(
@@ -221,6 +236,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 resume_thread_id=resume_thread_id,
                 effect_id=effect_id,
                 queue_key=queue_key or session_id,
+                workflow_context=workflow_context,
             )
             return {
                 "success": True,
@@ -267,6 +283,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 resume_thread_id=resume_thread_id,
                 effect_id=effect_id,
                 queue_key=queue_key or session_id,
+                workflow_context=workflow_context,
             )
             message = self._normalize_optional_string(exc) or type(exc).__name__
             raise RuntimeError(
@@ -512,6 +529,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         resume_thread_id: str | None,
         effect_id: str,
         queue_key: str | None = None,
+        workflow_context: dict[str, dict[str, Any]] | None = None,
     ) -> QueuedAgentPromptRecord:
         context = self._context()
         return enqueue_agent_prompt(
@@ -525,7 +543,48 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             vm_user=vm_user,
             resume_thread_id=resume_thread_id,
             effect_id=effect_id,
+            workflow_context=workflow_context,
         )
+
+    @classmethod
+    def _workflow_context_from_sources(
+        cls,
+        *,
+        execution_context: Mapping[str, Any] | None,
+        input_payload: Mapping[str, Any] | None,
+    ) -> dict[str, dict[str, Any]] | None:
+        for source in (execution_context, input_payload):
+            if not isinstance(source, Mapping):
+                continue
+            workflow_context = cls._copy_workflow_context(source.get(NODE_OUTPUTS_CONTEXT_KEY))
+            if workflow_context:
+                return workflow_context
+            nested_input = source.get("input_payload")
+            if isinstance(nested_input, Mapping):
+                workflow_context = cls._copy_workflow_context(
+                    nested_input.get(NODE_OUTPUTS_CONTEXT_KEY)
+                )
+                if workflow_context:
+                    return workflow_context
+        return None
+
+    @staticmethod
+    def _copy_workflow_context(raw_context: Any) -> dict[str, dict[str, Any]] | None:
+        if not isinstance(raw_context, Mapping):
+            return None
+        workflow_context: dict[str, dict[str, Any]] = {}
+        for node_id, node_payload in raw_context.items():
+            if not isinstance(node_id, str) or not isinstance(node_payload, Mapping):
+                continue
+            if not all(isinstance(key, str) for key in node_payload):
+                continue
+            try:
+                copied_payload = json.loads(json.dumps(dict(node_payload)))
+            except (TypeError, ValueError):
+                continue
+            if isinstance(copied_payload, dict):
+                workflow_context[node_id] = copied_payload
+        return workflow_context or None
 
     @staticmethod
     def _container_target_name(*, session: Any | None, session_id: str) -> str:
