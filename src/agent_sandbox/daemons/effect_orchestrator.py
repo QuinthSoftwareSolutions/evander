@@ -36,7 +36,7 @@ from agent_sandbox.gate_runtime import (
     GateRuntimeError,
     require_object_payload,
 )
-from agent_sandbox.messaging.wake_dispatch import single_instance_lock
+from agent_sandbox.orchestration.host_polling import HostFileLockManager, HostSleeper
 from agent_sandbox.orchestration.adapters import (
     EffectCompletionPublisherAdapter,
     EffectDependencyResolverAdapter,
@@ -85,6 +85,11 @@ from agent_sandbox.repositories.orchestration import (
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "AwaitAgentPendingRecord",
+    "_await_agent_pending_target",
+]
+
 _DEFAULT_MAX_GRAPH_DEPTH = 16
 _DEFAULT_MAX_EVENTS_PER_CYCLE = 200
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
@@ -95,18 +100,6 @@ WorkflowNodeDefinition = (
     | EffectDefinitionDiscriminated
     | QueryDefinitionDiscriminated
 )
-
-
-class _LockManager:
-    def lock(self, path: Path):
-        return single_instance_lock(path)
-
-
-class _Sleeper:
-    def sleep(self, seconds: float) -> None:
-        time.sleep(seconds)
-
-
 class EffectExecutionRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -312,8 +305,8 @@ class EffectOrchestratorWorker:
                 jitter_seconds=self.worker_config.jitter_seconds,
                 lock_path=self.lock_path,
             ),
-            lock_manager=_LockManager(),
-            sleeper=_Sleeper(),
+            lock_manager=HostFileLockManager(),
+            sleeper=HostSleeper(),
             run_cycle=self.run_once,
             get_sleep_seconds=lambda result: result.next_sleep_seconds,
         )
@@ -642,13 +635,29 @@ class EffectOrchestratorWorker:
         reconciled = 0
         graph = self._build_execution_graph()
         for hook in self._lifecycle_reconciliation_hooks:
-            reconciled += int(hook.reconcile(worker=self, graph=graph) or 0)
+            hook_name = hook.__class__.__name__
+            try:
+                reconciled += int(hook.reconcile(worker=self, graph=graph) or 0)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Effect orchestrator maintenance reconciliation failed "
+                    "phase=waiting_reconciliation hook=%s",
+                    hook_name,
+                )
         return reconciled
 
     def _run_post_completion_dispatch_hooks(self) -> int:
         dispatched = 0
         for hook in self._completion_dispatch_hooks:
-            dispatched += int(hook.dispatch(worker=self) or 0)
+            hook_name = hook.__class__.__name__
+            try:
+                dispatched += int(hook.dispatch(worker=self) or 0)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Effect orchestrator maintenance reconciliation failed "
+                    "phase=post_completion_dispatch hook=%s",
+                    hook_name,
+                )
         return dispatched
 
     def _run_special_event_handlers(
@@ -733,10 +742,20 @@ class EffectOrchestratorWorker:
     def _reconcile_gate_providers(self, *, graph: ExecutionGraph) -> int:
         reconciled = 0
         for gate_type in {gate.type for gate in graph.gates_by_id.values()}:
-            provider = self._get_gate_provider(gate_type)
-            if provider is None:
-                continue
-            reconciled += int(provider.reconcile(worker=self, graph=graph) or 0)
+            provider: Any | None = None
+            try:
+                provider = self._get_gate_provider(gate_type)
+                if provider is None:
+                    continue
+                reconciled += int(provider.reconcile(worker=self, graph=graph) or 0)
+            except Exception:  # noqa: BLE001
+                provider_name = provider.__class__.__name__ if provider is not None else None
+                logger.exception(
+                    "Effect orchestrator maintenance reconciliation failed "
+                    "phase=gate_reconciliation gate_type=%s provider=%s",
+                    gate_type,
+                    provider_name,
+                )
         return reconciled
 
     @staticmethod
