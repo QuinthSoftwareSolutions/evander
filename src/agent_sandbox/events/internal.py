@@ -99,32 +99,39 @@ class InternalEventBus:
             if isinstance(source, InternalEventSource) or source is None
             else InternalEventSource.model_validate(source)
         )
+        published = False
         with self._lock:
-            items = self._store.read_all()
-            if normalized_idempotency is not None:
-                for event in items.values():
-                    if event.idempotency_key == normalized_idempotency:
-                        return event
-            event_id = _event_id(
-                event_type=normalized_type,
-                payload=normalized_payload,
-                correlation_key=normalized_correlation,
-                idempotency_key=normalized_idempotency,
-            )
-            existing = items.get(event_id)
-            if existing is not None:
-                return existing
-            event = InternalEvent(
-                event_id=event_id,
-                event_type=normalized_type,
-                payload=normalized_payload,
-                correlation_key=normalized_correlation,
-                created_at=created_at or datetime.now(UTC),
-                source=normalized_source,
-                idempotency_key=normalized_idempotency,
-            )
-            items[event.event_id] = event
-            self._store.write_all(items)
+            def update(items: dict[str, InternalEvent]) -> InternalEvent:
+                nonlocal published
+                if normalized_idempotency is not None:
+                    for event in items.values():
+                        if event.idempotency_key == normalized_idempotency:
+                            return event
+                event_id = _event_id(
+                    event_type=normalized_type,
+                    payload=normalized_payload,
+                    correlation_key=normalized_correlation,
+                    idempotency_key=normalized_idempotency,
+                )
+                existing = items.get(event_id)
+                if existing is not None:
+                    return existing
+                event = InternalEvent(
+                    event_id=event_id,
+                    event_type=normalized_type,
+                    payload=normalized_payload,
+                    correlation_key=normalized_correlation,
+                    created_at=created_at or datetime.now(UTC),
+                    source=normalized_source,
+                    idempotency_key=normalized_idempotency,
+                )
+                items[event.event_id] = event
+                published = True
+                return event
+
+            event = self._store.update_all(update)
+            if not published:
+                return event
             self._journal.append(
                 "workflow.internal_event.published",
                 source="internal_event_bus",
