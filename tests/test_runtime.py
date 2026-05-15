@@ -432,6 +432,35 @@ def test_runtime_teams_service_for_session_scopes_root_graph_service_to_session(
     assert teams_service._allowed_channel_targets() == ["team-a/channel-1"]
 
 
+def test_runtime_teams_service_for_session_includes_chat_allowlist_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "root-token")
+    config = make_config(tmp_path, teams_backend="graph_api")
+    runtime = build_runtime(config)
+    runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-a",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_chat_allowlist=["chat:chat-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-b",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_chat_allowlist=["chat:chat-2"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    teams_service = runtime.teams_service_for_session("session-a")
+
+    assert isinstance(teams_service, GraphTeamsService)
+    assert teams_service._allowed_channel_targets() == ["chat:chat-1"]
+
+
 def test_runtime_teams_service_for_session_uses_directory_delegated_credentials(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

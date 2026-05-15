@@ -114,6 +114,15 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "communication_file_require_approval_for_send": True,
         }
     )
+    agent_create_chat_only = adapter.validate_python(
+        {
+            "id": "effect-agent-create-chat",
+            "display_name": "Create agent chat",
+            "type": "effect:agent:create",
+            "session_id": "session-1",
+            "teams_chat_allowlist": ["chat:chat-3"],
+        }
+    )
     agent_destroy = adapter.validate_python(
         {
             "id": "effect-agent-destroy",
@@ -253,6 +262,9 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert agent_create.type == "effect:agent:create"
     assert agent_create.teams_channel_allowlist == ["team-a/channel-1", "chat:chat-1"]
     assert agent_create.teams_chat_allowlist == ["chat:chat-2"]
+    assert agent_create_chat_only.type == "effect:agent:create"
+    assert agent_create_chat_only.config.get("teams_channel_allowlist") is None
+    assert agent_create_chat_only.teams_chat_allowlist == ["chat:chat-3"]
     assert agent_create.communication_file_receive_enabled is True
     assert agent_create.communication_file_send_enabled is True
     assert agent_create.communication_file_max_bytes == 4096

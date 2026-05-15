@@ -481,6 +481,30 @@ def test_require_teams_message_source_rejects_unallowlisted_channel(tmp_path: Pa
         engine.require_teams_message_source(session, message)
 
 
+def test_require_teams_message_source_allows_session_chat(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+        teams_chat_allowlist=["chat:chat-1"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    message = TeamsMessageEnvelope(
+        cursor="chat:chat-1/msg-1",
+        message_id="msg-1",
+        author_id="user-1",
+        chat_id="chat-1",
+        content="hello",
+        metadata={
+            "source": "teams_graph_api",
+            "chat_id": "chat-1",
+            "author_id": "user-1",
+        },
+    )
+
+    engine.require_teams_message_source(session, message)
+
+
 def test_require_teams_channel_target_validates_allowlist_and_shape(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     session = SessionManifest(
@@ -499,6 +523,18 @@ def test_require_teams_channel_target_validates_allowlist_and_shape(tmp_path: Pa
         engine.require_teams_channel_target(session, "user:operator@example.com")
 
 
+def test_require_teams_channel_target_allows_chat_allowlist_entries(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+        teams_chat_allowlist=["chat:chat-1"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    assert engine.require_teams_channel_target(session, "chat:chat-1") == "chat:chat-1"
+
+
 def test_require_teams_send_target_allows_declared_user_targets(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     session = SessionManifest(
@@ -515,6 +551,18 @@ def test_require_teams_send_target_allows_declared_user_targets(tmp_path: Path) 
     )
     with pytest.raises(PolicyError, match="Teams user target is not allowlisted"):
         engine.require_teams_send_target(session, "user:other@example.com")
+
+
+def test_require_teams_send_target_allows_chat_allowlist_entries(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.TEAMS_POST_STATUS],
+        teams_chat_allowlist=["chat:chat-1"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    assert engine.require_teams_send_target(session, "chat:chat-1") == "chat:chat-1"
 
 
 def test_session_manifest_preserves_teams_chat_allowlist() -> None:

@@ -434,6 +434,33 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
     )
 
 
+def test_agent_create_provider_passes_chat_allowlist_without_channel_allowlist() -> None:
+    effect = AgentCreateEffectDefinition(
+        id="effect-agent",
+        display_name="Create agent",
+        type="effect:agent:create",
+        execution_backend="libvirt_vm",
+        vm_name="lab-vm",
+        session_id="lab-session",
+        teams_chat_allowlist=[" chat:chat-1 "],
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+
+    factory.build(effect, directory_path="root/team-a").execute()
+
+    assert admin_service.create_vm_calls[0]["teams_channel_allowlist"] is None
+    assert admin_service.create_vm_calls[0]["teams_chat_allowlist"] == ["chat:chat-1"]
+
+
 def test_vm_clone_repo_provider_passes_through_repo_outputs() -> None:
     effect = VmCloneRepoEffectDefinition(
         id="effect-clone",
