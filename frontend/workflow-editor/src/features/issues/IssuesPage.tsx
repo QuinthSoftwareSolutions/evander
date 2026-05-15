@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
@@ -57,9 +57,13 @@ const ISSUE_SELECTION_STORAGE_KEY = "admin-web:issues:selected-issue";
 
 type IssueMetadataEntry = {
   label: string;
-  items: string[] | null;
-  value: string | null;
+  value: IssueMetadataValue;
 };
+
+type IssueMetadataValue =
+  | { kind: "scalar"; text: string }
+  | { kind: "list"; items: IssueMetadataValue[] }
+  | { kind: "map"; entries: IssueMetadataEntry[] };
 
 function issueSummaryText(issue: IssueDetail): string {
   const summaryText = issueBodyText(issue);
@@ -108,20 +112,30 @@ function issueSourceLabel(sourceType: string | null | undefined): string {
   return normalized || "Unknown";
 }
 
-function metadataValueLabel(value: unknown): string {
+function scalarMetadataValueLabel(value: unknown): string {
   if (value == null) return "";
   if (typeof value === "string") return value.trim();
   if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return String(value);
+}
+
+function issueMetadataValue(value: unknown): IssueMetadataValue | null {
+  if (value == null) return null;
   if (Array.isArray(value)) {
-    return value.map((item) => metadataValueLabel(item)).filter(Boolean).join(", ");
+    const items = value.map((item) => issueMetadataValue(item)).filter((item): item is IssueMetadataValue => item !== null);
+    return items.length > 0 ? { kind: "list", items } : null;
   }
   if (typeof value === "object") {
-    return Object.entries(value as Record<string, unknown>)
-      .map(([key, item]) => `${key}: ${metadataValueLabel(item)}`)
-      .filter((item) => !item.endsWith(": "))
-      .join(" · ");
+    const entries = Object.entries(value as Record<string, unknown>)
+      .map(([key, item]) => {
+        const nestedValue = issueMetadataValue(item);
+        return nestedValue ? { label: metadataLabel(key), value: nestedValue } : null;
+      })
+      .filter((item): item is IssueMetadataEntry => item !== null);
+    return entries.length > 0 ? { kind: "map", entries } : null;
   }
-  return String(value);
+  const text = scalarMetadataValueLabel(value);
+  return text ? { kind: "scalar", text } : null;
 }
 
 function metadataLabel(key: string): string {
@@ -135,15 +149,35 @@ function issueMetadataDisplayEntries(issue: IssueDetail): IssueMetadataEntry[] {
   return Object.entries(issue.metadata ?? {})
     .filter(([key]) => !["proxy_cache", "remote"].includes(key))
     .map(([key, rawValue]) => {
-      const label = metadataLabel(key);
-      if (Array.isArray(rawValue)) {
-        const items = rawValue.map((item) => metadataValueLabel(item).trim()).filter((item) => item.length > 0);
-        return { label, items: items.length > 0 ? items : null, value: null };
-      }
-      const value = metadataValueLabel(rawValue).trim();
-      return { label, items: null, value: value.length > 0 ? value : null };
+      const value = issueMetadataValue(rawValue);
+      return value ? { label: metadataLabel(key), value } : null;
     })
-    .filter((entry) => (entry.items && entry.items.length > 0) || entry.value);
+    .filter((entry): entry is IssueMetadataEntry => entry !== null);
+}
+
+function renderIssueMetadataValue(value: IssueMetadataValue): ReactNode {
+  if (value.kind === "scalar") {
+    return <span className="issue-metadata-scalar">{value.text}</span>;
+  }
+  if (value.kind === "list") {
+    return (
+      <ol className="issue-metadata-items">
+        {value.items.map((item, index) => (
+          <li key={index}>{renderIssueMetadataValue(item)}</li>
+        ))}
+      </ol>
+    );
+  }
+  return (
+    <dl className="issue-metadata-map">
+      {value.entries.map((entry, index) => (
+        <div key={`${entry.label}-${index}`}>
+          <dt>{entry.label}</dt>
+          <dd>{renderIssueMetadataValue(entry.value)}</dd>
+        </div>
+      ))}
+    </dl>
+  );
 }
 
 function issueFormFromDetail(issue: IssueDetail): IssueFormState {
@@ -791,15 +825,7 @@ export function IssuesPage() {
                     <div key={entry.label}>
                       <dt>{entry.label}</dt>
                       <dd>
-                        {entry.items ? (
-                          <ol className="issue-metadata-items">
-                            {entry.items.map((item) => (
-                              <li key={item}>{item}</li>
-                            ))}
-                          </ol>
-                        ) : (
-                          entry.value
-                        )}
+                        {renderIssueMetadataValue(entry.value)}
                       </dd>
                     </div>
                   ))}

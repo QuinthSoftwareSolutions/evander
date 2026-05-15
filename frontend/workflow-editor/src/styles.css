@@ -3409,6 +3409,50 @@ select {
   padding-top: 0.25rem;
 }
 
+.issue-metadata-list > div {
+  min-width: 0;
+}
+
+.issue-metadata-scalar {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.issue-metadata-map {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0;
+}
+
+.issue-metadata-map > div {
+  display: grid;
+  grid-template-columns: minmax(7rem, 13rem) minmax(0, 1fr);
+  gap: 0.35rem 0.75rem;
+  min-width: 0;
+  padding-top: 0.55rem;
+  border-top: 1px solid rgba(93, 75, 48, 0.14);
+}
+
+.issue-metadata-map > div:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.issue-metadata-map dt {
+  margin: 0;
+  color: #7d5d34;
+  font-family: "SFMono-Regular", "Consolas", monospace;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.issue-metadata-map dd {
+  min-width: 0;
+  margin: 0;
+}
+
 .issue-metadata-items {
   margin: 0;
   padding-left: 1.2rem;
@@ -4752,6 +4796,14 @@ select {
   border-color: rgba(128, 106, 66, 0.18);
   background: rgba(29, 26, 21, 0.9);
   box-shadow: 0 14px 38px rgba(0, 0, 0, 0.2);
+}
+
+:root[data-theme="dark"] .issue-metadata-map > div {
+  border-top-color: rgba(128, 106, 66, 0.22);
+}
+
+:root[data-theme="dark"] .issue-metadata-map dt {
+  color: #e0bb74;
 }
 
 :root[data-theme="dark"] .contact-editor-item {
