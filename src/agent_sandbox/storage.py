@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 T = TypeVar("T", bound=BaseModel)
 R = TypeVar("R")
-O = TypeVar("O")
+U = TypeVar("U")
 
 
 @dataclass(frozen=True)
@@ -170,7 +170,7 @@ class JsonStore(_JsonFileStoreBase, Generic[T]):
                 self._write_all_unlocked(items)
 
 
-class JsonObjectStore(_JsonFileStoreBase, Generic[O]):
+class JsonObjectStore(_JsonFileStoreBase, Generic[U]):
     def __init__(
         self,
         path: Path,
@@ -193,14 +193,17 @@ class JsonObjectStore(_JsonFileStoreBase, Generic[O]):
             with self._file_lock():
                 self._write_object_unlocked(payload)
 
-    def update_object(self, updater: Callable[[dict[str, Any]], O | _NoWrite[O]]) -> O | None:
+    def update_object(
+        self,
+        updater: Callable[[dict[str, Any]], U | _NoWrite[U] | None],
+    ) -> U | None:
         with self._lock:
             with self._file_lock():
                 payload = self._read_object_unlocked()
                 result = updater(payload)
                 if isinstance(result, _NoWrite):
                     return result.value
-                self._write_object_unlocked(payload if result is None else result)
+                self._write_object_unlocked(payload)
                 return result
 
     def _read_object_unlocked(self) -> dict[str, Any]:
