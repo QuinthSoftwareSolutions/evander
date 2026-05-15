@@ -97,6 +97,11 @@ class _AgentRunStatusPortStub:
         return list(self.summaries)
 
 
+class _FailingAgentRunStatusPortStub:
+    def list_vm_summaries(self) -> list[object]:
+        raise RuntimeError("virsh list failed")
+
+
 class _AgentPromptDispatchPortStub:
     def __init__(self, resume_calls: list[dict[str, object]], result: object) -> None:
         self.resume_calls = resume_calls
@@ -2395,6 +2400,80 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
     assert waiting_records[0].status == "waiting"
     assert waiting_records[0].effect_type == "effect:agent:enqueue-prompt"
     assert waiting_records[0].outputs["thread_id"] == "thread-queued"
+
+
+def test_agent_enqueue_prompt_queue_dispatch_skips_and_retries_when_inventory_fails(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="vm-1",
+            target="vm-1",
+            vm_name="vm-1",
+            session_id=None,
+            prompt="hello",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            effect_id="effect-1",
+        )
+    )
+    execution_store = JsonExecutionStore(runtime_dir / "effect-orchestrator-executions.json")
+    resume_calls: list[dict[str, object]] = []
+    worker = SimpleNamespace(
+        queued_agent_prompt_store=queue_store,
+        agent_run_status_port=_FailingAgentRunStatusPortStub(),
+        agent_prompt_dispatch_port=_AgentPromptDispatchPortStub(
+            resume_calls,
+            type("Result", (), {"success": True, "thread_id": "thread-queued"})(),
+        ),
+        execution_store=execution_store,
+        _build_execution_graph=lambda: SimpleNamespace(
+            effects_by_id={
+                "effect-1": SimpleNamespace(type="effect:agent:enqueue-prompt"),
+            }
+        ),
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: None,
+        _update_event_delivery_state=lambda event_id: None,
+    )
+
+    caplog.set_level(logging.ERROR, logger="agent_sandbox.effects.providers.lifecycle_hooks")
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
+
+    assert dispatched == 0
+    assert resume_calls == []
+    queued_store_path = runtime_dir / "queued-agent-prompts.json"
+    queued_payload = json.loads(queued_store_path.read_text(encoding="utf-8"))
+    assert queued_payload["vm-1"]["prompt"] == "hello"
+    assert "AgentEnqueuePromptQueueDispatchHook" in caplog.text
+    assert "queued_non_container_records=1" in caplog.text
+    assert "virsh list failed" in caplog.text
+
+    caplog.clear()
+    worker.agent_run_status_port = _AgentRunStatusPortStub(
+        [
+            VmSummary(
+                vm_name="vm-1",
+                libvirt_state="running",
+                agent_state="idle",
+                session_ids=[],
+            )
+        ]
+    )
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
+
+    assert dispatched == 1
+    assert len(resume_calls) == 1
+    assert resume_calls[0]["target"] == "vm-1"
+    assert queue_store.read_all() == {}
+    waiting_records = list(execution_store.read_all().values())
+    assert len(waiting_records) == 1
+    assert waiting_records[0].status == "waiting"
+    assert waiting_records[0].effect_type == "effect:agent:enqueue-prompt"
 
 
 def test_agent_enqueue_prompt_dispatch_does_not_publish_dispatch_id_as_thread_id(
