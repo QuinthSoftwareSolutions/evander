@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol
+from collections.abc import Callable
+from typing import Protocol, TypeVar
 
 from agent_sandbox.models import Directory
 from agent_sandbox.storage import JsonStore
+
+R = TypeVar("R")
 
 
 class DirectoryRepository(Protocol):
@@ -15,6 +18,8 @@ class DirectoryRepository(Protocol):
     def write_all(self, items: dict[str, Directory]) -> None: ...
 
     def get(self, key: str) -> Directory | None: ...
+
+    def update_all(self, updater: Callable[[dict[str, Directory]], R]) -> R: ...
 
 
 class JsonDirectoryRepository:
@@ -32,3 +37,6 @@ class JsonDirectoryRepository:
 
     def get(self, key: str) -> Directory | None:
         return self._store.get(key)
+
+    def update_all(self, updater: Callable[[dict[str, Directory]], R]) -> R:
+        return self._store.update_all(updater)
