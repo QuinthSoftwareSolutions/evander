@@ -40,6 +40,7 @@ from agent_sandbox.workflow.runtime_config import (
 from agent_sandbox.orchestration.host_polling import HostFileLockManager, HostSleeper
 from agent_sandbox.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
 from agent_sandbox.orchestration.wiring import TriggerWorkerWiring, build_trigger_worker_wiring
+from agent_sandbox.orchestration.wiring.trigger import build_trigger_provider_runtime_wiring
 from agent_sandbox.repositories.orchestration import GateCursorRepository
 
 logger = logging.getLogger(__name__)
@@ -108,19 +109,43 @@ class TriggerOrchestratorWorker:
         return self._kernel.run_once_with_lock()
 
     def run_once(self) -> TriggerOrchestratorCycleResult:
-        latest_config, changed = self._config_reloader.get_latest()
+        latest_config, _ = self._config_reloader.get_latest()
         previous_config = self.worker_config
-        self.worker_config = latest_config
-        if changed:
-            logger.info(
-                "Trigger orchestrator config revision changed revision=%s trigger_count=%d",
-                _config_revision_hash(latest_config),
-                len(latest_config.triggers),
-            )
-            self.event_queue = TriggerEventQueue(self.worker_config.event_queue_store_path)
+        config_changed = latest_config != previous_config
+        active_config = previous_config
+        if config_changed:
+            if _provider_loader_signature(latest_config) != _provider_loader_signature(
+                previous_config
+            ):
+                try:
+                    runtime_wiring = build_trigger_provider_runtime_wiring(
+                        config=self.config,
+                        worker_config=latest_config,
+                        runtime=self.runtime,
+                        provider_config_resolver=self.provider_config_resolver,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Trigger orchestrator provider_loader reload failed revision=%s; "
+                        "restart or fix configuration before retrying",
+                        _config_revision_hash(latest_config),
+                    )
+                    latest_config = previous_config
+                else:
+                    self.provider_config_resolver = runtime_wiring.provider_config_resolver
+                    self.provider_factory = runtime_wiring.provider_factory
+            if latest_config != previous_config:
+                self.worker_config = latest_config
+                active_config = latest_config
+                logger.info(
+                    "Trigger orchestrator config revision changed revision=%s trigger_count=%d",
+                    _config_revision_hash(latest_config),
+                    len(latest_config.triggers),
+                )
+                self.event_queue = TriggerEventQueue(self.worker_config.event_queue_store_path)
 
-        configured_triggers = self._configured_triggers(latest_config)
-        providers = self._load_configured_providers(latest_config, configured_triggers)
+        configured_triggers = self._configured_triggers(active_config)
+        providers = self._load_configured_providers(active_config, configured_triggers)
         events_discovered = 0
         events_published = 0
         loop = OrchestrationLoop[
@@ -186,7 +211,7 @@ class TriggerOrchestratorWorker:
         events_discovered = loop_result.dependencies_resolved
         events_published = loop_result.executions_recorded
 
-        sleep_config = previous_config if changed else latest_config
+        sleep_config = previous_config if config_changed else latest_config
         next_sleep_seconds = _compute_next_sleep_seconds(
             poll_interval_seconds=sleep_config.poll_interval_seconds,
             jitter_seconds=sleep_config.jitter_seconds,
@@ -260,6 +285,15 @@ def _acknowledge_provider_event_published(provider: Any | None, event: TriggerEv
 
 def _is_system_trigger(trigger: TriggerDefinitionDiscriminated) -> bool:
     return str(trigger.type or "").startswith("trigger:system:")
+
+
+def _provider_loader_signature(worker_config: TriggerOrchestratorWorkerGlobalConfig) -> str:
+    payload = {
+        "provider_loader": worker_config.provider_loader.model_dump(mode="json"),
+        "provider_include_builtin": worker_config.provider_include_builtin,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _config_revision_hash(worker_config: TriggerOrchestratorWorkerGlobalConfig) -> str:

@@ -74,8 +74,9 @@ from agent_sandbox.workflow.engine.node_executors import (
 from agent_sandbox.workflow.engine import OrchestrationLoop
 from agent_sandbox.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
 from agent_sandbox.orchestration.wiring import EffectWorkerWiring, build_effect_worker_wiring
+from agent_sandbox.orchestration.wiring.effect import build_effect_provider_runtime_wiring
 from agent_sandbox.orchestration.effect_extensions import SpecialEventResult
-from agent_sandbox.gates.providers.await_agent import (
+from agent_sandbox.gates.providers.await_agent import (  # noqa: F401
     AwaitAgentPendingRecord,
     _await_agent_pending_target,
 )
@@ -325,7 +326,60 @@ class EffectOrchestratorWorker:
 
     def run_once(self) -> EffectOrchestratorCycleResult:
         latest_config, _changed = self._config_reloader.get_latest()
-        self.worker_config = latest_config
+        previous_config = self.worker_config
+        active_config = previous_config
+        config_changed = latest_config != previous_config
+        if config_changed:
+            if _provider_loader_signature(latest_config) != _provider_loader_signature(
+                previous_config
+            ):
+                try:
+                    runtime_wiring = build_effect_provider_runtime_wiring(
+                        config=self.config,
+                        worker_config=latest_config,
+                        runtime=self.runtime,
+                        provider_config_resolver=self.provider_config_resolver,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Effect orchestrator provider_loader reload failed revision=%s; "
+                        "restart or fix configuration before retrying",
+                        _config_revision_hash(latest_config),
+                    )
+                    latest_config = previous_config
+                else:
+                    self.provider_config_resolver = runtime_wiring.provider_config_resolver
+                    self.provider_factory = runtime_wiring.provider_factory
+                    self.query_provider_factory = runtime_wiring.query_provider_factory
+                    self.gate_provider_factory = runtime_wiring.gate_provider_factory
+                    self.agent_run_status_port = runtime_wiring.agent_run_status_port
+                    self.agent_prompt_dispatch_port = runtime_wiring.agent_prompt_dispatch_port
+                    self._special_event_handlers = runtime_wiring.special_event_handlers
+                    self._lifecycle_reconciliation_hooks = (
+                        runtime_wiring.lifecycle_reconciliation_hooks
+                    )
+                    self._completion_dispatch_hooks = runtime_wiring.completion_dispatch_hooks
+                    self._effect_provider_class_registry = getattr(
+                        self.provider_factory, "registry", None
+                    )
+                    self._gate_providers.clear()
+                    self._gate_provider_factory_cache_id = id(self.gate_provider_factory)
+                    self.gate_executor_registry = NodeExecutorRegistry()
+                    self.effect_executor_registry = NodeExecutorRegistry()
+                    self.query_executor_registry = NodeExecutorRegistry()
+                    self._register_default_node_executors()
+            if latest_config != previous_config:
+                self.worker_config = latest_config
+                active_config = latest_config
+                logger.info(
+                    "Effect orchestrator config revision changed revision=%s node_count=%d edge_count=%d",
+                    _config_revision_hash(latest_config),
+                    len(latest_config.triggers)
+                    + len(latest_config.gates)
+                    + len(latest_config.effects)
+                    + len(latest_config.queries),
+                    len(latest_config.edges),
+                )
         config_revision = _config_revision_hash(latest_config)
         pending_events_scanned = 0
         events_processed = 0
@@ -333,7 +387,7 @@ class EffectOrchestratorWorker:
         effect_executions_completed = 0
         completion_events_published = 0
 
-        graph = _build_execution_graph(self.worker_config)
+        graph = _build_execution_graph(active_config)
         self._log_graph_revision_change(
             config_revision=config_revision,
             node_count=len(graph.nodes_by_id),
@@ -1792,6 +1846,15 @@ def _completion_event_id(*, parent_event_id: str, node_id: str, prefix: str) -> 
 
 def _config_revision_hash(worker_config: TriggerOrchestratorWorkerGlobalConfig) -> str:
     payload = worker_config.model_dump(mode="json")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _provider_loader_signature(worker_config: TriggerOrchestratorWorkerGlobalConfig) -> str:
+    payload = {
+        "provider_loader": worker_config.provider_loader.model_dump(mode="json"),
+        "provider_include_builtin": worker_config.provider_include_builtin,
+    }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 

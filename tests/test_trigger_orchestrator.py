@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -450,6 +451,110 @@ def test_trigger_orchestrator_run_once_uses_reloaded_worker_config(tmp_path: Pat
     result = worker.run_once()
 
     assert result.configured_triggers == 1
+
+
+def test_trigger_orchestrator_reloads_provider_factory_after_provider_loader_change(
+    tmp_path: Path, caplog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    initial_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [],
+        }
+    )
+    updated_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "provider_loader": {
+                "provider_modules": ["custom.reload"],
+            },
+            "triggers": [
+                {
+                    "id": "reload-trigger",
+                    "display_name": "Reloaded custom trigger",
+                    "type": "trigger:custom:reload",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    event = TriggerEvent(
+        event_id="reload-event-1",
+        trigger_id="reload-trigger",
+        trigger_type="trigger:custom:reload",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"kind": "reload"},
+    )
+    build_calls: list[tuple[str, ...]] = []
+
+    def _build_runtime_wiring(
+        *,
+        config: GatewayConfig,
+        worker_config: TriggerOrchestratorWorkerGlobalConfig,
+        runtime,
+        provider_config_resolver=None,
+    ):
+        _ = config, runtime, provider_config_resolver
+        build_calls.append(tuple(worker_config.provider_modules))
+        if worker_config.provider_modules and len(build_calls) == 2:
+            raise RuntimeError("temporary provider_loader reload failure")
+        provider_factory = SimpleNamespace(
+            build=lambda trigger: _StaticProvider([event])
+            if worker_config.provider_modules and trigger.id == "reload-trigger"
+            else _StaticProvider([])
+        )
+        return SimpleNamespace(
+            provider_config_resolver=object(),
+            provider_factory=provider_factory,
+        )
+
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.trigger_orchestrator.build_trigger_provider_runtime_wiring",
+        _build_runtime_wiring,
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.orchestration.wiring.trigger.build_trigger_provider_runtime_wiring",
+        _build_runtime_wiring,
+    )
+
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=initial_config,
+        config_reloader=_SequenceReloader(
+            [
+                (updated_config, True),
+                (updated_config, False),
+                (updated_config, False),
+            ]
+        ),
+        runtime=None,  # type: ignore[arg-type]
+    )
+
+    caplog.set_level("ERROR")
+
+    first_cycle = worker.run_once()
+    assert first_cycle.configured_triggers == 0
+    assert worker.worker_config.provider_modules == []
+
+    second_cycle = worker.run_once()
+
+    assert second_cycle.configured_triggers == 1
+    assert second_cycle.events_published == 1
+    assert build_calls == [(), ("custom.reload",), ("custom.reload",)]
+    assert worker.worker_config.provider_modules == ["custom.reload"]
+    assert "provider_loader reload failed" in caplog.text
+    assert "restart or fix configuration before retrying" in caplog.text
+
+    queue_payload = json.loads(
+        updated_config.event_queue_store_path.read_text(encoding="utf-8")
+    )
+    assert list(queue_payload.keys()) == ["reload-event-1"]
 
 
 def test_trigger_orchestrator_direct_worker_does_not_reload_from_cwd(
