@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import Lock
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -14,6 +12,7 @@ from agent_sandbox.models import (
     WakeScheduledRequest,
     WakeScheduleDefinition,
 )
+from agent_sandbox.storage import JsonObjectStore, _no_write
 
 _WAKE_RETENTION = timedelta(days=90)
 
@@ -61,40 +60,35 @@ class WakeRequestStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._lock = Lock()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
-            self._atomic_write({"requests": {}, "dispatches": {}, "messages": {}})
+        self._store = JsonObjectStore(path, {"requests": {}, "dispatches": {}, "messages": {}})
 
     def upsert_request(self, request: WakeScheduledRequest) -> None:
-        with self._lock:
-            payload = self._read_raw()
+        def update(payload: dict[str, Any]) -> None:
             requests = payload.setdefault("requests", {})
             requests[request.request_id] = request.model_dump(mode="json")
             self._compact(payload)
-            self._atomic_write(payload)
+
+        self._store.update_object(update)
 
     def get_request(self, request_id: str) -> WakeScheduledRequest | None:
-        with self._lock:
-            raw_request = self._read_raw().get("requests", {}).get(request_id)
-            if not isinstance(raw_request, dict):
-                return None
-            return WakeScheduledRequest.model_validate(raw_request)
+        raw_request = self._store.read_object().get("requests", {}).get(request_id)
+        if not isinstance(raw_request, dict):
+            return None
+        return WakeScheduledRequest.model_validate(raw_request)
 
     def delete_request(self, request_id: str) -> bool:
-        with self._lock:
-            payload = self._read_raw()
+        def update(payload: dict[str, Any]) -> bool | None:
             requests = payload.get("requests")
             if not isinstance(requests, dict) or request_id not in requests:
-                return False
+                return _no_write(False)
             requests.pop(request_id, None)
             self._compact(payload)
-            self._atomic_write(payload)
             return True
 
+        return bool(self._store.update_object(update))
+
     def record_dispatch(self, dispatch: WakeDispatchRecord) -> None:
-        with self._lock:
-            payload = self._read_raw()
+        def update(payload: dict[str, Any]) -> None:
             dispatches = payload.setdefault("dispatches", {})
             dispatches[dispatch.dispatch_id] = dispatch.model_dump(mode="json")
 
@@ -125,7 +119,8 @@ class WakeRequestStore:
             messages[message.message_id] = message.model_dump(mode="json")
 
             self._compact(payload)
-            self._atomic_write(payload)
+
+        self._store.update_object(update)
 
     def schedule_resume_request(
         self,
@@ -140,8 +135,8 @@ class WakeRequestStore:
         metadata: dict[str, Any],
     ) -> WakeScheduledRequest:
         now = datetime.now(UTC)
-        with self._lock:
-            payload = self._read_raw()
+
+        def update(payload: dict[str, Any]) -> WakeScheduledRequest:
             requests = payload.setdefault("requests", {})
             if request_id:
                 normalized_request_id = request_id
@@ -165,12 +160,12 @@ class WakeRequestStore:
             )
             requests[request.request_id] = request.model_dump(mode="json")
             self._compact(payload)
-            self._atomic_write(payload)
             return request
 
+        return self._store.update_object(update)
+
     def read_raw(self) -> dict[str, Any]:
-        with self._lock:
-            return self._read_raw()
+        return self._store.read_object()
 
     def list_requests(
         self,
@@ -178,46 +173,44 @@ class WakeRequestStore:
         session_id: str | None = None,
         include_disabled: bool = True,
     ) -> list[WakeScheduledRequest]:
-        with self._lock:
-            payload = self._read_raw()
-            raw_requests = payload.get("requests", {})
-            if not isinstance(raw_requests, dict):
-                return []
-            requests: list[WakeScheduledRequest] = []
-            for raw_value in raw_requests.values():
-                if not isinstance(raw_value, dict):
-                    continue
-                try:
-                    request = WakeScheduledRequest.model_validate(raw_value)
-                except Exception:
-                    continue
-                if session_id and request.session_id != session_id:
-                    continue
-                if not include_disabled and not request.enabled:
-                    continue
-                requests.append(request)
-            return requests
+        payload = self._store.read_object()
+        raw_requests = payload.get("requests", {})
+        if not isinstance(raw_requests, dict):
+            return []
+        requests: list[WakeScheduledRequest] = []
+        for raw_value in raw_requests.values():
+            if not isinstance(raw_value, dict):
+                continue
+            try:
+                request = WakeScheduledRequest.model_validate(raw_value)
+            except Exception:
+                continue
+            if session_id and request.session_id != session_id:
+                continue
+            if not include_disabled and not request.enabled:
+                continue
+            requests.append(request)
+        return requests
 
     def latest_dispatch_by_request_id(self) -> dict[str, WakeDispatchRecord]:
-        with self._lock:
-            payload = self._read_raw()
-            raw_dispatches = payload.get("dispatches", {})
-            if not isinstance(raw_dispatches, dict):
-                return {}
-            latest: dict[str, WakeDispatchRecord] = {}
-            for raw_value in raw_dispatches.values():
-                if not isinstance(raw_value, dict):
-                    continue
-                try:
-                    dispatch = WakeDispatchRecord.model_validate(raw_value)
-                except Exception:
-                    continue
-                if not dispatch.request_id:
-                    continue
-                current = latest.get(dispatch.request_id)
-                if current is None or dispatch.dispatched_at > current.dispatched_at:
-                    latest[dispatch.request_id] = dispatch
-            return latest
+        payload = self._store.read_object()
+        raw_dispatches = payload.get("dispatches", {})
+        if not isinstance(raw_dispatches, dict):
+            return {}
+        latest: dict[str, WakeDispatchRecord] = {}
+        for raw_value in raw_dispatches.values():
+            if not isinstance(raw_value, dict):
+                continue
+            try:
+                dispatch = WakeDispatchRecord.model_validate(raw_value)
+            except Exception:
+                continue
+            if not dispatch.request_id:
+                continue
+            current = latest.get(dispatch.request_id)
+            if current is None or dispatch.dispatched_at > current.dispatched_at:
+                latest[dispatch.request_id] = dispatch
+        return latest
 
     def find_due_requests(self, *, now_utc: datetime) -> list[WakeScheduledRequest]:
         due_requests: list[WakeScheduledRequest] = []
@@ -272,14 +265,6 @@ class WakeRequestStore:
                     continue
                 compacted_requests[request_id] = raw_value
             payload["requests"] = compacted_requests
-
-    def _read_raw(self) -> dict[str, Any]:
-        return json.loads(self.path.read_text(encoding="utf-8"))
-
-    def _atomic_write(self, payload: dict[str, Any]) -> None:
-        tmp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp_path.replace(self.path)
 
     @staticmethod
     def _parse_dt(value: Any) -> datetime:
