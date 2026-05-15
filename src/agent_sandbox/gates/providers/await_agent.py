@@ -331,7 +331,13 @@ class AwaitAgentGateProvider(GateProviderBase):
         pending_by_key = self._store().read_all()
         if not pending_by_key:
             return
-        summaries = list_vm_summaries_for_agent_reconciliation(worker)
+        summaries = self._safe_list_vm_summaries_for_reconciliation(
+            worker=worker,
+            phase="stale_pending_cleanup",
+            pending_record_count=len(pending_by_key),
+        )
+        if summaries is None:
+            return
         summaries_by_vm_name: dict[str, list[Any]] = {}
         summaries_by_session_id: dict[str, list[Any]] = {}
         for summary in summaries:
@@ -421,7 +427,14 @@ class AwaitAgentGateProvider(GateProviderBase):
     def _build_completion_event(
         self, *, worker: Any, pending: AwaitAgentPendingRecord, log_skips: bool, key: str | None
     ):
-        summaries = list_vm_summaries_for_agent_reconciliation(worker)
+        summaries = self._safe_list_vm_summaries_for_reconciliation(
+            worker=worker,
+            phase="completion_event_build",
+            key=key,
+            dispatch_id=pending.dispatch_id,
+        )
+        if summaries is None:
+            return None
         session_id, vm_name = _await_agent_pending_target(pending, summaries=summaries)
         if not vm_name:
             return None
@@ -452,6 +465,31 @@ class AwaitAgentGateProvider(GateProviderBase):
                 event.event_id,
             )
         return event
+
+    def _safe_list_vm_summaries_for_reconciliation(
+        self,
+        *,
+        worker: Any,
+        phase: str,
+        pending_record_count: int | None = None,
+        key: str | None = None,
+        dispatch_id: str | None = None,
+    ) -> list[Any] | None:
+        try:
+            return list_vm_summaries_for_agent_reconciliation(worker)
+        except Exception:
+            parts = [f"phase={phase}"]
+            if pending_record_count is not None:
+                parts.append(f"pending_records={pending_record_count}")
+            if key:
+                parts.append(f"key={key}")
+            if dispatch_id:
+                parts.append(f"dispatch_id={dispatch_id}")
+            logger.exception(
+                "AwaitAgentGateProvider inventory reconciliation skipped %s",
+                " ".join(parts),
+            )
+            return None
 
 
 def _await_agent_pending_target(
