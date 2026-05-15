@@ -17,6 +17,10 @@ from agent_sandbox.models import (
 from agent_sandbox.policy import PolicyEngine, PolicyError
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from agent_sandbox.runtime import allowed_tools_for_capability_profile
+from agent_sandbox.services import (
+    effective_teams_channel_targets,
+    normalize_teams_chat_targets,
+)
 from agent_sandbox.storage import JsonStore
 
 
@@ -511,6 +515,51 @@ def test_require_teams_send_target_allows_declared_user_targets(tmp_path: Path) 
     )
     with pytest.raises(PolicyError, match="Teams user target is not allowlisted"):
         engine.require_teams_send_target(session, "user:other@example.com")
+
+
+def test_session_manifest_preserves_teams_chat_allowlist() -> None:
+    manifest = SessionManifest.model_validate(
+        {
+            "session_id": "s1",
+            "allowed_tools": [],
+            "teams_chat_allowlist": ["chat:chat-1"],
+            "expires_at": "2099-01-01T00:00:00Z",
+        }
+    )
+
+    assert manifest.teams_chat_allowlist == ["chat:chat-1"]
+
+
+def test_effective_teams_channel_targets_combines_channel_and_chat_allowlists() -> None:
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+        teams_channel_allowlist=["team-a/channel-1", "chat:chat-1", "team-a/channel-1"],
+        teams_chat_allowlist=[" chat:chat-1 ", "chat:chat-2"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    assert effective_teams_channel_targets(session) == [
+        "team-a/channel-1",
+        "chat:chat-1",
+        "chat:chat-2",
+    ]
+
+
+def test_effective_teams_channel_targets_returns_chat_only_targets() -> None:
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+        teams_chat_allowlist=[" chat:chat-1 "],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    assert effective_teams_channel_targets(session) == ["chat:chat-1"]
+
+
+def test_normalize_teams_chat_targets_requires_chat_kind() -> None:
+    with pytest.raises(ValueError, match="teams_chat_allowlist accepts chat targets only"):
+        normalize_teams_chat_targets(["team-a/channel-1"])
 
 
 def test_require_email_mailbox_and_folder_for_mailbox(tmp_path: Path) -> None:

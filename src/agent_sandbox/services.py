@@ -30,6 +30,7 @@ from agent_sandbox.models import (
     PullRequestItem,
     PullRequestReviewer,
     PrFeedbackItem,
+    SessionManifest,
     TeamsMessageEnvelope,
 )
 from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
@@ -1201,6 +1202,80 @@ def normalize_teams_target(target: str) -> str:
     if not separator or not team_id or not channel_id:
         raise ValueError(f"Invalid Teams target {target!r}: {_TEAMS_TARGET_ERROR}")
     return f"{team_id}/{channel_id}"
+
+
+def _normalize_teams_allowlist_targets(
+    value: list[str] | None,
+    *,
+    field_name: str,
+    allowed_kind: str | None = None,
+    forbid_user_targets: bool = True,
+) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_target in value or []:
+        text = str(raw_target).strip()
+        if not text:
+            continue
+        target = normalize_teams_target(text)
+        parsed_target = parse_teams_target(target)
+        if allowed_kind is not None and parsed_target.kind != allowed_kind:
+            if allowed_kind == "chat":
+                raise ValueError(
+                    f"{field_name} accepts chat targets only; use teams_channel_allowlist "
+                    "for channel targets and teams_user_allowlist for user targets"
+                )
+            raise ValueError(f"{field_name} accepts {allowed_kind} targets only")
+        if forbid_user_targets and parsed_target.kind == "user":
+            raise ValueError(
+                f"{field_name} accepts channel/chat targets only; use teams_user_allowlist for user targets"
+            )
+        if target in seen:
+            continue
+        seen.add(target)
+        normalized.append(target)
+    return normalized
+
+
+def normalize_teams_channel_targets(value: list[str] | None) -> list[str]:
+    return _normalize_teams_allowlist_targets(value, field_name="teams_channel_allowlist")
+
+
+def normalize_teams_chat_targets(value: list[str] | None) -> list[str]:
+    return _normalize_teams_allowlist_targets(
+        value,
+        field_name="teams_chat_allowlist",
+        allowed_kind="chat",
+    )
+
+
+def effective_teams_channel_targets(
+    session: SessionManifest,
+    *,
+    skip_user_targets: bool = False,
+) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_target in list(session.teams_channel_allowlist or []) + list(
+        session.teams_chat_allowlist or []
+    ):
+        text = str(raw_target).strip()
+        if not text:
+            continue
+        target = normalize_teams_target(text)
+        parsed_target = parse_teams_target(target)
+        if parsed_target.kind == "user":
+            if skip_user_targets:
+                continue
+            raise ValueError(
+                "effective_teams_channel_targets does not accept user targets; use "
+                "teams_user_allowlist for user targets"
+            )
+        if target in seen:
+            continue
+        seen.add(target)
+        normalized.append(target)
+    return normalized
 
 
 def parse_teams_target(target: str) -> TeamsTarget:
