@@ -64,7 +64,7 @@ from agent_sandbox.services import (
     StubDiscordService,
     StubTeamsService,
     TeamsService,
-    normalize_teams_target,
+    effective_teams_channel_targets,
     normalize_teams_user_target,
 )
 from agent_sandbox.storage import JsonStore
@@ -663,16 +663,8 @@ def _resolve_allowed_teams_channel_targets(
     for session in session_store.list_active_sessions(now=now):
         if ToolName.TEAMS_GET_MESSAGES not in session.allowed_tools:
             continue
-        targets.update(session.teams_channel_allowlist)
-    return sorted(
-        {
-            normalized
-            for target in targets
-            if target.strip()
-            for normalized in [normalize_teams_target(target)]
-            if not normalized.startswith("user:")
-        }
-    )
+        targets.update(effective_teams_channel_targets(session, skip_user_targets=True))
+    return sorted(targets)
 
 
 def _resolve_allowed_teams_channel_targets_for_session(
@@ -687,15 +679,7 @@ def _resolve_allowed_teams_channel_targets_for_session(
         return []
     if ToolName.TEAMS_GET_MESSAGES not in session.allowed_tools:
         return []
-    return sorted(
-        {
-            normalized
-            for target in session.teams_channel_allowlist
-            if target.strip()
-            for normalized in [normalize_teams_target(target)]
-            if not normalized.startswith("user:")
-        }
-    )
+    return sorted(effective_teams_channel_targets(session, skip_user_targets=True))
 
 
 def _resolve_allowed_teams_user_targets_for_session(

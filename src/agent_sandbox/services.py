@@ -1591,16 +1591,13 @@ class GraphTeamsService:
         }
 
     def _allowed_channel_targets(self) -> list[str]:
-        targets = {
-            normalize_teams_target(target)
-            for target in self.allowed_channel_targets_provider()
-            if target.strip()
-        }
-        for user_target in self._allowed_user_targets():
-            chat_id = self.user_chat_cache.get(self._user_chat_cache_key(user_target))
-            if chat_id:
-                targets.add(normalize_teams_target(f"chat:{chat_id}"))
-        return sorted(targets)
+        return sorted(
+            {
+                normalize_teams_target(target)
+                for target in self.allowed_channel_targets_provider()
+                if target.strip()
+            }
+        )
 
     def _allowed_user_targets(self) -> list[str]:
         return sorted(
