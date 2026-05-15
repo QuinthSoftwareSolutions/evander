@@ -280,6 +280,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:vm:delete-files",
         "effect:issue:update-state",
         "effect:issue:update-metadata",
+        "effect:ado:update-work-item",
         "effect:notification:send",
         "effect:session:update-metadata",
         "effect:git:promote-agent-branch",

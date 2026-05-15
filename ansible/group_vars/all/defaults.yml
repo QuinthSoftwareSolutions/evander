@@ -367,6 +367,7 @@ agent_sandbox_services:
   semantic_store: true
   http_target_relay: true
   ado_worker: true
+  proxy_issue_sync: true
   discord_ingest: true
   discord_wake: true
   scheduled_wake: true

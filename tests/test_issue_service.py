@@ -350,6 +350,43 @@ def test_update_issue_uploads_field_artifact_appends_image_and_links_relation(
     assert result["uploaded_attachments"][0]["filename"] == "field.png"
 
 
+def test_update_issue_adds_expected_state_test_before_mutations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "project-x", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    responses = [httpx.Response(200, json={"id": 77})]
+    monkeypatch.setattr(
+        "agent_sandbox.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses.copy()),
+    )
+
+    result = adapter.update_issue(
+        directory_path="root",
+        project="override-project",
+        remote_issue_id="77",
+        state="In Progress",
+        expected_state="New",
+        fields={"Custom.Priority": 2},
+    )
+
+    assert calls[0]["url"] == (
+        "https://dev.azure.com/example/override-project/_apis/wit/workitems/77"
+    )
+    assert calls[0]["json"] == [
+        {"op": "test", "path": "/fields/System.State", "value": "New"},
+        {"op": "add", "path": "/fields/System.State", "value": "In Progress"},
+        {"op": "add", "path": "/fields/Custom.Priority", "value": 2},
+    ]
+    assert result["expected_state"] == "New"
+    assert result["state"] == "In Progress"
+
+
 def test_create_issue_rejects_invalid_parent_relation_id_before_network(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -608,6 +645,72 @@ def test_query_backlog_items_batch_uses_fields_without_expand() -> None:
     assert isinstance(batch_payload, dict)
     assert "fields" in batch_payload
     assert "$expand" not in batch_payload
+
+
+def test_read_issues_batch_uses_workitemsbatch_without_comments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = AzureDevOpsIssueAdapter(config_resolver=object())
+    monkeypatch.setattr(
+        adapter,
+        "_resolve_connection",
+        lambda directory_path: ("https://dev.azure.com/example", "default-project", "pat"),
+    )
+    calls: list[dict[str, object]] = []
+    responses = [
+        httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": 101,
+                        "url": "https://dev.azure.com/example/_apis/wit/workitems/101",
+                        "_links": {
+                            "web": {
+                                "href": "https://dev.azure.com/example/project-x/_workitems/edit/101"
+                            }
+                        },
+                        "fields": {
+                            "System.Title": "Remote issue",
+                            "System.Description": "Remote body",
+                            "System.State": "To Do",
+                            "System.WorkItemType": "Bug",
+                            "System.AreaPath": "project-x\\Area",
+                            "System.IterationPath": "project-x\\Sprint",
+                            "System.AssignedTo": {"displayName": "Alice"},
+                            "System.Tags": "auto-dev; backend",
+                            "System.ChangedDate": "2026-05-15T10:11:12Z",
+                        },
+                    }
+                ]
+            },
+        )
+    ]
+    monkeypatch.setattr(
+        "agent_sandbox.issues.service.httpx.Client",
+        lambda timeout: _RecordingClient(calls, responses.copy()),
+    )
+
+    result = adapter.read_issues_batch(
+        directory_path="root/team",
+        project="project-x",
+        remote_issue_ids=["101", "999"],
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["method"] == "POST"
+    assert calls[0]["url"] == "https://dev.azure.com/example/_apis/wit/workitemsbatch"
+    payload = calls[0]["json"]
+    assert isinstance(payload, dict)
+    assert payload["ids"] == [101, 999]
+    assert payload["errorPolicy"] == "Omit"
+    assert "fields" in payload
+    assert "$expand" not in payload
+    assert result["items"]["101"]["title"] == "Remote issue"
+    assert result["items"]["101"]["description"] == "Remote body"
+    assert result["items"]["101"]["tags"] == ["auto-dev", "backend"]
+    assert result["items"]["101"]["assigned_to"] == "Alice"
+    assert result["missing_ids"] == ["999"]
 
 
 def test_query_backlog_items_can_use_explicit_wiql() -> None:

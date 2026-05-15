@@ -544,6 +544,17 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "metadata_paths": {"type": "array"},
         "patch_kind": {"type": "string"},
     },
+    "effect:ado:update-work-item": {
+        "success": {"type": "boolean"},
+        "updated": {"type": "boolean"},
+        "skipped": {"type": "boolean"},
+        "skipped_reason": {"type": ["string", "null"]},
+        "work_item_id": {"type": "string"},
+        "previous_state": {"type": ["string", "null"]},
+        "state": {"type": ["string", "null"]},
+        "fields": {"type": "object"},
+        **_TICKET_OUTPUT_SCHEMA,
+    },
     "effect:notification:send": {
         "success": {"type": "boolean"},
         "provider": {"type": "string"},

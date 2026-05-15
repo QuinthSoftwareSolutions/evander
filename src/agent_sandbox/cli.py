@@ -39,6 +39,12 @@ from agent_sandbox.messaging.discord_wake import build_discord_wake_worker
 from agent_sandbox.directories import DirectoryService
 from agent_sandbox.daemons.issue_orchestrator import build_issue_orchestrator_worker
 from agent_sandbox.daemons.effect_orchestrator import build_effect_orchestrator_worker
+from agent_sandbox.daemons.proxy_issue_sync import (
+    DEFAULT_PROXY_ISSUE_SYNC_FRESHNESS_SECONDS,
+    DEFAULT_PROXY_ISSUE_SYNC_INTERVAL_SECONDS,
+    run_once_from_runtime as run_proxy_issue_sync_once,
+    run_proxy_issue_sync_worker,
+)
 from agent_sandbox.execution import (
     ContainerWorkerExecutionRepository,
     ContainerWorkerVmExecutionBackend,
@@ -4190,6 +4196,66 @@ def trigger_orchestrator(
         return
 
     worker.run_forever()
+
+
+@app.command(
+    "proxy-issue-sync",
+    rich_help_panel="Background Workers",
+    short_help="Sync local proxy issues from Azure DevOps.",
+)
+def proxy_issue_sync(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    run_once: Annotated[
+        bool,
+        typer.Option("--once", help="Run a single proxy issue sync cycle and exit."),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Sync records regardless of freshness."),
+    ] = False,
+    interval_seconds: Annotated[
+        float,
+        typer.Option(
+            "--interval-seconds",
+            help="Daemon polling interval in seconds.",
+        ),
+    ] = DEFAULT_PROXY_ISSUE_SYNC_INTERVAL_SECONDS,
+    freshness_window_seconds: Annotated[
+        float,
+        typer.Option(
+            "--freshness-window-seconds",
+            help="Skip records synced more recently than this many seconds unless --force is set.",
+        ),
+    ] = DEFAULT_PROXY_ISSUE_SYNC_FRESHNESS_SECONDS,
+    log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
+) -> None:
+    logging_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(logging_level, int):
+        raise typer.BadParameter(f"Invalid --log-level value: {log_level}")
+    logging.basicConfig(
+        level=logging_level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    runtime_dir, _legacy_config_path = _bootstrap_inputs(config)
+    if run_once:
+        result = run_proxy_issue_sync_once(
+            runtime_dir=runtime_dir,
+            freshness_window_seconds=freshness_window_seconds,
+            force=force,
+        )
+        typer.echo(
+            f"Proxy issue sync complete candidates={result.candidates} "
+            f"skipped_fresh={result.skipped_fresh} updated={result.updated} "
+            f"missing={result.missing} failed={result.failed}"
+        )
+        return
+
+    run_proxy_issue_sync_worker(
+        runtime_dir=runtime_dir,
+        interval_seconds=interval_seconds,
+        freshness_window_seconds=freshness_window_seconds,
+        force=force,
+    )
 
 
 @app.command(

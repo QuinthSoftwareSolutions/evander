@@ -122,10 +122,12 @@ Troubleshooting checklist:
   checked-in starting points use `*-example.json`.
 - A pack can contain multiple connected graphs. Optional `graphs` entries name those connected
   node sets with `id`, `name`, `description`, `directory_paths`, `user_ids`, and `node_ids`; the
-  runtime still executes from the IR, while the editor uses this metadata for directory-scoped and
-  private-user graph selection and labels. Saving from a filtered view keeps unchanged graph
-  metadata entries intact, so graphs outside the selected directory or private-user view are not
-  rewritten by the presentation filter.
+  runtime still executes from the IR, while the editor uses this metadata for directory-scoped
+  graph selection and labels. `user_ids` are owner/audit metadata only; workflow graphs are visible
+  to control-plane operators. Saving from a filtered view keeps unchanged graph metadata entries
+  intact, so graphs outside the selected directory are not rewritten by the presentation filter.
+- Admin Web exposes workflow reporting under **Reports**. The workflow graph activity report ranks
+  graph metadata by trigger events plus gate/effect execution records over the selected period.
 - To add a new domain workflow, add a new pack file and list it in `workflow_packs`. No core
   orchestrator Python code changes are required for that path.
 - `config/trigger-orchestrator/config.json` is operator-local too. Start from
@@ -1188,6 +1190,10 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
   `metadata.remote` and a last-seen cache in `metadata.proxy_cache`.
 - Re-polling the same remote issue updates the existing local proxy record/cache instead of
   creating duplicates, so Desktop and CLI views remain stable across worker cycles.
+- `agent-sandbox-proxy-issue-sync` keeps all Azure DevOps proxy issues fresh independently of the
+  backlog setup worker. It defaults to a five-minute interval/freshness window, uses batched
+  `workitemsbatch` summary reads, leaves comments to on-demand detail reads, and writes missing or
+  inaccessible item diagnostics into `metadata.proxy_sync` without deleting local issues.
 - Worker-triggered setup calls honor `ADO_BOOTSTRAP_DOTNET`, `ADO_BOOTSTRAP_NUGET`,
   `ADO_BOOTSTRAP_MSSQL`, `ADO_BOOTSTRAP_PLAYWRIGHT`, and `ADO_BOOTSTRAP_FRONTEND_DEPS` to
   decide which guest toolchains are bootstrapped for backlog-driven issue VMs. The first three
@@ -1229,7 +1235,9 @@ Systemd runbook:
 
 ```bash
 sudo systemctl start agent-sandbox-ado-worker.service
+sudo systemctl start agent-sandbox-proxy-issue-sync.service
 sudo systemctl status agent-sandbox-ado-worker.service
+sudo systemctl status agent-sandbox-proxy-issue-sync.service
 sudo journalctl -u agent-sandbox-ado-worker.service -f
 ```
 
@@ -1377,6 +1385,7 @@ This creates:
 - `agent-sandbox-nuget-relay.service`
 - `agent-sandbox-http-target-relay.service`
 - `agent-sandbox-ado-worker.service`
+- `agent-sandbox-proxy-issue-sync.service`
 - `agent-sandbox-discord-ingest.service`
 - `agent-sandbox-discord-wake.service`
 - `agent-sandbox-scheduled-wake.service`
@@ -1412,6 +1421,7 @@ sudo systemctl start agent-sandbox-openai-relay.service
 sudo systemctl start agent-sandbox-nuget-relay.service
 sudo systemctl start agent-sandbox-http-target-relay.service
 sudo systemctl start agent-sandbox-ado-worker.service
+sudo systemctl start agent-sandbox-proxy-issue-sync.service
 sudo systemctl start agent-sandbox-discord-ingest.service
 sudo systemctl start agent-sandbox-discord-wake.service
 sudo systemctl start agent-sandbox-scheduled-wake.service
@@ -1425,6 +1435,7 @@ sudo systemctl status agent-sandbox-openai-relay.service
 sudo systemctl status agent-sandbox-nuget-relay.service
 sudo systemctl status agent-sandbox-http-target-relay.service
 sudo systemctl status agent-sandbox-ado-worker.service
+sudo systemctl status agent-sandbox-proxy-issue-sync.service
 sudo systemctl status agent-sandbox-discord-ingest.service
 sudo systemctl status agent-sandbox-discord-wake.service
 sudo systemctl status agent-sandbox-scheduled-wake.service

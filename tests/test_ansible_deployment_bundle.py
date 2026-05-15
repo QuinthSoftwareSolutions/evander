@@ -403,7 +403,7 @@ def test_ansible_qdrant_semantic_store_defaults_and_role_contract() -> None:
         repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
 
-    assert "semantic_store: false" in defaults
+    assert "semantic_store: true" in defaults
     assert 'agent_sandbox_qdrant_image: "qdrant/qdrant:v1.18.0"' in defaults
     assert 'agent_sandbox_qdrant_data_dir: "/var/lib/agent-sandbox/qdrant"' in defaults
     assert 'agent_sandbox_qdrant_bind_host: "127.0.0.1"' in defaults
@@ -596,6 +596,25 @@ def test_ansible_restarts_services_after_managed_config_changes() -> None:
     assert "agent_sandbox_json_config_render.changed" in service_config
     assert "agent_sandbox_managed_service_config_changed | default(false)" in service_runtime
     assert "'restarted'" in service_runtime
+
+
+def test_ansible_manages_proxy_issue_sync_service() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    service_runtime = (
+        repo / "ansible" / "roles" / "service_runtime" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    verification = (
+        repo / "ansible" / "roles" / "verification" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "proxy_issue_sync: true" in defaults
+    assert "key: proxy_issue_sync" in service_runtime
+    assert "unit: agent-sandbox-proxy-issue-sync.service" in service_runtime
+    assert "key: proxy_issue_sync" in verification
+    assert "unit: agent-sandbox-proxy-issue-sync.service" in verification
 
 
 def test_ansible_systemd_install_passes_service_profile() -> None:

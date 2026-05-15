@@ -276,6 +276,7 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
     assert "discord-wake" in output and "Run the Discord wake worker." in output
     assert "scheduled-wake" in output and "Run the scheduled wake worker." in output
     assert "teams-ingest" in output and "Run the Teams ingest worker." in output
+    assert "proxy-issue-sync" in output and "Sync local proxy issues from Azure DevOps." in output
     assert "trigger-orchestrator" in output and "Run the trigger orchestrator worker." in output
 
 

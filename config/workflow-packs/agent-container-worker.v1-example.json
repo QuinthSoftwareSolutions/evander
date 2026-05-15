@@ -27,6 +27,41 @@
         "target_id": "gate-merge-1"
       },
       {
+        "source_id": "trigger-cron-auto-dev-1",
+        "target_id": "query-ado-auto-dev-1"
+      },
+      {
+        "source_id": "query-ado-auto-dev-1",
+        "target_id": "gate-for-auto-dev-1"
+      },
+      {
+        "source_id": "gate-for-auto-dev-1",
+        "source_port": "body",
+        "target_id": "effect-ado-update-work-item-auto-dev-1"
+      },
+      {
+        "allow_cycle": true,
+        "source_id": "effect-ado-update-work-item-auto-dev-1",
+        "target_id": "gate-for-auto-dev-1"
+      },
+      {
+        "source_id": "effect-ado-update-work-item-auto-dev-1",
+        "target_id": "gate-filter-auto-dev-claimed-1"
+      },
+      {
+        "source_id": "gate-filter-auto-dev-claimed-1",
+        "target_id": "gate-map-auto-dev-ticket-1"
+      },
+      {
+        "source_id": "gate-map-auto-dev-ticket-1",
+        "target_id": "gate-merge-1"
+      },
+      {
+        "source_id": "gate-for-auto-dev-1",
+        "source_port": "done",
+        "target_id": "effect-event-emit-auto-dev-scan-complete-1"
+      },
+      {
         "source_id": "gate-merge-1",
         "target_id": "effect-agent-create-1"
       },
@@ -313,6 +348,159 @@
           }
         },
         "type": "trigger:script-run-request"
+      },
+      {
+        "config": {
+          "expression": "*/5 * * * *"
+        },
+        "display_name": "Auto-dev ADO poll",
+        "id": "trigger-cron-auto-dev-1",
+        "type": "trigger:cron"
+      },
+      {
+        "config": {
+          "current_iteration": false,
+          "directory_path": "root/example/truman",
+          "project": "Example Industry APP",
+          "states": [
+            "New",
+            "To Do"
+          ],
+          "tags_any": [
+            "auto-dev"
+          ],
+          "top": 50
+        },
+        "display_name": "Find auto-dev work items",
+        "id": "query-ado-auto-dev-1",
+        "outputs": {
+          "items": {
+            "type": "array"
+          }
+        },
+        "type": "query:ado:work-items"
+      },
+      {
+        "config": {
+          "items": "${{query-ado-auto-dev-1.items}}"
+        },
+        "display_name": "For each auto-dev work item",
+        "id": "gate-for-auto-dev-1",
+        "outputs": {
+          "current_element": {
+            "type": "object"
+          },
+          "current_index": {
+            "type": "integer"
+          },
+          "is_done": {
+            "type": "boolean"
+          },
+          "item_count": {
+            "type": "integer"
+          }
+        },
+        "type": "gate:for"
+      },
+      {
+        "config": {
+          "directory_path": "root/example/truman",
+          "expected_states": [
+            "New",
+            "To Do"
+          ],
+          "project": "Example Industry APP",
+          "state": "In Progress",
+          "sync_proxy_cache": true,
+          "work_item_id": "${{gate-for-auto-dev-1.current_element.id}}"
+        },
+        "display_name": "Claim auto-dev work item",
+        "id": "effect-ado-update-work-item-auto-dev-1",
+        "type": "effect:ado:update-work-item"
+      },
+      {
+        "config": {
+          "when": {
+            "all": [
+              {
+                "equals": true,
+                "left": "${{effect-ado-update-work-item-auto-dev-1.updated}}"
+              }
+            ]
+          }
+        },
+        "display_name": "Only claimed auto-dev items",
+        "id": "gate-filter-auto-dev-claimed-1",
+        "outputs": {
+          "ticket": {
+            "type": "object"
+          },
+          "updated": {
+            "type": "boolean"
+          }
+        },
+        "type": "gate:filter"
+      },
+      {
+        "config": {
+          "template": {
+            "ado_project": "Example Industry APP",
+            "agents_template_path": "/home/jonathan/agent-sandbox/templates/guest-AGENTS-new.md.tmpl",
+            "branch": "main",
+            "directory_path": "root/example/truman",
+            "directory_slug": "root-example-truman",
+            "frontend_host_checkout": "/home/jonathan/Documents/Repos/ExampleIndustryAPP",
+            "frontend_install_roots": [
+              "/home/jonathan/Documents/Repos/ExampleIndustryAPP/Src/Clients"
+            ],
+            "repo_source": "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/ExampleIndustryAPP",
+            "ticket": "${{effect-ado-update-work-item-auto-dev-1.ticket}}"
+          }
+        },
+        "display_name": "Map auto-dev ticket routing",
+        "id": "gate-map-auto-dev-ticket-1",
+        "outputs": {
+          "ado_project": {
+            "type": "string"
+          },
+          "agents_template_path": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "directory_path": {
+            "type": "string"
+          },
+          "directory_slug": {
+            "type": "string"
+          },
+          "frontend_host_checkout": {
+            "type": "string"
+          },
+          "frontend_install_roots": {
+            "type": "array"
+          },
+          "repo_source": {
+            "type": "string"
+          },
+          "ticket": {
+            "type": "object"
+          }
+        },
+        "type": "gate:map"
+      },
+      {
+        "config": {
+          "event_type": "auto_dev.poll.completed",
+          "payload": {
+            "directory_path": "root/example/truman",
+            "item_count": "${{gate-for-auto-dev-1.item_count}}"
+          }
+        },
+        "display_name": "Auto-dev poll complete",
+        "id": "effect-event-emit-auto-dev-scan-complete-1",
+        "type": "effect:event:emit"
       },
       {
         "config": {

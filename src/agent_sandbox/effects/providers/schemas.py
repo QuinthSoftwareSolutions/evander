@@ -385,6 +385,26 @@ class IssueUpdateMetadataEffectDefinition(EffectDefinition):
         return self
 
 
+class AdoUpdateWorkItemEffectDefinition(EffectDefinition):
+    type: Literal["effect:ado:update-work-item"]
+    directory_path: ConfigValue
+    project: ConfigValue
+    work_item_id: ConfigValue
+    state: ConfigValue | None = None
+    fields: ConfigValue | None = None
+    expected_states: list[ConfigValue] | ConfigValue | None = None
+    sync_proxy_cache: ConfigValue | None = False
+
+    @field_validator("fields")
+    @classmethod
+    def validate_fields_is_object(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None:
+            return None
+        if not isinstance(value, (Mapping, str)):
+            raise ValueError("effect:ado:update-work-item fields must be a JSON object")
+        return value
+
+
 class NotificationSendEffectDefinition(EffectDefinition):
     type: Literal["effect:notification:send"]
     communication_target_id: str

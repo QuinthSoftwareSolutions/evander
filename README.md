@@ -219,6 +219,7 @@ sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
 sudo systemctl start agent-sandbox-nuget-relay.service
 sudo systemctl start agent-sandbox-ado-worker.service
+sudo systemctl start agent-sandbox-proxy-issue-sync.service
 sudo systemctl start agent-sandbox-discord-wake.service
 sudo systemctl start agent-sandbox-scheduled-wake.service
 ```
@@ -350,6 +351,10 @@ set -a; source secrets.env; set +a
 ```
 
 The dedicated worker entry point is also available as `agent-sandbox-ado-worker` for systemd.
+`agent-sandbox-proxy-issue-sync` is the companion freshness worker for local Azure DevOps proxy
+issues. It runs every five minutes by default, batches remote summary reads, skips comments, and
+refreshes `runtime/local-issues.json` so ticket triggers and UI screens continue to read local
+state.
 Backlog-worker VM setup calls can opt into `--dotnet`, `--nuget`, `--mssql`, `--playwright`,
 and `--frontend-deps` via `ADO_BOOTSTRAP_DOTNET`, `ADO_BOOTSTRAP_NUGET`,
 `ADO_BOOTSTRAP_MSSQL`, `ADO_BOOTSTRAP_PLAYWRIGHT`, and `ADO_BOOTSTRAP_FRONTEND_DEPS`.

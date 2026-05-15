@@ -561,6 +561,12 @@ class AdoWorkerGlobalConfig(BaseModel):
         return self
 
 
+class ProxyIssueSyncWorkerGlobalConfig(BaseModel):
+    runtime_dir: Path = Path("runtime")
+    poll_interval_seconds: float = Field(default=300.0, gt=0)
+    freshness_window_seconds: float = Field(default=300.0, ge=0)
+
+
 class HostHeartbeatWorkerGlobalConfig(BaseModel):
     runtime_dir: Path = Path("runtime")
     host_heartbeat_directory_paths: list[str] = Field(default_factory=list)

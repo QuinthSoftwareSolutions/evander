@@ -15,6 +15,7 @@ config/discord-ingest/config.json
 config/discord-wake/config.json
 config/host-heartbeat/config.json
 config/issue-orchestrator/config.json
+config/proxy-issue-sync/config.json
 config/scheduled-wake/config.json
 config/teams-ingest/config.json
 config/teams-meeting-ingest/config.json

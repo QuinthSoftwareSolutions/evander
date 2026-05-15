@@ -21,6 +21,7 @@ from agent_sandbox.config import (
     AssistantSettingsConfig,
     DiscordWakeWorkerGlobalConfig,
     GatewayConfig,
+    ProxyIssueSyncWorkerGlobalConfig,
     ScheduledWakeWorkerGlobalConfig,
     TeamsIngestWorkerGlobalConfig,
     TeamsMeetingIngestWorkerGlobalConfig,
@@ -430,6 +431,7 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
 }
 _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "ado": AdoWorkerGlobalConfig,
+    "proxy-issue-sync": ProxyIssueSyncWorkerGlobalConfig,
     "discord-wake": DiscordWakeWorkerGlobalConfig,
     "scheduled-wake": ScheduledWakeWorkerGlobalConfig,
     "teams-ingest": TeamsIngestWorkerGlobalConfig,
@@ -452,6 +454,7 @@ _WORKER_GLOBAL_CONFIG_TOOLTIPS: dict[str, str] = {
     "include_comments": "Whether fetched work item comments are attached to YAML payloads.",
     "comments_max_count": "Maximum number of comments fetched per work item.",
     "comment_text_max_chars": "Maximum number of comment characters kept per comment.",
+    "freshness_window_seconds": "How recently a proxy issue can have synced before the worker skips it.",
     "host_busy_check_script_path": "Host script used to determine whether a session VM is busy before resuming it.",
     "host_resume_script_path": "Host script invoked to resume a session VM when feedback is waiting.",
     "jitter_seconds": "Random delay added to each worker sleep interval.",
@@ -661,6 +664,7 @@ def _worker_config_schema(worker_id: str) -> dict[str, Any] | None:
             model_sets=(
                 GatewayConfig.model_fields,
                 AdoWorkerGlobalConfig.model_fields,
+                ProxyIssueSyncWorkerGlobalConfig.model_fields,
                 DiscordWakeWorkerGlobalConfig.model_fields,
                 ScheduledWakeWorkerGlobalConfig.model_fields,
                 TeamsIngestWorkerGlobalConfig.model_fields,
@@ -735,6 +739,7 @@ def _directory_config_field_metadata(
         model_sets=(
             GatewayConfig.model_fields,
             AdoWorkerGlobalConfig.model_fields,
+            ProxyIssueSyncWorkerGlobalConfig.model_fields,
             DiscordWakeWorkerGlobalConfig.model_fields,
             ScheduledWakeWorkerGlobalConfig.model_fields,
             TeamsIngestWorkerGlobalConfig.model_fields,
