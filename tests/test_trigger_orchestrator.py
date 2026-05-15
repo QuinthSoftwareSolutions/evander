@@ -155,6 +155,67 @@ def test_trigger_orchestrator_acknowledges_provider_after_queue_publish(
     assert provider.acknowledged_event_ids == ["event-1"]
 
 
+def test_trigger_orchestrator_publishes_multiple_events_from_one_provider_poll(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,
+    )  # type: ignore[arg-type]
+    first_event = TriggerEvent(
+        event_id="event-1",
+        trigger_id="cron-1",
+        trigger_type="trigger:cron",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"kind": "tick-1"},
+    )
+    second_event = TriggerEvent(
+        event_id="event-2",
+        trigger_id="cron-1",
+        trigger_type="trigger:cron",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"kind": "tick-2"},
+    )
+    provider = _AcknowledgingProvider([first_event, second_event])
+    worker.provider_factory.build = lambda trigger: provider  # type: ignore[assignment]
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 1
+    assert result.events_discovered == 2
+    assert result.events_published == 2
+
+    queue_payload = json.loads(
+        worker_config.event_queue_store_path.read_text(encoding="utf-8")
+    )
+    assert list(queue_payload.keys()) == ["event-1", "event-2"]
+    cursor_payload = json.loads(
+        worker_config.event_queue_cursor_store_path.read_text(encoding="utf-8")
+    )
+    assert cursor_payload["triggers"]["cron-1"]["last_discovered_count"] == 2
+    assert cursor_payload["triggers"]["cron-1"]["last_event_ids"] == ["event-1", "event-2"]
+    assert cursor_payload["triggers"]["cron-1"]["last_event_id"] == "event-2"
+    assert provider.acknowledged_event_ids == ["event-1", "event-2"]
+
+
 def test_trigger_orchestrator_main_once_uses_single_cycle(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:

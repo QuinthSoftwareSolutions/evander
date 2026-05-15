@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Lock
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+from agent_sandbox.storage import JsonObjectStore, _no_write
 
 _TEAMS_MESSAGE_RETENTION = timedelta(days=90)
 
@@ -35,20 +35,16 @@ class TeamsInboxStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._lock = Lock()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
-            self._atomic_write({"cursors": {}, "messages": {}})
+        self._store = JsonObjectStore(path, {"cursors": {}, "messages": {}})
 
     def get_cursor(self, channel_target: str) -> str | None:
         state = self.get_cursor_state(channel_target)
         return state.cursor if state is not None else None
 
     def get_cursor_state(self, channel_target: str) -> TeamsInboxCursorState | None:
-        with self._lock:
-            payload = self._read_raw()
-            raw_state = payload.get("cursors", {}).get(channel_target)
-            return self._validate_cursor_state(raw_state)
+        payload = self._store.read_object()
+        raw_state = payload.get("cursors", {}).get(channel_target)
+        return self._validate_cursor_state(raw_state)
 
     def set_cursor(
         self,
@@ -57,8 +53,7 @@ class TeamsInboxStore:
         *,
         created_at: datetime | None = None,
     ) -> None:
-        with self._lock:
-            payload = self._read_raw()
+        def update(payload: dict[str, Any]) -> None:
             cursors = payload.setdefault("cursors", {})
             if cursor is None:
                 cursors.pop(channel_target, None)
@@ -66,24 +61,25 @@ class TeamsInboxStore:
                 state = TeamsInboxCursorState(cursor=cursor, created_at=created_at)
                 cursors[channel_target] = state.model_dump(mode="json")
             self._compact_messages(payload)
-            self._atomic_write(payload)
+
+        self._store.update_object(update)
 
     def add_message_if_new(self, message: TeamsInboxMessage) -> bool:
-        with self._lock:
-            payload = self._read_raw()
+        def update(payload: dict[str, Any]) -> bool | None:
             stored_messages = payload.setdefault("messages", {})
             if message.cursor in stored_messages:
-                return False
+                return _no_write(False)
             stored_messages[message.cursor] = message.model_dump(mode="json")
             self._compact_messages(payload)
-            self._atomic_write(payload)
+
             return True
 
+        return bool(self._store.update_object(update))
+
     def get_message(self, cursor: str) -> TeamsInboxMessage | None:
-        with self._lock:
-            payload = self._read_raw()
-            raw_message = payload.get("messages", {}).get(cursor)
-            return self._validate_message(raw_message)
+        payload = self._store.read_object()
+        raw_message = payload.get("messages", {}).get(cursor)
+        return self._validate_message(raw_message)
 
     def list_all_messages(
         self,
@@ -91,40 +87,30 @@ class TeamsInboxStore:
         channel_targets: list[str] | None = None,
         limit: int | None = None,
     ) -> list[TeamsInboxMessage]:
-        with self._lock:
-            payload = self._read_raw()
-            allowed_targets = None
-            if channel_targets is not None:
-                allowed_targets = {
-                    target.strip().strip("/") for target in channel_targets if target.strip()
-                }
-            messages: list[TeamsInboxMessage] = []
-            for raw_value in payload.get("messages", {}).values():
-                candidate = self._validate_message(raw_value)
-                if candidate is None:
-                    continue
-                if (
-                    allowed_targets is not None
-                    and self._channel_target(candidate) not in allowed_targets
-                ):
-                    continue
-                messages.append(candidate)
-            messages.sort(key=self._message_sort_key)
-            if limit is not None:
-                return messages[:limit]
-            return messages
+        payload = self._store.read_object()
+        allowed_targets = None
+        if channel_targets is not None:
+            allowed_targets = {
+                target.strip().strip("/") for target in channel_targets if target.strip()
+            }
+        messages: list[TeamsInboxMessage] = []
+        for raw_value in payload.get("messages", {}).values():
+            candidate = self._validate_message(raw_value)
+            if candidate is None:
+                continue
+            if (
+                allowed_targets is not None
+                and self._channel_target(candidate) not in allowed_targets
+            ):
+                continue
+            messages.append(candidate)
+        messages.sort(key=self._message_sort_key)
+        if limit is not None:
+            return messages[:limit]
+        return messages
 
     def read_raw(self) -> dict[str, Any]:
-        with self._lock:
-            return self._read_raw()
-
-    def _read_raw(self) -> dict[str, Any]:
-        return json.loads(self.path.read_text(encoding="utf-8"))
-
-    def _atomic_write(self, payload: dict[str, Any]) -> None:
-        tmp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp_path.replace(self.path)
+        return self._store.read_object()
 
     def _compact_messages(self, payload: dict[str, Any]) -> None:
         messages = payload.get("messages")

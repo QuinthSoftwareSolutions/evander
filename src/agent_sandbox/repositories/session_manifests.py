@@ -3,13 +3,12 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from threading import RLock
 from typing import Any, Protocol
 
 from pydantic import ValidationError
 
 from agent_sandbox.models import SessionManifest
-from agent_sandbox.storage import JsonStore
+from agent_sandbox.storage import JsonObjectStore, JsonStore, _no_write
 
 
 class SessionManifestRepository(Protocol):
@@ -43,22 +42,16 @@ class JsonSessionManifestRepository:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self._lock = RLock()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
-            self.path.write_text("{}", encoding="utf-8")
+        self._store = JsonObjectStore(path, {})
 
     def read_all(self) -> dict[str, SessionManifest]:
-        with self._lock:
-            raw = self._read_raw()
-        return self._validate_manifests(raw, ignore_invalid=False)
+        return self._validate_manifests(self._read_raw(), ignore_invalid=False)
 
     def read_all_safe(self) -> dict[str, SessionManifest]:
-        with self._lock:
-            try:
-                raw = self._read_raw()
-            except (OSError, json.JSONDecodeError):
-                return {}
+        try:
+            raw = self._read_raw()
+        except (OSError, json.JSONDecodeError):
+            return {}
         return self._validate_manifests(raw, ignore_invalid=True)
 
     def get_session(self, session_id: str) -> SessionManifest | None:
@@ -129,10 +122,10 @@ class JsonSessionManifestRepository:
         return normalized
 
     def upsert_session(self, manifest: SessionManifest) -> None:
-        with self._lock:
-            payload = self._read_raw()
+        def _upsert(payload: dict[str, Any]) -> None:
             payload[manifest.session_id] = manifest.model_dump(mode="json")
-            self._atomic_write(payload)
+
+        self._store.update_object(_upsert)
 
     def put(self, session_id: str, manifest: SessionManifest) -> None:
         resolved_manifest = manifest
@@ -144,8 +137,8 @@ class JsonSessionManifestRepository:
         normalized_session_id = str(session_id or "").strip()
         if not normalized_session_id:
             return False
-        with self._lock:
-            payload = self._read_raw()
+
+        def _delete(payload: dict[str, Any]) -> bool | object:
             removed = False
             for key, value in list(payload.items()):
                 if str(key) == normalized_session_id:
@@ -159,32 +152,32 @@ class JsonSessionManifestRepository:
                     payload.pop(key, None)
                     removed = True
             if not removed:
-                return False
-            self._atomic_write(payload)
+                return _no_write(False)
             return True
+
+        return bool(self._store.update_object(_delete))
 
     def delete(self, session_id: str) -> None:
         self.delete_session(session_id)
 
     def write_all(self, payload: dict[str, SessionManifest]) -> None:
-        with self._lock:
-            self._atomic_write(
-                {
-                    session_id: manifest.model_dump(mode="json")
-                    for session_id, manifest in payload.items()
-                }
-            )
+        self._store.write_object(
+            {
+                session_id: manifest.model_dump(mode="json")
+                for session_id, manifest in payload.items()
+            }
+        )
 
     def _read_raw(self) -> dict[str, object]:
-        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        try:
+            payload = self._store.read_object()
+        except ValueError as exc:
+            if "must contain an object at the top level" in str(exc):
+                return {}
+            raise
         if not isinstance(payload, dict):
             return {}
         return payload
-
-    def _atomic_write(self, payload: dict[str, object]) -> None:
-        tmp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        tmp_path.replace(self.path)
 
     @staticmethod
     def _validate_manifests(
