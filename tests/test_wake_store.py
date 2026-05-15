@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Barrier, Thread
 
-from agent_sandbox.models import WakeDispatchRecord, WakeResumePromptPayload, WakeScheduleDefinition
-from agent_sandbox.messaging.wake_store import WakeRequestStore
 import pytest
+
+from agent_sandbox.messaging.wake_store import WakeRequestStore
+from agent_sandbox.models import WakeDispatchRecord, WakeResumePromptPayload, WakeScheduleDefinition
+from agent_sandbox.storage import JsonObjectStore
 
 
 def test_schedule_resume_request_persists_expected_shape(tmp_path: Path) -> None:
@@ -175,3 +179,97 @@ def test_find_due_requests_advances_first_cron_run_and_sorts_results(tmp_path: P
     refreshed = store.get_request("wake-cron")
     assert refreshed is not None
     assert refreshed.next_run_at == datetime(2026, 4, 1, 10, 30, tzinfo=UTC)
+
+
+def test_wake_request_store_initializes_missing_file(tmp_path: Path) -> None:
+    path = tmp_path / "wake-store.json"
+
+    store = WakeRequestStore(path)
+
+    assert store.read_raw() == {"requests": {}, "dispatches": {}, "messages": {}}
+
+
+def test_wake_request_store_retains_independent_request_and_dispatch_updates_across_instances(
+    tmp_path: Path, monkeypatch
+) -> None:
+    path = tmp_path / "wake-store.json"
+    first_store = WakeRequestStore(path)
+    second_store = WakeRequestStore(path)
+
+    original_write = JsonObjectStore._write_json_payload
+
+    def delayed_write(self, payload):
+        time.sleep(0.05)
+        return original_write(self, payload)
+
+    monkeypatch.setattr(JsonObjectStore, "_write_json_payload", delayed_write)
+
+    barrier = Barrier(3)
+
+    def schedule_request() -> None:
+        barrier.wait(timeout=5)
+        first_store.schedule_resume_request(
+            session_id="session-1",
+            prompt="Resume work.",
+            schedule=WakeScheduleDefinition(resume_at=datetime(2026, 4, 1, 10, 30, tzinfo=UTC)),
+            request_id="wake-1",
+            source="gateway-tool",
+            resume_mode="same_context",
+            enabled=True,
+            metadata={},
+        )
+
+    def record_dispatch() -> None:
+        barrier.wait(timeout=5)
+        second_store.record_dispatch(
+            WakeDispatchRecord(
+                dispatch_id="dispatch-1",
+                session_id="session-2",
+                status="dispatched",
+                resume_prompt=WakeResumePromptPayload(prompt="Dispatch work."),
+                dispatched_at=datetime(2026, 4, 1, 10, 31, tzinfo=UTC),
+            )
+        )
+
+    threads = [Thread(target=schedule_request), Thread(target=record_dispatch)]
+
+    for thread in threads:
+        thread.start()
+    barrier.wait(timeout=5)
+    for thread in threads:
+        thread.join(timeout=5)
+
+    for thread in threads:
+        assert not thread.is_alive()
+
+    payload = WakeRequestStore(path).read_raw()
+    assert payload["requests"]["wake-1"]["session_id"] == "session-1"
+    assert payload["dispatches"]["dispatch-1"]["session_id"] == "session-2"
+    assert payload["messages"]["wake:dispatch-1"]["status"] == "dispatched"
+
+
+@pytest.mark.parametrize("payload_text", ["", "{not json"])
+def test_wake_request_store_raises_on_empty_or_invalid_json(
+    tmp_path: Path,
+    payload_text: str,
+) -> None:
+    path = tmp_path / "wake-store.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload_text, encoding="utf-8")
+
+    store = WakeRequestStore(path)
+
+    with pytest.raises(json.JSONDecodeError):
+        store.read_raw()
+
+    with pytest.raises(json.JSONDecodeError):
+        store.schedule_resume_request(
+            session_id="session-1",
+            prompt="Resume work.",
+            schedule=WakeScheduleDefinition(resume_at=datetime(2026, 4, 1, 10, 30, tzinfo=UTC)),
+            request_id="wake-1",
+            source="gateway-tool",
+            resume_mode="same_context",
+            enabled=True,
+            metadata={},
+        )
