@@ -1155,6 +1155,7 @@ The helper:
   - use `post_pr_inline_comment(provider, repo, pr_id, path, line, body_text, ...)` for a single finding
   - pass `comments=[{"path": "...", "line": 123, "body": "..."}]` to `submit_pr_review` for batches
   - do not encode the file path and line number in `body_text`; the tool attaches the provider-native line context
+  - for Azure DevOps, inline comments are resolved against the latest PR iteration changes and require a matching changed path; if a path cannot be safely anchored, post a top-level comment instead
 
 ### Microsoft Graph OAuth/token setup
 
