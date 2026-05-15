@@ -44,7 +44,8 @@ class JsonStore(Generic[T]):
 
     # Logical read/modify/write operations must use update_all(), put(), or delete()
     # directly. A read_all() snapshot followed by a later write_all() can overwrite
-    # concurrent cross-process updates.
+    # concurrent cross-process updates. update_all() always writes the snapshot back
+    # after the updater returns, even when the updater makes no changes.
     def update_all(self, updater: Callable[[dict[str, T]], R]) -> R:
         with self._lock:
             with self._file_lock():
