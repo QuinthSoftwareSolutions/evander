@@ -535,6 +535,41 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         ]["source_port"]
         == "done"
     )
+    assert (
+        container_triggers["trigger-cron-auto-dev-approval-call-1"]["config"]["expression"]
+        == "*/15 * * * *"
+    )
+    approval_query = container_queries["query-ado-auto-dev-awaiting-approval-1"]
+    assert approval_query["config"]["directory_path"] == "root/example/truman/auto-dev"
+    assert approval_query["config"]["top"] == 50
+    assert "[System.Tags] CONTAINS 'auto-dev'" in approval_query["config"]["wiql"]
+    assert "[System.Tags] NOT CONTAINS 'auto-dev-approved'" in approval_query["config"]["wiql"]
+    assert "[System.State] IN ('New', 'To Do')" in approval_query["config"]["wiql"]
+    approval_threshold = container_gates[
+        "gate-filter-auto-dev-approval-backlog-threshold-1"
+    ]
+    assert approval_threshold["config"]["when"]["all"][1]["not_in"] == list(range(11))
+    approval_caller = container_effects["effect-agent-create-auto-dev-approval-caller-1"]
+    assert approval_caller["config"]["session_id"] == (
+        "auto-dev-ado-approval-caller-root-example-truman-auto-dev"
+    )
+    assert "make_phone_call" in approval_caller["config"]["allowed_tools"]
+    assert "get_phone_call_result" in approval_caller["config"]["allowed_tools"]
+    assert "update_ado_backlog_tags" in approval_caller["config"]["allowed_tools"]
+    approval_prompt = container_effects[
+        "effect-agent-enqueue-prompt-auto-dev-approval-caller-1"
+    ]["config"]["prompt"]
+    assert "jonathan_quinth" in approval_prompt
+    assert "auto-dev-approved" in approval_prompt
+    assert (
+        container_edges[
+            (
+                "effect-agent-enqueue-prompt-auto-dev-approval-caller-1",
+                "effect-session-update-metadata-auto-dev-approval-caller-thread-1",
+            )
+        ]["target_id"]
+        == "effect-session-update-metadata-auto-dev-approval-caller-thread-1"
+    )
 
     all_node_ids = {
         *(trigger["id"] for trigger in container.triggers),

@@ -832,6 +832,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:pull-request:new-feedback": (
         "Start when new pull-request feedback arrives from the configured provider."
     ),
+    "trigger:pull-request:completed": (
+        "Start when a tracked pull request is observed as merged or completed."
+    ),
     "trigger:review:new-request": "Start when a review request is queued for orchestration.",
     "trigger:git:push": "Start from Git push events captured by the host-side bare-repo hook.",
     "trigger:agent:run:completed": "Start when an agent run completion event is recorded.",
@@ -1068,6 +1071,26 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         kind="trigger",
         type="trigger:pull-request:new-feedback",
         label="PR feedback",
+        fields=[
+            _field(
+                "provider",
+                "Provider",
+                "enum",
+                required=True,
+                options=[
+                    _field_option("local", "Local"),
+                    _field_option("github", "GitHub"),
+                    _field_option("ado", "Azure DevOps"),
+                ],
+            ),
+            _field("organization_url", "Organization URL", "string"),
+            _field("project", "Project", "string"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:pull-request:completed",
+        label="PR completed",
         fields=[
             _field(
                 "provider",
@@ -6249,6 +6272,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 removed_mappings += 1
         removed_session = self.runtime.session_repository.delete_session(session_id)
         removed_approvals = _prune_approvals_for_sessions(self.runtime, session_ids={session_id})
+        removed_pr_map_entries, removed_streams = _prune_pr_map(
+            self.config.pr_map_path,
+            session_ids={session_id},
+        )
+        removed_cursors, removed_feedback = _prune_pr_feedback_store(
+            self.config.runtime_dir / "pr-feedback-store.json",
+            streams=removed_streams,
+        )
         return {
             "success": True,
             "agent_id": agent_id,
@@ -6260,6 +6291,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 f"removed_mappings={removed_mappings} "
                 f"removed_session={int(removed_session)} "
                 f"removed_approvals={removed_approvals} "
+                f"removed_pr_map_entries={removed_pr_map_entries} "
+                f"removed_feedback_cursors={removed_cursors} "
+                f"removed_feedback_items={removed_feedback} "
                 f"worker_session_deleted={int(worker_session_removed)}"
             ),
             "status": "deleted",

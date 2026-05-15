@@ -59,6 +59,7 @@ from agent_sandbox.triggers.providers.schemas import (
     EmailNewMessageTriggerDefinition,
     GitPushTriggerDefinition,
     IssueCommentCreatedTriggerDefinition,
+    PullRequestCompletedTriggerDefinition,
     PullRequestNewFeedbackTriggerDefinition,
     ReviewNewRequestTriggerDefinition,
     ScriptRunRequestTriggerDefinition,

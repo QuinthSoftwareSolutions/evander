@@ -20,6 +20,7 @@ from agent_sandbox.events.provider_models import (
     IssueUpdateStateEffectDefinition,
     NotificationSendEffectDefinition,
     PrCreateEffectDefinition,
+    PullRequestCompletedTriggerDefinition,
     PullRequestNewFeedbackTriggerDefinition,
     ReviewNewRequestTriggerDefinition,
     ScriptRunRequestTriggerDefinition,
@@ -173,6 +174,18 @@ def test_pr_feedback_trigger_requires_org_url_for_ado() -> None:
                 "id": "t-3",
                 "display_name": "PR feedback",
                 "type": "trigger:pull-request:new-feedback",
+                "provider": "ado",
+            }
+        )
+
+
+def test_pr_completed_trigger_requires_org_url_for_ado() -> None:
+    with pytest.raises(ValueError, match="organization_url is required"):
+        PullRequestCompletedTriggerDefinition.model_validate(
+            {
+                "id": "t-pr-done",
+                "display_name": "PR completed",
+                "type": "trigger:pull-request:completed",
                 "provider": "ado",
             }
         )

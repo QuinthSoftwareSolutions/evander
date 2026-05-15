@@ -168,6 +168,29 @@ _TRIGGER_OUTPUT_SCHEMAS = {
             },
         },
     },
+    "trigger:pull-request:completed": {
+        "session_id": {"type": "string"},
+        "status": {"type": "string"},
+        "merged": {"type": "boolean"},
+        "completed_at": {"type": ["string", "null"]},
+        "pr": {
+            "type": "object",
+            "properties": {
+                "provider": {"type": "string"},
+                "repo": {"type": "string"},
+                "pr_id": {"type": "string"},
+                "status": {"type": "string"},
+                "merged": {"type": "boolean"},
+                "completed_at": {"type": ["string", "null"]},
+                "pr_url": {"type": ["string", "null"]},
+                "title": {"type": ["string", "null"]},
+                "source_branch": {"type": ["string", "null"]},
+                "target_branch": {"type": ["string", "null"]},
+                "source_commit": {"type": ["string", "null"]},
+                "target_commit": {"type": ["string", "null"]},
+            },
+        },
+    },
     "trigger:review:new-request": {
         "review_request": {
             "type": "object",

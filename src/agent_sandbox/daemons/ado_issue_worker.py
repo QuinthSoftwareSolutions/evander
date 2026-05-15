@@ -29,7 +29,10 @@ from agent_sandbox.directory_config import (
     validate_effective_domain_payload,
 )
 from agent_sandbox.events.models import TriggerEvent, materialize_node_definition
-from agent_sandbox.events.provider_models import PullRequestNewFeedbackTriggerDefinition
+from agent_sandbox.events.provider_models import (
+    PullRequestCompletedTriggerDefinition,
+    PullRequestNewFeedbackTriggerDefinition,
+)
 from agent_sandbox.models import (
     DirectoryPath,
     LocalIssueRecord,
@@ -46,10 +49,16 @@ from agent_sandbox.daemons.pr_feedback_worker import (
     pr_feedback_item_payload,
 )
 from agent_sandbox.policy_config import EffectivePolicyConfig
+from agent_sandbox.pr_tracking import (
+    PrMapStore,
+    completion_event_id,
+    completion_event_payload,
+    status_snapshot_from_pull_request,
+)
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.runtime import build_runtime
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
-from agent_sandbox.services import _normalize_ignored_feedback_payload
+from agent_sandbox.services import AzureDevOpsPrQueryProvider, _normalize_ignored_feedback_payload
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
 from agent_sandbox.triggers.providers.pull_request_new_feedback import _parse_dt
@@ -2095,6 +2104,23 @@ def _load_ado_pr_feedback_triggers(
     return triggers
 
 
+def _load_ado_pr_completed_triggers(
+    config: WorkerConfig,
+) -> list[PullRequestCompletedTriggerDefinition]:
+    worker_config = _load_trigger_orchestrator_worker_config(config)
+    if worker_config is None:
+        return []
+    triggers: list[PullRequestCompletedTriggerDefinition] = []
+    for trigger in worker_config.triggers:
+        materialized = materialize_node_definition(trigger)
+        if (
+            isinstance(materialized, PullRequestCompletedTriggerDefinition)
+            and materialized.provider == "ado"
+        ):
+            triggers.append(materialized)
+    return triggers
+
+
 def _load_trigger_orchestrator_worker_config(
     config: WorkerConfig,
 ) -> TriggerOrchestratorWorkerGlobalConfig | None:
@@ -2188,7 +2214,7 @@ def _ado_project_for_feedback_stream(
     *,
     repo: str,
     binding: dict[str, str],
-    trigger: PullRequestNewFeedbackTriggerDefinition,
+    trigger: PullRequestNewFeedbackTriggerDefinition | PullRequestCompletedTriggerDefinition,
     config: WorkerConfig,
 ) -> str:
     parts = [part.strip() for part in repo.split("/") if part.strip()]
@@ -2242,7 +2268,7 @@ def _publish_directory_pr_feedback_events(
         ),
     )
     feedback_store = PrFeedbackStore(config.runtime_dir / "pr-feedback-store.json")
-    audit_logger = AuditLogger(config.runtime_dir / "audit.log")
+    audit_logger = AuditLogger(runtime_gateway_config.audit_log_path)
     ignored_feedback_ids = _read_ignored_feedback_ids(
         config.runtime_dir / "ignored-feedback-ids.json"
     )
@@ -2366,6 +2392,139 @@ def _publish_directory_pr_feedback_events(
     return published_count
 
 
+def _publish_directory_pr_completion_events(
+    *,
+    client: httpx.Client,
+    config: WorkerConfig,
+    runtime_gateway_config: GatewayConfig,
+    directory_path: str,
+) -> int:
+    _ = client
+    triggers = _load_ado_pr_completed_triggers(config)
+    if not triggers:
+        return 0
+
+    bindings = _load_ado_pr_feedback_session_bindings(
+        runtime_dir=config.runtime_dir,
+        pr_map_path=runtime_gateway_config.pr_map_path,
+        directory_path=directory_path,
+    )
+    if not bindings:
+        return 0
+
+    pat_env_name = runtime_gateway_config.azure_devops_pr_pat_env
+    pat = os.environ.get(pat_env_name, "").strip()
+    if not pat:
+        _LOG.debug(
+            "Skipping Azure PR completion polling for directory=%s because %s is unset",
+            directory_path,
+            pat_env_name,
+        )
+        return 0
+
+    trigger_worker_config = _load_trigger_orchestrator_worker_config(config)
+    event_queue = TriggerEventQueue(
+        (
+            trigger_worker_config.event_queue_store_path
+            if trigger_worker_config is not None
+            else None
+        )
+        or config.runtime_dir / "trigger-orchestrator-events.json",
+        journal_path=(
+            trigger_worker_config.workflow_event_journal_path
+            if trigger_worker_config is not None
+            else None
+        ),
+    )
+    pr_map_store = PrMapStore(runtime_gateway_config.pr_map_path)
+    audit_logger = AuditLogger(runtime_gateway_config.audit_log_path)
+    published_count = 0
+
+    for trigger in triggers:
+        for repo, pr_id in sorted(bindings.keys()):
+            binding = bindings.get((repo, pr_id), {})
+            provider = AzureDevOpsPrQueryProvider(
+                organization_url=trigger.organization_url or config.organization_url,
+                project=_ado_project_for_feedback_stream(
+                    repo=repo,
+                    binding=binding,
+                    trigger=trigger,
+                    config=config,
+                ),
+                pat=pat,
+                timeout_seconds=30.0,
+            )
+            try:
+                response = provider.get_pull_request(
+                    repo=repo,
+                    pr_id=pr_id,
+                    include_reviewers=False,
+                    include_commits=False,
+                )
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code if exc.response is not None else None
+                if status_code == 404:
+                    _LOG.warning(
+                        "Skipping Azure PR completion stream after 404 "
+                        "directory=%s trigger_id=%s repo=%s pr_id=%s project=%s",
+                        directory_path,
+                        trigger.id,
+                        repo,
+                        pr_id,
+                        provider.project,
+                    )
+                    continue
+                raise
+            update = pr_map_store.update_status(
+                status_snapshot_from_pull_request(response, repo=repo, pr_id=pr_id),
+                trigger_id=trigger.id,
+            )
+            if not update.completed_ready:
+                continue
+
+            event_id = completion_event_id(trigger.id, update.entry)
+            event = TriggerEvent(
+                event_id=event_id,
+                trigger_id=trigger.id,
+                trigger_type=trigger.type,
+                occurred_at=_pr_completion_occurred_at(update.entry),
+                payload=completion_event_payload(update.entry),
+            )
+            already_queued = event_queue.contains(event.event_id)
+            record = event_queue.publish(event)
+            if record.event_id == event.event_id:
+                pr_map_store.mark_completion_event_published(
+                    provider=update.entry["provider"],
+                    repo=update.entry["repo"],
+                    pr_id=update.entry["pr_id"],
+                    trigger_id=trigger.id,
+                    event_id=event.event_id,
+                )
+                audit_logger.log_decision(
+                    event_type=AuditEventType.PR_COMPLETION_DETECTED,
+                    session_id=binding["session_id"]
+                    if binding and binding.get("session_id")
+                    else None,
+                    vm_id=binding["vm_id"] if binding and binding.get("vm_id") else None,
+                    provider=update.entry["provider"],
+                    repo=update.entry["repo"],
+                    pr_id=update.entry["pr_id"],
+                    decision="detected",
+                    reason="pr-completed",
+                    args={"pr": completion_event_payload(update.entry)["pr"]},
+                    result={"event_id": event.event_id},
+                )
+            if not already_queued and record.event_id == event.event_id:
+                published_count += 1
+
+    return published_count
+
+
+def _pr_completion_occurred_at(entry: dict[str, Any]) -> datetime:
+    parsed = _parse_dt(entry.get("completed_at")) or _parse_dt(entry.get("pr_status_updated_at"))
+    return parsed or datetime.now(UTC)
+
+
 def _read_ignored_feedback_ids(path: Path) -> set[str]:
     if not path.exists():
         return set()
@@ -2400,6 +2559,12 @@ def run_worker(config: WorkerConfig) -> None:
                 for directory_path in config.directories:
                     try:
                         _publish_directory_pr_feedback_events(
+                            client=client,
+                            config=config,
+                            runtime_gateway_config=runtime_gateway_config,
+                            directory_path=directory_path,
+                        )
+                        _publish_directory_pr_completion_events(
                             client=client,
                             config=config,
                             runtime_gateway_config=runtime_gateway_config,

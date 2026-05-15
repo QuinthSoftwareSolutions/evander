@@ -27,8 +27,12 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
     ToolName.UPDATE_ADO_BACKLOG_TEXT: (
         "Update Azure DevOps backlog description or acceptance criteria text."
     ),
+    ToolName.UPDATE_ADO_BACKLOG_TAGS: "Add or remove Azure DevOps backlog item tags.",
     ToolName.GET_ADO_DAILY_STATUS_REPORT_DATA: (
         "Build the daily status report JSON from Azure DevOps current-iteration data."
+    ),
+    ToolName.LIST_CONTACTS: (
+        "List directory-configured contact ids without exposing addresses or phone numbers."
     ),
     ToolName.MAKE_PHONE_CALL: (
         "Start Retell phone calls to directory-configured contact ids."

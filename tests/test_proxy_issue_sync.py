@@ -252,6 +252,55 @@ def test_upsert_ado_proxy_issue_reuses_local_issue_linked_from_approval_reason(
     assert list(stored) == [local_issue.issue_id]
 
 
+def test_upsert_ado_proxy_issue_does_not_reuse_prefix_url_match(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 5, 15, 12, 0, tzinfo=UTC)
+    local_issue = LocalIssueRecord(
+        issue_id="root/team::local::21",
+        issue_number="21",
+        title="Remote 101",
+        body="Local body",
+        yaml_path=str(tmp_path / "issues" / "21.yaml"),
+        directory_path="root/team",
+        source_type="local_manual",
+        source="local_gui",
+        state="Committed",
+        metadata={
+            "fields": {
+                "Reason": (
+                    "Committed after approval as Azure DevOps Bug 1010: "
+                    "https://dev.azure.com/example/Project/_workitems/edit/1010"
+                )
+            }
+        },
+    )
+    _store_issue(tmp_path, local_issue)
+
+    issue = upsert_ado_proxy_issue_from_remote_payload(
+        runtime_dir=tmp_path,
+        directory_path="root/team",
+        project="Project",
+        organization_url="https://dev.azure.com/example",
+        now=now,
+        remote_payload={
+            "remote_issue_id": "101",
+            "title": "Remote 101",
+            "description": "Remote body 101",
+            "state": "In Progress",
+            "url": "https://dev.azure.com/example/Project/_workitems/edit/101",
+            "updated_at": "2026-05-15T11:00:00Z",
+            "fields": {"System.State": "In Progress"},
+        },
+    )
+
+    assert issue.issue_id != local_issue.issue_id
+    assert issue.source_type == "remote_proxy"
+    stored = JsonStore(tmp_path / "local-issues.json", LocalIssueRecord).read_all()
+    assert set(stored) == {local_issue.issue_id, issue.issue_id}
+    assert stored[local_issue.issue_id].remote_reference is None
+
+
 def test_upsert_ado_proxy_issue_prunes_generated_duplicate_when_local_issue_is_canonical(
     tmp_path: Path,
 ) -> None:

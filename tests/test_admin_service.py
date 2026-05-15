@@ -22,6 +22,7 @@ from agent_sandbox.config import (
     ScheduledWakeWorkerGlobalConfig,
     TeamsIngestWorkerGlobalConfig,
 )
+from agent_sandbox.daemons.pr_feedback_worker import FeedbackEnvelope, PrFeedbackStore
 from agent_sandbox.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
@@ -3724,6 +3725,98 @@ def test_delete_session_cleans_detached_worker_state(
     assert repository.read_all() == {}
     assert "worker_session_deleted=1" in result.message
     assert "removed_mappings=1" in result.message
+
+
+def test_delete_admin_agent_prunes_container_pr_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+            },
+        ),
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-1",
+            session_id="container-session",
+            worker_job_id="job-1",
+            worker_url="http://worker.test",
+            target_name="container-target",
+            last_status="exited",
+        )
+    )
+    service.config.pr_map_path.write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "azure_devops:org/repo:6070": {
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "6070",
+                        "session_id": "container-session",
+                    },
+                    "azure_devops:org/other:1": {
+                        "provider": "azure_devops",
+                        "repo": "org/other",
+                        "pr_id": "1",
+                        "session_id": "other-session",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    feedback_store = PrFeedbackStore(service.config.runtime_dir / "pr-feedback-store.json")
+    feedback_store.set_cursor("azure_devops:org/repo:6070", "2026-05-15T10:00:00Z")
+    feedback_store.add_feedback_if_new(
+        FeedbackEnvelope(
+            feedback_id="azure_devops:thread_comment:6070:1",
+            provider="azure_devops",
+            repo="org/repo",
+            pr_id="6070",
+            thread_id="6070",
+            comment_id="1",
+            author="reviewer",
+            body="Looks good",
+            created_at=datetime(2026, 5, 15, 10, 0, tzinfo=UTC),
+        )
+    )
+
+    class FakeContainerBackend:
+        def delete_session(self, session_id: str) -> dict[str, object]:
+            return {"deleted": True, "session_id": session_id}
+
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: FakeContainerBackend(), service),
+    )
+
+    result = service.delete_admin_agent("container-session", backend="container_worker_vm")
+
+    assert result["success"] is True
+    assert "removed_pr_map_entries=1" in result["message"]
+    assert "removed_feedback_cursors=1" in result["message"]
+    assert "removed_feedback_items=1" in result["message"]
+    pr_map_payload = json.loads(service.config.pr_map_path.read_text(encoding="utf-8"))
+    assert set(pr_map_payload["entries"]) == {"azure_devops:org/other:1"}
+    feedback_payload = PrFeedbackStore(
+        service.config.runtime_dir / "pr-feedback-store.json"
+    ).read_raw()
+    assert feedback_payload["cursors"] == {}
+    assert feedback_payload["feedback"] == {}
 
 
 def test_set_session_allowed_tools_updates_manifest(tmp_path: Path) -> None:

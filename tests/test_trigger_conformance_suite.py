@@ -16,7 +16,6 @@ from agent_sandbox.models import (
     EmailMessage,
     LocalIssueRecord,
     PrFeedbackItem,
-    TeamsMessageEnvelope,
 )
 from agent_sandbox.daemons.trigger_orchestrator import TriggerOrchestratorWorker
 from agent_sandbox.events.models import TriggerDefinitionDiscriminated, materialize_node_definition
@@ -26,9 +25,11 @@ from agent_sandbox.triggers.providers.cron import CronTriggerProvider
 from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.git_push import GitPushTriggerProvider
-from agent_sandbox.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
 from agent_sandbox.triggers.providers.pull_request_new_feedback import (
     PullRequestNewFeedbackTriggerProvider,
+)
+from agent_sandbox.triggers.providers.pull_request_completed import (
+    PullRequestCompletedTriggerProvider,
 )
 from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.ticket_changed import TicketChangedTriggerProvider
@@ -179,6 +180,18 @@ def _trigger_adapter() -> _MaterializingTriggerAdapter:
         ),
         (
             {
+                "id": "pr-completed",
+                "display_name": "PR completed",
+                "type": "trigger:pull-request:completed",
+                "provider": "ado",
+                "organization_url": "https://dev.azure.com/example",
+                "project": "Sandbox",
+            },
+            "trigger:pull-request:completed",
+            "provider",
+        ),
+        (
+            {
                 "id": "review-request",
                 "display_name": "Review request",
                 "type": "trigger:review:new-request",
@@ -273,6 +286,16 @@ def test_conformance_schema_accepts_required_trigger_shapes(
             },
             "organization_url is required",
             "trigger:pull-request:new-feedback",
+        ),
+        (
+            {
+                "id": "pr-completed-bad",
+                "display_name": "PR completed",
+                "type": "trigger:pull-request:completed",
+                "provider": "ado",
+            },
+            "organization_url is required",
+            "trigger:pull-request:completed",
         ),
         (
             {
@@ -798,6 +821,9 @@ def test_conformance_pr_provider_modes_and_git_push_contract(
                         "pr_id": "10",
                         "session_id": "session-10",
                         "directory_path": "root",
+                        "status": "completed",
+                        "merged": True,
+                        "completed_at": "2026-04-03T12:00:00Z",
                     }
                 }
             }
@@ -820,6 +846,26 @@ def test_conformance_pr_provider_modes_and_git_push_contract(
     mapped_events = pr_provider_with_mapping.poll()
     assert len(mapped_events) == 1
     assert mapped_events[0].payload["session_id"] == "session-10"
+
+    pr_completed = PullRequestCompletedTriggerProvider()
+    pr_completed.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-completed-local",
+                "display_name": "PR completed",
+                "type": "trigger:pull-request:completed",
+                "provider": "local",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+    completed_events = pr_completed.poll()
+    assert len(completed_events) == 1
+    assert completed_events[0].payload["session_id"] == "session-10"
+    assert completed_events[0].payload["pr"]["status"] == "completed"
+    assert completed_events[0].payload["pr"]["merged"] is True
+    pr_completed.acknowledge_published_event(completed_events[0])
+    assert pr_completed.poll() == []
 
     repo = tmp_path / "repo.git"
     repo.mkdir(parents=True)
@@ -881,10 +927,10 @@ def test_conformance_pr_provider_modes_and_git_push_contract(
     _record_result(
         report_collector,
         requirement_id="provider:pr-modes-and-git-push",
-        trigger_type="trigger:pull-request:new-feedback,trigger:git:push",
+        trigger_type="trigger:pull-request:new-feedback,trigger:pull-request:completed,trigger:git:push",
         status="pass",
         coverage=["provider behavior correctness", "event/output contract verification"],
-        details="PR feedback trigger exercises local and github modes; git push emits branch/hash contract.",
+        details="PR feedback and completion triggers exercise local/github modes; git push emits branch/hash contract.",
     )
 
 
@@ -967,6 +1013,79 @@ def test_pr_feedback_trigger_github_emits_new_feedback_before_advancing_cursor(
     assert len(events) == 1
     assert events[0].payload["pr"] == {"provider": "github", "repo": "org/repo", "pr_id": "11"}
     assert events[0].payload["feedback"]["feedback_id"] == "github:comment:1"
+
+
+def test_pr_completed_trigger_github_refreshes_status_before_emitting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    pr_map_path = runtime_dir / "pr-map.json"
+    pr_map_path.write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "github:org/repo:11": {
+                        "provider": "github",
+                        "repo": "org/repo",
+                        "pr_id": "11",
+                        "session_id": "session-11",
+                        "directory_path": "root",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = PullRequestCompletedTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-completed-gh",
+                "display_name": "PR completed",
+                "type": "trigger:pull-request:completed",
+                "provider": "github",
+            }
+        ),
+        _build_runtime_context(runtime_dir, env={"GITHUB_TOKEN": "secret-token"}),
+    )
+    calls: list[dict[str, Any]] = []
+
+    def fake_fetch_github_pull_request(**kwargs: Any) -> dict[str, Any]:
+        calls.append(dict(kwargs))
+        return {
+            "title": "Feature PR",
+            "state": "closed",
+            "merged": True,
+            "merged_at": "2026-05-15T10:00:00Z",
+            "html_url": "https://github.com/org/repo/pull/11",
+            "head": {"ref": "feature/11", "sha": "abc123"},
+            "base": {"ref": "main", "sha": "def456"},
+        }
+
+    monkeypatch.setattr(provider, "_fetch_github_pull_request", fake_fetch_github_pull_request)
+
+    events = provider.poll()
+
+    assert len(events) == 1
+    assert calls[0]["repo"] == "org/repo"
+    assert calls[0]["pr_id"] == "11"
+    assert calls[0]["headers"]["Authorization"] == "Bearer secret-token"
+    assert events[0].payload["session_id"] == "session-11"
+    assert events[0].payload["status"] == "merged"
+    assert events[0].payload["merged"] is True
+    assert events[0].payload["completed_at"] == "2026-05-15T10:00:00Z"
+    assert events[0].payload["pr"]["target_branch"] == "main"
+
+    pr_map_payload = json.loads(pr_map_path.read_text(encoding="utf-8"))
+    entry = pr_map_payload["entries"]["github:org/repo:11"]
+    assert entry["status"] == "merged"
+    assert entry["merged"] is True
+    assert entry["completed_at"] == "2026-05-15T10:00:00Z"
+
+    provider.acknowledge_published_event(events[0])
+    assert provider.poll() == []
 
 
 def test_conformance_orchestrator_integration_locking_jitter_and_idempotency(
@@ -1059,6 +1178,7 @@ def test_conformance_traceability_matrix_and_report(
             "schema:trigger:teams:new-message",
             "schema:trigger:email:new-message",
             "schema:trigger:pull-request:new-feedback",
+            "schema:trigger:pull-request:completed",
             "schema:trigger:review:new-request",
             "schema:trigger:git:push",
             "schema:duplicate-ids",

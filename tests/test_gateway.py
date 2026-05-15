@@ -174,6 +174,7 @@ def test_create_server_registers_schedule_resume_tool(tmp_path) -> None:
     assert any(tool.name == "list_pull_requests" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "get_pull_request" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "assistant_read_config" for tool in server._tool_manager.list_tools())
+    assert any(tool.name == "list_contacts" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "make_phone_call" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "get_phone_call_result" for tool in server._tool_manager.list_tools())
     assert any(
@@ -190,6 +191,13 @@ def test_create_server_registers_schedule_resume_tool(tmp_path) -> None:
     )
     assert "phone_number" not in make_phone_call_fields
     assert "to_number" not in make_phone_call_fields
+    list_contacts_tool = next(
+        tool for tool in server._tool_manager.list_tools() if tool.name == "list_contacts"
+    )
+    list_contacts_fields = set(list_contacts_tool.parameters["properties"])
+    assert "session_id" in list_contacts_fields
+    assert "phone_number" not in list_contacts_fields
+    assert "to_number" not in list_contacts_fields
 
 
 def test_request_pr_review_schema_advertises_allowed_provider_values(tmp_path: Path) -> None:
@@ -665,6 +673,93 @@ def test_run_script_enforces_tool_policy_and_script_allowlist(tmp_path: Path) ->
                 {"session_id": "session-1", "script_name": "collect-logs", "parameters": []},
             )
         )
+
+
+def test_list_contacts_enforces_policy_and_redacts_contact_values(tmp_path: Path) -> None:
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+        )
+    )
+    DirectoryConfigStore(context.directories, runtime_dir=tmp_path).write(
+        "root",
+        domain="contacts",
+        payload={
+            "contacts": {
+                "ops": {
+                    "name": "Ops Duty",
+                    "description": "Deployment window escalation contact",
+                    "email_addresses": ["ops@example.com"],
+                    "phone_numbers": [
+                        {"label": "mobile", "number": "+15550000002", "primary": True}
+                    ],
+                },
+                "support": {
+                    "name": "Support",
+                    "description": "Email-only help desk",
+                    "email_addresses": ["support@example.com"],
+                    "phone_numbers": [],
+                },
+            }
+        },
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="Tool list_contacts is not allowed"):
+        _call_tool(server, "list_contacts", {"session_id": "session-1"})
+
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.LIST_CONTACTS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    result = _call_tool(server, "list_contacts", {"session_id": "session-1"})
+
+    assert result == {
+        "directory_path": "root",
+        "contacts": [
+            {
+                "id": "ops",
+                "name": "Ops Duty",
+                "description": "Deployment window escalation contact",
+                "email_address_count": 1,
+                "phone_number_count": 1,
+                "primary_phone_label": "mobile",
+                "callable": True,
+            },
+            {
+                "id": "support",
+                "name": "Support",
+                "description": "Email-only help desk",
+                "email_address_count": 1,
+                "phone_number_count": 0,
+                "primary_phone_label": None,
+                "callable": False,
+            },
+        ],
+    }
+    result_text = json.dumps(result)
+    assert "+15550000002" not in result_text
+    assert "ops@example.com" not in result_text
+    audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert "+15550000002" not in audit_text
+    assert "ops@example.com" not in audit_text
 
 
 def test_make_phone_call_enforces_policy_contact_alias_and_audit_redaction(

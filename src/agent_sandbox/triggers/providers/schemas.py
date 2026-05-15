@@ -240,6 +240,40 @@ class PullRequestNewFeedbackTriggerDefinition(TriggerDefinition):
         return self
 
 
+class PullRequestCompletedTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:pull-request:completed"]
+    provider: PrFeedbackProvider
+    organization_url: str | None = None
+    project: str | None = None
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def validate_provider(cls, value: object) -> str:
+        return validate_pr_feedback_provider(value)
+
+    @field_validator("organization_url", mode="before")
+    @classmethod
+    def normalize_organization_url(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip().rstrip("/")
+        return text or None
+
+    @field_validator("project", mode="before")
+    @classmethod
+    def normalize_project(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @model_validator(mode="after")
+    def validate_provider_specific_fields(self) -> "PullRequestCompletedTriggerDefinition":
+        if self.provider == "ado" and not self.organization_url:
+            raise ValueError("organization_url is required when provider is 'ado'")
+        return self
+
+
 class ReviewNewRequestTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:review:new-request"]
 

@@ -9,6 +9,7 @@ from agent_sandbox.models import AuditEvent
 
 class AuditEventType:
     FEEDBACK_DETECTED = "feedback_detected"
+    PR_COMPLETION_DETECTED = "pr_completion_detected"
     MAPPING_RESOLVED = "mapping_resolved"
     BUSY_SKIP = "busy_skip"
     VM_START_ATTEMPTED = "vm_start_attempted"

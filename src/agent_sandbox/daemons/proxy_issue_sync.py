@@ -24,6 +24,7 @@ _LOG = logging.getLogger(__name__)
 DEFAULT_PROXY_ISSUE_SYNC_INTERVAL_SECONDS = 300.0
 DEFAULT_PROXY_ISSUE_SYNC_FRESHNESS_SECONDS = 300.0
 _PROXY_ISSUE_SYNC_CONFIG_RELATIVE_PATH = Path("config") / "proxy-issue-sync" / "config.json"
+_URL_TRAILING_DELIMITERS = ".,;:!?)]}'\""
 
 
 @dataclass(frozen=True)
@@ -403,7 +404,7 @@ def _local_issue_mentions_ado_work_item(
 
     text = "\n".join(reason_parts)
     remote_url = _optional_text(remote_payload.get("url"))
-    if remote_url and remote_url.rstrip("/") in text:
+    if remote_url and _text_mentions_exact_url(text, remote_url):
         return True
     return bool(
         re.search(
@@ -417,6 +418,17 @@ def _local_issue_mentions_ado_work_item(
             flags=re.IGNORECASE,
         )
     )
+
+
+def _text_mentions_exact_url(text: str, url: str) -> bool:
+    normalized_url = url.rstrip("/")
+    if not normalized_url:
+        return False
+    for match in re.finditer(r"https?://[^\s<>\"]+", text):
+        token = match.group(0).rstrip(_URL_TRAILING_DELIMITERS).rstrip("/")
+        if token == normalized_url:
+            return True
+    return False
 
 
 def _find_generated_ado_proxy_duplicate_ids(

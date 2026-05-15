@@ -85,6 +85,7 @@ from agent_sandbox.models import (
     AdoBacklogGetResponse,
     AdoBacklogQueryRequest,
     AdoBacklogQueryResponse,
+    AdoBacklogTagsUpdateRequest,
     AdoBacklogTextUpdateRequest,
     AuditEvent,
     CommunicationAttachmentRef,
@@ -104,10 +105,14 @@ from agent_sandbox.models import (
     CommunicationSendMessageWithAttachmentsResponse,
     CommunicationStageWorkspaceFileRequest,
     CommunicationStageWorkspaceFileResponse,
+    ContactSummary,
     DiscordCommandEnvelope,
     GetPullRequestRequest,
     HasPendingDiscordMessagesRequest,
     HasPendingFeedbackRequest,
+    GetPhoneCallResultRequest,
+    ListContactsRequest,
+    ListContactsResponse,
     ListPendingAgentPromptsRequest,
     ListPendingAgentPromptsResponse,
     ListUnreadDiscordMessagesRequest,
@@ -123,7 +128,6 @@ from agent_sandbox.models import (
     PromptAgentResponse,
     RunScriptRequest,
     RunScriptResponse,
-    GetPhoneCallResultRequest,
     RequestPrReviewRequest,
     RespondToAgentRequest,
     RespondToAgentResponse,
@@ -1010,6 +1014,48 @@ def create_server(context: RuntimeContext) -> FastMCP:
         if isinstance(payload, dict):
             return {key: value for key, value in payload.items() if key != "request_id"}
         return {}
+
+    def _extract_ado_tags(remote_payload: dict[str, Any]) -> list[str]:
+        fields = remote_payload.get("fields") if isinstance(remote_payload.get("fields"), dict) else {}
+        raw_tags = remote_payload.get("tags")
+        if raw_tags is None:
+            raw_tags = fields.get("System.Tags")
+        return _normalize_ado_tag_list(raw_tags)
+
+    def _normalize_ado_tag_list(value: Any) -> list[str]:
+        raw_values = value if isinstance(value, list) else str(value or "").split(";")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw_tag in raw_values:
+            tag = str(raw_tag).strip()
+            if not tag:
+                continue
+            key = tag.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(tag)
+        return normalized
+
+    def _merge_ado_tags(
+        previous_tags: list[str], *, add_tags: list[str], remove_tags: list[str]
+    ) -> list[str]:
+        remove_keys = {tag.casefold() for tag in remove_tags}
+        merged: list[str] = []
+        seen: set[str] = set()
+        for tag in previous_tags:
+            key = tag.casefold()
+            if key in remove_keys or key in seen:
+                continue
+            seen.add(key)
+            merged.append(tag)
+        for tag in add_tags:
+            key = tag.casefold()
+            if key in remove_keys or key in seen:
+                continue
+            seen.add(key)
+            merged.append(tag)
+        return merged
 
     def _communication_target_audit_fields(
         *,
@@ -3456,6 +3502,94 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.UPDATE_ADO_BACKLOG_TEXT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def update_ado_backlog_tags(
+        id: int | str,
+        project: str | None = None,
+        add_tags: list[str] | None = None,
+        remove_tags: list[str] | None = None,
+        *,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        request_model = AdoBacklogTagsUpdateRequest(
+            id=id,
+            project=project,
+            add_tags=add_tags or [],
+            remove_tags=remove_tags or [],
+        )
+        args = {"session_id": session_id, **request_model.model_dump(mode="json")}
+        try:
+            session = context.policy.require_tool(session_id, ToolName.UPDATE_ADO_BACKLOG_TAGS)
+            issue_service = IssueService(context.provider_config)
+            current = issue_service.read_remote_issue(
+                provider="azure_devops",
+                remote_issue_id=request_model.id,
+                directory_path=session.directory_path,
+                project=request_model.project,
+                include_comments=False,
+            )
+            previous_tags = _extract_ado_tags(current)
+            merged_tags = _merge_ado_tags(
+                previous_tags,
+                add_tags=request_model.add_tags,
+                remove_tags=request_model.remove_tags,
+            )
+            result = issue_service.update_remote_issue(
+                provider="azure_devops",
+                remote_issue_id=request_model.id,
+                directory_path=session.directory_path,
+                project=request_model.project,
+                state=None,
+                fields={"System.Tags": "; ".join(merged_tags)},
+            )
+            response = {
+                **result,
+                "work_item_id": request_model.id,
+                "previous_tags": previous_tags,
+                "tags": merged_tags,
+                "added_tags": [
+                    tag
+                    for tag in request_model.add_tags
+                    if tag.casefold() not in {item.casefold() for item in previous_tags}
+                ],
+                "removed_tags": [
+                    tag
+                    for tag in previous_tags
+                    if tag.casefold() in {item.casefold() for item in request_model.remove_tags}
+                ],
+            }
+            audit_success(
+                session_id,
+                ToolName.UPDATE_ADO_BACKLOG_TAGS,
+                args,
+                {
+                    "work_item_id": request_model.id,
+                    "project": request_model.project,
+                    "updated": result.get("updated"),
+                    "tag_count": len(merged_tags),
+                    "added_tag_count": len(response["added_tags"]),
+                    "removed_tag_count": len(response["removed_tags"]),
+                },
+            )
+            return response
+        except PolicyError as exc:
+            audit_failure(session_id, ToolName.UPDATE_ADO_BACKLOG_TAGS, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                session_id,
+                ToolName.UPDATE_ADO_BACKLOG_TAGS,
                 args,
                 str(exc),
                 decision="error",
@@ -5999,6 +6133,85 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(
                 session_id,
                 ToolName.ADD_MESSAGE_REACTION,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
+    def list_contacts(
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """List directory contacts visible to this session without exposing addresses or numbers."""
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {"session_id": resolved_session_id}
+        try:
+            request = ListContactsRequest(session_id=resolved_session_id)
+            args = request.model_dump(mode="json")
+            session = context.policy.require_tool(
+                resolved_session_id,
+                ToolName.LIST_CONTACTS,
+            )
+            contacts_config = context.provider_config.resolve_contacts_for_directory(
+                session.directory_path
+            )
+            contacts = []
+            for contact_id, contact in sorted(contacts_config.contacts.items()):
+                primary_phone_labels = [
+                    phone.label for phone in contact.phone_numbers if phone.primary
+                ]
+                contacts.append(
+                    ContactSummary(
+                        id=contact_id,
+                        name=contact.name,
+                        description=contact.description,
+                        email_address_count=len(contact.email_addresses),
+                        phone_number_count=len(contact.phone_numbers),
+                        primary_phone_label=(
+                            primary_phone_labels[0] if len(primary_phone_labels) == 1 else None
+                        ),
+                        callable=len(primary_phone_labels) == 1,
+                    )
+                )
+            result = ListContactsResponse(
+                directory_path=session.directory_path,
+                contacts=contacts,
+            ).model_dump(mode="json")
+            audit_success(
+                resolved_session_id,
+                ToolName.LIST_CONTACTS,
+                args,
+                {
+                    "directory_path": result["directory_path"],
+                    "contact_count": len(result["contacts"]),
+                    "callable_contact_count": sum(
+                        1 for contact in result["contacts"] if contact.get("callable")
+                    ),
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(resolved_session_id, ToolName.LIST_CONTACTS, args, str(exc))
+            raise
+        except ValueError as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.LIST_CONTACTS,
+                args,
+                str(exc),
+                decision="error",
+                error_class="validation_error",
+            )
+            raise ToolError(str(exc)) from exc
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.LIST_CONTACTS,
                 args,
                 str(exc),
                 decision="error",
