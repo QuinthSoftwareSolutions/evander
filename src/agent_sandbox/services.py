@@ -3631,6 +3631,7 @@ class AzureDevOpsPrPublishProvider:
         pr_id: str,
         body_text: str,
         thread_context: dict[str, Any] | None = None,
+        pull_request_thread_context: dict[str, Any] | None = None,
         error_context: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
@@ -3652,6 +3653,8 @@ class AzureDevOpsPrPublishProvider:
         }
         if thread_context is not None:
             payload["threadContext"] = thread_context
+        if pull_request_thread_context is not None:
+            payload["pullRequestThreadContext"] = pull_request_thread_context
         response = client.post(
             (
                 f"{self.organization_url}/{self.project}/_apis/git/repositories/{self._repo_identifier(repo)}/"
@@ -3742,14 +3745,57 @@ class AzureDevOpsPrPublishProvider:
         uploaded_attachments: list[dict[str, Any]] = []
 
         with httpx.Client(timeout=self.timeout_seconds) as client:
+            iteration_context = (
+                _azure_devops_pr_iteration_context(
+                    client=client,
+                    organization_url=self.organization_url,
+                    project=self.project,
+                    repo_identifier=self._repo_identifier(repo),
+                    pr_id=pr_id,
+                    pat=self.pat,
+                )
+                if normalized_comments
+                else None
+            )
             total_inline_comments = len(normalized_comments)
+            prepared_inline_comments: list[
+                tuple[
+                    dict[str, Any],
+                    dict[str, Any],
+                    dict[str, Any] | None,
+                    str,
+                ]
+            ] = []
             for index, comment in enumerate(normalized_comments, start=1):
                 thread_context = _azure_devops_thread_context_for_review_comment(comment)
+                pull_request_thread_context = (
+                    _azure_devops_pull_request_thread_context_for_review_comment(
+                        comment,
+                        iteration_context=iteration_context,
+                    )
+                    if iteration_context is not None
+                    else None
+                )
                 error_context = _azure_devops_inline_comment_error_context(
                     comment,
                     index=index,
                     total=total_inline_comments,
                 )
+                prepared_inline_comments.append(
+                    (
+                        comment,
+                        thread_context,
+                        pull_request_thread_context,
+                        error_context,
+                    )
+                )
+
+            for (
+                comment,
+                thread_context,
+                pull_request_thread_context,
+                error_context,
+            ) in prepared_inline_comments:
                 try:
                     comment_result = self._post_thread_comment(
                         client=client,
@@ -3757,6 +3803,7 @@ class AzureDevOpsPrPublishProvider:
                         pr_id=pr_id,
                         body_text=comment["body_text"],
                         thread_context=thread_context,
+                        pull_request_thread_context=pull_request_thread_context,
                         error_context=error_context,
                         attachments=comment.get("attachments"),
                     )
@@ -3821,8 +3868,23 @@ class AzureDevOpsPrPublishProvider:
         }
 
 
+@dataclass(frozen=True)
+class _AzureDevOpsPrChange:
+    change_tracking_id: int
+    change_type: str
+    current_paths: tuple[str, ...]
+    original_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _AzureDevOpsPrIterationContext:
+    first_iteration_id: int
+    latest_iteration_id: int
+    changes: tuple[_AzureDevOpsPrChange, ...]
+
+
 def _azure_devops_thread_context_for_review_comment(comment: dict[str, Any]) -> dict[str, Any]:
-    thread_context: dict[str, Any] = {"filePath": comment["path"]}
+    thread_context: dict[str, Any] = {"filePath": _azure_devops_comment_file_path(comment["path"])}
     line = comment.get("line")
     if line is None:
         return thread_context
@@ -3833,6 +3895,204 @@ def _azure_devops_thread_context_for_review_comment(comment: dict[str, Any]) -> 
     thread_context[f"{position_prefix}Start"] = {"line": start_line, "offset": 1}
     thread_context[f"{position_prefix}End"] = {"line": line, "offset": 1}
     return thread_context
+
+
+def _azure_devops_pr_iteration_context(
+    *,
+    client: httpx.Client,
+    organization_url: str,
+    project: str,
+    repo_identifier: str,
+    pr_id: str,
+    pat: str,
+) -> _AzureDevOpsPrIterationContext:
+    base_url = (
+        f"{organization_url}/{project}/_apis/git/repositories/{repo_identifier}/"
+        f"pullRequests/{pr_id}/iterations"
+    )
+    response = client.get(
+        base_url,
+        params={"api-version": "7.1"},
+        auth=("", pat),
+    )
+    _raise_azure_devops_pr_publish_error(
+        response,
+        action="resolve PR iterations for inline comment anchoring",
+        context=f"pr_id={pr_id}",
+    )
+    payload = response.json()
+    raw_iterations = payload.get("value") if isinstance(payload, dict) else payload
+    if not isinstance(raw_iterations, list):
+        raw_iterations = []
+    iteration_ids = sorted(
+        {
+            iteration_id
+            for item in raw_iterations
+            if isinstance(item, dict)
+            for iteration_id in [_as_int_or_none(item.get("id"))]
+            if iteration_id is not None and iteration_id > 0
+        }
+    )
+    if not iteration_ids:
+        raise ValueError(
+            f"Azure DevOps PR {pr_id} has no iterations; cannot anchor inline comments"
+        )
+
+    latest_iteration_id = iteration_ids[-1]
+    changes: list[_AzureDevOpsPrChange] = []
+    skip = 0
+    while True:
+        params: dict[str, Any] = {
+            "api-version": "7.1",
+            "$top": 2000,
+        }
+        if skip:
+            params["$skip"] = skip
+        changes_response = client.get(
+            f"{base_url}/{latest_iteration_id}/changes",
+            params=params,
+            auth=("", pat),
+        )
+        _raise_azure_devops_pr_publish_error(
+            changes_response,
+            action="resolve PR iteration changes for inline comment anchoring",
+            context=f"pr_id={pr_id} iteration={latest_iteration_id}",
+        )
+        changes_payload = changes_response.json()
+        raw_changes = (
+            changes_payload.get("changeEntries")
+            or changes_payload.get("value")
+            if isinstance(changes_payload, dict)
+            else []
+        )
+        if not isinstance(raw_changes, list):
+            raw_changes = []
+        for raw_change in raw_changes:
+            change = _azure_devops_pr_change_from_payload(raw_change)
+            if change is not None:
+                changes.append(change)
+        next_skip = (
+            _as_int_or_none(changes_payload.get("nextSkip"))
+            if isinstance(changes_payload, dict)
+            else None
+        )
+        if not next_skip:
+            break
+        skip = next_skip
+
+    if not changes:
+        raise ValueError(
+            f"Azure DevOps PR {pr_id} latest iteration {latest_iteration_id} has no changes; "
+            "cannot anchor inline comments"
+        )
+
+    return _AzureDevOpsPrIterationContext(
+        first_iteration_id=iteration_ids[0],
+        latest_iteration_id=latest_iteration_id,
+        changes=tuple(changes),
+    )
+
+
+def _azure_devops_pr_change_from_payload(raw_change: Any) -> _AzureDevOpsPrChange | None:
+    if not isinstance(raw_change, dict):
+        return None
+    change_tracking_id = _as_int_or_none(raw_change.get("changeTrackingId"))
+    if change_tracking_id is None:
+        return None
+    current_paths = []
+    item = raw_change.get("item")
+    if isinstance(item, dict):
+        current_paths.append(item.get("path"))
+    current_paths.append(raw_change.get("sourceServerItem"))
+    original_paths = [raw_change.get("originalPath")]
+    normalized_current_paths = tuple(
+        dict.fromkeys(
+            path
+            for raw_path in current_paths
+            for path in [_normalize_azure_devops_pr_path(raw_path)]
+            if path is not None
+        )
+    )
+    normalized_original_paths = tuple(
+        dict.fromkeys(
+            path
+            for raw_path in original_paths
+            for path in [_normalize_azure_devops_pr_path(raw_path)]
+            if path is not None
+        )
+    )
+    if not normalized_current_paths and not normalized_original_paths:
+        return None
+    change_type = str(raw_change.get("changeType") or "").strip().lower()
+    return _AzureDevOpsPrChange(
+        change_tracking_id=change_tracking_id,
+        change_type=change_type,
+        current_paths=normalized_current_paths,
+        original_paths=normalized_original_paths,
+    )
+
+
+def _azure_devops_pull_request_thread_context_for_review_comment(
+    comment: dict[str, Any],
+    *,
+    iteration_context: _AzureDevOpsPrIterationContext,
+) -> dict[str, Any]:
+    path = _normalize_azure_devops_pr_path(comment["path"])
+    if path is None:
+        raise ValueError("Azure DevOps inline comment requires a file path")
+    side = str(comment.get("side") or "RIGHT").strip().upper()
+    matching_change = next(
+        (
+            change
+            for change in iteration_context.changes
+            if path
+            in (
+                (*change.original_paths, *change.current_paths)
+                if side == "LEFT"
+                else change.current_paths
+            )
+        ),
+        None,
+    )
+    if matching_change is None:
+        raise ValueError(
+            f"Azure DevOps inline comment path {comment['path']!r} is not present in the latest "
+            f"PR iteration {iteration_context.latest_iteration_id}; refusing to post a detached "
+            "inline comment"
+        )
+
+    change_types = {
+        part.strip()
+        for part in matching_change.change_type.replace(";", ",").split(",")
+        if part.strip()
+    }
+    if side != "LEFT" and "delete" in change_types:
+        raise ValueError(
+            f"Azure DevOps inline comment path {comment['path']!r} is deleted in the latest "
+            "PR iteration; use side=LEFT or a top-level comment instead"
+        )
+
+    return {
+        "changeTrackingId": matching_change.change_tracking_id,
+        "iterationContext": {
+            "firstComparingIteration": iteration_context.first_iteration_id,
+            "secondComparingIteration": iteration_context.latest_iteration_id,
+        },
+    }
+
+
+def _normalize_azure_devops_pr_path(path: Any) -> str | None:
+    normalized = _normalize_optional_text(path)
+    if normalized is None:
+        return None
+    return "/" + normalized.lstrip("/")
+
+
+def _azure_devops_comment_file_path(path: Any) -> str:
+    normalized = _normalize_azure_devops_pr_path(path)
+    if normalized is None:
+        raise ValueError("Azure DevOps inline comment requires a file path")
+    return normalized
 
 
 def _azure_devops_inline_comment_error_context(
