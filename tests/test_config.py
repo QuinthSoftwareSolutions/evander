@@ -10,6 +10,7 @@ from agent_sandbox.config import (
     TriggerOrchestratorWorkerGlobalConfig,
 )
 from agent_sandbox.effects.providers.agent_session import (
+    container_worker_guest_http_target_relay_base_url,
     container_worker_guest_npm_registry_url,
     container_worker_guest_pypi_index_url,
 )
@@ -136,6 +137,10 @@ def test_teams_delegated_scopes_default_includes_channel_and_chat_access() -> No
         ("teams_graph_api_base_url", " https://graph.microsoft.com/v1.0/ "),
         ("container_worker_guest_openai_base_url", " http://worker-relay.test:11434/v1/ "),
         ("container_worker_guest_gateway_url", " http://worker-gateway.test:8000/mcp/ "),
+        (
+            "container_worker_guest_http_target_relay_base_url",
+            " http://worker-http-target.test:11777/ ",
+        ),
         ("container_worker_guest_nuget_relay_base_url", " http://worker-nuget.test:11666/ "),
         (
             "container_worker_guest_pypi_index_url",
@@ -169,6 +174,7 @@ def test_http_url_fields_are_trimmed_and_trailing_slash_is_removed(
         ("teams_graph_api_base_url", "graph.microsoft.com/v1.0"),
         ("container_worker_guest_openai_base_url", "worker-relay.test:11434/v1"),
         ("container_worker_guest_gateway_url", "ftp://worker-gateway.test/mcp"),
+        ("container_worker_guest_http_target_relay_base_url", "worker-http-target.test:11777"),
         ("container_worker_guest_nuget_relay_base_url", ""),
         ("container_worker_guest_pypi_index_url", "nexus.test:8081/repository/pypi-all/simple"),
         ("container_worker_guest_npm_registry_url", "ftp://nexus.test/repository/npm-all/"),
@@ -194,9 +200,14 @@ def test_container_worker_package_cache_urls_derive_from_gateway_host() -> None:
             "gateway_url": "http://10.20.30.40:8000/mcp",
             "openai_relay_port": 12000,
             "nuget_relay_port": 13000,
+            "http_target_relay_port": 14000,
         }
     )
 
+    assert (
+        container_worker_guest_http_target_relay_base_url(config)
+        == "http://10.20.30.40:14000"
+    )
     assert (
         container_worker_guest_pypi_index_url(config)
         == "http://10.20.30.40:8081/repository/pypi-all/simple"
@@ -219,6 +230,7 @@ def test_container_worker_package_cache_url_derivation_does_not_change_relays() 
     assert container_worker_guest_gateway_url(config) == "http://10.20.30.40:8000/mcp"
     assert container_worker_guest_openai_base_url(config) == "http://10.20.30.40:11434/v1"
     assert container_worker_guest_nuget_relay_base_url(config) == "http://10.20.30.40:11666"
+    assert container_worker_guest_http_target_relay_base_url(config) == "http://10.20.30.40:11777"
 
 
 def test_container_worker_mssql_config_fields_are_validated_and_redacted_by_default() -> None:

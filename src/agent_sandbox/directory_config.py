@@ -85,6 +85,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "container_worker_workspace_persistence",
             "container_worker_guest_openai_base_url",
             "container_worker_guest_gateway_url",
+            "container_worker_guest_http_target_relay_base_url",
             "container_worker_guest_nuget_relay_base_url",
             "container_worker_guest_pypi_index_url",
             "container_worker_guest_npm_registry_url",

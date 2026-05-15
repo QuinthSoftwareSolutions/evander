@@ -240,6 +240,9 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "container_worker_guest_gateway_url": (
         "Container-visible MCP gateway URL used inside runner sessions."
     ),
+    "container_worker_guest_http_target_relay_base_url": (
+        "Container-visible HTTP target relay base URL used inside runner sessions."
+    ),
     "container_worker_guest_nuget_relay_base_url": (
         "Container-visible NuGet relay base URL used inside runner sessions."
     ),

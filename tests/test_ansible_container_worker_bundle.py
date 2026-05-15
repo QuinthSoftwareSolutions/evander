@@ -433,6 +433,7 @@ def test_worker_docs_and_inventory_reference_playbook() -> None:
     assert "ansible/worker.yml" in ansible_docs
     assert "agent_sandbox_worker_token" in ansible_docs
     assert "container_worker_base_url" in ansible_docs
+    assert "container_worker_guest_http_target_relay_base_url" in ansible_docs
     assert "container_worker_guest_pypi_index_url" in ansible_docs
     assert "container_worker_guest_npm_registry_url" in ansible_docs
     assert "local playbook commit" in ansible_docs

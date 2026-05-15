@@ -1069,6 +1069,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         container_worker_base_url="http://worker.test",
         container_worker_guest_openai_base_url="http://relay.test:11434/v1",
         container_worker_guest_gateway_url="http://gateway.test:8000/mcp",
+        container_worker_guest_http_target_relay_base_url="http://http-target.test:11777",
         container_worker_guest_nuget_relay_base_url="http://nuget.test:11666",
         container_worker_guest_pypi_index_url="http://nexus.test:8081/repository/pypi-all/simple",
         container_worker_guest_npm_registry_url="http://nexus.test:8081/repository/npm-all/",
@@ -1194,6 +1195,14 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     )
     assert (
         "AGENT_SANDBOX_ARTIFACTS_DIR=/artifacts"
+        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+    )
+    assert (
+        "HTTP_TARGET_RELAY_BASE_URL=http://http-target.test:11777"
+        in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
+    )
+    assert (
+        "AGENT_SANDBOX_HTTP_TARGET_RELAY_BASE_URL=http://http-target.test:11777"
         in bootstrap_by_path["/home/agent/.agent-sandbox/session.env"]["content"]
     )
     assert (
