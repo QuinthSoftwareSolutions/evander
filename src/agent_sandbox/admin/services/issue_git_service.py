@@ -81,6 +81,20 @@ def _apply_json_merge_patch(
     return merge(metadata, merge_patch, ""), touched
 
 
+def _remote_project_for_issue(issue: LocalIssueRecord) -> str | None:
+    remote = issue.remote_reference
+    if remote is not None:
+        project = str(remote.project or "").strip()
+        if project:
+            return project
+    metadata_remote = issue.metadata.get("remote") if isinstance(issue.metadata, Mapping) else None
+    if isinstance(metadata_remote, Mapping):
+        project = str(metadata_remote.get("project") or "").strip()
+        if project:
+            return project
+    return None
+
+
 def _issue_updated_at_matches(issue: LocalIssueRecord, expected_updated_at: str) -> bool:
     expected = str(expected_updated_at).strip()
     if expected == issue.updated_at.isoformat():
@@ -1233,6 +1247,7 @@ class IssueGitAdminService:
             provider=provider,
             remote_issue_id=remote_issue_id,
             directory_path=issue.directory_path,
+            project=_remote_project_for_issue(issue),
             include_comments=include_remote_comments,
         )
         if sync_proxy_cache:
@@ -1293,6 +1308,7 @@ class IssueGitAdminService:
             provider=provider,
             remote_issue_id=remote_issue_id,
             directory_path=issue.directory_path,
+            project=_remote_project_for_issue(issue),
             comment=normalized_comment,
         )
         if sync_proxy_cache:
@@ -1300,6 +1316,7 @@ class IssueGitAdminService:
                 provider=provider,
                 remote_issue_id=remote_issue_id,
                 directory_path=issue.directory_path,
+                project=_remote_project_for_issue(issue),
                 include_comments=True,
             )
             admin.refresh_proxy_cache_from_remote(issue, remote_payload)
@@ -1393,6 +1410,7 @@ class IssueGitAdminService:
             provider=provider,
             remote_issue_id=remote_issue_id,
             directory_path=issue.directory_path,
+            project=_remote_project_for_issue(issue),
             state=state,
             fields=fields,
         )
@@ -1401,6 +1419,7 @@ class IssueGitAdminService:
                 provider=provider,
                 remote_issue_id=remote_issue_id,
                 directory_path=issue.directory_path,
+                project=_remote_project_for_issue(issue),
                 include_comments=True,
             )
             admin.refresh_proxy_cache_from_remote(issue, remote_payload)

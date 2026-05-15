@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -171,7 +172,8 @@ def sync_proxy_issues_once(
 
     store.update_all(_apply)
     for issue in refreshed_records:
-        _write_proxy_issue_yaml(issue)
+        if _is_generated_ado_proxy_issue(issue):
+            _write_proxy_issue_yaml(issue)
     return result
 
 
@@ -196,6 +198,7 @@ def upsert_ado_proxy_issue_from_remote_payload(
     )
     now = _utc(now) or datetime.now(UTC)
     store = JsonStore(runtime_dir / "local-issues.json", LocalIssueRecord)
+    deleted_proxy_yaml_paths: list[Path] = []
 
     def _apply(items: dict[str, LocalIssueRecord]) -> LocalIssueRecord:
         issue_id = _find_ado_proxy_issue_id(
@@ -204,6 +207,7 @@ def upsert_ado_proxy_issue_from_remote_payload(
             work_item_id=work_item_id,
             project=normalized_project,
             organization_url=normalized_organization_url,
+            remote_payload=remote_payload,
         )
         issue = items.get(issue_id) if issue_id is not None else None
         if issue is None:
@@ -235,10 +239,12 @@ def upsert_ado_proxy_issue_from_remote_payload(
                 updated_at=now,
             )
             items[issue.issue_id] = issue
+        else:
+            issue.directory_path = normalized_directory_path
 
-        issue.directory_path = normalized_directory_path
-        issue.source_type = "remote_proxy"
-        issue.source = "proxy_azure_devops"
+        if issue.source_type == "remote_proxy" or issue.source == "proxy_azure_devops":
+            issue.source_type = "remote_proxy"
+            issue.source = "proxy_azure_devops"
         issue.remote_reference = _updated_remote_reference(
             issue.remote_reference,
             work_item_id=work_item_id,
@@ -259,10 +265,24 @@ def upsert_ado_proxy_issue_from_remote_payload(
         _record_sync_status(issue, status="ok", attempted_at=_iso(now))
         issue.updated_at = now
         items[issue.issue_id] = issue
+        for duplicate_id in _find_generated_ado_proxy_duplicate_ids(
+            items,
+            keep_issue_id=issue.issue_id,
+            directory_path=normalized_directory_path,
+            work_item_id=work_item_id,
+            project=normalized_project,
+            organization_url=normalized_organization_url,
+        ):
+            duplicate = items.pop(duplicate_id, None)
+            if duplicate is not None and duplicate.yaml_path:
+                deleted_proxy_yaml_paths.append(Path(duplicate.yaml_path))
         return issue.model_copy(deep=True)
 
     issue = store.update_all(_apply)
-    _write_proxy_issue_yaml(issue)
+    if _is_generated_ado_proxy_issue(issue):
+        _write_proxy_issue_yaml(issue)
+    for yaml_path in deleted_proxy_yaml_paths:
+        _delete_generated_proxy_yaml(runtime_dir=runtime_dir, yaml_path=yaml_path)
     return issue
 
 
@@ -322,7 +342,10 @@ def _find_ado_proxy_issue_id(
     work_item_id: str,
     project: str | None,
     organization_url: str | None,
+    remote_payload: dict[str, Any] | None = None,
 ) -> str | None:
+    proxy_match: str | None = None
+    text_link_match: str | None = None
     for issue_id, issue in items.items():
         if issue.directory_path != directory_path:
             continue
@@ -337,15 +360,131 @@ def _find_ado_proxy_issue_id(
                 _normalize_url(organization_url),
             }:
                 continue
-            return issue_id
+            if not _is_generated_ado_proxy_issue(issue):
+                return issue_id
+            proxy_match = proxy_match or issue_id
+            continue
         metadata_remote = (
             issue.metadata.get("remote") if isinstance(issue.metadata.get("remote"), dict) else {}
         )
         provider = str(metadata_remote.get("provider") or "").strip()
         metadata_issue_id = str(metadata_remote.get("issue_id") or "").strip()
         if provider == "azure_devops" and metadata_issue_id == work_item_id:
-            return issue_id
-    return None
+            if not _is_generated_ado_proxy_issue(issue):
+                return issue_id
+            proxy_match = proxy_match or issue_id
+            continue
+        if remote_payload is not None and _local_issue_mentions_ado_work_item(
+            issue, work_item_id=work_item_id, remote_payload=remote_payload
+        ):
+            text_link_match = text_link_match or issue_id
+    return text_link_match or proxy_match
+
+
+def _local_issue_mentions_ado_work_item(
+    issue: LocalIssueRecord, *, work_item_id: str, remote_payload: dict[str, Any]
+) -> bool:
+    if _is_generated_ado_proxy_issue(issue):
+        return False
+    title = _optional_text(remote_payload.get("title"))
+    if title and issue.title.strip() != title:
+        return False
+
+    reason_parts: list[str] = []
+    if issue.reason:
+        reason_parts.append(issue.reason)
+    fields = issue.metadata.get("fields") if isinstance(issue.metadata, dict) else None
+    if isinstance(fields, dict):
+        reason = _optional_text(fields.get("Reason"))
+        if reason:
+            reason_parts.append(reason)
+    if not reason_parts:
+        return False
+
+    text = "\n".join(reason_parts)
+    remote_url = _optional_text(remote_payload.get("url"))
+    if remote_url and remote_url.rstrip("/") in text:
+        return True
+    return bool(
+        re.search(
+            rf"\b(?:ADO|Azure DevOps)\b[^\n]{{0,120}}\b{re.escape(work_item_id)}\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        or re.search(
+            rf"\b{re.escape(work_item_id)}\b[^\n]{{0,120}}\b(?:ADO|Azure DevOps)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _find_generated_ado_proxy_duplicate_ids(
+    items: dict[str, LocalIssueRecord],
+    *,
+    keep_issue_id: str,
+    directory_path: str,
+    work_item_id: str,
+    project: str | None,
+    organization_url: str | None,
+) -> list[str]:
+    duplicate_ids: list[str] = []
+    for issue_id, issue in items.items():
+        if issue_id == keep_issue_id:
+            continue
+        if issue.directory_path != directory_path:
+            continue
+        if not _is_generated_ado_proxy_issue(issue):
+            continue
+        if _ado_issue_matches_remote(
+            issue,
+            work_item_id=work_item_id,
+            project=project,
+            organization_url=organization_url,
+        ):
+            duplicate_ids.append(issue_id)
+    return duplicate_ids
+
+
+def _ado_issue_matches_remote(
+    issue: LocalIssueRecord,
+    *,
+    work_item_id: str,
+    project: str | None,
+    organization_url: str | None,
+) -> bool:
+    remote = issue.remote_reference
+    if remote is not None:
+        if remote.provider != "azure_devops" or str(remote.work_item_id or "") != work_item_id:
+            return False
+        if project and _optional_text(remote.project) not in {None, project}:
+            return False
+        if organization_url and _normalize_url(remote.organization) not in {
+            None,
+            _normalize_url(organization_url),
+        }:
+            return False
+        return True
+
+    metadata_remote = (
+        issue.metadata.get("remote") if isinstance(issue.metadata.get("remote"), dict) else {}
+    )
+    provider = str(metadata_remote.get("provider") or "").strip()
+    metadata_issue_id = str(metadata_remote.get("issue_id") or "").strip()
+    if provider != "azure_devops" or metadata_issue_id != work_item_id:
+        return False
+    if project and _optional_text(metadata_remote.get("project")) not in {None, project}:
+        return False
+    if organization_url and _normalize_url(metadata_remote.get("organization")) not in {
+        None,
+        _normalize_url(organization_url),
+    }:
+        return False
+    return True
+
+
+def _is_generated_ado_proxy_issue(issue: LocalIssueRecord) -> bool:
+    return issue.source_type == "remote_proxy" or issue.source == "proxy_azure_devops"
 
 
 def _scoped_proxy_issue_id(
@@ -511,6 +650,22 @@ def _normalize_tags(value: object) -> list[str]:
 def _write_proxy_issue_yaml(issue: LocalIssueRecord) -> None:
     path = Path(issue.yaml_path)
     _atomic_write_yaml(path, _build_proxy_issue_yaml_payload(issue))
+
+
+def _delete_generated_proxy_yaml(*, runtime_dir: Path, yaml_path: Path) -> None:
+    try:
+        resolved_runtime = runtime_dir.resolve()
+        resolved_yaml = yaml_path.resolve()
+    except OSError:
+        return
+    if resolved_runtime not in resolved_yaml.parents:
+        return
+    if not resolved_yaml.name.startswith("proxy-azure-devops-"):
+        return
+    try:
+        resolved_yaml.unlink(missing_ok=True)
+    except OSError:
+        _LOG.warning("proxy_issue_sync failed to delete duplicate proxy yaml path=%s", yaml_path)
 
 
 def _build_proxy_issue_yaml_payload(issue: LocalIssueRecord) -> dict[str, Any]:

@@ -9,7 +9,7 @@
   "jitter_seconds": 1.0,
   "lock_path": "runtime/trigger-orchestrator.lock",
   "max_events_per_cycle": 200,
-  "max_graph_depth": 16,
+  "max_graph_depth": 32,
   "poll_interval_seconds": 5.0,
   "provider_loader": {
     "provider_entry_points_enabled": true,
