@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import os
@@ -8,7 +7,7 @@ import random
 import subprocess
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,10 +18,13 @@ from agent_sandbox.admin.service import (
 from agent_sandbox.agent_control import AgentControlStore
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.models import WakeDispatchRecord, WakeResumePromptPayload
+from agent_sandbox.orchestration.host_polling import single_instance_lock
 from agent_sandbox.runtime import RuntimeContext
 from agent_sandbox.worker_directory_context import WorkerDirectoryContextResolver
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["single_instance_lock"]
 
 
 @dataclass(frozen=True)
@@ -272,33 +274,6 @@ class HostWakeDispatcher:
             if session_model:
                 return session_model
             return os.environ.get("AGENT_MODEL") or None
-
-
-class _LockHandle:
-    def __init__(self, path: Path, fd: int) -> None:
-        self.path = path
-        self.fd = fd
-
-    def __enter__(self) -> _LockHandle:
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        fcntl.flock(self.fd, fcntl.LOCK_UN)
-        os.close(self.fd)
-
-
-def single_instance_lock(path: Path) -> _LockHandle:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError as exc:
-        os.close(fd)
-        raise RuntimeError(f"worker already running (lock held at {path})") from exc
-    os.ftruncate(fd, 0)
-    os.write(fd, f"{os.getpid()}\n".encode("utf-8"))
-    return _LockHandle(path, fd)
-
 
 def probe_agent_dispatch_state(*, session_id: str, vm_id: str, script_path: Path) -> str:
     if not script_path.exists():

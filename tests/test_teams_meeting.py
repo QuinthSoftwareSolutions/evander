@@ -10,6 +10,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from agent_sandbox.config import GatewayConfig, TeamsMeetingIngestWorkerGlobalConfig
 from agent_sandbox.gateway import create_server
 from agent_sandbox.models import SessionManifest, ToolName
+from agent_sandbox.orchestration.host_polling import single_instance_lock
 from agent_sandbox.runtime import build_runtime
 from agent_sandbox.teams_meeting import (
     TeamsMeetingBinding,
@@ -292,6 +293,62 @@ def test_teams_meeting_ingest_worker_polls_new_bridge_events_once(tmp_path: Path
         "hello",
         "second",
     ]
+
+
+def test_teams_meeting_ingest_worker_uses_shared_lock_and_busy_message(
+    tmp_path: Path,
+) -> None:
+    context = make_context(tmp_path)
+    worker = TeamsMeetingIngestWorker(
+        config=context.config,
+        worker_config=TeamsMeetingIngestWorkerGlobalConfig(
+            runtime_dir=tmp_path,
+            jitter_seconds=0,
+        ),
+        runtime=context,
+    )
+
+    class RecordingLock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+    class RecordingLockManager:
+        def __init__(self) -> None:
+            self.paths: list[object] = []
+
+        def lock(self, path: object):
+            self.paths.append(path)
+            return RecordingLock()
+
+    recording_lock_manager = RecordingLockManager()
+    worker._kernel._lock_manager = recording_lock_manager  # type: ignore[attr-defined]
+
+    result = worker.run_once_with_lock()
+
+    assert result.meetings_polled == 0
+    assert result.events_ingested == 0
+    assert result.errors_recorded == 0
+    assert recording_lock_manager.paths == [worker.worker_config.lock_path]
+
+    with single_instance_lock(
+        worker.worker_config.lock_path,
+        busy_error_text="Teams meeting ingest worker already running",
+    ):
+        with pytest.raises(
+            RuntimeError,
+            match=r"Teams meeting ingest worker already running \(lock held at .*/teams-meeting-ingest\.lock\)",
+        ):
+            TeamsMeetingIngestWorker(
+                config=context.config,
+                worker_config=TeamsMeetingIngestWorkerGlobalConfig(
+                    runtime_dir=tmp_path,
+                    jitter_seconds=0,
+                ),
+                runtime=context,
+            ).run_once_with_lock()
 
 
 def test_teams_meeting_transcript_trigger_emits_transcripts_once(tmp_path: Path) -> None:

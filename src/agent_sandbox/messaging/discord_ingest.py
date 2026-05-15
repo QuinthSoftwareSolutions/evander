@@ -4,8 +4,6 @@ import argparse
 import json
 import logging
 import os
-import random
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,6 +12,12 @@ import httpx
 from agent_sandbox.bootstrap import load_runtime_gateway_config
 from agent_sandbox.config import DiscordIngestWorkerGlobalConfig, GatewayConfig
 from agent_sandbox.models import DirectoryPath, DiscordMessageEnvelope, SessionManifest
+from agent_sandbox.orchestration.host_polling import HostFileLockManager, HostSleeper
+from agent_sandbox.orchestration.kernels import (
+    PollingKernelConfig,
+    PollingOrchestratorKernel,
+    compute_next_sleep_seconds,
+)
 from agent_sandbox.runtime import RuntimeContext, build_runtime
 from agent_sandbox.services import DiscordBotApiService
 
@@ -48,37 +52,29 @@ class DiscordIngestWorker:
         self.worker_config = worker_config
         self.runtime = runtime
         self.session_repository = runtime.session_repository
+        self._kernel = PollingOrchestratorKernel(
+            config=PollingKernelConfig(
+                poll_interval_seconds=self.worker_config.poll_interval_seconds,
+                jitter_seconds=self.worker_config.jitter_seconds,
+                lock_path=self.worker_config.lock_path,
+            ),
+            lock_manager=HostFileLockManager(
+                busy_error_text="Discord ingest worker already running"
+            ),
+            sleeper=HostSleeper(),
+            run_cycle=self.run_once,
+            get_sleep_seconds=lambda result: result.next_sleep_seconds,
+            on_start=self._log_start,
+            on_cycle_success=self._log_cycle_success,
+            on_cycle_exception=self._log_cycle_exception,
+            get_exception_sleep_seconds=lambda _exc: self.worker_config.backoff_seconds,
+        )
 
     def run_forever(self) -> None:
-        with _single_instance_lock(self.worker_config.lock_path):
-            logger.info(
-                "Discord ingest worker started poll_interval=%.3f jitter=%.3f backoff=%.3f lock=%s",
-                self.worker_config.poll_interval_seconds,
-                self.worker_config.jitter_seconds,
-                self.worker_config.backoff_seconds,
-                self.worker_config.lock_path,
-            )
-            while True:
-                try:
-                    result = self.run_once()
-                except Exception:
-                    logger.exception("Discord ingest worker cycle failed")
-                    time.sleep(self.worker_config.backoff_seconds)
-                    continue
-                logger.debug(
-                    (
-                        "Discord ingest worker cycle complete directories=%d sessions=%d "
-                        "sleep_seconds=%.3f"
-                    ),
-                    result.directories_polled,
-                    result.sessions_seen,
-                    result.next_sleep_seconds,
-                )
-                time.sleep(result.next_sleep_seconds)
+        self._kernel.run_forever()
 
     def run_once_with_lock(self) -> DiscordIngestCycleResult:
-        with _single_instance_lock(self.worker_config.lock_path):
-            return self.run_once()
+        return self._kernel.run_once_with_lock()
 
     def run_once(self) -> DiscordIngestCycleResult:
         now = datetime.now(UTC)
@@ -102,7 +98,7 @@ class DiscordIngestWorker:
             }
         else:
             matching_sessions = {session.session_id for session in active_sessions}
-        next_sleep_seconds = _compute_next_sleep_seconds(
+        next_sleep_seconds = compute_next_sleep_seconds(
             poll_interval_seconds=self.worker_config.poll_interval_seconds,
             jitter_seconds=self.worker_config.jitter_seconds,
         )
@@ -111,6 +107,29 @@ class DiscordIngestWorker:
             sessions_seen=len(matching_sessions),
             next_sleep_seconds=next_sleep_seconds,
         )
+
+    def _log_start(self) -> None:
+        logger.info(
+            "Discord ingest worker started poll_interval=%.3f jitter=%.3f backoff=%.3f lock=%s",
+            self.worker_config.poll_interval_seconds,
+            self.worker_config.jitter_seconds,
+            self.worker_config.backoff_seconds,
+            self.worker_config.lock_path,
+        )
+
+    def _log_cycle_success(self, result: DiscordIngestCycleResult) -> None:
+        logger.debug(
+            (
+                "Discord ingest worker cycle complete directories=%d sessions=%d "
+                "sleep_seconds=%.3f"
+            ),
+            result.directories_polled,
+            result.sessions_seen,
+            result.next_sleep_seconds,
+        )
+
+    def _log_cycle_exception(self, _exc: Exception) -> None:
+        logger.exception("Discord ingest worker cycle failed")
 
     def _directories_to_scan(self, active_sessions: list[SessionManifest]) -> list[str]:
         if self.worker_config.directories:
@@ -322,13 +341,6 @@ def main() -> None:
     worker.run_forever()
 
 
-def _compute_next_sleep_seconds(*, poll_interval_seconds: float, jitter_seconds: float) -> float:
-    delay = poll_interval_seconds
-    if jitter_seconds > 0:
-        delay += random.uniform(0.0, jitter_seconds)
-    return max(0.0, delay)
-
-
 def _parse_discord_timestamp(value: object) -> datetime:
     if not isinstance(value, str):
         raise ValueError(f"invalid Discord timestamp: {value!r}")
@@ -345,39 +357,6 @@ def _message_sort_key(message_id: str) -> tuple[int, int | str]:
     if message_id.isdigit():
         return (0, int(message_id))
     return (1, message_id)
-
-
-class _LockHandle:
-    def __init__(self, path: Path, fd: int) -> None:
-        self.path = path
-        self.fd = fd
-
-    def __enter__(self) -> _LockHandle:
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        import fcntl
-        import os
-
-        fcntl.flock(self.fd, fcntl.LOCK_UN)
-        os.close(self.fd)
-
-
-def _single_instance_lock(path: Path) -> _LockHandle:
-    import fcntl
-    import os
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError as exc:
-        os.close(fd)
-        raise RuntimeError(f"Discord ingest worker already running (lock held at {path})") from exc
-
-    os.ftruncate(fd, 0)
-    os.write(fd, f"{os.getpid()}\n".encode("utf-8"))
-    return _LockHandle(path, fd)
 
 
 def _directory_is_within_scope(directory_path: str | None, scope_directory_path: str) -> bool:

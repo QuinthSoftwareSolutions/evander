@@ -4,17 +4,20 @@ import argparse
 import json
 import logging
 import os
-import random
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from agent_sandbox.bootstrap import load_runtime_gateway_config
 from agent_sandbox.config import GatewayConfig, TeamsMeetingIngestWorkerGlobalConfig
 from agent_sandbox.models import DirectoryPath
+from agent_sandbox.orchestration.host_polling import HostFileLockManager, HostSleeper
+from agent_sandbox.orchestration.kernels import (
+    PollingKernelConfig,
+    PollingOrchestratorKernel,
+    compute_next_sleep_seconds,
+)
 from agent_sandbox.runtime import RuntimeContext, build_runtime
 from agent_sandbox.teams_meeting import TeamsMeetingBridgeEvent, TeamsMeetingStore
-from agent_sandbox.messaging.teams_ingest import _single_instance_lock
 
 logger = logging.getLogger(__name__)
 
@@ -40,41 +43,29 @@ class TeamsMeetingIngestWorker:
         self.worker_config = worker_config
         self.runtime = runtime
         self.store = store or runtime.teams_meeting_store
+        self._kernel = PollingOrchestratorKernel(
+            config=PollingKernelConfig(
+                poll_interval_seconds=self.worker_config.poll_interval_seconds,
+                jitter_seconds=self.worker_config.jitter_seconds,
+                lock_path=self.worker_config.lock_path,
+            ),
+            lock_manager=HostFileLockManager(
+                busy_error_text="Teams meeting ingest worker already running"
+            ),
+            sleeper=HostSleeper(),
+            run_cycle=self.run_once,
+            get_sleep_seconds=lambda result: result.next_sleep_seconds,
+            on_start=self._log_start,
+            on_cycle_success=self._log_cycle_success,
+            on_cycle_exception=self._log_cycle_exception,
+            get_exception_sleep_seconds=lambda _exc: self.worker_config.backoff_seconds,
+        )
 
     def run_forever(self) -> None:
-        with _single_instance_lock(self.worker_config.lock_path):
-            logger.info(
-                (
-                    "Teams meeting ingest worker started poll_interval=%.3f jitter=%.3f "
-                    "backoff=%.3f lock=%s"
-                ),
-                self.worker_config.poll_interval_seconds,
-                self.worker_config.jitter_seconds,
-                self.worker_config.backoff_seconds,
-                self.worker_config.lock_path,
-            )
-            while True:
-                try:
-                    result = self.run_once()
-                except Exception:
-                    logger.exception("Teams meeting ingest worker cycle failed")
-                    time.sleep(self.worker_config.backoff_seconds)
-                    continue
-                logger.debug(
-                    (
-                        "Teams meeting ingest cycle complete meetings=%d events=%d "
-                        "errors=%d sleep_seconds=%.3f"
-                    ),
-                    result.meetings_polled,
-                    result.events_ingested,
-                    result.errors_recorded,
-                    result.next_sleep_seconds,
-                )
-                time.sleep(result.next_sleep_seconds)
+        self._kernel.run_forever()
 
     def run_once_with_lock(self) -> TeamsMeetingIngestCycleResult:
-        with _single_instance_lock(self.worker_config.lock_path):
-            return self.run_once()
+        return self._kernel.run_once_with_lock()
 
     def run_once(self) -> TeamsMeetingIngestCycleResult:
         meetings_polled = 0
@@ -121,11 +112,38 @@ class TeamsMeetingIngestWorker:
             meetings_polled=meetings_polled,
             events_ingested=events_ingested,
             errors_recorded=errors_recorded,
-            next_sleep_seconds=_compute_next_sleep_seconds(
+            next_sleep_seconds=compute_next_sleep_seconds(
                 poll_interval_seconds=self.worker_config.poll_interval_seconds,
                 jitter_seconds=self.worker_config.jitter_seconds,
             ),
         )
+
+    def _log_start(self) -> None:
+        logger.info(
+            (
+                "Teams meeting ingest worker started poll_interval=%.3f jitter=%.3f "
+                "backoff=%.3f lock=%s"
+            ),
+            self.worker_config.poll_interval_seconds,
+            self.worker_config.jitter_seconds,
+            self.worker_config.backoff_seconds,
+            self.worker_config.lock_path,
+        )
+
+    def _log_cycle_success(self, result: TeamsMeetingIngestCycleResult) -> None:
+        logger.debug(
+            (
+                "Teams meeting ingest cycle complete meetings=%d events=%d "
+                "errors=%d sleep_seconds=%.3f"
+            ),
+            result.meetings_polled,
+            result.events_ingested,
+            result.errors_recorded,
+            result.next_sleep_seconds,
+        )
+
+    def _log_cycle_exception(self, _exc: Exception) -> None:
+        logger.exception("Teams meeting ingest worker cycle failed")
 
 
 def _worker_global_config_path(project_dir: Path) -> Path:
@@ -209,13 +227,6 @@ def main() -> None:
         )
         return
     worker.run_forever()
-
-
-def _compute_next_sleep_seconds(*, poll_interval_seconds: float, jitter_seconds: float) -> float:
-    delay = poll_interval_seconds
-    if jitter_seconds > 0:
-        delay += random.uniform(0.0, jitter_seconds)
-    return max(0.0, delay)
 
 
 def _directory_is_within_scope(directory_path: str | None, scope_directory_path: str) -> bool:

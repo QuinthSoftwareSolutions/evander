@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from agent_sandbox.orchestration.host_polling import HostFileLockManager
 from agent_sandbox.daemons.trigger_orchestrator import (
     TriggerOrchestratorCycleResult,
     TriggerOrchestratorWorker,
@@ -249,6 +250,39 @@ def test_trigger_orchestrator_main_once_uses_single_cycle(
 
     output = capsys.readouterr().out.strip()
     assert "Trigger orchestrator cycle complete triggers=2 discovered=3 published=2" in output
+
+
+def test_trigger_orchestrator_uses_shared_host_lock_manager(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [],
+        }
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+
+    assert isinstance(worker._kernel._lock_manager, HostFileLockManager)
+    assert worker._kernel.config.lock_path == worker_config.lock_path
+
+    worker._kernel.run_once_with_lock = lambda: TriggerOrchestratorCycleResult(
+        configured_triggers=0,
+        events_discovered=0,
+        events_published=0,
+        next_sleep_seconds=1.0,
+    )  # type: ignore[method-assign]
+
+    result = worker.run_once_with_lock()
+
+    assert result.configured_triggers == 0
+    assert result.next_sleep_seconds == 1.0
 
 
 def test_trigger_orchestrator_rejects_reserved_runtime_output_name(tmp_path: Path) -> None:

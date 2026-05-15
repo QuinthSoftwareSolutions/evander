@@ -7,7 +7,7 @@ import logging
 import os
 import random
 import time
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,7 +21,6 @@ from agent_sandbox.config import (
     OrchestrationCoreConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
-from agent_sandbox.effects.registry import EffectProviderFactory, EffectProviderRegistry
 from agent_sandbox.events.internal import InternalEventBus, InternalEventSource
 from agent_sandbox.events.models import (
     EffectDefinitionDiscriminated,
@@ -33,12 +32,11 @@ from agent_sandbox.events.models import (
     TriggerDefinitionDiscriminated,
     TriggerEvent,
 )
-from agent_sandbox.gates.registry import GateProviderFactory, GateProviderRegistry
 from agent_sandbox.gate_runtime import (
     GateRuntimeError,
     require_object_payload,
 )
-from agent_sandbox.messaging.wake_dispatch import single_instance_lock
+from agent_sandbox.orchestration.host_polling import HostFileLockManager, HostSleeper
 from agent_sandbox.orchestration.adapters import (
     EffectCompletionPublisherAdapter,
     EffectDependencyResolverAdapter,
@@ -47,11 +45,10 @@ from agent_sandbox.orchestration.adapters import (
     EffectExecutionRecorderAdapter,
 )
 from agent_sandbox.provider_config import ProviderConfigResolver
-from agent_sandbox.queries.registry import QueryProviderFactory, QueryProviderRegistry
 from agent_sandbox.runtime import RuntimeContext
 from agent_sandbox.app_bootstrap import build_runtime
 from agent_sandbox.platform_integrations import PlatformServiceBundle, RuntimeAssemblyInterface
-from agent_sandbox.triggers.queue import TriggerEventQueue, TriggerQueueRecord
+from agent_sandbox.triggers.queue import TriggerQueueRecord
 from agent_sandbox.workflow.runtime_config import (
     FixedTriggerOrchestratorWorkerGlobalConfigReloader,
     TriggerOrchestratorWorkerGlobalConfigReloader,
@@ -75,7 +72,6 @@ from agent_sandbox.workflow.engine.node_executors import (
     ProviderQueryNodeExecutor,
 )
 from agent_sandbox.workflow.engine import OrchestrationLoop
-from agent_sandbox.workflow.plugins import load_provider_plugins
 from agent_sandbox.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
 from agent_sandbox.orchestration.wiring import EffectWorkerWiring, build_effect_worker_wiring
 from agent_sandbox.orchestration.effect_extensions import SpecialEventResult
@@ -92,6 +88,11 @@ from agent_sandbox.repositories.orchestration import (
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "AwaitAgentPendingRecord",
+    "_await_agent_pending_target",
+]
+
 _DEFAULT_MAX_GRAPH_DEPTH = 16
 _DEFAULT_MAX_EVENTS_PER_CYCLE = 200
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
@@ -102,18 +103,6 @@ WorkflowNodeDefinition = (
     | EffectDefinitionDiscriminated
     | QueryDefinitionDiscriminated
 )
-
-
-class _LockManager:
-    def lock(self, path: Path):
-        return single_instance_lock(path)
-
-
-class _Sleeper:
-    def sleep(self, seconds: float) -> None:
-        time.sleep(seconds)
-
-
 class EffectExecutionRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -319,8 +308,8 @@ class EffectOrchestratorWorker:
                 jitter_seconds=self.worker_config.jitter_seconds,
                 lock_path=self.lock_path,
             ),
-            lock_manager=_LockManager(),
-            sleeper=_Sleeper(),
+            lock_manager=HostFileLockManager(),
+            sleeper=HostSleeper(),
             run_cycle=self.run_once,
             get_sleep_seconds=lambda result: result.next_sleep_seconds,
         )
