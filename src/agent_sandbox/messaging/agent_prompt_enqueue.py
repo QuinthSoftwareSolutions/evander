@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
+from typing import Any
 
 from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore, QueuedAgentPromptRecord
 
@@ -22,6 +23,7 @@ def enqueue_agent_prompt(
     effect_id: str,
     queue_key: str | None = None,
     metadata: dict[str, str] | None = None,
+    workflow_context: dict[str, dict[str, Any]] | None = None,
 ) -> QueuedAgentPromptRecord:
     start = time.monotonic()
     queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
@@ -38,6 +40,7 @@ def enqueue_agent_prompt(
                 resume_thread_id=resume_thread_id,
                 effect_id=effect_id,
                 metadata=dict(metadata or {}),
+                workflow_context=workflow_context,
             )
         )
         latency_ms = int((time.monotonic() - start) * 1000)

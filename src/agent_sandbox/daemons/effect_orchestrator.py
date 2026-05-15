@@ -1942,11 +1942,16 @@ def _effect_execution_context(
     queue_record: TriggerQueueRecord,
     effect: EffectDefinitionDiscriminated,
 ) -> dict[str, Any]:
-    return {
+    input_payload = dict(queue_record.payload)
+    context = {
         "idempotency_key": idempotency_key,
         "workflow_run_id": queue_record.trace_id,
         "workflow_event_id": queue_record.event_id,
         "workflow_trace_id": queue_record.trace_id,
         "node_id": effect.id,
         "node_type": effect.type,
+        "input_payload": input_payload,
     }
+    if isinstance(input_payload.get(NODE_OUTPUTS_CONTEXT_KEY), dict):
+        context[NODE_OUTPUTS_CONTEXT_KEY] = input_payload[NODE_OUTPUTS_CONTEXT_KEY]
+    return context
