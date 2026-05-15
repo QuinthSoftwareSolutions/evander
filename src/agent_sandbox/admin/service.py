@@ -1622,6 +1622,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                         "Content",
                         "string",
                         bindable=True,
+                        multiline=True,
                         description="Inline file content. Mutually exclusive with Source path.",
                     ),
                     _field(
