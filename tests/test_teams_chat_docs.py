@@ -15,6 +15,7 @@ def test_teams_chat_docs_cover_channel_and_chat_targets() -> None:
     assert "Chat.ReadWrite" in readme
     assert "team-id/channel-id" in operations
     assert "chat:<chat-id>" in operations
+    assert "teams_chat_allowlist" in operations
     assert "/chats/{chat-id}/messages" in operations
     assert "Chat.ReadWrite" in operations
     assert "teams_chat_allowlist" in configuration_reference

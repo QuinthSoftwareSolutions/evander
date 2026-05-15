@@ -1542,6 +1542,12 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 placeholder="team-id/channel-id or chat:<chat-id>",
             ),
             _field(
+                "teams_chat_allowlist",
+                "Teams chats",
+                "string_list",
+                placeholder="chat:<chat-id>",
+            ),
+            _field(
                 "teams_user_allowlist",
                 "Teams users",
                 "string_list",
@@ -9873,7 +9879,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             allowed_tools=allowed_tools,
             allowed_script_names=allowed_script_names,
             discord_channels=discord_channels,
-            teams_chat_allowlist=teams_chat_allowlist,
             email_mailboxes=email_mailboxes,
             email_folders=email_folders,
             dotnet=dotnet,

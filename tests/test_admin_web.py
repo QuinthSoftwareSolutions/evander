@@ -520,6 +520,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "allowed_script_names",
         "discord_channels",
         "teams_channel_allowlist",
+        "teams_chat_allowlist",
         "teams_user_allowlist",
         "email_mailboxes",
         "email_folders",

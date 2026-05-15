@@ -5336,6 +5336,38 @@ def test_create_vm_merges_additional_allowed_tools_into_session_manifest(
     assert ToolName.POST_PR_FEEDBACK_REPLY in manifest.allowed_tools
 
 
+def test_create_vm_sets_teams_chat_allowlist_on_session_manifest(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service.subprocess.run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="ok", stderr=""
+        ),
+    )
+
+    result = service.create_vm(
+        vm_name="lab-vm",
+        session_id="lab-session",
+        teams_channel_allowlist=["team-a/channel-1"],
+        teams_chat_allowlist=[" chat:chat-1 ", "chat:chat-1", "chat:chat-2"],
+    )
+
+    assert result.success is True
+    manifest = service.runtime.session_repository.get_session("lab-session")
+    assert manifest is not None
+    assert manifest.teams_channel_allowlist == ["team-a/channel-1"]
+    assert manifest.teams_chat_allowlist == ["chat:chat-1", "chat:chat-2"]
+
+
 def test_create_vm_sets_allowed_script_names_on_session_manifest(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
