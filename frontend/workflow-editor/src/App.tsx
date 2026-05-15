@@ -66,6 +66,13 @@ import {
   compareWorkflowNodeCatalogEntries,
   groupWorkflowNodeCatalogEntries,
 } from "./workflowCatalogGroups";
+import {
+  FALLBACK_NODE_HEIGHT,
+  FALLBACK_NODE_WIDTH,
+  snapDraggedNodes,
+  workflowNodeBounds as nodeBounds,
+  type SnapGuide,
+} from "./workflowNodeSnap";
 
 type GraphNodeData = {
   id: string;
@@ -95,20 +102,6 @@ type SaveState = "idle" | "saving" | "saved";
 type BindingOption = {
   value: string;
   label: string;
-};
-
-type SnapGuide = {
-  orientation: "horizontal" | "vertical";
-  position: number;
-};
-
-type NodeBounds = {
-  left: number;
-  centerX: number;
-  right: number;
-  top: number;
-  centerY: number;
-  bottom: number;
 };
 
 type WorkflowGraphLabel = {
@@ -244,9 +237,6 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
 
 const RUNTIME_POLL_INTERVAL_MS = 5000;
 const NODE_STATUS_ORDER = ["failed", "running", "waiting", "inflight", "pending"] as const;
-const SNAP_THRESHOLD = 12;
-const FALLBACK_NODE_WIDTH = 212;
-const FALLBACK_NODE_HEIGHT = 108;
 const WORKFLOW_SIDEBAR_WIDTH_STORAGE_KEY = "workflow-editor:sidebar-width";
 const WORKFLOW_SIDEBAR_DEFAULT_WIDTH = 320;
 const WORKFLOW_SIDEBAR_MIN_WIDTH = 320;
@@ -1151,83 +1141,6 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 function currentPositionsFromNodes(nodes: Node<GraphNodeData>[]): Record<string, { x: number; y: number }> {
   return Object.fromEntries(nodes.map((node) => [node.id, node.position]));
-}
-
-function nodeBounds(node: Node): NodeBounds {
-  const width = node.measured?.width ?? node.width ?? FALLBACK_NODE_WIDTH;
-  const height = node.measured?.height ?? node.height ?? FALLBACK_NODE_HEIGHT;
-  const left = node.position.x;
-  const top = node.position.y;
-  return {
-    left,
-    centerX: left + width / 2,
-    right: left + width,
-    top,
-    centerY: top + height / 2,
-    bottom: top + height,
-  };
-}
-
-function closestSnapDelta(sourceAnchors: number[], targetAnchors: number[]): { delta: number; guide: number } | null {
-  let closest: { delta: number; guide: number } | null = null;
-  for (const sourceAnchor of sourceAnchors) {
-    for (const targetAnchor of targetAnchors) {
-      const delta = targetAnchor - sourceAnchor;
-      if (Math.abs(delta) > SNAP_THRESHOLD) continue;
-      if (!closest || Math.abs(delta) < Math.abs(closest.delta)) {
-        closest = { delta, guide: targetAnchor };
-      }
-    }
-  }
-  return closest;
-}
-
-function snapDraggedNodes(activeNode: Node, draggedNodes: Node<GraphNodeData>[], allNodes: Node<GraphNodeData>[]) {
-  const stationaryNodes = allNodes.filter((node) => !draggedNodes.some((dragged) => dragged.id === node.id));
-  if (stationaryNodes.length === 0) {
-    return { snappedNodes: draggedNodes, guides: [] as SnapGuide[] };
-  }
-  const activeBounds = nodeBounds(activeNode);
-  let bestX: { delta: number; guide: number } | null = null;
-  let bestY: { delta: number; guide: number } | null = null;
-
-  for (const candidate of stationaryNodes) {
-    const candidateBounds = nodeBounds(candidate);
-    const xSnap = closestSnapDelta(
-      [activeBounds.left, activeBounds.centerX, activeBounds.right],
-      [candidateBounds.left, candidateBounds.centerX, candidateBounds.right],
-    );
-    if (xSnap && (!bestX || Math.abs(xSnap.delta) < Math.abs(bestX.delta))) {
-      bestX = xSnap;
-    }
-    const ySnap = closestSnapDelta(
-      [activeBounds.top, activeBounds.centerY, activeBounds.bottom],
-      [candidateBounds.top, candidateBounds.centerY, candidateBounds.bottom],
-    );
-    if (ySnap && (!bestY || Math.abs(ySnap.delta) < Math.abs(bestY.delta))) {
-      bestY = ySnap;
-    }
-  }
-
-  if (!bestX && !bestY) {
-    return { snappedNodes: draggedNodes, guides: [] as SnapGuide[] };
-  }
-
-  const xDelta = bestX?.delta ?? 0;
-  const yDelta = bestY?.delta ?? 0;
-  return {
-    snappedNodes: draggedNodes.map((node) => ({
-      ...node,
-      position: {
-        x: node.position.x + xDelta,
-        y: node.position.y + yDelta,
-      },
-    })),
-    guides: [
-      ...(bestX ? [{ orientation: "vertical" as const, position: bestX.guide }] : []),
-      ...(bestY ? [{ orientation: "horizontal" as const, position: bestY.guide }] : []),
-    ],
-  };
 }
 
 function workflowGraphLabels(
@@ -2344,12 +2257,24 @@ export default function App() {
     setFlowNodes((currentNodes) => applyNodeChanges(changes, currentNodes) as Node<GraphNodeData>[]);
   }
 
-  function updateDraggedNodePositions(activeNode: Node, draggedNodes: Node[]) {
+  function snapVisibleDraggedNodes(
+    activeNode: Node<GraphNodeData>,
+    draggedNodes: Node<GraphNodeData>[],
+    currentNodes: Node<GraphNodeData>[],
+  ) {
+    const nodesToSnap = draggedNodes.some((node) => node.id === activeNode.id)
+      ? draggedNodes
+      : [activeNode, ...draggedNodes];
+    const draggedById = new Map(nodesToSnap.map((node) => [node.id, node]));
+    const visibleCurrentNodes = currentNodes
+      .filter((node) => visibleGraphNodeIds.has(node.id))
+      .map((node) => draggedById.get(node.id) ?? node);
+    return snapDraggedNodes(activeNode, nodesToSnap, visibleCurrentNodes);
+  }
+
+  function updateDraggedNodePositions(activeNode: Node<GraphNodeData>, draggedNodes: Node<GraphNodeData>[]) {
     setFlowNodes((currentNodes) => {
-      const draggedNodeIds = new Set(draggedNodes.map((node) => node.id));
-      const typedDraggedNodes = draggedNodes as Node<GraphNodeData>[];
-      const visibleCurrentNodes = currentNodes.filter((node) => visibleGraphNodeIds.has(node.id));
-      const { snappedNodes, guides } = snapDraggedNodes(activeNode, typedDraggedNodes, visibleCurrentNodes);
+      const { snappedNodes, guides } = snapVisibleDraggedNodes(activeNode, draggedNodes, currentNodes);
       setSnapGuides(guides);
       const snappedById = new Map(snappedNodes.map((node) => [node.id, node]));
       return currentNodes.map((node) => snappedById.get(node.id) ?? node);
@@ -2710,13 +2635,21 @@ export default function App() {
     deleteSelectedEdge();
   }
 
-  function persistNodePositions(nodes: Node[]) {
+  function persistNodePositions(activeNode: Node<GraphNodeData>, draggedNodes: Node<GraphNodeData>[]) {
     if (!document || editLocked) return;
     setSnapGuides([]);
+    const currentNodes = flowInstance?.getNodes() as Node<GraphNodeData>[] | undefined;
+    const { snappedNodes } = snapVisibleDraggedNodes(
+      activeNode,
+      draggedNodes,
+      currentNodes && currentNodes.length > 0 ? currentNodes : flowNodes,
+    );
     const nextLayout = cloneLayout(document.layout);
-    for (const node of nodes) {
+    for (const node of snappedNodes) {
       nextLayout.nodes[node.id] = node.position;
     }
+    const snappedById = new Map(snappedNodes.map((node) => [node.id, node]));
+    setFlowNodes((nodes) => nodes.map((node) => snappedById.get(node.id) ?? node));
     setDocument({
       ...document,
       layout: nextLayout,
@@ -3946,7 +3879,7 @@ export default function App() {
                 setSelectedEdgeId(edge.id);
               }}
               onNodeDrag={(_, node, nodes) => updateDraggedNodePositions(node, nodes.length > 0 ? nodes : [node])}
-              onNodeDragStop={(_, node, nodes) => persistNodePositions(nodes.length > 0 ? nodes : [node])}
+              onNodeDragStop={(_, node, nodes) => persistNodePositions(node, nodes.length > 0 ? nodes : [node])}
               onPaneClick={handlePaneClick}
               onPaneContextMenu={handlePaneContextMenu}
               onConnect={onConnect}

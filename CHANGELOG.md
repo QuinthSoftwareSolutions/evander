@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-15 - Workflow Editor Alignment Snapping
+
+Touched areas: `frontend/workflow-editor/`.
+
+- Increased the workflow canvas alignment snap threshold and made dropped nodes
+  persist the snapped coordinates, so layouts stay aligned after save/reload
+  instead of only showing temporary guide lines while dragging.
+
 ## 2026-05-14 - Workflow Editor Node Palette Grouping
 
 Touched areas: `frontend/workflow-editor/`.
