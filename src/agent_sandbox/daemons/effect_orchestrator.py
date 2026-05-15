@@ -76,6 +76,10 @@ from agent_sandbox.orchestration.kernels import PollingKernelConfig, PollingOrch
 from agent_sandbox.orchestration.wiring import EffectWorkerWiring, build_effect_worker_wiring
 from agent_sandbox.orchestration.wiring.effect import build_effect_provider_runtime_wiring
 from agent_sandbox.orchestration.effect_extensions import SpecialEventResult
+from agent_sandbox.gates.providers.await_agent import (  # noqa: F401
+    AwaitAgentPendingRecord,
+    _await_agent_pending_target,
+)
 from agent_sandbox.repositories.orchestration import (
     EffectExecutionRepository,
     GateExecutionRepository,
