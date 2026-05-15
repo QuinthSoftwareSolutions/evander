@@ -28,6 +28,7 @@ from agent_sandbox.daemons.effect_orchestrator import (
     _matching_outbound_edges,
     build_effect_orchestrator_worker,
     EffectExecutionRecord,
+    EffectOrchestratorCycleResult,
     main,
 )
 from agent_sandbox.messaging.agent_prompt_queue import (
@@ -4846,6 +4847,91 @@ def test_event_emit_effect_evaluates_payload_and_writes_internal_event(tmp_path:
     assert emitted["source"]["node_id"] == "emit-plan"
     journal = worker_config.workflow_event_journal_path.read_text(encoding="utf-8")
     assert "workflow.internal_event.published" in journal
+
+
+def test_run_once_processes_unrelated_event_when_inventory_reconciliation_fails(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Trigger",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"issue_id": {"type": "string"}, "metadata": {"type": "object"}},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "emit-plan",
+                    "display_name": "Emit plan",
+                    "type": "effect:event:emit",
+                    "event_type": "issue.plan_committed",
+                    "correlation_key": "issue:${{trigger-1.issue_id}}",
+                    "payload": {
+                        "issue_id": "${{trigger-1.issue_id}}",
+                        "plan_version": "${{trigger-1.metadata.plan.version}}",
+                    },
+                }
+            ],
+            "gates": [
+                {
+                    "id": "await-agent-1",
+                    "display_name": "Await agent",
+                    "type": "gate:await-agent",
+                    "session_id": "session-42",
+                    "vm_name": "vm-issue-42",
+                    "outputs": {},
+                }
+            ],
+            "edges": [
+                _edge("trigger-1", "emit-plan"),
+                _edge("emit-plan", "await-agent-1", source_port="started"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    pending = AwaitAgentPendingRecord(
+        gate_id="await-agent-1",
+        dispatch_id="dispatch-cycle-failure",
+        prompt_event_id="effect:effect-agent-prompt-1:cycle-failure",
+        prompt_source_node_id="effect-agent-prompt-1",
+        trace_id="trace-cycle-failure",
+        session_id="session-42",
+        vm_name="vm-issue-42",
+        payload={},
+        occurred_at=datetime(2026, 4, 4, 11, 50, tzinfo=timezone.utc),
+    )
+    pending_key = "await-agent-1:dispatch-cycle-failure"
+    _await_agent_store(worker).put(pending_key, pending)
+    worker.agent_run_status_port = _FailingAgentRunStatusPortStub()
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="input-event-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime.now(timezone.utc),
+            trace_id="trace-cycle-failure",
+            payload={"issue_id": "ISSUE-1", "metadata": {"plan": {"version": 7}}},
+        )
+    )
+
+    caplog.set_level(logging.ERROR, logger="agent_sandbox.gates.providers.await_agent")
+
+    result = worker.run_once()
+
+    assert isinstance(result, EffectOrchestratorCycleResult)
+    assert result.events_processed == 1
+    assert _await_agent_store(worker).read_all() == {pending_key: pending}
+    assert "AwaitAgentGateProvider" in caplog.text
+    assert "virsh list failed" in caplog.text
 
 
 def test_event_emit_effect_can_start_event_trigger_workflow(tmp_path: Path) -> None:
