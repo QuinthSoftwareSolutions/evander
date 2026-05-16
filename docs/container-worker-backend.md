@@ -284,7 +284,9 @@ The `strict` sandbox profile keeps the default profile behavior and also adds:
 
 Operators can tune worker daemon container flags with `--read-only-rootfs`, repeated `--tmpfs`, and `--container-user`. `--docker-network` and `AGENT_SANDBOX_WORKER_DOCKER_NETWORK` override the selected profile network, but `host` remains rejected.
 
-Non-`none` networking requires Phase 5 worker VM firewall and network controls before it can protect cloud metadata or adjacent infrastructure endpoints. Do not treat a Docker network override as a metadata-protection boundary.
+Non-`none` networking requires worker VM firewall and routing controls before it can protect cloud
+metadata or adjacent infrastructure endpoints. Do not treat a Docker network override as a
+metadata-protection boundary.
 
 ## Job Store
 
@@ -307,4 +309,8 @@ npm and pip need their own registry proxy or mirror; they are not handled by the
 
 ## Current Limitations
 
-This phase adds the worker-side daemon, durable session model, explicit worker container sandbox profile, and host control-plane backend for a single configured worker URL. It does not replace the existing libvirt backend, implement scheduling, implement AKS/Kubernetes, autoscale workers, publish PRs, add secret transport, or migrate the full issue/prompt orchestration stack.
+The current implementation provides the worker-side daemon, durable session model, explicit worker
+container sandbox profile, and host control-plane backend for a single configured worker URL. It
+does not replace the existing libvirt backend, implement scheduling, implement AKS/Kubernetes,
+autoscale workers, publish PRs, add secret transport, or migrate the full issue/prompt
+orchestration stack.

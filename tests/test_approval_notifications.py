@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -10,6 +9,10 @@ import pytest
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.directories import DirectoryStore
+from agent_sandbox.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 from agent_sandbox.models import (
     ApprovalNotificationDeliveryStatus,
     ApprovalNotificationStatus,
@@ -31,9 +34,10 @@ def _write_root_policy_overlay(config: GatewayConfig, payload: dict[str, object]
 
 
 def _write_targets(project_dir: Path, targets: list[dict[str, object]]) -> None:
-    config_dir = project_dir / "config" / "communication-targets"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "config.json").write_text(json.dumps({"targets": targets}), encoding="utf-8")
+    repository = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(project_dir / "runtime")
+    )
+    repository.write_overlay("root", {"targets": targets})
 
 
 def _runtime(project_dir: Path, *, approval_notification_target_ids: list[str]) -> object:
