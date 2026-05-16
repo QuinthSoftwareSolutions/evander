@@ -111,7 +111,7 @@ Container sessions write `/home/agent/.config/pip/pip.conf` and `/home/agent/.np
 `PIP_INDEX_URL` and `NPM_CONFIG_REGISTRY` from `/home/agent/.agent-sandbox/session.env`, with
 `PIP_TRUSTED_HOST` added for plain HTTP Nexus endpoints.
 
-## Docker Constraints
+## Worker Egress Policy
 
 The Docker sandbox profile still starts from `--network none`. Worker deploys can override the
 daemon network for the supported single-worker slice, but `host` is refused. Any non-`none`
@@ -144,6 +144,15 @@ The host reads the token from `container_worker_token_env` when it calls the wor
 The host-side `ExecutionSpec` uses first-class fields for container behavior: `command`, `image`, `repo_source`, `clone_branch`, `resource_limits`, `persistence_mode`, and `workspace_mode`. The backend does not read those values from `metadata`; metadata is only sanitized caller context.
 
 ## Security Boundaries
+
+The worker is treated as an untrusted execution surface. The host sends only explicit job fields:
+session id, stable job id, image, command, optional mirror repo source, optional clone branch,
+resource limits, and sanitized caller metadata. It does not send raw environment variables, OpenAI
+keys, Azure DevOps PATs, GitHub tokens, host credentials, or request headers.
+
+Secret-like metadata keys are redacted before the host sends the request and before the host
+mapping is stored. Raw `env`, `environment`, and `environment_variables` fields remain rejected by
+the worker request model.
 
 The worker and its containers should not have direct GitHub/Azure DevOps egress in this mode.
 Required private egress is limited to the control-plane SSH endpoint for Git mirrors, the
@@ -332,12 +341,13 @@ Docker is used as a local container runtime on the worker VM. The default sandbo
 - worker-level read-only cache mounts configured with `--readonly-mount`
 - working directory `/home/agent`
 
-The Docker network can be overridden with worker config or `--docker-network`, but `host` is refused.
-When Codex or package restores need the control-plane gateway, OpenAI relay, NuGet relay,
-apt-cacher-ng relay, or Nexus package cache, choose a non-host Docker network and worker VM
-routing/firewall rules that allow only those specific private control-plane endpoints. Workers
-should not have direct outbound access to Ubuntu mirrors, `pypi.org`, or `registry.npmjs.org`;
-apt-cacher-ng is the private apt egress point and Nexus is the private PyPI/npm egress point.
+The Docker network can be overridden with worker config or `--docker-network`, but `host` is
+refused. In the Ansible-managed single-worker path, any non-`none` worker Docker network must be
+paired with `agent_sandbox_worker_egress_policy_enabled: true`. That policy installs a
+default-deny `DOCKER-USER` chain for the configured container network, blocks `169.254.0.0/16`, and
+allows only the configured private control-plane endpoints. Workers should not have direct
+outbound access to Ubuntu mirrors, `pypi.org`, or `registry.npmjs.org`; apt-cacher-ng is the
+private apt egress point and Nexus is the private PyPI/npm egress point.
 
 The `strict` sandbox profile keeps the default profile behavior and also adds:
 
@@ -347,8 +357,8 @@ The `strict` sandbox profile keeps the default profile behavior and also adds:
 
 Operators can tune worker daemon container flags with `--read-only-rootfs`, repeated `--tmpfs`, and `--container-user`. `--docker-network` and `AGENT_SANDBOX_WORKER_DOCKER_NETWORK` override the selected profile network, but `host` remains rejected.
 
-Non-`none` networking requires worker VM firewall and routing controls before it can protect cloud
-metadata or adjacent infrastructure endpoints. Do not treat a Docker network override as a
+Non-`none` networking requires the worker egress policy before it can protect cloud metadata or
+adjacent infrastructure endpoints. Do not treat a Docker network override as a
 metadata-protection boundary.
 
 ## Job Store

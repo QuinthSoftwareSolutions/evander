@@ -54,6 +54,8 @@ tasks/
 !ansible/roles/worker_playwright_toolchain/tasks/main.yml
 !ansible/roles/worker_mssql/tasks/
 !ansible/roles/worker_mssql/tasks/main.yml
+!ansible/roles/worker_container_egress_policy/tasks/
+!ansible/roles/worker_container_egress_policy/tasks/main.yml
 frontend/workflow-editor/node_modules/
 frontend/workflow-editor/tsconfig.tsbuildinfo
 **/dist/*

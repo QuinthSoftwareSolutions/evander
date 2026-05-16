@@ -41,7 +41,7 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     assert "apt-cacher-ng relay on `3142`" in docs
     assert "registry.npmjs.org" in docs
     assert "does not turn containers into a VM-equivalent trust boundary" in docs
-    assert "Non-`none` networking requires worker VM firewall and routing controls" in docs
+    assert "Non-`none` networking requires the worker egress policy" in docs
     assert "--allowed-git-source-prefix" in docs
     assert "ssh://<git_ssh_alias><git_root>/<mirror>.git" in docs
     assert "GitHub/Azure DevOps egress" in docs

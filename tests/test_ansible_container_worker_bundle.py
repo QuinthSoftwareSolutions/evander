@@ -27,12 +27,20 @@ def test_worker_playbook_exists_with_expected_roles() -> None:
     assert "- role: worker_node_toolchain" in worker
     assert "- role: worker_playwright_toolchain" in worker
     assert "- role: worker_mssql" in worker
+    assert "- role: worker_container_egress_policy" in worker
     assert "- role: container_worker_service" in worker
     assert "- role: container_worker_verification" in worker
+    assert "Resolve worker Docker network and egress allowlist" in worker
+    assert "Assert non-none worker Docker networking has egress policy" in worker
+    assert "agent_sandbox_worker_docker_network=none for isolated containers" in worker
+    assert "Assert worker egress allowlist endpoints are concrete" in worker
     assert worker.index("- role: container_worker_runtime") < worker.index(
         "- role: worker_mssql"
     )
     assert worker.index("- role: worker_mssql") < worker.index(
+        "- role: worker_container_egress_policy"
+    )
+    assert worker.index("- role: worker_container_egress_policy") < worker.index(
         "- role: container_worker_service"
     )
 
@@ -44,6 +52,7 @@ def test_worker_playbook_exists_with_expected_roles() -> None:
         "worker_node_toolchain",
         "worker_playwright_toolchain",
         "worker_mssql",
+        "worker_container_egress_policy",
         "container_worker_service",
         "container_worker_verification",
     ]:
@@ -59,6 +68,7 @@ def test_worker_role_task_files_are_not_ignored_by_git() -> None:
         "ansible/roles/worker_node_toolchain/tasks/main.yml",
         "ansible/roles/worker_playwright_toolchain/tasks/main.yml",
         "ansible/roles/worker_mssql/tasks/main.yml",
+        "ansible/roles/worker_container_egress_policy/tasks/main.yml",
         "ansible/roles/container_worker_service/tasks/main.yml",
         "ansible/roles/container_worker_verification/tasks/main.yml",
     ]
@@ -90,6 +100,7 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "ansible/roles/worker_node_toolchain" in text
     assert "ansible/roles/worker_playwright_toolchain" in text
     assert "ansible/roles/worker_mssql" in text
+    assert "ansible/roles/worker_container_egress_policy" in text
     assert "ansible/roles/container_worker_service" in text
     assert "  - docker" in text
     assert "  - docker.io" in text
@@ -106,6 +117,11 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert 'agent_sandbox_worker_root: "/var/lib/agent-worker"' in text
     assert 'agent_sandbox_worker_runtime_dir: "{{ agent_sandbox_worker_root }}/runtime"' in text
     assert 'agent_sandbox_worker_sandbox_profile: "default"' in text
+    assert 'agent_sandbox_worker_docker_network: "none"' in text
+    assert "agent_sandbox_worker_egress_policy_enabled: false" in text
+    assert "agent_sandbox_worker_egress_policy_chain" in text
+    assert "agent_sandbox_worker_egress_policy_source_cidrs: []" in text
+    assert '"169.254.0.0/16"' in text
     assert "AGENT_SANDBOX_WORKER_TOKEN" in text
     assert "agent_sandbox_control_plane_host" in text
     assert "hostvars[agent_sandbox_control_plane_host].agent_sandbox_deploy_path" in text
@@ -183,7 +199,12 @@ def test_worker_egress_policy_defaults_expose_private_control_plane_endpoints() 
         ROOT / "ansible" / "group_vars" / "agent_sandbox_worker_hosts.yml"
     ).read_text(encoding="utf-8")
 
+    assert 'agent_sandbox_worker_docker_network: "none"' in worker_defaults
     assert "agent_sandbox_worker_egress_policy_enabled: false" in worker_defaults
+    assert "agent_sandbox_worker_egress_policy_chain" in worker_defaults
+    assert "agent_sandbox_worker_egress_policy_script_path" in worker_defaults
+    assert "agent_sandbox_worker_egress_policy_source_cidrs: []" in worker_defaults
+    assert '"169.254.0.0/16"' in worker_defaults
     assert "agent_sandbox_worker_egress_policy_allow_tcp_endpoints" in defaults
     assert "agent_sandbox_worker_egress_policy_extra_allow_tcp_endpoints: []" in defaults
     assert 'agent_sandbox_git_host: "{{ agent_sandbox_control_plane_private_ip }}"' in defaults
@@ -204,7 +225,42 @@ def test_worker_egress_policy_defaults_expose_private_control_plane_endpoints() 
     assert "port: 3142" in defaults
     assert 'host: "{{ agent_sandbox_control_plane_private_ip }}"' in defaults
     assert "<control-plane-private-ip>" not in defaults
+    assert 'agent_sandbox_worker_docker_network: "bridge"' in azure
     assert "agent_sandbox_worker_egress_policy_enabled: true" in azure
+
+
+def test_worker_container_egress_policy_role_applies_docker_user_default_deny() -> None:
+    role = ROOT / "ansible" / "roles" / "worker_container_egress_policy"
+    worker_defaults = (
+        ROOT / "ansible" / "group_vars" / "agent_sandbox_worker_hosts.yml"
+    ).read_text(encoding="utf-8")
+    tasks = (role / "tasks" / "main.yml").read_text(encoding="utf-8")
+    script = (role / "templates" / "agent-sandbox-worker-egress-policy.sh.j2").read_text(
+        encoding="utf-8"
+    )
+    unit = (role / "templates" / "agent-sandbox-worker-egress-policy.service.j2").read_text(
+        encoding="utf-8"
+    )
+    verification = (
+        ROOT / "ansible" / "roles" / "container_worker_verification" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "agent_sandbox_worker_egress_policy_active" in tasks
+    assert "Render worker egress policy script" in tasks
+    assert "agent-sandbox-worker-egress-policy.service" in tasks
+    assert "Disable inactive worker egress policy service" in tasks
+    assert "docker network inspect" in script
+    assert "DOCKER-USER" in script
+    assert "AGENT-SANDBOX-WORKER-EGRESS" in worker_defaults
+    assert "agent_sandbox_worker_egress_policy_block_cidrs" in script
+    assert "169.254.0.0/16" in worker_defaults
+    assert "--dport" in script
+    assert "-j ACCEPT" in script
+    assert 'iptables -A "${CHAIN}" -j DROP' in script
+    assert "ExecStart={{ agent_sandbox_worker_egress_policy_script_path }} apply" in unit
+    assert "ExecStop={{ agent_sandbox_worker_egress_policy_script_path }} clear" in unit
+    assert "Before=agent-sandbox-worker-daemon.service" in unit
+    assert "Verify worker egress policy service is active" in verification
 
 
 def test_worker_service_role_renders_env_and_daemon_unit() -> None:
@@ -309,6 +365,9 @@ def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_contro
     runtime = (
         ROOT / "ansible" / "roles" / "container_worker_runtime" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
+    egress = (
+        ROOT / "ansible" / "roles" / "worker_container_egress_policy" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
     verification = (
         ROOT / "ansible" / "roles" / "container_worker_verification" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
@@ -324,7 +383,10 @@ def test_worker_runtime_and_verification_roles_cover_docker_health_and_no_contro
     assert "docker\n      - image\n      - inspect" in runtime
     assert "agent_sandbox_worker_toolchain_cache_root" in runtime
     assert "agent_sandbox_worker_preload_images" in runtime
+    assert "agent_sandbox_worker_egress_policy_active" in egress
+    assert "agent-sandbox-worker-egress-policy.service" in egress
     assert "agent-sandbox-worker-daemon.service" in verification
+    assert "agent-sandbox-worker-egress-policy.service" in verification
     assert "docker ps" not in verification
     assert "Verify Docker is usable by the worker user" in verification
     assert "/healthz" in verification

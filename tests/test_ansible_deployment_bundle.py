@@ -460,8 +460,15 @@ def test_ansible_worker_egress_policy_defaults_are_private_control_plane_endpoin
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
         encoding="utf-8"
     )
+    worker_defaults = (
+        repo / "ansible" / "group_vars" / "agent_sandbox_worker_hosts.yml"
+    ).read_text(encoding="utf-8")
     azure = (repo / "ansible" / "group_vars" / "azure.yml").read_text(encoding="utf-8")
 
+    assert 'agent_sandbox_worker_docker_network: "none"' in worker_defaults
+    assert "agent_sandbox_worker_egress_policy_enabled: false" in worker_defaults
+    assert "agent_sandbox_worker_egress_policy_chain" in worker_defaults
+    assert '"169.254.0.0/16"' in worker_defaults
     assert "agent_sandbox_worker_egress_policy_allow_tcp_endpoints" in defaults
     assert "agent_sandbox_worker_egress_policy_extra_allow_tcp_endpoints: []" in defaults
     assert 'agent_sandbox_git_host: "{{ agent_sandbox_control_plane_private_ip }}"' in defaults
@@ -481,6 +488,7 @@ def test_ansible_worker_egress_policy_defaults_are_private_control_plane_endpoin
     assert "port: 8081" in defaults
     assert "port: 3142" in defaults
     assert 'host: "{{ agent_sandbox_control_plane_private_ip }}"' in defaults
+    assert 'agent_sandbox_worker_docker_network: "bridge"' in azure
     assert "agent_sandbox_worker_egress_policy_enabled: true" in azure
 
 
