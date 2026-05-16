@@ -164,7 +164,7 @@ def test_find_due_requests_advances_first_cron_run_and_sorts_results(tmp_path: P
     cron = store.schedule_resume_request(
         session_id="session-1",
         prompt="Cron wake",
-        schedule=WakeScheduleDefinition(cron="*/15 * * * *"),
+        schedule=WakeScheduleDefinition(cron="*/15 * * * 0-6"),
         request_id="wake-cron",
         source="gateway-tool",
         resume_mode="same_context",

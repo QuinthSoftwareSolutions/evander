@@ -9,7 +9,7 @@
   - recording executions
   - looking up executions by idempotency key
   - finding the latest gate execution for a gate
-- `wake_store.py` now owns due-wake discovery through `find_due_requests(...)` instead of leaving that logic in the heartbeat worker.
+- `wake_store.py` owns due-wake discovery through `find_due_requests(...)`.
 - `pr_feedback_worker.py` now exposes semantic feedback listing and session-read advancement operations used by `PrFeedbackService`.
 - `review_request_store.py` keeps the existing workflow model and now exposes `claim_review_requests(...)` as the semantic leasing entrypoint, with the older name retained as a transitional alias.
 
@@ -26,7 +26,7 @@
   - CLI session lifecycle commands (`create-session`, `prune-sessions`, `list-sessions`, `renew-session`, `revoke-session`, `delete-session`)
   - CLI session mutation commands (`set-session-model`, `add-tool-permission`, `revoke-tool-permission`, `attach-pr-feedback`)
   - CLI issue-state pruning now deletes session manifests through repository lifecycle methods instead of rewriting raw session payloads
-  - `SessionAdminFacade`, `WorkerAdminFacade`, `DiscordIngestWorker`, `TeamsIngestWorker`, `IssueOrchestratorWorker`, and provider-runtime session lookup now read through the semantic repository
+  - `SessionAdminFacade`, `WorkerAdminFacade`, `DiscordIngestWorker`, `TeamsIngestWorker`, and provider-runtime session lookup now read through the semantic repository
 - Session-aware infrastructure/config seams now also use repository semantics:
   - `ProviderConfigResolver`, `PolicyConfigResolver`, `VmDefaultsConfigResolver`, `PolicyEngine`, `DirectoryOwnershipQueries`, and `WorkerDirectoryContextResolver`
   - runtime helper paths for allowed Discord/Teams routing now consume session repository semantics rather than raw store iteration

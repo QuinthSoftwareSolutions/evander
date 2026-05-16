@@ -2519,7 +2519,7 @@ def test_schedule_resume_persists_request_and_audits_success(tmp_path: Path) -> 
             "resume_at": "2026-04-01T10:30:00Z",
             "prompt": "Continue working through unread feedback.",
             "request_id": "wake-123",
-            "source": "heartbeat-worker",
+            "source": "wake-worker",
             "metadata": {"trace_id": "trace-1"},
         },
     )
@@ -2536,7 +2536,7 @@ def test_schedule_resume_persists_request_and_audits_success(tmp_path: Path) -> 
     assert saved_request["session_id"] == "session-1"
     assert saved_request["schedule"]["resume_at"] == "2026-04-01T10:30:00Z"
     assert saved_request["resume_prompt"]["prompt"] == "Continue working through unread feedback."
-    assert saved_request["source"] == "heartbeat-worker"
+    assert saved_request["source"] == "wake-worker"
     assert saved_request["resume_prompt"]["metadata"] == {"trace_id": "trace-1"}
 
     event = read_audit_events(context.config.audit_log_path)[-1]

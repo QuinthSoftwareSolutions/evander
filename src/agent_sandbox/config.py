@@ -233,23 +233,21 @@ class GatewayConfig(BaseModel):
     ado_frontend_install_roots: list[str] = Field(default_factory=list)
     ado_mssql_sa_password_env: str | None = None
     email_provider_timeout_seconds: float = Field(default=30.0, gt=0)
-    host_heartbeat_poll_interval_seconds: float = Field(default=30.0, gt=0)
-    host_heartbeat_jitter_seconds: float = Field(default=5.0, ge=0)
-    host_heartbeat_cooldown_seconds: float = Field(default=60.0, ge=0)
-    host_heartbeat_http_timeout_seconds: float = Field(default=30.0, gt=0)
-    host_heartbeat_lock_path: Path = Path("/var/lib/agent-sandbox/host-heartbeat.lock")
-    host_heartbeat_session_cooldown_path: Path = Path(
-        "/var/lib/agent-sandbox/host-heartbeat-session-cooldown.json"
+    wake_poll_interval_seconds: float = Field(default=30.0, gt=0)
+    wake_jitter_seconds: float = Field(default=5.0, ge=0)
+    wake_cooldown_seconds: float = Field(default=60.0, ge=0)
+    wake_session_cooldown_path: Path = Path(
+        "/var/lib/agent-sandbox/wake-session-cooldown.json"
     )
     host_agent_control_state_path: Path = Path(
         "/var/lib/agent-sandbox/host-agent-control-state.json"
     )
     host_busy_check_script_path: Path = Path("scripts/check_session_vm_busy.sh")
     host_resume_script_path: Path = Path("scripts/resume_issue_agent.sh")
-    host_heartbeat_wake_state_path: Path = Path(
-        "/var/lib/agent-sandbox/host-heartbeat-wake-state.json"
+    wake_dispatch_state_path: Path = Path(
+        "/var/lib/agent-sandbox/wake-dispatch-state.json"
     )
-    host_heartbeat_pr_resume_prompt: str = (
+    pr_feedback_resume_prompt: str = (
         "You have unread PR comments. Please fetch them with list_unread_feedback."
     )
     discord_resume_prompt: str = Field(
@@ -258,15 +256,14 @@ class GatewayConfig(BaseModel):
             "list_unread_discord_messages and respond with discord_post_status if needed."
         ),
     )
-    host_heartbeat_vm_user: str = "agent"
-    host_heartbeat_resume_timeout_seconds: float = Field(default=1200.0, gt=0)
-    host_heartbeat_stream_conflict_policy: Literal["fanout", "reject"] = "fanout"
-    host_heartbeat_scheduled_wake_prefix_text: str = (
+    wake_vm_user: str = "agent"
+    wake_resume_timeout_seconds: float = Field(default=1200.0, gt=0)
+    wake_scheduled_prefix_text: str = (
         "You have unread PR comments. Please fetch them with list_unread_feedback."
     )
-    host_heartbeat_schedule_max_active_per_session: int | None = Field(default=None, ge=1)
-    host_heartbeat_schedule_max_active_total: int | None = Field(default=None, ge=1)
-    host_heartbeat_schedule_min_interval_seconds: float | None = Field(default=None, gt=0)
+    wake_schedule_max_active_per_session: int | None = Field(default=None, ge=1)
+    wake_schedule_max_active_total: int | None = Field(default=None, ge=1)
+    wake_schedule_min_interval_seconds: float | None = Field(default=None, gt=0)
     pr_map_path: Path = Path("/var/lib/agent-sandbox/pr-map.json")
     provider_state: dict[str, Any] = Field(default_factory=dict)
     email_mailboxes: list[MailboxConfig] = Field(
@@ -456,12 +453,9 @@ class GatewayConfig(BaseModel):
     def apply_runtime_path_defaults(self) -> GatewayConfig:
         default_runtime_dir = Path("/var/lib/agent-sandbox")
         default_paths = {
-            "host_heartbeat_lock_path": default_runtime_dir / "host-heartbeat.lock",
-            "host_heartbeat_session_cooldown_path": default_runtime_dir
-            / "host-heartbeat-session-cooldown.json",
+            "wake_session_cooldown_path": default_runtime_dir / "wake-session-cooldown.json",
             "host_agent_control_state_path": default_runtime_dir / "host-agent-control-state.json",
-            "host_heartbeat_wake_state_path": default_runtime_dir
-            / "host-heartbeat-wake-state.json",
+            "wake_dispatch_state_path": default_runtime_dir / "wake-dispatch-state.json",
             "session_store_path": default_runtime_dir / "sessions.json",
             "approval_store_path": default_runtime_dir / "approvals.json",
             "draft_store_path": default_runtime_dir / "drafts.json",
@@ -565,99 +559,6 @@ class ProxyIssueSyncWorkerGlobalConfig(BaseModel):
     runtime_dir: Path = Path("runtime")
     poll_interval_seconds: float = Field(default=300.0, gt=0)
     freshness_window_seconds: float = Field(default=300.0, ge=0)
-
-
-class HostHeartbeatWorkerGlobalConfig(BaseModel):
-    runtime_dir: Path = Path("runtime")
-    host_heartbeat_directory_paths: list[str] = Field(default_factory=list)
-    host_heartbeat_poll_interval_seconds: float = Field(default=30.0, gt=0)
-    host_heartbeat_jitter_seconds: float = Field(default=5.0, ge=0)
-    host_heartbeat_cooldown_seconds: float = Field(default=60.0, ge=0)
-    host_heartbeat_http_timeout_seconds: float = Field(default=30.0, gt=0)
-    host_heartbeat_lock_path: Path | None = None
-    host_heartbeat_session_cooldown_path: Path | None = None
-    host_busy_check_script_path: Path = Path("scripts/check_session_vm_busy.sh")
-    host_resume_script_path: Path = Path("scripts/resume_issue_agent.sh")
-    host_heartbeat_wake_state_path: Path | None = None
-    host_heartbeat_vm_user: str = "agent"
-    host_heartbeat_resume_timeout_seconds: float = Field(default=1200.0, gt=0)
-    host_heartbeat_stream_conflict_policy: Literal["fanout", "reject"] = "fanout"
-    host_heartbeat_scheduled_wake_prefix_text: str = (
-        "You have unread PR comments. Please fetch them with list_unread_feedback."
-    )
-    host_heartbeat_schedule_max_active_per_session: int | None = Field(default=None, ge=1)
-    host_heartbeat_schedule_max_active_total: int | None = Field(default=None, ge=1)
-    host_heartbeat_schedule_min_interval_seconds: float | None = Field(default=None, gt=0)
-
-    @field_validator("host_heartbeat_directory_paths", mode="before")
-    @classmethod
-    def normalize_host_heartbeat_directory_paths(cls, value: object) -> object:
-        if value is None:
-            return []
-        if isinstance(value, str):
-            value = [value]
-        if not isinstance(value, (list, tuple)):
-            return value
-        normalized: list[str] = []
-        for item in value:
-            text = str(item).strip()
-            if not text:
-                continue
-            normalized.append(DirectoryPath(segments=text).as_posix())
-        return normalized
-
-    @model_validator(mode="after")
-    def apply_runtime_path_defaults(self) -> HostHeartbeatWorkerGlobalConfig:
-        if self.host_heartbeat_lock_path is None:
-            self.host_heartbeat_lock_path = self.runtime_dir / "host-heartbeat.lock"
-        if self.host_heartbeat_session_cooldown_path is None:
-            self.host_heartbeat_session_cooldown_path = (
-                self.runtime_dir / "host-heartbeat-session-cooldown.json"
-            )
-        if self.host_heartbeat_wake_state_path is None:
-            self.host_heartbeat_wake_state_path = (
-                self.runtime_dir / "host-heartbeat-wake-state.json"
-            )
-        return self
-
-
-class IssueOrchestratorWorkerGlobalConfig(BaseModel):
-    runtime_dir: Path = Path("runtime")
-    directories: list[str] = Field(default_factory=list)
-    poll_interval_seconds: float = Field(default=30.0, gt=0)
-    jitter_seconds: float = Field(default=5.0, ge=0)
-    cooldown_seconds: float = Field(default=60.0, ge=0)
-    lock_path: Path | None = None
-    busy_check_script_path: Path = Path("scripts/check_session_vm_busy.sh")
-    resume_script_path: Path = Path("scripts/resume_issue_agent.sh")
-    wake_state_path: Path | None = None
-    vm_user: str = "agent"
-    resume_timeout_seconds: float = Field(default=1200.0, gt=0)
-
-    @field_validator("directories", mode="before")
-    @classmethod
-    def normalize_directories(cls, value: object) -> object:
-        if value is None:
-            return []
-        if isinstance(value, str):
-            value = [value]
-        if not isinstance(value, (list, tuple)):
-            return value
-        normalized: list[str] = []
-        for item in value:
-            text = str(item).strip()
-            if not text:
-                continue
-            normalized.append(DirectoryPath(segments=text).as_posix())
-        return normalized
-
-    @model_validator(mode="after")
-    def apply_runtime_path_defaults(self) -> IssueOrchestratorWorkerGlobalConfig:
-        if self.lock_path is None:
-            self.lock_path = self.runtime_dir / "issue-orchestrator.lock"
-        if self.wake_state_path is None:
-            self.wake_state_path = self.runtime_dir / "issue-orchestrator-wake-state.json"
-        return self
 
 
 class DiscordIngestWorkerGlobalConfig(BaseModel):

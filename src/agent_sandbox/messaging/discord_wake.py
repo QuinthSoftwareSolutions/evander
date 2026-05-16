@@ -176,7 +176,7 @@ class DiscordWakeWorker:
             if self.dispatcher.is_host_disabled(binding):
                 continue
             if is_session_in_cooldown(
-                path=scoped_config.host_heartbeat_session_cooldown_path,
+                path=scoped_config.wake_session_cooldown_path,
                 session_id=binding.session_id,
             ):
                 continue
@@ -190,9 +190,9 @@ class DiscordWakeWorker:
             if agent_state != "idle":
                 if agent_state == "busy":
                     set_session_cooldown(
-                        path=scoped_config.host_heartbeat_session_cooldown_path,
+                        path=scoped_config.wake_session_cooldown_path,
                         session_id=binding.session_id,
-                        cooldown_seconds=scoped_config.host_heartbeat_cooldown_seconds,
+                        cooldown_seconds=scoped_config.wake_cooldown_seconds,
                     )
                 continue
             self.dispatcher.resume_binding(
@@ -202,9 +202,9 @@ class DiscordWakeWorker:
                 dispatch_source="discord_wake_worker",
             )
             set_session_cooldown(
-                path=scoped_config.host_heartbeat_session_cooldown_path,
+                path=scoped_config.wake_session_cooldown_path,
                 session_id=binding.session_id,
-                cooldown_seconds=scoped_config.host_heartbeat_cooldown_seconds,
+                cooldown_seconds=scoped_config.wake_cooldown_seconds,
             )
 
 
@@ -222,16 +222,16 @@ def _load_discord_wake_worker_global_config(
         {
             "runtime_dir": source.runtime_dir,
             "directories": [],
-            "poll_interval_seconds": source.host_heartbeat_poll_interval_seconds,
-            "jitter_seconds": source.host_heartbeat_jitter_seconds,
-            "cooldown_seconds": source.host_heartbeat_cooldown_seconds,
+            "poll_interval_seconds": source.wake_poll_interval_seconds,
+            "jitter_seconds": source.wake_jitter_seconds,
+            "cooldown_seconds": source.wake_cooldown_seconds,
             "lock_path": source.runtime_dir / "discord-wake.lock",
-            "session_cooldown_path": source.host_heartbeat_session_cooldown_path,
+            "session_cooldown_path": source.wake_session_cooldown_path,
             "busy_check_script_path": source.host_busy_check_script_path,
             "resume_script_path": source.host_resume_script_path,
             "wake_state_path": source.runtime_dir / "discord-wake-state.json",
-            "vm_user": source.host_heartbeat_vm_user,
-            "resume_timeout_seconds": source.host_heartbeat_resume_timeout_seconds,
+            "vm_user": source.wake_vm_user,
+            "resume_timeout_seconds": source.wake_resume_timeout_seconds,
         }
     ).model_dump(mode="json")
     path = _worker_global_config_path(project_dir)
@@ -256,17 +256,15 @@ def build_discord_wake_worker(
         {
             **config.model_dump(mode="json"),
             "runtime_dir": worker_config.runtime_dir,
-            "host_heartbeat_directory_paths": worker_config.directories,
-            "host_heartbeat_poll_interval_seconds": worker_config.poll_interval_seconds,
-            "host_heartbeat_jitter_seconds": worker_config.jitter_seconds,
-            "host_heartbeat_cooldown_seconds": worker_config.cooldown_seconds,
-            "host_heartbeat_lock_path": worker_config.lock_path,
-            "host_heartbeat_session_cooldown_path": worker_config.session_cooldown_path,
+            "wake_poll_interval_seconds": worker_config.poll_interval_seconds,
+            "wake_jitter_seconds": worker_config.jitter_seconds,
+            "wake_cooldown_seconds": worker_config.cooldown_seconds,
+            "wake_session_cooldown_path": worker_config.session_cooldown_path,
             "host_busy_check_script_path": worker_config.busy_check_script_path,
             "host_resume_script_path": worker_config.resume_script_path,
-            "host_heartbeat_wake_state_path": worker_config.wake_state_path,
-            "host_heartbeat_vm_user": worker_config.vm_user,
-            "host_heartbeat_resume_timeout_seconds": worker_config.resume_timeout_seconds,
+            "wake_dispatch_state_path": worker_config.wake_state_path,
+            "wake_vm_user": worker_config.vm_user,
+            "wake_resume_timeout_seconds": worker_config.resume_timeout_seconds,
         }
     )
     runtime = build_runtime(effective_config)

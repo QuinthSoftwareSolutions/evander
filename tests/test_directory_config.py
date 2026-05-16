@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directory_config import (
     DirectoryConfigResolver,
@@ -458,7 +460,7 @@ def test_directory_config_store_rejects_unknown_domain_fields(tmp_path: Path) ->
     team = service.create(parent="root", name="team")
 
     try:
-        config_store.write(team.path, domain="workers", payload={"unexpected": True})
+        config_store.write(team.path, domain="wake", payload={"unexpected": True})
     except ValueError as exc:
         assert "does not allow fields" in str(exc)
     else:
@@ -864,7 +866,7 @@ def test_directory_config_resolver_inherits_ado_worker_and_issue_setup_overlays(
     assert issue_resolution.effective_config["enable_guest_heartbeat"] is True
 
 
-def test_directory_config_resolver_keeps_heartbeat_prompts_directory_scoped_only(
+def test_directory_config_resolver_keeps_wake_prompts_directory_scoped_only(
     tmp_path: Path,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
@@ -876,28 +878,33 @@ def test_directory_config_resolver_keeps_heartbeat_prompts_directory_scoped_only
 
     config_store.write(
         team.path,
-        domain="heartbeat",
+        domain="wake",
         payload={
-            "host_heartbeat_pr_resume_prompt": "team PR prompt",
+            "pr_feedback_resume_prompt": "team PR prompt",
             "discord_resume_prompt": "team Discord prompt",
-            "host_heartbeat_poll_interval_seconds": 12.0,
-            "host_busy_check_script_path": "/tmp/check.sh",
         },
     )
 
-    read_payload = config_store.read(team.path, domain="heartbeat")
+    read_payload = config_store.read(team.path, domain="wake")
     assert read_payload == {
-        "host_heartbeat_pr_resume_prompt": "team PR prompt",
+        "pr_feedback_resume_prompt": "team PR prompt",
         "discord_resume_prompt": "team Discord prompt",
     }
 
     resolution = resolver.resolve_domain(
         team.path,
-        domain="heartbeat",
-        base_config=get_domain_base_config(GatewayConfig(), "heartbeat"),
-        validator=lambda candidate: validate_effective_domain_payload("heartbeat", candidate),
+        domain="wake",
+        base_config=get_domain_base_config(GatewayConfig(), "wake"),
+        validator=lambda candidate: validate_effective_domain_payload("wake", candidate),
     )
 
-    assert resolution.effective_config["host_heartbeat_pr_resume_prompt"] == "team PR prompt"
+    assert resolution.effective_config["pr_feedback_resume_prompt"] == "team PR prompt"
     assert resolution.effective_config["discord_resume_prompt"] == "team Discord prompt"
-    assert "host_heartbeat_poll_interval_seconds" not in resolution.effective_config
+    assert "wake_poll_interval_seconds" not in resolution.effective_config
+
+    with pytest.raises(ValueError, match="wake_poll_interval_seconds"):
+        config_store.write(
+            team.path,
+            domain="wake",
+            payload={"wake_poll_interval_seconds": 12.0},
+        )

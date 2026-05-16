@@ -84,6 +84,75 @@ def read_audit_events(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in lines]
 
 
+def _build_runtime_with_workflow_config(
+    tmp_path: Path,
+    *,
+    allowed_tools: list[ToolName],
+):
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    config_dir = tmp_path / "config" / "trigger-orchestrator"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(runtime_dir),
+                "triggers": [
+                    {
+                        "id": "cron-15m",
+                        "display_name": "Every 15 minutes",
+                        "type": "trigger:cron",
+                        "expression": "*/15 * * * *",
+                    }
+                ],
+                "gates": [],
+                "effects": [
+                    {
+                        "id": "prompt-agent",
+                        "display_name": "Prompt agent",
+                        "type": "effect:agent:prompt",
+                        "prompt": "Summarize the latest workflow state.",
+                    }
+                ],
+                "queries": [],
+                "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (config_dir / "layout.json").write_text(
+        json.dumps(
+            {
+                "nodes": {
+                    "cron-15m": {"x": 120, "y": 80},
+                    "prompt-agent": {"x": 440, "y": 80},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=runtime_dir,
+            audit_log_path=runtime_dir / "audit.jsonl",
+            session_store_path=runtime_dir / "sessions.json",
+            approval_store_path=runtime_dir / "approvals.json",
+            draft_store_path=runtime_dir / "drafts.json",
+            email_store_path=runtime_dir / "emails.json",
+            discord_command_store_path=runtime_dir / "discord.json",
+        )
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=allowed_tools,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            directory_path="root",
+        )
+    )
+    return context
+
+
 def _command(command_id: str, *, source: str) -> DiscordCommandEnvelope:
     return DiscordCommandEnvelope(
         command_id=command_id,
@@ -209,6 +278,7 @@ def test_create_server_registers_schedule_resume_tool(tmp_path) -> None:
     assert any(tool.name == "run_script" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "list_pull_requests" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "get_pull_request" for tool in server._tool_manager.list_tools())
+    assert any(tool.name == "get_workflow_snapshot" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "assistant_read_config" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "list_contacts" for tool in server._tool_manager.list_tools())
     assert any(tool.name == "make_phone_call" for tool in server._tool_manager.list_tools())
@@ -234,6 +304,56 @@ def test_create_server_registers_schedule_resume_tool(tmp_path) -> None:
     assert "session_id" in list_contacts_fields
     assert "phone_number" not in list_contacts_fields
     assert "to_number" not in list_contacts_fields
+
+
+def test_get_workflow_snapshot_returns_current_config_and_optional_runs(tmp_path: Path) -> None:
+    context = _build_runtime_with_workflow_config(
+        tmp_path,
+        allowed_tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+    )
+    server = create_server(context)
+
+    result = _call_tool(server, "get_workflow_snapshot", {"session_id": "session-1"})
+
+    assert result["worker_id"] == "trigger-orchestrator"
+    assert result["config_exists"] is True
+    assert result["layout_exists"] is True
+    assert result["revision"]
+    assert result["config"]["triggers"][0]["id"] == "cron-15m"
+    assert result["config"]["effects"][0]["id"] == "prompt-agent"
+    assert result["config"]["edges"] == [
+        {"source_id": "cron-15m", "target_id": "prompt-agent"}
+    ]
+    assert result["layout"]["nodes"]["cron-15m"] == {"x": 120.0, "y": 80.0}
+    assert result["graphs"][0]["node_ids"] == ["cron-15m", "prompt-agent"]
+    assert "runs" not in result
+
+    result_with_runs = _call_tool(
+        server,
+        "get_workflow_snapshot",
+        {"session_id": "session-1", "include_runs": True},
+    )
+
+    assert result_with_runs["runs"]["worker_id"] == "trigger-orchestrator"
+    assert result_with_runs["runs"]["runs"] == []
+
+    audit_events = read_audit_events(context.config.audit_log_path)
+    tool_events = [
+        event
+        for event in audit_events
+        if event.get("tool_name") == ToolName.GET_WORKFLOW_SNAPSHOT.value
+    ]
+    assert len(tool_events) == 2
+    assert tool_events[0]["result"]["revision"] == result["revision"]
+    assert "config" not in tool_events[0]["result"]
+
+
+def test_get_workflow_snapshot_requires_allowed_tool(tmp_path: Path) -> None:
+    context = _build_runtime_with_workflow_config(tmp_path, allowed_tools=[])
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="Tool get_workflow_snapshot is not allowed"):
+        _call_tool(server, "get_workflow_snapshot", {"session_id": "session-1"})
 
 
 def test_request_pr_review_schema_advertises_allowed_provider_values(tmp_path: Path) -> None:
