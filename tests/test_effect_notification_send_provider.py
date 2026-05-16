@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,16 +9,18 @@ from agent_sandbox.config import GatewayConfig, MailboxConfig
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.effects.providers.notification_send import NotificationSendEffectProvider
 from agent_sandbox.events.provider_models import NotificationSendEffectDefinition
+from agent_sandbox.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 from agent_sandbox.runtime import build_runtime
 
 
 def _write_targets(project_dir: Path, targets: list[dict[str, object]]) -> None:
-    config_dir = project_dir / "config" / "communication-targets"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "config.json").write_text(
-        json.dumps({"targets": targets}),
-        encoding="utf-8",
+    repository = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(project_dir / "runtime")
     )
+    repository.write_overlay("root", {"targets": targets})
 
 
 def _runtime(project_dir: Path, **kwargs: object):

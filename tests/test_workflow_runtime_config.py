@@ -6,6 +6,10 @@ from pathlib import Path
 import pytest
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 from agent_sandbox.workflow.runtime_config import (
     TriggerOrchestratorWorkerGlobalConfigReloader,
     load_trigger_orchestrator_worker_global_config,
@@ -14,6 +18,11 @@ from agent_sandbox.workflow.runtime_config import (
 
 def _config_path(project_dir: Path) -> Path:
     return project_dir / "config" / "trigger-orchestrator" / "config.json"
+
+
+def _write_communication_targets(runtime_dir: Path, targets: list[dict[str, object]]) -> None:
+    repository = SqliteCommunicationTargetsRepository(communication_targets_db_path(runtime_dir))
+    repository.write_overlay("root", {"targets": targets})
 
 
 def test_loaded_worker_config_defaults_to_sqlite_orchestration_store(tmp_path: Path) -> None:
@@ -504,23 +513,17 @@ def test_load_config_accepts_notification_effect_communication_target_ref(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     project_dir = tmp_path
-    targets_dir = project_dir / "config" / "communication-targets"
-    targets_dir.mkdir(parents=True, exist_ok=True)
-    (targets_dir / "config.json").write_text(
-        json.dumps(
+    _write_communication_targets(
+        runtime_dir,
+        [
             {
-                "targets": [
-                    {
-                        "id": "teams-primary",
-                        "provider": "teams",
-                        "kind": "teams",
-                        "address": "team/channel",
-                        "policy": {"capabilities": ["notify"]},
-                    }
-                ]
+                "id": "teams-primary",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team/channel",
+                "policy": {"capabilities": ["notify"]},
             }
-        ),
-        encoding="utf-8",
+        ],
     )
     path = _config_path(project_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -562,23 +565,17 @@ def test_load_config_accepts_communication_send_message_target_ref(
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     project_dir = tmp_path
-    targets_dir = project_dir / "config" / "communication-targets"
-    targets_dir.mkdir(parents=True, exist_ok=True)
-    (targets_dir / "config.json").write_text(
-        json.dumps(
+    _write_communication_targets(
+        runtime_dir,
+        [
             {
-                "targets": [
-                    {
-                        "id": "teams-primary",
-                        "provider": "teams",
-                        "kind": "teams",
-                        "address": "chat:chat-1",
-                        "policy": {"capabilities": ["write"]},
-                    }
-                ]
+                "id": "teams-primary",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "chat:chat-1",
+                "policy": {"capabilities": ["write"]},
             }
-        ),
-        encoding="utf-8",
+        ],
     )
     path = _config_path(project_dir)
     path.parent.mkdir(parents=True, exist_ok=True)

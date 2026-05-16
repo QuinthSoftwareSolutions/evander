@@ -7,9 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from agent_sandbox.directories import DirectoryStore
 from agent_sandbox.messaging.targets import (
-    communication_targets_config_path,
-    load_communication_targets_config,
+    communication_targets_db_path,
+    known_communication_target_ids,
     validate_communication_target_refs,
 )
 from agent_sandbox.workflow.compiler import (
@@ -61,7 +62,7 @@ def load_trigger_orchestrator_worker_global_config(
     if not isinstance(raw, dict):
         raise ValueError(f"worker config file {path} must contain a JSON object")
     raw = _compose_configured_workflow_ir(project_dir=project_dir, payload=raw)
-    _validate_communication_targets(project_dir=project_dir, payload=raw)
+    _validate_communication_targets(base_config=base_config, payload=raw)
     return _compile_worker_global_config(
         TriggerOrchestratorWorkerGlobalConfig.model_validate({**base_payload, **raw})
     )
@@ -114,12 +115,9 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
             return None
 
         fingerprints = [base_fingerprint]
-        communication_targets_path = communication_targets_config_path(self._project_dir)
-        communication_targets_fingerprint = _file_fingerprint(communication_targets_path)
-        if communication_targets_fingerprint is None:
-            fingerprints.append((0, 0, 0, f"missing:{communication_targets_path}"))
-        else:
-            fingerprints.append(communication_targets_fingerprint)
+        runtime_dir = Path(self._base_payload.get("runtime_dir") or "runtime")
+        communication_targets_path = communication_targets_db_path(runtime_dir)
+        fingerprints.extend(_sqlite_fingerprints(communication_targets_path))
 
         for pack_path in self._workflow_pack_paths():
             pack_fingerprint = _file_fingerprint(pack_path)
@@ -139,7 +137,11 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
             raise ValueError(f"worker config file {self._path} must contain a JSON object")
         project_dir = self._path.parents[2]
         raw = _compose_configured_workflow_ir(project_dir=project_dir, payload=raw)
-        _validate_communication_targets(project_dir=project_dir, payload=raw)
+        runtime_dir = Path(self._base_payload.get("runtime_dir") or "runtime")
+        _validate_communication_targets(
+            base_config=GatewayConfig(runtime_dir=runtime_dir),
+            payload=raw,
+        )
         return _compile_worker_global_config(
             TriggerOrchestratorWorkerGlobalConfig.model_validate({**self._base_payload, **raw})
         )
@@ -294,10 +296,18 @@ def _is_system_managed_workflow_node_id(node_id: object) -> bool:
     return str(node_id or "").strip() in _SYSTEM_MANAGED_WORKFLOW_NODE_IDS
 
 
-def _validate_communication_targets(*, project_dir: Path, payload: dict[str, Any]) -> None:
-    communication_targets = load_communication_targets_config(project_dir)
+def _validate_communication_targets(
+    *, base_config: GatewayConfig | None, payload: dict[str, Any]
+) -> None:
+    known_target_ids: set[str] = set()
+    if base_config is not None:
+        directory_store = DirectoryStore(base_config.directories_store_path)
+        known_target_ids = known_communication_target_ids(
+            runtime_dir=base_config.runtime_dir,
+            directory_store=directory_store,
+        )
     validate_communication_target_refs(
-        payload=payload, known_target_ids=set(communication_targets.by_id())
+        payload=payload, known_target_ids=known_target_ids
     )
 
 
@@ -323,3 +333,14 @@ def _file_fingerprint(path: Path) -> tuple[int, int, int, str] | None:
         return None
     digest = hashlib.sha256(payload).hexdigest()
     return stat.st_mtime_ns, stat.st_ino, stat.st_size, digest
+
+
+def _sqlite_fingerprints(path: Path) -> list[tuple[int, int, int, str]]:
+    fingerprints: list[tuple[int, int, int, str]] = []
+    for candidate in (path, path.with_name(f"{path.name}-wal"), path.with_name(f"{path.name}-shm")):
+        fingerprint = _file_fingerprint(candidate)
+        if fingerprint is None:
+            fingerprints.append((0, 0, 0, f"missing:{candidate}"))
+        else:
+            fingerprints.append(fingerprint)
+    return fingerprints
