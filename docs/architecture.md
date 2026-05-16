@@ -158,6 +158,10 @@ This sequence minimizes payload volume when there is no new feedback and support
   - one-time (`resume_at` UTC timestamp), or
   - recurring (`cron` expression).
 - Due schedules are dispatched by the host scheduled-wake loop, not by guests directly.
+- Recurring cron schedules advance to the next occurrence only after the host resume
+  dispatch reports `status=dispatched`. Failed, timed-out, or missing-script dispatch
+  attempts remain due/retryable and are retained in dispatch history without updating
+  the request-level `last_dispatched_at` success timestamp.
 - Prompt composition for scheduled wakes is:
   - `wake_scheduled_prefix_text + requested_prompt`.
 - MCP-created schedules are restricted to `resume_mode=same_context`; admin-created schedules may also use `new_context`.

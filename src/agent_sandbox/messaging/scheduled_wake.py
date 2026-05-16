@@ -171,20 +171,22 @@ class ScheduledWakeWorker:
             scheduled_for=request.next_run_at or request.schedule.resume_at,
             wake_metadata={"schedule_cron": request.schedule.cron},
         )
-        set_session_cooldown(
-            path=scoped_config.wake_session_cooldown_path,
-            session_id=binding.session_id,
-            cooldown_seconds=scoped_config.wake_cooldown_seconds,
-        )
-        if (request.schedule.cron or "").strip():
+        dispatch_succeeded = bool(dispatch and dispatch.status == "dispatched")
+        if dispatch_succeeded:
+            set_session_cooldown(
+                path=scoped_config.wake_session_cooldown_path,
+                session_id=binding.session_id,
+                cooldown_seconds=scoped_config.wake_cooldown_seconds,
+            )
+        if (request.schedule.cron or "").strip() and dispatch_succeeded:
             _advance_cron_wake_request(
                 wake_store=wake_store,
                 request=request,
                 now_utc=now_utc,
                 mark_consumed=False,
-                was_dispatched=bool(dispatch and dispatch.status == "dispatched"),
+                was_dispatched=True,
             )
-        elif dispatch is not None and dispatch.status == "dispatched":
+        elif dispatch_succeeded:
             _advance_cron_wake_request(
                 wake_store=wake_store,
                 request=request,
@@ -192,7 +194,7 @@ class ScheduledWakeWorker:
                 mark_consumed=True,
                 was_dispatched=True,
             )
-        return bool(dispatch and dispatch.status == "dispatched")
+        return dispatch_succeeded
 
 
 def _worker_global_config_path(project_dir: Path) -> Path:
