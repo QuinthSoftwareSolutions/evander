@@ -4,8 +4,6 @@ import argparse
 import json
 import logging
 import os
-import random
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +18,12 @@ from agent_sandbox.repositories.cursors import (
     TeamsInboxCursorRepository,
 )
 from agent_sandbox.models import DirectoryPath, SessionManifest, TeamsMessageEnvelope, ToolName
+from agent_sandbox.orchestration.host_polling import HostFileLockManager, HostSleeper
+from agent_sandbox.orchestration.kernels import (
+    PollingKernelConfig,
+    PollingOrchestratorKernel,
+    compute_next_sleep_seconds,
+)
 from agent_sandbox.runtime import (
     RuntimeContext,
     _build_delegated_teams_token_provider,
@@ -66,38 +70,29 @@ class TeamsIngestWorker:
         self.store = store or JsonTeamsInboxCursorRepository(
             config.runtime_dir / "teams-inbox-store.json"
         )
+        self._kernel = PollingOrchestratorKernel(
+            config=PollingKernelConfig(
+                poll_interval_seconds=self.worker_config.poll_interval_seconds,
+                jitter_seconds=self.worker_config.jitter_seconds,
+                lock_path=self.worker_config.lock_path,
+            ),
+            lock_manager=HostFileLockManager(
+                busy_error_text="Teams ingest worker already running"
+            ),
+            sleeper=HostSleeper(),
+            run_cycle=self.run_once,
+            get_sleep_seconds=lambda result: result.next_sleep_seconds,
+            on_start=self._log_start,
+            on_cycle_success=self._log_cycle_success,
+            on_cycle_exception=self._log_cycle_exception,
+            get_exception_sleep_seconds=lambda _exc: self.worker_config.backoff_seconds,
+        )
 
     def run_forever(self) -> None:
-        with _single_instance_lock(self.worker_config.lock_path):
-            logger.info(
-                "Teams ingest worker started poll_interval=%.3f jitter=%.3f backoff=%.3f lock=%s",
-                self.worker_config.poll_interval_seconds,
-                self.worker_config.jitter_seconds,
-                self.worker_config.backoff_seconds,
-                self.worker_config.lock_path,
-            )
-            while True:
-                try:
-                    result = self.run_once()
-                except Exception:
-                    logger.exception("Teams ingest worker cycle failed")
-                    time.sleep(self.worker_config.backoff_seconds)
-                    continue
-                logger.debug(
-                    (
-                        "Teams ingest worker cycle complete directories=%d channel_targets=%d "
-                        "sessions=%d sleep_seconds=%.3f"
-                    ),
-                    result.directories_polled,
-                    result.channel_targets_polled,
-                    result.sessions_seen,
-                    result.next_sleep_seconds,
-                )
-                time.sleep(result.next_sleep_seconds)
+        self._kernel.run_forever()
 
     def run_once_with_lock(self) -> TeamsIngestCycleResult:
-        with _single_instance_lock(self.worker_config.lock_path):
-            return self.run_once()
+        return self._kernel.run_once_with_lock()
 
     def run_once(self) -> TeamsIngestCycleResult:
         now = datetime.now(UTC)
@@ -124,7 +119,7 @@ class TeamsIngestWorker:
             }
         else:
             matching_sessions = {session.session_id for session in active_sessions}
-        next_sleep_seconds = _compute_next_sleep_seconds(
+        next_sleep_seconds = compute_next_sleep_seconds(
             poll_interval_seconds=self.worker_config.poll_interval_seconds,
             jitter_seconds=self.worker_config.jitter_seconds,
         )
@@ -134,6 +129,30 @@ class TeamsIngestWorker:
             sessions_seen=len(matching_sessions),
             next_sleep_seconds=next_sleep_seconds,
         )
+
+    def _log_start(self) -> None:
+        logger.info(
+            "Teams ingest worker started poll_interval=%.3f jitter=%.3f backoff=%.3f lock=%s",
+            self.worker_config.poll_interval_seconds,
+            self.worker_config.jitter_seconds,
+            self.worker_config.backoff_seconds,
+            self.worker_config.lock_path,
+        )
+
+    def _log_cycle_success(self, result: TeamsIngestCycleResult) -> None:
+        logger.debug(
+            (
+                "Teams ingest worker cycle complete directories=%d channel_targets=%d "
+                "sessions=%d sleep_seconds=%.3f"
+            ),
+            result.directories_polled,
+            result.channel_targets_polled,
+            result.sessions_seen,
+            result.next_sleep_seconds,
+        )
+
+    def _log_cycle_exception(self, _exc: Exception) -> None:
+        logger.exception("Teams ingest worker cycle failed")
 
     def _directories_to_scan(self, active_sessions: list[SessionManifest]) -> list[str]:
         if self.worker_config.directories:
@@ -431,13 +450,6 @@ def main() -> None:
     worker.run_forever()
 
 
-def _compute_next_sleep_seconds(*, poll_interval_seconds: float, jitter_seconds: float) -> float:
-    delay = poll_interval_seconds
-    if jitter_seconds > 0:
-        delay += random.uniform(0.0, jitter_seconds)
-    return max(0.0, delay)
-
-
 def _target_from_envelope(envelope: TeamsMessageEnvelope, *, metadata: dict[str, Any]) -> str:
     if metadata.get("target"):
         return normalize_teams_target(str(metadata["target"]))
@@ -473,39 +485,6 @@ def _message_is_after_cursor_state(
     if cursor_state.created_at is not None:
         return (message.created_at, message.cursor) > (cursor_state.created_at, cursor_state.cursor)
     return message.cursor > cursor_state.cursor
-
-
-class _LockHandle:
-    def __init__(self, path: Path, fd: int) -> None:
-        self.path = path
-        self.fd = fd
-
-    def __enter__(self) -> _LockHandle:
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        import fcntl
-        import os
-
-        fcntl.flock(self.fd, fcntl.LOCK_UN)
-        os.close(self.fd)
-
-
-def _single_instance_lock(path: Path) -> _LockHandle:
-    import fcntl
-    import os
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError as exc:
-        os.close(fd)
-        raise RuntimeError(f"Teams ingest worker already running (lock held at {path})") from exc
-
-    os.ftruncate(fd, 0)
-    os.write(fd, f"{os.getpid()}\n".encode("utf-8"))
-    return _LockHandle(path, fd)
 
 
 def _directory_is_within_scope(directory_path: str | None, scope_directory_path: str) -> bool:

@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from agent_sandbox.orchestration.host_polling import HostFileLockManager
 from agent_sandbox.daemons.trigger_orchestrator import (
     TriggerOrchestratorCycleResult,
     TriggerOrchestratorWorker,
@@ -176,6 +178,67 @@ def test_trigger_orchestrator_acknowledges_provider_after_queue_publish(
     assert provider.acknowledged_event_ids == ["event-1"]
 
 
+def test_trigger_orchestrator_publishes_multiple_events_from_one_provider_poll(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,
+    )  # type: ignore[arg-type]
+    first_event = TriggerEvent(
+        event_id="event-1",
+        trigger_id="cron-1",
+        trigger_type="trigger:cron",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"kind": "tick-1"},
+    )
+    second_event = TriggerEvent(
+        event_id="event-2",
+        trigger_id="cron-1",
+        trigger_type="trigger:cron",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"kind": "tick-2"},
+    )
+    provider = _AcknowledgingProvider([first_event, second_event])
+    worker.provider_factory.build = lambda trigger: provider  # type: ignore[assignment]
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 1
+    assert result.events_discovered == 2
+    assert result.events_published == 2
+
+    queue_payload = json.loads(
+        worker_config.event_queue_store_path.read_text(encoding="utf-8")
+    )
+    assert list(queue_payload.keys()) == ["event-1", "event-2"]
+    cursor_payload = json.loads(
+        worker_config.event_queue_cursor_store_path.read_text(encoding="utf-8")
+    )
+    assert cursor_payload["triggers"]["cron-1"]["last_discovered_count"] == 2
+    assert cursor_payload["triggers"]["cron-1"]["last_event_ids"] == ["event-1", "event-2"]
+    assert cursor_payload["triggers"]["cron-1"]["last_event_id"] == "event-2"
+    assert provider.acknowledged_event_ids == ["event-1", "event-2"]
+
+
 def test_trigger_orchestrator_main_once_uses_single_cycle(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
@@ -210,6 +273,39 @@ def test_trigger_orchestrator_main_once_uses_single_cycle(
 
     output = capsys.readouterr().out.strip()
     assert "Trigger orchestrator cycle complete triggers=2 discovered=3 published=2" in output
+
+
+def test_trigger_orchestrator_uses_shared_host_lock_manager(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [],
+        }
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+
+    assert isinstance(worker._kernel._lock_manager, HostFileLockManager)
+    assert worker._kernel.config.lock_path == worker_config.lock_path
+
+    worker._kernel.run_once_with_lock = lambda: TriggerOrchestratorCycleResult(
+        configured_triggers=0,
+        events_discovered=0,
+        events_published=0,
+        next_sleep_seconds=1.0,
+    )  # type: ignore[method-assign]
+
+    result = worker.run_once_with_lock()
+
+    assert result.configured_triggers == 0
+    assert result.next_sleep_seconds == 1.0
 
 
 def test_trigger_orchestrator_rejects_reserved_runtime_output_name(tmp_path: Path) -> None:
@@ -377,6 +473,110 @@ def test_trigger_orchestrator_run_once_uses_reloaded_worker_config(tmp_path: Pat
     result = worker.run_once()
 
     assert result.configured_triggers == 1
+
+
+def test_trigger_orchestrator_reloads_provider_factory_after_provider_loader_change(
+    tmp_path: Path, caplog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    initial_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [],
+        }
+    )
+    updated_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "provider_loader": {
+                "provider_modules": ["custom.reload"],
+            },
+            "triggers": [
+                {
+                    "id": "reload-trigger",
+                    "display_name": "Reloaded custom trigger",
+                    "type": "trigger:custom:reload",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    event = TriggerEvent(
+        event_id="reload-event-1",
+        trigger_id="reload-trigger",
+        trigger_type="trigger:custom:reload",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"kind": "reload"},
+    )
+    build_calls: list[tuple[str, ...]] = []
+
+    def _build_runtime_wiring(
+        *,
+        config: GatewayConfig,
+        worker_config: TriggerOrchestratorWorkerGlobalConfig,
+        runtime,
+        provider_config_resolver=None,
+    ):
+        _ = config, runtime, provider_config_resolver
+        build_calls.append(tuple(worker_config.provider_modules))
+        if worker_config.provider_modules and len(build_calls) == 2:
+            raise RuntimeError("temporary provider_loader reload failure")
+        provider_factory = SimpleNamespace(
+            build=lambda trigger: _StaticProvider([event])
+            if worker_config.provider_modules and trigger.id == "reload-trigger"
+            else _StaticProvider([])
+        )
+        return SimpleNamespace(
+            provider_config_resolver=object(),
+            provider_factory=provider_factory,
+        )
+
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.trigger_orchestrator.build_trigger_provider_runtime_wiring",
+        _build_runtime_wiring,
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.orchestration.wiring.trigger.build_trigger_provider_runtime_wiring",
+        _build_runtime_wiring,
+    )
+
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=initial_config,
+        config_reloader=_SequenceReloader(
+            [
+                (updated_config, True),
+                (updated_config, False),
+                (updated_config, False),
+            ]
+        ),
+        runtime=None,  # type: ignore[arg-type]
+    )
+
+    caplog.set_level("ERROR")
+
+    first_cycle = worker.run_once()
+    assert first_cycle.configured_triggers == 0
+    assert worker.worker_config.provider_modules == []
+
+    second_cycle = worker.run_once()
+
+    assert second_cycle.configured_triggers == 1
+    assert second_cycle.events_published == 1
+    assert build_calls == [(), ("custom.reload",), ("custom.reload",)]
+    assert worker.worker_config.provider_modules == ["custom.reload"]
+    assert "provider_loader reload failed" in caplog.text
+    assert "restart or fix configuration before retrying" in caplog.text
+
+    queue_payload = json.loads(
+        updated_config.event_queue_store_path.read_text(encoding="utf-8")
+    )
+    assert list(queue_payload.keys()) == ["reload-event-1"]
 
 
 def test_trigger_orchestrator_direct_worker_does_not_reload_from_cwd(

@@ -4,6 +4,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.messaging.discord_ingest import build_discord_ingest_worker
 from agent_sandbox.models import SessionManifest, ToolName
@@ -78,6 +80,52 @@ def test_discord_ingest_worker_counts_active_sessions_in_configured_scope(tmp_pa
 
     assert result.directories_polled == 1
     assert result.sessions_seen == 1
+
+
+def test_discord_ingest_worker_run_once_with_lock_uses_configured_lock_path(
+    tmp_path: Path,
+) -> None:
+    worker = build_discord_ingest_worker(
+        GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")}),
+        project_dir=tmp_path,
+    )
+
+    class _RecordingLock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+    class _RecordingLockManager:
+        def __init__(self) -> None:
+            self.paths: list[object] = []
+
+        def lock(self, path: object):
+            self.paths.append(path)
+            return _RecordingLock()
+
+    lock_manager = _RecordingLockManager()
+    worker._kernel._lock_manager = lock_manager
+
+    result = worker.run_once_with_lock()
+
+    assert result.directories_polled == 0
+    assert result.sessions_seen == 0
+    assert lock_manager.paths == [worker.worker_config.lock_path]
+
+
+def test_discord_ingest_worker_reports_busy_lock_message(tmp_path: Path) -> None:
+    worker = build_discord_ingest_worker(
+        GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")}),
+        project_dir=tmp_path,
+    )
+
+    with worker._kernel._lock_manager.lock(worker.worker_config.lock_path):
+        with pytest.raises(RuntimeError, match="Discord ingest worker already running") as exc:
+            worker.run_once_with_lock()
+
+    assert str(worker.worker_config.lock_path) in str(exc.value)
 
 
 def test_discord_ingest_normalize_message_preserves_attachment_metadata_without_bytes(

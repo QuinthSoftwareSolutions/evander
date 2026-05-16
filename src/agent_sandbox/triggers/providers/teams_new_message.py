@@ -64,15 +64,26 @@ class TeamsNewMessageTriggerProvider(TriggerProviderBase):
 
         candidates.sort(key=lambda message: (message.created_at, message.cursor))
 
+        events: list[TriggerEvent] = []
         max_created_at = cursor
         new_cursors = list(recent_cursors)
-        latest_message: TeamsInboxMessage | None = None
         for message in candidates:
             occurred_at = message.created_at.astimezone(UTC)
             new_cursors.append(message.cursor)
-            latest_message = message
+            events.append(
+                TriggerEvent(
+                    event_id=f"{trigger.id}:{message.cursor}",
+                    trigger_id=trigger.id,
+                    trigger_type=trigger.type,
+                    occurred_at=occurred_at,
+                    payload=_message_payload(message),
+                )
+            )
             if max_created_at is None or occurred_at > max_created_at:
                 max_created_at = occurred_at
+
+        if not events:
+            return []
 
         if max_created_at is not None:
             cursor_store.put(
@@ -82,17 +93,7 @@ class TeamsNewMessageTriggerProvider(TriggerProviderBase):
                     "recent_cursors": new_cursors[-self._RECENT_CURSOR_LIMIT :],
                 },
             )
-        if not candidates or max_created_at is None or latest_message is None:
-            return []
-        return [
-            TriggerEvent(
-                event_id=f"{trigger.id}:{latest_message.cursor}",
-                trigger_id=trigger.id,
-                trigger_type=trigger.type,
-                occurred_at=max_created_at,
-                payload=_message_payload(latest_message),
-            )
-        ]
+        return events
 
     def _trigger(self) -> TeamsNewMessageTriggerDefinition:
         if not isinstance(self.trigger_definition, TeamsNewMessageTriggerDefinition):

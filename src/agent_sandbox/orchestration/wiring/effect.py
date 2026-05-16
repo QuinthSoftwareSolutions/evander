@@ -34,10 +34,94 @@ from ..effect_extensions import (
 
 
 @dataclass(frozen=True)
+class EffectProviderRuntimeWiring:
+    provider_config_resolver: ProviderConfigResolver
+    provider_factory: EffectProviderFactory
+    query_provider_factory: QueryProviderFactory
+    gate_provider_factory: GateProviderFactory
+    agent_run_status_port: object | None
+    agent_prompt_dispatch_port: object | None
+    special_event_handlers: tuple[SpecialEventHandler, ...]
+    lifecycle_reconciliation_hooks: tuple[LifecycleReconciliationHook, ...]
+    completion_dispatch_hooks: tuple[CompletionDispatchHook, ...]
+
+
+def build_effect_provider_runtime_wiring(
+    *,
+    config: GatewayConfig,
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+    runtime: RuntimeContext,
+    provider_config_resolver: ProviderConfigResolver | None = None,
+    include_default_domain_handlers: bool = True,
+) -> EffectProviderRuntimeWiring:
+    runtime_provider_resolver = getattr(runtime, "provider_config", None)
+    resolver = (
+        provider_config_resolver or runtime_provider_resolver or ProviderConfigResolver(config)
+    )
+    provider_catalog = load_provider_plugins(
+        module_names=resolve_provider_module_names(
+            profile_name=worker_config.provider_profile,
+            extra_modules=worker_config.provider_modules,
+        ),
+        include_entry_points=worker_config.provider_entry_points_enabled,
+        include_builtin=worker_config.provider_include_builtin,
+    )
+    provider_factory = build_effect_provider_factory(
+        runtime_dir=config.runtime_dir,
+        provider_config_resolver=resolver,
+        effect_providers=provider_catalog.effect_providers,
+        env=os.environ,
+    )
+    query_provider_factory = build_query_provider_factory(
+        runtime_dir=config.runtime_dir,
+        provider_config_resolver=resolver,
+        query_providers=provider_catalog.query_providers,
+        env=os.environ,
+    )
+    gate_provider_factory = build_gate_provider_factory(
+        runtime_dir=config.runtime_dir,
+        provider_config_resolver=resolver,
+        gate_providers=provider_catalog.gate_providers,
+        env=os.environ,
+    )
+    agent_run_status_port = None
+    agent_prompt_dispatch_port = None
+    special_event_handlers: tuple[SpecialEventHandler, ...] = ()
+    lifecycle_reconciliation_hooks: tuple[LifecycleReconciliationHook, ...] = ()
+    completion_dispatch_hooks: tuple[CompletionDispatchHook, ...] = ()
+    if include_default_domain_handlers and not is_pure_orchestration_core_profile(
+        worker_config.provider_profile
+    ):
+        agent_run_status_port = build_agent_run_status_port(runtime_dir=config.runtime_dir)
+        agent_prompt_dispatch_port = build_agent_prompt_dispatch_port(
+            runtime_dir=config.runtime_dir
+        )
+
+        from ..providers import build_agent_default_effect_handlers
+
+        (
+            special_event_handlers,
+            lifecycle_reconciliation_hooks,
+            completion_dispatch_hooks,
+        ) = build_agent_default_effect_handlers(provider_factory=provider_factory)
+    return EffectProviderRuntimeWiring(
+        provider_config_resolver=resolver,
+        provider_factory=provider_factory,
+        query_provider_factory=query_provider_factory,
+        gate_provider_factory=gate_provider_factory,
+        agent_run_status_port=agent_run_status_port,
+        agent_prompt_dispatch_port=agent_prompt_dispatch_port,
+        special_event_handlers=special_event_handlers,
+        lifecycle_reconciliation_hooks=lifecycle_reconciliation_hooks,
+        completion_dispatch_hooks=completion_dispatch_hooks,
+    )
+
+
+@dataclass(frozen=True)
 class EffectWorkerWiring:
     provider_config_resolver: ProviderConfigResolver
-    workflow_event_journal: WorkflowEventJournal
-    event_queue: TriggerEventQueue
+    workflow_event_journal: WorkflowEventJournal | SqliteWorkflowEventJournal
+    event_queue: TriggerEventQueue | SqliteTriggerEventQueue
     lock_path: Path
     cursor_path: Path
     effect_cursor_repository: object
@@ -63,7 +147,6 @@ def build_effect_worker_wiring(
     provider_config_resolver: ProviderConfigResolver | None = None,
     include_default_domain_handlers: bool = True,
 ) -> EffectWorkerWiring:
-
     from agent_sandbox.daemons.effect_orchestrator import (
         JsonExecutionStore,
         JsonGateExecutionStore,
@@ -71,10 +154,6 @@ def build_effect_worker_wiring(
         build_effect_cursor_repository,
     )
 
-    runtime_provider_resolver = getattr(runtime, "provider_config", None)
-    resolver = (
-        provider_config_resolver or runtime_provider_resolver or ProviderConfigResolver(config)
-    )
     retention_days = int(worker_config.orchestration_retention_days)
     if _sqlite_orchestration_store_enabled(worker_config):
         workflow_event_journal = SqliteWorkflowEventJournal(
@@ -141,54 +220,15 @@ def build_effect_worker_wiring(
         max_workers=max(1, min(32, max(1, (os.cpu_count() or 1) * 4))),
         thread_name_prefix="effect-orchestrator",
     )
-    provider_catalog = load_provider_plugins(
-        module_names=resolve_provider_module_names(
-            profile_name=worker_config.provider_profile,
-            extra_modules=worker_config.provider_modules,
-        ),
-        include_entry_points=worker_config.provider_entry_points_enabled,
-        include_builtin=worker_config.provider_include_builtin,
+    runtime_wiring = build_effect_provider_runtime_wiring(
+        config=config,
+        worker_config=worker_config,
+        runtime=runtime,
+        provider_config_resolver=provider_config_resolver,
+        include_default_domain_handlers=include_default_domain_handlers,
     )
-    provider_factory = build_effect_provider_factory(
-        runtime_dir=config.runtime_dir,
-        provider_config_resolver=resolver,
-        effect_providers=provider_catalog.effect_providers,
-        env=os.environ,
-    )
-    query_provider_factory = build_query_provider_factory(
-        runtime_dir=config.runtime_dir,
-        provider_config_resolver=resolver,
-        query_providers=provider_catalog.query_providers,
-        env=os.environ,
-    )
-    gate_provider_factory = build_gate_provider_factory(
-        runtime_dir=config.runtime_dir,
-        provider_config_resolver=resolver,
-        gate_providers=provider_catalog.gate_providers,
-        env=os.environ,
-    )
-    agent_run_status_port = None
-    agent_prompt_dispatch_port = None
-    special_event_handlers: tuple[SpecialEventHandler, ...] = ()
-    lifecycle_reconciliation_hooks: tuple[LifecycleReconciliationHook, ...] = ()
-    completion_dispatch_hooks: tuple[CompletionDispatchHook, ...] = ()
-    if include_default_domain_handlers and not is_pure_orchestration_core_profile(
-        worker_config.provider_profile
-    ):
-        agent_run_status_port = build_agent_run_status_port(runtime_dir=config.runtime_dir)
-        agent_prompt_dispatch_port = build_agent_prompt_dispatch_port(
-            runtime_dir=config.runtime_dir
-        )
-
-        from ..providers import build_agent_default_effect_handlers
-
-        (
-            special_event_handlers,
-            lifecycle_reconciliation_hooks,
-            completion_dispatch_hooks,
-        ) = build_agent_default_effect_handlers(provider_factory=provider_factory)
     return EffectWorkerWiring(
-        provider_config_resolver=resolver,
+        provider_config_resolver=runtime_wiring.provider_config_resolver,
         workflow_event_journal=workflow_event_journal,
         event_queue=event_queue,
         lock_path=lock_path,
@@ -198,14 +238,14 @@ def build_effect_worker_wiring(
         gate_execution_store=gate_execution_store,
         queued_agent_prompt_store=queued_agent_prompt_store,
         executor=executor,
-        provider_factory=provider_factory,
-        query_provider_factory=query_provider_factory,
-        gate_provider_factory=gate_provider_factory,
-        agent_run_status_port=agent_run_status_port,
-        agent_prompt_dispatch_port=agent_prompt_dispatch_port,
-        special_event_handlers=special_event_handlers,
-        lifecycle_reconciliation_hooks=lifecycle_reconciliation_hooks,
-        completion_dispatch_hooks=completion_dispatch_hooks,
+        provider_factory=runtime_wiring.provider_factory,
+        query_provider_factory=runtime_wiring.query_provider_factory,
+        gate_provider_factory=runtime_wiring.gate_provider_factory,
+        agent_run_status_port=runtime_wiring.agent_run_status_port,
+        agent_prompt_dispatch_port=runtime_wiring.agent_prompt_dispatch_port,
+        special_event_handlers=runtime_wiring.special_event_handlers,
+        lifecycle_reconciliation_hooks=runtime_wiring.lifecycle_reconciliation_hooks,
+        completion_dispatch_hooks=runtime_wiring.completion_dispatch_hooks,
     )
 
 

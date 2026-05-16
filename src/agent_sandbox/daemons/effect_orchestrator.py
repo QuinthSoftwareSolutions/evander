@@ -7,7 +7,7 @@ import logging
 import os
 import random
 import time
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,7 +21,6 @@ from agent_sandbox.config import (
     OrchestrationCoreConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
-from agent_sandbox.effects.registry import EffectProviderFactory, EffectProviderRegistry
 from agent_sandbox.events.internal import InternalEventBus, InternalEventSource
 from agent_sandbox.events.models import (
     EffectDefinitionDiscriminated,
@@ -33,12 +32,11 @@ from agent_sandbox.events.models import (
     TriggerDefinitionDiscriminated,
     TriggerEvent,
 )
-from agent_sandbox.gates.registry import GateProviderFactory, GateProviderRegistry
 from agent_sandbox.gate_runtime import (
     GateRuntimeError,
     require_object_payload,
 )
-from agent_sandbox.messaging.wake_dispatch import single_instance_lock
+from agent_sandbox.orchestration.host_polling import HostFileLockManager, HostSleeper
 from agent_sandbox.orchestration.adapters import (
     EffectCompletionPublisherAdapter,
     EffectDependencyResolverAdapter,
@@ -47,11 +45,10 @@ from agent_sandbox.orchestration.adapters import (
     EffectExecutionRecorderAdapter,
 )
 from agent_sandbox.provider_config import ProviderConfigResolver
-from agent_sandbox.queries.registry import QueryProviderFactory, QueryProviderRegistry
 from agent_sandbox.runtime import RuntimeContext
 from agent_sandbox.app_bootstrap import build_runtime
 from agent_sandbox.platform_integrations import PlatformServiceBundle, RuntimeAssemblyInterface
-from agent_sandbox.triggers.queue import TriggerEventQueue, TriggerQueueRecord
+from agent_sandbox.triggers.queue import TriggerQueueRecord
 from agent_sandbox.workflow.runtime_config import (
     FixedTriggerOrchestratorWorkerGlobalConfigReloader,
     TriggerOrchestratorWorkerGlobalConfigReloader,
@@ -75,11 +72,11 @@ from agent_sandbox.workflow.engine.node_executors import (
     ProviderQueryNodeExecutor,
 )
 from agent_sandbox.workflow.engine import OrchestrationLoop
-from agent_sandbox.workflow.plugins import load_provider_plugins
 from agent_sandbox.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
 from agent_sandbox.orchestration.wiring import EffectWorkerWiring, build_effect_worker_wiring
+from agent_sandbox.orchestration.wiring.effect import build_effect_provider_runtime_wiring
 from agent_sandbox.orchestration.effect_extensions import SpecialEventResult
-from agent_sandbox.gates.providers.await_agent import (
+from agent_sandbox.gates.providers.await_agent import (  # noqa: F401
     AwaitAgentPendingRecord,
     _await_agent_pending_target,
 )
@@ -94,6 +91,11 @@ from agent_sandbox.repositories.orchestration import (
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "AwaitAgentPendingRecord",
+    "_await_agent_pending_target",
+]
+
 _DEFAULT_MAX_GRAPH_DEPTH = 16
 _DEFAULT_MAX_EVENTS_PER_CYCLE = 200
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
@@ -104,18 +106,6 @@ WorkflowNodeDefinition = (
     | EffectDefinitionDiscriminated
     | QueryDefinitionDiscriminated
 )
-
-
-class _LockManager:
-    def lock(self, path: Path):
-        return single_instance_lock(path)
-
-
-class _Sleeper:
-    def sleep(self, seconds: float) -> None:
-        time.sleep(seconds)
-
-
 class EffectExecutionRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -325,8 +315,8 @@ class EffectOrchestratorWorker:
                 jitter_seconds=self.worker_config.jitter_seconds,
                 lock_path=self.lock_path,
             ),
-            lock_manager=_LockManager(),
-            sleeper=_Sleeper(),
+            lock_manager=HostFileLockManager(),
+            sleeper=HostSleeper(),
             run_cycle=self.run_once,
             get_sleep_seconds=lambda result: result.next_sleep_seconds,
         )
@@ -342,7 +332,60 @@ class EffectOrchestratorWorker:
 
     def run_once(self) -> EffectOrchestratorCycleResult:
         latest_config, _changed = self._config_reloader.get_latest()
-        self.worker_config = latest_config
+        previous_config = self.worker_config
+        active_config = previous_config
+        config_changed = latest_config != previous_config
+        if config_changed:
+            if _provider_loader_signature(latest_config) != _provider_loader_signature(
+                previous_config
+            ):
+                try:
+                    runtime_wiring = build_effect_provider_runtime_wiring(
+                        config=self.config,
+                        worker_config=latest_config,
+                        runtime=self.runtime,
+                        provider_config_resolver=self.provider_config_resolver,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Effect orchestrator provider_loader reload failed revision=%s; "
+                        "restart or fix configuration before retrying",
+                        _config_revision_hash(latest_config),
+                    )
+                    latest_config = previous_config
+                else:
+                    self.provider_config_resolver = runtime_wiring.provider_config_resolver
+                    self.provider_factory = runtime_wiring.provider_factory
+                    self.query_provider_factory = runtime_wiring.query_provider_factory
+                    self.gate_provider_factory = runtime_wiring.gate_provider_factory
+                    self.agent_run_status_port = runtime_wiring.agent_run_status_port
+                    self.agent_prompt_dispatch_port = runtime_wiring.agent_prompt_dispatch_port
+                    self._special_event_handlers = runtime_wiring.special_event_handlers
+                    self._lifecycle_reconciliation_hooks = (
+                        runtime_wiring.lifecycle_reconciliation_hooks
+                    )
+                    self._completion_dispatch_hooks = runtime_wiring.completion_dispatch_hooks
+                    self._effect_provider_class_registry = getattr(
+                        self.provider_factory, "registry", None
+                    )
+                    self._gate_providers.clear()
+                    self._gate_provider_factory_cache_id = id(self.gate_provider_factory)
+                    self.gate_executor_registry = NodeExecutorRegistry()
+                    self.effect_executor_registry = NodeExecutorRegistry()
+                    self.query_executor_registry = NodeExecutorRegistry()
+                    self._register_default_node_executors()
+            if latest_config != previous_config:
+                self.worker_config = latest_config
+                active_config = latest_config
+                logger.info(
+                    "Effect orchestrator config revision changed revision=%s node_count=%d edge_count=%d",
+                    _config_revision_hash(latest_config),
+                    len(latest_config.triggers)
+                    + len(latest_config.gates)
+                    + len(latest_config.effects)
+                    + len(latest_config.queries),
+                    len(latest_config.edges),
+                )
         config_revision = _config_revision_hash(latest_config)
         pending_events_scanned = 0
         events_processed = 0
@@ -350,7 +393,7 @@ class EffectOrchestratorWorker:
         effect_executions_completed = 0
         completion_events_published = 0
 
-        graph = _build_execution_graph(self.worker_config)
+        graph = _build_execution_graph(active_config)
         self._log_graph_revision_change(
             config_revision=config_revision,
             node_count=len(graph.nodes_by_id),
@@ -602,13 +645,29 @@ class EffectOrchestratorWorker:
         reconciled = 0
         graph = self._build_execution_graph()
         for hook in self._lifecycle_reconciliation_hooks:
-            reconciled += int(hook.reconcile(worker=self, graph=graph) or 0)
+            hook_name = hook.__class__.__name__
+            try:
+                reconciled += int(hook.reconcile(worker=self, graph=graph) or 0)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Effect orchestrator maintenance reconciliation failed "
+                    "phase=waiting_reconciliation hook=%s",
+                    hook_name,
+                )
         return reconciled
 
     def _run_post_completion_dispatch_hooks(self) -> int:
         dispatched = 0
         for hook in self._completion_dispatch_hooks:
-            dispatched += int(hook.dispatch(worker=self) or 0)
+            hook_name = hook.__class__.__name__
+            try:
+                dispatched += int(hook.dispatch(worker=self) or 0)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Effect orchestrator maintenance reconciliation failed "
+                    "phase=post_completion_dispatch hook=%s",
+                    hook_name,
+                )
         return dispatched
 
     def _run_special_event_handlers(
@@ -693,10 +752,20 @@ class EffectOrchestratorWorker:
     def _reconcile_gate_providers(self, *, graph: ExecutionGraph) -> int:
         reconciled = 0
         for gate_type in {gate.type for gate in graph.gates_by_id.values()}:
-            provider = self._get_gate_provider(gate_type)
-            if provider is None:
-                continue
-            reconciled += int(provider.reconcile(worker=self, graph=graph) or 0)
+            provider: Any | None = None
+            try:
+                provider = self._get_gate_provider(gate_type)
+                if provider is None:
+                    continue
+                reconciled += int(provider.reconcile(worker=self, graph=graph) or 0)
+            except Exception:  # noqa: BLE001
+                provider_name = provider.__class__.__name__ if provider is not None else None
+                logger.exception(
+                    "Effect orchestrator maintenance reconciliation failed "
+                    "phase=gate_reconciliation gate_type=%s provider=%s",
+                    gate_type,
+                    provider_name,
+                )
         return reconciled
 
     @staticmethod
@@ -1826,6 +1895,15 @@ def _completion_event_id(*, parent_event_id: str, node_id: str, prefix: str) -> 
 
 def _config_revision_hash(worker_config: TriggerOrchestratorWorkerGlobalConfig) -> str:
     payload = worker_config.model_dump(mode="json")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _provider_loader_signature(worker_config: TriggerOrchestratorWorkerGlobalConfig) -> str:
+    payload = {
+        "provider_loader": worker_config.provider_loader.model_dump(mode="json"),
+        "provider_include_builtin": worker_config.provider_include_builtin,
+    }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 

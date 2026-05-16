@@ -15,35 +15,22 @@ from ..adapters.provider_factories import build_trigger_provider_factory
 
 
 @dataclass(frozen=True)
-class TriggerWorkerWiring:
+class TriggerProviderRuntimeWiring:
     provider_config_resolver: ProviderConfigResolver
-    event_queue: TriggerEventQueue
     provider_factory: TriggerProviderFactory
-    gate_cursor_repository: JsonGateCursorRepository
 
 
-def build_trigger_worker_wiring(
+def build_trigger_provider_runtime_wiring(
     *,
     config: GatewayConfig,
     worker_config: TriggerOrchestratorWorkerGlobalConfig,
     runtime: RuntimeContext,
     provider_config_resolver: ProviderConfigResolver | None = None,
-) -> TriggerWorkerWiring:
+) -> TriggerProviderRuntimeWiring:
     runtime_provider_resolver = getattr(runtime, "provider_config", None)
     resolver = (
         provider_config_resolver or runtime_provider_resolver or ProviderConfigResolver(config)
     )
-    if _sqlite_orchestration_store_enabled(worker_config):
-        event_queue = SqliteTriggerEventQueue(
-            worker_config.orchestration_store_path,
-            retention_days=int(worker_config.orchestration_retention_days),
-        )
-    else:
-        event_queue = TriggerEventQueue(
-            worker_config.event_queue_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
-        )
-    gate_cursor_repository = JsonGateCursorRepository(worker_config.event_queue_cursor_store_path)
     provider_catalog = load_provider_plugins(
         module_names=resolve_provider_module_names(
             profile_name=worker_config.provider_profile,
@@ -64,10 +51,48 @@ def build_trigger_worker_wiring(
             "workflow_event_journal_path": str(worker_config.workflow_event_journal_path),
         }
     )
-    return TriggerWorkerWiring(
+    return TriggerProviderRuntimeWiring(
         provider_config_resolver=resolver,
-        event_queue=event_queue,
         provider_factory=provider_factory,
+    )
+
+
+@dataclass(frozen=True)
+class TriggerWorkerWiring:
+    provider_config_resolver: ProviderConfigResolver
+    event_queue: TriggerEventQueue | SqliteTriggerEventQueue
+    provider_factory: TriggerProviderFactory
+    gate_cursor_repository: JsonGateCursorRepository
+
+
+def build_trigger_worker_wiring(
+    *,
+    config: GatewayConfig,
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+    runtime: RuntimeContext,
+    provider_config_resolver: ProviderConfigResolver | None = None,
+) -> TriggerWorkerWiring:
+    if _sqlite_orchestration_store_enabled(worker_config):
+        event_queue = SqliteTriggerEventQueue(
+            worker_config.orchestration_store_path,
+            retention_days=int(worker_config.orchestration_retention_days),
+        )
+    else:
+        event_queue = TriggerEventQueue(
+            worker_config.event_queue_store_path,
+            journal_path=worker_config.workflow_event_journal_path,
+        )
+    gate_cursor_repository = JsonGateCursorRepository(worker_config.event_queue_cursor_store_path)
+    runtime_wiring = build_trigger_provider_runtime_wiring(
+        config=config,
+        worker_config=worker_config,
+        runtime=runtime,
+        provider_config_resolver=provider_config_resolver,
+    )
+    return TriggerWorkerWiring(
+        provider_config_resolver=runtime_wiring.provider_config_resolver,
+        event_queue=event_queue,
+        provider_factory=runtime_wiring.provider_factory,
         gate_cursor_repository=gate_cursor_repository,
     )
 

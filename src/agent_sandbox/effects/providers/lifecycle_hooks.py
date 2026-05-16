@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import json
 from datetime import UTC, datetime
 from typing import Any
@@ -18,6 +19,8 @@ from agent_sandbox.orchestration.effect_extensions import (
 )
 from agent_sandbox.workflow.contracts import NODE_OUTPUTS_CONTEXT_KEY
 from agent_sandbox.workflow.migrations import AGENT_PROMPT_STARTED_PORT
+
+logger = logging.getLogger(__name__)
 
 
 class ProviderCompletionLifecycleHook(EffectLifecycleHookBase):
@@ -67,10 +70,18 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         if not queued_records:
             return dispatched
 
-        summaries = {
-            str(getattr(item, "vm_name", "") or "").strip(): item
-            for item in list_vm_summaries_for_agent_reconciliation(worker)
-        }
+        try:
+            summaries = {
+                str(getattr(item, "vm_name", "") or "").strip(): item
+                for item in list_vm_summaries_for_agent_reconciliation(worker)
+            }
+        except Exception:
+            logger.exception(
+                "AgentEnqueuePromptQueueDispatchHook inventory reconciliation skipped "
+                "phase=post_completion_dispatch queued_non_container_records=%d",
+                len(queued_records),
+            )
+            return dispatched
 
         for queue_key, record in sorted(queued_records.items()):
             graph = worker._build_execution_graph()

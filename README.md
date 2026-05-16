@@ -673,11 +673,11 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
 - `trigger:teams:new-message` message arrival is driven by host-side Teams ingest polling on the
   host, not by the wake workers. Discord inbox wakeups and scheduled resumes are handled by
   `agent-sandbox-discord-wake` and `agent-sandbox-scheduled-wake`.
-- `trigger:teams:new-message` fires at most once per poll cycle when new allowlisted Teams
-  messages have arrived. Its payload includes the triggering Teams `channel_target`, cursor,
-  message id, target type, and a normalized `message` object for the latest matching message.
-  Agents that need surrounding context should call `teams_get_messages` with that
-  `channel_target`.
+- `trigger:teams:new-message` emits one event per new allowlisted Teams message discovered
+  during a poll. Its payload includes the triggering Teams `channel_target`, cursor, message id,
+  target type, and a normalized `message` object for the corresponding message, not just the
+  latest matching message in the batch. Agents that need surrounding context should call
+  `teams_get_messages` with that `channel_target`.
 - `trigger:teams:new-message` defines `targets`, where each target can optionally narrow wakes
   with its own `message_filter`.
 - The initial supported filter shape is content substring matching:

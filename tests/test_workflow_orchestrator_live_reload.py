@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import importlib
+import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
-import json
+from textwrap import dedent
 
 from agent_sandbox.admin.service import AdminService
-from agent_sandbox.config import GatewayConfig
+from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from agent_sandbox.daemons.effect_orchestrator import build_effect_orchestrator_worker
-from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.daemons.trigger_orchestrator import build_trigger_orchestrator_worker
+from agent_sandbox.events.models import TriggerEvent
 
 
 class _QueuedTriggerProvider:
@@ -30,6 +33,127 @@ class _RecordingEffectProvider:
     def execute(self, *, resolved_config=None):
         self._calls.append(self._effect_id)
         return {"success": True, "effect_id": self._effect_id}
+
+
+def _reload_worker_config(
+    runtime_dir: Path,
+    *,
+    provider_modules: list[str] | None = None,
+    triggers: list[dict[str, object]] | None = None,
+    gates: list[dict[str, object]] | None = None,
+    effects: list[dict[str, object]] | None = None,
+    queries: list[dict[str, object]] | None = None,
+    edges: list[dict[str, object]] | None = None,
+) -> TriggerOrchestratorWorkerGlobalConfig:
+    return TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "provider_loader": {
+                "provider_entry_points_enabled": False,
+                "provider_modules": provider_modules or [],
+            },
+            "triggers": triggers or [],
+            "gates": gates or [],
+            "effects": effects or [],
+            "queries": queries or [],
+            "edges": edges or [],
+        }
+    )
+
+
+def _save_worker_config(
+    project_dir: Path, worker_config: TriggerOrchestratorWorkerGlobalConfig
+) -> None:
+    _workflow_config_path(project_dir).parent.mkdir(parents=True, exist_ok=True)
+    _workflow_config_path(project_dir).write_text(
+        json.dumps(worker_config.model_dump(mode="json"), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def _write_reload_provider_module(
+    module_root: Path, module_name: str = "workflow_reload_plugin"
+) -> str:
+    module_path = module_root / f"{module_name}.py"
+    module_path.write_text(
+        dedent(
+            """
+            from __future__ import annotations
+
+            from agent_sandbox.events.models import TriggerEvent
+            from agent_sandbox.effects.providers.base import EffectProviderBase
+            from agent_sandbox.gates.providers.base import GateProviderBase
+            from agent_sandbox.queries.providers.base import QueryProviderBase
+            from agent_sandbox.triggers.providers.base import TriggerProviderBase
+            from agent_sandbox.workflow.plugins import ProviderPluginRegistration
+
+            TRIGGER_EVENT_QUEUE: dict[str, list[TriggerEvent]] = {}
+            TRIGGER_POLLS: list[str] = []
+            EFFECT_CALLS: list[str] = []
+            QUERY_CALLS: list[str] = []
+            GATE_CALLS: list[str] = []
+
+            class CustomTriggerProvider(TriggerProviderBase):
+                def poll(self) -> list[TriggerEvent]:
+                    trigger_id = self.trigger_definition.id
+                    TRIGGER_POLLS.append(trigger_id)
+                    queued = TRIGGER_EVENT_QUEUE.get(trigger_id, [])
+                    TRIGGER_EVENT_QUEUE[trigger_id] = []
+                    return list(queued)
+
+            class CustomEffectProvider(EffectProviderBase):
+                def execute(self, *, resolved_config=None):
+                    del resolved_config
+                    EFFECT_CALLS.append(self.effect_definition.id)
+                    return {"success": True, "effect_id": self.effect_definition.id}
+
+            class CustomQueryProvider(QueryProviderBase):
+                def execute(self, *, resolved_config=None):
+                    del resolved_config
+                    QUERY_CALLS.append(self.query_definition.id)
+                    return {"success": True, "query_id": self.query_definition.id}
+
+            class CustomGateProvider(GateProviderBase):
+                def execute(self, **kwargs):
+                    worker = kwargs["worker"]
+                    queue_record = kwargs["queue_record"]
+                    gate = kwargs["gate"]
+                    started_at = kwargs["started_at"]
+                    config_revision = kwargs["config_revision"]
+                    inputs_by_source = kwargs["inputs_by_source"]
+                    input_event_ids_by_source = kwargs["input_event_ids_by_source"]
+                    input_occurred_at_by_source = kwargs["input_occurred_at_by_source"]
+
+                    GATE_CALLS.append(gate.id)
+                    worker._write_gate_record(
+                        queue_record=queue_record,
+                        gate=gate,
+                        status="succeeded",
+                        started_at=started_at,
+                        resolved_config={"gate_id": gate.id},
+                        outputs={"gate_id": gate.id},
+                        inputs_by_source=inputs_by_source,
+                        input_event_ids_by_source=input_event_ids_by_source,
+                        input_occurred_at_by_source=input_occurred_at_by_source,
+                        config_revision=config_revision,
+                        publish_completion_event=True,
+                    )
+                    return True
+
+            def register_providers():
+                return ProviderPluginRegistration(
+                    trigger_providers={"trigger:custom:reload": CustomTriggerProvider},
+                    gate_providers={"gate:custom:reload": CustomGateProvider},
+                    effect_providers={"effect:custom:reload": CustomEffectProvider},
+                    query_providers={"query:custom:reload": CustomQueryProvider},
+                )
+            """
+        ),
+        encoding="utf-8",
+    )
+    return module_name
 
 
 def _workflow_config_path(project_dir: Path) -> Path:
@@ -148,6 +272,166 @@ def test_workers_reload_saved_workflow_without_restarting_objects(tmp_path: Path
     assert id(effect_worker) == effect_worker_id
     assert id(trigger_worker.runtime) == trigger_runtime_id
     assert id(effect_worker.runtime) == effect_runtime_id
+
+
+def test_trigger_worker_reloads_custom_provider_module(tmp_path: Path, monkeypatch) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    initial_config = _reload_worker_config(runtime_dir)
+    _save_worker_config(tmp_path, initial_config)
+
+    module_name = _write_reload_provider_module(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    sys.modules.pop(module_name, None)
+
+    trigger_worker = build_trigger_orchestrator_worker(config, project_dir=tmp_path)
+    initial_provider_factory = trigger_worker.provider_factory
+
+    first_cycle = trigger_worker.run_once()
+    assert first_cycle.configured_triggers == 0
+
+    updated_config = _reload_worker_config(
+        runtime_dir,
+        provider_modules=[module_name],
+        triggers=[
+            {
+                "id": "reload-trigger",
+                "display_name": "Reloaded custom trigger",
+                "type": "trigger:custom:reload",
+                "expression": "* * * * *",
+            }
+        ],
+    )
+    _save_worker_config(tmp_path, updated_config)
+    module = importlib.import_module(module_name)
+    module.TRIGGER_EVENT_QUEUE["reload-trigger"] = [
+        TriggerEvent(
+            event_id="reload-event-1",
+            trigger_id="reload-trigger",
+            trigger_type="trigger:custom:reload",
+            occurred_at=datetime(2026, 4, 19, 15, 0, tzinfo=timezone.utc),
+            payload={"kind": "reload"},
+        )
+    ]
+
+    second_cycle = trigger_worker.run_once()
+
+    assert second_cycle.configured_triggers == 1
+    assert second_cycle.events_published == 1
+    assert trigger_worker.provider_factory is not initial_provider_factory
+    assert trigger_worker.worker_config.provider_modules == [module_name]
+    assert trigger_worker.worker_config.triggers[0].type == "trigger:custom:reload"
+    assert module.TRIGGER_POLLS == ["reload-trigger"]
+    pending_events = trigger_worker.event_queue.list_pending()
+    assert [event.event_id for event in pending_events] == ["reload-event-1"]
+    assert pending_events[0].trigger_type == "trigger:custom:reload"
+
+
+def test_effect_worker_reloads_custom_provider_module(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    initial_config = _reload_worker_config(runtime_dir)
+    _save_worker_config(tmp_path, initial_config)
+
+    module_name = _write_reload_provider_module(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    sys.modules.pop(module_name, None)
+
+    effect_worker = build_effect_orchestrator_worker(config, project_dir=tmp_path)
+    initial_provider_factory = effect_worker.provider_factory
+    initial_query_provider_factory = effect_worker.query_provider_factory
+    initial_gate_provider_factory = effect_worker.gate_provider_factory
+
+    first_cycle = effect_worker.run_once()
+    assert first_cycle.events_processed == 0
+
+    updated_config = _reload_worker_config(
+        runtime_dir,
+        provider_modules=[module_name],
+        triggers=[
+            {
+                "id": "source-trigger",
+                "display_name": "Source trigger",
+                "type": "trigger:custom:reload",
+                "expression": "* * * * *",
+            }
+        ],
+        gates=[
+            {
+                "id": "custom-gate",
+                "display_name": "Custom gate",
+                "type": "gate:custom:reload",
+            }
+        ],
+        effects=[
+            {
+                "id": "custom-effect",
+                "display_name": "Custom effect",
+                "type": "effect:custom:reload",
+            }
+        ],
+        queries=[
+            {
+                "id": "custom-query",
+                "display_name": "Custom query",
+                "type": "query:custom:reload",
+            }
+        ],
+        edges=[
+            {"source_id": "source-trigger", "target_id": "custom-gate"},
+            {"source_id": "custom-gate", "target_id": "custom-effect"},
+            {"source_id": "custom-gate", "target_id": "custom-query"},
+        ],
+    )
+    _save_worker_config(tmp_path, updated_config)
+    module = importlib.import_module(module_name)
+    effect_worker.event_queue.publish(
+        TriggerEvent(
+            event_id="source-event-1",
+            trigger_id="source-trigger",
+            trigger_type="trigger:custom:reload",
+            occurred_at=datetime(2026, 4, 19, 16, 0, tzinfo=timezone.utc),
+            payload={"kind": "source"},
+        )
+    )
+
+    second_cycle = effect_worker.run_once()
+    effect_worker._wait_for_inflight_completion(timeout_seconds=2)
+    effect_worker.run_once()
+
+    assert second_cycle.events_processed >= 1
+    assert effect_worker.provider_factory is not initial_provider_factory
+    assert effect_worker.query_provider_factory is not initial_query_provider_factory
+    assert effect_worker.gate_provider_factory is not initial_gate_provider_factory
+    assert effect_worker.worker_config.provider_modules == [module_name]
+    assert module.GATE_CALLS == ["custom-gate"]
+    assert module.EFFECT_CALLS == ["custom-effect"]
+    assert module.QUERY_CALLS == ["custom-query"]
+
+    gate_records = effect_worker.gate_execution_store.list_executions()
+    effect_records = effect_worker.execution_store.list_executions()
+    assert any(
+        record.gate_type == "gate:custom:reload" and record.status == "succeeded"
+        for record in gate_records
+    )
+    assert any(
+        record.effect_type == "effect:custom:reload" and record.status == "succeeded"
+        for record in effect_records
+    )
+    assert any(
+        record.effect_type == "query:custom:reload" and record.status == "succeeded"
+        for record in effect_records
+    )
+    assert all(
+        "no_gate_provider_registered" not in (record.error or "") for record in gate_records
+    )
+    assert all(
+        "no_effect_executor_registered" not in (record.error or "") for record in effect_records
+    )
 
 
 def test_workers_keep_last_known_good_config_when_reload_payload_is_invalid(
