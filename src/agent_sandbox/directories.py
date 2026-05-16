@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from collections import defaultdict
 from pathlib import Path
+from typing import TypeVar
 from uuid import uuid4
 
 from agent_sandbox.repositories.directories import DirectoryRepository, JsonDirectoryRepository
 from agent_sandbox.models import Directory, DirectoryDetails, DirectoryInfo, DirectoryPath
 
 ROOT_DIRECTORY_ID = "root"
+R = TypeVar("R")
 
 
 class DirectoryStore:
@@ -15,27 +18,7 @@ class DirectoryStore:
         self._repository = repository or JsonDirectoryRepository(path)
 
     def ensure_root(self) -> None:
-        items = self._repository.read_all()
-        root = items.get(ROOT_DIRECTORY_ID)
-        if root is None:
-            items[ROOT_DIRECTORY_ID] = Directory(
-                id=ROOT_DIRECTORY_ID, name=ROOT_DIRECTORY_ID, parent_id=None
-            )
-            self._repository.write_all(items)
-            return
-        if (
-            root.id != ROOT_DIRECTORY_ID
-            or root.name != ROOT_DIRECTORY_ID
-            or root.parent_id is not None
-        ):
-            items[ROOT_DIRECTORY_ID] = Directory(
-                id=ROOT_DIRECTORY_ID,
-                name=ROOT_DIRECTORY_ID,
-                parent_id=None,
-                created_at=root.created_at,
-                metadata=root.metadata,
-            )
-            self._repository.write_all(items)
+        self.update_all(lambda _items: None)
 
     def read_all(self) -> dict[str, Directory]:
         self.ensure_root()
@@ -44,21 +27,23 @@ class DirectoryStore:
         return items
 
     def put(self, directory: Directory) -> None:
-        items = self._repository.read_all()
         if directory.id == ROOT_DIRECTORY_ID:
             if directory.name != ROOT_DIRECTORY_ID or directory.parent_id is not None:
                 raise ValueError("root directory identity is immutable")
-        items[directory.id] = directory
-        self._validate_tree(items)
-        self._repository.write_all(items)
+
+        def update(items: dict[str, Directory]) -> None:
+            items[directory.id] = directory
+
+        self.update_all(update)
 
     def delete(self, directory_id: str) -> None:
         if directory_id == ROOT_DIRECTORY_ID:
             raise ValueError("root directory cannot be deleted")
-        items = self._repository.read_all()
-        items.pop(directory_id, None)
-        self._validate_tree(items)
-        self._repository.write_all(items)
+
+        def update(items: dict[str, Directory]) -> None:
+            items.pop(directory_id, None)
+
+        self.update_all(update)
 
     def get(self, directory_id: str) -> Directory | None:
         return self.read_all().get(directory_id)
@@ -66,6 +51,15 @@ class DirectoryStore:
     def write_all(self, items: dict[str, Directory]) -> None:
         self._validate_tree(items)
         self._repository.write_all(items)
+
+    def update_all(self, updater: Callable[[dict[str, Directory]], R]) -> R:
+        def update(items: dict[str, Directory]) -> R:
+            self._ensure_root_record(items)
+            result = updater(items)
+            self._validate_tree(items)
+            return result
+
+        return self._repository.update_all(update)
 
     def validate_path(self, path: str) -> str:
         canonical = DirectoryPath(segments=path).as_posix()
@@ -83,6 +77,27 @@ class DirectoryStore:
                 )
             cursor = next_directory.id
         return canonical
+
+    @staticmethod
+    def _ensure_root_record(items: dict[str, Directory]) -> None:
+        root = items.get(ROOT_DIRECTORY_ID)
+        if root is None:
+            items[ROOT_DIRECTORY_ID] = Directory(
+                id=ROOT_DIRECTORY_ID, name=ROOT_DIRECTORY_ID, parent_id=None
+            )
+            return
+        if (
+            root.id != ROOT_DIRECTORY_ID
+            or root.name != ROOT_DIRECTORY_ID
+            or root.parent_id is not None
+        ):
+            items[ROOT_DIRECTORY_ID] = Directory(
+                id=ROOT_DIRECTORY_ID,
+                name=ROOT_DIRECTORY_ID,
+                parent_id=None,
+                created_at=root.created_at,
+                metadata=root.metadata,
+            )
 
     @staticmethod
     def _validate_tree(items: dict[str, Directory]) -> None:
@@ -124,49 +139,53 @@ class DirectoryService:
         self._store = store
 
     def create(self, *, parent: str, name: str) -> DirectoryInfo:
-        items = self._store.read_all()
-        parent_directory = self._resolve(parent, items)
-        directory = Directory(id=uuid4().hex, name=name, parent_id=parent_directory.id)
-        items[directory.id] = directory
-        self._write(items)
-        return self._to_info(directory, items)
+        def update(items: dict[str, Directory]) -> DirectoryInfo:
+            parent_directory = self._resolve(parent, items)
+            directory = Directory(id=uuid4().hex, name=name, parent_id=parent_directory.id)
+            items[directory.id] = directory
+            return self._to_info(directory, items)
+
+        return self._store.update_all(update)
 
     def rename(self, reference: str, *, new_name: str) -> DirectoryInfo:
-        items = self._store.read_all()
-        directory = self._resolve(reference, items)
-        self._ensure_not_root(directory.id, action="renamed")
-        updated = directory.model_copy(update={"name": new_name})
-        items[directory.id] = updated
-        self._write(items)
-        return self._to_info(updated, items)
+        def update(items: dict[str, Directory]) -> DirectoryInfo:
+            directory = self._resolve(reference, items)
+            self._ensure_not_root(directory.id, action="renamed")
+            updated = directory.model_copy(update={"name": new_name})
+            items[directory.id] = updated
+            return self._to_info(updated, items)
+
+        return self._store.update_all(update)
 
     def move(self, reference: str, *, new_parent: str) -> DirectoryInfo:
-        items = self._store.read_all()
-        directory = self._resolve(reference, items)
-        self._ensure_not_root(directory.id, action="moved")
-        new_parent_directory = self._resolve(new_parent, items)
-        if new_parent_directory.id == directory.id:
-            raise ValueError("directory cannot be moved into itself")
-        descendant_ids = self._descendant_ids(directory.id, items)
-        if new_parent_directory.id in descendant_ids:
-            raise ValueError("directory cannot be moved into its descendant")
-        updated = directory.model_copy(update={"parent_id": new_parent_directory.id})
-        items[directory.id] = updated
-        self._write(items)
-        return self._to_info(updated, items)
+        def update(items: dict[str, Directory]) -> DirectoryInfo:
+            directory = self._resolve(reference, items)
+            self._ensure_not_root(directory.id, action="moved")
+            new_parent_directory = self._resolve(new_parent, items)
+            if new_parent_directory.id == directory.id:
+                raise ValueError("directory cannot be moved into itself")
+            descendant_ids = self._descendant_ids(directory.id, items)
+            if new_parent_directory.id in descendant_ids:
+                raise ValueError("directory cannot be moved into its descendant")
+            updated = directory.model_copy(update={"parent_id": new_parent_directory.id})
+            items[directory.id] = updated
+            return self._to_info(updated, items)
+
+        return self._store.update_all(update)
 
     def delete(self, reference: str, *, force: bool = False) -> dict[str, object]:
-        items = self._store.read_all()
-        directory = self._resolve(reference, items)
-        self._ensure_not_root(directory.id, action="deleted")
-        descendant_ids = self._descendant_ids(directory.id, items)
-        if descendant_ids and not force:
-            raise ValueError("directory is not empty; pass force=True to delete recursively")
-        deleted_ids = sorted({directory.id, *descendant_ids})
-        for directory_id in deleted_ids:
-            items.pop(directory_id, None)
-        self._write(items)
-        return {"deleted_count": len(deleted_ids), "deleted_ids": deleted_ids}
+        def update(items: dict[str, Directory]) -> dict[str, object]:
+            directory = self._resolve(reference, items)
+            self._ensure_not_root(directory.id, action="deleted")
+            descendant_ids = self._descendant_ids(directory.id, items)
+            if descendant_ids and not force:
+                raise ValueError("directory is not empty; pass force=True to delete recursively")
+            deleted_ids = sorted({directory.id, *descendant_ids})
+            for directory_id in deleted_ids:
+                items.pop(directory_id, None)
+            return {"deleted_count": len(deleted_ids), "deleted_ids": deleted_ids}
+
+        return self._store.update_all(update)
 
     def list_children(self, *, parent: str = ROOT_DIRECTORY_ID) -> list[DirectoryInfo]:
         items = self._store.read_all()
@@ -220,9 +239,6 @@ class DirectoryService:
         if directory is None:
             raise ValueError(f"directory {normalized!r} does not exist")
         return directory
-
-    def _write(self, items: dict[str, Directory]) -> None:
-        self._store.write_all(items)
 
     def _to_info(self, directory: Directory, items: dict[str, Directory]) -> DirectoryInfo:
         return DirectoryInfo.from_directory(directory, path=self._path_for_id(directory.id, items))
