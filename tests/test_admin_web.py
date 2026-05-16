@@ -2492,8 +2492,12 @@ def test_admin_web_user_api_rejects_regular_azure_user(tmp_path: Path, monkeypat
     assert create_user.status_code == 403
 
 
-def test_admin_web_exposes_admin_domain_smoke_endpoints(tmp_path: Path) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+def test_admin_web_exposes_admin_domain_smoke_endpoints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.setattr(service, "list_vms", lambda **kwargs: [])
+    client = TestClient(create_app(service))
 
     responses = {
         "agents": client.get("/api/admin/agents"),
@@ -2505,6 +2509,7 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(tmp_path: Path) -> None:
         "workers": client.get("/api/workers"),
         "configuration": client.get("/api/configuration/state"),
         "reports": client.get("/api/admin/reports/workflow-graph-activity"),
+        "conformance_reports": client.get("/api/admin/reports/conformance"),
     }
 
     assert responses["agents"].status_code == 200
@@ -2525,6 +2530,27 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(tmp_path: Path) -> None:
     assert responses["configuration"].json()["selected_directory_path"] == "root"
     assert responses["reports"].status_code == 200
     assert isinstance(responses["reports"].json()["graphs"], list)
+    assert responses["conformance_reports"].status_code == 200
+    assert len(responses["conformance_reports"].json()["reports"]) == 2
+
+
+def test_admin_web_conformance_report_endpoint_returns_invalid_records(
+    tmp_path: Path,
+) -> None:
+    config_path = write_config(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "trigger-conformance-report.json").write_text("{bad json", encoding="utf-8")
+    client = TestClient(create_app(AdminService(config_path)))
+
+    response = client.get("/api/admin/reports/conformance")
+
+    assert response.status_code == 200
+    payload = response.json()
+    reports = {report["kind"]: report for report in payload["reports"]}
+    assert reports["trigger"]["state"] == "invalid"
+    assert "not valid JSON" in reports["trigger"]["error"]
+    assert reports["effect"]["state"] == "missing"
 
 
 def test_admin_web_active_issue_filter_excludes_done_issues(tmp_path: Path) -> None:

@@ -474,6 +474,38 @@ class WorkflowGraphActivityReportPayload(BaseModel):
     graphs: list[WorkflowGraphActivityGraphPayload] = Field(default_factory=list)
 
 
+class ConformanceRequirementSnippetPayload(BaseModel):
+    requirement_id: str
+    status: str
+    details: str | None = None
+    remediation: str | None = None
+    coverage: list[str] = Field(default_factory=list)
+
+
+class ConformanceReportPayload(BaseModel):
+    kind: str
+    label: str
+    artifact_path: str
+    state: str
+    status: str | None = None
+    generated_at: datetime | None = None
+    requirement_counts: dict[str, int] = Field(default_factory=dict)
+    requirement_count: int = 0
+    missing_coverage_count: int = 0
+    missing_coverage: dict[str, list[str]] = Field(default_factory=dict)
+    traceability_task_count: int = 0
+    failing_requirements: list[ConformanceRequirementSnippetPayload] = Field(default_factory=list)
+    remediation_snippets: list[ConformanceRequirementSnippetPayload] = Field(default_factory=list)
+    error: str | None = None
+    guidance: str | None = None
+
+
+class ConformanceReportsPayload(BaseModel):
+    generated_at: datetime
+    stale_after_seconds: int
+    reports: list[ConformanceReportPayload] = Field(default_factory=list)
+
+
 class WorkflowRunClearPayload(BaseModel):
     worker_id: str = "trigger-orchestrator"
     event_id: str
@@ -2424,6 +2456,28 @@ def _read_json_object(path: Path | None) -> dict[str, object]:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+CONFORMANCE_REPORT_STALE_AFTER = timedelta(days=7)
+CONFORMANCE_REPORT_SNIPPET_LIMIT = 10
+CONFORMANCE_REPORT_TEXT_LIMIT = 500
+TRIGGER_CONFORMANCE_GUIDANCE = (
+    "PYTHONPATH=src python -m pytest -q tests/test_trigger_conformance_suite.py"
+)
+EFFECT_CONFORMANCE_GUIDANCE = (
+    "PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py"
+)
+
+
+def _trim_conformance_text(
+    value: object, *, limit: int = CONFORMANCE_REPORT_TEXT_LIMIT
+) -> str | None:
+    text = _coerce_optional_string(value)
+    if text is None:
+        return None
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 3].rstrip()}..."
 
 
 def _resolve_path_setting(*, base_dir: Path, value: object | None, fallback: Path) -> Path:
@@ -7473,6 +7527,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             limit=limit,
         )
 
+    def read_conformance_reports(self) -> ConformanceReportsPayload:
+        return self._read_conformance_reports()
+
     def clear_workflow_run(self, event_id: str) -> WorkflowRunClearPayload:
         return self.workflow_config_admin.clear_workflow_run(event_id)
 
@@ -9155,6 +9212,190 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             period_start=start_at,
             period_end=end_at,
             graphs=graphs,
+        )
+
+    def _read_conformance_reports(self) -> ConformanceReportsPayload:
+        now = _utc_now()
+        specs = (
+            {
+                "kind": "trigger",
+                "label": "Trigger",
+                "artifact_path": "trigger-conformance-report.json",
+                "guidance": TRIGGER_CONFORMANCE_GUIDANCE,
+            },
+            {
+                "kind": "effect",
+                "label": "Effect",
+                "artifact_path": "effect-conformance-report.json",
+                "guidance": EFFECT_CONFORMANCE_GUIDANCE,
+            },
+        )
+        return ConformanceReportsPayload(
+            generated_at=now,
+            stale_after_seconds=int(CONFORMANCE_REPORT_STALE_AFTER.total_seconds()),
+            reports=[self._read_conformance_report(now=now, **spec) for spec in specs],
+        )
+
+    def _read_conformance_report(
+        self,
+        *,
+        kind: str,
+        label: str,
+        artifact_path: str,
+        guidance: str,
+        now: datetime,
+    ) -> ConformanceReportPayload:
+        path = self.config.runtime_dir / artifact_path
+
+        def report(
+            state: str,
+            *,
+            status: str | None = None,
+            generated_at: datetime | None = None,
+            requirement_counts: dict[str, int] | None = None,
+            requirement_count: int = 0,
+            missing_coverage_count: int = 0,
+            missing_coverage: dict[str, list[str]] | None = None,
+            traceability_task_count: int = 0,
+            failing_requirements: list[ConformanceRequirementSnippetPayload] | None = None,
+            remediation_snippets: list[ConformanceRequirementSnippetPayload] | None = None,
+            error: str | None = None,
+        ) -> ConformanceReportPayload:
+            return ConformanceReportPayload(
+                kind=kind,
+                label=label,
+                artifact_path=artifact_path,
+                state=state,
+                status=status,
+                generated_at=generated_at,
+                requirement_counts=requirement_counts or {},
+                requirement_count=requirement_count,
+                missing_coverage_count=missing_coverage_count,
+                missing_coverage=missing_coverage or {},
+                traceability_task_count=traceability_task_count,
+                failing_requirements=failing_requirements or [],
+                remediation_snippets=remediation_snippets or [],
+                error=error,
+                guidance=guidance,
+            )
+
+        if not path.exists():
+            return report("missing", error=f"{artifact_path} has not been generated yet.")
+
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            return report("invalid", error=f"{artifact_path} is not valid JSON: {exc.msg}.")
+        except OSError as exc:
+            return report("invalid", error=f"{artifact_path} could not be read: {exc}.")
+
+        if not isinstance(payload, dict):
+            return report("invalid", error=f"{artifact_path} must contain a JSON object.")
+
+        raw_generated_at = payload.get("generated_at")
+        generated_at = _coerce_optional_datetime(raw_generated_at)
+        if generated_at is None:
+            return report("invalid", error=f"{artifact_path} is missing a valid generated_at.")
+
+        status = (_coerce_optional_string(payload.get("status")) or "").lower()
+        if status not in {"pass", "fail"}:
+            return report(
+                "invalid",
+                generated_at=generated_at,
+                error=f"{artifact_path} has unsupported status {payload.get('status')!r}.",
+            )
+
+        raw_requirements = payload.get("requirements")
+        if not isinstance(raw_requirements, list):
+            return report(
+                "invalid",
+                status=status,
+                generated_at=generated_at,
+                error=f"{artifact_path} requirements must be a list.",
+            )
+        raw_traceability_matrix = payload.get("traceability_matrix")
+        if not isinstance(raw_traceability_matrix, dict):
+            return report(
+                "invalid",
+                status=status,
+                generated_at=generated_at,
+                error=f"{artifact_path} traceability_matrix must be an object.",
+            )
+        raw_missing_coverage = payload.get("missing_coverage")
+        if not isinstance(raw_missing_coverage, dict):
+            return report(
+                "invalid",
+                status=status,
+                generated_at=generated_at,
+                error=f"{artifact_path} missing_coverage must be an object.",
+            )
+
+        requirement_counts: dict[str, int] = {}
+        failing_requirements: list[ConformanceRequirementSnippetPayload] = []
+        remediation_snippets: list[ConformanceRequirementSnippetPayload] = []
+        for index, raw_requirement in enumerate(raw_requirements):
+            if not isinstance(raw_requirement, dict):
+                return report(
+                    "invalid",
+                    status=status,
+                    generated_at=generated_at,
+                    error=f"{artifact_path} requirements[{index}] must be an object.",
+                )
+            requirement_status = (
+                _coerce_optional_string(raw_requirement.get("status")) or "unknown"
+            ).lower()
+            requirement_counts[requirement_status] = (
+                requirement_counts.get(requirement_status, 0) + 1
+            )
+            requirement_id = _coerce_optional_string(raw_requirement.get("requirement_id"))
+            raw_coverage = raw_requirement.get("coverage")
+            coverage = (
+                [str(item) for item in raw_coverage] if isinstance(raw_coverage, list) else []
+            )
+            snippet = ConformanceRequirementSnippetPayload(
+                requirement_id=requirement_id or f"requirement[{index}]",
+                status=requirement_status,
+                details=_trim_conformance_text(raw_requirement.get("details")),
+                remediation=_trim_conformance_text(raw_requirement.get("remediation")),
+                coverage=coverage,
+            )
+            if (
+                requirement_status != "pass"
+                and len(failing_requirements) < CONFORMANCE_REPORT_SNIPPET_LIMIT
+            ):
+                failing_requirements.append(snippet)
+            if snippet.remediation and len(remediation_snippets) < CONFORMANCE_REPORT_SNIPPET_LIMIT:
+                remediation_snippets.append(snippet)
+
+        missing_coverage: dict[str, list[str]] = {}
+        missing_coverage_count = 0
+        for task_name, raw_missing_items in raw_missing_coverage.items():
+            if not isinstance(raw_missing_items, list):
+                return report(
+                    "invalid",
+                    status=status,
+                    generated_at=generated_at,
+                    error=f"{artifact_path} missing_coverage.{task_name} must be a list.",
+                )
+            items = [str(item) for item in raw_missing_items]
+            missing_coverage[str(task_name)] = items
+            missing_coverage_count += len(items)
+
+        state = status
+        if generated_at < now - CONFORMANCE_REPORT_STALE_AFTER:
+            state = "stale"
+
+        return report(
+            state,
+            status=status,
+            generated_at=generated_at,
+            requirement_counts=dict(sorted(requirement_counts.items())),
+            requirement_count=len(raw_requirements),
+            missing_coverage_count=missing_coverage_count,
+            missing_coverage=dict(sorted(missing_coverage.items())),
+            traceability_task_count=len(raw_traceability_matrix),
+            failing_requirements=failing_requirements,
+            remediation_snippets=remediation_snippets,
         )
 
     def _latest_resumable_failed_workflow_record(

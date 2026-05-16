@@ -53,12 +53,17 @@ def report_routes(service: AdminService) -> list[Route]:
             return json_error(str(exc))
         return JSONResponse(payload.model_dump(mode="json"))
 
+    async def conformance(_: Request) -> JSONResponse:
+        payload = service.read_conformance_reports()
+        return JSONResponse(payload.model_dump(mode="json"))
+
     return [
         Route(
             "/api/admin/reports/workflow-graph-activity",
             workflow_graph_activity,
             methods=["GET"],
-        )
+        ),
+        Route("/api/admin/reports/conformance", conformance, methods=["GET"]),
     ]
 
 
