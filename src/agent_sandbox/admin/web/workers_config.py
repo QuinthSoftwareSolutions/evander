@@ -36,7 +36,7 @@ from agent_sandbox.directory_config import (
     IssueSetupDirectoryConfig,
     PrTemplateDirectoryConfig,
 )
-from agent_sandbox.messaging.targets import load_communication_targets_config
+from agent_sandbox.messaging.targets import COMMUNICATION_TARGETS_DOMAIN
 from agent_sandbox.vm.defaults_config import EffectiveVmDefaultsConfig
 
 _DISCORD_CONFIG_FIELDS: tuple[tuple[str, str], ...] = (
@@ -73,10 +73,19 @@ _ASSISTANT_SETTINGS_FIELDS: tuple[tuple[str, str], ...] = (
     (_ASSISTANT_SETTINGS_DOMAIN, "default_profile"),
     (_ASSISTANT_SETTINGS_DOMAIN, "custom_system_instructions"),
 )
+_COMMUNICATION_TARGET_FIELDS: tuple[tuple[str, str], ...] = (
+    (COMMUNICATION_TARGETS_DOMAIN, "targets"),
+)
 _ASSISTANT_SETTINGS_FIELD_LABELS: dict[str, str] = {
     "default_profile": "assistant capability profile",
 }
+_DIRECTORY_CONFIG_FIELD_LABELS: dict[tuple[str, str], str] = {
+    (COMMUNICATION_TARGETS_DOMAIN, "targets"): "Communication targets",
+}
 _SOURCE_DOMAIN_CONFIG_FIELD_TOOLTIPS: dict[tuple[str, str], str] = {
+    (COMMUNICATION_TARGETS_DOMAIN, "targets"): (
+        "Directory-scoped communication targets available to workflow notification and messaging effects."
+    ),
     (_ASSISTANT_SETTINGS_DOMAIN, "enabled"): (
         "Enables the admin web assistant launcher and chat endpoints."
     ),
@@ -100,6 +109,7 @@ _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES: dict[str, tuple[tuple[str, str], ...]] =
     "communications": (
         *_DISCORD_CONFIG_FIELDS,
         *_TEAMS_PROVIDER_CONFIG_FIELDS,
+        *_COMMUNICATION_TARGET_FIELDS,
         *_ASSISTANT_SETTINGS_FIELDS,
     ),
     "access_policy": tuple(
@@ -162,6 +172,7 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
     "communications": (
         ("Discord", _DISCORD_CONFIG_FIELDS, ("discord_",)),
         ("Teams", _TEAMS_PROVIDER_CONFIG_FIELDS, ("teams_",)),
+        ("Communication targets", _COMMUNICATION_TARGET_FIELDS, ()),
         ("Assistant", _ASSISTANT_SETTINGS_FIELDS, ()),
     ),
     "access_policy": (
@@ -435,6 +446,10 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
         ),
     ),
 }
+_DIRECTORY_CONFIG_SNAPSHOT_DOMAINS: tuple[str, ...] = (
+    *DIRECTORY_CONFIG_DOMAIN_FILENAMES.keys(),
+    COMMUNICATION_TARGETS_DOMAIN,
+)
 _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "ado": AdoWorkerGlobalConfig,
     "proxy-issue-sync": ProxyIssueSyncWorkerGlobalConfig,
@@ -722,8 +737,8 @@ def _directory_tab_help_text(tab_key: str) -> str | None:
         return "Messaging integrations for Discord and Teams, including routing, read reactions, and wake prompts."
     if tab_key == "access_policy":
         return (
-            "Directory-level guardrails for approvals, approval notifications, recipients, "
-            "mailboxes, communication files, and audit redaction defaults."
+            "Directory-level guardrails for approvals, approval notifications, "
+            "recipients, mailboxes, communication files, and audit redaction defaults."
         )
     if tab_key == "contacts":
         return "Directory contacts available to host-side communication integrations."
@@ -742,20 +757,39 @@ def _directory_tab_help_text(tab_key: str) -> str | None:
     return None
 
 
-def _approval_notification_target_options(project_dir: Path) -> tuple[str, ...]:
+def _approval_notification_target_options(
+    service: AdminService, directory_path: str
+) -> tuple[str, ...]:
     try:
-        config = load_communication_targets_config(project_dir)
+        result = service.compute_directory_effective_config(
+            directory_path, COMMUNICATION_TARGETS_DOMAIN
+        )
     except Exception:
         return ()
-    return tuple(
-        target.id
-        for target in config.targets
-        if "notify" in set(target.policy.capabilities)
-    )
+    if not result.ok or result.data is None:
+        return ()
+    targets = result.data.resolution.effective_config.get("targets")
+    if not isinstance(targets, list):
+        return ()
+    options: list[str] = []
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        target_id = str(target.get("id") or "").strip()
+        policy = target.get("policy")
+        capabilities = policy.get("capabilities") if isinstance(policy, dict) else []
+        if (
+            target_id
+            and isinstance(capabilities, list)
+            and "notify" in {str(capability) for capability in capabilities}
+        ):
+            options.append(target_id)
+    return tuple(options)
 
 
 def _directory_config_field_metadata(
     service: AdminService,
+    directory_path: str,
     tab_key: str,
     source_domain: str,
     field_name: str,
@@ -782,11 +816,13 @@ def _directory_config_field_metadata(
         ),
     )
     if source_domain == "policy" and field_name == "approval_notification_target_ids":
-        options = _approval_notification_target_options(service.project_dir)
+        options = _approval_notification_target_options(service, directory_path)
     label = (
         _ASSISTANT_SETTINGS_FIELD_LABELS.get(field_name)
         if source_domain == _ASSISTANT_SETTINGS_DOMAIN
         else None
+    ) or _DIRECTORY_CONFIG_FIELD_LABELS.get(
+        (source_domain, field_name)
     ) or _config_field_display_name(field_name, prefixes=prefixes)
     return {
         "source_domain": source_domain,
@@ -795,14 +831,19 @@ def _directory_config_field_metadata(
         "kind": kind,
         "options": list(options),
         "scope": "global" if source_domain == _ASSISTANT_SETTINGS_DOMAIN else "directory",
-        "root_starts_editable": tab_key == "pr_template" and field_name == "pr_template_markdown",
+        "root_starts_editable": (
+            (tab_key == "pr_template" and field_name == "pr_template_markdown")
+            or (source_domain == COMMUNICATION_TARGETS_DOMAIN and field_name == "targets")
+        ),
         "tooltip": _directory_config_field_tooltip(
             source_domain, field_name, label=label, kind=kind, options=options
         ),
     }
 
 
-def _directory_tab_metadata(service: AdminService, tab_key: str) -> dict[str, Any]:
+def _directory_tab_metadata(
+    service: AdminService, directory_path: str, tab_key: str
+) -> dict[str, Any]:
     sections = []
     for title, field_sources, prefixes in _DIRECTORY_CONFIG_TAB_SECTIONS.get(tab_key, ()):
         sections.append(
@@ -810,7 +851,12 @@ def _directory_tab_metadata(service: AdminService, tab_key: str) -> dict[str, An
                 "title": title,
                 "fields": [
                     _directory_config_field_metadata(
-                        service, tab_key, source_domain, field_name, prefixes
+                        service,
+                        directory_path,
+                        tab_key,
+                        source_domain,
+                        field_name,
+                        prefixes,
                     )
                     for source_domain, field_name in field_sources
                 ],
@@ -822,7 +868,12 @@ def _directory_tab_metadata(service: AdminService, tab_key: str) -> dict[str, An
                 "title": _DIRECTORY_CONFIG_UI_TAB_TITLES.get(tab_key, tab_key),
                 "fields": [
                     _directory_config_field_metadata(
-                        service, tab_key, source_domain, field_name, ()
+                        service,
+                        directory_path,
+                        tab_key,
+                        source_domain,
+                        field_name,
+                        (),
                     )
                     for source_domain, field_name in _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES[tab_key]
                 ],
@@ -985,7 +1036,7 @@ def _directory_overrides_snapshot(
 ) -> dict[str, Any]:
     overrides: dict[str, dict[str, Any]] = {}
     errors: list[dict[str, Any]] = []
-    for domain in DIRECTORY_CONFIG_DOMAIN_FILENAMES:
+    for domain in _DIRECTORY_CONFIG_SNAPSHOT_DOMAINS:
         snapshot = domain_snapshots.get(domain)
         if snapshot is None:
             continue
@@ -1126,11 +1177,11 @@ def worker_config_routes(service: AdminService, auth: AdminWebAuth) -> list[Base
         )
         domain_snapshots = {
             domain: _domain_snapshot(service, selected_path, domain)
-            for domain in DIRECTORY_CONFIG_DOMAIN_FILENAMES
+            for domain in _DIRECTORY_CONFIG_SNAPSHOT_DOMAINS
         }
         domain_snapshots[_ASSISTANT_SETTINGS_DOMAIN] = _assistant_settings_snapshot(service)
         tabs = [
-            _directory_tab_metadata(service, tab_key)
+            _directory_tab_metadata(service, selected_path, tab_key)
             for tab_key in _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES
         ]
         tab_snapshots = {
@@ -1151,7 +1202,7 @@ def worker_config_routes(service: AdminService, auth: AdminWebAuth) -> list[Base
             },
             "tree": _normalize_admin_result(tree_result),
             "directory": _normalize_admin_result(directory_result),
-            "domains": list(DIRECTORY_CONFIG_DOMAIN_FILENAMES.keys()),
+            "domains": list(_DIRECTORY_CONFIG_SNAPSHOT_DOMAINS),
             "tabs": tabs,
             "tab_snapshots": tab_snapshots,
             "directory_overrides": _directory_overrides_snapshot(
@@ -1242,7 +1293,7 @@ def worker_config_routes(service: AdminService, auth: AdminWebAuth) -> list[Base
                     )
             domain_snapshots = {
                 source_domain: _domain_snapshot(service, directory_path, source_domain)
-                for source_domain in DIRECTORY_CONFIG_DOMAIN_FILENAMES
+                for source_domain in _DIRECTORY_CONFIG_SNAPSHOT_DOMAINS
             }
             domain_snapshots[_ASSISTANT_SETTINGS_DOMAIN] = _assistant_settings_snapshot(service)
             return JSONResponse(

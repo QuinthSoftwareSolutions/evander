@@ -339,18 +339,19 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 artifacts folder. The `path` value must be relative and stay inside that folder.
 
 `effect:communication:send-message` sends a plain message through a declared
-communication target in `config/communication-targets/config.json`. The target
-must include the `write` capability for a top-level message, or the `reply`
-capability when `thread_id` is set. Teams targets can address
+directory-scoped communication target managed from Admin Web Configuration ->
+Communications and stored in `runtime/communication-targets.db`. The target must
+include the `write` capability for a top-level message, or the `reply` capability
+when `thread_id` is set. Teams targets can address
 `team-id/channel-id`, `chat:<chat-id>`, or a declared one-on-one user as
 `user:<user-id-or-upn>`. Discord targets post to the configured channel.
 
 `effect:notification:send` delivers through a declared communication target in
-`config/communication-targets/config.json`. The target must include the `notify`
+the same directory-scoped SQLite store. The target must include the `notify`
 capability. Teams and Discord targets post a status message; email targets create
-a draft using `policy.auth_profile_ref` as the mailbox selector. Teams targets can
-address `team-id/channel-id`, `chat:<chat-id>`, or a declared one-on-one user as
-`user:<user-id-or-upn>`.
+a draft using `policy.auth_profile_ref` as the mailbox selector. Teams targets
+can address `team-id/channel-id`, `chat:<chat-id>`, or a declared one-on-one user
+as `user:<user-id-or-upn>`.
 
 Effect schema envelope example:
 
@@ -742,6 +743,7 @@ Storage paths:
 |---|---|---|
 | `runtime/directories.json` (or `directories_store_path`) | Directory tree metadata, canonical ownership, configured domains | `src/agent_sandbox/directories.py`, `src/agent_sandbox/admin/directory.py`, `src/agent_sandbox/ownership.py` |
 | `runtime/directory-config/root/.../<domain>.json` | Raw per-domain overlay payloads for directories listed in `directories.json` metadata | `src/agent_sandbox/directory_config.py` |
+| `runtime/communication-targets.db` | SQLite-backed communication target overlays keyed by directory and target ID | `src/agent_sandbox/messaging/targets.py`, Admin Web Configuration -> Communications, workflow notification/message effects |
 
 Supported directory config domains:
 
@@ -756,6 +758,7 @@ Supported directory config domains:
 | `issue-setup.json` | VM issue setup/git hand-off defaults | `git_root`, `git_host`, `git_user`, `git_ssh_alias`, optional `default_model`, `post_exec_verification_prompt`, `enable_guest_heartbeat`, `guest_heartbeat_prompt`, optional `issue_setup_azure_devops_pr_pat_env` |
 | `pr-template.json` | Directory-scoped markdown boilerplate prepended to automated PR bodies | `pr_template_markdown` |
 | `vm.json` | Guest-facing relay/network defaults | `bind_network_cidr`, `gateway_url`, OpenAI relay host/port, NuGet relay host/port, HTTP target relay host/port |
+| `communication_targets` (SQLite) | Directory-scoped communication targets inherited by target ID | `targets` entries with `id`, `provider`, `kind`, `address`, `policy.capabilities`, optional `policy.auth_profile_ref`, or `disabled: true` for inherited target removal |
 
 Merge behavior in `src/agent_sandbox/directory_config.py`:
 
@@ -773,8 +776,8 @@ Inheritance path:
 Approval notification policy:
 
 - `approval_notification_target_ids` is a list of host-owned communication target IDs. The targets
-  are defined in `config/communication-targets/config.json` and must include the `notify`
-  capability.
+  are configured in Admin Web under Configuration -> Communications and stored in
+  `runtime/communication-targets.db`; each selected target must include the `notify` capability.
 - In Admin Web, this field is presented as a selectable list of known notify-capable communication
   targets with an `Add communication target` action.
 - The default is an empty list, which disables approval notifications.

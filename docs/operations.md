@@ -844,9 +844,9 @@ Approval notifications are host-side operator alerts for newly created `Approval
 They are separate from guest communication permissions: a session does not need Discord, Teams, or
 email send allowlists for the host to notify an operator target.
 
-1. Define one or more host-owned communication targets in `config/communication-targets/config.json`
-   with the `notify` capability. For example, a Teams channel target uses the existing target
-   schema:
+1. Define one or more host-owned communication targets with the `notify` capability. In Admin Web,
+   use Configuration -> Communications; the targets are stored in
+   `runtime/communication-targets.db`. For example, a Teams channel target uses this payload shape:
 
    ```json
    {
