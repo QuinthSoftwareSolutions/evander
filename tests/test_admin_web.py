@@ -2599,6 +2599,38 @@ def test_admin_web_workers_expose_config_schema(tmp_path: Path) -> None:
 
 
 def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> None:
+    targets_dir = tmp_path / "config" / "communication-targets"
+    targets_dir.mkdir(parents=True)
+    (targets_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "targets": [
+                    {
+                        "id": "ops-approvals",
+                        "provider": "teams",
+                        "kind": "teams",
+                        "address": "team/channel",
+                        "policy": {"capabilities": ["notify"]},
+                    },
+                    {
+                        "id": "ops-chat",
+                        "provider": "teams",
+                        "kind": "teams",
+                        "address": "team/other-channel",
+                        "policy": {"capabilities": ["reply"]},
+                    },
+                    {
+                        "id": "backup-approvals",
+                        "provider": "email",
+                        "kind": "email",
+                        "address": "backup@example.com",
+                        "policy": {"capabilities": ["notify", "reply"]},
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     client = TestClient(
         create_app(AdminService(write_config(tmp_path, enable_directory_scoped_config=True)))
     )
@@ -2651,8 +2683,16 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
         field["field_name"]: field for field in approval_notifications["fields"]
     }
     assert approval_notification_fields["approval_notification_target_ids"]["kind"] == "string_list"
+    assert approval_notification_fields["approval_notification_target_ids"]["options"] == [
+        "ops-approvals",
+        "backup-approvals",
+    ]
     assert (
         "approval request notifications"
+        in approval_notification_fields["approval_notification_target_ids"]["tooltip"]
+    )
+    assert (
+        "known notify-capable communication targets"
         in approval_notification_fields["approval_notification_target_ids"]["tooltip"]
     )
     communication_files = next(

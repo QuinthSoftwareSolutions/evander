@@ -773,6 +773,8 @@ Approval notification policy:
 - `approval_notification_target_ids` is a list of host-owned communication target IDs. The targets
   are defined in `config/communication-targets/config.json` and must include the `notify`
   capability.
+- In Admin Web, this field is presented as a selectable list of known notify-capable communication
+  targets with an `Add communication target` action.
 - The default is an empty list, which disables approval notifications.
 - Lists replace inherited values, so set the complete target list on the directory overlay that
   should own notifications.

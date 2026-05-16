@@ -868,6 +868,10 @@ email send allowlists for the host to notify an operator target.
    Child directories inherit the root value unless they replace the list in their own
    `policy.json` overlay. An empty list disables approval notifications.
 
+   In Admin Web, the Access Policy tab exposes `approval_notification_target_ids` as an explicit
+   list of known notify-capable communication targets with an `Add communication target` control
+   instead of free-form text entry.
+
 3. Have the guest create the approval request through `approval_submit`. The notification message
    includes the `request_id`, action/tool name, directory, session and VM context, expiry,
    `human_summary`, payload digest, and review commands. It does not include the approval payload.
