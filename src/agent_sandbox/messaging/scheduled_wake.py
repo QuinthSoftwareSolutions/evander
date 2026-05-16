@@ -14,6 +14,8 @@ from agent_sandbox.bootstrap import load_runtime_gateway_config
 from agent_sandbox.config import GatewayConfig, ScheduledWakeWorkerGlobalConfig
 from agent_sandbox.cron import next_cron_time
 from agent_sandbox.models import WakeScheduledRequest
+from agent_sandbox.orchestration.host_polling import HostFileLockManager, HostSleeper
+from agent_sandbox.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
 from agent_sandbox.runtime import RuntimeContext, build_runtime
 from agent_sandbox.messaging.wake_dispatch import (
     HostWakeDispatcher,
@@ -23,7 +25,6 @@ from agent_sandbox.messaging.wake_dispatch import (
     is_session_in_cooldown,
     probe_agent_dispatch_state,
     set_session_cooldown,
-    single_instance_lock,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,24 +53,29 @@ class ScheduledWakeWorker:
             runtime=runtime,
             agent_control_store=AgentControlStore(config.host_agent_control_state_path),
         )
+        self._kernel = PollingOrchestratorKernel(
+            config=PollingKernelConfig(
+                poll_interval_seconds=self.worker_config.poll_interval_seconds,
+                jitter_seconds=self.worker_config.jitter_seconds,
+                lock_path=self.worker_config.lock_path,
+            ),
+            lock_manager=HostFileLockManager(
+                busy_error_text="Scheduled wake worker already running"
+            ),
+            sleeper=HostSleeper(),
+            run_cycle=self.run_once,
+            get_sleep_seconds=lambda result: result.next_sleep_seconds,
+            on_start=self._log_start,
+            on_cycle_success=self._log_cycle_success,
+            on_cycle_exception=self._log_cycle_exception,
+            get_exception_sleep_seconds=lambda _exc: self.worker_config.backoff_seconds,
+        )
 
     def run_forever(self) -> None:
-        with single_instance_lock(self.worker_config.lock_path):
-            while True:
-                result = self.run_once()
-                logger.debug(
-                    "Scheduled wake cycle complete due=%d dispatched=%d sleep_seconds=%.3f",
-                    result.requests_due,
-                    result.wakes_dispatched,
-                    result.next_sleep_seconds,
-                )
-                import time
-
-                time.sleep(result.next_sleep_seconds)
+        self._kernel.run_forever()
 
     def run_once_with_lock(self) -> ScheduledWakeCycleResult:
-        with single_instance_lock(self.worker_config.lock_path):
-            return self.run_once()
+        return self._kernel.run_once_with_lock()
 
     def run_once(self) -> ScheduledWakeCycleResult:
         if not self.worker_config.directories:
@@ -120,6 +126,30 @@ class ScheduledWakeWorker:
                 activity_detected=requests_due,
             ),
         )
+
+    def _log_start(self) -> None:
+        logger.info(
+            (
+                "Scheduled wake worker started poll_interval=%.3f jitter=%.3f "
+                "backoff=%.3f cooldown=%.3f lock=%s"
+            ),
+            self.worker_config.poll_interval_seconds,
+            self.worker_config.jitter_seconds,
+            self.worker_config.backoff_seconds,
+            self.worker_config.cooldown_seconds,
+            self.worker_config.lock_path,
+        )
+
+    def _log_cycle_success(self, result: ScheduledWakeCycleResult) -> None:
+        logger.debug(
+            "Scheduled wake cycle complete due=%d dispatched=%d sleep_seconds=%.3f",
+            result.requests_due,
+            result.wakes_dispatched,
+            result.next_sleep_seconds,
+        )
+
+    def _log_cycle_exception(self, _exc: Exception) -> None:
+        logger.exception("Scheduled wake worker cycle failed")
 
     def _dispatch_request(
         self, *, request: WakeScheduledRequest, session: Any, now_utc: datetime
