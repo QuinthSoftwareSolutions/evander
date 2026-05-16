@@ -1293,6 +1293,11 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .admin-shell.workflow-focus .admin-shell-layout,
+  .admin-shell.workflow-focus.workflow-sidebar-collapsed .admin-shell-layout {
+    grid-template-columns: 1fr;
+  }
+
   .admin-shell-layout,
   .admin-shell-main,
   .admin-shell-nav {
@@ -1305,6 +1310,26 @@ select {
 
   .admin-shell-header {
     align-items: start;
+  }
+
+  .admin-shell.workflow-focus .admin-shell-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .admin-shell.workflow-focus .admin-shell-brand {
+    flex: 0 1 auto;
+    max-width: 100%;
+    width: 100%;
+  }
+
+  .admin-shell.workflow-focus .admin-shell-info-group {
+    padding-inline: 0;
+  }
+
+  .admin-shell.workflow-focus .admin-shell-info-group::before,
+  .admin-shell.workflow-focus .admin-shell-info-group::after {
+    display: none;
   }
 
   .admin-shell-brand-lockup {
@@ -1340,6 +1365,25 @@ select {
   .admin-workflow-panel {
     height: auto;
     min-height: 70vh;
+    overflow: visible;
+  }
+
+  .admin-workflow-panel .workflow-embedded-page,
+  .admin-workflow-panel .workflow-editor-shell {
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .admin-workflow-panel .workflow-editor-shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
+  }
+
+  .admin-workflow-panel .canvas-shell {
+    height: 70vh;
+    height: 70dvh;
+    min-height: 28rem;
   }
 
   .modal-backdrop {
