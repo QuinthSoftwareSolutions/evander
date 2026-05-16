@@ -33,6 +33,7 @@ SCRIPTS = [
     "mirror_issue_repo.sh",
     "prewarm_nuget_cache.sh",
     "provision_exampleindustry_app_demo_environment.sh",
+    "seed_workflow_run_inspector_demo.sh",
     "resume_issue_agent.sh",
     "resolve_repo_source.sh",
     "set_issue_agent_state.sh",

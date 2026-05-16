@@ -133,6 +133,11 @@ Troubleshooting checklist:
 - Admin Web also exposes read-only conformance snapshots under the same **Reports** section. See
   [conformance-reports.md](conformance-reports.md) for the trigger/effect artifact names,
   regeneration commands, and report states.
+- For a repeatable local workflow run inspector demo, see
+  [workflow-run-inspector-demo.md](workflow-run-inspector-demo.md). It seeds a dedicated
+  `runtime/workflow-run-inspector-demo` tree with a deterministic trigger, gate, effect,
+  approval, artifact, and graph snapshot that the workflow tab can inspect by exact
+  `event_id`, `trace_id`, `session_id`, or `artifact_id`.
 - To add a new domain workflow, add a new pack file and list it in `workflow_packs`. No core
   orchestrator Python code changes are required for that path.
 - `config/trigger-orchestrator/config.json` is operator-local too. Start from
