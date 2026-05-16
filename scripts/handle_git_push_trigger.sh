@@ -59,6 +59,8 @@ from contextlib import contextmanager
 from pathlib import Path
 import fcntl
 
+from agent_sandbox.events.models import TriggerEvent
+from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
 from agent_sandbox.triggers.providers.git_push import build_git_push_payloads, git_push_trigger_matches_repo
 from agent_sandbox.workflow.packs import compose_workflow_ir
 
@@ -115,6 +117,22 @@ def _resolve_config_path(value: object, *, config_path: Path, project_dir: Path)
     return path.resolve()
 
 
+def _resolve_orchestration_store_path(
+    config: dict, *, runtime_dir: Path, config_path: Path, project_dir: Path
+) -> Path:
+    store_path = config.get("orchestration_store_path")
+    if store_path:
+        return _resolve_config_path(store_path, config_path=config_path, project_dir=project_dir)
+    return runtime_dir / "orchestration.db"
+
+
+def _uses_sqlite_queue(config: dict) -> bool:
+    return (
+        "orchestration_store_backend" in config
+        and str(config.get("orchestration_store_backend", "")).strip().lower() == "sqlite"
+    )
+
+
 def _branch_name(ref_name: str) -> str | None:
     normalized = ref_name.strip()
     prefix = "refs/heads/"
@@ -136,35 +154,54 @@ def _locked_queue(path: Path):
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def main() -> int:
-    if len(sys.argv) != 5:
-        return 1
+def _build_trigger_events(
+    *,
+    updates_path: Path,
+    repo_path: Path,
+    git_push_triggers: list[dict],
+) -> list[TriggerEvent]:
+    events: list[TriggerEvent] = []
+    for raw_line in updates_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = line.split(maxsplit=2)
+        if len(parts) != 3:
+            continue
+        old_rev, new_rev, ref_name = parts
+        payloads = build_git_push_payloads(
+            repo_path=str(repo_path),
+            old_rev=old_rev,
+            new_rev=new_rev,
+            ref_name=ref_name,
+        )
+        if not payloads:
+            continue
 
-    project_dir = Path(sys.argv[1]).expanduser().resolve()
-    repo_path = _resolve_repo(sys.argv[2])
-    config_path = Path(sys.argv[3]).expanduser().resolve()
-    updates_path = Path(sys.argv[4]).expanduser().resolve()
-    config = _load_config(config_path)
-    runtime_dir = _resolve_config_path(config.get("runtime_dir", "runtime"), config_path=config_path, project_dir=project_dir)
-    queue_path = config.get("event_queue_store_path")
-    if queue_path:
-        queue_store_path = _resolve_config_path(queue_path, config_path=config_path, project_dir=project_dir)
-    else:
-        queue_store_path = runtime_dir / "trigger-orchestrator-events.json"
+        occurred_at = datetime.now(timezone.utc)
+        for payload in payloads:
+            event_hash = str(payload.get("event_hash") or new_rev)
+            for trigger in git_push_triggers:
+                trigger_id = str(trigger["id"]).strip()
+                events.append(
+                    TriggerEvent(
+                        event_id=f"{trigger_id}:{payload['branch_name']}:{event_hash}",
+                        trigger_id=trigger_id,
+                        trigger_type="trigger:git:push",
+                        occurred_at=occurred_at,
+                        payload=payload,
+                    )
+                )
+    return events
 
-    triggers = _resolve_git_push_triggers(config=config, project_dir=project_dir)
 
-    git_push_triggers = [
-        trigger
-        for trigger in triggers
-        if isinstance(trigger, dict)
-        and str(trigger.get("type", "")).strip() == "trigger:git:push"
-        and str(trigger.get("id", "")).strip()
-        and git_push_trigger_matches_repo(trigger, str(repo_path))
-    ]
-    if not git_push_triggers:
-        return 0
+def _publish_sqlite_events(database_path: Path, events: list[TriggerEvent]) -> None:
+    queue = SqliteTriggerEventQueue(database_path)
+    for event in events:
+        queue.publish(event)
 
+
+def _publish_json_events(queue_store_path: Path, events: list[TriggerEvent]) -> None:
     queue_store_path.parent.mkdir(parents=True, exist_ok=True)
     with _locked_queue(queue_store_path):
         hold_seconds = float(os.environ.get("AGENT_SANDBOX_TRIGGER_QUEUE_LOCK_HOLD_SECONDS", "0") or "0")
@@ -180,42 +217,20 @@ def main() -> int:
         else:
             queue_payload = {}
 
-        for raw_line in updates_path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line:
+        for event in events:
+            if event.event_id in queue_payload:
                 continue
-            parts = line.split(maxsplit=2)
-            if len(parts) != 3:
-                continue
-            old_rev, new_rev, ref_name = parts
-            payloads = build_git_push_payloads(
-                repo_path=str(repo_path),
-                old_rev=old_rev,
-                new_rev=new_rev,
-                ref_name=ref_name,
-            )
-            if not payloads:
-                continue
-
-            now = datetime.now(timezone.utc).isoformat()
-            for payload in payloads:
-                event_hash = str(payload.get("event_hash") or new_rev)
-                for trigger in git_push_triggers:
-                    trigger_id = str(trigger["id"]).strip()
-                    event_id = f"{trigger_id}:{payload['branch_name']}:{event_hash}"
-                    if event_id in queue_payload:
-                        continue
-                    queue_payload[event_id] = {
-                        "event_id": event_id,
-                        "trigger_id": trigger_id,
-                        "trigger_type": "trigger:git:push",
-                        "occurred_at": now,
-                        "payload": payload,
-                        "delivery_state": "pending",
-                        "inflight_at": None,
-                        "delivered_at": None,
-                        "idempotency_key": None,
-                    }
+            queue_payload[event.event_id] = {
+                "event_id": event.event_id,
+                "trigger_id": event.trigger_id,
+                "trigger_type": event.trigger_type,
+                "occurred_at": event.occurred_at.isoformat(),
+                "payload": event.payload,
+                "delivery_state": "pending",
+                "inflight_at": None,
+                "delivered_at": None,
+                "idempotency_key": None,
+            }
 
         temp_fd, temp_path = tempfile.mkstemp(
             prefix=f"{queue_store_path.name}.",
@@ -231,6 +246,49 @@ def main() -> int:
                 os.unlink(temp_path)
             except FileNotFoundError:
                 pass
+
+
+def main() -> int:
+    if len(sys.argv) != 5:
+        return 1
+
+    project_dir = Path(sys.argv[1]).expanduser().resolve()
+    repo_path = _resolve_repo(sys.argv[2])
+    config_path = Path(sys.argv[3]).expanduser().resolve()
+    updates_path = Path(sys.argv[4]).expanduser().resolve()
+    config = _load_config(config_path)
+    runtime_dir = _resolve_config_path(config.get("runtime_dir", "runtime"), config_path=config_path, project_dir=project_dir)
+    queue_path = config.get("event_queue_store_path")
+    if queue_path:
+        queue_store_path = _resolve_config_path(queue_path, config_path=config_path, project_dir=project_dir)
+    else:
+        queue_store_path = runtime_dir / "trigger-orchestrator-events.json"
+    orchestration_store_path = _resolve_orchestration_store_path(
+        config, runtime_dir=runtime_dir, config_path=config_path, project_dir=project_dir
+    )
+
+    triggers = _resolve_git_push_triggers(config=config, project_dir=project_dir)
+
+    git_push_triggers = [
+        trigger
+        for trigger in triggers
+        if isinstance(trigger, dict)
+        and str(trigger.get("type", "")).strip() == "trigger:git:push"
+        and str(trigger.get("id", "")).strip()
+        and git_push_trigger_matches_repo(trigger, str(repo_path))
+    ]
+    if not git_push_triggers:
+        return 0
+
+    events = _build_trigger_events(
+        updates_path=updates_path,
+        repo_path=repo_path,
+        git_push_triggers=git_push_triggers,
+    )
+    if _uses_sqlite_queue(config):
+        _publish_sqlite_events(orchestration_store_path, events)
+    else:
+        _publish_json_events(queue_store_path, events)
 
     return 0
 
