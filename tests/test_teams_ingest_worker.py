@@ -157,6 +157,58 @@ def test_teams_ingest_worker_persists_inbound_messages_and_ignores_status_store_
     assert result.channel_targets_polled == 1
 
 
+def test_teams_ingest_worker_polls_chat_targets_from_chat_allowlist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/chats/chat-1/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-1",
+                            "createdDateTime": "2026-03-30T11:00:00Z",
+                            "body": {"content": "<p>hello</p>", "contentType": "html"},
+                            "from": {"user": {"id": "user-1", "displayName": "Ada"}},
+                        }
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+        }
+    )
+    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    worker.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_chat_allowlist=["chat:chat-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    result = worker.run_once()
+
+    assert [request.url.path for request in requests] == ["/v1.0/chats/chat-1/messages"]
+    assert worker.store.list_all_messages(channel_targets=["chat:chat-1"])
+    assert worker.store.get_cursor("chat:chat-1") == "chat:chat-1/msg-1"
+    assert result.channel_targets_polled == 1
+
+
 def test_teams_ingest_worker_uses_history_page_budget_per_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
