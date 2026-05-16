@@ -5,6 +5,7 @@ import {
   useState,
   type CSSProperties,
   type DragEvent as ReactDragEvent,
+  type FormEvent as ReactFormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -40,6 +41,8 @@ import {
   type WorkflowNodeConfig,
   type WorkflowNodeKind,
   type WorkflowOutputSchemas,
+  type WorkflowRunDetail,
+  type WorkflowRunNodeDetail,
   type WorkflowRunNodeActivity,
   type WorkflowRunSnapshot,
   type WorkflowRunSummary,
@@ -99,6 +102,15 @@ type GraphNodeStatusBadge = {
 };
 
 type SaveState = "idle" | "saving" | "saved";
+
+type WorkflowRunDetailLookupKind =
+  | "auto"
+  | "run_id"
+  | "event_id"
+  | "trigger_event_id"
+  | "trace_id"
+  | "session_id"
+  | "artifact_id";
 
 type BindingOption = {
   value: string;
@@ -1418,6 +1430,74 @@ function formatJson(value: unknown, fallback = "{}"): string {
   return JSON.stringify(value, null, 2);
 }
 
+function workflowRunDetailLookupQuery(value: string, kind: WorkflowRunDetailLookupKind): URLSearchParams {
+  const normalized = value.trim();
+  const query = new URLSearchParams();
+  if (kind !== "auto") {
+    query.set(kind, normalized);
+  } else if (normalized.startsWith("comm_")) {
+    query.set("artifact_id", normalized);
+  } else if (normalized.startsWith("trace")) {
+    query.set("trace_id", normalized);
+  } else if (normalized.startsWith("session")) {
+    query.set("session_id", normalized);
+  } else {
+    query.set("event_id", normalized);
+  }
+  return query;
+}
+
+function workflowRunDetailGraphNodes(detail: WorkflowRunDetail): Array<WorkflowNodeConfig & { kind: WorkflowNodeKind }> {
+  const snapshot = detail.graph.snapshot;
+  const source = snapshot
+    ? {
+        triggers: snapshot.triggers ?? [],
+        gates: snapshot.gates ?? [],
+        effects: snapshot.effects ?? [],
+        queries: snapshot.queries ?? [],
+      }
+    : detail.graph.config;
+  return [
+    ...(source.triggers ?? []).map((node) => ({ ...node, kind: "trigger" as const })),
+    ...(source.gates ?? []).map((node) => ({ ...node, kind: "gate" as const })),
+    ...(source.effects ?? []).map((node) => ({ ...node, kind: "effect" as const })),
+    ...(source.queries ?? []).map((node) => ({ ...node, kind: "query" as const })),
+  ].filter((node) => Boolean(node.id));
+}
+
+function workflowRunDetailGraphEdges(detail: WorkflowRunDetail): WorkflowEdge[] {
+  const rawEdges = detail.graph.snapshot?.edges ?? detail.graph.config.edges ?? [];
+  return rawEdges.flatMap((edge) => {
+    const rawEdge = edge as Record<string, unknown>;
+    const source = typeof rawEdge.source_id === "string" ? rawEdge.source_id : typeof rawEdge.source === "string" ? rawEdge.source : "";
+    const target = typeof rawEdge.target_id === "string" ? rawEdge.target_id : typeof rawEdge.target === "string" ? rawEdge.target : "";
+    if (!source || !target) return [];
+    return [{
+      source_id: source,
+      target_id: target,
+      source_port: typeof rawEdge.source_port === "string" ? rawEdge.source_port : undefined,
+    }];
+  });
+}
+
+function workflowRunDetailNodeById(detail: WorkflowRunDetail): Map<string, WorkflowRunNodeDetail> {
+  return new Map(detail.nodes.map((node) => [node.node_id, node]));
+}
+
+function objectHasData(value: Record<string, unknown> | null | undefined): boolean {
+  return Boolean(value && Object.keys(value).length > 0);
+}
+
+function durationLabel(durationMs: number | null | undefined): string {
+  if (durationMs === null || durationMs === undefined) return "Unknown duration";
+  if (durationMs < 1000) return `${durationMs} ms`;
+  return `${(durationMs / 1000).toFixed(2)} s`;
+}
+
+function isMissingRunDetailValue(value: string | undefined): boolean {
+  return value === undefined || value.startsWith("missing");
+}
+
 function objectListJsonDraftKey(fieldKey: string, index: number, itemFieldKey: string): string {
   return `${fieldKey}.${index}.${itemFieldKey}`;
 }
@@ -1959,6 +2039,11 @@ export default function App() {
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
+  const [runDetail, setRunDetail] = useState<WorkflowRunDetail | null>(null);
+  const [runDetailLookup, setRunDetailLookup] = useState("");
+  const [runDetailLookupKind, setRunDetailLookupKind] = useState<WorkflowRunDetailLookupKind>("auto");
+  const [runDetailLoading, setRunDetailLoading] = useState(false);
+  const [runDetailError, setRunDetailError] = useState<string | null>(null);
   const [validationDiagnostics, setValidationDiagnostics] = useState<WorkflowValidationDiagnostic[]>([]);
   const [flowNodes, setFlowNodes] = useState<Node<GraphNodeData>[]>([]);
   const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
@@ -2001,6 +2086,11 @@ export default function App() {
   const visibleRuns = (runSnapshot?.runs ?? []).filter((run) =>
     run.active_nodes.some((activity) => visibleGraphNodeIds.has(activity.node_id)),
   );
+  const runDetailGraphNodes = runDetail ? workflowRunDetailGraphNodes(runDetail) : [];
+  const runDetailGraphEdges = runDetail ? workflowRunDetailGraphEdges(runDetail) : [];
+  const runDetailNodesById = runDetail ? workflowRunDetailNodeById(runDetail) : new Map<string, WorkflowRunNodeDetail>();
+  const runDetailResumeEventId = runDetail?.recovery.resume.event_id ?? null;
+  const runDetailClearEventId = runDetail?.recovery.clear.event_id ?? null;
   const baseDisplayedFlowNodes = flowNodes.filter((node) => visibleGraphNodeIds.has(node.id));
   const displayedFlowNodes = pendingConnection && document
     ? baseDisplayedFlowNodes.map((node) => {
@@ -2224,6 +2314,9 @@ export default function App() {
           runs: current.runs.filter((run) => run.event_id !== normalizedEventId),
         };
       });
+      if (runDetail?.event_id === normalizedEventId) {
+        setRunDetail(null);
+      }
       setError(null);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -2244,6 +2337,9 @@ export default function App() {
       await fetchJson(`/api/workflow-editor/runs/${encodeURIComponent(normalizedEventId)}/resume`, {
         method: "POST",
       });
+      if (runDetail?.event_id === normalizedEventId) {
+        await loadWorkflowRunDetail(new URLSearchParams({ event_id: normalizedEventId }), normalizedEventId);
+      }
       setError(null);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -2254,6 +2350,35 @@ export default function App() {
         return next;
       });
     }
+  }
+
+  async function loadWorkflowRunDetail(query: URLSearchParams, lookupText?: string) {
+    const queryText = query.toString();
+    if (!queryText || runDetailLoading) return;
+    setRunDetailLoading(true);
+    setRunDetailError(null);
+    try {
+      const detail = await fetchJson<WorkflowRunDetail>(`/api/workflow-editor/run-detail?${queryText}`);
+      setRunDetail(detail);
+      setRunDetailLookup(lookupText ?? detail.event_id);
+    } catch (reason: unknown) {
+      setRunDetailError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setRunDetailLoading(false);
+    }
+  }
+
+  function inspectWorkflowRun(eventId: string) {
+    const normalizedEventId = eventId.trim();
+    if (!normalizedEventId) return;
+    void loadWorkflowRunDetail(new URLSearchParams({ event_id: normalizedEventId }), normalizedEventId);
+  }
+
+  function submitWorkflowRunDetailLookup(event: ReactFormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const normalizedLookup = runDetailLookup.trim();
+    if (!normalizedLookup) return;
+    void loadWorkflowRunDetail(workflowRunDetailLookupQuery(normalizedLookup, runDetailLookupKind), normalizedLookup);
   }
 
   function startSidebarResize(event: ReactPointerEvent<HTMLDivElement>) {
@@ -3888,6 +4013,102 @@ export default function App() {
     return null;
   }
 
+  function renderRunDetailJson(label: string, value: unknown, missing: boolean) {
+    if (missing) {
+      return (
+        <div className="run-detail-data-block run-detail-missing" key={label}>
+          <span>{label}</span>
+          <strong>Missing legacy trace data</strong>
+        </div>
+      );
+    }
+    const empty = Array.isArray(value)
+      ? value.length === 0
+      : isRecord(value)
+        ? !objectHasData(value)
+        : value === null || value === undefined;
+    return (
+      <details className="run-detail-json" key={label}>
+        <summary>
+          <span>{label}</span>
+          <strong>{empty ? "Empty" : "Recorded"}</strong>
+        </summary>
+        <pre>{formatJson(value, "null")}</pre>
+      </details>
+    );
+  }
+
+  function renderRunDetailNode(node: WorkflowRunNodeDetail) {
+    const nodeTitle = node.display_name || node.node_id;
+    return (
+      <details key={`${node.node_id}-${node.execution_id ?? node.event_id ?? "node"}`} className="run-detail-node-card">
+        <summary>
+          <span className="run-detail-node-title">{nodeTitle}</span>
+          <span className={`runtime-run-state state-${node.status ?? "unknown"}`}>{node.status ?? "not recorded"}</span>
+        </summary>
+        <div className="run-detail-node-meta">
+          <span>{node.node_id}</span>
+          <span>{node.node_type ?? "unknown type"}</span>
+          <span>{durationLabel(node.duration_ms)}</span>
+          <span>{node.started_at ? `Started ${formatRuntimeTimestamp(node.started_at)}` : "Start missing"}</span>
+          <span>{node.finished_at ? `Finished ${formatRuntimeTimestamp(node.finished_at)}` : "Finish missing"}</span>
+        </div>
+        {node.error ? <div className="runtime-run-error">{node.error}</div> : null}
+        {node.binding_error ? <div className="runtime-run-error">Binding error: {node.binding_error}</div> : null}
+        {node.missing_fields.length > 0 ? (
+          <div className="run-detail-missing-fields">
+            Missing: {node.missing_fields.join(", ")}
+          </div>
+        ) : null}
+        <div className="run-detail-node-status-line">
+          <span>{node.retry_resume_eligible ? "Retry/resume eligible" : "Retry/resume unavailable"}</span>
+          {node.retry_resume_reason ? <span>{node.retry_resume_reason}</span> : null}
+        </div>
+        <div className="run-detail-node-links">
+          {node.approval_links.map((approval) => (
+            <div className="run-detail-link-item" key={approval.request_id}>
+              <strong>Approval {approval.request_id}</strong>
+              <span>{approval.action_type}{approval.tool_name ? ` / ${approval.tool_name}` : ""}</span>
+              <span>Boundary {approval.directory_path}</span>
+              <span>{approval.status}</span>
+              <span>Payload {approval.payload_digest}</span>
+              {approval.human_summary ? <span>{approval.human_summary}</span> : null}
+              {approval.approver ? <span>Approver {approval.approver}</span> : null}
+              {approval.decision_at ? <span>Decision {formatRuntimeTimestamp(approval.decision_at)}</span> : null}
+            </div>
+          ))}
+          {node.agent_links.map((agent, index) => (
+            <div className="run-detail-link-item" key={`${agent.session_id ?? "agent"}-${agent.execution_id ?? index}`}>
+              <strong>Agent {agent.session_id ?? "session missing"}</strong>
+              <span>{agent.status ?? (agent.waiting ? "waiting" : agent.completed ? "completed" : "status missing")}</span>
+              {agent.thread_id ? <span>Thread {agent.thread_id}</span> : null}
+              {agent.execution_id ? <span>Execution {agent.execution_id}</span> : null}
+              <span>{agent.waiting ? "Waiting" : agent.completed ? "Completed" : "Completion state missing"}</span>
+              {agent.prompt ? <span>{agent.prompt}</span> : null}
+              {agent.artifact_ids.length > 0 ? <span>Artifacts {agent.artifact_ids.join(", ")}</span> : null}
+              {agent.log_reference ? <span>Logs recorded</span> : null}
+            </div>
+          ))}
+          {node.communication_artifact_links.map((artifact) => (
+            <div className="run-detail-link-item" key={artifact.artifact_id}>
+              <strong>Artifact {artifact.artifact_id}</strong>
+              <span>{artifact.filename ?? artifact.original_filename ?? "filename missing"}</span>
+              <span>{artifact.provider ?? "provider missing"}</span>
+              {artifact.sha256 ? <span>SHA-256 {artifact.sha256}</span> : null}
+              {artifact.status ? <span>{artifact.status}</span> : null}
+            </div>
+          ))}
+        </div>
+        {renderRunDetailJson("Resolved bindings", node.resolved_config, node.missing_fields.includes("resolved_config"))}
+        {renderRunDetailJson("Binding trace", node.binding_trace, node.missing_fields.includes("binding_trace"))}
+        {renderRunDetailJson("Input payload", node.input_payload, node.missing_fields.includes("payload"))}
+        {renderRunDetailJson("Outputs", node.outputs, node.missing_fields.includes("outputs"))}
+        {renderRunDetailJson("Inputs by source", node.inputs_by_source, false)}
+        {renderRunDetailJson("Raw records", node.records, node.records.length === 0)}
+      </details>
+    );
+  }
+
   const createEntriesByKind = NODE_GROUPS.map((group) => {
     const entries = catalog.nodes
       .filter((entry) => entry.kind === group.kind)
@@ -3924,6 +4145,31 @@ export default function App() {
                   ? "No active or errored workflow runs."
                   : `${visibleRuns.length} ${visibleRuns.length === 1 ? "run" : "runs"} visible on the graph.`}
               </p>
+              <form className="run-detail-lookup" onSubmit={submitWorkflowRunDetailLookup}>
+                <select
+                  value={runDetailLookupKind}
+                  onChange={(event) => setRunDetailLookupKind(event.target.value as WorkflowRunDetailLookupKind)}
+                  aria-label="Run lookup key"
+                >
+                  <option value="auto">Auto</option>
+                  <option value="run_id">Run ID</option>
+                  <option value="event_id">Event ID</option>
+                  <option value="trigger_event_id">Trigger event</option>
+                  <option value="trace_id">Trace ID</option>
+                  <option value="session_id">Session ID</option>
+                  <option value="artifact_id">Artifact ID</option>
+                </select>
+                <input
+                  value={runDetailLookup}
+                  onChange={(event) => setRunDetailLookup(event.target.value)}
+                  placeholder="Lookup id"
+                  aria-label="Workflow run lookup id"
+                />
+                <button type="submit" className="subtle-button" disabled={runDetailLoading || !runDetailLookup.trim()}>
+                  {runDetailLoading ? "Loading..." : "Inspect"}
+                </button>
+              </form>
+              {runDetailError ? <div className="runtime-run-error">{runDetailError}</div> : null}
               <div className="runtime-runs">
                 {visibleRuns.map((run: WorkflowRunSummary) => (
                   <div key={run.event_id} className="runtime-run-card">
@@ -3950,6 +4196,14 @@ export default function App() {
                       ))}
                     </div>
                     <div className="runtime-run-actions">
+                      <button
+                        type="button"
+                        className="subtle-button"
+                        onClick={() => inspectWorkflowRun(run.event_id)}
+                        disabled={runDetailLoading}
+                      >
+                        Inspect
+                      </button>
                       {run.run_state === "errored" && run.resumable ? (
                         <button
                           type="button"
@@ -3963,7 +4217,7 @@ export default function App() {
                       <button
                         type="button"
                         className="subtle-button runtime-run-clear"
-                          onClick={() => void clearWorkflowRun(run.event_id, run.run_state)}
+                        onClick={() => void clearWorkflowRun(run.event_id, run.run_state)}
                         disabled={Boolean(clearingRunIds[run.event_id]) || editLocked}
                       >
                         {clearingRunIds[run.event_id]
@@ -3978,6 +4232,127 @@ export default function App() {
                   </div>
                 ))}
               </div>
+              {runDetail ? (
+                <div className="run-detail-panel">
+                  <div className="run-detail-header">
+                    <div>
+                      <div className="section-label">Run detail</div>
+                      <div className="runtime-run-event">{runDetail.event_id}</div>
+                    </div>
+                    <span className={`runtime-run-state state-${runDetail.run_state === "errored" ? "failed" : runDetail.delivery_state ?? "active"}`}>
+                      {runDetail.run_state === "errored" ? "errored" : runDetail.delivery_state ?? "active"}
+                    </span>
+                  </div>
+                  <div className="run-detail-meta-grid">
+                    <span>Worker {runDetail.worker_id}</span>
+                    <span>Generated {formatRuntimeTimestamp(runDetail.generated_at)}</span>
+                    <span>Trace {runDetail.trace_id ?? "missing"}</span>
+                    <span>Matched by {runDetail.matched_by.length > 0 ? runDetail.matched_by.join(", ") : "event_id"}</span>
+                  </div>
+                  <div className="run-detail-availability">
+                    {Object.entries(runDetail.data_availability).map(([key, value]) => (
+                      <span key={key} className={isMissingRunDetailValue(value) ? "missing" : ""}>
+                        {key.replace(/_/g, " ")}: {value}
+                      </span>
+                    ))}
+                  </div>
+                  {runDetail.trigger_event ? (
+                    <div className="run-detail-trigger">
+                      <strong>Trigger {runDetail.trigger_event.trigger_id}</strong>
+                      <span>{runDetail.trigger_event.trigger_type}</span>
+                      <span>{runDetail.trigger_event.trace_id}</span>
+                      {renderRunDetailJson("Trigger payload", runDetail.trigger_event.payload, false)}
+                    </div>
+                  ) : (
+                    <div className="run-detail-data-block run-detail-missing">
+                      <span>Trigger event</span>
+                      <strong>Missing legacy trace data</strong>
+                    </div>
+                  )}
+                  <div className="run-detail-graph">
+                    <div className="run-detail-graph-header">
+                      <strong>
+                        {runDetail.graph.snapshot ? "Historical graph snapshot" : "Current graph fallback"}
+                      </strong>
+                      <span>
+                        {runDetailGraphNodes.length} nodes / {runDetailGraphEdges.length} edges
+                      </span>
+                    </div>
+                    <div className="run-detail-graph-nodes">
+                      {runDetailGraphNodes.map((node) => {
+                        const detail = runDetailNodesById.get(node.id);
+                        return (
+                          <div key={node.id} className={`run-detail-graph-node node-${node.kind}`}>
+                            <span>{node.display_name || node.id}</span>
+                            <small>{node.type}</small>
+                            <strong>{detail?.status ?? "not recorded"}</strong>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {runDetailGraphEdges.length > 0 ? (
+                      <div className="run-detail-edges">
+                        {runDetailGraphEdges.map((edge) => (
+                          <span key={`${edge.source_id}-${edge.source_port ?? "default"}-${edge.target_id}`}>
+                            {edge.source_id}{edge.source_port ? `:${edge.source_port}` : ""} -> {edge.target_id}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="run-detail-recovery">
+                    <span>{runDetail.recovery.resume.eligible ? "Resume eligible" : runDetail.recovery.resume.reason ?? "Resume unavailable"}</span>
+                    <span>{runDetail.recovery.clear.eligible ? "Clear eligible" : runDetail.recovery.clear.reason ?? "Clear unavailable"}</span>
+                    <div className="runtime-run-actions">
+                      {runDetail.recovery.resume.eligible && runDetailResumeEventId ? (
+                        <button
+                          type="button"
+                          className="subtle-button"
+                          onClick={() => void resumeWorkflowRun(runDetailResumeEventId)}
+                          disabled={Boolean(resumingRunIds[runDetailResumeEventId]) || editLocked}
+                        >
+                          Resume
+                        </button>
+                      ) : null}
+                      {runDetail.recovery.clear.eligible && runDetailClearEventId ? (
+                        <button
+                          type="button"
+                          className="subtle-button"
+                          onClick={() => void clearWorkflowRun(runDetailClearEventId, runDetail.run_state)}
+                          disabled={Boolean(clearingRunIds[runDetailClearEventId]) || editLocked}
+                        >
+                          Clear
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  {runDetail.lookup_candidates.length > 1 ? (
+                    <div className="run-detail-candidates">
+                      <strong>Other matches</strong>
+                      {runDetail.lookup_candidates.slice(1).map((candidate) => (
+                        <button
+                          type="button"
+                          className="subtle-button"
+                          key={candidate.event_id}
+                          onClick={() => inspectWorkflowRun(candidate.event_id)}
+                        >
+                          {candidate.event_id}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="run-detail-node-list">
+                    {runDetail.nodes.length > 0
+                      ? runDetail.nodes.map((node) => renderRunDetailNode(node))
+                      : (
+                        <div className="run-detail-data-block run-detail-missing">
+                          <span>Node records</span>
+                          <strong>Missing legacy trace data</strong>
+                        </div>
+                      )}
+                  </div>
+                </div>
+              ) : null}
             </details>
 
             <div className="sidebar-section workflow-graphs-section">

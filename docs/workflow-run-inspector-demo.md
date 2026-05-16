@@ -37,7 +37,9 @@ Then open `http://127.0.0.1:8100` and switch to the workflow tab.
 
 ## Inspect The Run
 
-Use the workflow run detail lookup with any of these exact identifiers:
+Use the workflow run detail lookup in the Current runs panel. Select the matching lookup key or
+leave it on Auto for event, trace, session, and communication artifact ids. The Inspect button on a
+visible current run opens the same detail panel by event id.
 
 - `event_id=evt-detail`
 - `trace_id=trace-detail`
