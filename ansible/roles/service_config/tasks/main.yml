@@ -82,16 +82,21 @@
       payload: "{{ agent_sandbox_teams_ingest_config }}"
       mode: "0640"
       force: "{{ agent_sandbox_force_render_worker_config }}"
-    - path: "config/host-heartbeat/config.json"
-      payload: "{{ agent_sandbox_host_heartbeat_config }}"
-      mode: "0640"
-      force: "{{ agent_sandbox_force_render_worker_config }}"
     - path: "config/trigger-orchestrator/config.json"
       payload: "{{ agent_sandbox_trigger_orchestrator_config }}"
       mode: "0640"
       enabled: "{{ agent_sandbox_manage_workflow_config }}"
   when: item.enabled | default(true) | bool
   register: agent_sandbox_json_config_render
+
+- name: Remove retired generated host-heartbeat and issue-orchestrator config files
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_deploy_path }}/{{ item }}"
+    state: absent
+  loop:
+    - "config/host-heartbeat/config.json"
+    - "config/issue-orchestrator/config.json"
+  register: agent_sandbox_retired_config_remove
 
 - name: Copy managed workflow pack files
   ansible.builtin.copy:
@@ -134,6 +139,7 @@
         or (agent_sandbox_shared_secrets_render.changed | default(false))
         or (agent_sandbox_shared_secrets_remove.changed | default(false))
         or (agent_sandbox_json_config_render.changed | default(false))
+        or (agent_sandbox_retired_config_remove.changed | default(false))
         or (agent_sandbox_workflow_pack_copy.changed | default(false))
         or (agent_sandbox_workflow_layout_copy.changed | default(false))
       }}

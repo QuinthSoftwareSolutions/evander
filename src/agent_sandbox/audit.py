@@ -18,7 +18,6 @@ class AuditEventType:
     RESUME_ATTEMPTED = "resume_attempted"
     RESUME_SUCCEEDED = "resume_succeeded"
     RESUME_FAILED = "resume_failed"
-    HOST_HEARTBEAT_CYCLE_COMPLETED = "host_heartbeat_cycle_completed"
 
 
 class AuditLogger:

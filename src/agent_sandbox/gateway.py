@@ -2175,6 +2175,50 @@ def create_server(context: RuntimeContext) -> FastMCP:
             raise
 
     @server.tool()
+    def get_workflow_snapshot(
+        include_runs: bool = False,
+        session_id: str | None = None,
+        ctx: Context | None = None,
+    ) -> dict[str, Any]:
+        """Return the current workflow configuration snapshot."""
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
+        args = {"session_id": resolved_session_id, "include_runs": include_runs}
+        try:
+            context.policy.require_tool(resolved_session_id, ToolName.GET_WORKFLOW_SNAPSHOT)
+            service = _admin_service()
+            document = service.read_workflow_editor_document()
+            result = document.model_dump(mode="json")
+            if include_runs:
+                runs = service.read_workflow_run_snapshot()
+                result["runs"] = runs.model_dump(mode="json")
+            audit_success(
+                resolved_session_id,
+                ToolName.GET_WORKFLOW_SNAPSHOT,
+                args,
+                {
+                    "revision": document.revision,
+                    "include_runs": include_runs,
+                    "graph_count": len(document.graphs),
+                },
+            )
+            return result
+        except PolicyError as exc:
+            audit_failure(resolved_session_id, ToolName.GET_WORKFLOW_SNAPSHOT, args, str(exc))
+            raise
+        except Exception as exc:
+            audit_failure(
+                resolved_session_id,
+                ToolName.GET_WORKFLOW_SNAPSHOT,
+                args,
+                str(exc),
+                decision="error",
+                error_class="unexpected_error",
+            )
+            raise
+
+    @server.tool()
     def assistant_inspect_workflows(
         include_runs: bool = True,
         session_id: str | None = None,

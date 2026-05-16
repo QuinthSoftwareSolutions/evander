@@ -12,6 +12,7 @@ from typing import Any
 from agent_sandbox.agent_control import AgentControlStore
 from agent_sandbox.bootstrap import load_runtime_gateway_config
 from agent_sandbox.config import GatewayConfig, ScheduledWakeWorkerGlobalConfig
+from agent_sandbox.cron import next_cron_time
 from agent_sandbox.models import WakeScheduledRequest
 from agent_sandbox.runtime import RuntimeContext, build_runtime
 from agent_sandbox.messaging.wake_dispatch import (
@@ -141,7 +142,7 @@ class ScheduledWakeWorker:
         if self.dispatcher.is_host_disabled(binding):
             return False
         if is_session_in_cooldown(
-            path=scoped_config.host_heartbeat_session_cooldown_path,
+            path=scoped_config.wake_session_cooldown_path,
             session_id=binding.session_id,
         ):
             return False
@@ -155,9 +156,9 @@ class ScheduledWakeWorker:
         if agent_state != "idle":
             if agent_state == "busy":
                 set_session_cooldown(
-                    path=scoped_config.host_heartbeat_session_cooldown_path,
+                    path=scoped_config.wake_session_cooldown_path,
                     session_id=binding.session_id,
-                    cooldown_seconds=scoped_config.host_heartbeat_cooldown_seconds,
+                    cooldown_seconds=scoped_config.wake_cooldown_seconds,
                 )
             return False
         dispatch = self.dispatcher.resume_binding(
@@ -171,9 +172,9 @@ class ScheduledWakeWorker:
             wake_metadata={"schedule_cron": request.schedule.cron},
         )
         set_session_cooldown(
-            path=scoped_config.host_heartbeat_session_cooldown_path,
+            path=scoped_config.wake_session_cooldown_path,
             session_id=binding.session_id,
-            cooldown_seconds=scoped_config.host_heartbeat_cooldown_seconds,
+            cooldown_seconds=scoped_config.wake_cooldown_seconds,
         )
         if (request.schedule.cron or "").strip():
             _advance_cron_wake_request(
@@ -208,17 +209,17 @@ def _load_scheduled_wake_worker_global_config(
         {
             "runtime_dir": source.runtime_dir,
             "directories": [],
-            "poll_interval_seconds": source.host_heartbeat_poll_interval_seconds,
-            "jitter_seconds": source.host_heartbeat_jitter_seconds,
-            "cooldown_seconds": source.host_heartbeat_cooldown_seconds,
+            "poll_interval_seconds": source.wake_poll_interval_seconds,
+            "jitter_seconds": source.wake_jitter_seconds,
+            "cooldown_seconds": source.wake_cooldown_seconds,
             "lock_path": source.runtime_dir / "scheduled-wake.lock",
-            "session_cooldown_path": source.host_heartbeat_session_cooldown_path,
+            "session_cooldown_path": source.wake_session_cooldown_path,
             "busy_check_script_path": source.host_busy_check_script_path,
             "resume_script_path": source.host_resume_script_path,
             "wake_state_path": source.runtime_dir / "scheduled-wake-state.json",
-            "vm_user": source.host_heartbeat_vm_user,
-            "resume_timeout_seconds": source.host_heartbeat_resume_timeout_seconds,
-            "scheduled_wake_prefix_text": source.host_heartbeat_scheduled_wake_prefix_text,
+            "vm_user": source.wake_vm_user,
+            "resume_timeout_seconds": source.wake_resume_timeout_seconds,
+            "scheduled_wake_prefix_text": source.wake_scheduled_prefix_text,
         }
     ).model_dump(mode="json")
     path = _worker_global_config_path(project_dir)
@@ -243,18 +244,16 @@ def build_scheduled_wake_worker(
         {
             **config.model_dump(mode="json"),
             "runtime_dir": worker_config.runtime_dir,
-            "host_heartbeat_directory_paths": worker_config.directories,
-            "host_heartbeat_poll_interval_seconds": worker_config.poll_interval_seconds,
-            "host_heartbeat_jitter_seconds": worker_config.jitter_seconds,
-            "host_heartbeat_cooldown_seconds": worker_config.cooldown_seconds,
-            "host_heartbeat_lock_path": worker_config.lock_path,
-            "host_heartbeat_session_cooldown_path": worker_config.session_cooldown_path,
+            "wake_poll_interval_seconds": worker_config.poll_interval_seconds,
+            "wake_jitter_seconds": worker_config.jitter_seconds,
+            "wake_cooldown_seconds": worker_config.cooldown_seconds,
+            "wake_session_cooldown_path": worker_config.session_cooldown_path,
             "host_busy_check_script_path": worker_config.busy_check_script_path,
             "host_resume_script_path": worker_config.resume_script_path,
-            "host_heartbeat_wake_state_path": worker_config.wake_state_path,
-            "host_heartbeat_vm_user": worker_config.vm_user,
-            "host_heartbeat_resume_timeout_seconds": worker_config.resume_timeout_seconds,
-            "host_heartbeat_scheduled_wake_prefix_text": worker_config.scheduled_wake_prefix_text,
+            "wake_dispatch_state_path": worker_config.wake_state_path,
+            "wake_vm_user": worker_config.vm_user,
+            "wake_resume_timeout_seconds": worker_config.resume_timeout_seconds,
+            "wake_scheduled_prefix_text": worker_config.scheduled_wake_prefix_text,
         }
     )
     runtime = build_runtime(effective_config)
@@ -291,7 +290,7 @@ def main() -> None:
 
 
 def _build_scheduled_resume_prompt(worker_config: GatewayConfig, requested_prompt: str) -> str:
-    preamble = str(worker_config.host_heartbeat_scheduled_wake_prefix_text).strip()
+    preamble = str(worker_config.wake_scheduled_prefix_text).strip()
     cleaned_requested = requested_prompt.strip()
     if preamble and cleaned_requested:
         return f"{preamble} {cleaned_requested}"
@@ -316,7 +315,7 @@ def _load_due_wake_requests(*, wake_store: Any, now_utc: datetime) -> list[WakeS
         if next_run_at is None:
             cron = (request.schedule.cron or "").strip()
             if cron:
-                next_run_at = _next_cron_time(cron, now_utc - timedelta(minutes=1))
+                next_run_at = next_cron_time(cron, now_utc - timedelta(minutes=1))
                 if next_run_at is not None:
                     request.next_run_at = next_run_at
                     request.updated_at = now_utc
@@ -348,7 +347,7 @@ def _advance_cron_wake_request(
         wake_store.upsert_request(request)
         return
     next_base = request.next_run_at or now_utc
-    request.next_run_at = _next_cron_time(cron, next_base)
+    request.next_run_at = next_cron_time(cron, next_base)
     wake_store.upsert_request(request)
 
 
@@ -358,68 +357,3 @@ def _parse_wake_request(raw_value: dict[str, Any]) -> WakeScheduledRequest | Non
     except Exception:
         logger.warning("Skipping invalid wake request entry=%r", raw_value, exc_info=True)
         return None
-
-
-def _next_cron_time(expression: str, base: datetime) -> datetime | None:
-    fields = expression.split()
-    if len(fields) != 5:
-        return None
-    minute_values = _parse_cron_field(fields[0], 0, 59)
-    hour_values = _parse_cron_field(fields[1], 0, 23)
-    day_values = _parse_cron_field(fields[2], 1, 31)
-    month_values = _parse_cron_field(fields[3], 1, 12)
-    weekday_values = _parse_cron_field(fields[4], 0, 6)
-    if any(
-        value is None
-        for value in (minute_values, hour_values, day_values, month_values, weekday_values)
-    ):
-        return None
-    assert minute_values is not None
-    assert hour_values is not None
-    assert day_values is not None
-    assert month_values is not None
-    assert weekday_values is not None
-    candidate = base.astimezone(UTC).replace(second=0, microsecond=0) + timedelta(minutes=1)
-    deadline = candidate + timedelta(days=366)
-    while candidate <= deadline:
-        cron_weekday = (candidate.weekday() + 1) % 7
-        if (
-            candidate.minute in minute_values
-            and candidate.hour in hour_values
-            and candidate.day in day_values
-            and candidate.month in month_values
-            and cron_weekday in weekday_values
-        ):
-            return candidate
-        candidate += timedelta(minutes=1)
-    return None
-
-
-def _parse_cron_field(token: str, lower: int, upper: int) -> set[int] | None:
-    normalized = token.strip()
-    if not normalized:
-        return None
-    if normalized == "*":
-        return set(range(lower, upper + 1))
-    values: set[int] = set()
-    for chunk in normalized.split(","):
-        part = chunk.strip()
-        if not part:
-            return None
-        if part.startswith("*/"):
-            try:
-                step = int(part[2:])
-            except ValueError:
-                return None
-            if step <= 0:
-                return None
-            values.update(range(lower, upper + 1, step))
-            continue
-        try:
-            value = int(part)
-        except ValueError:
-            return None
-        if value < lower or value > upper:
-            return None
-        values.add(value)
-    return values

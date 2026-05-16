@@ -43,6 +43,7 @@ from agent_sandbox.config import (
     TeamsMeetingIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
+from agent_sandbox.cron import cron_min_interval_seconds, validate_cron_expression
 from agent_sandbox.admin.directory import DirectoryAdminService
 from agent_sandbox.directory_config import (
     DirectoryConfigResolver,
@@ -2561,115 +2562,14 @@ def _normalize_resume_mode(value: str | None) -> str:
 
 
 def _require_valid_cron(cron: str) -> str:
-    normalized = " ".join(part.strip() for part in str(cron).split())
-    fields = normalized.split(" ")
-    if len(fields) != 5:
-        raise ValueError(
-            "Invalid cron expression. Expected 5 fields (minute hour day month weekday), "
-            "for example: '*/15 * * * *'."
-        )
-    ranges = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 6))
-    for index, token in enumerate(fields):
-        lower, upper = ranges[index]
-        for chunk in token.split(","):
-            part = chunk.strip()
-            if not part:
-                raise ValueError(f"Invalid cron field #{index + 1}: empty value.")
-            if part == "*":
-                continue
-            if part.startswith("*/"):
-                step_text = part[2:]
-                if not step_text.isdigit() or int(step_text) <= 0:
-                    raise ValueError(
-                        f"Invalid cron field #{index + 1}: invalid step value {part!r}."
-                    )
-                continue
-            if not part.isdigit():
-                raise ValueError(
-                    f"Invalid cron field #{index + 1}: expected integer, '*', or step, got {part!r}."
-                )
-            number = int(part)
-            if number < lower or number > upper:
-                raise ValueError(
-                    f"Invalid cron field #{index + 1}: value {number} out of range {lower}-{upper}."
-                )
-    return normalized
-
-
-def _parse_cron_field(token: str, lower: int, upper: int) -> set[int] | None:
-    normalized = token.strip()
-    if not normalized:
-        return None
-    if normalized == "*":
-        return set(range(lower, upper + 1))
-    values: set[int] = set()
-    for chunk in normalized.split(","):
-        part = chunk.strip()
-        if not part:
-            return None
-        if part.startswith("*/"):
-            try:
-                step = int(part[2:])
-            except ValueError:
-                return None
-            if step <= 0:
-                return None
-            values.update(range(lower, upper + 1, step))
-            continue
-        try:
-            value = int(part)
-        except ValueError:
-            return None
-        if value < lower or value > upper:
-            return None
-        values.add(value)
-    return values
-
-
-def _next_cron_time(expression: str, base: datetime) -> datetime | None:
-    fields = expression.split()
-    if len(fields) != 5:
-        return None
-    minute_values = _parse_cron_field(fields[0], 0, 59)
-    hour_values = _parse_cron_field(fields[1], 0, 23)
-    day_values = _parse_cron_field(fields[2], 1, 31)
-    month_values = _parse_cron_field(fields[3], 1, 12)
-    weekday_values = _parse_cron_field(fields[4], 0, 6)
-    if any(
-        value is None
-        for value in (minute_values, hour_values, day_values, month_values, weekday_values)
-    ):
-        return None
-    assert minute_values is not None
-    assert hour_values is not None
-    assert day_values is not None
-    assert month_values is not None
-    assert weekday_values is not None
-    candidate = base.astimezone(UTC).replace(second=0, microsecond=0) + timedelta(minutes=1)
-    deadline = candidate + timedelta(days=366)
-    while candidate <= deadline:
-        cron_weekday = (candidate.weekday() + 1) % 7
-        if (
-            candidate.minute in minute_values
-            and candidate.hour in hour_values
-            and candidate.day in day_values
-            and candidate.month in month_values
-            and cron_weekday in weekday_values
-        ):
-            return candidate
-        candidate += timedelta(minutes=1)
-    return None
+    try:
+        return validate_cron_expression(cron)
+    except ValueError as exc:
+        raise ValueError(f"Invalid cron expression. {exc}") from exc
 
 
 def _cron_min_interval_seconds(expression: str) -> float | None:
-    base = _utc_now().replace(second=0, microsecond=0) - timedelta(minutes=1)
-    first = _next_cron_time(expression, base)
-    if first is None:
-        return None
-    second = _next_cron_time(expression, first)
-    if second is None:
-        return None
-    return (second - first).total_seconds()
+    return cron_min_interval_seconds(expression, _utc_now().replace(second=0, microsecond=0))
 
 
 def _normalize_local_issue_state(state: str | None, *, allow_empty: bool = False) -> str | None:
@@ -5078,7 +4978,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if not enabled:
             return
         active_requests = self._active_wake_requests(exclude_request_id=exclude_request_id)
-        max_active_per_session = self.config.host_heartbeat_schedule_max_active_per_session
+        max_active_per_session = self.config.wake_schedule_max_active_per_session
         if max_active_per_session is not None:
             active_for_session = sum(
                 1 for request in active_requests if request.session_id == session_id
@@ -5088,10 +4988,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     "Wake schedule limit reached for session "
                     f"{session_id}: max_active_per_session={max_active_per_session}"
                 )
-        max_active_total = self.config.host_heartbeat_schedule_max_active_total
+        max_active_total = self.config.wake_schedule_max_active_total
         if max_active_total is not None and len(active_requests) >= max_active_total:
             raise ValueError(f"Wake schedule limit reached: max_active_total={max_active_total}")
-        min_interval_seconds = self.config.host_heartbeat_schedule_min_interval_seconds
+        min_interval_seconds = self.config.wake_schedule_min_interval_seconds
         cron = str(schedule.cron or "").strip()
         if min_interval_seconds is not None and cron:
             actual_interval_seconds = _cron_min_interval_seconds(cron)

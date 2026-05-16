@@ -654,7 +654,7 @@ class SessionAdminFacade:
         if not enabled:
             return
         active_requests = self._active_wake_requests(exclude_request_id=exclude_request_id)
-        max_active_per_session = self._deps.config.host_heartbeat_schedule_max_active_per_session
+        max_active_per_session = self._deps.config.wake_schedule_max_active_per_session
         if max_active_per_session is not None:
             active_for_session = sum(
                 1 for request in active_requests if request.session_id == session_id
@@ -664,10 +664,10 @@ class SessionAdminFacade:
                     "Wake schedule limit reached for session "
                     f"{session_id}: max_active_per_session={max_active_per_session}"
                 )
-        max_active_total = self._deps.config.host_heartbeat_schedule_max_active_total
+        max_active_total = self._deps.config.wake_schedule_max_active_total
         if max_active_total is not None and len(active_requests) >= max_active_total:
             raise ValueError(f"Wake schedule limit reached: max_active_total={max_active_total}")
-        min_interval_seconds = self._deps.config.host_heartbeat_schedule_min_interval_seconds
+        min_interval_seconds = self._deps.config.wake_schedule_min_interval_seconds
         cron = str(schedule.cron or "").strip()
         if min_interval_seconds is not None and cron:
             actual_interval_seconds = admin_service_module._cron_min_interval_seconds(cron)

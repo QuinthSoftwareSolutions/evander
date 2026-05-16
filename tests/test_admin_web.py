@@ -2723,7 +2723,7 @@ def test_admin_web_configuration_state_exposes_unified_directory_overrides(
     assert overrides["payload"] == {
         "directory_path": "root/ops",
         "overrides": {
-            "heartbeat": {"discord_resume_prompt": "Resume this session."},
+            "wake": {"discord_resume_prompt": "Resume this session."},
             "policy": {"discord_operator_channel_allowlist": ["chan-1"]},
             "providers": {
                 "discord_backend": "stub",
@@ -2838,16 +2838,16 @@ def test_admin_web_communications_tab_assistant_only_save_preserves_directory_do
 
     providers_result = service.read_directory_domain_config("ops", "providers")
     policy_result = service.read_directory_domain_config("ops", "policy")
-    heartbeat_result = service.read_directory_domain_config("ops", "heartbeat")
+    wake_result = service.read_directory_domain_config("ops", "wake")
     assert providers_result.ok is True
     assert policy_result.ok is True
-    assert heartbeat_result.ok is True
+    assert wake_result.ok is True
     assert providers_result.data is not None
     assert policy_result.data is not None
-    assert heartbeat_result.data is not None
+    assert wake_result.data is not None
     assert providers_result.data.config["discord_backend"] == "stub"
     assert policy_result.data.config["discord_operator_channel_allowlist"] == ["chan-1"]
-    assert heartbeat_result.data.config["discord_resume_prompt"] == "Resume this session."
+    assert wake_result.data.config["discord_resume_prompt"] == "Resume this session."
     assert service.read_assistant_settings()["default_model"] == "gpt-test"
 
 

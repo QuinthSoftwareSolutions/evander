@@ -281,16 +281,19 @@ def test_bind_network_cidr_rejects_invalid_values_with_clear_error(value: str) -
         GatewayConfig.model_validate({"bind_network_cidr": value})
 
 
-def test_host_heartbeat_lock_path_follows_runtime_dir_default() -> None:
-    config = GatewayConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
-    assert str(config.host_heartbeat_lock_path) == "/tmp/agent-sandbox-runtime/host-heartbeat.lock"
-
-
-def test_host_heartbeat_wake_state_path_follows_runtime_dir_default() -> None:
+def test_wake_session_cooldown_path_follows_runtime_dir_default() -> None:
     config = GatewayConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
     assert (
-        str(config.host_heartbeat_wake_state_path)
-        == "/tmp/agent-sandbox-runtime/host-heartbeat-wake-state.json"
+        str(config.wake_session_cooldown_path)
+        == "/tmp/agent-sandbox-runtime/wake-session-cooldown.json"
+    )
+
+
+def test_wake_dispatch_state_path_follows_runtime_dir_default() -> None:
+    config = GatewayConfig.model_validate({"runtime_dir": "/tmp/agent-sandbox-runtime"})
+    assert (
+        str(config.wake_dispatch_state_path)
+        == "/tmp/agent-sandbox-runtime/wake-dispatch-state.json"
     )
 
 
@@ -302,9 +305,9 @@ def test_host_agent_control_state_path_follows_runtime_dir_default() -> None:
     )
 
 
-def test_host_heartbeat_poll_interval_must_be_positive() -> None:
-    with pytest.raises(ValueError, match="host_heartbeat_poll_interval_seconds"):
-        GatewayConfig.model_validate({"host_heartbeat_poll_interval_seconds": 0})
+def test_wake_poll_interval_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="wake_poll_interval_seconds"):
+        GatewayConfig.model_validate({"wake_poll_interval_seconds": 0})
 
 
 def test_discord_wake_worker_global_config_defaults_follow_runtime_dir() -> None:

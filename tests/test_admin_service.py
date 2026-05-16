@@ -6058,13 +6058,13 @@ def test_create_and_list_wake_schedules_include_last_dispatch(tmp_path: Path) ->
     service.create_wake_schedule(
         session_id="issue-1-session",
         prompt="Resume now",
-        cron="*/5 * * * *",
+        cron="0 6,15 * * 1-5",
         source="admin_cli",
         resume_mode="new_context",
     )
     schedules = service.list_wake_schedules(session_id="issue-1-session")
     assert len(schedules) == 1
-    assert schedules[0]["cron"] == "*/5 * * * *"
+    assert schedules[0]["cron"] == "0 6,15 * * 1-5"
     assert schedules[0]["resume_mode"] == "new_context"
     assert schedules[0]["last_dispatch"] is None
 
@@ -6079,9 +6079,13 @@ def test_create_wake_schedule_rejects_invalid_cron(tmp_path: Path) -> None:
         )
 
 
+def test_wake_schedule_cron_validation_accepts_standard_range_syntax() -> None:
+    assert admin_service._require_valid_cron(" 0 6,15 * * 1-5 ") == "0 6,15 * * 1-5"
+
+
 def test_create_wake_schedule_enforces_max_active_per_session(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
-    service.config.host_heartbeat_schedule_max_active_per_session = 1
+    service.config.wake_schedule_max_active_per_session = 1
     service.create_wake_schedule(
         session_id="issue-1-session",
         prompt="Resume now",
@@ -6098,7 +6102,7 @@ def test_create_wake_schedule_enforces_max_active_per_session(tmp_path: Path) ->
 
 def test_create_wake_schedule_enforces_max_active_total(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
-    service.config.host_heartbeat_schedule_max_active_total = 1
+    service.config.wake_schedule_max_active_total = 1
     service.create_wake_schedule(
         session_id="issue-1-session",
         prompt="Resume now",
@@ -6115,7 +6119,7 @@ def test_create_wake_schedule_enforces_max_active_total(tmp_path: Path) -> None:
 
 def test_create_wake_schedule_enforces_min_interval(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
-    service.config.host_heartbeat_schedule_min_interval_seconds = 600
+    service.config.wake_schedule_min_interval_seconds = 600
 
     with pytest.raises(ValueError, match="minimum=600s actual=300s"):
         service.create_wake_schedule(
@@ -6129,8 +6133,8 @@ def test_edit_wake_schedule_enforces_guardrails_when_enabling_or_tightening_cron
     tmp_path: Path,
 ) -> None:
     service = AdminService(write_config(tmp_path))
-    service.config.host_heartbeat_schedule_max_active_per_session = 1
-    service.config.host_heartbeat_schedule_min_interval_seconds = 600
+    service.config.wake_schedule_max_active_per_session = 1
+    service.config.wake_schedule_min_interval_seconds = 600
     created = service.create_wake_schedule(
         session_id="issue-1-session",
         prompt="Resume later",

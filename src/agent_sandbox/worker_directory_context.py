@@ -21,7 +21,7 @@ from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepo
 
 logger = logging.getLogger(__name__)
 
-SHADOW_DOMAINS = ("policy", "providers", "email", "heartbeat", "vm")
+SHADOW_DOMAINS = ("policy", "providers", "email", "wake", "vm")
 
 
 @dataclass(frozen=True)
@@ -165,8 +165,8 @@ def _domain_default_payload(domain: str) -> dict[str, Any]:
         return {key: payload[key] for key in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"])}
     if domain == "email":
         return {key: payload[key] for key in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["email"])}
-    if domain == "heartbeat":
-        return {key: payload[key] for key in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["heartbeat"])}
+    if domain == "wake":
+        return {key: payload[key] for key in sorted(DIRECTORY_CONFIG_DOMAIN_FIELDS["wake"])}
     if domain == "vm":
         return EffectiveVmDefaultsConfig().model_dump(
             mode="json", include={"bind_network_cidr", "gateway_url"}

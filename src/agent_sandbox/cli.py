@@ -37,7 +37,6 @@ from agent_sandbox.bootstrap import (
 from agent_sandbox.config import GatewayConfig, load_config
 from agent_sandbox.messaging.discord_wake import build_discord_wake_worker
 from agent_sandbox.directories import DirectoryService
-from agent_sandbox.daemons.issue_orchestrator import build_issue_orchestrator_worker
 from agent_sandbox.daemons.effect_orchestrator import build_effect_orchestrator_worker
 from agent_sandbox.daemons.proxy_issue_sync import (
     DEFAULT_PROXY_ISSUE_SYNC_FRESHNESS_SECONDS,
@@ -60,6 +59,7 @@ from agent_sandbox.migrations import (
     migrate_ado_worker_env_to_root,
     migrate_directory_ownership_defaults,
     migrate_global_config_to_root,
+    migrate_heartbeat_config_to_wake,
     migrate_issue_setup_env_to_root,
     migrate_pr_template_to_root,
 )
@@ -321,23 +321,6 @@ class UnitStatus:
     state: str
     available: bool
     detail: str | None
-
-
-@dataclass(slots=True)
-class HeartbeatSummary:
-    healthy: bool
-    reason: str
-    last_cycle_at: str | None
-    last_cycle_streams_polled: int | None
-    last_cycle_discovered_feedback: int | None
-    last_cycle_next_sleep_seconds: float | None
-    last_busy_skip_at: str | None
-    last_busy_skip_reason: str | None
-    last_feedback_detected_at: str | None
-    last_resume_outcome: str | None
-    last_resume_reason: str | None
-    last_vm_start_outcome: str | None
-    last_vm_start_reason: str | None
 
 
 def _path_status(path: Path, *, is_dir: bool = False) -> PathStatus:
@@ -946,98 +929,6 @@ def _teams_auth_emit_result(title: str, result: object) -> None:
         return
     payload = _teams_auth_result_payload(result)
     _teams_auth_print_payload(title, payload)
-
-
-def _load_heartbeat_summary(audit_log_path: Path, *, max_events: int = 400) -> HeartbeatSummary:
-    summary = HeartbeatSummary(
-        healthy=False,
-        reason="no-heartbeat-events",
-        last_cycle_at=None,
-        last_cycle_streams_polled=None,
-        last_cycle_discovered_feedback=None,
-        last_cycle_next_sleep_seconds=None,
-        last_busy_skip_at=None,
-        last_busy_skip_reason=None,
-        last_feedback_detected_at=None,
-        last_resume_outcome=None,
-        last_resume_reason=None,
-        last_vm_start_outcome=None,
-        last_vm_start_reason=None,
-    )
-    if not audit_log_path.exists():
-        summary.reason = "missing-audit-log"
-        return summary
-
-    try:
-        lines = audit_log_path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        summary.reason = "audit-log-unreadable"
-        return summary
-
-    for raw in reversed(lines[-max_events:]):
-        try:
-            event = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        event_type = str(event.get("event_type", ""))
-        created_at = event.get("created_at")
-        reason = event.get("reason")
-        decision = event.get("decision")
-        result = event.get("result")
-        if (
-            event_type == AuditEventType.HOST_HEARTBEAT_CYCLE_COMPLETED
-            and summary.last_cycle_at is None
-        ):
-            summary.last_cycle_at = str(created_at) if created_at else None
-            if isinstance(result, dict):
-                streams_polled = result.get("streams_polled")
-                discovered_feedback = result.get("discovered_feedback")
-                next_sleep_seconds = result.get("next_sleep_seconds")
-                summary.last_cycle_streams_polled = (
-                    int(streams_polled) if isinstance(streams_polled, int) else None
-                )
-                summary.last_cycle_discovered_feedback = (
-                    int(discovered_feedback) if isinstance(discovered_feedback, int) else None
-                )
-                summary.last_cycle_next_sleep_seconds = (
-                    float(next_sleep_seconds)
-                    if isinstance(next_sleep_seconds, (int, float))
-                    else None
-                )
-            summary.reason = str(reason or decision or "cycle-seen")
-            summary.healthy = True
-        elif event_type == AuditEventType.BUSY_SKIP and summary.last_busy_skip_at is None:
-            summary.last_busy_skip_at = str(created_at) if created_at else None
-            summary.last_busy_skip_reason = str(reason) if reason else None
-        elif (
-            event_type == AuditEventType.FEEDBACK_DETECTED
-            and summary.last_feedback_detected_at is None
-        ):
-            summary.last_feedback_detected_at = str(created_at) if created_at else None
-        elif (
-            event_type
-            in {
-                AuditEventType.RESUME_ATTEMPTED,
-                AuditEventType.RESUME_SUCCEEDED,
-                AuditEventType.RESUME_FAILED,
-            }
-            and summary.last_resume_outcome is None
-        ):
-            summary.last_resume_outcome = event_type
-            summary.last_resume_reason = str(reason) if reason else None
-        elif (
-            event_type
-            in {
-                AuditEventType.VM_START_ATTEMPTED,
-                AuditEventType.VM_START_SUCCEEDED,
-                AuditEventType.VM_START_FAILED,
-            }
-            and summary.last_vm_start_outcome is None
-        ):
-            summary.last_vm_start_outcome = event_type
-            summary.last_vm_start_reason = str(reason) if reason else None
-
-    return summary
 
 
 def _default_issue_session_id(issue_number: str) -> str:
@@ -1720,6 +1611,33 @@ def migrate_global_config_root(
 
 
 @app.command(
+    "migrate-heartbeat-config-to-wake",
+    rich_help_panel="Health and State",
+    short_help="Rename legacy heartbeat directory config files to wake config files.",
+)
+def migrate_heartbeat_config_wake(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    overwrite: Annotated[
+        bool,
+        typer.Option(
+            "--overwrite",
+            help="Replace an existing wake.json when it differs from the migrated heartbeat.json.",
+        ),
+    ] = False,
+) -> None:
+    cfg = _load_runtime_config_from_option(config)
+    summary = migrate_heartbeat_config_to_wake(cfg, overwrite=overwrite)
+    typer.echo(
+        "Wake config migration complete: "
+        f"scanned={summary.scanned_files} "
+        f"written={summary.written_files} "
+        f"skipped={summary.skipped_files} "
+        f"removed_legacy={summary.removed_legacy_files} "
+        f"metadata_updated={summary.metadata_updated}"
+    )
+
+
+@app.command(
     "migrate-ado-worker-env-to-root",
     rich_help_panel="Health and State",
     short_help="Import ado-worker env settings into root ado_worker config.",
@@ -1925,7 +1843,6 @@ def status(
         "runtime_paths": [],
         "systemd_units": [],
         "health": [],
-        "host_heartbeat": {},
         "sessions": {
             "total": 0,
             "active": 0,
@@ -1988,14 +1905,6 @@ def status(
         for endpoint in health_results:
             if not endpoint.reachable:
                 report["overall"] = "degraded"
-
-        heartbeat_summary = _load_heartbeat_summary(cfg.audit_log_path)
-        report["host_heartbeat"] = asdict(heartbeat_summary)
-        if not heartbeat_summary.healthy and heartbeat_summary.reason not in {
-            "no-heartbeat-events",
-            "missing-audit-log",
-        }:
-            report["overall"] = "degraded"
 
         session_repository = JsonSessionManifestRepository(cfg.session_store_path)
         try:
@@ -2071,38 +1980,6 @@ def status(
             )
             if endpoint["error"]:
                 typer.echo(f"  error: {endpoint['error']}")
-
-    if report["host_heartbeat"]:
-        heartbeat = report["host_heartbeat"]
-        typer.echo("\nHost heartbeat")
-        typer.echo(
-            _format_rows(
-                [
-                    ("Healthy", "yes" if heartbeat["healthy"] else "no"),
-                    ("Reason", str(heartbeat["reason"])),
-                    ("Last cycle", str(heartbeat["last_cycle_at"] or "n/a")),
-                    ("Streams polled", str(heartbeat["last_cycle_streams_polled"] or "n/a")),
-                    (
-                        "Feedback discovered",
-                        str(heartbeat["last_cycle_discovered_feedback"] or "n/a"),
-                    ),
-                    (
-                        "Next sleep seconds",
-                        str(heartbeat["last_cycle_next_sleep_seconds"] or "n/a"),
-                    ),
-                    ("Last busy skip", str(heartbeat["last_busy_skip_at"] or "n/a")),
-                    ("Busy skip reason", str(heartbeat["last_busy_skip_reason"] or "n/a")),
-                    (
-                        "Last feedback detected",
-                        str(heartbeat["last_feedback_detected_at"] or "n/a"),
-                    ),
-                    ("Last resume outcome", str(heartbeat["last_resume_outcome"] or "n/a")),
-                    ("Last resume reason", str(heartbeat["last_resume_reason"] or "n/a")),
-                    ("Last vm start outcome", str(heartbeat["last_vm_start_outcome"] or "n/a")),
-                    ("Last vm start reason", str(heartbeat["last_vm_start_reason"] or "n/a")),
-                ]
-            )
-        )
 
     session_summary = report["sessions"]
     typer.echo("\nSessions")
@@ -3958,7 +3835,7 @@ def wake_schedule_create(
         str | None, typer.Option("--resume-at", help="One-time UTC timestamp (ISO-8601).")
     ] = None,
     cron: Annotated[
-        str | None, typer.Option("--cron", help="Recurring cron expression (5 fields).")
+        str | None, typer.Option("--cron", help="Recurring standard 5-field cron expression.")
     ] = None,
     mode: Annotated[
         str, typer.Option("--mode", help="Resume mode: same_context or new_context.")
@@ -4024,7 +3901,7 @@ def wake_schedule_edit(
         str | None, typer.Option("--resume-at", help="Updated one-time UTC timestamp (ISO-8601).")
     ] = None,
     cron: Annotated[
-        str | None, typer.Option("--cron", help="Updated recurring cron expression (5 fields).")
+        str | None, typer.Option("--cron", help="Updated recurring standard 5-field cron expression.")
     ] = None,
     mode: Annotated[
         str | None, typer.Option("--mode", help="Updated mode: same_context or new_context.")
@@ -4338,42 +4215,6 @@ def proxy_issue_sync(
         freshness_window_seconds=freshness_window_seconds,
         force=force,
     )
-
-
-@app.command(
-    "issue-orchestrator",
-    rich_help_panel="Background Workers",
-    short_help="Run the issue orchestrator worker.",
-)
-def issue_orchestrator(
-    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
-    run_once: Annotated[
-        bool,
-        typer.Option("--once", help="Run a single issue orchestrator cycle and exit."),
-    ] = False,
-    log_level: Annotated[str, typer.Option("--log-level", help="Python logging level.")] = "INFO",
-) -> None:
-    logging_level = getattr(logging, log_level.upper(), None)
-    if not isinstance(logging_level, int):
-        raise typer.BadParameter(f"Invalid --log-level value: {log_level}")
-    logging.basicConfig(
-        level=logging_level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
-
-    cfg = _load_runtime_config_from_option(config)
-    worker = build_issue_orchestrator_worker(
-        cfg, project_dir=_project_dir_for_config_option(config)
-    )
-    if run_once:
-        result = worker.run_once_with_lock()
-        typer.echo(
-            f"Issue orchestrator cycle complete resumed={result.resumed_sessions} "
-            f"eligible={result.eligible_sessions} sleep_seconds={result.next_sleep_seconds:.3f}"
-        )
-        return
-
-    worker.run_forever()
 
 
 @app.command(

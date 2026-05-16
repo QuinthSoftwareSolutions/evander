@@ -69,7 +69,7 @@ class HostWakeDispatcher:
         try:
             resolution = self.directory_context_resolver.resolve_effective_domain_for_session(
                 session_id,
-                domain="heartbeat",
+                domain="wake",
                 fallback_directory_path=directory_path,
             )
         except Exception:
@@ -132,12 +132,12 @@ class HostWakeDispatcher:
             "--session-id",
             binding.session_id,
             "--vm-user",
-            worker_config.host_heartbeat_vm_user,
+            worker_config.wake_vm_user,
             "--resume-mode",
             resume_mode,
             "--worker-mode",
             "--host-state-file",
-            str(worker_config.host_heartbeat_wake_state_path),
+            str(worker_config.wake_dispatch_state_path),
         ]
         host_control_state_path = getattr(self.config, "host_agent_control_state_path", None)
         if host_control_state_path is not None:
@@ -146,7 +146,7 @@ class HostWakeDispatcher:
             "check": False,
             "capture_output": True,
             "text": True,
-            "timeout": worker_config.host_heartbeat_resume_timeout_seconds,
+            "timeout": worker_config.wake_resume_timeout_seconds,
         }
         agent_model = self._resolve_agent_model_for_binding(binding)
         if agent_model:
@@ -186,7 +186,7 @@ class HostWakeDispatcher:
                 script_path,
                 binding.session_id,
                 binding.vm_id,
-                worker_config.host_heartbeat_resume_timeout_seconds,
+                worker_config.wake_resume_timeout_seconds,
             )
             dispatch_record = WakeDispatchRecord(
                 dispatch_id=f"wake-{int(time.time() * 1_000_000)}-{binding.session_id}",
@@ -200,7 +200,7 @@ class HostWakeDispatcher:
                 metadata={
                     "vm_id": binding.vm_id,
                     "source": binding.source,
-                    "timeout_seconds": worker_config.host_heartbeat_resume_timeout_seconds,
+                    "timeout_seconds": worker_config.wake_resume_timeout_seconds,
                     **(wake_metadata or {}),
                 },
                 error="resume script timed out",

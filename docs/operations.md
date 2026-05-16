@@ -136,22 +136,10 @@ Troubleshooting checklist:
 - Optional one-off overlays can be provided with inline `workflow_ir` in
   `config/trigger-orchestrator/config.json`.
 
-## Desktop Operator Console
+## Admin Web Operator Console
 
-For a host-local desktop GUI on Ubuntu, install the optional desktop extra:
-
-```bash
-uv pip install -e '.[desktop]'
-```
-
-Then launch:
-
-```bash
-agent-sandbox-admin
-```
-
-The console is intentionally single-user and localhost-oriented. It uses the same host-side
-orchestration layer as the CLI and surfaces:
+Admin Web is the supported operator GUI. It uses the same host-side orchestration layer as the CLI
+and surfaces:
 
 - all active and inactive VMs
 - VM power state and guest agent state separately
@@ -264,7 +252,7 @@ Storage layout for directory config:
   - `policy.json`
   - `providers.json`
   - `email.json`
-  - `heartbeat.json`
+  - `wake.json`
   - `ado-worker.json`
   - `issue-setup.json`
   - `vm.json`
@@ -335,7 +323,7 @@ Storage layout for directory config:
 - Teams message arrival for `trigger:teams:new-message` comes from host-side ingest polling on the
   host, using the same delegated Teams identity/configuration. That polling path is separate from
   PR and chat wakeups, which are handled by the ADO worker, Discord wake worker, and scheduled wake
-  worker. The old `agent-sandbox-host-heartbeat.service` is retired.
+  worker.
 - Teams targets can be channel threads, group chats, or explicitly allowlisted one-on-one users:
   - channel targets use `team-id/channel-id` and should be declared in `session.teams_channel_allowlist`
   - chat targets use `chat:<chat-id>` and should be declared in `session.teams_chat_allowlist`
@@ -448,6 +436,18 @@ When diagnosing streamed `/v1/*` relay calls, inspect host relay logs for these 
 - `relay_stream_transport_terminated` when `ReadError`/`RemoteProtocolError` is suppressed after partial or full delivery. This warning includes `exception_class`, `exception_message`, `chunks`, `bytes`, and global counters.
 
 A transport-terminated warning without client-visible failure can be expected for some upstream SSE responses that close abruptly after emitting the final event.
+
+## Host-Side Workflow Snapshot Tool
+
+- Gateway tool name: `get_workflow_snapshot`.
+- The tool is policy-gated: each session manifest must include `get_workflow_snapshot` in
+  `allowed_tools` before calls are accepted.
+- Required MCP arguments: none beyond the session binding.
+- Optional MCP arguments:
+  - `include_runs` (default `false`) includes the current workflow run snapshot alongside the
+    workflow editor document.
+- Response payload includes the active workflow editor document: config path, layout path, revision,
+  saved timestamp, normalized workflow config, layout, graph metadata, and derived output schemas.
 
 ## Host-Side Azure DevOps Backlog Tools
 
@@ -1047,10 +1047,6 @@ without exposing provider credentials in the VM.
 - Partial fetch or partial local processing:
   - Treat as uncommitted.
   - Do not advance cursor; re-fetch on next loop.
-- Stale host lock:
-  - `host_heartbeat_lock_path` is enforced as single-instance protection.
-  - If lock contention persists unexpectedly, inspect the host worker process/service before removing the lock file.
-
 ### Audit and log file locations
 
 - Host feedback state: `runtime/pr-feedback-store.json` (ingested comments + cursors), `runtime/pr-reply-idempotency.json` (reply dedupe keys/results), `runtime/host-agent-control-state.json` (durable enabled/disabled state by VM).
@@ -1219,7 +1215,7 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
 - The same worker now owns Azure DevOps PR feedback ingestion and PR completion polling for
   configured PR streams; it updates `runtime/pr-feedback-store.json`, records PR status in
   `runtime/pr-map.json`, and publishes `trigger:pull-request:new-feedback` plus
-  `trigger:pull-request:completed` events without depending on `agent-sandbox-host-heartbeat`.
+  `trigger:pull-request:completed` events.
 - For terminal-PR cleanup workflows, wire `trigger:pull-request:completed.session_id` into
   `effect:agent:destroy.session_id`.
 - A polled ADO work item is represented in the unified local issue store as a proxy issue
@@ -1310,16 +1306,6 @@ Failure recovery:
   sudo systemctl restart agent-sandbox-ado-worker.service
   ```
 
-## Retired Issue Orchestrator
-
-- `agent-sandbox-issue-orchestrator` is obsolete and should remain disabled.
-- `scripts/install_systemd_units.sh` no longer installs or enables
-  `agent-sandbox-issue-orchestrator.service`.
-- Existing hosts that still have the old unit installed should disable it explicitly:
-
-```bash
-sudo systemctl disable --now agent-sandbox-issue-orchestrator.service
-```
 
 ## Host-Side Trigger Orchestrator
 

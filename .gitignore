@@ -8,13 +8,10 @@ runtime/
 /.agent-sandbox/review-context.env
 git-remotes/
 config/nuget-relay.env
-config/host-heartbeat.env
 config/ado-worker/config.json
 config/communication-targets/config.json
 config/discord-ingest/config.json
 config/discord-wake/config.json
-config/host-heartbeat/config.json
-config/issue-orchestrator/config.json
 config/proxy-issue-sync/config.json
 config/scheduled-wake/config.json
 config/teams-ingest/config.json

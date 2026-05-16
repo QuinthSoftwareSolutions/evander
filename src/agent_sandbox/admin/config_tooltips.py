@@ -351,57 +351,47 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
         "Host script used by wake workers to detect whether a session VM is currently busy "
         "before attempting to resume it."
     ),
-    "host_heartbeat_cooldown_seconds": (
+    "wake_cooldown_seconds": (
         "Minimum cooldown in seconds before wake workers will try to resume the same session again."
     ),
-    "host_heartbeat_http_timeout_seconds": (
-        "HTTP client timeout in seconds for each host-side wake polling cycle."
-    ),
-    "host_heartbeat_jitter_seconds": (
+    "wake_jitter_seconds": (
         "Random delay added to each wake polling sleep interval to avoid perfectly synchronized polling."
     ),
-    "host_heartbeat_lock_path": (
-        "Single-instance lock file path shared by host-side wake workers."
-    ),
-    "host_heartbeat_poll_interval_seconds": (
+    "wake_poll_interval_seconds": (
         "Base polling interval in seconds for host-side wake workers."
     ),
-    "host_heartbeat_pr_resume_prompt": (
+    "pr_feedback_resume_prompt": (
         "Prompt text passed to the resume script when waking an agent session for unread PR comments."
     ),
     "discord_resume_prompt": (
         "Prompt text passed to the Discord wake worker when waking an agent session for unread Discord messages."
     ),
-    "host_heartbeat_resume_timeout_seconds": (
+    "wake_resume_timeout_seconds": (
         "Timeout in seconds for the host resume script invocation."
     ),
-    "host_heartbeat_session_cooldown_path": (
-        "JSON state file path where the heartbeat worker tracks per-session cooldowns."
+    "wake_session_cooldown_path": (
+        "JSON state file path where wake workers track per-session cooldowns."
     ),
-    "host_heartbeat_stream_conflict_policy": (
-        "How the heartbeat worker handles one PR feedback stream matching multiple sessions: "
-        "'fanout' polls anyway, 'reject' skips that stream."
-    ),
-    "host_heartbeat_scheduled_wake_prefix_text": (
+    "wake_scheduled_prefix_text": (
         "Static text prepended to MCP-scheduled resume prompts before dispatch (prefix + scheduled prompt)."
     ),
-    "host_heartbeat_schedule_max_active_per_session": (
+    "wake_schedule_max_active_per_session": (
         "Optional guardrail: maximum number of active scheduled wake requests allowed per session."
     ),
-    "host_heartbeat_schedule_max_active_total": (
+    "wake_schedule_max_active_total": (
         "Optional guardrail: maximum number of active scheduled wake requests allowed across all sessions."
     ),
-    "host_heartbeat_schedule_min_interval_seconds": (
+    "wake_schedule_min_interval_seconds": (
         "Optional guardrail: minimum allowed interval, in seconds, between scheduled runs for recurring wakes."
     ),
-    "host_heartbeat_vm_user": (
+    "wake_vm_user": (
         "Guest username passed to the resume script when reconnecting to a VM."
     ),
-    "host_heartbeat_wake_state_path": (
+    "wake_dispatch_state_path": (
         "Host-side JSON state file written by the resume script to track recent wake attempts."
     ),
     "host_resume_script_path": (
-        "Host script invoked by the heartbeat worker to resume an agent VM when unread feedback is available."
+        "Host script invoked by wake workers to resume an agent VM when unread feedback is available."
     ),
     "bind_network_cidr": (
         "Network CIDR assigned to the guest bind network. Must be a real network, for example 192.168.250.0/24."

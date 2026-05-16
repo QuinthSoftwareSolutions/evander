@@ -587,10 +587,10 @@ def test_conformance_cron_due_and_cursor_persistence(
     provider.initialize(
         _trigger_adapter().validate_python(
             {
-                "id": "cron-every-minute",
+                "id": "cron-every-minute-range",
                 "display_name": "Cron",
                 "type": "trigger:cron",
-                "expression": "* * * * *",
+                "expression": "* * * * 0-6",
             }
         ),
         _build_runtime_context(runtime_dir),
@@ -604,7 +604,7 @@ def test_conformance_cron_due_and_cursor_persistence(
 
     assert first_events
     assert second_events == []
-    assert "last_fired_at" in cursor_payload["cron-every-minute"]
+    assert "last_fired_at" in cursor_payload["cron-every-minute-range"]
     _record_result(
         report_collector,
         requirement_id="provider:cron:cursor",
