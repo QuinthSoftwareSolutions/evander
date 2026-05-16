@@ -31,7 +31,7 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     assert "apt-cacher-ng relay on `3142`" in docs
     assert "registry.npmjs.org" in docs
     assert "does not turn containers into a VM-equivalent trust boundary" in docs
-    assert "Non-`none` networking requires Phase 5" in docs
+    assert "Non-`none` networking requires worker VM firewall and routing controls" in docs
     assert "--allowed-git-source-prefix" in docs
     assert "ssh://<git_ssh_alias><git_root>/<mirror>.git" in docs
     assert "GitHub/Azure DevOps egress" in docs
@@ -44,7 +44,9 @@ def test_execution_backend_docs_distinguish_daemon_from_gateway_integration() ->
     docs = (ROOT / "docs" / "execution-backends.md").read_text(encoding="utf-8")
 
     assert "agent-sandbox-worker-daemon" in docs
-    assert "early single-worker control-plane use" in docs
+    assert "one configured worker URL" in docs
     assert "libvirt_vm` remains the default" in docs
-    assert "Phase 4 formalizes the worker container sandbox profile" in docs
-    assert "does not implement Phase 5 networking" in docs
+    assert "## Current Scope" in docs
+    assert "backend-aware `effect:agent:*` workflow nodes" in docs
+    assert "## Remaining Migration Work" in docs
+    assert "Phase " not in docs
