@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
+from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
 
 
 def test_handle_git_push_trigger_enqueues_matching_branch_updates(tmp_path: Path) -> None:
@@ -66,6 +67,59 @@ def test_handle_git_push_trigger_enqueues_matching_branch_updates(tmp_path: Path
     assert record["payload"]["commit_hash"] == "1" * 40
     assert record["payload"]["repo_name"] == "sample"
     assert record["payload"]["repo_path"] == str(repo_path)
+
+
+def test_handle_git_push_trigger_enqueues_to_sqlite_backend(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "handle_git_push_trigger.sh"
+
+    repo_path = (tmp_path / "git-remotes" / "sample.git").resolve()
+    repo_path.mkdir(parents=True)
+    queue_path = tmp_path / "runtime" / "trigger-events.json"
+    db_path = tmp_path / "runtime" / "orchestration.db"
+    config_path = tmp_path / "trigger-config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "event_queue_store_path": str(queue_path),
+                "orchestration_store_backend": "sqlite",
+                "orchestration_store_path": str(db_path),
+                "triggers": [
+                    {
+                        "id": "git-main",
+                        "display_name": "Git main",
+                        "type": "trigger:git:push",
+                        "path_to_repo": str(repo_path),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [str(script), str(repo_path)],
+        input=f"{'0' * 40} {'1' * 40} refs/heads/main\n",
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+        },
+        cwd=root,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not queue_path.exists()
+    queued = SqliteTriggerEventQueue(db_path).read_all()
+    assert list(queued) == [f"git-main:main:{'1' * 40}"]
+    record = queued[f"git-main:main:{'1' * 40}"]
+    assert record.delivery_state == "pending"
+    assert record.trigger_type == "trigger:git:push"
+    assert record.payload["branch_name"] == "main"
+    assert record.payload["commit_hash"] == "1" * 40
 
 
 def test_handle_git_push_trigger_ignores_non_matching_repo(tmp_path: Path) -> None:
