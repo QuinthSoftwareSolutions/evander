@@ -158,7 +158,9 @@ Type-specific keys:
 | `trigger:git:push` | `path_to_repo` | — |
 
 `trigger:cron.expression` uses a standard 5-field cron expression. Field syntax supports
-ranges, stepped ranges, lists, and month/weekday names.
+ranges, stepped ranges, lists, and month/weekday names. When a cron trigger is overdue, the
+trigger orchestrator queues only the latest due occurrence and advances the trigger cursor past
+older missed occurrences; editing a trigger to a higher frequency does not replay historical runs.
 
 `trigger:pull-request:completed` emits `session_id`, `status`, `merged`, `completed_at`, and a
 normalized `pr` object when the tracked PR reaches a terminal state such as merged, completed,
