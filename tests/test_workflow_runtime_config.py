@@ -16,6 +16,18 @@ def _config_path(project_dir: Path) -> Path:
     return project_dir / "config" / "trigger-orchestrator" / "config.json"
 
 
+def test_loaded_worker_config_defaults_to_sqlite_orchestration_store(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+    )
+
+    assert config.orchestration_store_backend == "sqlite"
+    assert config.orchestration_store_path == runtime_dir / "orchestration.db"
+    assert "orchestration_store_backend" in config.model_fields_set
+
+
 def test_reload_uses_last_known_good_config_when_new_payload_is_invalid(
     tmp_path: Path, caplog
 ) -> None:
@@ -543,3 +555,61 @@ def test_load_config_accepts_notification_effect_communication_target_ref(
     )
 
     assert [effect.type for effect in config.effects] == ["effect:notification:send"]
+
+
+def test_load_config_accepts_communication_send_message_target_ref(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    targets_dir = project_dir / "config" / "communication-targets"
+    targets_dir.mkdir(parents=True, exist_ok=True)
+    (targets_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "targets": [
+                    {
+                        "id": "teams-primary",
+                        "provider": "teams",
+                        "kind": "teams",
+                        "address": "chat:chat-1",
+                        "policy": {"capabilities": ["write"]},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "triggers": [
+                    {
+                        "id": "cron-1",
+                        "display_name": "Every minute",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "send-message-1",
+                        "display_name": "Send message",
+                        "type": "effect:communication:send-message",
+                        "communication_target_id": "teams-primary",
+                        "message": "Done",
+                    }
+                ],
+                "edges": [{"source_id": "cron-1", "target_id": "send-message-1"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+    )
+
+    assert [effect.type for effect in config.effects] == ["effect:communication:send-message"]

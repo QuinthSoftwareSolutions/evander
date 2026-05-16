@@ -11,6 +11,8 @@ from agent_sandbox.daemons.effect_orchestrator import (
     GateExecutionRecord,
     JsonExecutionStore,
     JsonGateExecutionStore,
+    SqliteExecutionStore,
+    SqliteGateExecutionStore,
 )
 from agent_sandbox.repositories.orchestration import (
     JsonEffectCursorRepository,
@@ -186,3 +188,61 @@ def test_execution_repository_update_all_preserves_records_written_after_stale_s
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["exec-old"]["status"] == "failed"
     assert payload["exec-new"]["status"] == "running"
+
+
+def test_sqlite_execution_repository_supports_indexed_queries(tmp_path: Path) -> None:
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
+    gate_store = SqliteGateExecutionStore(tmp_path / "orchestration.db")
+
+    running = _effect_record(execution_id="exec-1", idempotency_key="idem-1")
+    execution_store.record_execution(running)
+    succeeded = _effect_record(execution_id="exec-2", idempotency_key="idem-2")
+    succeeded.status = "succeeded"
+    execution_store.record_execution(succeeded)
+
+    older_gate = _gate_record(
+        execution_id="gate-1",
+        idempotency_key="gate-idem-1",
+        gate_id="merge-1",
+        finished_at=datetime(2026, 4, 23, 12, 0, tzinfo=UTC),
+    )
+    newer_gate = _gate_record(
+        execution_id="gate-2",
+        idempotency_key="gate-idem-2",
+        gate_id="merge-1",
+        finished_at=datetime(2026, 4, 23, 12, 10, tzinfo=UTC),
+    )
+    gate_store.record_execution(older_gate)
+    gate_store.record_execution(newer_gate)
+
+    assert execution_store.find_execution_by_idempotency_key("idem-1") == running
+    assert execution_store.get_execution("exec-1") == running
+    assert execution_store.has_running_execution_for_event("evt-1") is True
+    assert [record.execution_id for record in execution_store.list_active_records()] == [
+        "exec-1"
+    ]
+    assert gate_store.find_latest_execution_for_gate("merge-1") == newer_gate
+
+
+def test_sqlite_execution_repository_clears_target_event_without_full_file_store(
+    tmp_path: Path,
+) -> None:
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
+    target = _effect_record(execution_id="exec-1", idempotency_key="idem-1")
+    other = _effect_record(
+        execution_id="exec-2", idempotency_key="idem-2", event_id="evt-other"
+    )
+    execution_store.record_execution(target)
+    execution_store.record_execution(other)
+
+    cleared = execution_store.clear_event_records(
+        "evt-1",
+        cleared_at=datetime(2026, 4, 23, 13, 0, tzinfo=UTC),
+        clear_reason="manual_clear_stale_workflow_runs",
+        clear_error="cleared",
+    )
+
+    assert cleared == 1
+    assert execution_store.get_execution("exec-1").status == "failed"
+    assert execution_store.get_execution("exec-1").dismissed_at is not None
+    assert execution_store.get_execution("exec-2").status == "running"

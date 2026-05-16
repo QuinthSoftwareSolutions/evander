@@ -430,6 +430,9 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
         str(config.event_queue_store_path)
         == "/tmp/agent-sandbox-runtime/trigger-orchestrator-events.json"
     )
+    assert config.orchestration_store_backend == "sqlite"
+    assert str(config.orchestration_store_path) == "/tmp/agent-sandbox-runtime/orchestration.db"
+    assert config.orchestration_retention_days == 30
     assert (
         str(config.event_queue_cursor_store_path)
         == "/tmp/agent-sandbox-runtime/trigger-orchestrator-cursors.json"

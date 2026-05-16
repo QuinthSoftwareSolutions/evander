@@ -578,6 +578,18 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "fields": {"type": "object"},
         **_TICKET_OUTPUT_SCHEMA,
     },
+    "effect:communication:send-message": {
+        "success": {"type": "boolean"},
+        "provider": {"type": "string"},
+        "communication_target_id": {"type": "string"},
+        "status": {"type": "string"},
+        "message_id": {"type": "string"},
+        "channel_target": {"type": "string"},
+        "channel_id": {"type": "string"},
+        "chat_id": {"type": "string"},
+        "team_id": {"type": "string"},
+        "thread_id": {"type": "string"},
+    },
     "effect:notification:send": {
         "success": {"type": "boolean"},
         "provider": {"type": "string"},

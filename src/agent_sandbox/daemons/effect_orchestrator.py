@@ -88,6 +88,8 @@ from agent_sandbox.repositories.orchestration import (
     GateExecutionRepository,
     JsonEffectCursorRepository,
     JsonExecutionRepository,
+    SqliteExecutionRepository,
+    SqliteGateExecutionRepository,
 )
 
 logger = logging.getLogger(__name__)
@@ -260,8 +262,12 @@ class EffectOrchestratorWorker:
             raise ValueError(
                 "EffectOrchestratorWorker requires either core_config or worker_config"
             )
-        self.worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
-            selected_config.model_dump(mode="json")
+        self.worker_config = (
+            selected_config
+            if isinstance(selected_config, TriggerOrchestratorWorkerGlobalConfig)
+            else TriggerOrchestratorWorkerGlobalConfig.model_validate(
+                selected_config.model_dump(mode="json")
+            )
         )
         self._config_reloader = (
             config_reloader
@@ -1147,6 +1153,9 @@ class EffectOrchestratorWorker:
         self.event_queue.mark_delivered(event_id)
 
     def _event_has_inflight_effects(self, event_id: str) -> bool:
+        has_running = getattr(self.execution_store, "has_running_execution_for_event", None)
+        if callable(has_running):
+            return bool(has_running(event_id))
         for record in self.execution_store.list_executions():
             if record.event_id != event_id:
                 continue
@@ -1449,6 +1458,46 @@ class JsonGateExecutionStore(JsonExecutionRepository[GateExecutionRecord]):
             ):
                 latest = record
         return latest
+
+
+class SqliteExecutionStore(SqliteExecutionRepository[EffectExecutionRecord]):
+    def __init__(
+        self,
+        path: Path,
+        *,
+        journal: Any | None = None,
+        retention_days: int | None = None,
+    ) -> None:
+        super().__init__(
+            path,
+            EffectExecutionRecord,
+            table_name="effect_executions",
+            node_id_field="effect_id",
+            node_type_field="effect_type",
+            journal=journal,
+            source="effect_execution",
+            retention_days=retention_days,
+        )
+
+
+class SqliteGateExecutionStore(SqliteGateExecutionRepository[GateExecutionRecord]):
+    def __init__(
+        self,
+        path: Path,
+        *,
+        journal: Any | None = None,
+        retention_days: int | None = None,
+    ) -> None:
+        super().__init__(
+            path,
+            GateExecutionRecord,
+            table_name="gate_executions",
+            node_id_field="gate_id",
+            node_type_field="gate_type",
+            journal=journal,
+            source="gate_execution",
+            retention_days=retention_days,
+        )
 
 
 def build_effect_orchestrator_worker(

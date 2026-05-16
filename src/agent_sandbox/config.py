@@ -847,6 +847,9 @@ class OrchestrationCoreConfig(BaseModel):
     runtime_dir: Path = Path("runtime")
     poll_interval_seconds: float = Field(default=5.0, gt=0)
     jitter_seconds: float = Field(default=5.0, ge=0)
+    orchestration_store_backend: Literal["sqlite", "json"] = "sqlite"
+    orchestration_store_path: Path | None = None
+    orchestration_retention_days: int = Field(default=30, ge=0)
     lock_path: Path | None = None
     event_queue_store_path: Path | None = None
     event_queue_cursor_store_path: Path | None = None
@@ -902,6 +905,8 @@ class OrchestrationCoreConfig(BaseModel):
             self.lock_path = self.runtime_dir / "trigger-orchestrator.lock"
         if self.event_queue_store_path is None:
             self.event_queue_store_path = self.runtime_dir / "trigger-orchestrator-events.json"
+        if self.orchestration_store_path is None:
+            self.orchestration_store_path = self.runtime_dir / "orchestration.db"
         if self.event_queue_cursor_store_path is None:
             self.event_queue_cursor_store_path = (
                 self.runtime_dir / "trigger-orchestrator-cursors.json"

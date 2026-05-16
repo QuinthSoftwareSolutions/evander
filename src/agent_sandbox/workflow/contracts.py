@@ -176,6 +176,8 @@ def _validate_filter_when_node(value: Any, *, path: str) -> None:
             "not_equals",
             "in",
             "not_in",
+            "greater_than",
+            "less_than",
             "is_null",
             "is_not_null",
             "starts_with",
@@ -201,7 +203,7 @@ def _validate_filter_when_node(value: Any, *, path: str) -> None:
 
     if not operator_keys:
         raise ValueError(
-            f"{path} must contain a logical operator or one of: contains, ends_with, equals, in, is_not_null, is_null, not_equals, not_in, starts_with"
+            f"{path} must contain a logical operator or one of: contains, ends_with, equals, greater_than, in, is_not_null, is_null, less_than, not_equals, not_in, starts_with"
         )
     if len(operator_keys) != 1:
         raise ValueError(f"{path} must contain exactly one comparison operator")
@@ -215,6 +217,10 @@ def _validate_filter_when_node(value: Any, *, path: str) -> None:
     if operator in {"is_null", "is_not_null"}:
         if operator_value is not True:
             raise ValueError(f"{path}.{operator} must be true")
+        return
+    if operator in {"greater_than", "less_than"}:
+        if isinstance(operator_value, bool) or not isinstance(operator_value, (int, float)):
+            raise ValueError(f"{path}.{operator} must be a number")
         return
     if operator in {"starts_with", "ends_with", "contains"} and not isinstance(operator_value, str):
         raise ValueError(f"{path}.{operator} must be a string")

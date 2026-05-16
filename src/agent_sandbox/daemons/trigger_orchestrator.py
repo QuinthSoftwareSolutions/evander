@@ -32,7 +32,7 @@ from agent_sandbox.orchestration.adapters import (
     TriggerExecutionRecorderAdapter,
 )
 from agent_sandbox.workflow.engine import OrchestrationLoop
-from agent_sandbox.triggers.queue import TriggerEventQueue
+from agent_sandbox.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
 from agent_sandbox.workflow.runtime_config import (
     FixedTriggerOrchestratorWorkerGlobalConfigReloader,
     TriggerOrchestratorWorkerGlobalConfigReloader,
@@ -82,8 +82,12 @@ class TriggerOrchestratorWorker:
             raise ValueError(
                 "TriggerOrchestratorWorker requires either core_config or worker_config"
             )
-        self.worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
-            selected_config.model_dump(mode="json")
+        self.worker_config = (
+            selected_config
+            if isinstance(selected_config, TriggerOrchestratorWorkerGlobalConfig)
+            else TriggerOrchestratorWorkerGlobalConfig.model_validate(
+                selected_config.model_dump(mode="json")
+            )
         )
         self._config_reloader = (
             config_reloader
@@ -128,7 +132,16 @@ class TriggerOrchestratorWorker:
                 _config_revision_hash(latest_config),
                 len(latest_config.triggers),
             )
-            self.event_queue = TriggerEventQueue(self.worker_config.event_queue_store_path)
+            if (
+                self.worker_config.orchestration_store_backend == "sqlite"
+                and "orchestration_store_backend" in self.worker_config.model_fields_set
+            ):
+                self.event_queue = SqliteTriggerEventQueue(
+                    self.worker_config.orchestration_store_path,
+                    retention_days=self.worker_config.orchestration_retention_days,
+                )
+            else:
+                self.event_queue = TriggerEventQueue(self.worker_config.event_queue_store_path)
 
         configured_triggers = self._configured_triggers(latest_config)
         providers = self._load_configured_providers(latest_config, configured_triggers)

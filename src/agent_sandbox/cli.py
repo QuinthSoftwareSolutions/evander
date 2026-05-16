@@ -63,6 +63,7 @@ from agent_sandbox.migrations import (
     migrate_issue_setup_env_to_root,
     migrate_pr_template_to_root,
 )
+from agent_sandbox.orchestration.migration import migrate_orchestration_store_to_sqlite
 from agent_sandbox.email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from agent_sandbox.models import (
     ApprovalStatus,
@@ -77,6 +78,7 @@ from agent_sandbox.runtime import build_runtime
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from agent_sandbox.messaging.teams_auth import TeamsAuthError
 from agent_sandbox.vm.defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
+from agent_sandbox.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 
 _COMMAND_PANELS = {
     "Health and State": 0,
@@ -1825,6 +1827,86 @@ def migrate_pr_template_root(
         cfg, template_file=resolved_template_file, overwrite=overwrite
     )
     typer.echo(f"PR template migration complete: {result.status} {result.domain} -> {result.path}")
+
+
+@app.command(
+    "migrate-orchestration-store",
+    rich_help_panel="Health and State",
+    short_help="Import orchestration JSON stores into the SQLite runtime database.",
+)
+def migrate_orchestration_store(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    database_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--database-path",
+            help="Override destination SQLite database path. Defaults to worker orchestration_store_path.",
+        ),
+    ] = None,
+    retention_days: Annotated[
+        int | None,
+        typer.Option(
+            "--retention-days",
+            min=0,
+            help="Completed history retention after import. Defaults to worker orchestration_retention_days.",
+        ),
+    ] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable output.")] = False,
+) -> None:
+    runtime_config = _load_runtime_config_from_option(config)
+    project_dir = _project_dir_for_config_option(config)
+    worker_config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=runtime_config
+    )
+    destination = database_path or worker_config.orchestration_store_path
+    effective_retention_days = (
+        retention_days
+        if retention_days is not None
+        else worker_config.orchestration_retention_days
+    )
+    result = migrate_orchestration_store_to_sqlite(
+        database_path=destination,
+        trigger_events_path=worker_config.event_queue_store_path,
+        effect_executions_path=worker_config.effect_execution_store_path,
+        gate_executions_path=worker_config.gate_execution_store_path,
+        workflow_events_path=worker_config.workflow_event_journal_path,
+        retention_days=effective_retention_days,
+    )
+    if json_output:
+        typer.echo(json.dumps(result.as_dict(), indent=2, sort_keys=True))
+        return
+    typer.echo(f"Orchestration store migration complete: {result.database_path}")
+    typer.echo(
+        "trigger_events "
+        f"imported={result.trigger_events_imported} "
+        f"existing={result.trigger_events_existing} "
+        f"skipped={result.trigger_events_skipped}"
+    )
+    typer.echo(
+        "effect_executions "
+        f"imported={result.effect_executions_imported} "
+        f"existing={result.effect_executions_existing} "
+        f"skipped={result.effect_executions_skipped}"
+    )
+    typer.echo(
+        "gate_executions "
+        f"imported={result.gate_executions_imported} "
+        f"existing={result.gate_executions_existing} "
+        f"skipped={result.gate_executions_skipped}"
+    )
+    typer.echo(
+        "workflow_events "
+        f"imported={result.workflow_events_imported} "
+        f"existing={result.workflow_events_existing} "
+        f"skipped={result.workflow_events_skipped}"
+    )
+    typer.echo(
+        "retention_deleted "
+        f"trigger_events={result.retention_trigger_events_deleted} "
+        f"effect_executions={result.retention_effect_executions_deleted} "
+        f"gate_executions={result.retention_gate_executions_deleted} "
+        f"workflow_events={result.retention_workflow_events_deleted}"
+    )
 
 
 @app.command(

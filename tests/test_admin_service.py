@@ -35,6 +35,7 @@ from agent_sandbox.models import (
     ToolName,
     VmSummary,
 )
+from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
 from agent_sandbox.worker.models import (
     WorkerFileWriteRecord,
     WorkerFileWriteRequest,
@@ -2172,10 +2173,9 @@ def test_admin_service_chat_post_publishes_hidden_trigger_event(tmp_path: Path) 
     )
     _merged, changed = service._with_system_chat_assistant_workflow(persisted)
     assert changed is False
-    queue_payload = json.loads(
-        (tmp_path / "runtime" / "trigger-orchestrator-events.json").read_text(encoding="utf-8")
-    )
-    queued = queue_payload["chat:msg-1"]
+    queued = SqliteTriggerEventQueue(tmp_path / "runtime" / "orchestration.db").read_all()[
+        "chat:msg-1"
+    ].model_dump(mode="json")
     assert queued["trigger_id"] == "system.chat_assistant"
     assert queued["payload"]["content"] == "hello"
     assert queued["payload"]["backend"] == "container_worker_vm"

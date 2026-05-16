@@ -548,7 +548,7 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
     approval_threshold = container_gates[
         "gate-filter-auto-dev-approval-backlog-threshold-1"
     ]
-    assert approval_threshold["config"]["when"]["all"][1]["not_in"] == list(range(11))
+    assert approval_threshold["config"]["when"]["all"][1]["greater_than"] == 8
     approval_caller = container_effects["effect-agent-create-auto-dev-approval-caller-1"]
     assert approval_caller["config"]["session_id"] == (
         "auto-dev-ado-approval-caller-root-example-truman-auto-dev"

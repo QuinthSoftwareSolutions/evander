@@ -405,6 +405,21 @@ class AdoUpdateWorkItemEffectDefinition(EffectDefinition):
         return value
 
 
+class CommunicationSendMessageEffectDefinition(EffectDefinition):
+    type: Literal["effect:communication:send-message"]
+    communication_target_id: str
+    message: ConfigValue
+    thread_id: ConfigValue | None = None
+
+    @field_validator("communication_target_id", mode="before")
+    @classmethod
+    def normalize_communication_target_id(cls, value: object) -> str:
+        text = str(value or "").strip().lower()
+        if not text:
+            raise ValueError("effect:communication:send-message requires communication_target_id")
+        return text
+
+
 class NotificationSendEffectDefinition(EffectDefinition):
     type: Literal["effect:notification:send"]
     communication_target_id: str

@@ -294,6 +294,20 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "correlation_key",
         "payload",
     ]
+    communication = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "effect:communication:send-message"
+    )
+    assert [field["key"] for field in communication["fields"]] == [
+        "communication_target_id",
+        "message",
+        "thread_id",
+    ]
+    assert any(
+        field["key"] == "message" and field["bindable"] and field["multiline"]
+        for field in communication["fields"]
+    )
     notification = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:notification:send"
     )

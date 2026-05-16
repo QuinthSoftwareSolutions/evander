@@ -16,8 +16,8 @@ from agent_sandbox.provider_profiles import (
 from agent_sandbox.gates.registry import GateProviderFactory
 from agent_sandbox.queries.registry import QueryProviderFactory
 from agent_sandbox.runtime import RuntimeContext
-from agent_sandbox.triggers.queue import TriggerEventQueue
-from agent_sandbox.workflow.events import WorkflowEventJournal
+from agent_sandbox.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
+from agent_sandbox.workflow.events import SqliteWorkflowEventJournal, WorkflowEventJournal
 from agent_sandbox.workflow.plugins import load_provider_plugins
 from ..adapters.provider_factories import (
     build_agent_prompt_dispatch_port,
@@ -75,11 +75,23 @@ def build_effect_worker_wiring(
     resolver = (
         provider_config_resolver or runtime_provider_resolver or ProviderConfigResolver(config)
     )
-    workflow_event_journal = WorkflowEventJournal(worker_config.workflow_event_journal_path)
-    event_queue = TriggerEventQueue(
-        worker_config.event_queue_store_path,
-        journal_path=worker_config.workflow_event_journal_path,
-    )
+    retention_days = int(worker_config.orchestration_retention_days)
+    if _sqlite_orchestration_store_enabled(worker_config):
+        workflow_event_journal = SqliteWorkflowEventJournal(
+            worker_config.orchestration_store_path,
+            retention_days=retention_days,
+        )
+        event_queue = SqliteTriggerEventQueue(
+            worker_config.orchestration_store_path,
+            journal=workflow_event_journal,
+            retention_days=retention_days,
+        )
+    else:
+        workflow_event_journal = WorkflowEventJournal(worker_config.workflow_event_journal_path)
+        event_queue = TriggerEventQueue(
+            worker_config.event_queue_store_path,
+            journal_path=worker_config.workflow_event_journal_path,
+        )
     lock_path = _resolve_worker_path(
         worker_config,
         "gate_lock_path",
@@ -93,18 +105,35 @@ def build_effect_worker_wiring(
         or (worker_config.runtime_dir / "effect-orchestrator-cursors.json"),
     )
     effect_cursor_repository = build_effect_cursor_repository(cursor_path)
-    execution_store = JsonExecutionStore(
-        worker_config.effect_execution_store_path,
-        journal_path=worker_config.workflow_event_journal_path,
-    )
-    gate_execution_store = JsonGateExecutionStore(
-        _resolve_worker_path(
-            worker_config,
-            "gate_execution_store_path",
-            fallback=worker_config.runtime_dir / "gate-orchestrator-executions.json",
-        ),
-        journal_path=worker_config.workflow_event_journal_path,
-    )
+    if _sqlite_orchestration_store_enabled(worker_config):
+        from agent_sandbox.daemons.effect_orchestrator import (
+            SqliteExecutionStore,
+            SqliteGateExecutionStore,
+        )
+
+        execution_store = SqliteExecutionStore(
+            worker_config.orchestration_store_path,
+            journal=workflow_event_journal,
+            retention_days=retention_days,
+        )
+        gate_execution_store = SqliteGateExecutionStore(
+            worker_config.orchestration_store_path,
+            journal=workflow_event_journal,
+            retention_days=retention_days,
+        )
+    else:
+        execution_store = JsonExecutionStore(
+            worker_config.effect_execution_store_path,
+            journal_path=worker_config.workflow_event_journal_path,
+        )
+        gate_execution_store = JsonGateExecutionStore(
+            _resolve_worker_path(
+                worker_config,
+                "gate_execution_store_path",
+                fallback=worker_config.runtime_dir / "gate-orchestrator-executions.json",
+            ),
+            journal_path=worker_config.workflow_event_journal_path,
+        )
     queued_agent_prompt_store = AgentPromptQueueStore(
         worker_config.runtime_dir / "queued-agent-prompts.json"
     )
@@ -177,4 +206,13 @@ def build_effect_worker_wiring(
         special_event_handlers=special_event_handlers,
         lifecycle_reconciliation_hooks=lifecycle_reconciliation_hooks,
         completion_dispatch_hooks=completion_dispatch_hooks,
+    )
+
+
+def _sqlite_orchestration_store_enabled(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+) -> bool:
+    return (
+        worker_config.orchestration_store_backend == "sqlite"
+        and "orchestration_store_backend" in worker_config.model_fields_set
     )

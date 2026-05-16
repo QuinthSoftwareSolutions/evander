@@ -18,6 +18,9 @@ from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
 from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
 from agent_sandbox.effects.providers.bash_script import BashScriptEffectProvider
 from agent_sandbox.effects.providers.chat_assistant import ChatAssistantEnsureSessionEffectProvider
+from agent_sandbox.effects.providers.communication_send_message import (
+    CommunicationSendMessageEffectProvider,
+)
 from agent_sandbox.effects.providers.git_promote_agent_branch import (
     GitPromoteAgentBranchEffectProvider,
 )
@@ -140,6 +143,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:issue:update-state": IssueUpdateStateEffectProvider,
             "effect:issue:update-metadata": IssueUpdateMetadataEffectProvider,
             "effect:ado:update-work-item": AdoUpdateWorkItemEffectProvider,
+            "effect:communication:send-message": CommunicationSendMessageEffectProvider,
             "effect:notification:send": NotificationSendEffectProvider,
             "effect:session:update-metadata": SessionUpdateMetadataEffectProvider,
             "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectProvider,
