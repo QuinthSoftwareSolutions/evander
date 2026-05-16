@@ -70,6 +70,8 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
   resolved config, outputs, and merge errors.
 - `gate-orchestrator-cursors.json`: gate-worker cursor/checkpoint data.
 - `trigger-orchestrator.lock` / `gate-orchestrator.lock`: single-instance lock files.
+- `trigger-conformance-report.json` and `effect-conformance-report.json`: conformance snapshots
+  written by the trigger and effect suites under the configured `runtime_dir`.
 
 Gate execution state is useful when debugging workflow gates:
 
@@ -128,6 +130,9 @@ Troubleshooting checklist:
   intact, so graphs outside the selected directory are not rewritten by the presentation filter.
 - Admin Web exposes workflow reporting under **Reports**. The workflow graph activity report ranks
   graph metadata by trigger events plus gate/effect execution records over the selected period.
+- Admin Web also exposes read-only conformance snapshots under the same **Reports** section. See
+  [conformance-reports.md](conformance-reports.md) for the trigger/effect artifact names,
+  regeneration commands, and report states.
 - To add a new domain workflow, add a new pack file and list it in `workflow_packs`. No core
   orchestrator Python code changes are required for that path.
 - `config/trigger-orchestrator/config.json` is operator-local too. Start from
@@ -1385,8 +1390,11 @@ Git hook ingestion path:
 - It reads `<old> <new> <ref>` updates from stdin, matches configured `trigger:git:push`
   triggers, and appends deduplicated pending records into the same orchestrator queue.
 - Run `PYTHONPATH=src python -m pytest -q tests/test_trigger_conformance_suite.py` for full
-  trigger contract regression coverage and the generated conformance report (see
-  `docs/trigger-conformance.md`).
+  trigger contract regression coverage and the generated trigger conformance report.
+- Run `PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py` for the paired
+  effect contract regression coverage and the generated effect conformance report.
+- See [conformance-reports.md](conformance-reports.md) for the shared Admin Web conformance report
+  view and the exact runtime artifact names it reads.
 
 ## Systemd Services
 
