@@ -70,6 +70,15 @@ class PrFeedbackRepository(Protocol):
         limit: int | None = None,
     ) -> list[FeedbackEnvelope]: ...
 
+    def list_all_feedback(
+        self,
+        *,
+        after: dict[tuple[str, str, str], str | None] | None = None,
+        allowed_providers: set[str] | None = None,
+        exclude_feedback_ids: set[str] | None = None,
+        limit: int | None = None,
+    ) -> list[FeedbackEnvelope]: ...
+
     def mark_session_streams_read(
         self,
         *,
@@ -197,31 +206,34 @@ class PrFeedbackStore:
     ) -> list[FeedbackEnvelope]:
         with self._lock:
             payload = self._read_raw()
-            feedback_items = payload.get("feedback", {})
-            if not isinstance(feedback_items, dict):
-                return []
             allowed_streams = {
                 (stream["provider"], stream["repo"], stream["pr_id"]) for stream in streams
             }
-            ignored_feedback_ids = exclude_feedback_ids or set()
-            items: list[FeedbackEnvelope] = []
-            for raw_value in feedback_items.values():
-                if not isinstance(raw_value, dict):
-                    continue
-                candidate = FeedbackEnvelope.model_validate(raw_value)
-                if candidate.feedback_id in ignored_feedback_ids:
-                    continue
-                key = (candidate.provider, candidate.repo, candidate.pr_id)
-                if key not in allowed_streams:
-                    continue
-                effective_cursor = after.get(key)
-                if effective_cursor and candidate.created_at <= _parse_dt(effective_cursor):
-                    continue
-                items.append(candidate)
-            items.sort(key=lambda item: item.created_at)
-            if limit is not None:
-                return items[:limit]
-            return items
+            return self._list_feedback_from_payload(
+                payload,
+                allowed_streams=allowed_streams,
+                after=after,
+                exclude_feedback_ids=exclude_feedback_ids,
+                limit=limit,
+            )
+
+    def list_all_feedback(
+        self,
+        *,
+        after: dict[tuple[str, str, str], str | None] | None = None,
+        allowed_providers: set[str] | None = None,
+        exclude_feedback_ids: set[str] | None = None,
+        limit: int | None = None,
+    ) -> list[FeedbackEnvelope]:
+        with self._lock:
+            payload = self._read_raw()
+            return self._list_feedback_from_payload(
+                payload,
+                after=after,
+                allowed_providers=allowed_providers,
+                exclude_feedback_ids=exclude_feedback_ids,
+                limit=limit,
+            )
 
     def mark_session_streams_read(
         self,
@@ -341,6 +353,42 @@ class PrFeedbackStore:
                 continue
             return True
         return False
+
+    @staticmethod
+    def _list_feedback_from_payload(
+        payload: dict[str, Any],
+        *,
+        after: dict[tuple[str, str, str], str | None] | None = None,
+        allowed_streams: set[tuple[str, str, str]] | None = None,
+        allowed_providers: set[str] | None = None,
+        exclude_feedback_ids: set[str] | None = None,
+        limit: int | None = None,
+    ) -> list[FeedbackEnvelope]:
+        feedback_items = payload.get("feedback", {})
+        if not isinstance(feedback_items, dict):
+            return []
+
+        ignored_feedback_ids = exclude_feedback_ids or set()
+        items: list[FeedbackEnvelope] = []
+        for raw_value in feedback_items.values():
+            if not isinstance(raw_value, dict):
+                continue
+            candidate = FeedbackEnvelope.model_validate(raw_value)
+            if candidate.feedback_id in ignored_feedback_ids:
+                continue
+            if allowed_providers is not None and candidate.provider not in allowed_providers:
+                continue
+            key = (candidate.provider, candidate.repo, candidate.pr_id)
+            if allowed_streams is not None and key not in allowed_streams:
+                continue
+            effective_cursor = after.get(key) if after else None
+            if effective_cursor and candidate.created_at <= _parse_dt(effective_cursor):
+                continue
+            items.append(candidate)
+        items.sort(key=lambda item: item.created_at)
+        if limit is not None:
+            return items[:limit]
+        return items
 
     def _read_raw(self) -> dict[str, Any]:
         return json.loads(self.path.read_text(encoding="utf-8"))

@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agent_sandbox.daemons.pr_feedback_worker import FeedbackEnvelope, PrFeedbackStore
+from agent_sandbox.pr_feedback import FeedbackEnvelope, PrFeedbackStore
 from agent_sandbox.services import PrFeedbackService
 
 

@@ -14,7 +14,7 @@ from agent_sandbox.pr_feedback.providers import (
     GitHubFeedbackAdapter,
     pr_feedback_item_payload,
 )
-from agent_sandbox.pr_feedback.store import _stream_key
+from agent_sandbox.pr_feedback.store import PrFeedbackStore, _stream_key
 from agent_sandbox.triggers.providers._cursor_state import (
     TriggerCursorStore,
     latest_cursor_timestamp_text,
@@ -46,29 +46,23 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
 
         if trigger.provider == "local":
             feedback_store_path = self._runtime_dir() / "pr-feedback-store.json"
-            if feedback_store_path.exists():
-                payload = json.loads(feedback_store_path.read_text(encoding="utf-8"))
-                for raw in payload.get("feedback", {}).values():
-                    if not isinstance(raw, dict):
-                        continue
-                    item = PrFeedbackItem.model_validate(pr_feedback_item_payload(raw))
-                    if item.provider not in {"local", "github", "azure_devops"}:
-                        continue
-                    stream = {"provider": item.provider, "repo": item.repo, "pr_id": item.pr_id}
-                    key = _stream_key(item.provider, item.repo, item.pr_id)
-                    cursor = _parse_dt(previous_cursors.get(key))
-                    recent_ids = {
-                        value
-                        for value in recent_feedback_ids.get(key, [])
-                        if isinstance(value, str) and value.strip()
-                    }
-                    if (
-                        cursor is not None
-                        and item.created_at <= cursor
-                        and item.feedback_id in recent_ids
-                    ):
-                        continue
-                    discovered.append((stream, item))
+            feedback_store = PrFeedbackStore(feedback_store_path)
+            after: dict[tuple[str, str, str], str | None] = {}
+            for stream_key, cursor in previous_cursors.items():
+                if not isinstance(stream_key, str):
+                    continue
+                parts = stream_key.split(":", 2)
+                if len(parts) != 3:
+                    continue
+                provider_name, repo, pr_id = parts
+                after[(provider_name, repo, pr_id)] = cursor if isinstance(cursor, str) else None
+            for envelope in feedback_store.list_all_feedback(
+                after=after,
+                allowed_providers={"local", "github", "azure_devops"},
+            ):
+                item = PrFeedbackItem.model_validate(pr_feedback_item_payload(envelope))
+                stream = {"provider": item.provider, "repo": item.repo, "pr_id": item.pr_id}
+                discovered.append((stream, item))
         else:
             adapter = self._build_adapter(trigger.provider)
             with httpx.Client(timeout=30.0) as client:
