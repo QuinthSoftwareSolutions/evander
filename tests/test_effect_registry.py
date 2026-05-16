@@ -398,6 +398,7 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
         vm_name="lab-vm",
         session_id="lab-session",
         teams_channel_allowlist=["team-a/channel-1", "chat:chat-1"],
+        teams_chat_allowlist=[" chat:chat-2 ", "chat:chat-2"],
         communication_file_receive_enabled=True,
         communication_file_send_enabled=False,
         communication_file_max_bytes=4096,
@@ -421,6 +422,10 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
         "team-a/channel-1",
         "chat:chat-1",
     ]
+    assert admin_service.create_vm_calls[0]["teams_chat_allowlist"] == [
+        "chat:chat-2",
+        "chat:chat-2",
+    ]
     assert admin_service.create_vm_calls[0]["communication_file_receive_enabled"] is True
     assert admin_service.create_vm_calls[0]["communication_file_send_enabled"] is False
     assert admin_service.create_vm_calls[0]["communication_file_max_bytes"] == 4096
@@ -428,6 +433,33 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
         admin_service.create_vm_calls[0]["communication_file_require_approval_for_send"]
         is True
     )
+
+
+def test_agent_create_provider_passes_chat_allowlist_without_channel_allowlist() -> None:
+    effect = AgentCreateEffectDefinition(
+        id="effect-agent",
+        display_name="Create agent",
+        type="effect:agent:create",
+        execution_backend="libvirt_vm",
+        vm_name="lab-vm",
+        session_id="lab-session",
+        teams_chat_allowlist=[" chat:chat-1 "],
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+
+    factory.build(effect, directory_path="root/team-a").execute()
+
+    assert admin_service.create_vm_calls[0]["teams_channel_allowlist"] is None
+    assert admin_service.create_vm_calls[0]["teams_chat_allowlist"] == ["chat:chat-1"]
 
 
 def test_vm_clone_repo_provider_passes_through_repo_outputs() -> None:
@@ -1120,6 +1152,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
             model="gpt-5.4",
             allowed_tools=["set_issue_plan"],
             teams_channel_allowlist=["team-a/channel-1", " chat:chat-1 "],
+            teams_chat_allowlist=[" chat:chat-2 ", "chat:chat-2"],
             communication_file_receive_enabled=True,
             communication_file_send_enabled=True,
             communication_file_max_bytes=2048,
@@ -1165,6 +1198,7 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert manifest.vm_provider == "container_worker_vm"
     assert ToolName.SET_ISSUE_PLAN in manifest.allowed_tools
     assert manifest.teams_channel_allowlist == ["team-a/channel-1", "chat:chat-1"]
+    assert manifest.teams_chat_allowlist == ["chat:chat-2"]
     assert manifest.communication_file_receive_enabled is True
     assert manifest.communication_file_send_enabled is True
     assert manifest.communication_file_max_bytes == 2048

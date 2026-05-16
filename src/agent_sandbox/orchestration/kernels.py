@@ -56,9 +56,9 @@ class PollingOrchestratorKernel:
             return self._run_cycle()
 
     def run_forever(self) -> None:
-        if self._on_start is not None:
-            self._on_start()
         with self._lock_manager.lock(self.config.lock_path):
+            if self._on_start is not None:
+                self._on_start()
             while True:
                 try:
                     result = self._run_cycle()

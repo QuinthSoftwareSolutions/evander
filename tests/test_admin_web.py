@@ -534,6 +534,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "allowed_script_names",
         "discord_channels",
         "teams_channel_allowlist",
+        "teams_chat_allowlist",
         "teams_user_allowlist",
         "email_mailboxes",
         "email_folders",
@@ -3495,6 +3496,38 @@ def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monk
         "codex_skills": ["exampleindustry-app-demo"],
         "directory_path": "root/team-a",
     }
+
+
+def test_admin_web_agents_create_vm_forwards_supplied_teams_chat_allowlist(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    captured: dict[str, object] = {}
+
+    def create_vm(self, **payload):
+        captured.update(payload)
+        return VmActionResult(
+            success=True,
+            vm_name=payload["vm_name"],
+            action="create_vm",
+            message="created",
+            provider="libvirt",
+        )
+
+    monkeypatch.setattr(service, "create_vm", MethodType(create_vm, service))
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        "/api/admin/agents",
+        json={
+            "backend": "libvirt_vm",
+            "vm_name": "lab-vm",
+            "teams_chat_allowlist": [" chat:chat-1 ", "chat:chat-2"],
+        },
+    )
+
+    assert response.status_code == 201
+    assert captured["teams_chat_allowlist"] == ["chat:chat-1", "chat:chat-2"]
 
 
 def test_admin_web_agents_create_container_session_and_list_it(tmp_path: Path, monkeypatch) -> None:

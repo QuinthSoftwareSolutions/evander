@@ -116,6 +116,30 @@ def test_polling_kernel_backoffs_after_cycle_exception() -> None:
     assert sleeper.calls == [9.0, 7.0]
 
 
+def test_polling_kernel_starts_only_after_lock_is_acquired() -> None:
+    starts: list[str] = []
+
+    class _FailingLockManager:
+        def lock(self, path: object):
+            raise RuntimeError("lock held")
+
+    kernel = PollingOrchestratorKernel(
+        config=PollingKernelConfig(
+            poll_interval_seconds=1, jitter_seconds=0, lock_path="worker.lock"
+        ),
+        lock_manager=_FailingLockManager(),
+        sleeper=_FakeSleeper(),
+        run_cycle=lambda: 1,
+        get_sleep_seconds=lambda result: float(result),
+        on_start=lambda: starts.append("started"),
+    )
+
+    with pytest.raises(RuntimeError, match="lock held"):
+        kernel.run_forever()
+
+    assert starts == []
+
+
 def test_polling_kernel_run_once_with_lock_propagates_exceptions() -> None:
     lock_manager = _FakeLockManager()
 

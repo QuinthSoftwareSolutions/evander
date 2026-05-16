@@ -48,6 +48,42 @@ def _call_tool(server, name: str, arguments: dict[str, object]):
     return result
 
 
+def _call_tool_with_context(
+    server,
+    name: str,
+    arguments: dict[str, object],
+    context: object,
+):
+    result = asyncio.run(server._tool_manager.call_tool(name, arguments, context=context))
+    if isinstance(result, tuple) and len(result) == 2:
+        structured = result[1]
+        if isinstance(structured, dict) and set(structured) == {"result"}:
+            return structured["result"]
+        return structured
+    return result
+
+
+def _make_request_context(
+    *, session_id: str | None = None, transport_session_id: str | None = None
+) -> object:
+    query_params: dict[str, str] = {}
+    if session_id is not None:
+        query_params["session_id"] = session_id
+    headers: dict[str, str] = {}
+    if transport_session_id is not None:
+        headers["mcp-session-id"] = transport_session_id
+    return SimpleNamespace(
+        request_context=SimpleNamespace(
+            request=SimpleNamespace(query_params=query_params, headers=headers)
+        )
+    )
+
+
+def read_audit_events(path: Path) -> list[dict[str, object]]:
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [json.loads(line) for line in lines]
+
+
 def _command(command_id: str, *, source: str) -> DiscordCommandEnvelope:
     return DiscordCommandEnvelope(
         command_id=command_id,
@@ -332,6 +368,152 @@ def test_mssql_tools_call_container_worker_backend_and_redact_audit(
     audit_text = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
     assert "session-secret" not in audit_text
     assert "<redacted>" in audit_text
+
+
+def test_mssql_tools_reuse_mapped_transport_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = build_runtime(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            audit_log_path=tmp_path / "audit.jsonl",
+            session_store_path=tmp_path / "sessions.json",
+            approval_store_path=tmp_path / "approvals.json",
+            draft_store_path=tmp_path / "drafts.json",
+            email_store_path=tmp_path / "emails.json",
+            discord_command_store_path=tmp_path / "discord.json",
+            execution_backend="container_worker_vm",
+            container_worker_base_url="http://worker.test",
+            container_worker_mssql_enabled=True,
+            container_worker_mssql_host="10.55.0.12",
+            container_worker_mssql_port=15433,
+        )
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[
+                ToolName.MSSQL_PROVISION_DATABASE,
+                ToolName.MSSQL_LIST_DATABASES,
+                ToolName.MSSQL_DROP_DATABASE,
+            ],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            directory_path="root",
+        )
+    )
+    calls: list[tuple[str, str]] = []
+
+    class FakeContainerWorkerBackend:
+        def __init__(self, *, config: GatewayConfig) -> None:
+            assert config.container_worker_mssql_enabled is True
+            assert config.container_worker_mssql_host == "10.55.0.12"
+            assert config.container_worker_mssql_port == 15433
+
+        def provision_mssql_database(
+            self,
+            *,
+            session_id: str,
+            logical_name: str,
+        ) -> WorkerMssqlDatabaseRecord:
+            calls.append(("provision", session_id))
+            return WorkerMssqlDatabaseRecord(
+                session_id=session_id,
+                logical_name=logical_name,
+                database_name="asb_hash_app_hash",
+                server="172.17.0.1",
+                port=1433,
+                username="asb_login_hash",
+                password="session-secret",
+                connection_string="Server=tcp:172.17.0.1,1433;Password=session-secret",
+            )
+
+        def list_mssql_databases(self, *, session_id: str) -> WorkerMssqlDatabaseListRecord:
+            calls.append(("list", session_id))
+            return WorkerMssqlDatabaseListRecord(
+                session_id=session_id,
+                databases=[
+                    WorkerMssqlDatabaseState(
+                        logical_name="app",
+                        database_name="asb_hash_app_hash",
+                    )
+                ],
+            )
+
+        def drop_mssql_database(
+            self,
+            *,
+            session_id: str,
+            logical_name: str,
+        ) -> WorkerMssqlDatabaseDeleteRecord:
+            calls.append(("drop", session_id))
+            return WorkerMssqlDatabaseDeleteRecord(
+                session_id=session_id,
+                logical_name=logical_name,
+                database_name="asb_hash_app_hash",
+                deleted=True,
+            )
+
+    monkeypatch.setattr(
+        "agent_sandbox.gateway.ContainerWorkerVmExecutionBackend",
+        FakeContainerWorkerBackend,
+    )
+    server = create_server(context)
+
+    seeded_context = _make_request_context(
+        session_id="session-1",
+        transport_session_id="transport-1",
+    )
+    seeded_provision = _call_tool_with_context(
+        server,
+        "mssql_provision_database",
+        {"logical_name": "app"},
+        seeded_context,
+    )
+
+    mapped_context = _make_request_context(transport_session_id="transport-1")
+    provisioned = _call_tool_with_context(
+        server,
+        "mssql_provision_database",
+        {"logical_name": "app"},
+        mapped_context,
+    )
+    listed = _call_tool_with_context(server, "mssql_list_databases", {}, mapped_context)
+    dropped = _call_tool_with_context(
+        server,
+        "mssql_drop_database",
+        {"logical_name": "app"},
+        mapped_context,
+    )
+
+    assert seeded_provision["password"] == "session-secret"
+    assert provisioned["password"] == "session-secret"
+    assert listed["databases"][0]["logical_name"] == "app"
+    assert dropped["deleted"] is True
+    assert calls == [
+        ("provision", "session-1"),
+        ("provision", "session-1"),
+        ("list", "session-1"),
+        ("drop", "session-1"),
+    ]
+
+    audit_events = read_audit_events(tmp_path / "audit.jsonl")
+    mssql_events = [
+        event
+        for event in audit_events
+        if event.get("event_type") == "tool_call"
+        and event.get("tool_name") in {
+            ToolName.MSSQL_PROVISION_DATABASE.value,
+            ToolName.MSSQL_LIST_DATABASES.value,
+            ToolName.MSSQL_DROP_DATABASE.value,
+        }
+    ]
+    assert mssql_events
+    assert all(event["session_id"] == "session-1" for event in mssql_events)
+    assert all("session_id is required" not in json.dumps(event) for event in mssql_events)
+    assert "session_id is required" not in (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert "session-secret" not in (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
+    assert "<redacted>" in (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
 
 
 def test_mssql_provision_database_requires_allowed_tool(tmp_path: Path) -> None:

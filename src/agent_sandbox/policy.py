@@ -15,6 +15,7 @@ from agent_sandbox.models import (
     digest_payload,
 )
 from agent_sandbox.services import (
+    effective_teams_channel_targets,
     normalize_teams_target,
     normalize_teams_user_target,
     parse_teams_target,
@@ -268,11 +269,7 @@ class PolicyEngine:
                 f"Teams message {message.cursor} is missing required source metadata"
             ) from exc
 
-        if target not in {
-            normalize_teams_target(value)
-            for value in session.teams_channel_allowlist
-            if value.strip()
-        }:
+        if target not in set(effective_teams_channel_targets(session, skip_user_targets=True)):
             raise PolicyError(
                 f"Teams message {message.cursor} source is not allowlisted for session "
                 f"{session.session_id}"
@@ -285,11 +282,7 @@ class PolicyEngine:
             raise PolicyError(str(exc)) from exc
         if parse_teams_target(normalized_target).kind == "user":
             raise PolicyError("Teams user targets are only supported for send operations")
-        if normalized_target not in {
-            normalize_teams_target(value)
-            for value in session.teams_channel_allowlist
-            if value.strip()
-        }:
+        if normalized_target not in set(effective_teams_channel_targets(session, skip_user_targets=True)):
             raise PolicyError(f"Teams target is not allowlisted for session {session.session_id}")
         return normalized_target
 
@@ -310,11 +303,7 @@ class PolicyEngine:
                     f"Teams user target is not allowlisted for session {session.session_id}"
                 )
             return normalized_target
-        if normalized_target not in {
-            normalize_teams_target(value)
-            for value in session.teams_channel_allowlist
-            if value.strip()
-        }:
+        if normalized_target not in set(effective_teams_channel_targets(session, skip_user_targets=True)):
             raise PolicyError(f"Teams target is not allowlisted for session {session.session_id}")
         return normalized_target
 

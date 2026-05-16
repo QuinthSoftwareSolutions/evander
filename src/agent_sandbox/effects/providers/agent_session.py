@@ -14,7 +14,11 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.runtime import allowed_tools_for_capability_profile
-from agent_sandbox.services import normalize_teams_target, normalize_teams_user_target
+from agent_sandbox.services import (
+    normalize_teams_chat_targets,
+    normalize_teams_channel_targets,
+    normalize_teams_user_target,
+)
 from agent_sandbox.execution import (
     ExecutionBackendKind,
     ExecutionStatusKind,
@@ -27,6 +31,12 @@ from agent_sandbox.repositories.session_manifests import (
 )
 
 from .base import EffectRuntimeContext
+from .vm_targeting import (
+    read_all_sessions as _read_all_sessions_canonical,
+    resolve_session_id_from_vm_name as _resolve_session_id_from_vm_name_canonical,
+    resolve_vm_name_from_session as _resolve_vm_name_from_session_canonical,
+    resolve_vm_target as _resolve_vm_target_canonical,
+)
 
 NEXUS_PACKAGE_CACHE_PORT = 8081
 NEXUS_PYPI_GROUP_REPOSITORY = "pypi-all"
@@ -96,22 +106,11 @@ def as_bool_or_none(value: Any) -> bool | None:
 
 
 def normalize_teams_channel_allowlist(value: list[str] | None) -> list[str]:
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for raw_target in value or []:
-        text = str(raw_target).strip()
-        if not text:
-            continue
-        target = normalize_teams_target(text)
-        if target.startswith("user:"):
-            raise ValueError(
-                "teams_channel_allowlist accepts channel/chat targets only; use teams_user_allowlist for user targets"
-            )
-        if target in seen:
-            continue
-        seen.add(target)
-        normalized.append(target)
-    return normalized
+    return normalize_teams_channel_targets(value)
+
+
+def normalize_teams_chat_allowlist(value: list[str] | None) -> list[str]:
+    return normalize_teams_chat_targets(value)
 
 
 def normalize_teams_user_allowlist(value: list[str] | None) -> list[str]:
@@ -280,54 +279,20 @@ def resolve_vm_target(
     *,
     effect_type: str,
 ) -> tuple[str, str]:
-    session_id = normalize_optional_string(payload.get("session_id"))
-    vm_name = normalize_optional_string(payload.get("vm_name"))
-    target = normalize_optional_string(payload.get("target"))
-
-    if session_id:
-        return resolve_vm_name_from_session(context, session_id), session_id
-    if vm_name:
-        return vm_name, resolve_session_id_from_vm_name(context, vm_name)
-    if target:
-        session = read_all_sessions(context).get(target)
-        if session is not None:
-            resolved_vm_name = normalize_optional_string(getattr(session, "vm_id", None))
-            if not resolved_vm_name:
-                raise RuntimeError(f"Session {target!r} does not have an associated VM")
-            return resolved_vm_name, target
-        return target, resolve_session_id_from_vm_name(context, target)
-    raise RuntimeError(f"{effect_type} requires one of target, session_id, or vm_name")
+    resolved = _resolve_vm_target_canonical(context, payload, effect_type=effect_type)
+    return resolved.vm_name, resolved.session_id
 
 
 def resolve_vm_name_from_session(context: EffectRuntimeContext, session_id: str) -> str:
-    session = read_all_sessions(context).get(session_id)
-    if session is None:
-        raise RuntimeError(f"Unknown session: {session_id}")
-    vm_name = normalize_optional_string(getattr(session, "vm_id", None))
-    if not vm_name:
-        raise RuntimeError(f"Session {session_id!r} does not have an associated VM")
-    return vm_name
+    return _resolve_vm_name_from_session_canonical(context, session_id)
 
 
 def resolve_session_id_from_vm_name(context: EffectRuntimeContext, vm_name: str) -> str:
-    matches = [
-        session_id
-        for session_id, session in read_all_sessions(context).items()
-        if normalize_optional_string(getattr(session, "vm_id", None)) == vm_name
-    ]
-    if len(matches) == 1:
-        return matches[0]
-    if len(matches) > 1:
-        raise RuntimeError(
-            f"VM {vm_name!r} is associated with multiple sessions: {', '.join(sorted(matches))}"
-        )
-    return f"session-{vm_name}"
+    return _resolve_session_id_from_vm_name_canonical(context, vm_name)
 
 
 def read_all_sessions(context: EffectRuntimeContext) -> Mapping[str, Any]:
-    if context.session_lookup is None:
-        raise RuntimeError("agent effect requires session_lookup")
-    return context.session_lookup.read_all_sessions()
+    return _read_all_sessions_canonical(context)
 
 
 def normalize_allowed_tools(value: list[str] | None) -> list[ToolName]:
@@ -369,6 +334,7 @@ def build_container_session_manifest(
     allowed_script_names: list[str] | None,
     discord_channels: list[str] | None,
     teams_channel_allowlist: list[str] | None = None,
+    teams_chat_allowlist: list[str] | None = None,
     teams_user_allowlist: list[str] | None = None,
     email_mailboxes: list[str] | None,
     email_folders: list[str] | None,
@@ -410,6 +376,7 @@ def build_container_session_manifest(
     resolved_teams_channel_allowlist = normalize_teams_channel_allowlist(
         teams_channel_allowlist
     )
+    resolved_teams_chat_allowlist = normalize_teams_chat_allowlist(teams_chat_allowlist)
     resolved_teams_user_allowlist = normalize_teams_user_allowlist(teams_user_allowlist)
     resolved_email_mailboxes = email_mailboxes or (
         config.email_mailbox_allowlist if email_requested else []
@@ -435,6 +402,7 @@ def build_container_session_manifest(
         allowed_script_names=normalize_allowed_script_names(allowed_script_names),
         discord_channel_allowlist=discord_channels or [],
         teams_channel_allowlist=resolved_teams_channel_allowlist,
+        teams_chat_allowlist=resolved_teams_chat_allowlist,
         teams_user_allowlist=resolved_teams_user_allowlist,
         email_folder_allowlist=resolved_email_folders,
         email_mailbox_allowlist=resolved_email_mailboxes,

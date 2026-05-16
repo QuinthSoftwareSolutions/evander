@@ -149,8 +149,8 @@ from agent_sandbox.runtime import RuntimeContext, build_runtime
 from agent_sandbox.semantic.gateway_adapter import GatewaySemanticAdapter
 from agent_sandbox.services import (
     TeamsInlineMediaProvider,
+    effective_teams_channel_targets,
     normalize_pr_feedback_provider,
-    normalize_teams_target,
     parse_teams_target,
     resolve_teams_send_target,
     teams_target_from_message,
@@ -1263,11 +1263,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
 
         if requested_channel_id:
-            for target in session.teams_channel_allowlist:
-                try:
-                    normalized = normalize_teams_target(target)
-                except ValueError:
-                    continue
+            for normalized in effective_teams_channel_targets(session, skip_user_targets=True):
                 if _teams_target_channel_id(normalized) == requested_channel_id:
                     candidates.append(normalized)
             if candidates:
@@ -4330,7 +4326,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {
             "session_id": resolved_session_id,
             "issue_id": issue_id,
@@ -4378,7 +4376,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {
             "session_id": resolved_session_id,
             "vm_name": vm_name,
@@ -4439,7 +4439,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {
             "session_id": resolved_session_id,
             "vm_name": vm_name,
@@ -4491,7 +4493,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {"session_id": resolved_session_id, "logical_name": logical_name}
         try:
             context.policy.require_tool(
@@ -4535,7 +4539,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {"session_id": resolved_session_id}
         try:
             context.policy.require_tool(resolved_session_id, ToolName.MSSQL_LIST_DATABASES)
@@ -4574,7 +4580,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         session_id: str | None = None,
         ctx: Context | None = None,
     ) -> dict[str, Any]:
-        resolved_session_id = _resolve_session_id_from_context(session_id, ctx)
+        resolved_session_id = _resolve_session_id_from_context(
+            session_id, ctx, transport_session_map=transport_session_map
+        )
         args = {"session_id": resolved_session_id, "logical_name": logical_name}
         try:
             context.policy.require_tool(resolved_session_id, ToolName.MSSQL_DROP_DATABASE)
