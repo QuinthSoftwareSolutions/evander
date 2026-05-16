@@ -13,6 +13,11 @@ from typing import Any
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 
 
+_GENERIC_TERMINAL_PR_STATUSES = frozenset({"abandoned", "closed", "completed", "merged"})
+_AZURE_DEVOPS_TERMINAL_PR_STATUSES = frozenset({"abandoned", "closed", "completed"})
+_GITHUB_TERMINAL_PR_STATUSES = frozenset({"closed", "merged"})
+
+
 @dataclass(frozen=True)
 class PrMapEntry:
     key: str
@@ -216,7 +221,12 @@ def status_snapshot_from_pull_request(response: Any, *, repo: str, pr_id: str) -
     provider = pr_map_provider_name(getattr(response, "provider", raw.get("provider", "")))
     status = normalize_pr_status(getattr(response, "status", raw.get("status")))
     merged = _response_merged(provider=provider, status=status, raw=raw)
-    completed_at = _completed_at_from_response(provider=provider, merged=merged, raw=raw)
+    completed_at = _completed_at_from_response(
+        provider=provider,
+        status=status,
+        merged=merged,
+        raw=raw,
+    )
     return {
         "provider": provider,
         "repo": repo,
@@ -272,11 +282,17 @@ def is_pr_completed(entry: dict[str, Any]) -> bool:
     provider = pr_map_provider_name(entry.get("provider"))
     status = normalize_pr_status(entry.get("status"))
     merged = _coerce_bool(entry.get("merged"))
+    return _is_pr_terminal(provider=provider, status=status, merged=merged)
+
+
+def _is_pr_terminal(*, provider: str, status: str | None, merged: bool) -> bool:
+    if merged:
+        return True
     if provider == "azure_devops":
-        return merged or status == "completed"
+        return status in _AZURE_DEVOPS_TERMINAL_PR_STATUSES
     if provider == "github":
-        return merged or status == "merged"
-    return merged or status in {"completed", "merged"}
+        return status in _GITHUB_TERMINAL_PR_STATUSES
+    return status in _GENERIC_TERMINAL_PR_STATUSES
 
 
 def completion_event_published(entry: dict[str, Any], trigger_id: str) -> bool:
@@ -297,9 +313,9 @@ def _response_merged(*, provider: str, status: str | None, raw: dict[str, Any]) 
 
 
 def _completed_at_from_response(
-    *, provider: str, merged: bool, raw: dict[str, Any]
+    *, provider: str, status: str | None, merged: bool, raw: dict[str, Any]
 ) -> str | None:
-    if not merged:
+    if not _is_pr_terminal(provider=provider, status=status, merged=merged):
         return None
     candidates = (
         "closedDate",

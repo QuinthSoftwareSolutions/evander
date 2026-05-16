@@ -1088,6 +1088,70 @@ def test_pr_completed_trigger_github_refreshes_status_before_emitting(
     assert provider.poll() == []
 
 
+def test_pr_completed_trigger_github_emits_closed_unmerged_pr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    pr_map_path = runtime_dir / "pr-map.json"
+    pr_map_path.write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "github:org/repo:12": {
+                        "provider": "github",
+                        "repo": "org/repo",
+                        "pr_id": "12",
+                        "session_id": "session-12",
+                        "directory_path": "root",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = PullRequestCompletedTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-completed-gh",
+                "display_name": "PR completed",
+                "type": "trigger:pull-request:completed",
+                "provider": "github",
+            }
+        ),
+        _build_runtime_context(runtime_dir, env={"GITHUB_TOKEN": "secret-token"}),
+    )
+
+    def fake_fetch_github_pull_request(**kwargs: Any) -> dict[str, Any]:
+        return {
+            "title": "Closed PR",
+            "state": "closed",
+            "merged": False,
+            "closed_at": "2026-05-15T11:00:00Z",
+            "html_url": "https://github.com/org/repo/pull/12",
+            "head": {"ref": "feature/12", "sha": "abc123"},
+            "base": {"ref": "main", "sha": "def456"},
+        }
+
+    monkeypatch.setattr(provider, "_fetch_github_pull_request", fake_fetch_github_pull_request)
+
+    events = provider.poll()
+
+    assert len(events) == 1
+    assert events[0].payload["session_id"] == "session-12"
+    assert events[0].payload["status"] == "closed"
+    assert events[0].payload["merged"] is False
+    assert events[0].payload["completed_at"] == "2026-05-15T11:00:00Z"
+
+    pr_map_payload = json.loads(pr_map_path.read_text(encoding="utf-8"))
+    entry = pr_map_payload["entries"]["github:org/repo:12"]
+    assert entry["status"] == "closed"
+    assert entry["merged"] is False
+    assert entry["completed_at"] == "2026-05-15T11:00:00Z"
+
+
 def test_conformance_orchestrator_integration_locking_jitter_and_idempotency(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

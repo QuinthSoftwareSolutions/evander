@@ -1220,7 +1220,7 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
   configured PR streams; it updates `runtime/pr-feedback-store.json`, records PR status in
   `runtime/pr-map.json`, and publishes `trigger:pull-request:new-feedback` plus
   `trigger:pull-request:completed` events without depending on `agent-sandbox-host-heartbeat`.
-- For merged-PR cleanup workflows, wire `trigger:pull-request:completed.session_id` into
+- For terminal-PR cleanup workflows, wire `trigger:pull-request:completed.session_id` into
   `effect:agent:destroy.session_id`.
 - A polled ADO work item is represented in the unified local issue store as a proxy issue
   (`source: proxy_azure_devops`) keyed by local issue number with remote linkage in

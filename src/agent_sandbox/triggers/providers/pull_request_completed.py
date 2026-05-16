@@ -180,10 +180,11 @@ def _github_status_snapshot(*, repo: str, pr_id: str, payload: dict[str, Any]) -
     head = payload.get("head") if isinstance(payload.get("head"), dict) else {}
     base = payload.get("base") if isinstance(payload.get("base"), dict) else {}
     merged = bool(payload.get("merged")) or bool(str(payload.get("merged_at") or "").strip())
-    status = "merged" if merged else str(payload.get("state") or "").strip().lower() or None
+    state = str(payload.get("state") or "").strip().lower() or None
+    status = "merged" if merged else state
     completed_at = (
         str(payload.get("merged_at") or payload.get("closed_at") or "").strip() or None
-        if merged
+        if merged or state == "closed"
         else None
     )
     return {

@@ -852,7 +852,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Start when new pull-request feedback arrives from the configured provider."
     ),
     "trigger:pull-request:completed": (
-        "Start when a tracked pull request is observed as merged or completed."
+        "Start when a tracked pull request reaches a terminal state."
     ),
     "trigger:review:new-request": "Start when a review request is queued for orchestration.",
     "trigger:git:push": "Start from Git push events captured by the host-side bare-repo hook.",

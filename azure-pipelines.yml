@@ -1,6 +1,8 @@
 trigger:
   - main
-  
+
+lockBehavior: runLatest
+
 pr: none
 
 parameters:
