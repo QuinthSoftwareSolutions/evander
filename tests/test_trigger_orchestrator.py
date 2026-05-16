@@ -36,6 +36,19 @@ class _AcknowledgingProvider(_StaticProvider):
         self.acknowledged_event_ids.append(event.event_id)
 
 
+class _FailingEventQueue:
+    def __init__(self) -> None:
+        self.published_event_ids: list[str] = []
+
+    def contains(self, event_id: str) -> bool:
+        _ = event_id
+        return False
+
+    def publish(self, event: TriggerEvent):
+        _ = event
+        raise RuntimeError("queue publish failed")
+
+
 class _StaticReloader:
     def __init__(self, config: TriggerOrchestratorWorkerGlobalConfig, *, changed: bool) -> None:
         self._config = config
@@ -176,6 +189,47 @@ def test_trigger_orchestrator_acknowledges_provider_after_queue_publish(
     worker.run_once()
 
     assert provider.acknowledged_event_ids == ["event-1"]
+
+
+def test_trigger_orchestrator_does_not_checkpoint_when_publish_fails(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    event = TriggerEvent(
+        event_id="event-1",
+        trigger_id="cron-1",
+        trigger_type="trigger:cron",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"kind": "tick"},
+    )
+    provider = _AcknowledgingProvider([event])
+    worker.provider_factory.build = lambda trigger: provider  # type: ignore[assignment]
+    failing_queue = _FailingEventQueue()
+    worker.event_queue = failing_queue  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="queue publish failed"):
+        worker.run_once()
+
+    assert provider.acknowledged_event_ids == []
+    assert failing_queue.published_event_ids == []
+    assert not worker_config.event_queue_cursor_store_path.exists()
 
 
 def test_trigger_orchestrator_publishes_multiple_events_from_one_provider_poll(

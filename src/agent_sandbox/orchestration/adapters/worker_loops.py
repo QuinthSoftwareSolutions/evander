@@ -47,7 +47,8 @@ class TriggerDependencyResolverAdapter:
             if self._on_poll_error is not None:
                 self._on_poll_error(event)
             return []
-        self._update_cursor_state(event, len(events), [item.event_id for item in events])
+        if not events:
+            self._update_cursor_state(event, 0, [])
         return events
 
 
