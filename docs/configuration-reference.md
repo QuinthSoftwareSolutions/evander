@@ -159,8 +159,10 @@ Type-specific keys:
 
 `trigger:cron.expression` uses a standard 5-field cron expression. Field syntax supports
 ranges, stepped ranges, lists, and month/weekday names. When a cron trigger is overdue, the
-trigger orchestrator queues only the latest due occurrence and advances the trigger cursor past
-older missed occurrences; editing a trigger to a higher frequency does not replay historical runs.
+trigger orchestrator queues only the latest due occurrence. The provider stages that occurrence
+as pending and advances `last_fired_at` only after the trigger event is durably published and
+acknowledged, so a queue publish failure can retry the same scheduled occurrence. Editing a
+trigger to a higher frequency still does not replay historical runs.
 
 `trigger:pull-request:completed` emits `session_id`, `status`, `merged`, `completed_at`, and a
 normalized `pr` object when the tracked PR reaches a terminal state such as merged, completed,
