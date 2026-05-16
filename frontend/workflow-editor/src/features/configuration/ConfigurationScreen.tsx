@@ -87,6 +87,11 @@ type TabDrafts = Record<string, TabDraft>;
 
 const CONTACTS_TAB_KEY = "contacts";
 const CONTACTS_FIELD_NAME = "contacts";
+const COMMUNICATION_TARGETS_DOMAIN = "communication_targets";
+const COMMUNICATION_TARGETS_FIELD_NAME = "targets";
+const COMMUNICATION_TARGET_PROVIDERS = ["teams", "discord", "email", "github", "ado", "jira", "linear"];
+const COMMUNICATION_TARGET_KINDS = ["teams", "discord", "email", "pull-request", "ticket"];
+const COMMUNICATION_TARGET_CAPABILITIES = ["read", "write", "reply", "notify", "comment"];
 
 type ContactPhoneDraft = {
   label: string;
@@ -108,12 +113,31 @@ type ContactDraftParseResult = {
   error: string | null;
 };
 
+type CommunicationTargetDraftEntry = {
+  id: string;
+  disabled: boolean;
+  provider: string;
+  kind: string;
+  address: string;
+  capabilities: string[];
+  authProfileRef: string;
+};
+
+type CommunicationTargetDraftParseResult = {
+  entries: CommunicationTargetDraftEntry[];
+  error: string | null;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isContactsConfigField(field: ConfigurationField): boolean {
   return field.source_domain === CONTACTS_TAB_KEY && field.field_name === CONTACTS_FIELD_NAME;
+}
+
+function isCommunicationTargetsConfigField(field: ConfigurationField): boolean {
+  return field.source_domain === COMMUNICATION_TARGETS_DOMAIN && field.field_name === COMMUNICATION_TARGETS_FIELD_NAME;
 }
 
 function stringListFromValue(value: unknown): string[] {
@@ -293,6 +317,96 @@ function contactsDraftEntriesToConfig(entries: ContactDraftEntry[]): Record<stri
   return contacts;
 }
 
+function communicationTargetEntriesFromConfig(value: unknown): CommunicationTargetDraftEntry[] {
+  const rawTargets = Array.isArray(value)
+    ? value
+    : isRecord(value) && Array.isArray(value.targets)
+      ? value.targets
+      : [];
+  return rawTargets.map((item) => {
+    const target = isRecord(item) ? item : {};
+    const policy = isRecord(target.policy) ? target.policy : {};
+    return {
+      id: String(target.id ?? ""),
+      disabled: Boolean(target.disabled),
+      provider: String(target.provider ?? "teams"),
+      kind: String(target.kind ?? "teams"),
+      address: String(target.address ?? ""),
+      capabilities: stringListFromValue(policy.capabilities),
+      authProfileRef: String(policy.auth_profile_ref ?? ""),
+    };
+  });
+}
+
+function parseCommunicationTargetDraftValue(value: string | boolean): CommunicationTargetDraftParseResult {
+  if (typeof value === "boolean") {
+    return { entries: [], error: null };
+  }
+  const text = String(value).trim();
+  if (!text) {
+    return { entries: [], error: null };
+  }
+  try {
+    return { entries: communicationTargetEntriesFromConfig(JSON.parse(text)), error: null };
+  } catch (reason) {
+    return {
+      entries: [],
+      error: reason instanceof Error ? reason.message : String(reason),
+    };
+  }
+}
+
+function communicationTargetsDraftValue(entries: CommunicationTargetDraftEntry[]): string {
+  return JSON.stringify(entries, null, 2);
+}
+
+function defaultKindForCommunicationTargetProvider(provider: string): string {
+  if (provider === "teams") return "teams";
+  if (provider === "discord") return "discord";
+  if (provider === "email") return "email";
+  if (provider === "github" || provider === "ado") return "pull-request";
+  return "ticket";
+}
+
+function communicationTargetDraftEntriesToConfig(entries: CommunicationTargetDraftEntry[]): unknown[] {
+  const seenIds = new Set<string>();
+  return entries.map((entry, index) => {
+    const id = entry.id.trim().toLowerCase();
+    if (!id) {
+      throw new Error(`Communication target ${index + 1} id is required.`);
+    }
+    if (!/^[a-z0-9](?:[a-z0-9._:-]{0,126}[a-z0-9])?$/.test(id)) {
+      throw new Error(`Communication target ${id} has an invalid id.`);
+    }
+    if (seenIds.has(id)) {
+      throw new Error(`Duplicate communication target id: ${id}.`);
+    }
+    seenIds.add(id);
+
+    if (entry.disabled) {
+      return { id, disabled: true };
+    }
+
+    const provider = entry.provider.trim();
+    const kind = entry.kind.trim();
+    const address = entry.address.trim();
+    if (!provider || !kind || !address) {
+      throw new Error(`Communication target ${id} requires provider, kind, and address.`);
+    }
+    const capabilities = entry.capabilities.map((capability) => capability.trim()).filter(Boolean);
+    return {
+      id,
+      provider,
+      kind,
+      address,
+      policy: {
+        capabilities,
+        auth_profile_ref: entry.authProfileRef.trim() || null,
+      },
+    };
+  });
+}
+
 function formatJson(value: unknown): string {
   return JSON.stringify(value ?? {}, null, 2);
 }
@@ -303,6 +417,9 @@ function normalizeFieldValue(field: ConfigurationField, value: unknown): string 
   }
   if (isContactsConfigField(field)) {
     return JSON.stringify(contactsValueToDraftEntries(value), null, 2);
+  }
+  if (isCommunicationTargetsConfigField(field)) {
+    return JSON.stringify(communicationTargetEntriesFromConfig(value), null, 2);
   }
   if (field.kind === "string_list") {
     return Array.isArray(value) ? value.map((item) => String(item)).join("\n") : value == null ? "" : String(value);
@@ -361,6 +478,13 @@ function parseFieldValue(field: ConfigurationField, rawValue: string | boolean):
       throw new Error(`${field.label} contains an invalid draft payload: ${parsed.error}`);
     }
     return contactsDraftEntriesToConfig(parsed.entries);
+  }
+  if (isCommunicationTargetsConfigField(field)) {
+    const parsed = parseCommunicationTargetDraftValue(rawValue);
+    if (parsed.error) {
+      throw new Error(`${field.label} contains an invalid draft payload: ${parsed.error}`);
+    }
+    return communicationTargetDraftEntriesToConfig(parsed.entries);
   }
   if (field.kind === "int") {
     const text = String(rawValue).trim();
@@ -645,6 +769,39 @@ export function ConfigurationScreen() {
       clear: false,
       value: contactsDraftValue(nextEntries),
     });
+  }
+
+  function updateCommunicationTargetsField(fieldName: string, nextEntries: CommunicationTargetDraftEntry[]) {
+    updateFieldState(fieldName, {
+      include: true,
+      clear: false,
+      value: communicationTargetsDraftValue(nextEntries),
+    });
+  }
+
+  function mutateCommunicationTargetsField(
+    field: ConfigurationField,
+    fieldState: DraftFieldState,
+    mutate: (entries: CommunicationTargetDraftEntry[]) => CommunicationTargetDraftEntry[],
+  ) {
+    const parsed = parseCommunicationTargetDraftValue(fieldState.value);
+    if (parsed.error) {
+      setError(`Unable to edit communication targets: ${parsed.error}`);
+      return;
+    }
+    updateCommunicationTargetsField(field.field_name, mutate(parsed.entries));
+    setError(null);
+  }
+
+  function updateCommunicationTargetEntry(
+    field: ConfigurationField,
+    fieldState: DraftFieldState,
+    targetIndex: number,
+    nextTarget: CommunicationTargetDraftEntry,
+  ) {
+    mutateCommunicationTargetsField(field, fieldState, (entries) =>
+      entries.map((entry, index) => (index === targetIndex ? nextTarget : entry)),
+    );
   }
 
   function mutateContactsField(
@@ -934,6 +1091,233 @@ export function ConfigurationScreen() {
     );
   }
 
+  function renderCommunicationTargetsEditor(
+    field: ConfigurationField,
+    fieldState: DraftFieldState,
+    disabled: boolean,
+    inheritedTargets: CommunicationTargetDraftEntry[],
+  ) {
+    const parsed = parseCommunicationTargetDraftValue(fieldState.value);
+    const entries = parsed.entries;
+    const explicitIds = new Set(entries.map((entry) => entry.id.trim().toLowerCase()).filter(Boolean));
+    const availableInheritedTargets = inheritedTargets.filter((target) => !explicitIds.has(target.id.trim().toLowerCase()));
+    return (
+      <div className="communication-targets-editor">
+        <div className="contacts-editor-header">
+          <p className="muted-text">Targets are resolved through directory inheritance and used by workflow messaging effects.</p>
+          <div className="inline-actions contacts-editor-actions">
+            <button
+              type="button"
+              onClick={() =>
+                mutateCommunicationTargetsField(field, fieldState, (current) => [
+                  ...current,
+                  {
+                    id: "",
+                    disabled: false,
+                    provider: "teams",
+                    kind: "teams",
+                    address: "",
+                    capabilities: ["notify"],
+                    authProfileRef: "",
+                  },
+                ])
+              }
+              disabled={disabled}
+            >
+              Add target
+            </button>
+          </div>
+        </div>
+        {parsed.error ? (
+          <div className="callout error-callout">Communication target draft could not be read: {parsed.error}</div>
+        ) : null}
+        {!parsed.error && entries.length === 0 ? (
+          <div className="empty-state">No communication targets are configured for this override.</div>
+        ) : null}
+        {!parsed.error
+          ? entries.map((target, targetIndex) => (
+              <div key={`communication-target-${targetIndex}`} className="contact-editor-item communication-target-editor-item">
+                <div className="contact-editor-item-header">
+                  <strong>{target.id.trim() || `Target ${targetIndex + 1}`}</strong>
+                  <div className="inline-actions compact-actions">
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() =>
+                        mutateCommunicationTargetsField(field, fieldState, (current) =>
+                          current.filter((_, index) => index !== targetIndex),
+                        )
+                      }
+                      disabled={disabled}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+                <div className="communication-target-grid">
+                  <label className="field-stack">
+                    <span>Target id</span>
+                    <input
+                      value={target.id}
+                      onChange={(event) =>
+                        updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                          ...target,
+                          id: event.target.value,
+                        })
+                      }
+                      disabled={disabled}
+                      placeholder="teams-primary"
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Provider</span>
+                    <select
+                      value={target.provider}
+                      onChange={(event) => {
+                        const provider = event.target.value;
+                        updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                          ...target,
+                          provider,
+                          kind: defaultKindForCommunicationTargetProvider(provider),
+                        });
+                      }}
+                      disabled={disabled || target.disabled}
+                    >
+                      {COMMUNICATION_TARGET_PROVIDERS.map((provider) => (
+                        <option key={provider} value={provider}>{provider}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field-stack">
+                    <span>Kind</span>
+                    <select
+                      value={target.kind}
+                      onChange={(event) =>
+                        updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                          ...target,
+                          kind: event.target.value,
+                        })
+                      }
+                      disabled={disabled || target.disabled}
+                    >
+                      {COMMUNICATION_TARGET_KINDS.map((kind) => (
+                        <option key={kind} value={kind}>{kind}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field-stack communication-target-address-field">
+                    <span>Address</span>
+                    <input
+                      value={target.address}
+                      onChange={(event) =>
+                        updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                          ...target,
+                          address: event.target.value,
+                        })
+                      }
+                      disabled={disabled || target.disabled}
+                      placeholder="team-id/channel-id"
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Auth profile</span>
+                    <input
+                      value={target.authProfileRef}
+                      onChange={(event) =>
+                        updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                          ...target,
+                          authProfileRef: event.target.value,
+                        })
+                      }
+                      disabled={disabled || target.disabled}
+                      placeholder="email.default"
+                    />
+                  </label>
+                </div>
+                <div className="communication-target-capabilities">
+                  {COMMUNICATION_TARGET_CAPABILITIES.map((capability) => (
+                    <label key={capability} className="checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={target.capabilities.includes(capability)}
+                        onChange={(event) => {
+                          const capabilities = event.target.checked
+                            ? [...target.capabilities, capability]
+                            : target.capabilities.filter((current) => current !== capability);
+                          updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                            ...target,
+                            capabilities,
+                          });
+                        }}
+                        disabled={disabled || target.disabled}
+                      />
+                      <span>{capability}</span>
+                    </label>
+                  ))}
+                  <label className="checkbox-row communication-target-disabled-toggle">
+                    <input
+                      type="checkbox"
+                      checked={target.disabled}
+                      onChange={(event) =>
+                        updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                          ...target,
+                          disabled: event.target.checked,
+                        })
+                      }
+                      disabled={disabled}
+                    />
+                    <span>Disable inherited target</span>
+                  </label>
+                </div>
+              </div>
+            ))
+          : null}
+        {availableInheritedTargets.length ? (
+          <div className="contact-subsection communication-target-inherited">
+            <div className="contact-subsection-header">
+              <strong>Inherited targets</strong>
+            </div>
+            {availableInheritedTargets.map((target) => (
+              <div key={`inherited-${target.id}`} className="communication-target-inherited-row">
+                <div>
+                  <strong>{target.id}</strong>
+                  <span className="panel-meta">{target.provider} / {target.kind}</span>
+                </div>
+                <div className="inline-actions compact-actions">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      mutateCommunicationTargetsField(field, fieldState, (current) => [
+                        ...current,
+                        { ...target },
+                      ])
+                    }
+                    disabled={disabled}
+                  >
+                    Override
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() =>
+                      mutateCommunicationTargetsField(field, fieldState, (current) => [
+                        ...current,
+                        { ...target, disabled: true },
+                      ])
+                    }
+                    disabled={disabled}
+                  >
+                    Disable
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   function sectionStorageKey(sectionTitle: string) {
     return `${selectedTabKey}:${sectionTitle}`;
   }
@@ -1135,10 +1519,14 @@ export function ConfigurationScreen() {
                       ? fieldState.clear
                       : !fieldState.include || fieldState.clear;
                     const isContactsField = isContactsConfigField(field);
+                    const isCommunicationTargetsField = isCommunicationTargetsConfigField(field);
+                    const inheritedCommunicationTargets = isCommunicationTargetsField
+                      ? communicationTargetEntriesFromConfig(snapshot?.parent_defaults.config?.[field.field_name])
+                      : [];
                     return (
                       <div
                         key={field.field_name}
-                        className={`config-field-card${isContactsField ? " contacts-field-card" : ""}`}
+                        className={`config-field-card${isContactsField || isCommunicationTargetsField ? " contacts-field-card" : ""}`}
                       >
                         <div className="feature-list-title-row">
                           <div className="config-field-label">
@@ -1185,6 +1573,13 @@ export function ConfigurationScreen() {
                         <div className={inputDisabled ? "disabled-block" : ""}>
                           {isContactsField
                             ? renderContactsEditor(field, fieldState, inputDisabled || loading || saving || !state?.directory_scoped_config_enabled)
+                            : isCommunicationTargetsField
+                            ? renderCommunicationTargetsEditor(
+                                field,
+                                fieldState,
+                                inputDisabled || loading || saving || !state?.directory_scoped_config_enabled,
+                                inheritedCommunicationTargets,
+                              )
                             : renderFieldInput(field, fieldState)}
                         </div>
                         {fieldIsGlobal ? (

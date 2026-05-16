@@ -3176,6 +3176,12 @@ select {
   gap: 1rem;
 }
 
+.communication-targets-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
 .contacts-editor-header,
 .contact-editor-item-header,
 .contact-subsection-header {
@@ -3209,6 +3215,43 @@ select {
   display: grid;
   grid-template-columns: minmax(10rem, 0.7fr) minmax(12rem, 1fr) minmax(16rem, 1.4fr);
   gap: 0.85rem;
+}
+
+.communication-target-grid {
+  display: grid;
+  grid-template-columns: minmax(10rem, 0.8fr) minmax(9rem, 0.6fr) minmax(9rem, 0.6fr) minmax(14rem, 1.2fr) minmax(12rem, 1fr);
+  gap: 0.85rem;
+}
+
+.communication-target-capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem 1rem;
+}
+
+.communication-target-disabled-toggle {
+  margin-left: auto;
+}
+
+.communication-target-inherited-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.65rem 0;
+  border-top: 1px solid rgba(93, 75, 48, 0.12);
+}
+
+.communication-target-inherited-row > div:first-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.communication-target-inherited-row strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .contact-id-field {
@@ -4481,9 +4524,15 @@ select {
   }
 
   .contact-editor-grid,
+  .communication-target-grid,
   .contact-row,
   .contact-phone-row {
     grid-template-columns: 1fr;
+  }
+
+  .communication-target-inherited-row {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .contacts-editor-header,
