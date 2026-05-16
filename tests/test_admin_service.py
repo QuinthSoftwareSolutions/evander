@@ -2877,8 +2877,8 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
         session_id="session-sqlite",
         content=b"sqlite run detail artifact\n",
         original_filename="sqlite-notes.txt",
-        created_at=datetime(2026, 5, 3, 11, 0, tzinfo=UTC),
-        expires_at=datetime(2026, 5, 10, 11, 0, tzinfo=UTC),
+        created_at=datetime(2026, 5, 16, 11, 0, tzinfo=UTC),
+        expires_at=datetime(2026, 5, 23, 11, 0, tzinfo=UTC),
         metadata={"source": "sqlite-fixture"},
     )
     service.runtime.approvals.put(
@@ -2896,7 +2896,10 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
             },
             directory_path="root",
             tool_name="codex",
-            status=ApprovalStatus.PENDING,
+            status=ApprovalStatus.APPROVED,
+            approver="sqlite-reviewer",
+            decision_at=datetime(2026, 5, 3, 11, 0, 30, tzinfo=UTC),
+            decision_reason="Approved for the sqlite run detail fixture.",
             expires_at=datetime(2026, 5, 4, 11, 0, tzinfo=UTC),
             created_at=datetime(2026, 5, 3, 11, 0, tzinfo=UTC),
         ),
@@ -3030,15 +3033,46 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
     assert detail.graph.config_revision == "rev-sqlite"
     assert detail.graph.snapshot is not None
     assert detail.graph.snapshot.revision == "rev-sqlite"
+    assert detail.graph.snapshot.snapshot_type == "compiled_runtime_graph"
+    assert detail.graph.snapshot.workflow_graphs[0]["id"] == "graph-sqlite"
+    assert detail.graph.data_availability.graph_snapshot == "available"
     assert detail.recovery.resume.eligible is True
     assert detail.trigger_event is not None
     assert detail.trigger_event.payload == {"issue_number": "11"}
     effect_node = next(node for node in detail.nodes if node.node_id == "effect-prompt")
+    assert effect_node.status == "failed"
+    assert effect_node.duration_ms == 1000
+    assert effect_node.resolved_config["prompt"] == "Run the sqlite flow"
     assert effect_node.binding_trace is not None
+    assert effect_node.binding_trace["entries"] == []
     assert effect_node.retry_resume_eligible is True
-    assert effect_node.approval_links[0].request_id == "approval-sqlite"
-    assert effect_node.agent_links[0].session_id == "session-sqlite"
-    assert effect_node.communication_artifact_links[0].artifact_id == artifact.artifact_id
+    approval_link = effect_node.approval_links[0]
+    assert approval_link.request_id == "approval-sqlite"
+    assert approval_link.status == "approved"
+    assert approval_link.approver == "sqlite-reviewer"
+    assert approval_link.decision_at == datetime(2026, 5, 3, 11, 0, 30, tzinfo=UTC)
+    assert approval_link.decision_reason == "Approved for the sqlite run detail fixture."
+    assert approval_link.expires_at == datetime(2026, 5, 4, 11, 0, tzinfo=UTC)
+    agent_link = effect_node.agent_links[0]
+    assert agent_link.session_id == "session-sqlite"
+    assert agent_link.prompt == "Run the sqlite flow"
+    assert agent_link.thread_id == "thread-sqlite"
+    assert agent_link.execution_id == "execution-sqlite"
+    assert agent_link.log_reference == {
+        "source_kind": "effect_execution",
+        "node_id": "effect-prompt",
+        "session_id": "session-sqlite",
+        "vm_name": "vm-sqlite",
+        "thread_id": "thread-sqlite",
+        "execution_id": "execution-sqlite",
+        "dispatch_id": "dispatch-sqlite",
+    }
+    artifact_link = effect_node.communication_artifact_links[0]
+    assert artifact_link.artifact_id == artifact.artifact_id
+    assert artifact_link.session_id == "session-sqlite"
+    assert artifact_link.provider == "teams"
+    assert artifact_link.original_filename == "sqlite-notes.txt"
+    assert artifact_link.metadata == {"storage": "host_artifact_store", "source": "sqlite-fixture"}
 
 
 def test_conformance_reports_summarize_present_runtime_artifacts(tmp_path: Path) -> None:

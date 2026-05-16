@@ -1618,8 +1618,8 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
         session_id=session_id,
         content=b"hello from the run detail fixture\n",
         original_filename="notes.txt",
-        created_at=datetime(2026, 5, 1, 10, 4, tzinfo=timezone.utc),
-        expires_at=datetime(2026, 5, 8, 10, 4, tzinfo=timezone.utc),
+        created_at=datetime(2026, 5, 16, 10, 4, tzinfo=timezone.utc),
+        expires_at=datetime(2026, 5, 23, 10, 4, tzinfo=timezone.utc),
         metadata={"source": "fixture"},
     )
     approval_request = ApprovalRequest(
@@ -1635,7 +1635,10 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
         },
         directory_path="root",
         tool_name="codex",
-        status=ApprovalStatus.PENDING,
+        status=ApprovalStatus.APPROVED,
+        approver="workflow-admin",
+        decision_at=datetime(2026, 5, 1, 10, 2, tzinfo=timezone.utc),
+        decision_reason="Approved for the run detail fixture.",
         expires_at=datetime(2026, 5, 2, 10, 0, tzinfo=timezone.utc),
         created_at=datetime(2026, 5, 1, 10, 0, tzinfo=timezone.utc),
     )
@@ -1922,7 +1925,11 @@ def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> 
     assert event_payload["resumable"] is True
     assert event_payload["graph"]["config_revision"] == fixture["rich_revision"]
     assert event_payload["graph"]["snapshot"]["revision"] == fixture["rich_revision"]
+    assert event_payload["graph"]["snapshot"]["snapshot_type"] == "compiled_runtime_graph"
     assert event_payload["graph"]["data_availability"]["graph_snapshot"] == "available"
+    assert event_payload["graph"]["data_availability"]["approvals"] == "available"
+    assert event_payload["graph"]["data_availability"]["agent_links"] == "available"
+    assert event_payload["graph"]["data_availability"]["communication_artifacts"] == "available"
     assert event_payload["trigger_event"]["payload"] == {"issue_number": "99"}
     assert event_payload["lookup"]["event_id"] == fixture["rich_event_id"]
 
@@ -1935,18 +1942,41 @@ def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> 
     assert trace_response.json()["event_id"] == fixture["rich_event_id"]
 
     rich_node = next(node for node in event_payload["nodes"] if node["node_id"] == "effect-prompt")
+    assert rich_node["status"] == "failed"
+    assert rich_node["duration_ms"] == 1000
+    assert rich_node["resolved_config"]["prompt"] == "Investigate the issue"
+    assert rich_node["input_payload"]["request_id"] == "approval-rich"
+    assert rich_node["outputs"]["execution_id"] == "execution-detail"
     assert rich_node["binding_trace"]["entries"][0]["config_path"] == "$.prompt"
     assert rich_node["binding_error"] is None
     assert rich_node["retry_resume_eligible"] is True
-    assert rich_node["approval_links"][0]["request_id"] == "approval-rich"
-    assert rich_node["approval_links"][0]["payload_digest"] == "digest-rich"
-    assert rich_node["approval_links"][0]["status"] == "pending"
-    assert rich_node["agent_links"][0]["session_id"] == fixture["session_id"]
-    assert rich_node["agent_links"][0]["prompt"] == "Investigate the issue"
-    assert rich_node["agent_links"][0]["execution_id"] == "execution-detail"
-    assert fixture["artifact_id"] in [link["artifact_id"] for link in rich_node["communication_artifact_links"]]
+    approval_link = rich_node["approval_links"][0]
+    assert approval_link["request_id"] == "approval-rich"
+    assert approval_link["payload_digest"] == "digest-rich"
+    assert approval_link["status"] == "approved"
+    assert approval_link["approver"] == "workflow-admin"
+    assert approval_link["decision_at"] == "2026-05-01T10:02:00Z"
+    assert approval_link["decision_reason"] == "Approved for the run detail fixture."
+    assert approval_link["expires_at"] == "2026-05-02T10:00:00Z"
+
+    agent_link = rich_node["agent_links"][0]
+    assert agent_link["session_id"] == fixture["session_id"]
+    assert agent_link["prompt"] == "Investigate the issue"
+    assert agent_link["thread_id"] == "thread-detail"
+    assert agent_link["execution_id"] == "execution-detail"
+    assert agent_link["log_reference"]["source_kind"] == "effect_execution"
+    assert agent_link["log_reference"]["vm_name"] == "vm-detail"
+    assert agent_link["log_reference"]["dispatch_id"] == "dispatch-detail"
+
+    artifact_link = rich_node["communication_artifact_links"][0]
+    assert artifact_link["artifact_id"] == fixture["artifact_id"]
+    assert artifact_link["session_id"] == fixture["session_id"]
+    assert artifact_link["provider"] == "teams"
+    assert artifact_link["original_filename"] == "notes.txt"
+    assert artifact_link["metadata"] == {"storage": "host_artifact_store", "source": "fixture"}
     assert rich_node["records"][0]["record_kind"] == "effect_execution"
     assert rich_node["records"][0]["config_revision"] == fixture["rich_revision"]
+    assert rich_node["records"][0]["binding_trace"]["entries"][0]["resolved_value_preview"] == '"99"'
 
 
 def test_admin_web_run_detail_marks_missing_legacy_data(tmp_path: Path) -> None:
@@ -1961,9 +1991,12 @@ def test_admin_web_run_detail_marks_missing_legacy_data(tmp_path: Path) -> None:
     payload = response.json()
     assert payload["event_id"] == fixture["legacy_event_id"]
     assert payload["graph"]["data_availability"]["graph_snapshot"] == "missing_legacy_or_unrecorded"
+    assert payload["graph"]["snapshot"] is None
     legacy_node = next(node for node in payload["nodes"] if node["node_id"] == "effect-prompt")
     assert "binding_trace" in legacy_node["missing_fields"]
     assert legacy_node["binding_trace"] is None
+    assert legacy_node["records"][0]["binding_trace"] is None
+    assert legacy_node["records"][0]["resolved_config"] == {}
     assert legacy_node["approval_links"] == []
     assert legacy_node["agent_links"] == []
 
