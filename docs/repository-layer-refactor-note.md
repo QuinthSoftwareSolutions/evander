@@ -42,6 +42,14 @@
   - `ScheduledWakeWorker`, `DiscordWakeWorker`, `VmProviderRegistry`/`vm_provider.py`, and gateway audit/redaction lookups now read session state through repository semantics instead of raw session-store maps
 - Test fixtures in repository-focused modules now seed session state through `JsonSessionManifestRepository` or `session_repository.upsert_session(...)` rather than constructing raw `JsonStore(SessionManifest)` instances.
 
+## Runtime JSON persistence pattern
+
+- Use `JsonStore` for keyed top-level maps whose values are validated models.
+- Use `JsonObjectStore` for multi-section JSON payloads such as inbox state, prompt/token state, wake state, and other repositories that need several top-level sections in one file.
+- Any method that needs to read, mutate, compact, and write the same file must do that work inside one helper transaction so the process-local lock and file lock cover the entire read/modify/write window.
+- Preserve repository-specific empty-file and malformed-file behavior; do not silently normalize a file unless the repository already treats that case as safe.
+- Keep the shared writer behavior consistent: unique temp files, `os.replace(...)`, file fsync, parent-directory fsync, and no fixed `<name>.tmp` replacement paths.
+
 ## Remaining work before SQLite
 
 - Replace direct `JsonStore` usage for sessions and other runtime state with the semantic repository contracts introduced here.
