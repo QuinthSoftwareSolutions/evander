@@ -79,7 +79,11 @@ class NotificationSender:
         normalized_id = str(communication_target_id or "").strip().lower()
         if not normalized_id:
             raise ValueError("effect:notification:send requires communication_target_id")
-        targets = load_communication_targets_config(self.project_dir).by_id()
+        targets = load_communication_targets_config(
+            runtime_dir=self.runtime.config.runtime_dir,
+            directory_store=self.runtime.directories,
+            directory_path=self.directory_path,
+        ).by_id()
         target = targets.get(normalized_id)
         if target is None:
             raise ValueError(f"unknown communication target: {normalized_id}")

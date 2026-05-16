@@ -6,12 +6,17 @@ from pydantic import BaseModel, Field
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directory_config import (
-    DIRECTORY_CONFIG_DOMAIN_FILENAMES,
     DirectoryConfigResolution,
     DirectoryConfigStore,
     validate_effective_domain_payload,
 )
 from agent_sandbox.directories import DirectoryService, DirectoryStore
+from agent_sandbox.messaging.targets import (
+    COMMUNICATION_TARGETS_DOMAIN,
+    CommunicationTargetsDirectoryResolver,
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 from agent_sandbox.models import DirectoryDetails, DirectoryInfo
 
 T = TypeVar("T")
@@ -73,12 +78,16 @@ class DirectoryAdminService:
     def __init__(
         self,
         *,
+        directory_store: DirectoryStore,
         directories: DirectoryService,
         config_store: DirectoryConfigStore,
+        communication_targets_repository: SqliteCommunicationTargetsRepository,
         gateway_config: GatewayConfig,
     ) -> None:
+        self._directory_store = directory_store
         self._directories = directories
         self._config_store = config_store
+        self._communication_targets_repository = communication_targets_repository
         self._gateway_config = gateway_config
 
     @classmethod
@@ -91,9 +100,15 @@ class DirectoryAdminService:
         directories = DirectoryService(directory_store)
         config_store = DirectoryConfigStore(directory_store, runtime_dir=gateway_config.runtime_dir)
         config_store.ensure_root()
+        communication_targets_repository = SqliteCommunicationTargetsRepository(
+            communication_targets_db_path(gateway_config.runtime_dir)
+        )
+        communication_targets_repository.ensure_schema()
         return cls(
+            directory_store=directory_store,
             directories=directories,
             config_store=config_store,
+            communication_targets_repository=communication_targets_repository,
             gateway_config=gateway_config,
         )
 
@@ -157,6 +172,9 @@ class DirectoryAdminService:
             directory = self._directories.show(reference).directory
             deleted = self._directories.delete(directory.id, force=recursive)
             self._config_store.delete_directory_tree(directory.path)
+            self._communication_targets_repository.delete_directory_tree(
+                set(deleted.get("deleted_ids") or [])
+            )
             return DirectoryDeletePayload.model_validate(deleted)
 
         return self._run(operation)
@@ -166,6 +184,16 @@ class DirectoryAdminService:
     ) -> AdminResult[DirectoryConfigPayload]:
         def operation() -> DirectoryConfigPayload:
             directory = self._directories.show(reference).directory
+            if domain == COMMUNICATION_TARGETS_DOMAIN:
+                _directory, config = self._communication_targets_resolver().read_overlay(
+                    directory.id
+                )
+                return DirectoryConfigPayload(
+                    directory=directory,
+                    domain=domain,
+                    exists=config is not None,
+                    config=config,
+                )
             config = self._config_store.read(directory.id, domain=domain)
             return DirectoryConfigPayload(
                 directory=directory,
@@ -188,6 +216,16 @@ class DirectoryAdminService:
 
         def operation() -> DirectoryConfigWritePayload:
             directory = self._directories.show(reference).directory
+            if domain == COMMUNICATION_TARGETS_DOMAIN:
+                _directory, written = self._communication_targets_resolver().write_overlay(
+                    directory.id,
+                    payload,
+                )
+                return DirectoryConfigWritePayload(
+                    directory=directory,
+                    domain=domain,
+                    config=written,
+                )
             written = self._config_store.write(directory.id, domain=domain, payload=payload)
             return DirectoryConfigWritePayload(
                 directory=directory,
@@ -204,6 +242,9 @@ class DirectoryAdminService:
         domain: str,
     ) -> AdminResult[DirectoryEffectiveConfigPayload]:
         def operation() -> DirectoryEffectiveConfigPayload:
+            if domain == COMMUNICATION_TARGETS_DOMAIN:
+                resolution = self._communication_targets_resolver().resolve(reference)
+                return DirectoryEffectiveConfigPayload(resolution=resolution)
             base_config = (
                 self._gateway_config.model_dump(mode="json") if domain == "gateway" else None
             )
@@ -225,7 +266,7 @@ class DirectoryAdminService:
         ]
         return DirectoryTreeNode(
             directory=directory,
-            config_domains=self._config_store.list_domains(directory.id),
+            config_domains=self._list_config_domains(directory.id),
             children=children,
         )
 
@@ -234,7 +275,7 @@ class DirectoryAdminService:
         return DirectoryGetPayload(
             details=details,
             children=self._directories.list_children(parent=details.directory.id),
-            config_domains=self._config_store.list_domains(details.directory.id),
+            config_domains=self._list_config_domains(details.directory.id),
         )
 
     def _config_resolver(self):
@@ -246,6 +287,19 @@ class DirectoryAdminService:
             base_gateway_config=self._gateway_config,
             config_store=self._config_store,
         )
+
+    def _communication_targets_resolver(self) -> CommunicationTargetsDirectoryResolver:
+        return CommunicationTargetsDirectoryResolver(
+            self._directory_store,
+            repository=self._communication_targets_repository,
+        )
+
+    def _list_config_domains(self, reference: str) -> list[str]:
+        directory = self._directories.show(reference).directory
+        domains = set(self._config_store.list_domains(directory.id))
+        if self._communication_targets_repository.has_overlay(directory.id):
+            domains.add(COMMUNICATION_TARGETS_DOMAIN)
+        return sorted(domains)
 
     def _writes_enabled(self) -> bool:
         return self._gateway_config.enable_directory_scoped_config
