@@ -29,6 +29,12 @@ def test_worker_playbook_exists_with_expected_roles() -> None:
     assert "- role: worker_mssql" in worker
     assert "- role: container_worker_service" in worker
     assert "- role: container_worker_verification" in worker
+    assert worker.index("- role: container_worker_runtime") < worker.index(
+        "- role: worker_mssql"
+    )
+    assert worker.index("- role: worker_mssql") < worker.index(
+        "- role: container_worker_service"
+    )
 
     for role_name in [
         "container_worker_runtime",
