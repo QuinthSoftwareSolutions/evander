@@ -64,8 +64,101 @@ def test_record_dispatch_updates_request_and_appends_message(tmp_path: Path) -> 
     payload = store.read_raw()
     assert payload["requests"]["wake-1"]["enabled"] is False
     assert payload["requests"]["wake-1"]["last_dispatched_at"] == "2026-04-01T10:31:00Z"
+    assert payload["requests"]["wake-1"]["next_run_at"] is None
     assert payload["dispatches"]["dispatch-1"]["status"] == "dispatched"
     assert payload["messages"]["wake:dispatch-1"]["session_id"] == "session-1"
+
+
+@pytest.mark.parametrize("status", ["failed", "timed_out"])
+def test_record_dispatch_preserves_due_request_for_failed_dispatches(
+    tmp_path: Path, status: str
+) -> None:
+    store = WakeRequestStore(tmp_path / "wake-store.json")
+    due_time = datetime(2026, 4, 1, 10, 30, tzinfo=UTC)
+    store.schedule_resume_request(
+        session_id="session-1",
+        prompt="Resume work.",
+        schedule=WakeScheduleDefinition(cron="* * * * *"),
+        request_id="wake-1",
+        source="gateway-tool",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+
+    request = store.get_request("wake-1")
+    assert request is not None
+    request.next_run_at = due_time
+    store.upsert_request(request)
+
+    store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id=f"dispatch-{status}",
+            request_id="wake-1",
+            session_id="session-1",
+            status=status,
+            resume_prompt=WakeResumePromptPayload(prompt="Resume work."),
+            dispatched_at=due_time,
+        )
+    )
+
+    payload = store.read_raw()
+    latest = store.latest_dispatch_by_request_id()["wake-1"]
+    assert payload["requests"]["wake-1"]["enabled"] is True
+    assert payload["requests"]["wake-1"]["next_run_at"] == "2026-04-01T10:30:00Z"
+    assert payload["requests"]["wake-1"]["last_dispatched_at"] is None
+    assert payload["dispatches"][f"dispatch-{status}"]["status"] == status
+    assert payload["messages"][f"wake:dispatch-{status}"]["status"] == status
+    assert latest.status == status
+    assert latest.request_id == "wake-1"
+
+
+def test_record_dispatch_keeps_failed_timestamp_cleared_until_success(
+    tmp_path: Path,
+) -> None:
+    store = WakeRequestStore(tmp_path / "wake-store.json")
+    due_time = datetime(2026, 4, 1, 10, 30, tzinfo=UTC)
+    success_time = datetime(2026, 4, 1, 10, 31, tzinfo=UTC)
+    store.schedule_resume_request(
+        session_id="session-1",
+        prompt="Resume work.",
+        schedule=WakeScheduleDefinition(cron="* * * * *"),
+        request_id="wake-1",
+        source="gateway-tool",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+
+    request = store.get_request("wake-1")
+    assert request is not None
+    request.next_run_at = due_time
+    store.upsert_request(request)
+
+    store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-failed",
+            request_id="wake-1",
+            session_id="session-1",
+            status="failed",
+            resume_prompt=WakeResumePromptPayload(prompt="Resume work."),
+            dispatched_at=due_time,
+        )
+    )
+    store.record_dispatch(
+        WakeDispatchRecord(
+            dispatch_id="dispatch-success",
+            request_id="wake-1",
+            session_id="session-1",
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt="Resume work."),
+            dispatched_at=success_time,
+        )
+    )
+
+    payload = store.read_raw()
+    assert payload["requests"]["wake-1"]["last_dispatched_at"] == "2026-04-01T10:31:00Z"
+    assert store.latest_dispatch_by_request_id()["wake-1"].status == "dispatched"
 
 
 def test_schedule_resume_request_rejects_duplicate_request_id(tmp_path: Path) -> None:

@@ -158,6 +158,7 @@ class TriggerOrchestratorWorker:
         providers = self._load_configured_providers(active_config, configured_triggers)
         events_discovered = 0
         events_published = 0
+        published_event_ids_by_trigger_id: dict[str, list[str]] = {}
         loop = OrchestrationLoop[
             TriggerDefinitionDiscriminated,
             Any,
@@ -204,6 +205,13 @@ class TriggerOrchestratorWorker:
             record = self.event_queue.publish(event)
             if record.event_id == event.event_id:
                 _acknowledge_provider_event_published(providers.get(trigger.id), event)
+                published_event_ids = published_event_ids_by_trigger_id.setdefault(trigger.id, [])
+                published_event_ids.append(event.event_id)
+                self._update_cursor_state(
+                    trigger=trigger,
+                    discovered=len(published_event_ids),
+                    event_ids=published_event_ids,
+                )
             if not already_queued and record.event_id == event.event_id:
                 logger.debug(
                     "Trigger event published trigger_id=%s trigger_type=%s event_id=%s trace_id=%s",

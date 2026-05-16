@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from agent_sandbox.config import GatewayConfig, load_config
 from agent_sandbox.directory_config import (
@@ -23,6 +23,7 @@ from agent_sandbox.repositories.session_manifests import (
 
 class EffectivePolicyConfig(BaseModel):
     approval_ttl_seconds: int = 3600
+    approval_notification_target_ids: list[str] = Field(default_factory=list)
     default_session_ttl_seconds: int = 28800
     discord_operator_channel_allowlist: list[str] = Field(default_factory=list)
     discord_operator_user_allowlist: list[str] = Field(default_factory=list)
@@ -53,6 +54,25 @@ class EffectivePolicyConfig(BaseModel):
             "connectionString",
         }
     )
+
+    @field_validator("approval_notification_target_ids", mode="before")
+    @classmethod
+    def normalize_approval_notification_target_ids(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("approval_notification_target_ids must be a JSON array of strings")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            target_id = str(item or "").strip().lower()
+            if not target_id or target_id in seen:
+                continue
+            seen.add(target_id)
+            normalized.append(target_id)
+        return normalized
 
 
 class PolicyConfigResolver:

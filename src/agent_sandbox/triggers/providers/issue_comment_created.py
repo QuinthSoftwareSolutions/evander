@@ -8,7 +8,7 @@ from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import IssueCommentCreatedTriggerDefinition
 from agent_sandbox.models import LocalIssueRecord
 from agent_sandbox.storage import JsonStore
-from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
+from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore, merge_cursor_ids
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 from agent_sandbox.triggers.providers.ticket_created import _within_directories
 
@@ -54,10 +54,22 @@ class IssueCommentCreatedTriggerProvider(TriggerProviderBase):
                     )
                 )
 
-        if next_seen != seen:
-            cursor_store.put(trigger.id, {"seen_comment_keys": sorted(next_seen)[-5000:]})
         events.sort(key=lambda event: (event.occurred_at, event.event_id))
         return events
+
+    def acknowledge_published_event(self, event: TriggerEvent) -> None:
+        trigger = self._trigger()
+        if event.trigger_id != trigger.id or event.trigger_type != trigger.type:
+            return
+        issue_id = str(event.payload.get("issue_id") or "").strip()
+        comment_id = str(event.payload.get("comment_id") or "").strip()
+        if not issue_id or not comment_id:
+            return
+        seen_key = f"{issue_id}:{comment_id}"
+        self._cursor_store().update(
+            trigger.id,
+            lambda state: _acknowledge_comment_key(state, seen_key),
+        )
 
     def _trigger(self) -> IssueCommentCreatedTriggerDefinition:
         if not isinstance(self.trigger_definition, IssueCommentCreatedTriggerDefinition):
@@ -212,3 +224,12 @@ def _parse_dt(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _acknowledge_comment_key(state: dict[str, object], seen_key: str) -> dict[str, object]:
+    state["seen_comment_keys"] = merge_cursor_ids(
+        state.get("seen_comment_keys"),
+        [seen_key],
+        limit=5000,
+    )
+    return state

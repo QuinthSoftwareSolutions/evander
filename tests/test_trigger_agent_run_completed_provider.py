@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -90,10 +91,20 @@ def test_agent_run_completed_emits_once_on_running_to_idle_transition(tmp_path: 
 
     first = provider.poll()
     second = provider.poll()
-    third = provider.poll()
+    cursor_payload = json.loads(
+        (tmp_path / "runtime" / "trigger-cursors-agent-run-completed.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert cursor_payload["agent-run-complete"]["seen_by_vm"]["lab-vm-1"] == {
+        "last_agent_state": "running",
+        "last_state_update_at": "2026-04-05T11:59:00Z",
+    }
 
     assert first == []
     assert len(second) == 1
+    provider.acknowledge_published_event(second[0])
+    third = provider.poll()
     assert third == []
     event = second[0]
     assert event.trigger_type == "trigger:agent:run:completed"
@@ -105,3 +116,13 @@ def test_agent_run_completed_emits_once_on_running_to_idle_transition(tmp_path: 
     assert event.payload["dispatch_id"] == "dispatch-123"
     assert admin_service.calls[0]["directory_path"] == "root/team-a"
     assert admin_service.calls[0]["vm_user"] == "agent"
+    cursor_payload = json.loads(
+        (tmp_path / "runtime" / "trigger-cursors-agent-run-completed.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert cursor_payload["agent-run-complete"]["seen_by_vm"]["lab-vm-1"] == {
+        "last_agent_state": "idle",
+        "last_state_update_at": "2026-04-05T12:00:00Z",
+        "last_emitted_state_update_at": "2026-04-05T12:00:00Z",
+    }

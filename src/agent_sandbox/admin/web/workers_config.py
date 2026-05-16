@@ -36,6 +36,7 @@ from agent_sandbox.directory_config import (
     IssueSetupDirectoryConfig,
     PrTemplateDirectoryConfig,
 )
+from agent_sandbox.messaging.targets import load_communication_targets_config
 from agent_sandbox.vm.defaults_config import EffectiveVmDefaultsConfig
 
 _DISCORD_CONFIG_FIELDS: tuple[tuple[str, str], ...] = (
@@ -170,6 +171,11 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
                 ("policy", "approval_ttl_seconds"),
                 ("policy", "default_session_ttl_seconds"),
             ),
+            (),
+        ),
+        (
+            "Approval notifications",
+            (("policy", "approval_notification_target_ids"),),
             (),
         ),
         (
@@ -650,6 +656,11 @@ def _directory_config_field_tooltip(
         or CONFIG_FIELD_TOOLTIPS.get(field_name)
         or f"Configures {label}."
     )
+    if source_domain == "policy" and field_name == "approval_notification_target_ids":
+        return (
+            f"{description} Value: select one or more known communication target IDs "
+            "declared with the notify capability."
+        )
     return f"{description} {_field_value_hint(kind, options)}"
 
 
@@ -711,8 +722,8 @@ def _directory_tab_help_text(tab_key: str) -> str | None:
         return "Messaging integrations for Discord and Teams, including routing, read reactions, and wake prompts."
     if tab_key == "access_policy":
         return (
-            "Directory-level guardrails for approvals, recipients, mailboxes, "
-            "communication files, and audit redaction defaults."
+            "Directory-level guardrails for approvals, approval notifications, recipients, "
+            "mailboxes, communication files, and audit redaction defaults."
         )
     if tab_key == "contacts":
         return "Directory contacts available to host-side communication integrations."
@@ -731,8 +742,24 @@ def _directory_tab_help_text(tab_key: str) -> str | None:
     return None
 
 
+def _approval_notification_target_options(project_dir: Path) -> tuple[str, ...]:
+    try:
+        config = load_communication_targets_config(project_dir)
+    except Exception:
+        return ()
+    return tuple(
+        target.id
+        for target in config.targets
+        if "notify" in set(target.policy.capabilities)
+    )
+
+
 def _directory_config_field_metadata(
-    tab_key: str, source_domain: str, field_name: str, prefixes: tuple[str, ...]
+    service: AdminService,
+    tab_key: str,
+    source_domain: str,
+    field_name: str,
+    prefixes: tuple[str, ...],
 ) -> dict[str, Any]:
     kind, options = _field_kind(
         field_name,
@@ -754,6 +781,8 @@ def _directory_config_field_metadata(
             EffectiveVmDefaultsConfig.model_fields,
         ),
     )
+    if source_domain == "policy" and field_name == "approval_notification_target_ids":
+        options = _approval_notification_target_options(service.project_dir)
     label = (
         _ASSISTANT_SETTINGS_FIELD_LABELS.get(field_name)
         if source_domain == _ASSISTANT_SETTINGS_DOMAIN
@@ -773,14 +802,16 @@ def _directory_config_field_metadata(
     }
 
 
-def _directory_tab_metadata(tab_key: str) -> dict[str, Any]:
+def _directory_tab_metadata(service: AdminService, tab_key: str) -> dict[str, Any]:
     sections = []
     for title, field_sources, prefixes in _DIRECTORY_CONFIG_TAB_SECTIONS.get(tab_key, ()):
         sections.append(
             {
                 "title": title,
                 "fields": [
-                    _directory_config_field_metadata(tab_key, source_domain, field_name, prefixes)
+                    _directory_config_field_metadata(
+                        service, tab_key, source_domain, field_name, prefixes
+                    )
                     for source_domain, field_name in field_sources
                 ],
             }
@@ -790,7 +821,9 @@ def _directory_tab_metadata(tab_key: str) -> dict[str, Any]:
             {
                 "title": _DIRECTORY_CONFIG_UI_TAB_TITLES.get(tab_key, tab_key),
                 "fields": [
-                    _directory_config_field_metadata(tab_key, source_domain, field_name, ())
+                    _directory_config_field_metadata(
+                        service, tab_key, source_domain, field_name, ()
+                    )
                     for source_domain, field_name in _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES[tab_key]
                 ],
             }
@@ -1097,7 +1130,8 @@ def worker_config_routes(service: AdminService, auth: AdminWebAuth) -> list[Base
         }
         domain_snapshots[_ASSISTANT_SETTINGS_DOMAIN] = _assistant_settings_snapshot(service)
         tabs = [
-            _directory_tab_metadata(tab_key) for tab_key in _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES
+            _directory_tab_metadata(service, tab_key)
+            for tab_key in _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES
         ]
         tab_snapshots = {
             tab_key: _aggregate_tab_snapshot(service, selected_path, tab_key, domain_snapshots)

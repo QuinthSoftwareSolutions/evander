@@ -364,23 +364,25 @@ class AwaitAgentGateProvider(GateProviderBase):
             session_id, vm_name = _await_agent_pending_target(pending, summaries=candidates)
             if not candidates:
                 continue
-            matches_active_dispatch = any(
-                str(getattr(summary, "dispatch_id", "") or "").strip() == pending.dispatch_id
-                and str(getattr(summary, "agent_state", "") or "").strip() == "running"
-                for summary in candidates
-            )
-            if matches_active_dispatch:
-                continue
-            replaced_or_unavailable = any(
+            normalized_candidates = [
                 (
-                    str(getattr(summary, "dispatch_id", "") or "").strip()
-                    and str(getattr(summary, "dispatch_id", "") or "").strip()
-                    != pending.dispatch_id
+                    str(getattr(summary, "dispatch_id", "") or "").strip() or None,
+                    str(getattr(summary, "agent_state", "") or "").strip(),
+                    str(getattr(summary, "libvirt_state", "") or "").strip(),
                 )
-                or str(getattr(summary, "libvirt_state", "") or "").strip() != "running"
                 for summary in candidates
-            )
-            if replaced_or_unavailable:
+            ]
+            # Keep the pending record when the VM still reports the same dispatch;
+            # direct completion needs the record to survive this reconciliation pass.
+            if any(
+                candidate_dispatch_id == pending.dispatch_id
+                for candidate_dispatch_id, _, _ in normalized_candidates
+            ):
+                continue
+            if any(
+                candidate_dispatch_id and candidate_dispatch_id != pending.dispatch_id
+                for candidate_dispatch_id, _, _ in normalized_candidates
+            ):
                 self._store().delete(key)
 
     def _complete_pending_directly(self, *, worker: Any, graph: Any) -> int:

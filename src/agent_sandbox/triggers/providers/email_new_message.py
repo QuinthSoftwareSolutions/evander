@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from agent_sandbox.repositories.cursors import JsonEmailCursorRepository
 from agent_sandbox.email.gmail_provider import GmailEmailProvider
 from agent_sandbox.email.graph_provider import GraphEmailProvider
 from agent_sandbox.email.providers import EmailMessageSummary, JsonEmailProvider
@@ -11,11 +10,17 @@ from agent_sandbox.repositories.records import JsonEmailRecordsRepository
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import EmailNewMessageTriggerDefinition
-from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
+from agent_sandbox.triggers.providers._cursor_state import (
+    TriggerCursorStore,
+    latest_cursor_timestamp_text,
+    merge_cursor_ids,
+)
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 
 
 class EmailNewMessageTriggerProvider(TriggerProviderBase):
+    _RECENT_MESSAGE_LIMIT = 512
+
     def poll(self) -> list[TriggerEvent]:
         trigger = self._trigger()
         state_store = self._cursor_store()
@@ -37,8 +42,6 @@ class EmailNewMessageTriggerProvider(TriggerProviderBase):
         candidates.sort(key=lambda item: (item.received_at, item.message_id))
 
         events: list[TriggerEvent] = []
-        max_received_at = cursor
-        new_ids = list(recent_ids)
         for message in candidates:
             if (
                 cursor is not None
@@ -56,19 +59,24 @@ class EmailNewMessageTriggerProvider(TriggerProviderBase):
                     payload={"message": message.model_dump(mode="json")},
                 )
             )
-            new_ids.append(message.message_id)
-            if max_received_at is None or occurred_at > max_received_at:
-                max_received_at = occurred_at
 
-        if max_received_at is not None:
-            state_store.put(
-                trigger.id,
-                {
-                    "last_received_at": max_received_at.isoformat().replace("+00:00", "Z"),
-                    "recent_message_ids": new_ids[-512:],
-                },
-            )
         return events
+
+    def acknowledge_published_event(self, event: TriggerEvent) -> None:
+        trigger = self._trigger()
+        if event.trigger_id != trigger.id or event.trigger_type != trigger.type:
+            return
+        payload = event.payload.get("message")
+        if not isinstance(payload, dict):
+            return
+        message_id = str(payload.get("message_id") or "").strip()
+        received_at = _parse_dt(payload.get("received_at")) or event.occurred_at
+        if not message_id or received_at is None:
+            return
+        self._cursor_store().update(
+            trigger.id,
+            lambda state: _acknowledge_message(state, message_id, received_at),
+        )
 
     def _trigger(self) -> EmailNewMessageTriggerDefinition:
         if not isinstance(self.trigger_definition, EmailNewMessageTriggerDefinition):
@@ -86,7 +94,6 @@ class EmailNewMessageTriggerProvider(TriggerProviderBase):
         return TriggerCursorStore(self._runtime_dir() / "trigger-cursors-email.json")
 
     def _build_provider(self, trigger: EmailNewMessageTriggerDefinition):
-        runtime_dir = self._runtime_dir()
         if trigger.provider == "json_store":
             config = self.runtime_context.resolved_config
             return JsonEmailProvider(
@@ -98,16 +105,13 @@ class EmailNewMessageTriggerProvider(TriggerProviderBase):
             key: self.runtime_context.resolve_secret(value) or value
             for key, value in trigger.auth_secret_refs.items()
         }
-        provider_cursor_store = JsonEmailCursorRepository(
-            runtime_dir / "trigger-email-provider-cursors.json"
-        )
         if trigger.provider == "gmail":
             return GmailEmailProvider(
                 account_identifier=trigger.account_identifier,
                 folder_mapping={},
                 auth_secret_refs=auth_secret_refs,
                 timeout_seconds=self.runtime_context.resolved_config.email_provider_timeout_seconds,
-                cursor_store=provider_cursor_store,
+                cursor_store=None,
             )
         if trigger.provider == "graph":
             return GraphEmailProvider(
@@ -115,7 +119,7 @@ class EmailNewMessageTriggerProvider(TriggerProviderBase):
                 folder_mapping={},
                 auth_secret_refs=auth_secret_refs,
                 timeout_seconds=self.runtime_context.resolved_config.email_provider_timeout_seconds,
-                cursor_store=provider_cursor_store,
+                cursor_store=None,
             )
         raise RuntimeError(f"Unsupported email provider: {trigger.provider!r}")
 
@@ -130,3 +134,20 @@ def _parse_dt(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _acknowledge_message(
+    state: dict[str, object],
+    message_id: str,
+    received_at: datetime,
+) -> dict[str, object]:
+    state["last_received_at"] = latest_cursor_timestamp_text(
+        state.get("last_received_at"),
+        received_at,
+    )
+    state["recent_message_ids"] = merge_cursor_ids(
+        state.get("recent_message_ids"),
+        [message_id],
+        limit=EmailNewMessageTriggerProvider._RECENT_MESSAGE_LIMIT,
+    )
+    return state

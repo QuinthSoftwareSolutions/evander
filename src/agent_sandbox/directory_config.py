@@ -49,6 +49,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
     "policy": frozenset(
         {
             "approval_ttl_seconds",
+            "approval_notification_target_ids",
             "default_session_ttl_seconds",
             "discord_operator_channel_allowlist",
             "discord_inbox_routes",
