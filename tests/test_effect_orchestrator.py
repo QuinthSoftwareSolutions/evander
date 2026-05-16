@@ -4299,6 +4299,164 @@ def test_await_agent_reconciliation_keeps_pending_record_without_matching_summar
     assert _await_agent_store(worker).read_all() == {"await-agent-1:dispatch-missing": pending}
 
 
+def test_await_agent_reconciliation_deletes_pending_record_for_replaced_dispatch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "await-agent-1",
+                    "display_name": "Await agent",
+                    "type": "gate:await-agent",
+                    "session_id": "session-42",
+                    "vm_name": "vm-issue-42",
+                    "outputs": {},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-42",
+                    "prompt": "Continue main task",
+                }
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+                _edge("effect-1", "await-agent-1", source_port="started"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    pending = AwaitAgentPendingRecord(
+        gate_id="await-agent-1",
+        dispatch_id="dispatch-old",
+        prompt_event_id="effect:effect-agent-prompt-1:old",
+        prompt_source_node_id="effect-agent-prompt-1",
+        trace_id="trace-old",
+        session_id="session-42",
+        vm_name="vm-issue-42",
+        payload={},
+        occurred_at=datetime(2026, 4, 4, 11, 50, tzinfo=timezone.utc),
+    )
+    pending_key = "await-agent-1:dispatch-old"
+    _await_agent_store(worker).put(pending_key, pending)
+    monkeypatch.setattr(
+        worker,
+        "_list_vm_summaries_for_await_agent_reconciliation",
+        lambda: [
+            VmSummary(
+                vm_name="vm-issue-42",
+                session_ids=["session-42"],
+                labels={},
+                directory_paths=["root/team-a"],
+                libvirt_state="shut off",
+                ip_address="192.0.2.10",
+                agent_state="running",
+                agent_repo_names=["repo-a"],
+                last_state_update_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+                dispatch_id="dispatch-new",
+            )
+        ],
+    )
+
+    worker.run_once()
+
+    assert pending_key not in _await_agent_store(worker).read_all()
+
+
+def test_await_agent_reconciliation_keeps_pending_record_when_unavailable_vm_has_no_replacement(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "await-agent-1",
+                    "display_name": "Await agent",
+                    "type": "gate:await-agent",
+                    "session_id": "session-42",
+                    "vm_name": "vm-issue-42",
+                    "outputs": {},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-42",
+                    "prompt": "Continue main task",
+                }
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+                _edge("effect-1", "await-agent-1", source_port="started"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    pending = AwaitAgentPendingRecord(
+        gate_id="await-agent-1",
+        dispatch_id="dispatch-stale",
+        prompt_event_id="effect:effect-agent-prompt-1:stale",
+        prompt_source_node_id="effect-agent-prompt-1",
+        trace_id="trace-stale",
+        session_id="session-42",
+        vm_name="vm-issue-42",
+        payload={},
+        occurred_at=datetime(2026, 4, 4, 11, 50, tzinfo=timezone.utc),
+    )
+    pending_key = "await-agent-1:dispatch-stale"
+    _await_agent_store(worker).put(pending_key, pending)
+    monkeypatch.setattr(
+        worker,
+        "_list_vm_summaries_for_await_agent_reconciliation",
+        lambda: [
+            VmSummary(
+                vm_name="vm-issue-42",
+                session_ids=["session-42"],
+                labels={},
+                directory_paths=["root/team-a"],
+                libvirt_state="shut off",
+                ip_address="192.0.2.10",
+                agent_state="running",
+                agent_repo_names=["repo-a"],
+                last_state_update_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+                dispatch_id=None,
+            )
+        ],
+    )
+
+    worker.run_once()
+
+    assert _await_agent_store(worker).read_all() == {pending_key: pending}
+
+
 def test_await_agent_reconciliation_skips_and_retries_when_inventory_fails(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
