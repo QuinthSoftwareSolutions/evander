@@ -101,7 +101,23 @@ def test_approval_notifications_send_safe_message_to_configured_targets(
         ],
     )
     runtime = _runtime(tmp_path, approval_notification_target_ids=["ops-approvals"])
-    runtime.session_repository.upsert_session(_session_manifest())
+    runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-42",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT],
+            discord_channel_allowlist=[],
+            teams_channel_allowlist=[],
+            teams_chat_allowlist=[],
+            teams_user_allowlist=[],
+            email_folder_allowlist=[],
+            email_mailbox_allowlist=[],
+            email_draft_recipient_allowlist=[],
+            email_draft_domain_allowlist=[],
+            email_send_enabled=False,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
 
     calls: list[dict[str, object]] = []
 
@@ -140,16 +156,29 @@ def test_approval_notifications_send_safe_message_to_configured_targets(
     assert calls[0]["directory_path"] == "root"
     assert calls[0]["sender_session_id"] == f"approval:{approval.request_id}"
     assert calls[0]["communication_target_id"] == "ops-approvals"
-    assert "super secret body" not in str(calls[0]["message"])
-    assert "Bearer secret" not in str(calls[0]["message"])
-    assert "nested-secret" not in str(calls[0]["message"])
-    assert "agent-sandbox-cli show-approval" in str(calls[0]["message"])
-    assert f"agent-sandbox-cli show-approval {approval.request_id}" in str(calls[0]["message"])
+    message = str(calls[0]["message"])
+    assert f"request_id: {approval.request_id}" in message
+    assert "action_type: email_send_approved" in message
+    assert "tool_name: email_send_approved" in message
+    assert "session_id: session-1" in message
+    assert "directory_path: root" in message
+    assert "vm_id: vm-42" in message
+    assert "human_summary: send the email" in message
+    assert f"payload_digest: {approval.payload_digest}" in message
+    assert f"expires_at: {approval.expires_at.isoformat()}" in message
+    assert "super secret body" not in message
+    assert "Bearer secret" not in message
+    assert "nested-secret" not in message
+    assert "body:" not in message.lower()
+    assert "token:" not in message.lower()
+    assert "authorization:" not in message.lower()
+    assert "agent-sandbox-cli show-approval" in message
+    assert f"agent-sandbox-cli show-approval {approval.request_id}" in message
     assert (
         f"agent-sandbox-cli approve {approval.request_id} <approver> --approve|--deny --reason"
-        in str(calls[0]["message"])
+        in message
     )
-    assert "payload:" not in str(calls[0]["message"]).lower()
+    assert "payload:" not in message.lower()
     assert approval.notification_status == ApprovalNotificationStatus.DELIVERED
     assert approval.notification_target_ids == ["ops-approvals"]
     assert approval.notification_attempted_at is not None
@@ -160,6 +189,61 @@ def test_approval_notifications_send_safe_message_to_configured_targets(
     assert approval.notification_deliveries[0].provider == "teams"
     assert approval.notification_deliveries[0].message_id == "msg-123"
     assert approval.notification_deliveries[0].result_summary is not None
+
+
+def test_approval_notifications_ignore_guest_allowlists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_targets(
+        tmp_path,
+        [
+            {
+                "id": "ops-approvals",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["notify"]},
+            }
+        ],
+    )
+    runtime = _runtime(tmp_path, approval_notification_target_ids=["ops-approvals"])
+    runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-42",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT],
+            discord_channel_allowlist=[],
+            teams_channel_allowlist=[],
+            teams_chat_allowlist=[],
+            teams_user_allowlist=[],
+            email_folder_allowlist=[],
+            email_mailbox_allowlist=[],
+            email_draft_recipient_allowlist=[],
+            email_draft_domain_allowlist=[],
+            communication_file_send_enabled=False,
+            communication_file_receive_enabled=False,
+            email_send_enabled=False,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    send_calls: list[dict[str, object]] = []
+
+    def fake_send(self, **kwargs: object) -> dict[str, object]:
+        send_calls.append(kwargs)
+        return {"success": True, "provider": "teams", "communication_target_id": "ops-approvals"}
+
+    with patch("agent_sandbox.approval_notifications.NotificationSender.send", new=fake_send):
+        approval = runtime.policy.create_approval(
+            "session-1",
+            "email_send_approved",
+            {"body": "secret", "token": "secret-token"},
+            "send email",
+        )
+
+    assert len(send_calls) == 1
+    assert send_calls[0]["communication_target_id"] == "ops-approvals"
+    assert approval.notification_status == ApprovalNotificationStatus.DELIVERED
+    assert approval.notification_target_ids == ["ops-approvals"]
 
 
 def test_duplicate_approval_submission_does_not_resend_notifications(
