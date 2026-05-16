@@ -831,6 +831,66 @@ Audit/result behavior:
 - Email is **read + draft only by default**. Keep `email_send_enabled: false` unless you are ready
   to enforce explicit approval checks for send.
 
+## Operator Approval Notifications
+
+Approval notifications are host-side operator alerts for newly created `ApprovalRequest` records.
+They are separate from guest communication permissions: a session does not need Discord, Teams, or
+email send allowlists for the host to notify an operator target.
+
+1. Define one or more host-owned communication targets in `config/communication-targets/config.json`
+   with the `notify` capability. For example, a Teams channel target uses the existing target
+   schema:
+
+   ```json
+   {
+     "targets": [
+       {
+         "id": "ops-approvals",
+         "provider": "teams",
+         "kind": "teams",
+         "address": "team-id/channel-id",
+         "policy": {"capabilities": ["notify"]}
+       }
+     ]
+   }
+   ```
+
+2. Configure the owning directory policy with those target IDs:
+
+   ```bash
+   agent-sandbox-cli directories config-set \
+     --runtime-dir runtime \
+     --domain policy \
+     root \
+     '{"approval_notification_target_ids":["ops-approvals"]}'
+   ```
+
+   Child directories inherit the root value unless they replace the list in their own
+   `policy.json` overlay. An empty list disables approval notifications.
+
+3. Have the guest create the approval request through `approval_submit`. The notification message
+   includes the `request_id`, action/tool name, directory, session and VM context, expiry,
+   `human_summary`, payload digest, and review commands. It does not include the approval payload.
+
+4. Review with Admin Web Approvals or with:
+
+   ```bash
+   agent-sandbox-cli show-approval <request_id> --runtime-dir runtime
+   ```
+
+   The review payload includes notification status and delivery attempts, so failed delivery is
+   visible without changing the approval state.
+
+5. Decide through the existing audited path:
+
+   ```bash
+   agent-sandbox-cli approve <request_id> <approver> --approve --reason "approved reason" --runtime-dir runtime
+   agent-sandbox-cli approve <request_id> <approver> --deny --reason "denied reason" --runtime-dir runtime
+   ```
+
+Delivery failure logs `metric_approval_notification` with the target id, request id, review command,
+and error. It never auto-approves, denies, or blocks the pending approval record.
+
 ## Communication File Transfer Runbook
 
 Use this runbook only for dedicated operator channels/mailboxes that are already covered by the
