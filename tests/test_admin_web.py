@@ -24,6 +24,10 @@ from agent_sandbox.execution.models import (
     ExecutionStatus,
     ExecutionStatusKind,
 )
+from agent_sandbox.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 from agent_sandbox.models import (
     ApprovalRequest,
     LocalIssueRecord,
@@ -2599,37 +2603,35 @@ def test_admin_web_workers_expose_config_schema(tmp_path: Path) -> None:
 
 
 def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> None:
-    targets_dir = tmp_path / "config" / "communication-targets"
-    targets_dir.mkdir(parents=True)
-    (targets_dir / "config.json").write_text(
-        json.dumps(
-            {
-                "targets": [
-                    {
-                        "id": "ops-approvals",
-                        "provider": "teams",
-                        "kind": "teams",
-                        "address": "team/channel",
-                        "policy": {"capabilities": ["notify"]},
-                    },
-                    {
-                        "id": "ops-chat",
-                        "provider": "teams",
-                        "kind": "teams",
-                        "address": "team/other-channel",
-                        "policy": {"capabilities": ["reply"]},
-                    },
-                    {
-                        "id": "backup-approvals",
-                        "provider": "email",
-                        "kind": "email",
-                        "address": "backup@example.com",
-                        "policy": {"capabilities": ["notify", "reply"]},
-                    },
-                ]
-            }
-        ),
-        encoding="utf-8",
+    SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(tmp_path / "runtime")
+    ).write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "ops-approvals",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team/channel",
+                    "policy": {"capabilities": ["notify"]},
+                },
+                {
+                    "id": "ops-chat",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team/other-channel",
+                    "policy": {"capabilities": ["reply"]},
+                },
+                {
+                    "id": "backup-approvals",
+                    "provider": "email",
+                    "kind": "email",
+                    "address": "backup@example.com",
+                    "policy": {"capabilities": ["notify", "reply"]},
+                },
+            ]
+        },
     )
     client = TestClient(
         create_app(AdminService(write_config(tmp_path, enable_directory_scoped_config=True)))
@@ -2642,6 +2644,16 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     communications = next(tab for tab in payload["tabs"] if tab["key"] == "communications")
     assert communications["title"] == "Communications"
     assert any(section["title"] == "Discord" for section in communications["sections"])
+    communication_targets = next(
+        section
+        for section in communications["sections"]
+        if section["title"] == "Communication targets"
+    )
+    target_fields = {field["field_name"]: field for field in communication_targets["fields"]}
+    assert target_fields["targets"]["source_domain"] == "communication_targets"
+    assert target_fields["targets"]["kind"] == "json"
+    assert target_fields["targets"]["root_starts_editable"] is True
+    assert "workflow notification" in target_fields["targets"]["tooltip"]
     assistant = next(
         section for section in communications["sections"] if section["title"] == "Assistant"
     )
@@ -2684,8 +2696,8 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     }
     assert approval_notification_fields["approval_notification_target_ids"]["kind"] == "string_list"
     assert approval_notification_fields["approval_notification_target_ids"]["options"] == [
-        "ops-approvals",
         "backup-approvals",
+        "ops-approvals",
     ]
     assert (
         "approval request notifications"
@@ -2873,6 +2885,75 @@ def test_admin_web_configuration_tab_save_splits_underlying_domains(tmp_path: Pa
     assert snapshot["raw"]["config"]["discord_backend"] == "stub"
     assert snapshot["raw"]["config"]["discord_operator_channel_allowlist"] == ["chan-1", "chan-2"]
     assert snapshot["raw"]["config"]["discord_resume_prompt"] == "Resume this session."
+
+
+def test_admin_web_communications_tab_saves_sqlite_communication_targets(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    client = TestClient(create_app(service))
+
+    root_response = client.put(
+        "/api/configuration/domains/communications?directory_path=root",
+        json={
+            "config": {
+                "targets": [
+                    {
+                        "id": "teams-primary",
+                        "provider": "teams",
+                        "kind": "teams",
+                        "address": "team-a/channel-1",
+                        "policy": {"capabilities": ["notify"]},
+                    }
+                ]
+            }
+        },
+    )
+    create_response = client.post(
+        "/api/configuration/directories",
+        json={"parent_path": "root", "name": "ops"},
+    )
+    child_response = client.put(
+        "/api/configuration/domains/communications?directory_path=root/ops",
+        json={
+            "config": {
+                "targets": [
+                    {"id": "teams-primary", "disabled": True},
+                    {
+                        "id": "discord-ops",
+                        "provider": "discord",
+                        "kind": "discord",
+                        "address": "123456789012345678",
+                        "policy": {"capabilities": ["write"]},
+                    },
+                ]
+            }
+        },
+    )
+    state_response = client.get("/api/configuration/state?directory_path=root/ops")
+
+    assert root_response.status_code == 200
+    assert create_response.status_code == 200
+    assert child_response.status_code == 200
+    payload = state_response.json()
+    communications = payload["tab_snapshots"]["communications"]
+    assert communications["raw"]["config"]["targets"][0] == {
+        "id": "discord-ops",
+        "provider": "discord",
+        "kind": "discord",
+        "address": "123456789012345678",
+        "policy": {"capabilities": ["write"], "auth_profile_ref": None},
+    }
+    assert communications["raw"]["config"]["targets"][1] == {
+        "id": "teams-primary",
+        "disabled": True,
+    }
+    assert communications["parent_defaults"]["config"]["targets"][0]["id"] == "teams-primary"
+    assert communications["effective"]["config"]["targets"][0]["id"] == "discord-ops"
+    assert payload["directory_overrides"]["overrides"]["communication_targets"]["targets"][1] == {
+        "id": "teams-primary",
+        "disabled": True,
+    }
 
 
 def test_admin_web_communications_tab_saves_assistant_settings(tmp_path: Path) -> None:
