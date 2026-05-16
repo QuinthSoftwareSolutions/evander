@@ -1797,8 +1797,29 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             value=trigger_worker_config.get("workflow_event_journal_path"),
             fallback=_admin_service.workflow_event_journal_path(workflow_runtime_dir),
         )
+        orchestration_backend = (
+            str(trigger_worker_config.get("orchestration_store_backend") or "sqlite")
+            .strip()
+            .lower()
+        )
+        if orchestration_backend not in {"sqlite", "json"}:
+            orchestration_backend = "sqlite"
+        orchestration_store_path = _admin_service._resolve_path_setting(
+            base_dir=self._deps.project_dir,
+            value=trigger_worker_config.get("orchestration_store_path"),
+            fallback=workflow_runtime_dir / "orchestration.db",
+        )
+        orchestration_retention_days = trigger_worker_config.get(
+            "orchestration_retention_days"
+        )
         watcher_cmd.extend(["--event-queue-store-path", str(event_queue_store_path)])
         watcher_cmd.extend(["--workflow-event-journal-path", str(workflow_event_journal)])
+        watcher_cmd.extend(["--orchestration-store-backend", orchestration_backend])
+        watcher_cmd.extend(["--orchestration-store-path", str(orchestration_store_path)])
+        if orchestration_retention_days is not None:
+            watcher_cmd.extend(
+                ["--orchestration-retention-days", str(orchestration_retention_days)]
+            )
         if session_id:
             watcher_cmd.extend(["--session-id", session_id])
         if directory_path:

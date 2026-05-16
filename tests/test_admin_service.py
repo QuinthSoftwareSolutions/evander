@@ -1153,6 +1153,14 @@ def test_resume_agent_passes_explicit_resume_thread_id(tmp_path: Path, monkeypat
     assert "--dispatch-id" in watcher["cmd"]
     assert "dispatch-keep-1" in watcher["cmd"]
     assert "--event-queue-store-path" in watcher["cmd"]
+    assert "--orchestration-store-backend" in watcher["cmd"]
+    backend_index = watcher["cmd"].index("--orchestration-store-backend")
+    assert watcher["cmd"][backend_index + 1] == "sqlite"
+    assert "--orchestration-store-path" in watcher["cmd"]
+    store_index = watcher["cmd"].index("--orchestration-store-path")
+    assert watcher["cmd"][store_index + 1] == str(
+        service.config.runtime_dir / "orchestration.db"
+    )
     assert "--session-id" in watcher["cmd"]
     assert "receptionist-session" in watcher["cmd"]
 
