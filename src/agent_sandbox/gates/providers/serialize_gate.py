@@ -7,7 +7,10 @@ import yaml
 
 from agent_sandbox.gate_runtime import GateRuntimeError
 from agent_sandbox.gates.providers.base import GateProviderBase
-from agent_sandbox.workflow.binding import resolve_workflow_bindings
+from agent_sandbox.workflow.binding import (
+    binding_trace_to_payload,
+    resolve_workflow_bindings,
+)
 from agent_sandbox.workflow.validation import NodeCapability
 
 SerializeFormat = Literal["json", "yaml"]
@@ -60,6 +63,7 @@ class SerializeGateProvider(GateProviderBase):
             input_event_ids_by_source=input_event_ids_by_source,
             input_occurred_at_by_source=input_occurred_at_by_source,
             config_revision=config_revision,
+            binding_trace=binding_trace_to_payload(resolved.trace),
             publish_completion_event=True,
         )
         return True

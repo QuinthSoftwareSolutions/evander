@@ -18,7 +18,7 @@ from agent_sandbox.repositories.orchestration_db import (
     json_loads_object,
     maybe_run_orchestration_retention,
 )
-from agent_sandbox.storage import JsonStore
+from agent_sandbox.storage import JsonObjectStore, JsonStore
 from agent_sandbox.workflow.events import WorkflowEventJournal
 
 logger = logging.getLogger(__name__)
@@ -83,6 +83,14 @@ class EffectCursorRepository(Protocol):
     def load(self) -> dict[str, Any]: ...
 
     def save(self, payload: dict[str, Any]) -> None: ...
+
+
+class WorkflowConfigSnapshotRepository(Protocol):
+    def get_snapshot(self, revision: str) -> dict[str, Any] | None: ...
+
+    def list_snapshots(self) -> list[dict[str, Any]]: ...
+
+    def put_snapshot(self, snapshot: dict[str, Any]) -> None: ...
 
 
 class JsonCursorRepository:
@@ -193,6 +201,113 @@ class JsonEffectCursorRepository(JsonCursorRepository):
             payload["last_processed_at"] = timestamp
 
         self.update(_update)
+
+
+class JsonWorkflowConfigSnapshotRepository:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._store = JsonObjectStore(path, {})
+        self._lock = RLock()
+
+    def read_all(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            payload = self._store.read_object()
+        if not isinstance(payload, dict):
+            return {}
+        normalized: dict[str, dict[str, Any]] = {}
+        for revision, snapshot in payload.items():
+            revision_key = str(revision or "").strip()
+            if not revision_key or not isinstance(snapshot, dict):
+                continue
+            normalized[revision_key] = dict(snapshot)
+        return normalized
+
+    def get_snapshot(self, revision: str) -> dict[str, Any] | None:
+        normalized_revision = str(revision or "").strip()
+        if not normalized_revision:
+            return None
+        return self.read_all().get(normalized_revision)
+
+    def list_snapshots(self) -> list[dict[str, Any]]:
+        snapshots = list(self.read_all().values())
+        snapshots.sort(
+            key=lambda snapshot: (
+                str(snapshot.get("captured_at") or ""),
+                str(snapshot.get("revision") or ""),
+            ),
+            reverse=True,
+        )
+        return snapshots
+
+    def put_snapshot(self, snapshot: dict[str, Any]) -> None:
+        revision = str(snapshot.get("revision") or "").strip()
+        captured_at = str(snapshot.get("captured_at") or "").strip()
+        if not revision:
+            raise ValueError("workflow config snapshot requires revision")
+        if not captured_at:
+            raise ValueError("workflow config snapshot requires captured_at")
+
+        def _update(payload: dict[str, Any]) -> None:
+            payload[revision] = dict(snapshot)
+
+        with self._lock:
+            self._store.update_object(_update)
+
+
+class SqliteWorkflowConfigSnapshotRepository:
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self._lock = RLock()
+        ensure_orchestration_schema(self.path)
+
+    def get_snapshot(self, revision: str) -> dict[str, Any] | None:
+        normalized_revision = str(revision or "").strip()
+        if not normalized_revision:
+            return None
+        with self._lock, connect_orchestration_db(self.path) as connection:
+            row = connection.execute(
+                """
+                SELECT payload_json
+                FROM workflow_config_snapshots
+                WHERE revision = ?
+                """,
+                (normalized_revision,),
+            ).fetchone()
+        return json_loads_object(row["payload_json"]) if row is not None else None
+
+    def list_snapshots(self) -> list[dict[str, Any]]:
+        with self._lock, connect_orchestration_db(self.path) as connection:
+            rows = connection.execute(
+                """
+                SELECT payload_json
+                FROM workflow_config_snapshots
+                ORDER BY captured_at DESC, revision DESC
+                """
+            ).fetchall()
+        return [json_loads_object(row["payload_json"]) for row in rows]
+
+    def put_snapshot(self, snapshot: dict[str, Any]) -> None:
+        revision = str(snapshot.get("revision") or "").strip()
+        captured_at = str(snapshot.get("captured_at") or "").strip()
+        if not revision:
+            raise ValueError("workflow config snapshot requires revision")
+        if not captured_at:
+            raise ValueError("workflow config snapshot requires captured_at")
+        with self._lock, connect_orchestration_db(self.path) as connection:
+            connection.execute(
+                """
+                INSERT INTO workflow_config_snapshots(
+                    revision,
+                    captured_at,
+                    payload_json
+                )
+                VALUES (?, ?, ?)
+                ON CONFLICT(revision) DO UPDATE SET
+                    captured_at = excluded.captured_at,
+                    payload_json = excluded.payload_json
+                """,
+                (revision, captured_at, json_dumps(snapshot)),
+            )
 
 
 class JsonExecutionRepository(Generic[TRecord]):

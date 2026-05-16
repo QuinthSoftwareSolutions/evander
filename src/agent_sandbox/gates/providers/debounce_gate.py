@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -13,7 +13,9 @@ from agent_sandbox.gate_runtime import GateRuntimeError, parse_iso8601_duration
 from agent_sandbox.gates.providers.base import GateProviderBase
 from agent_sandbox.triggers.queue import TriggerQueueRecord
 from agent_sandbox.storage import JsonStore
-from agent_sandbox.workflow.binding import resolve_workflow_bindings
+from agent_sandbox.workflow.binding import (
+    resolve_workflow_bindings,
+)
 from agent_sandbox.workflow.validation import NodeCapability
 
 logger = logging.getLogger(__name__)

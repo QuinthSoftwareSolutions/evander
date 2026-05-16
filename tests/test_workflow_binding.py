@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 
 from agent_sandbox.effects.binding import BindingResolutionError, resolve_effect_config_bindings
-from agent_sandbox.workflow.binding import resolve_gate_map_bindings, resolve_workflow_bindings
+from agent_sandbox.workflow.binding import (
+    binding_trace_to_payload,
+    resolve_gate_map_bindings,
+    resolve_workflow_bindings,
+)
 
 
 def test_workflow_binding_resolution_matches_effect_compatibility_path() -> None:
@@ -31,6 +35,41 @@ def test_workflow_binding_resolution_matches_effect_compatibility_path() -> None
         "prompt": "Ticket 42",
         "nested": ["session-7", {"name": "vm-9"}],
     }
+
+
+def test_workflow_binding_resolution_records_trace_entries() -> None:
+    raw = {
+        "prompt": "Ticket ${{trigger_1.ticket_id}}",
+        "resume_thread_id": "${{query_1.metadata.thread_id ?? effect_1.thread_id}}",
+    }
+    upstream = {
+        "trigger_1": {"ticket_id": 42},
+        "query_1": {"metadata": {}},
+        "effect_1": {"thread_id": "thread-7"},
+    }
+    declared = {
+        "trigger_1": {"ticket_id"},
+        "query_1": {"metadata"},
+        "effect_1": {"thread_id"},
+    }
+
+    result = resolve_workflow_bindings(raw, upstream, declared)
+    payload = binding_trace_to_payload(result.trace)
+
+    assert result.resolved_config == {
+        "prompt": "Ticket 42",
+        "resume_thread_id": "thread-7",
+    }
+    assert result.trace.consumed_output_keys == ("effect_1.thread_id", "trigger_1.ticket_id")
+    assert payload is not None
+    assert payload["entries"][0]["config_path"] == "$.prompt"
+    assert payload["entries"][0]["reference"] == "trigger_1.ticket_id"
+    assert payload["entries"][0]["status"] == "resolved"
+    assert payload["entries"][0]["value_type"] == "int"
+    assert payload["entries"][1]["config_path"] == "$.resume_thread_id"
+    assert payload["entries"][1]["reference"] == "effect_1.thread_id"
+    assert payload["entries"][1]["fallback_used"] is True
+    assert payload["entries"][1]["status"] == "fallback_used"
 
 
 def test_workflow_binding_resolution_rejects_undeclared_and_malformed_references() -> None:

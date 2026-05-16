@@ -148,6 +148,15 @@ def ensure_orchestration_schema(path: Path | str) -> None:
                 ON workflow_events(subject_id, row_id);
             CREATE INDEX IF NOT EXISTS idx_workflow_events_occurred
                 ON workflow_events(occurred_at, row_id);
+
+            CREATE TABLE IF NOT EXISTS workflow_config_snapshots (
+                revision TEXT PRIMARY KEY,
+                captured_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_workflow_config_snapshots_captured
+                ON workflow_config_snapshots(captured_at, revision);
             """
         )
         connection.execute(

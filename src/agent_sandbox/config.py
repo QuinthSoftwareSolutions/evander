@@ -761,6 +761,7 @@ class OrchestrationCoreConfig(BaseModel):
     effect_execution_store_path: Path | None = None
     effect_cursor_store_path: Path | None = None
     effect_lock_path: Path | None = None
+    workflow_config_snapshot_store_path: Path | None = None
     workflow_packs: list[str] = Field(default_factory=list)
     workflow_ir: dict[str, Any] | None = None
     workflow_transforms: list[str] = Field(default_factory=list)
@@ -828,6 +829,10 @@ class OrchestrationCoreConfig(BaseModel):
             self.effect_cursor_store_path = self.runtime_dir / "effect-orchestrator-cursors.json"
         if self.effect_lock_path is None:
             self.effect_lock_path = self.runtime_dir / "effect-orchestrator.lock"
+        if self.workflow_config_snapshot_store_path is None:
+            self.workflow_config_snapshot_store_path = (
+                self.runtime_dir / "workflow-config-snapshots.json"
+            )
         return self
 
 

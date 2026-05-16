@@ -31,6 +31,10 @@ from ..effect_extensions import (
     LifecycleReconciliationHook,
     SpecialEventHandler,
 )
+from agent_sandbox.repositories.orchestration import (
+    JsonWorkflowConfigSnapshotRepository,
+    SqliteWorkflowConfigSnapshotRepository,
+)
 
 
 @dataclass(frozen=True)
@@ -127,6 +131,7 @@ class EffectWorkerWiring:
     effect_cursor_repository: object
     execution_store: object
     gate_execution_store: object
+    workflow_config_snapshot_store: object
     queued_agent_prompt_store: AgentPromptQueueStore
     executor: ThreadPoolExecutor
     provider_factory: EffectProviderFactory
@@ -200,6 +205,9 @@ def build_effect_worker_wiring(
             journal=workflow_event_journal,
             retention_days=retention_days,
         )
+        workflow_config_snapshot_store = SqliteWorkflowConfigSnapshotRepository(
+            worker_config.orchestration_store_path
+        )
     else:
         execution_store = JsonExecutionStore(
             worker_config.effect_execution_store_path,
@@ -212,6 +220,13 @@ def build_effect_worker_wiring(
                 fallback=worker_config.runtime_dir / "gate-orchestrator-executions.json",
             ),
             journal_path=worker_config.workflow_event_journal_path,
+        )
+        workflow_config_snapshot_store = JsonWorkflowConfigSnapshotRepository(
+            _resolve_worker_path(
+                worker_config,
+                "workflow_config_snapshot_store_path",
+                fallback=worker_config.runtime_dir / "workflow-config-snapshots.json",
+            )
         )
     queued_agent_prompt_store = AgentPromptQueueStore(
         worker_config.runtime_dir / "queued-agent-prompts.json"
@@ -236,6 +251,7 @@ def build_effect_worker_wiring(
         effect_cursor_repository=effect_cursor_repository,
         execution_store=execution_store,
         gate_execution_store=gate_execution_store,
+        workflow_config_snapshot_store=workflow_config_snapshot_store,
         queued_agent_prompt_store=queued_agent_prompt_store,
         executor=executor,
         provider_factory=runtime_wiring.provider_factory,

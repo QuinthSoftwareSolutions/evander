@@ -17,6 +17,8 @@ from agent_sandbox.daemons.effect_orchestrator import (
 from agent_sandbox.repositories.orchestration import (
     JsonEffectCursorRepository,
     JsonGateCursorRepository,
+    JsonWorkflowConfigSnapshotRepository,
+    SqliteWorkflowConfigSnapshotRepository,
 )
 
 
@@ -70,6 +72,22 @@ def _gate_record(
         input_event_ids_by_source={},
         input_occurred_at_by_source={},
     )
+
+
+def _workflow_config_snapshot_payload(*, revision: str = "revision-1") -> dict[str, object]:
+    return {
+        "revision": revision,
+        "captured_at": "2026-04-23T12:15:00Z",
+        "snapshot_type": "compiled_runtime_graph",
+        "source": "effect_orchestrator.run_once",
+        "node_count": 4,
+        "edge_count": 3,
+        "triggers": [{"id": "trigger-1", "type": "trigger:test"}],
+        "gates": [{"id": "gate-1", "type": "gate:test"}],
+        "effects": [{"id": "effect-1", "type": "effect:test"}],
+        "queries": [{"id": "query-1", "type": "query:test"}],
+        "edges": [{"source_id": "trigger-1", "target_id": "effect-1"}],
+    }
 
 
 def test_gate_cursor_repository_records_per_trigger_poll_metadata(tmp_path: Path) -> None:
@@ -246,3 +264,21 @@ def test_sqlite_execution_repository_clears_target_event_without_full_file_store
     assert execution_store.get_execution("exec-1").status == "failed"
     assert execution_store.get_execution("exec-1").dismissed_at is not None
     assert execution_store.get_execution("exec-2").status == "running"
+
+
+def test_workflow_config_snapshot_repository_supports_json_and_sqlite_backends(
+    tmp_path: Path,
+) -> None:
+    snapshot = _workflow_config_snapshot_payload()
+    json_repo = JsonWorkflowConfigSnapshotRepository(
+        tmp_path / "workflow-config-snapshots.json"
+    )
+    sqlite_repo = SqliteWorkflowConfigSnapshotRepository(tmp_path / "orchestration.db")
+
+    json_repo.put_snapshot(snapshot)
+    sqlite_repo.put_snapshot(snapshot)
+
+    assert json_repo.get_snapshot("revision-1") == snapshot
+    assert sqlite_repo.get_snapshot("revision-1") == snapshot
+    assert json_repo.list_snapshots() == [snapshot]
+    assert sqlite_repo.list_snapshots() == [snapshot]

@@ -38,6 +38,7 @@ from agent_sandbox.messaging.agent_prompt_queue import (
 from agent_sandbox.orchestration.host_polling import HostFileLockManager
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.models import SessionManifest, ToolName, VmSummary
+from agent_sandbox.repositories.orchestration import SqliteWorkflowConfigSnapshotRepository
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from agent_sandbox.triggers.queue import TriggerQueueRecord
 
@@ -502,13 +503,32 @@ def test_effect_orchestrator_executes_gate_and_effect_chain(tmp_path: Path) -> N
     effect_payload = json.loads(
         (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
     )
+    by_effect = {item["effect_id"]: item for item in effect_payload.values()}
     assert sorted(item["status"] for item in effect_payload.values()) == ["succeeded", "succeeded"]
+    assert by_effect["effect-1"]["binding_trace"]["entries"][0]["config_path"] == "$.vm_name"
+    assert by_effect["effect-1"]["binding_trace"]["entries"][0]["reference"] == "gate-1.vm_name"
+    assert by_effect["effect-2"]["binding_trace"]["entries"][0]["config_path"] == "$.session_id"
+    assert by_effect["effect-2"]["binding_trace"]["entries"][0]["reference"] == "effect-1.session_id"
+    assert by_effect["effect-2"]["binding_trace"]["entries"][1]["config_path"] == "$.prompt"
+    assert by_effect["effect-2"]["binding_trace"]["entries"][1]["reference"] == "effect-1.session_id"
     gate_payload = json.loads(
         (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
     )
     only_gate = next(iter(gate_payload.values()))
     assert only_gate["status"] == "succeeded"
     assert only_gate["outputs"] == {"vm_name": "vm-123"}
+    assert only_gate["binding_trace"]["entries"][0]["config_path"] == "$.vm_name"
+    assert only_gate["binding_trace"]["entries"][0]["reference"] == "trigger-1.ticket_id"
+
+    snapshot_payload = json.loads(
+        (runtime_dir / "workflow-config-snapshots.json").read_text(encoding="utf-8")
+    )
+    only_snapshot = next(iter(snapshot_payload.values()))
+    assert only_snapshot["snapshot_type"] == "compiled_runtime_graph"
+    assert [item["id"] for item in only_snapshot["triggers"]] == ["trigger-1"]
+    assert [item["id"] for item in only_snapshot["gates"]] == ["gate-1"]
+    assert [item["id"] for item in only_snapshot["effects"]] == ["effect-1", "effect-2"]
+    assert only_snapshot["edges"][0]["source_id"] == "trigger-1"
 
     queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
     assert any(item["trigger_id"] == "gate-1" for item in queue_payload.values())
@@ -572,6 +592,7 @@ def test_effect_orchestrator_executes_query_nodes(tmp_path: Path) -> None:
     assert record["effect_type"] == "query:vm:run-state"
     assert record["status"] == "succeeded"
     assert record["outputs"] == {"state_code": "running"}
+    assert record["binding_trace"]["entries"][0]["config_path"] == "$.session_id"
 
 
 def test_effect_orchestrator_executes_issue_get_query_nodes(tmp_path: Path) -> None:
@@ -630,6 +651,118 @@ def test_effect_orchestrator_executes_issue_get_query_nodes(tmp_path: Path) -> N
     assert record["effect_type"] == "query:issue:get"
     assert record["status"] == "succeeded"
     assert record["outputs"] == {"issue_id": "root:issue-42", "metadata": {"steps": ["one", "two"]}}
+    assert record["binding_trace"]["entries"][0]["config_path"] == "$.issue_id"
+
+
+def test_effect_orchestrator_persists_binding_error_on_failed_resolution(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "${{trigger-1.missing}}",
+                    "prompt": "hello",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory({})
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-binding-error-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-binding-error-1",
+        )
+    )
+
+    for _ in range(2):
+        worker.run_once()
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    record = next(iter(effect_payload.values()))
+    assert record["status"] == "failed"
+    assert "not declared" in record["binding_error"]
+    assert record["binding_trace"] is None
+
+
+def test_effect_orchestrator_persists_workflow_config_snapshot_in_sqlite_backend(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "orchestration_store_backend": "sqlite",
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "prompt": "hello",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory({"effect-1": {"success": True}})
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-sqlite-snapshot-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+            trace_id="trace-sqlite-snapshot-1",
+        )
+    )
+
+    for _ in range(4):
+        worker.run_once()
+
+    snapshot_repo = SqliteWorkflowConfigSnapshotRepository(runtime_dir / "orchestration.db")
+    snapshots = snapshot_repo.list_snapshots()
+
+    assert len(snapshots) == 1
+    assert snapshots[0]["snapshot_type"] == "compiled_runtime_graph"
+    assert [item["id"] for item in snapshots[0]["effects"]] == ["effect-1"]
 
 
 def test_effect_orchestrator_persists_provider_reported_failure_message(tmp_path: Path) -> None:
