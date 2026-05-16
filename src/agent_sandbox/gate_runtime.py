@@ -68,6 +68,16 @@ def filter_when_matches(predicate: Any) -> bool:
         return left not in _require_membership_container(
             predicate["not_in"], operator_name="not_in"
         )
+    if "greater_than" in predicate:
+        left_number, right_number = _require_numeric_operands(
+            left, predicate["greater_than"], operator_name="greater_than"
+        )
+        return left_number > right_number
+    if "less_than" in predicate:
+        left_number, right_number = _require_numeric_operands(
+            left, predicate["less_than"], operator_name="less_than"
+        )
+        return left_number < right_number
     if "starts_with" in predicate:
         return _require_string_operand(left, operator_name="starts_with").startswith(
             _require_string_operand(predicate["starts_with"], operator_name="starts_with")
@@ -101,6 +111,19 @@ def _require_string_operand(value: Any, *, operator_name: str) -> str:
     if isinstance(value, str):
         return value
     raise GateRuntimeError(f"gate:filter when.{operator_name} requires string operands")
+
+
+def _require_numeric_operands(
+    left: Any, right: Any, *, operator_name: str
+) -> tuple[int | float, int | float]:
+    if (
+        isinstance(left, bool)
+        or isinstance(right, bool)
+        or not isinstance(left, (int, float))
+        or not isinstance(right, (int, float))
+    ):
+        raise GateRuntimeError(f"gate:filter when.{operator_name} requires numeric operands")
+    return left, right
 
 
 def merged_payload_from_sources(

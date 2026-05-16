@@ -32,7 +32,7 @@ from agent_sandbox.orchestration.adapters import (
     TriggerExecutionRecorderAdapter,
 )
 from agent_sandbox.workflow.engine import OrchestrationLoop
-from agent_sandbox.triggers.queue import TriggerEventQueue
+from agent_sandbox.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
 from agent_sandbox.workflow.runtime_config import (
     FixedTriggerOrchestratorWorkerGlobalConfigReloader,
     TriggerOrchestratorWorkerGlobalConfigReloader,
@@ -78,8 +78,12 @@ class TriggerOrchestratorWorker:
             raise ValueError(
                 "TriggerOrchestratorWorker requires either core_config or worker_config"
             )
-        self.worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
-            selected_config.model_dump(mode="json")
+        self.worker_config = (
+            selected_config
+            if isinstance(selected_config, TriggerOrchestratorWorkerGlobalConfig)
+            else TriggerOrchestratorWorkerGlobalConfig.model_validate(
+                selected_config.model_dump(mode="json")
+            )
         )
         self._config_reloader = (
             config_reloader
@@ -148,7 +152,7 @@ class TriggerOrchestratorWorker:
                     _config_revision_hash(latest_config),
                     len(latest_config.triggers),
                 )
-                self.event_queue = TriggerEventQueue(self.worker_config.event_queue_store_path)
+                self.event_queue = _build_trigger_event_queue(self.worker_config)
 
         configured_triggers = self._configured_triggers(active_config)
         providers = self._load_configured_providers(active_config, configured_triggers)
@@ -291,6 +295,23 @@ def _acknowledge_provider_event_published(provider: Any | None, event: TriggerEv
 
 def _is_system_trigger(trigger: TriggerDefinitionDiscriminated) -> bool:
     return str(trigger.type or "").startswith("trigger:system:")
+
+
+def _build_trigger_event_queue(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+) -> TriggerEventQueue | SqliteTriggerEventQueue:
+    if (
+        worker_config.orchestration_store_backend == "sqlite"
+        and "orchestration_store_backend" in worker_config.model_fields_set
+    ):
+        return SqliteTriggerEventQueue(
+            worker_config.orchestration_store_path,
+            retention_days=worker_config.orchestration_retention_days,
+        )
+    return TriggerEventQueue(
+        worker_config.event_queue_store_path,
+        journal_path=worker_config.workflow_event_journal_path,
+    )
 
 
 def _provider_loader_signature(worker_config: TriggerOrchestratorWorkerGlobalConfig) -> str:

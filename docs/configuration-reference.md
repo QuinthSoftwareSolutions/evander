@@ -129,16 +129,21 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `poll_interval_seconds` | `config/trigger-orchestrator/config.json` | Trigger orchestrator worker polling cadence. |
 | `jitter_seconds` | `config/trigger-orchestrator/config.json` | Trigger orchestrator worker jitter between cycles. |
 | `lock_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator single-instance lock file path. |
-| `event_queue_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator persisted event queue store path. |
+| `orchestration_store_backend` | `config/trigger-orchestrator/config.json` | Hot orchestration store backend. Defaults to `sqlite`; set to `json` for rollback to legacy files. |
+| `orchestration_store_path` | `config/trigger-orchestrator/config.json` | SQLite database path for trigger events, effect executions, gate executions, and workflow events. Defaults to `runtime/orchestration.db`. |
+| `orchestration_retention_days` | `config/trigger-orchestrator/config.json` | Completed orchestration history retention window for the SQLite backend. Defaults to `30`. |
+| `event_queue_store_path` | `config/trigger-orchestrator/config.json` | Legacy JSON trigger queue path used when `orchestration_store_backend` is `json` and as the migration source. |
 | `event_queue_cursor_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator event queue cursor/checkpoint store path. |
+| `workflow_event_journal_path` | `config/trigger-orchestrator/config.json` | Legacy JSONL workflow event journal path used when `orchestration_store_backend` is `json` and as the migration source. |
 | `workflow_packs` | `config/trigger-orchestrator/config.json` | Ordered workflow-pack filenames under `config/workflow-packs/` to compose into executable IR. |
 | `workflow_ir` | `config/trigger-orchestrator/config.json` | Optional inline IR overlay (`version`, `nodes`, `edges`) merged after pack composition. |
 | `workflow_graphs` | `config/trigger-orchestrator/config.json` | Optional editor metadata for connected graphs when using inline/non-pack workflows (`id`, `name`, `description`, `directory_paths`, `user_ids`, `node_ids`). `user_ids` are ownership/audit metadata, not a visibility boundary. Pack-backed workflows store the same metadata as `graphs` inside the pack file. |
 | `workflow_transforms` | `config/trigger-orchestrator/config.json` | Optional ordered transform plugin names (for example `await_agent_completion`) applied after structural compile/validation. |
 | `triggers` | `config/trigger-orchestrator/config.json` | Trigger orchestrator trigger definition list (`src/agent_sandbox/triggers/models.py`). |
-| `gate_execution_store_path` | `config/trigger-orchestrator/config.json` | Gate execution log path (idempotency keys, merge state, resolved config snapshots, outputs, failures). |
+| `gate_execution_store_path` | `config/trigger-orchestrator/config.json` | Legacy JSON gate execution log path used when `orchestration_store_backend` is `json` and as the migration source. |
 | `gate_cursor_store_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator cursor/checkpoint path. |
 | `gate_lock_path` | `config/trigger-orchestrator/config.json` | Gate orchestrator single-instance lock file path. |
+| `effect_execution_store_path` | `config/trigger-orchestrator/config.json` | Legacy JSON effect execution log path used when `orchestration_store_backend` is `json` and as the migration source. |
 | `effects` | `config/trigger-orchestrator/config.json` | Effect definition list (`src/agent_sandbox/events/models.py`). Effects no longer take `upstream_id`; they are wired with edges. |
 | `gates` | `config/trigger-orchestrator/config.json` | Gate definition list (filter/map/merge nodes). |
 | `edges` | `config/trigger-orchestrator/config.json` | Explicit graph wiring between triggers, gates, and effects. |
@@ -312,6 +317,7 @@ Type-specific keys:
 | `effect:vm:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:issue:update-state` | `issue_id`, `state` | `sync_proxy_cache`, `outputs` |
+| `effect:communication:send-message` | `communication_target_id`, `message` | `thread_id`, `outputs` |
 | `effect:notification:send` | `communication_target_id`, `message` | `severity`, `subject`, `thread_id`, `outputs` |
 | `effect:pr:create` | `host_repo_path` | `local_branch`, `origin_branch`, `canonical_origin_url`, `provider`, `base_branch`, `session_id`, `work_item_id`, `title`, `body`, `body_file`, `body_artifact_ids`, `draft`, `fill`, `outputs` |
 
@@ -344,6 +350,13 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 
 `query:agent:artifact-text` reads a UTF-8 text file from the resolved session's
 artifacts folder. The `path` value must be relative and stay inside that folder.
+
+`effect:communication:send-message` sends a plain message through a declared
+communication target in `config/communication-targets/config.json`. The target
+must include the `write` capability for a top-level message, or the `reply`
+capability when `thread_id` is set. Teams targets can address
+`team-id/channel-id`, `chat:<chat-id>`, or a declared one-on-one user as
+`user:<user-id-or-upn>`. Discord targets post to the configured channel.
 
 `effect:notification:send` delivers through a declared communication target in
 `config/communication-targets/config.json`. The target must include the `notify`

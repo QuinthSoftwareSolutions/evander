@@ -15,6 +15,7 @@ from agent_sandbox.events.provider_models import (
     AgentPromptEffectDefinition,
     AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
+    CommunicationSendMessageEffectDefinition,
     GitPromoteAgentBranchEffectDefinition,
     GitPushTriggerDefinition,
     IssueUpdateStateEffectDefinition,
@@ -530,6 +531,27 @@ def test_pr_create_effect_requires_host_repo_path() -> None:
 
 
 def test_notification_send_effect_requires_target_and_message() -> None:
+    communication = CommunicationSendMessageEffectDefinition.model_validate(
+        {
+            "id": "effect-send-message",
+            "display_name": "Send message",
+            "type": "effect:communication:send-message",
+            "communication_target_id": "Teams-Primary",
+            "message": "Done",
+        }
+    )
+    assert communication.communication_target_id == "teams-primary"
+
+    with pytest.raises(ValueError, match="Field required"):
+        CommunicationSendMessageEffectDefinition.model_validate(
+            {
+                "id": "effect-send-message-missing-message",
+                "display_name": "Send message",
+                "type": "effect:communication:send-message",
+                "communication_target_id": "teams-primary",
+            }
+        )
+
     effect = NotificationSendEffectDefinition.model_validate(
         {
             "id": "effect-notify",

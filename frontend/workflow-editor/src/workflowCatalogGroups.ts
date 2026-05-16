@@ -125,6 +125,12 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       prefixes: ["effect:git:", "effect:pr:"],
     },
     {
+      key: "communications",
+      label: "Communications",
+      description: "Send messages through declared communication targets.",
+      prefixes: ["effect:communication:"],
+    },
+    {
       key: "events-notifications",
       label: "Events & notifications",
       description: "Emit internal events or send operator notifications.",
@@ -165,6 +171,7 @@ const NAMESPACE_LABELS: Record<string, string> = {
   agent: "Agent",
   bash: "Bash",
   cron: "Cron",
+  communication: "Communication",
   discord: "Discord",
   email: "Email",
   event: "Event",

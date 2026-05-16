@@ -323,9 +323,9 @@ def test_trigger_worker_reloads_custom_provider_module(tmp_path: Path, monkeypat
     assert trigger_worker.worker_config.provider_modules == [module_name]
     assert trigger_worker.worker_config.triggers[0].type == "trigger:custom:reload"
     assert module.TRIGGER_POLLS == ["reload-trigger"]
-    assert json.loads(
-        trigger_worker.worker_config.event_queue_store_path.read_text(encoding="utf-8")
-    )["reload-event-1"]["trigger_type"] == "trigger:custom:reload"
+    pending_events = trigger_worker.event_queue.list_pending()
+    assert [event.event_id for event in pending_events] == ["reload-event-1"]
+    assert pending_events[0].trigger_type == "trigger:custom:reload"
 
 
 def test_effect_worker_reloads_custom_provider_module(

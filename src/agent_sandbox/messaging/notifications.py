@@ -87,10 +87,7 @@ class NotificationSender:
 
     @staticmethod
     def _require_notify_capability(target: CommunicationTargetDefinition) -> None:
-        if "notify" not in set(target.policy.capabilities):
-            raise ValueError(
-                f"communication target {target.id!r} does not allow notify capability"
-            )
+        _require_target_capability(target, "notify")
 
     def _send_teams(
         self,
@@ -102,7 +99,7 @@ class NotificationSender:
     ) -> Mapping[str, Any]:
         parsed_target = parse_teams_target(target.address)
         if parsed_target.kind in {"chat", "user"} and thread_id is not None:
-            raise ValueError("Teams chat notification targets do not support thread replies.")
+            raise ValueError("Teams chat targets do not support thread replies.")
         service = self._teams_service(target.address)
         send_target = resolve_teams_send_target(service, parsed_target.normalized)
         return service.post_status(
@@ -196,6 +193,60 @@ class NotificationSender:
                 f"{mailbox_id!r}"
             )
         return mailbox_id
+
+
+class CommunicationMessageSender(NotificationSender):
+    def send_message(
+        self,
+        *,
+        communication_target_id: str,
+        message: str,
+        thread_id: str | None = None,
+        sender_session_id: str = "workflow",
+    ) -> dict[str, Any]:
+        target = self._resolve_target(communication_target_id)
+        required_capability = "reply" if thread_id else "write"
+        _require_target_capability(target, required_capability)
+
+        if target.provider == "teams":
+            result = self._send_teams(
+                target=target,
+                message=message,
+                thread_id=thread_id,
+                sender_session_id=sender_session_id,
+            )
+        elif target.provider == "discord":
+            if thread_id is not None:
+                raise ValueError("Discord communication targets do not support thread replies.")
+            result = self._send_discord(
+                target=target,
+                message=message,
+                sender_session_id=sender_session_id,
+            )
+        else:
+            raise ValueError(
+                "effect:communication:send-message does not support "
+                f"communication target provider {target.provider!r}"
+            )
+
+        output = dict(result)
+        output.update(
+            {
+                "success": True,
+                "provider": target.provider,
+                "communication_target_id": target.id,
+            }
+        )
+        return output
+
+
+def _require_target_capability(target: CommunicationTargetDefinition, capability: str) -> None:
+    if capability not in set(target.policy.capabilities):
+        if capability == "notify":
+            raise ValueError(f"communication target {target.id!r} does not allow notify capability")
+        raise ValueError(
+            f"communication target {target.id!r} does not allow {capability} capability"
+        )
 
 
 def _discord_channel_id(address: str) -> str:

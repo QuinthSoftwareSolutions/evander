@@ -294,6 +294,20 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "correlation_key",
         "payload",
     ]
+    communication = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "effect:communication:send-message"
+    )
+    assert [field["key"] for field in communication["fields"]] == [
+        "communication_target_id",
+        "message",
+        "thread_id",
+    ]
+    assert any(
+        field["key"] == "message" and field["bindable"] and field["multiline"]
+        for field in communication["fields"]
+    )
     notification = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:notification:send"
     )
@@ -536,6 +550,15 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "codex_skills",
         "directory_path",
     ]
+    agent_create_fields = {field["key"]: field for field in agent_create["fields"]}
+    assert agent_create_fields["labels"]["kind"] == "string_map"
+    assert agent_create_fields["labels"]["description"]
+    assert agent_create_fields["directory_path"]["description"]
+    assert agent_create_fields["allowed_tools"]["options"]
+    assert {
+        "value": ToolName.RUN_SCRIPT.value,
+        "label": ToolName.RUN_SCRIPT.value.replace("_", " "),
+    } in agent_create_fields["allowed_tools"]["options"]
     execution_backend = next(
         field for field in agent_create["fields"] if field["key"] == "execution_backend"
     )

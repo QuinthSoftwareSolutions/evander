@@ -94,7 +94,7 @@ export type WorkflowEditorFieldOption = {
 export type WorkflowEditorFieldDefinition = {
   key: string;
   label: string;
-  kind: "string" | "number" | "boolean" | "enum" | "string_list" | "json" | "object_list";
+  kind: "string" | "number" | "boolean" | "enum" | "string_list" | "string_map" | "json" | "object_list";
   required: boolean;
   bindable: boolean;
   read_only: boolean;

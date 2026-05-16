@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 import json
 
 from agent_sandbox.events.models import TriggerEvent
-from agent_sandbox.triggers.queue import TriggerEventQueue
+from agent_sandbox.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
 
 
 def _event(*, event_id: str, trigger_id: str = "discord", offset_seconds: int = 0) -> TriggerEvent:
@@ -143,3 +143,31 @@ def test_state_transitions_use_single_store_update(tmp_path, monkeypatch) -> Non
     assert queue.reset_inflight() == 1
     assert queue.mark_delivered("evt-1") is True
     assert queue.list_pending() == []
+
+
+def test_sqlite_trigger_queue_publish_idempotency_and_transitions(tmp_path) -> None:
+    queue = SqliteTriggerEventQueue(tmp_path / "orchestration.db")
+
+    first = queue.publish(_event(event_id="evt-1"), idempotency_key="provider:delivery-1")
+    second = queue.publish(_event(event_id="evt-2"), idempotency_key="provider:delivery-1")
+
+    assert second.event_id == first.event_id
+    assert [item.event_id for item in queue.list_pending()] == ["evt-1"]
+
+    assert queue.mark_inflight("evt-1") is True
+    assert queue.list_pending() == []
+    assert queue.reset_inflight() == 1
+    assert [item.event_id for item in queue.list_pending()] == ["evt-1"]
+    assert queue.mark_delivered("evt-1") is True
+    assert queue.list_pending() == []
+
+
+def test_sqlite_trigger_queue_filters_pending_with_indexed_order(tmp_path) -> None:
+    queue = SqliteTriggerEventQueue(tmp_path / "orchestration.db")
+    queue.publish(_event(event_id="evt-2", trigger_id="discord", offset_seconds=2))
+    queue.publish(_event(event_id="evt-1", trigger_id="discord", offset_seconds=1))
+    queue.publish(_event(event_id="evt-3", trigger_id="email", offset_seconds=3))
+
+    filtered = queue.list_pending(trigger_id="discord", limit=1)
+
+    assert [item.event_id for item in filtered] == ["evt-1"]

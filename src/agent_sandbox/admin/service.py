@@ -92,7 +92,11 @@ from agent_sandbox.models import (
 )
 from agent_sandbox.runtime import RuntimeContext, build_runtime
 from agent_sandbox.storage import JsonStore
-from agent_sandbox.workflow.events import WorkflowEventJournal, workflow_event_journal_path
+from agent_sandbox.workflow.events import (
+    SqliteWorkflowEventJournal,
+    WorkflowEventJournal,
+    workflow_event_journal_path,
+)
 from agent_sandbox.workflow.migrations import (
     AGENT_PROMPT_COMPLETED_PORT,
     AGENT_PROMPT_STARTED_PORT,
@@ -125,7 +129,11 @@ from agent_sandbox.events.models import (
     TriggerDefinitionDiscriminated,
     materialize_node_definition,
 )
-from agent_sandbox.triggers.queue import TriggerEventQueue, TriggerQueueRecord
+from agent_sandbox.triggers.queue import (
+    SqliteTriggerEventQueue,
+    TriggerEventQueue,
+    TriggerQueueRecord,
+)
 from agent_sandbox.workflow.validation import (
     WorkflowValidationDiagnostic,
     derive_workflow_output_schemas,
@@ -781,6 +789,13 @@ def _field_option(value: str, label: str | None = None) -> WorkflowEditorFieldOp
     return WorkflowEditorFieldOption(value=value, label=label or value)
 
 
+def _tool_field_options() -> list[WorkflowEditorFieldOption]:
+    return [
+        _field_option(tool.value, tool.value.replace("_", " "))
+        for tool in sorted(ToolName, key=lambda item: item.value)
+    ]
+
+
 def _port(
     key: str, label: str, *, description: str | None = None
 ) -> WorkflowEditorNodePortDefinition:
@@ -882,6 +897,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Update an Azure DevOps work item with an optional expected-state guard."
     ),
     "effect:event:emit": "Emit an internal workflow event for other graphs.",
+    "effect:communication:send-message": (
+        "Send a message through a configured communication target."
+    ),
     "effect:notification:send": "Send a notification through a configured communication target.",
     "effect:session:update-metadata": "Patch metadata on a host-side session record.",
     "effect:git:promote-agent-branch": (
@@ -1161,7 +1179,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "When",
                 "json",
                 bindable=True,
-                description='Structured predicate using bindings, for example {"all":[{"left":"${{effect-1.success}}","equals":true}]} or {"left":"${{trigger-1.branch_name}}","starts_with":"agents/"}. Mutually exclusive with Match.',
+                description='Structured predicate using bindings, for example {"all":[{"left":"${{effect-1.success}}","equals":true}]} or {"left":"${{query-1.count}}","greater_than":8}. Mutually exclusive with Match.',
             ),
             _field(
                 "outputs",
@@ -1506,27 +1524,70 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="effect:agent:create",
         label="Agent create",
         fields=[
-            _field("provider", "Provider", "string", bindable=True),
+            _field(
+                "provider",
+                "Provider",
+                "string",
+                bindable=True,
+                description="Optional agent provider override. Leave blank to use the directory default.",
+            ),
             _field(
                 "execution_backend",
                 "Execution backend",
                 "enum",
+                description="Runtime backend that will host the created agent session.",
                 options=[
                     _field_option("libvirt_vm", "Libvirt VM"),
                     _field_option("container_worker_vm", "Container worker VM"),
                 ],
             ),
-            _field("vm_name", "VM name", "string", bindable=True),
-            _field("session_id", "Session ID", "string", bindable=True),
-            _field("labels", "Labels", "json", bindable=True),
-            _field("model", "Model", "string", bindable=True),
-            _field("vm_user", "VM user", "string", bindable=True),
-            _field("ttl_hours", "TTL hours", "number", bindable=True),
+            _field(
+                "vm_name",
+                "VM name",
+                "string",
+                bindable=True,
+                description="Optional VM name for libvirt-backed agents. Container-backed agents usually leave this blank.",
+            ),
+            _field(
+                "session_id",
+                "Session ID",
+                "string",
+                bindable=True,
+                description="Optional durable session id. Leave blank to let the runtime allocate one.",
+            ),
+            _field(
+                "labels",
+                "Labels",
+                "string_map",
+                bindable=True,
+                description="String key/value labels stored on the created agent session.",
+            ),
+            _field(
+                "model",
+                "Model",
+                "string",
+                bindable=True,
+                description="Model name the agent should use. Leave blank to inherit the directory default.",
+            ),
+            _field(
+                "vm_user",
+                "VM user",
+                "string",
+                bindable=True,
+                description="Guest user for libvirt-backed sessions. Defaults to agent.",
+            ),
+            _field(
+                "ttl_hours",
+                "TTL hours",
+                "number",
+                bindable=True,
+                description="Session lifetime in hours before the host considers it expired.",
+            ),
             _field(
                 "allowed_tools",
                 "Allowed tools",
                 "string_list",
-                description="Additional MCP tools to allow for the created session.",
+                description="MCP tools the created session may invoke through the host gateway.",
             ),
             _field(
                 "allowed_script_names",
@@ -1534,11 +1595,17 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string_list",
                 description="Additional script names the created session may invoke with run_script.",
             ),
-            _field("discord_channels", "Discord channels", "string_list"),
+            _field(
+                "discord_channels",
+                "Discord channels",
+                "string_list",
+                description="Discord channel ids the created session may read or post to.",
+            ),
             _field(
                 "teams_channel_allowlist",
                 "Teams targets",
                 "string_list",
+                description="Teams channels or chats the created session may use.",
                 placeholder="team-id/channel-id or chat:<chat-id>",
             ),
             _field(
@@ -1551,41 +1618,97 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "teams_user_allowlist",
                 "Teams users",
                 "string_list",
+                description="Teams users the created session may interact with.",
                 placeholder="user:<user-id-or-upn>",
             ),
-            _field("email_mailboxes", "Email mailboxes", "string_list"),
-            _field("email_folders", "Email folders", "string_list"),
+            _field(
+                "email_mailboxes",
+                "Email mailboxes",
+                "string_list",
+                description="Email mailboxes the created session may inspect.",
+            ),
+            _field(
+                "email_folders",
+                "Email folders",
+                "string_list",
+                description="Email folders the created session may inspect.",
+            ),
             _field(
                 "communication_file_receive_enabled",
                 "Receive inbound files",
                 "boolean",
                 bindable=True,
+                description="Allow the session to download inbound communication attachments into host-managed artifacts.",
             ),
             _field(
                 "communication_file_send_enabled",
                 "Send files",
                 "boolean",
                 bindable=True,
+                description="Allow the session to send staged communication artifacts through approved targets.",
             ),
             _field(
                 "communication_file_require_approval_for_send",
                 "Require approval for file sends",
                 "boolean",
                 bindable=True,
+                description="Require an approval before the session can send staged communication files.",
             ),
             _field(
                 "communication_file_max_bytes",
                 "Communication file max bytes",
                 "number",
                 bindable=True,
+                description="Maximum size in bytes for a single communication file. Leave blank to inherit policy defaults.",
             ),
-            _field("dotnet", "Dotnet", "boolean", bindable=True),
-            _field("nuget", "NuGet", "boolean", bindable=True),
-            _field("mssql", "MSSQL", "boolean", bindable=True),
-            _field("mssql_init_root", "MSSQL init root", "string", bindable=True),
-            _field("playwright", "Playwright", "boolean", bindable=True),
-            _field("codex_skills", "Codex skills", "string_list"),
-            _field("directory_path", "Directory path", "string", bindable=True),
+            _field(
+                "dotnet",
+                "Dotnet",
+                "boolean",
+                bindable=True,
+                description="Bootstrap the .NET toolchain for libvirt-backed agents.",
+            ),
+            _field(
+                "nuget",
+                "NuGet",
+                "boolean",
+                bindable=True,
+                description="Bootstrap NuGet relay support for libvirt-backed agents.",
+            ),
+            _field(
+                "mssql",
+                "MSSQL",
+                "boolean",
+                bindable=True,
+                description="Bootstrap SQL Server tooling for libvirt-backed agents.",
+            ),
+            _field(
+                "mssql_init_root",
+                "MSSQL init root",
+                "string",
+                bindable=True,
+                description="Optional host init-script root for MSSQL provisioning.",
+            ),
+            _field(
+                "playwright",
+                "Playwright",
+                "boolean",
+                bindable=True,
+                description="Bootstrap Playwright for browser automation in libvirt-backed agents.",
+            ),
+            _field(
+                "codex_skills",
+                "Codex skills",
+                "string_list",
+                description="Managed Codex skills to install into the created session.",
+            ),
+            _field(
+                "directory_path",
+                "Directory path",
+                "string",
+                bindable=True,
+                description="Directory scope that owns the created session and resolves inherited configuration.",
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -2045,6 +2168,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("event_type", "Event type", "string", required=True, bindable=True),
             _field("correlation_key", "Correlation key", "string", bindable=True),
             _field("payload", "Payload", "json", required=True, bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:communication:send-message",
+        label="Send message",
+        fields=[
+            _field("communication_target_id", "Communication target ID", "string", required=True),
+            _field("message", "Message", "string", required=True, bindable=True, multiline=True),
+            _field("thread_id", "Thread ID", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -6786,8 +6919,27 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             value=trigger_worker_config.get("workflow_event_journal_path"),
             fallback=workflow_event_journal_path(workflow_runtime_dir),
         )
+        orchestration_backend = (
+            str(trigger_worker_config.get("orchestration_store_backend") or "sqlite")
+            .strip()
+            .lower()
+        )
+        if orchestration_backend not in {"sqlite", "json"}:
+            orchestration_backend = "sqlite"
+        orchestration_store_path = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=trigger_worker_config.get("orchestration_store_path"),
+            fallback=workflow_runtime_dir / "orchestration.db",
+        )
+        orchestration_retention_days = trigger_worker_config.get("orchestration_retention_days")
         watcher_cmd.extend(["--event-queue-store-path", str(event_queue_store_path)])
         watcher_cmd.extend(["--workflow-event-journal-path", str(workflow_event_journal)])
+        watcher_cmd.extend(["--orchestration-store-backend", orchestration_backend])
+        watcher_cmd.extend(["--orchestration-store-path", str(orchestration_store_path)])
+        if orchestration_retention_days is not None:
+            watcher_cmd.extend(
+                ["--orchestration-retention-days", str(orchestration_retention_days)]
+            )
         if session_id:
             watcher_cmd.extend(["--session-id", session_id])
         if directory_path:
@@ -7543,10 +7695,16 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     ) -> dict[str, object]:
         document = self.ensure_chat_assistant_workflow()
         worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(document.config)
-        queue = TriggerEventQueue(
-            worker_config.event_queue_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
-        )
+        if worker_config.orchestration_store_backend == "sqlite":
+            queue = SqliteTriggerEventQueue(
+                worker_config.orchestration_store_path,
+                retention_days=worker_config.orchestration_retention_days,
+            )
+        else:
+            queue = TriggerEventQueue(
+                worker_config.event_queue_store_path,
+                journal_path=worker_config.workflow_event_journal_path,
+            )
         normalized_backend = str(backend or self.config.execution_backend).strip() or "libvirt_vm"
         normalized_capability_mode = str(assistant_capability_mode or "").strip() or "read-only"
         if normalized_capability_mode != "full-access":
@@ -8078,6 +8236,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
     def _read_workflow_editor_catalog(self) -> WorkflowEditorCatalogPayload:
         skill_options = [_field_option(skill.name) for skill in self.skill_library.list_skills()]
+        tool_options = _tool_field_options()
         nodes: list[WorkflowEditorNodeCatalogEntry] = []
         for entry in _WORKFLOW_EDITOR_NODE_CATALOG:
             node = entry.model_copy(
@@ -8092,6 +8251,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 node.fields = [
                     field.model_copy(update={"options": skill_options})
                     if field.key == "codex_skills"
+                    else field.model_copy(update={"options": tool_options})
+                    if field.key == "allowed_tools"
                     else field
                     for field in node.fields
                 ]
@@ -8363,7 +8524,25 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             node_status_counts = node_activity.setdefault(normalized_node_id, {})
             node_status_counts[status] = node_status_counts.get(status, 0) + 1
 
-        queue_payload = self.trigger_event_repository.read_events(event_queue_store_path)
+        if self._workflow_uses_sqlite_store(stores):
+            queue_store, effect_store, gate_store = self._workflow_sqlite_store_bundle(stores)
+            queue_payload = {
+                record.event_id: record.model_dump(mode="json")
+                for record in queue_store.list_active_records()
+            }
+            execution_payload = {
+                record.execution_id: record.model_dump(mode="json")
+                for record in effect_store.list_active_records()
+            }
+            gate_payload = {
+                record.execution_id: record.model_dump(mode="json")
+                for record in gate_store.list_active_records()
+            }
+        else:
+            queue_payload = self.trigger_event_repository.read_events(event_queue_store_path)
+            execution_payload = _read_json_object(effect_execution_store_path)
+            gate_payload = _read_json_object(gate_execution_store_path)
+
         for event_id, raw_record in queue_payload.items():
             if not isinstance(raw_record, dict):
                 continue
@@ -8386,7 +8565,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 finished_at=_coerce_optional_datetime(raw_record.get("delivered_at")),
             )
 
-        execution_payload = _read_json_object(effect_execution_store_path)
         for execution_id, raw_record in execution_payload.items():
             if not isinstance(raw_record, dict):
                 continue
@@ -8414,7 +8592,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 ),
             )
 
-        gate_payload = _read_json_object(gate_execution_store_path)
         for execution_id, raw_record in gate_payload.items():
             if not isinstance(raw_record, dict):
                 continue
@@ -8513,63 +8690,84 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         clear_reason = "manual_clear_stale_workflow_runs"
         clear_error = "Manually cleared stale workflow run from editor state."
 
-        def _clear_queue_records(records: dict[str, TriggerQueueRecord]) -> int:
-            updated = 0
-            for record_key, record in records.items():
-                record_event_id = str(record.event_id or record_key).strip()
-                if record_event_id != normalized_event_id:
-                    continue
-                if record.delivery_state == "delivered":
-                    continue
-                record.delivery_state = "delivered"
-                record.delivered_at = cleared_at
-                record.clear_reason = clear_reason
-                record.error = clear_error
-                records[record_key] = record
-                updated += 1
-            return updated
+        if self._workflow_uses_sqlite_store(stores):
+            queue_store, effect_store, gate_store = self._workflow_sqlite_store_bundle(stores)
+            queue_records_updated = queue_store.mark_event_cleared(
+                normalized_event_id,
+                cleared_at=cleared_at,
+                clear_reason=clear_reason,
+                error=clear_error,
+            )
+            effect_records_updated = effect_store.clear_event_records(
+                normalized_event_id,
+                cleared_at=cleared_at,
+                clear_reason=clear_reason,
+                clear_error=clear_error,
+            )
+            gate_records_updated = gate_store.clear_event_records(
+                normalized_event_id,
+                cleared_at=cleared_at,
+                clear_reason=clear_reason,
+                clear_error=clear_error,
+            )
+        else:
+            def _clear_queue_records(records: dict[str, TriggerQueueRecord]) -> int:
+                updated = 0
+                for record_key, record in records.items():
+                    record_event_id = str(record.event_id or record_key).strip()
+                    if record_event_id != normalized_event_id:
+                        continue
+                    if record.delivery_state == "delivered":
+                        continue
+                    record.delivery_state = "delivered"
+                    record.delivered_at = cleared_at
+                    record.clear_reason = clear_reason
+                    record.error = clear_error
+                    records[record_key] = record
+                    updated += 1
+                return updated
 
-        from agent_sandbox.daemons.effect_orchestrator import (
-            JsonExecutionStore,
-            JsonGateExecutionStore,
-        )
+            from agent_sandbox.daemons.effect_orchestrator import (
+                JsonExecutionStore,
+                JsonGateExecutionStore,
+            )
 
-        queue_records_updated = JsonStore(
-            event_queue_store_path, TriggerQueueRecord
-        ).update_all(_clear_queue_records)
+            queue_records_updated = JsonStore(
+                event_queue_store_path, TriggerQueueRecord
+            ).update_all(_clear_queue_records)
 
-        def _clear_execution_records(records: dict[str, Any]) -> int:
-            updated = 0
-            for execution_id, record in records.items():
-                record_event_id = str(getattr(record, "event_id", execution_id) or "").strip()
-                if record_event_id != normalized_event_id:
-                    continue
-                status = str(getattr(record, "status", "") or "").strip()
-                if status == "failed":
+            def _clear_execution_records(records: dict[str, Any]) -> int:
+                updated = 0
+                for execution_id, record in records.items():
+                    record_event_id = str(getattr(record, "event_id", execution_id) or "").strip()
+                    if record_event_id != normalized_event_id:
+                        continue
+                    status = str(getattr(record, "status", "") or "").strip()
+                    if status == "failed":
+                        record.dismissed_at = cleared_at
+                        record.dismiss_reason = "manual_dismiss_errored_workflow_run"
+                        records[execution_id] = record
+                        updated += 1
+                        continue
+                    if status not in {"running", "waiting"}:
+                        continue
+                    record.status = "failed"
+                    record.finished_at = cleared_at
+                    record.cleared_at = cleared_at
+                    record.clear_reason = clear_reason
+                    record.error = clear_error
                     record.dismissed_at = cleared_at
-                    record.dismiss_reason = "manual_dismiss_errored_workflow_run"
+                    record.dismiss_reason = "manual_clear_stale_workflow_runs"
                     records[execution_id] = record
                     updated += 1
-                    continue
-                if status not in {"running", "waiting"}:
-                    continue
-                record.status = "failed"
-                record.finished_at = cleared_at
-                record.cleared_at = cleared_at
-                record.clear_reason = clear_reason
-                record.error = clear_error
-                record.dismissed_at = cleared_at
-                record.dismiss_reason = "manual_clear_stale_workflow_runs"
-                records[execution_id] = record
-                updated += 1
-            return updated
+                return updated
 
-        effect_records_updated = JsonExecutionStore(effect_execution_store_path).update_all(
-            _clear_execution_records
-        )
-        gate_records_updated = JsonGateExecutionStore(gate_execution_store_path).update_all(
-            _clear_execution_records
-        )
+            effect_records_updated = JsonExecutionStore(effect_execution_store_path).update_all(
+                _clear_execution_records
+            )
+            gate_records_updated = JsonGateExecutionStore(gate_execution_store_path).update_all(
+                _clear_execution_records
+            )
 
         await_agent_records_removed = 0
         await_agent_payload = _read_json_object(await_agent_store_path)
@@ -8643,11 +8841,30 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         effect_execution_store_path = stores["effect_execution_store_path"]
         gate_execution_store_path = stores["gate_execution_store_path"]
 
-        failed_record = self._latest_resumable_failed_workflow_record(
-            event_id=normalized_event_id,
-            effect_payload=_read_json_object(effect_execution_store_path),
-            gate_payload=_read_json_object(gate_execution_store_path),
-        )
+        queue_store = None
+        if self._workflow_uses_sqlite_store(stores):
+            queue_store, effect_store, gate_store = self._workflow_sqlite_store_bundle(stores)
+            failed_record = self._latest_resumable_failed_workflow_record(
+                event_id=normalized_event_id,
+                effect_payload={
+                    record.execution_id: record.model_dump(mode="json")
+                    for record in effect_store.list_records_for_event(
+                        normalized_event_id, statuses={"failed"}
+                    )
+                },
+                gate_payload={
+                    record.execution_id: record.model_dump(mode="json")
+                    for record in gate_store.list_records_for_event(
+                        normalized_event_id, statuses={"failed"}
+                    )
+                },
+            )
+        else:
+            failed_record = self._latest_resumable_failed_workflow_record(
+                event_id=normalized_event_id,
+                effect_payload=_read_json_object(effect_execution_store_path),
+                gate_payload=_read_json_object(gate_execution_store_path),
+            )
         if failed_record is None:
             raise ValueError(f"Workflow run is not resumable: {normalized_event_id}")
 
@@ -8660,16 +8877,18 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         input_payload["__resume_source_event_id"] = normalized_event_id
         resume_event_id = f"{normalized_event_id}:resume:{uuid4().hex[:12]}"
 
-        TriggerEventQueue(event_queue_store_path).publish(
-            TriggerEvent(
-                event_id=resume_event_id,
-                trigger_id=source_node_id,
-                trigger_type=source_trigger_type,
-                trace_id=str(failed_record["trace_id"]),
-                occurred_at=resumed_at,
-                payload=input_payload,
-            )
+        resume_event = TriggerEvent(
+            event_id=resume_event_id,
+            trigger_id=source_node_id,
+            trigger_type=source_trigger_type,
+            trace_id=str(failed_record["trace_id"]),
+            occurred_at=resumed_at,
+            payload=input_payload,
         )
+        if queue_store is not None:
+            queue_store.publish(resume_event)
+        else:
+            TriggerEventQueue(event_queue_store_path).publish(resume_event)
         self._workflow_event_journal().append(
             "workflow.run.resumed",
             source="workflow_editor",
@@ -8688,30 +8907,73 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             target_node_id=target_node_id,
         )
 
-    def _workflow_run_store_paths(self) -> dict[str, Path]:
-        worker_config = self._read_worker_global_config("trigger-orchestrator").config
+    def _workflow_run_store_paths(self) -> dict[str, Any]:
+        worker_payload = self._read_worker_global_config("trigger-orchestrator")
+        worker_config = worker_payload.config
         runtime_dir = _resolve_path_setting(
             base_dir=self.project_dir,
             value=worker_config.get("runtime_dir"),
             fallback=self.config.runtime_dir,
         )
+        backend = (
+            str(worker_config.get("orchestration_store_backend") or "sqlite").strip().lower()
+        )
+        if backend not in {"sqlite", "json"}:
+            backend = "sqlite"
+        backend_explicit = False
+        try:
+            worker_config_path = Path(worker_payload.path)
+            if worker_config_path.exists():
+                raw_worker_config = json.loads(worker_config_path.read_text(encoding="utf-8"))
+                backend_explicit = (
+                    isinstance(raw_worker_config, dict)
+                    and "orchestration_store_backend" in raw_worker_config
+                )
+        except (OSError, json.JSONDecodeError):
+            backend_explicit = False
+        orchestration_store_path = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=worker_config.get("orchestration_store_path"),
+            fallback=runtime_dir / "orchestration.db",
+        )
+        event_queue_store_path = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=worker_config.get("event_queue_store_path"),
+            fallback=runtime_dir / "trigger-orchestrator-events.json",
+        )
+        effect_execution_store_path = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=worker_config.get("effect_execution_store_path"),
+            fallback=runtime_dir / "effect-orchestrator-executions.json",
+        )
+        gate_execution_store_path = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=worker_config.get("gate_execution_store_path"),
+            fallback=runtime_dir / "gate-orchestrator-executions.json",
+        )
+        if (
+            backend == "sqlite"
+            and not backend_explicit
+            and not orchestration_store_path.exists()
+            and (
+                event_queue_store_path.exists()
+                or effect_execution_store_path.exists()
+                or gate_execution_store_path.exists()
+            )
+        ):
+            backend = "json"
         return {
             "runtime_dir": runtime_dir,
-            "event_queue_store_path": _resolve_path_setting(
-                base_dir=self.project_dir,
-                value=worker_config.get("event_queue_store_path"),
-                fallback=runtime_dir / "trigger-orchestrator-events.json",
+            "orchestration_store_backend": backend,
+            "orchestration_store_path": orchestration_store_path,
+            "orchestration_retention_days": int(
+                worker_config.get("orchestration_retention_days")
+                if worker_config.get("orchestration_retention_days") is not None
+                else 30
             ),
-            "effect_execution_store_path": _resolve_path_setting(
-                base_dir=self.project_dir,
-                value=worker_config.get("effect_execution_store_path"),
-                fallback=runtime_dir / "effect-orchestrator-executions.json",
-            ),
-            "gate_execution_store_path": _resolve_path_setting(
-                base_dir=self.project_dir,
-                value=worker_config.get("gate_execution_store_path"),
-                fallback=runtime_dir / "gate-orchestrator-executions.json",
-            ),
+            "event_queue_store_path": event_queue_store_path,
+            "effect_execution_store_path": effect_execution_store_path,
+            "gate_execution_store_path": gate_execution_store_path,
             "await_agent_store_path": runtime_dir
             / "providers"
             / "gates"
@@ -8719,6 +8981,25 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             / "pending.json",
             "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
         }
+
+    def _workflow_uses_sqlite_store(self, stores: Mapping[str, Any]) -> bool:
+        return str(stores.get("orchestration_store_backend") or "").lower() == "sqlite"
+
+    def _workflow_sqlite_store_bundle(self, stores: Mapping[str, Any]) -> tuple[Any, Any, Any]:
+        from agent_sandbox.daemons.effect_orchestrator import (
+            SqliteExecutionStore,
+            SqliteGateExecutionStore,
+        )
+
+        db_path = Path(stores["orchestration_store_path"])
+        raw_retention_days = stores.get("orchestration_retention_days")
+        retention_days = int(raw_retention_days if raw_retention_days is not None else 30)
+        journal = SqliteWorkflowEventJournal(db_path, retention_days=retention_days)
+        return (
+            SqliteTriggerEventQueue(db_path, journal=journal, retention_days=retention_days),
+            SqliteExecutionStore(db_path, journal=journal, retention_days=retention_days),
+            SqliteGateExecutionStore(db_path, journal=journal, retention_days=retention_days),
+        )
 
     def _read_workflow_graph_activity_report(
         self,
@@ -8847,7 +9128,29 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             return max(parsed_values) if parsed_values else None
 
         stores = self._workflow_run_store_paths()
-        queue_payload = _read_json_object(stores["event_queue_store_path"])
+        if self._workflow_uses_sqlite_store(stores):
+            queue_store, effect_store, gate_store = self._workflow_sqlite_store_bundle(stores)
+            queue_payload = {
+                record.event_id: record.model_dump(mode="json")
+                for record in queue_store.list_activity_between(
+                    start_at=start_at, end_at=end_at
+                )
+            }
+            effect_payload = {
+                record.execution_id: record.model_dump(mode="json")
+                for record in effect_store.list_activity_between(
+                    start_at=start_at, end_at=end_at
+                )
+            }
+            gate_payload = {
+                record.execution_id: record.model_dump(mode="json")
+                for record in gate_store.list_activity_between(start_at=start_at, end_at=end_at)
+            }
+        else:
+            queue_payload = _read_json_object(stores["event_queue_store_path"])
+            effect_payload = _read_json_object(stores["effect_execution_store_path"])
+            gate_payload = _read_json_object(stores["gate_execution_store_path"])
+
         for record_key, raw_record in queue_payload.items():
             if not isinstance(raw_record, dict):
                 continue
@@ -8864,7 +9167,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 run_key=trace_id or event_id,
             )
 
-        effect_payload = _read_json_object(stores["effect_execution_store_path"])
         for execution_id, raw_record in effect_payload.items():
             if not isinstance(raw_record, dict):
                 continue
@@ -8878,7 +9180,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 run_key=trace_id or event_id,
             )
 
-        gate_payload = _read_json_object(stores["gate_execution_store_path"])
         for execution_id, raw_record in gate_payload.items():
             if not isinstance(raw_record, dict):
                 continue
@@ -9017,13 +9318,16 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
         return candidates[0]
 
-    def _workflow_event_journal(self) -> WorkflowEventJournal:
+    def _workflow_event_journal(self) -> WorkflowEventJournal | SqliteWorkflowEventJournal:
+        stores = self._workflow_run_store_paths()
+        if self._workflow_uses_sqlite_store(stores):
+            raw_retention_days = stores.get("orchestration_retention_days")
+            return SqliteWorkflowEventJournal(
+                stores["orchestration_store_path"],
+                retention_days=int(raw_retention_days if raw_retention_days is not None else 30),
+            )
         worker_config = self._read_worker_global_config("trigger-orchestrator").config
-        runtime_dir = _resolve_path_setting(
-            base_dir=self.project_dir,
-            value=worker_config.get("runtime_dir"),
-            fallback=self.config.runtime_dir,
-        )
+        runtime_dir = stores["runtime_dir"]
         journal_path = _resolve_path_setting(
             base_dir=self.project_dir,
             value=worker_config.get("workflow_event_journal_path"),

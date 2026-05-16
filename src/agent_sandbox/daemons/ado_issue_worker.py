@@ -62,7 +62,7 @@ from agent_sandbox.services import AzureDevOpsPrQueryProvider, _normalize_ignore
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
 from agent_sandbox.triggers.providers.pull_request_new_feedback import _parse_dt
-from agent_sandbox.triggers.queue import TriggerEventQueue
+from agent_sandbox.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
 from agent_sandbox.vm.defaults_config import VmDefaultsConfigResolver
 from agent_sandbox.worker_directory_context import (
     WorkerDirectoryContextResolver,
@@ -2133,6 +2133,28 @@ def _load_trigger_orchestrator_worker_config(
     )
 
 
+def _build_trigger_event_queue_for_worker_config(
+    config: WorkerConfig,
+    worker_config: TriggerOrchestratorWorkerGlobalConfig | None,
+):
+    if (
+        worker_config is not None
+        and worker_config.orchestration_store_backend == "sqlite"
+        and "orchestration_store_backend" in worker_config.model_fields_set
+    ):
+        return SqliteTriggerEventQueue(
+            worker_config.orchestration_store_path,
+            retention_days=worker_config.orchestration_retention_days,
+        )
+    return TriggerEventQueue(
+        (worker_config.event_queue_store_path if worker_config is not None else None)
+        or config.runtime_dir / "trigger-orchestrator-events.json",
+        journal_path=(
+            worker_config.workflow_event_journal_path if worker_config is not None else None
+        ),
+    )
+
+
 def _load_ado_pr_feedback_session_bindings(
     *,
     runtime_dir: Path,
@@ -2254,18 +2276,8 @@ def _publish_directory_pr_feedback_events(
 
     cursor_store = TriggerCursorStore(config.runtime_dir / "trigger-cursors-pr-feedback.json")
     trigger_worker_config = _load_trigger_orchestrator_worker_config(config)
-    event_queue = TriggerEventQueue(
-        (
-            trigger_worker_config.event_queue_store_path
-            if trigger_worker_config is not None
-            else None
-        )
-        or config.runtime_dir / "trigger-orchestrator-events.json",
-        journal_path=(
-            trigger_worker_config.workflow_event_journal_path
-            if trigger_worker_config is not None
-            else None
-        ),
+    event_queue = _build_trigger_event_queue_for_worker_config(
+        config, trigger_worker_config
     )
     feedback_store = PrFeedbackStore(config.runtime_dir / "pr-feedback-store.json")
     audit_logger = AuditLogger(runtime_gateway_config.audit_log_path)
@@ -2423,18 +2435,8 @@ def _publish_directory_pr_completion_events(
         return 0
 
     trigger_worker_config = _load_trigger_orchestrator_worker_config(config)
-    event_queue = TriggerEventQueue(
-        (
-            trigger_worker_config.event_queue_store_path
-            if trigger_worker_config is not None
-            else None
-        )
-        or config.runtime_dir / "trigger-orchestrator-events.json",
-        journal_path=(
-            trigger_worker_config.workflow_event_journal_path
-            if trigger_worker_config is not None
-            else None
-        ),
+    event_queue = _build_trigger_event_queue_for_worker_config(
+        config, trigger_worker_config
     )
     pr_map_store = PrMapStore(runtime_gateway_config.pr_map_path)
     audit_logger = AuditLogger(runtime_gateway_config.audit_log_path)

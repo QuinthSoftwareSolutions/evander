@@ -16,6 +16,7 @@ from agent_sandbox.daemons.trigger_orchestrator import (
     main,
 )
 from agent_sandbox.events.models import TriggerEvent
+from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
 
 
 class _StaticProvider:
@@ -75,6 +76,27 @@ def test_build_trigger_orchestrator_worker_accepts_injected_services(tmp_path: P
     assert services.called_with is not None
     assert services.called_with.runtime_dir == runtime_dir
     assert worker.runtime is not None
+
+
+def test_build_trigger_orchestrator_worker_uses_sqlite_default_from_loader(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker = build_trigger_orchestrator_worker(config, project_dir=tmp_path)
+    event = TriggerEvent(
+        event_id="event-1",
+        trigger_id="cron-1",
+        trigger_type="trigger:cron",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"kind": "tick"},
+    )
+
+    worker.event_queue.publish(event)
+
+    queue = SqliteTriggerEventQueue(runtime_dir / "orchestration.db")
+    assert queue.contains("event-1") is True
+    assert not (runtime_dir / "trigger-orchestrator-events.json").exists()
 
 
 def test_trigger_orchestrator_run_once_publishes_and_updates_cursor(tmp_path: Path) -> None:

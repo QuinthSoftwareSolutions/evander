@@ -7,7 +7,7 @@ from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalC
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.provider_profiles import resolve_provider_module_names
 from agent_sandbox.runtime import RuntimeContext
-from agent_sandbox.triggers.queue import TriggerEventQueue
+from agent_sandbox.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
 from agent_sandbox.triggers.registry import TriggerProviderFactory
 from agent_sandbox.workflow.plugins import load_provider_plugins
 from agent_sandbox.repositories.orchestration import JsonGateCursorRepository
@@ -60,7 +60,7 @@ def build_trigger_provider_runtime_wiring(
 @dataclass(frozen=True)
 class TriggerWorkerWiring:
     provider_config_resolver: ProviderConfigResolver
-    event_queue: TriggerEventQueue
+    event_queue: TriggerEventQueue | SqliteTriggerEventQueue
     provider_factory: TriggerProviderFactory
     gate_cursor_repository: JsonGateCursorRepository
 
@@ -72,10 +72,16 @@ def build_trigger_worker_wiring(
     runtime: RuntimeContext,
     provider_config_resolver: ProviderConfigResolver | None = None,
 ) -> TriggerWorkerWiring:
-    event_queue = TriggerEventQueue(
-        worker_config.event_queue_store_path,
-        journal_path=worker_config.workflow_event_journal_path,
-    )
+    if _sqlite_orchestration_store_enabled(worker_config):
+        event_queue = SqliteTriggerEventQueue(
+            worker_config.orchestration_store_path,
+            retention_days=int(worker_config.orchestration_retention_days),
+        )
+    else:
+        event_queue = TriggerEventQueue(
+            worker_config.event_queue_store_path,
+            journal_path=worker_config.workflow_event_journal_path,
+        )
     gate_cursor_repository = JsonGateCursorRepository(worker_config.event_queue_cursor_store_path)
     runtime_wiring = build_trigger_provider_runtime_wiring(
         config=config,
@@ -88,4 +94,13 @@ def build_trigger_worker_wiring(
         event_queue=event_queue,
         provider_factory=runtime_wiring.provider_factory,
         gate_cursor_repository=gate_cursor_repository,
+    )
+
+
+def _sqlite_orchestration_store_enabled(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+) -> bool:
+    return (
+        worker_config.orchestration_store_backend == "sqlite"
+        and "orchestration_store_backend" in worker_config.model_fields_set
     )

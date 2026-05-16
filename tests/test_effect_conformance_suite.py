@@ -245,6 +245,15 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "host_repo_path": "/repo",
         }
     )
+    communication = adapter.validate_python(
+        {
+            "id": "effect-send-message",
+            "display_name": "Send message",
+            "type": "effect:communication:send-message",
+            "communication_target_id": "teams-primary",
+            "message": "Done",
+        }
+    )
     notification = adapter.validate_python(
         {
             "id": "effect-notify",
@@ -280,6 +289,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert vm_exec.type == "effect:vm:exec"
     assert vm_copy.type == "effect:vm:copy-files"
     assert issue_state.type == "effect:issue:update-state"
+    assert communication.type == "effect:communication:send-message"
     assert notification.type == "effect:notification:send"
     assert promote.type == "effect:git:promote-agent-branch"
     assert pr_create.type == "effect:pr:create"
