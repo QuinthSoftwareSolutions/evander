@@ -28,6 +28,8 @@ from agent_sandbox.execution.container_worker_repository import (
     ContainerWorkerExecutionRepository,
 )
 from agent_sandbox.execution.container_worker_client import ContainerWorkerClient
+from agent_sandbox.communication_artifacts import CommunicationArtifactStore
+from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.models import (
     ApprovalNotificationDeliveryRecord,
     ApprovalNotificationDeliveryStatus,
@@ -39,6 +41,13 @@ from agent_sandbox.models import (
     VmSummary,
 )
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
+from agent_sandbox.daemons.effect_orchestrator import (
+    GateExecutionRecord,
+    EffectExecutionRecord,
+    SqliteExecutionStore,
+    SqliteGateExecutionStore,
+)
+from agent_sandbox.repositories.orchestration import SqliteWorkflowConfigSnapshotRepository
 from agent_sandbox.worker.models import (
     WorkerFileWriteRecord,
     WorkerFileWriteRequest,
@@ -2854,6 +2863,182 @@ def test_workflow_graph_activity_report_groups_runtime_records_by_graph(
     assert cron_graph.activity_count == 1
     assert cron_graph.run_count == 1
     assert cron_graph.effect_execution_count == 0
+
+
+def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    runtime_dir = tmp_path / "runtime"
+    db_path = runtime_dir / "orchestration.db"
+    artifact_store = CommunicationArtifactStore(runtime_dir)
+    artifact = artifact_store.stage(
+        provider="teams",
+        session_id="session-sqlite",
+        content=b"sqlite run detail artifact\n",
+        original_filename="sqlite-notes.txt",
+        created_at=datetime(2026, 5, 3, 11, 0, tzinfo=UTC),
+        expires_at=datetime(2026, 5, 10, 11, 0, tzinfo=UTC),
+        metadata={"source": "sqlite-fixture"},
+    )
+    service.runtime.approvals.put(
+        "approval-sqlite",
+        ApprovalRequest(
+            request_id="approval-sqlite",
+            session_id="session-sqlite",
+            action_type="effect:agent:prompt",
+            payload_digest="digest-sqlite",
+            human_summary="Approve the sqlite run detail fixture.",
+            payload={
+                "request_id": "approval-sqlite",
+                "session_id": "session-sqlite",
+                "artifact_ids": [artifact.artifact_id],
+            },
+            directory_path="root",
+            tool_name="codex",
+            status=ApprovalStatus.PENDING,
+            expires_at=datetime(2026, 5, 4, 11, 0, tzinfo=UTC),
+            created_at=datetime(2026, 5, 3, 11, 0, tzinfo=UTC),
+        ),
+    )
+    queue_store = SqliteTriggerEventQueue(db_path)
+    queue_store.publish(
+        TriggerEvent(
+            event_id="evt-sqlite",
+            trigger_id="trigger-ticket",
+            trigger_type="trigger:ticket:created",
+            occurred_at=datetime(2026, 5, 3, 11, 0, tzinfo=UTC),
+            payload={"issue_number": "11"},
+            trace_id="trace-sqlite",
+        ),
+    )
+    effect_store = SqliteExecutionStore(db_path)
+    effect_store.record_execution(
+        EffectExecutionRecord(
+            execution_id="exec-sqlite",
+            idempotency_key="evt-sqlite::effect-prompt",
+            event_id="evt-sqlite",
+            trace_id="trace-sqlite",
+            source_node_id="trigger-ticket",
+            source_trigger_type="trigger:ticket:created",
+            effect_id="effect-prompt",
+            effect_type="effect:agent:prompt",
+            status="failed",
+            started_at=datetime(2026, 5, 3, 11, 0, 5, tzinfo=UTC),
+            finished_at=datetime(2026, 5, 3, 11, 0, 6, tzinfo=UTC),
+            resolved_config_hash="hash-sqlite",
+            resolved_config={
+                "session_id": "session-sqlite",
+                "vm_name": "vm-sqlite",
+                "prompt": "Run the sqlite flow",
+                "dispatch_id": "dispatch-sqlite",
+                "thread_id": "thread-sqlite",
+                "execution_id": "execution-sqlite",
+                "artifact_ids": [artifact.artifact_id],
+                "request_id": "approval-sqlite",
+            },
+            input_payload={
+                "issue_number": "11",
+                "session_id": "session-sqlite",
+                "request_id": "approval-sqlite",
+            },
+            outputs={"dispatch_id": "dispatch-sqlite", "execution_id": "execution-sqlite"},
+            binding_trace={
+                "consumed_output_keys": ["trigger-ticket.issue_number"],
+                "entries": [],
+            },
+            config_revision="rev-sqlite",
+            error="sqlite failure",
+        )
+    )
+    gate_store = SqliteGateExecutionStore(db_path)
+    gate_store.record_execution(
+        GateExecutionRecord(
+            execution_id="gate-sqlite",
+            idempotency_key="evt-sqlite::gate-await",
+            event_id="evt-sqlite",
+            trace_id="trace-sqlite",
+            source_node_id="effect-prompt",
+            source_trigger_type="trigger:ticket:created",
+            gate_id="gate-await",
+            gate_type="gate:await-agent",
+            status="waiting",
+            started_at=datetime(2026, 5, 3, 11, 0, 7, tzinfo=UTC),
+            finished_at=datetime(2026, 5, 3, 11, 0, 8, tzinfo=UTC),
+            resolved_config_hash="hash-sqlite",
+            resolved_config={
+                "session_id": "session-sqlite",
+                "vm_name": "vm-sqlite",
+                "dispatch_id": "dispatch-sqlite",
+            },
+            input_payload={"session_id": "session-sqlite", "vm_name": "vm-sqlite"},
+            outputs={"dispatch_id": "dispatch-sqlite"},
+            inputs_by_source={"effect-prompt": {"issue_number": "11"}},
+            input_event_ids_by_source={"effect-prompt": "evt-sqlite"},
+            input_occurred_at_by_source={
+                "effect-prompt": datetime(2026, 5, 3, 11, 0, tzinfo=UTC)
+            },
+            config_revision="rev-sqlite",
+        )
+    )
+    SqliteWorkflowConfigSnapshotRepository(db_path).put_snapshot(
+        {
+            "revision": "rev-sqlite",
+            "captured_at": "2026-05-03T11:00:30Z",
+            "snapshot_type": "compiled_runtime_graph",
+            "source": "effect_orchestrator.run_once",
+            "node_count": 3,
+            "edge_count": 2,
+            "triggers": [
+                {
+                    "id": "trigger-ticket",
+                    "type": "trigger:ticket:created",
+                    "display_name": "Ticket Created",
+                }
+            ],
+            "gates": [
+                {"id": "gate-await", "type": "gate:await-agent", "display_name": "Await Agent"}
+            ],
+            "effects": [
+                {
+                    "id": "effect-prompt",
+                    "type": "effect:agent:prompt",
+                    "display_name": "Prompt Agent",
+                }
+            ],
+            "queries": [],
+            "edges": [
+                {"id": "edge-1", "source": "trigger-ticket", "target": "effect-prompt"},
+                {"id": "edge-2", "source": "effect-prompt", "target": "gate-await"},
+            ],
+            "workflow_graphs": [
+                {
+                    "id": "graph-sqlite",
+                    "name": "SQLite Graph",
+                    "description": "SQLite run detail fixture",
+                    "directory_paths": ["root"],
+                    "user_ids": ["operator"],
+                    "node_ids": ["trigger-ticket", "effect-prompt", "gate-await"],
+                }
+            ],
+        }
+    )
+
+    detail = service.read_workflow_run_detail(event_id="evt-sqlite")
+
+    assert detail.event_id == "evt-sqlite"
+    assert detail.graph.config_revision == "rev-sqlite"
+    assert detail.graph.snapshot is not None
+    assert detail.graph.snapshot.revision == "rev-sqlite"
+    assert detail.recovery.resume.eligible is True
+    assert detail.trigger_event is not None
+    assert detail.trigger_event.payload == {"issue_number": "11"}
+    effect_node = next(node for node in detail.nodes if node.node_id == "effect-prompt")
+    assert effect_node.binding_trace is not None
+    assert effect_node.retry_resume_eligible is True
+    assert effect_node.approval_links[0].request_id == "approval-sqlite"
+    assert effect_node.agent_links[0].session_id == "session-sqlite"
+    assert effect_node.communication_artifact_links[0].artifact_id == artifact.artifact_id
 
 
 def test_conformance_reports_summarize_present_runtime_artifacts(tmp_path: Path) -> None:

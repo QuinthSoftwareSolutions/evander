@@ -92,6 +92,22 @@ def workflow_routes(service: AdminService) -> list[Route]:
             return json_error(str(exc))
         return JSONResponse(snapshot.model_dump(mode="json"))
 
+    async def get_run_detail(request: Request) -> JSONResponse:
+        query = request.query_params
+        try:
+            payload = service.read_workflow_run_detail(
+                run_id=query.get("run_id"),
+                event_id=query.get("event_id"),
+                trigger_event_id=query.get("trigger_event_id"),
+                trace_id=query.get("trace_id"),
+                session_id=query.get("session_id"),
+                artifact_id=query.get("artifact_id"),
+            )
+        except ValueError as exc:
+            status_code = 404 if "did not match any stored run" in str(exc) else 400
+            return json_error(str(exc), status_code=status_code)
+        return JSONResponse(payload.model_dump(mode="json"))
+
     async def clear_run(request: Request) -> JSONResponse:
         event_id = request.path_params.get("event_id", "")
         try:
@@ -145,6 +161,7 @@ def workflow_routes(service: AdminService) -> list[Route]:
         Route("/api/workflow-editor/document", get_document, methods=["GET"]),
         Route("/api/workflow-editor/catalog", get_catalog, methods=["GET"]),
         Route("/api/workflow-editor/runs", get_runs, methods=["GET"]),
+        Route("/api/workflow-editor/run-detail", get_run_detail, methods=["GET"]),
         Route("/api/workflow-editor/runs/{event_id:path}", clear_run, methods=["DELETE"]),
         Route("/api/workflow-editor/runs/{event_id:path}/resume", resume_run, methods=["POST"]),
         Route("/api/workflow-editor/runs/stream", stream_runs, methods=["GET"]),
