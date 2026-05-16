@@ -4014,6 +4014,10 @@ select {
   min-width: 820px;
 }
 
+.report-conformance-table {
+  min-width: 940px;
+}
+
 .activity-bar {
   height: 0.35rem;
   margin-top: 0.55rem;
@@ -4043,6 +4047,56 @@ select {
 .report-meta-block p {
   margin: 0;
   color: #324b55;
+}
+
+.report-task-list,
+.report-issue-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.report-task-item,
+.report-issue-item {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.75rem;
+  border: 1px solid rgba(32, 69, 78, 0.1);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.46);
+}
+
+.report-task-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.report-task-heading span {
+  color: #6a7d86;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.report-task-item p,
+.report-issue-item p,
+.report-guidance {
+  margin: 0;
+  color: #324b55;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.report-guidance {
+  padding: 0.85rem;
+  border: 1px solid rgba(32, 69, 78, 0.1);
+  border-radius: 10px;
+  background: rgba(243, 240, 233, 0.85);
+  font-family: "SFMono-Regular", "Consolas", monospace;
+  font-size: 0.84rem;
 }
 
 .node-activity-list {
@@ -4240,6 +4294,31 @@ select {
   background: rgba(227, 237, 241, 0.92);
   color: #28526a;
   font-weight: 700;
+}
+
+.state-pass {
+  background: #dff5e7;
+  color: #1f6a3f;
+}
+
+.state-fail {
+  background: #fae0dc;
+  color: #9d392e;
+}
+
+.state-missing {
+  background: #ece7df;
+  color: #5c4d3b;
+}
+
+.state-invalid {
+  background: #f1e1fb;
+  color: #7a2888;
+}
+
+.state-stale {
+  background: #faedcb;
+  color: #8a5a00;
 }
 
 .action-cluster,
@@ -4850,6 +4929,24 @@ select {
   color: #f0f8fb;
 }
 
+:root[data-theme="dark"] .report-task-item,
+:root[data-theme="dark"] .report-issue-item {
+  border-color: rgba(125, 170, 190, 0.16);
+  background: rgba(24, 39, 47, 0.88);
+}
+
+:root[data-theme="dark"] .report-task-heading span,
+:root[data-theme="dark"] .report-task-item p,
+:root[data-theme="dark"] .report-issue-item p,
+:root[data-theme="dark"] .report-guidance {
+  color: #a7bac8;
+}
+
+:root[data-theme="dark"] .report-guidance {
+  border-color: rgba(125, 170, 190, 0.16);
+  background: rgba(12, 24, 31, 0.58);
+}
+
 :root[data-theme="dark"] .activity-bar {
   background: rgba(125, 170, 190, 0.14);
 }
@@ -5133,6 +5230,31 @@ select {
 :root[data-theme="dark"] .state-active {
   background: #24313a;
   color: #b8c8d2;
+}
+
+:root[data-theme="dark"] .state-pass {
+  background: #163526;
+  color: #96e4bc;
+}
+
+:root[data-theme="dark"] .state-fail {
+  background: #321816;
+  color: #ffb6aa;
+}
+
+:root[data-theme="dark"] .state-missing {
+  background: #2b2924;
+  color: #d4c4b0;
+}
+
+:root[data-theme="dark"] .state-invalid {
+  background: #321f39;
+  color: #e3afff;
+}
+
+:root[data-theme="dark"] .state-stale {
+  background: #3a2d15;
+  color: #f0d27e;
 }
 
 :root[data-theme="dark"] .modal-backdrop {

@@ -2833,6 +2833,166 @@ def test_workflow_graph_activity_report_groups_runtime_records_by_graph(
     assert cron_graph.effect_execution_count == 0
 
 
+def test_conformance_reports_summarize_present_runtime_artifacts(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "trigger-conformance-report.json").write_text(
+        json.dumps(
+            {
+                "generated_at": "2099-01-01T00:00:00Z",
+                "status": "pass",
+                "requirements": [
+                    {
+                        "requirement_id": "schema:trigger:cron",
+                        "status": "pass",
+                        "coverage": ["cron shape"],
+                        "details": "Cron trigger validates.",
+                    },
+                    {
+                        "requirement_id": "provider:cursor",
+                        "status": "pass",
+                        "coverage": ["cursor"],
+                        "details": "Cursor persists.",
+                    },
+                ],
+                "traceability_matrix": {"task_trigger_schema": ["schema:trigger:cron"]},
+                "missing_coverage": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runtime_dir / "effect-conformance-report.json").write_text(
+        json.dumps(
+            {
+                "generated_at": "2099-01-01T00:00:00Z",
+                "status": "fail",
+                "requirements": [
+                    {
+                        "requirement_id": "schema:supported-effect-types",
+                        "status": "pass",
+                        "coverage": ["effect schema"],
+                        "details": "Schema validates.",
+                    },
+                    {
+                        "requirement_id": "binding:resolution-and-chaining",
+                        "status": "fail",
+                        "coverage": ["binding"],
+                        "details": "Binding output was missing.",
+                        "remediation": "Restore binding coverage.",
+                    },
+                ],
+                "traceability_matrix": {
+                    "task_schema_validation": ["schema:supported-effect-types"],
+                    "task_binding_and_chain": ["binding:resolution-and-chaining"],
+                },
+                "missing_coverage": {"task_queue_idempotency": ["queue:idempotency"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = AdminService(config_path)
+
+    payload = service.read_conformance_reports()
+
+    assert payload.stale_after_seconds == 7 * 24 * 60 * 60
+    reports = {report.kind: report for report in payload.reports}
+    assert set(reports) == {"trigger", "effect"}
+    trigger = reports["trigger"]
+    assert trigger.artifact_path == "trigger-conformance-report.json"
+    assert trigger.state == "pass"
+    assert trigger.status == "pass"
+    assert trigger.requirement_counts == {"pass": 2}
+    assert trigger.requirement_count == 2
+    assert trigger.missing_coverage_count == 0
+    assert trigger.traceability_task_count == 1
+    assert trigger.failing_requirements == []
+    effect = reports["effect"]
+    assert effect.artifact_path == "effect-conformance-report.json"
+    assert effect.state == "fail"
+    assert effect.status == "fail"
+    assert effect.requirement_counts == {"fail": 1, "pass": 1}
+    assert effect.missing_coverage_count == 1
+    assert effect.missing_coverage == {"task_queue_idempotency": ["queue:idempotency"]}
+    assert effect.traceability_task_count == 2
+    assert [item.requirement_id for item in effect.failing_requirements] == [
+        "binding:resolution-and-chaining"
+    ]
+    assert effect.remediation_snippets[0].remediation == "Restore binding coverage."
+    assert not Path(effect.artifact_path).is_absolute()
+
+
+def test_conformance_reports_return_missing_guidance(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    payload = service.read_conformance_reports()
+
+    reports = {report.kind: report for report in payload.reports}
+    assert reports["trigger"].state == "missing"
+    assert reports["trigger"].guidance == (
+        "PYTHONPATH=src python -m pytest -q tests/test_trigger_conformance_suite.py"
+    )
+    assert reports["effect"].state == "missing"
+    assert reports["effect"].guidance == (
+        "PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py"
+    )
+
+
+def test_conformance_reports_return_invalid_for_malformed_and_unsupported_shapes(
+    tmp_path: Path,
+) -> None:
+    config_path = write_config(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "trigger-conformance-report.json").write_text("{not json", encoding="utf-8")
+    (runtime_dir / "effect-conformance-report.json").write_text(
+        json.dumps(
+            {
+                "generated_at": "2099-01-01T00:00:00Z",
+                "status": "pass",
+                "requirements": [],
+                "traceability_matrix": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = AdminService(config_path)
+
+    reports = {report.kind: report for report in service.read_conformance_reports().reports}
+
+    assert reports["trigger"].state == "invalid"
+    assert "not valid JSON" in (reports["trigger"].error or "")
+    assert reports["effect"].state == "invalid"
+    assert "missing_coverage must be an object" in (reports["effect"].error or "")
+
+
+def test_conformance_reports_marks_old_valid_artifacts_stale(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    for filename in ("trigger-conformance-report.json", "effect-conformance-report.json"):
+        (runtime_dir / filename).write_text(
+            json.dumps(
+                {
+                    "generated_at": "2000-01-01T00:00:00Z",
+                    "status": "pass",
+                    "requirements": [],
+                    "traceability_matrix": {},
+                    "missing_coverage": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+    service = AdminService(config_path)
+
+    reports = {report.kind: report for report in service.read_conformance_reports().reports}
+
+    assert reports["trigger"].state == "stale"
+    assert reports["trigger"].status == "pass"
+    assert reports["effect"].state == "stale"
+    assert reports["effect"].status == "pass"
+
+
 def test_workflow_editor_rejects_graph_metadata_that_crosses_connected_components(
     tmp_path: Path,
 ) -> None:
