@@ -18,6 +18,10 @@ class DirectoryStore:
         self._repository = repository or JsonDirectoryRepository(path)
 
     def ensure_root(self) -> None:
+        items = self._repository.read_all()
+        if not self._root_record_needs_repair(items):
+            self._validate_tree(items)
+            return
         self.update_all(lambda _items: None)
 
     def read_all(self) -> dict[str, Directory]:
@@ -77,6 +81,16 @@ class DirectoryStore:
                 )
             cursor = next_directory.id
         return canonical
+
+    @staticmethod
+    def _root_record_needs_repair(items: dict[str, Directory]) -> bool:
+        root = items.get(ROOT_DIRECTORY_ID)
+        return (
+            root is None
+            or root.id != ROOT_DIRECTORY_ID
+            or root.name != ROOT_DIRECTORY_ID
+            or root.parent_id is not None
+        )
 
     @staticmethod
     def _ensure_root_record(items: dict[str, Directory]) -> None:

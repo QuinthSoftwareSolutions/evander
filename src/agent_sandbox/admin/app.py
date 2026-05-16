@@ -489,6 +489,19 @@ except ImportError:  # pragma: no cover - exercised only when GUI extra is missi
         def text(self) -> str:
             return self._text
 
+    class _FallbackInputDialog:
+        @staticmethod
+        def getText(*args: object, **kwargs: object) -> tuple[str, bool]:
+            return "", False
+
+        @staticmethod
+        def getMultiLineText(*args: object, **kwargs: object) -> tuple[str, bool]:
+            return "", False
+
+        @staticmethod
+        def getItem(*args: object, **kwargs: object) -> tuple[str, bool]:
+            return "", False
+
     QApplication = None
     QObject = object
     QRunnable = object
@@ -502,7 +515,8 @@ except ImportError:  # pragma: no cover - exercised only when GUI extra is missi
 
     QButtonGroup = object
     QCheckBox = QDialog = QDialogButtonBox = QFileDialog = QFormLayout = QHBoxLayout = object
-    QHeaderView = QInputDialog = QLabel = QLineEdit = QMainWindow = QMessageBox = object
+    QHeaderView = QLabel = QLineEdit = QMainWindow = QMessageBox = object
+    QInputDialog = _FallbackInputDialog
     QAbstractItemView = object
     QStyle = object
     QPushButton = QPlainTextEdit = QRadioButton = QScrollArea = QSplitter = QSpinBox = (

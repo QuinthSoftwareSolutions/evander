@@ -61,6 +61,20 @@ def test_directory_store_mutations_use_transactional_updates(tmp_path: Path, mon
     assert list(store.read_all()) == ["root"]
 
 
+def test_directory_store_read_all_does_not_rewrite_existing_root(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = DirectoryStore(tmp_path / "directories.json")
+    store.ensure_root()
+
+    def fail_update_all(*args, **kwargs) -> None:
+        raise AssertionError("directory reads must not use transactional write updates")
+
+    monkeypatch.setattr(store._repository, "update_all", fail_update_all)
+
+    assert list(store.read_all()) == ["root"]
+
+
 def test_session_manifest_directory_path_is_canonical() -> None:
     manifest = SessionManifest(
         session_id="session-1",
