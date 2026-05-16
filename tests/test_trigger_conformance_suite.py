@@ -615,6 +615,67 @@ def test_conformance_cron_due_and_cursor_persistence(
     )
 
 
+def test_conformance_cron_high_frequency_edit_skips_backlog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, report_collector: dict[str, Any]
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    cursor_path = runtime_dir / "trigger-cursors-cron.json"
+    cursor_path.write_text(
+        json.dumps(
+            {
+                "cron-edited": {
+                    "last_fired_at": "2026-04-03T10:00:00Z",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    frozen_now = datetime(2026, 4, 3, 12, 10, tzinfo=timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz: timezone | None = None) -> datetime:
+            if tz is None:
+                return frozen_now.replace(tzinfo=None)
+            return frozen_now.astimezone(tz)
+
+    monkeypatch.setattr("agent_sandbox.triggers.providers.cron.datetime", _FrozenDatetime)
+
+    provider = CronTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "cron-edited",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "* * * * *",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+
+    events = provider.poll()
+    cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+    second_events = provider.poll()
+
+    assert len(events) == 1
+    assert events[0].occurred_at == frozen_now
+    assert events[0].payload["scheduled_for"] == "2026-04-03T12:10:00Z"
+    assert cursor_payload["cron-edited"]["last_fired_at"] == "2026-04-03T12:10:00Z"
+    assert second_events == []
+
+    _record_result(
+        report_collector,
+        requirement_id="provider:cron:no-retroactive-catch-up",
+        trigger_type="trigger:cron",
+        status="pass",
+        coverage=["provider behavior correctness"],
+        details="Edited high-frequency cron schedules emit only the latest due occurrence and advance the cursor past older missed times.",
+    )
+
+
 def test_conformance_directory_and_filter_scoping(
     tmp_path: Path, report_collector: dict[str, Any]
 ) -> None:
@@ -1253,6 +1314,7 @@ def test_conformance_traceability_matrix_and_report(
         ],
         "task_provider_behavior": [
             "provider:cron:cursor",
+            "provider:cron:no-retroactive-catch-up",
             "provider:directory-and-filter-scoping",
             "provider:pr-modes-and-git-push",
         ],

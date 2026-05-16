@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
-from agent_sandbox.cron import next_cron_time, validate_cron_expression
+from agent_sandbox.cron import latest_cron_time_on_or_before, validate_cron_expression
 from agent_sandbox.events.models import (
     TriggerDefinitionDiscriminated,
     TriggerEvent,
@@ -54,29 +54,22 @@ class CronTriggerProvider(TriggerProviderBase):
             )
             return []
 
-        events: list[TriggerEvent] = []
-        next_fire_at = next_cron_time(expression, base)
-        iterations = 0
-        while next_fire_at is not None and next_fire_at <= now and iterations < 100:
-            events.append(
-                TriggerEvent(
-                    event_id=f"{trigger.id}:{next_fire_at.isoformat()}",
-                    trigger_id=trigger.id,
-                    trigger_type=trigger.type,
-                    occurred_at=next_fire_at,
-                    payload={"scheduled_for": next_fire_at.isoformat().replace("+00:00", "Z")},
-                )
-            )
-            base = next_fire_at
-            next_fire_at = next_cron_time(expression, base)
-            iterations += 1
+        latest_fire_at = latest_cron_time_on_or_before(expression, now)
+        if latest_fire_at is None or latest_fire_at <= base:
+            return []
 
-        if events:
-            cursor_store.put(
-                trigger.id,
-                {"last_fired_at": events[-1].occurred_at.isoformat().replace("+00:00", "Z")},
-            )
-        return events
+        event = TriggerEvent(
+            event_id=f"{trigger.id}:{latest_fire_at.isoformat()}",
+            trigger_id=trigger.id,
+            trigger_type=trigger.type,
+            occurred_at=latest_fire_at,
+            payload={"scheduled_for": latest_fire_at.isoformat().replace("+00:00", "Z")},
+        )
+        cursor_store.put(
+            trigger.id,
+            {"last_fired_at": latest_fire_at.isoformat().replace("+00:00", "Z")},
+        )
+        return [event]
 
     def _trigger(self) -> CronTriggerDefinition:
         if not isinstance(self.trigger_definition, CronTriggerDefinition):

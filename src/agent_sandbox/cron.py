@@ -34,6 +34,17 @@ def next_cron_time(expression: str, base: datetime) -> datetime | None:
     return _coerce_utc(next_value).replace(second=0, microsecond=0)
 
 
+def latest_cron_time_on_or_before(expression: str, base: datetime) -> datetime | None:
+    try:
+        normalized = validate_cron_expression(expression)
+        rounded_base = _coerce_utc(base).replace(second=0, microsecond=0)
+        iterator = croniter(normalized, rounded_base + timedelta(minutes=1))
+        latest_value = iterator.get_prev(datetime)
+    except (ValueError, OverflowError):
+        return None
+    return _coerce_utc(latest_value).replace(second=0, microsecond=0)
+
+
 def cron_min_interval_seconds(expression: str, base: datetime | None = None) -> float | None:
     if base is None:
         base = datetime.now(UTC).replace(second=0, microsecond=0) - timedelta(minutes=1)
