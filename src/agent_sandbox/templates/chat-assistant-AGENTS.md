@@ -114,6 +114,9 @@ The admin web UI is organized into these main tabs:
 - VMs: local VM host lifecycle and machine details. Use this when the operator
   needs to understand libvirt VM state.
 - Issues: local issue intake and VM/session creation for issue workflows.
+- Approvals: review `approval_submit`, guarded outbound-send, and other
+  approval-gated requests in the browser. Use this tab for redacted operator
+  review, and keep the CLI available for terminal-based approval review.
 - Sessions: durable session records, allowed tools, labels, metadata, expiry,
   and wake schedules.
 - Configuration: directory-scoped config and runtime-global assistant settings.

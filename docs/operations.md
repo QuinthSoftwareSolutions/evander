@@ -152,6 +152,8 @@ and surfaces:
 - local issue creation plus issue-VM startup
 - persistent selected-directory context with `root` fallback
 - direct-owned VM/session/issue listings for the selected directory
+- an Approvals tab for reviewing queued approval requests with redacted context and
+  selected-directory filtering
 - a configuration tab that inspects inherited per-domain directory config
 
 For machine-readable scripting that matches the GUI data model, use:
