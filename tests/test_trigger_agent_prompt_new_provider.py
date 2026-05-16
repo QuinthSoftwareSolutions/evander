@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -82,6 +83,13 @@ def test_agent_prompt_new_trigger_emits_once_per_unread_message(tmp_path: Path) 
     assert events[0].event_id == "agent-prompt-trigger:msg-1"
     assert events[0].payload["session_id"] == "target-a"
     assert events[0].payload["agent_prompt"]["message_id"] == "msg-1"
+
+    cursor_path = runtime_dir / "trigger-cursors-agent-prompt-new.json"
+    assert json.loads(cursor_path.read_text(encoding="utf-8")) == {}
+
+    provider.acknowledge_published_event(events[0])
+    cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+    assert cursor_payload["agent-prompt-trigger"]["emitted_unread_message_ids"] == ["msg-1"]
     assert provider.poll() == []
 
     store.record_response("msg-1", response_text="done", responder_session_id="target-a")

@@ -376,12 +376,23 @@ def test_teams_meeting_transcript_trigger_emits_transcripts_once(tmp_path: Path)
     )
 
     first = provider.poll()
+    cursor_payload = json.loads(
+        (tmp_path / "trigger-cursors-teams-meeting.json").read_text(encoding="utf-8")
+    )
+    assert cursor_payload == {}
+    provider.acknowledge_published_event(first[0])
     second = provider.poll()
 
     assert [event.event_id for event in first] == ["meeting-trigger:meeting-1:1"]
     assert first[0].payload["session_id"] == "session-1"
     assert first[0].payload["transcript"]["text"] == "final sentence"
     assert second == []
+    cursor_payload = json.loads(
+        (tmp_path / "trigger-cursors-teams-meeting.json").read_text(encoding="utf-8")
+    )
+    assert cursor_payload["meeting-trigger"] == {
+        "last_sequences_by_meeting": {"meeting-1": 1}
+    }
 
 
 def test_teams_meeting_transcript_trigger_uses_monotonic_sequence_cursor(
@@ -412,6 +423,12 @@ def test_teams_meeting_transcript_trigger_uses_monotonic_sequence_cursor(
     )
 
     first = provider.poll()
+    cursor_payload = json.loads(
+        (tmp_path / "trigger-cursors-teams-meeting.json").read_text(encoding="utf-8")
+    )
+    assert cursor_payload == {}
+    for event in first:
+        provider.acknowledge_published_event(event)
     second = provider.poll()
 
     assert len(first) == 600

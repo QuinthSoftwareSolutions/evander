@@ -50,7 +50,11 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
         )
 
         events: list[TriggerEvent] = []
-        updated_seen_by_vm: dict[str, dict[str, Any]] = {}
+        updated_seen_by_vm: dict[str, dict[str, Any]] = {
+            str(vm_name): dict(previous)
+            for vm_name, previous in seen_by_vm.items()
+            if str(vm_name).strip() and isinstance(previous, dict)
+        }
 
         for summary in normalized_summaries:
             vm_name = self._normalize_optional_string(summary.vm_name)
@@ -88,14 +92,13 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
                         target_session_id=target_session_id,
                     )
                 )
+                continue
 
             seen_entry: dict[str, Any] = {
                 "last_agent_state": current_state,
                 "last_state_update_at": self._format_dt(current_updated_at),
             }
-            if should_emit:
-                seen_entry["last_emitted_state_update_at"] = self._format_dt(current_updated_at)
-            elif previous_emitted_at is not None:
+            if previous_emitted_at is not None:
                 seen_entry["last_emitted_state_update_at"] = self._format_dt(previous_emitted_at)
             updated_seen_by_vm[vm_name] = seen_entry
 
@@ -112,6 +115,28 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
             )
 
         return events
+
+    def acknowledge_published_event(self, event: TriggerEvent) -> None:
+        trigger = self._trigger()
+        if event.trigger_id != trigger.id or event.trigger_type != trigger.type:
+            return
+        payload = event.payload
+        vm_name = self._normalize_optional_string(payload.get("vm_name"))
+        current_state = self._normalize_optional_string(payload.get("agent_state")) or "unknown"
+        current_updated_at = self._normalize_dt(payload.get("last_state_update_at"))
+        if not vm_name or current_updated_at is None:
+            return
+        scope = payload.get("scope")
+        self._cursor_store().update(
+            trigger.id,
+            lambda state: _acknowledge_vm(
+                state,
+                vm_name=vm_name,
+                current_state=current_state,
+                current_updated_at=current_updated_at,
+                scope=scope if isinstance(scope, dict) else None,
+            ),
+        )
 
     def _trigger(self) -> Any:
         if self.trigger_definition is None:
@@ -308,3 +333,41 @@ class AgentRunCompletedTriggerProvider(TriggerProviderBase):
         if value is None:
             return None
         return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _acknowledge_vm(
+    state: dict[str, Any],
+    *,
+    vm_name: str,
+    current_state: str,
+    current_updated_at: datetime,
+    scope: dict[str, Any] | None,
+) -> dict[str, Any]:
+    seen_by_vm = state.get("seen_by_vm", {})
+    if isinstance(seen_by_vm, dict):
+        updated_seen_by_vm = {
+            str(existing_vm_name): dict(existing_state)
+            for existing_vm_name, existing_state in seen_by_vm.items()
+            if str(existing_vm_name).strip() and isinstance(existing_state, dict)
+        }
+    else:
+        updated_seen_by_vm = {}
+
+    seen_entry: dict[str, Any] = {
+        "last_agent_state": current_state,
+        "last_state_update_at": current_updated_at.astimezone(UTC)
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "last_emitted_state_update_at": current_updated_at.astimezone(UTC)
+        .isoformat()
+        .replace("+00:00", "Z"),
+    }
+    updated_seen_by_vm[vm_name] = seen_entry
+    state["seen_by_vm"] = updated_seen_by_vm
+
+    if scope is not None:
+        for key in ("directory_path", "vm_name", "session_id", "vm_user"):
+            value = scope.get(key)
+            if value is not None:
+                state[key] = value
+    return state

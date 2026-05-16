@@ -16,7 +16,17 @@ from agent_sandbox.daemons.trigger_orchestrator import (
     main,
 )
 from agent_sandbox.events.models import TriggerEvent
+from agent_sandbox.events.provider_models import AgentPromptNewTriggerDefinition, EventTriggerDefinition
+from agent_sandbox.messaging.agent_prompt_store import AgentPromptRecord, AgentPromptStore
+from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
+from agent_sandbox.models import SessionManifest
+from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from agent_sandbox.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
+from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
+from agent_sandbox.triggers.providers.event import EventTriggerProvider
+from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
+from agent_sandbox.events.provider_models import TeamsNewMessageTriggerDefinition
 
 
 class _StaticProvider:
@@ -34,6 +44,36 @@ class _AcknowledgingProvider(_StaticProvider):
 
     def acknowledge_published_event(self, event: TriggerEvent) -> None:
         self.acknowledged_event_ids.append(event.event_id)
+
+
+class _FailingEventQueue:
+    def __init__(self) -> None:
+        self.published_event_ids: list[str] = []
+
+    def contains(self, event_id: str) -> bool:
+        _ = event_id
+        return False
+
+    def publish(self, event: TriggerEvent):
+        _ = event
+        raise RuntimeError("queue publish failed")
+
+
+class _FailingSecondEventQueue:
+    def __init__(self) -> None:
+        self.published_event_ids: list[str] = []
+        self.calls = 0
+
+    def contains(self, event_id: str) -> bool:
+        _ = event_id
+        return False
+
+    def publish(self, event: TriggerEvent):
+        self.calls += 1
+        if self.calls == 2:
+            raise RuntimeError("queue publish failed on second event")
+        self.published_event_ids.append(event.event_id)
+        return SimpleNamespace(event_id=event.event_id)
 
 
 class _StaticReloader:
@@ -176,6 +216,203 @@ def test_trigger_orchestrator_acknowledges_provider_after_queue_publish(
     worker.run_once()
 
     assert provider.acknowledged_event_ids == ["event-1"]
+
+
+def test_trigger_orchestrator_does_not_checkpoint_when_publish_fails(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    event = TriggerEvent(
+        event_id="event-1",
+        trigger_id="cron-1",
+        trigger_type="trigger:cron",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"kind": "tick"},
+    )
+    provider = _AcknowledgingProvider([event])
+    worker.provider_factory.build = lambda trigger: provider  # type: ignore[assignment]
+    failing_queue = _FailingEventQueue()
+    worker.event_queue = failing_queue  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="queue publish failed"):
+        worker.run_once()
+
+    assert provider.acknowledged_event_ids == []
+    assert failing_queue.published_event_ids == []
+    assert not worker_config.event_queue_cursor_store_path.exists()
+
+
+def test_trigger_orchestrator_retries_same_timestamp_teams_event_after_publish_failure(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    created_at = datetime(2026, 4, 9, 9, 30, tzinfo=UTC)
+    inbox_store = TeamsInboxStore(runtime_dir / "teams-inbox-store.json")
+    inbox_store.add_message_if_new(
+        TeamsInboxMessage(
+            cursor="team-a/channel-1/msg-1",
+            message_id="msg-1",
+            author_id="user-a",
+            author_name="User A",
+            team_id="team-a",
+            channel_id="channel-1",
+            thread_id="msg-1",
+            content="hello",
+            created_at=created_at,
+            metadata={"source": "teams_graph_api"},
+        )
+    )
+    inbox_store.add_message_if_new(
+        TeamsInboxMessage(
+            cursor="team-a/channel-1/msg-2",
+            message_id="msg-2",
+            author_id="user-a",
+            author_name="User A",
+            team_id="team-a",
+            channel_id="channel-1",
+            thread_id="msg-1",
+            content="same timestamp reply",
+            created_at=created_at,
+            metadata={"source": "teams_graph_api"},
+        )
+    )
+
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "teams-trigger",
+                    "display_name": "Teams new message",
+                    "type": "trigger:teams:new-message",
+                    "targets": [{"target": "team-a/channel-1"}],
+                    "user_ids": ["user-a"],
+                }
+            ],
+        }
+    )
+    provider = TeamsNewMessageTriggerProvider()
+    provider.initialize(
+        TeamsNewMessageTriggerDefinition.model_validate(
+            {
+                "id": "teams-trigger",
+                "display_name": "Teams new message",
+                "type": "trigger:teams:new-message",
+                "targets": [{"target": "team-a/channel-1"}],
+                "user_ids": ["user-a"],
+            }
+        ),
+        TriggerRuntimeContext(resolved_config=config, env={}),
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory.build = lambda trigger: provider  # type: ignore[assignment]
+    worker.event_queue = _FailingSecondEventQueue()  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="queue publish failed on second event"):
+        worker.run_once()
+
+    cursor_payload = json.loads(
+        (runtime_dir / "trigger-cursors-teams.json").read_text(encoding="utf-8")
+    )
+    assert cursor_payload["teams-trigger"]["last_created_at"] == "2026-04-09T09:30:00Z"
+    assert cursor_payload["teams-trigger"]["recent_cursors"] == ["team-a/channel-1/msg-1"]
+    assert [event.event_id for event in provider.poll()] == ["teams-trigger:team-a/channel-1/msg-2"]
+
+
+def test_trigger_orchestrator_publish_failure_with_real_provider_keeps_cursor_unadvanced(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "agent-prompt-trigger",
+                    "display_name": "Agent prompt",
+                    "type": "trigger:agent:prompt:new",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+
+    sessions = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    sessions.upsert_session(
+        SessionManifest(
+            session_id="target-a",
+            directory_path="root/team-a",
+            allowed_tools=[],
+            expires_at=datetime(2026, 4, 3, 13, 0, tzinfo=UTC),
+        )
+    )
+    prompt_store = AgentPromptStore(runtime_dir / "agent-prompt-store.json")
+    prompt_store.create_prompt_message(
+        AgentPromptRecord(
+            message_id="msg-1",
+            sender_session_id="sender",
+            target_session_id="target-a",
+            prompt_payload={"prompt": "Fetch the prompt inbox."},
+            issued_token_hash="token-hash-1",
+            issued_token_claims={"nonce": "n-1"},
+            created_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+            updated_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    provider = AgentPromptNewTriggerProvider()
+    provider.initialize(
+        AgentPromptNewTriggerDefinition(
+            id="agent-prompt-trigger",
+            display_name="Agent prompt",
+            type="trigger:agent:prompt:new",
+        ),
+        TriggerRuntimeContext(
+            resolved_config=GatewayConfig(
+                runtime_dir=runtime_dir,
+                session_store_path=runtime_dir / "sessions.json",
+            ),
+            metadata={"directory_path": "root/team-a"},
+        ),
+    )
+    worker.provider_factory.build = lambda trigger: provider  # type: ignore[assignment]
+    failing_queue = _FailingEventQueue()
+    worker.event_queue = failing_queue  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="queue publish failed"):
+        worker.run_once()
+
+    assert [event.event_id for event in provider.poll()] == ["agent-prompt-trigger:msg-1"]
+    assert failing_queue.published_event_ids == []
+    assert len(prompt_store.list_unread_prompts(target_session_id="target-a")) == 1
+    cursor_payload = json.loads(
+        (runtime_dir / "trigger-cursors-agent-prompt-new.json").read_text(encoding="utf-8")
+    )
+    assert cursor_payload == {}
+    assert not worker_config.event_queue_cursor_store_path.exists()
 
 
 def test_trigger_orchestrator_publishes_multiple_events_from_one_provider_poll(
@@ -845,3 +1082,49 @@ def test_multiple_event_triggers_can_listen_to_same_internal_event(tmp_path: Pat
         f"listener-a:{event.event_id}",
         f"listener-b:{event.event_id}",
     ]
+
+
+def test_event_trigger_acknowledges_internal_event_after_publish(tmp_path: Path) -> None:
+    from agent_sandbox.events.internal import InternalEventBus
+
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    event_bus = InternalEventBus(
+        runtime_dir / "internal-events.json",
+        journal_path=runtime_dir / "workflow-events.jsonl",
+    )
+    internal = event_bus.publish(
+        event_type="issue.plan_committed",
+        payload={"issue_id": "ISSUE-1", "plan_version": 3},
+        correlation_key="issue:ISSUE-1",
+        idempotency_key="internal-event-1",
+    )
+
+    provider = EventTriggerProvider()
+    provider.initialize(
+        EventTriggerDefinition.model_validate(
+            {
+                "id": "event-listener",
+                "display_name": "Plan committed",
+                "type": "trigger:event",
+                "event_type": "issue.plan_committed",
+            }
+        ),
+        TriggerRuntimeContext(resolved_config=config, env={}),
+    )
+
+    first = provider.poll()
+    cursor_path = runtime_dir / "trigger-cursors-event.json"
+    cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+
+    assert len(first) == 1
+    assert first[0].payload["event_id"] == internal.event_id
+    assert cursor_payload == {}
+
+    provider.acknowledge_published_event(first[0])
+
+    second = provider.poll()
+    cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+
+    assert second == []
+    assert cursor_payload["event-listener"]["emitted_internal_event_ids"] == [internal.event_id]

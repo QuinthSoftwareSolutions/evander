@@ -10,7 +10,10 @@ from agent_sandbox.events.models import (
     WorkflowNodeEnvelope,
 )
 from agent_sandbox.events.provider_models import CronTriggerDefinition
-from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
+from agent_sandbox.triggers.providers._cursor_state import (
+    TriggerCursorStore,
+    latest_cursor_timestamp_text,
+)
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 from agent_sandbox.triggers.providers.cron_schema import CronTriggerConfigSchema
 
@@ -42,7 +45,7 @@ class CronTriggerProvider(TriggerProviderBase):
 
         now = datetime.now(UTC).replace(second=0, microsecond=0)
         last_fired_at = _parse_dt(state.get("last_fired_at"))
-        base = last_fired_at or (now - timedelta(minutes=1))
+        pending_scheduled_for = _parse_dt(state.get("pending_scheduled_for"))
         try:
             expression = validate_cron_expression(trigger.expression)
         except ValueError as exc:
@@ -54,8 +57,26 @@ class CronTriggerProvider(TriggerProviderBase):
             )
             return []
 
-        latest_fire_at = latest_cron_time_on_or_before(expression, now)
-        if latest_fire_at is None or latest_fire_at <= base:
+        if pending_scheduled_for is not None:
+            latest_fire_at = pending_scheduled_for
+        else:
+            base = last_fired_at or (now - timedelta(minutes=1))
+            latest_fire_at = latest_cron_time_on_or_before(expression, now)
+            if latest_fire_at is None or latest_fire_at <= base:
+                return []
+            cursor_store.update(
+                trigger.id,
+                lambda state: _mark_pending_scheduled_for(
+                    state,
+                    scheduled_for=latest_fire_at,
+                ),
+            )
+
+        if pending_scheduled_for is not None and last_fired_at is not None:
+            if pending_scheduled_for <= last_fired_at:
+                return []
+
+        if latest_fire_at is None:
             return []
 
         event = TriggerEvent(
@@ -65,11 +86,19 @@ class CronTriggerProvider(TriggerProviderBase):
             occurred_at=latest_fire_at,
             payload={"scheduled_for": latest_fire_at.isoformat().replace("+00:00", "Z")},
         )
-        cursor_store.put(
-            trigger.id,
-            {"last_fired_at": latest_fire_at.isoformat().replace("+00:00", "Z")},
-        )
         return [event]
+
+    def acknowledge_published_event(self, event: TriggerEvent) -> None:
+        trigger = self._trigger()
+        if event.trigger_id != trigger.id or event.trigger_type != trigger.type:
+            return
+        scheduled_for = _parse_dt(event.payload.get("scheduled_for")) or event.occurred_at
+        if scheduled_for is None:
+            return
+        self._cursor_store().update(
+            trigger.id,
+            lambda state: _acknowledge_scheduled_for(state, scheduled_for),
+        )
 
     def _trigger(self) -> CronTriggerDefinition:
         if not isinstance(self.trigger_definition, CronTriggerDefinition):
@@ -94,3 +123,30 @@ def _parse_dt(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _mark_pending_scheduled_for(
+    state: dict[str, object],
+    *,
+    scheduled_for: datetime,
+) -> dict[str, object]:
+    current = _parse_dt(state.get("pending_scheduled_for"))
+    if current is not None and current >= scheduled_for:
+        return state
+    state["pending_scheduled_for"] = scheduled_for.astimezone(UTC).isoformat().replace(
+        "+00:00", "Z"
+    )
+    return state
+
+
+def _acknowledge_scheduled_for(
+    state: dict[str, object],
+    scheduled_for: datetime,
+) -> dict[str, object]:
+    pending = _parse_dt(state.get("pending_scheduled_for"))
+    if pending is not None and pending != scheduled_for.astimezone(UTC):
+        return state
+    state["last_fired_at"] = latest_cursor_timestamp_text(state.get("last_fired_at"), scheduled_for)
+    if pending is not None:
+        state.pop("pending_scheduled_for", None)
+    return state
