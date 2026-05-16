@@ -6,6 +6,7 @@ from typing import Any
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.models import (
+    ApprovalNotificationStatus,
     ApprovalRequest,
     ApprovalStatus,
     DiscordCommandEnvelope,
@@ -81,6 +82,10 @@ class PolicyEngine:
             config,
             session_store=session_store,
         )
+        self.approval_notification_dispatcher: Any | None = None
+
+    def set_approval_notification_dispatcher(self, dispatcher: Any | None) -> None:
+        self.approval_notification_dispatcher = dispatcher
 
     def get_session(self, session_id: str) -> SessionManifest:
         session = self.session_store.get_session(session_id)
@@ -626,11 +631,32 @@ class PolicyEngine:
         payload: dict[str, Any],
         human_summary: str,
     ) -> ApprovalRequest:
+        request_id = f"apr_{digest_payload({'session_id': session_id, **payload})[:16]}"
+        existing = self.approval_store.get(request_id)
+        if existing is not None:
+            session = self.session_store.get_session(existing.session_id)
+            if session is not None:
+                effective_policy = self.effective_policy_for_session(session)
+                redacted_payload = _redact_nested_payload(
+                    effective_policy.redacted_keys, existing.payload
+                )
+                if redacted_payload != existing.payload:
+                    existing.payload = redacted_payload
+                    self.approval_store.put(existing.request_id, existing)
+            return existing
+
         session = self.get_session(session_id)
         effective_policy = self.effective_policy_for_session(session)
         redacted_payload = _redact_nested_payload(effective_policy.redacted_keys, payload)
+        notification_target_ids = list(effective_policy.approval_notification_target_ids)
+        notification_status = (
+            ApprovalNotificationStatus.QUEUED
+            if notification_target_ids
+            else ApprovalNotificationStatus.DISABLED
+        )
+        now = datetime.now(UTC)
         request = ApprovalRequest(
-            request_id=f"apr_{digest_payload({'session_id': session_id, **payload})[:16]}",
+            request_id=request_id,
             session_id=session_id,
             action_type=action_type,
             payload_digest=digest_payload(payload),
@@ -639,9 +665,14 @@ class PolicyEngine:
             directory_path=session.directory_path,
             vm_id=session.vm_id,
             tool_name=action_type,
-            expires_at=datetime.now(UTC) + timedelta(seconds=effective_policy.approval_ttl_seconds),
+            notification_status=notification_status,
+            notification_target_ids=notification_target_ids,
+            notification_attempted_at=now if notification_target_ids else None,
+            expires_at=now + timedelta(seconds=effective_policy.approval_ttl_seconds),
         )
         self.approval_store.put(request.request_id, request)
+        if self.approval_notification_dispatcher is not None:
+            self.approval_notification_dispatcher.dispatch(request)
         return request
 
     def get_approval(self, request_id: str) -> ApprovalRequest:
