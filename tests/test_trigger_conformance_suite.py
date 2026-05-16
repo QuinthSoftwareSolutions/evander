@@ -580,9 +580,20 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
 
 
 def test_conformance_cron_due_and_cursor_persistence(
-    tmp_path: Path, report_collector: dict[str, Any]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, report_collector: dict[str, Any]
 ) -> None:
     runtime_dir = tmp_path / "runtime"
+    frozen_now = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz: timezone | None = None) -> datetime:
+            if tz is None:
+                return frozen_now.replace(tzinfo=None)
+            return frozen_now.astimezone(tz)
+
+    monkeypatch.setattr("agent_sandbox.triggers.providers.cron.datetime", _FrozenDatetime)
+
     provider = CronTriggerProvider()
     provider.initialize(
         _trigger_adapter().validate_python(
@@ -597,21 +608,34 @@ def test_conformance_cron_due_and_cursor_persistence(
     )
 
     first_events = provider.poll()
-    second_events = provider.poll()
     cursor_payload = json.loads(
         (runtime_dir / "trigger-cursors-cron.json").read_text(encoding="utf-8")
     )
 
     assert first_events
-    assert second_events == []
-    assert "last_fired_at" in cursor_payload["cron-every-minute-range"]
+    assert first_events[0].occurred_at == frozen_now
+    assert first_events[0].payload["scheduled_for"] == "2026-04-03T12:00:00Z"
+    assert cursor_payload["cron-every-minute-range"]["pending_scheduled_for"] == (
+        "2026-04-03T12:00:00Z"
+    )
+    assert "last_fired_at" not in cursor_payload["cron-every-minute-range"]
+
+    provider.acknowledge_published_event(first_events[0])
+    acked_cursor_payload = json.loads(
+        (runtime_dir / "trigger-cursors-cron.json").read_text(encoding="utf-8")
+    )
+    assert acked_cursor_payload["cron-every-minute-range"]["last_fired_at"] == (
+        "2026-04-03T12:00:00Z"
+    )
+    assert "pending_scheduled_for" not in acked_cursor_payload["cron-every-minute-range"]
+    assert provider.poll() == []
     _record_result(
         report_collector,
         requirement_id="provider:cron:cursor",
         trigger_type="trigger:cron",
         status="pass",
         coverage=["provider behavior correctness"],
-        details="Cron emits when due and persists last_fired_at cursor.",
+        details="Cron emits when due, stages pending_scheduled_for until acknowledgement, and then persists last_fired_at.",
     )
 
 
@@ -658,13 +682,18 @@ def test_conformance_cron_high_frequency_edit_skips_backlog(
 
     events = provider.poll()
     cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
-    second_events = provider.poll()
 
     assert len(events) == 1
     assert events[0].occurred_at == frozen_now
     assert events[0].payload["scheduled_for"] == "2026-04-03T12:10:00Z"
-    assert cursor_payload["cron-edited"]["last_fired_at"] == "2026-04-03T12:10:00Z"
-    assert second_events == []
+    assert cursor_payload["cron-edited"]["last_fired_at"] == "2026-04-03T10:00:00Z"
+    assert cursor_payload["cron-edited"]["pending_scheduled_for"] == "2026-04-03T12:10:00Z"
+
+    provider.acknowledge_published_event(events[0])
+    acked_cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+    assert acked_cursor_payload["cron-edited"]["last_fired_at"] == "2026-04-03T12:10:00Z"
+    assert "pending_scheduled_for" not in acked_cursor_payload["cron-edited"]
+    assert provider.poll() == []
 
     _record_result(
         report_collector,
@@ -672,7 +701,7 @@ def test_conformance_cron_high_frequency_edit_skips_backlog(
         trigger_type="trigger:cron",
         status="pass",
         coverage=["provider behavior correctness"],
-        details="Edited high-frequency cron schedules emit only the latest due occurrence and advance the cursor past older missed times.",
+        details="Edited high-frequency cron schedules emit the latest due occurrence, keep it pending until acknowledgement, and then advance last_fired_at past older missed times.",
     )
 
 

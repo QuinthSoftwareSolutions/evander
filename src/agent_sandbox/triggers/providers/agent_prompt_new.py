@@ -7,7 +7,7 @@ from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import AgentPromptNewTriggerDefinition
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 
-from ._cursor_state import TriggerCursorStore
+from ._cursor_state import TriggerCursorStore, merge_cursor_ids
 from .base import TriggerProviderBase
 
 
@@ -28,7 +28,6 @@ class AgentPromptNewTriggerProvider(TriggerProviderBase):
         current_unread.sort(key=lambda item: (item.created_at, item.message_id))
 
         events: list[TriggerEvent] = []
-        current_ids = {message.message_id for message in current_unread}
         for message in current_unread:
             if message.message_id in emitted_ids:
                 continue
@@ -56,8 +55,22 @@ class AgentPromptNewTriggerProvider(TriggerProviderBase):
                 )
             )
 
-        cursor_store.put(trigger.id, {"emitted_unread_message_ids": sorted(current_ids)})
         return events
+
+    def acknowledge_published_event(self, event: TriggerEvent) -> None:
+        trigger = self._trigger()
+        if event.trigger_id != trigger.id or event.trigger_type != trigger.type:
+            return
+        payload = event.payload.get("agent_prompt")
+        if not isinstance(payload, dict):
+            return
+        message_id = str(payload.get("message_id") or "").strip()
+        if not message_id:
+            return
+        self._cursor_store().update(
+            trigger.id,
+            lambda state: _acknowledge_message_id(state, message_id),
+        )
 
     def _list_current_unread(self):
         prompt_store = AgentPromptStore(
@@ -89,3 +102,11 @@ class AgentPromptNewTriggerProvider(TriggerProviderBase):
         if not isinstance(self.trigger_definition, AgentPromptNewTriggerDefinition):
             raise RuntimeError("AgentPromptNewTriggerProvider initialized with wrong definition")
         return self.trigger_definition
+
+
+def _acknowledge_message_id(state: dict[str, object], message_id: str) -> dict[str, object]:
+    state["emitted_unread_message_ids"] = merge_cursor_ids(
+        state.get("emitted_unread_message_ids"),
+        [message_id],
+    )
+    return state

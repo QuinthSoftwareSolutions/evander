@@ -16,6 +16,12 @@ from agent_sandbox.daemons.trigger_orchestrator import (
     main,
 )
 from agent_sandbox.events.models import TriggerEvent
+from agent_sandbox.events.provider_models import AgentPromptNewTriggerDefinition
+from agent_sandbox.messaging.agent_prompt_store import AgentPromptRecord, AgentPromptStore
+from agent_sandbox.models import SessionManifest
+from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from agent_sandbox.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
+from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
 
 
@@ -229,6 +235,82 @@ def test_trigger_orchestrator_does_not_checkpoint_when_publish_fails(
 
     assert provider.acknowledged_event_ids == []
     assert failing_queue.published_event_ids == []
+    assert not worker_config.event_queue_cursor_store_path.exists()
+
+
+def test_trigger_orchestrator_publish_failure_with_real_provider_keeps_cursor_unadvanced(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "agent-prompt-trigger",
+                    "display_name": "Agent prompt",
+                    "type": "trigger:agent:prompt:new",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+
+    sessions = JsonSessionManifestRepository(runtime_dir / "sessions.json")
+    sessions.upsert_session(
+        SessionManifest(
+            session_id="target-a",
+            directory_path="root/team-a",
+            allowed_tools=[],
+            expires_at=datetime(2026, 4, 3, 13, 0, tzinfo=UTC),
+        )
+    )
+    prompt_store = AgentPromptStore(runtime_dir / "agent-prompt-store.json")
+    prompt_store.create_prompt_message(
+        AgentPromptRecord(
+            message_id="msg-1",
+            sender_session_id="sender",
+            target_session_id="target-a",
+            prompt_payload={"prompt": "Fetch the prompt inbox."},
+            issued_token_hash="token-hash-1",
+            issued_token_claims={"nonce": "n-1"},
+            created_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+            updated_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        )
+    )
+
+    provider = AgentPromptNewTriggerProvider()
+    provider.initialize(
+        AgentPromptNewTriggerDefinition(
+            id="agent-prompt-trigger",
+            display_name="Agent prompt",
+            type="trigger:agent:prompt:new",
+        ),
+        TriggerRuntimeContext(
+            resolved_config=GatewayConfig(
+                runtime_dir=runtime_dir,
+                session_store_path=runtime_dir / "sessions.json",
+            ),
+            metadata={"directory_path": "root/team-a"},
+        ),
+    )
+    worker.provider_factory.build = lambda trigger: provider  # type: ignore[assignment]
+    failing_queue = _FailingEventQueue()
+    worker.event_queue = failing_queue  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="queue publish failed"):
+        worker.run_once()
+
+    assert [event.event_id for event in provider.poll()] == ["agent-prompt-trigger:msg-1"]
+    assert failing_queue.published_event_ids == []
+    assert len(prompt_store.list_unread_prompts(target_session_id="target-a")) == 1
+    cursor_payload = json.loads(
+        (runtime_dir / "trigger-cursors-agent-prompt-new.json").read_text(encoding="utf-8")
+    )
+    assert cursor_payload == {}
     assert not worker_config.event_queue_cursor_store_path.exists()
 
 
