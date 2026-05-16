@@ -370,7 +370,9 @@ the correct host repo path or remote URL per directory.
 ## Admin Web And CLI
 
 Use `agent-sandbox-admin-web` for the operator GUI and `agent-sandbox-cli` for terminal
-automation. Issue handling is a single local abstraction in both Admin Web and CLI flows:
+automation. Admin Web now includes an Approvals tab for reviewing queued approval requests in the
+browser, while the CLI remains available for terminal-based review. Issue handling is a single
+local abstraction in both Admin Web and CLI flows:
 
 - local-only issues are created and managed in `runtime/local-issues.json`
 - ADO-backed issues are stored as local **proxy issues** (`source: proxy_azure_devops`) with
@@ -394,6 +396,10 @@ agent-sandbox-cli start-vm vm-14084
 agent-sandbox-cli shutdown-vm vm-14084
 agent-sandbox-cli create-local-issue --title "Fix failing restore" --body "Investigate restore timeout"
 agent-sandbox-cli list-local-issues --json
+agent-sandbox-cli list-approvals
+agent-sandbox-cli show-approval <request_id>
+agent-sandbox-cli approve --reason "..." <request_id> <approver>
+agent-sandbox-cli approve --deny --reason "..." <request_id> <approver>
 agent-sandbox-cli directories list --parent root
 agent-sandbox-cli directories show root
 ```

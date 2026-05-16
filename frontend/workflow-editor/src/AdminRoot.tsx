@@ -9,6 +9,7 @@ import type { AdminResult, DirectoryTreeNode } from "./features/admin/AdminConte
 import { AgentsPage } from "./features/agents/AgentsPage";
 import { ConfigurationScreen } from "./features/configuration/ConfigurationScreen";
 import { IssuesPage } from "./features/issues/IssuesPage";
+import { ApprovalsScreen } from "./features/approvals/ApprovalsScreen";
 import { ReportsPage } from "./features/reports/ReportsPage";
 import { SessionsScreen } from "./features/sessions/SessionsScreen";
 import { SkillsPage } from "./features/skills/SkillsPage";
@@ -77,6 +78,7 @@ type DirectoryMutationResult = AdminResult<unknown>;
 
 type AdminTab =
   | "agents"
+  | "approvals"
   | "skills"
   | "vms"
   | "issues"
@@ -102,6 +104,7 @@ const THEME_STORAGE_KEY = "admin-web:theme";
 
 const TABS: ReadonlyArray<AdminTabDefinition> = [
   { key: "agents", label: "Agents", shortLabel: "Agents", description: "Active and historical execution targets." },
+  { key: "approvals", label: "Approvals", shortLabel: "Approvals", description: "Review guarded approval requests and queued decisions." },
   { key: "skills", label: "Skills", shortLabel: "Skills", description: "Managed Codex skill library." },
   { key: "vms", label: "VMs", shortLabel: "VMs", description: "VM host lifecycle and machine details." },
   { key: "issues", label: "Issues", shortLabel: "Issues", description: "Local issue intake and VM creation." },
@@ -1614,6 +1617,8 @@ export default function AdminRoot() {
               <WorkersScreen />
             ) : renderedTab === "sessions" ? (
               <SessionsScreen />
+            ) : renderedTab === "approvals" ? (
+              <ApprovalsScreen />
             ) : (
               <PlaceholderView title={activeTab.label} description={activeTab.description} />
             )}
