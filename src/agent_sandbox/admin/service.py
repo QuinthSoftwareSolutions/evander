@@ -5663,7 +5663,15 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 teams_channel_allowlist=self._agent_string_list(
                     payload, "teams_channel_allowlist"
                 ),
-                teams_chat_allowlist=self._agent_string_list(payload, "teams_chat_allowlist"),
+                **(
+                    {
+                        "teams_chat_allowlist": self._agent_string_list(
+                            payload, "teams_chat_allowlist"
+                        )
+                    }
+                    if "teams_chat_allowlist" in payload
+                    else {}
+                ),
                 teams_user_allowlist=self._agent_string_list(payload, "teams_user_allowlist"),
                 email_mailboxes=self._agent_string_list(payload, "email_mailboxes"),
                 email_folders=self._agent_string_list(payload, "email_folders"),

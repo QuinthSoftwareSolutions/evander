@@ -46,6 +46,35 @@ def test_directory_store_rejects_missing_parent_and_duplicate_siblings(tmp_path:
         store.put(Directory(id="a-2", name="a", parent_id="root"))
 
 
+def test_directory_store_mutations_use_transactional_updates(tmp_path: Path, monkeypatch) -> None:
+    store = DirectoryStore(tmp_path / "directories.json")
+
+    def fail_write_all(*args, **kwargs) -> None:
+        raise AssertionError("directory mutations must not use split read/write updates")
+
+    monkeypatch.setattr(store._repository, "write_all", fail_write_all)
+
+    store.ensure_root()
+    store.put(Directory(id="a", name="a", parent_id="root"))
+    store.delete("a")
+
+    assert list(store.read_all()) == ["root"]
+
+
+def test_directory_store_read_all_does_not_rewrite_existing_root(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = DirectoryStore(tmp_path / "directories.json")
+    store.ensure_root()
+
+    def fail_update_all(*args, **kwargs) -> None:
+        raise AssertionError("directory reads must not use transactional write updates")
+
+    monkeypatch.setattr(store._repository, "update_all", fail_update_all)
+
+    assert list(store.read_all()) == ["root"]
+
+
 def test_session_manifest_directory_path_is_canonical() -> None:
     manifest = SessionManifest(
         session_id="session-1",
@@ -77,6 +106,27 @@ def test_directory_service_supports_create_show_rename_move_and_delete(tmp_path:
 
     deleted = service.delete(moved.id)
     assert deleted == {"deleted_count": 1, "deleted_ids": [moved.id]}
+
+
+def test_directory_service_mutations_use_transactional_updates(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = DirectoryStore(tmp_path / "directories.json")
+    service = DirectoryService(store)
+
+    def fail_write_all(*args, **kwargs) -> None:
+        raise AssertionError("directory service mutations must not use split read/write updates")
+
+    monkeypatch.setattr(store, "write_all", fail_write_all)
+
+    team = service.create(parent="root", name="team")
+    sandbox = service.create(parent=team.id, name="sandbox")
+    renamed = service.rename(sandbox.id, new_name="lab")
+    moved = service.move(renamed.id, new_parent="root")
+    deleted = service.delete(moved.id)
+
+    assert deleted == {"deleted_count": 1, "deleted_ids": [moved.id]}
+    assert [item.path for item in service.list_children(parent="root")] == ["root/team"]
 
 
 def test_directory_service_rejects_move_cycles_and_non_empty_delete_without_force(
