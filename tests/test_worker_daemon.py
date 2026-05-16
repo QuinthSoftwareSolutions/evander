@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
+from pydantic import ValidationError
 from starlette.testclient import TestClient
 
 from agent_sandbox.worker.service import WorkerDaemon
@@ -99,6 +101,21 @@ def test_auth_rejects_missing_or_wrong_bearer_token_and_accepts_configured_token
     )
 
     assert response.status_code == 201
+
+
+def test_worker_job_request_rejects_egress_policy_fields() -> None:
+    with pytest.raises(ValidationError, match="egress_policy_enabled"):
+        WorkerJobRequest.model_validate(
+            {
+                "session_id": "session-1",
+                "job_id": "job-1",
+                "image": "codex:latest",
+                "command": ["true"],
+                "egress_policy_enabled": True,
+            }
+        )
+
+    assert not any("egress" in field_name for field_name in WorkerJobRequest.model_fields)
 
 
 def test_session_directories_are_created_and_reused_without_replacing_codex(tmp_path: Path) -> None:
