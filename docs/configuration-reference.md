@@ -82,27 +82,6 @@ persisted source of truth is `config/ado-worker/config.json`. Secret values such
 DevOps PAT value is read from the host env var named by `ado_work_items_azure_devops_pat_env`,
 defaulting to `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT`.
 
-## `config/issue-orchestrator/config.json`
-
-This JSON file stores the retired issue orchestrator worker's global settings. The worker is
-obsolete, `scripts/install_systemd_units.sh` no longer installs/enables its systemd unit, and new
-deployments should leave this config unused unless they are intentionally reviving that legacy
-scaffold.
-
-| Parameter | Found in | Consumed by |
-|---|---|---|
-| `runtime_dir` | `config/issue-orchestrator/config.json` | Future issue orchestrator worker runtime path defaults. |
-| `directories` | `config/issue-orchestrator/config.json` | Future issue orchestrator worker directory list. |
-| `poll_interval_seconds` | `config/issue-orchestrator/config.json` | Future issue orchestrator worker sleep cadence. |
-| `jitter_seconds` | `config/issue-orchestrator/config.json` | Future issue orchestrator worker jitter. |
-| `cooldown_seconds` | `config/issue-orchestrator/config.json` | Future issue orchestrator worker per-session cooldown. |
-| `lock_path` | `config/issue-orchestrator/config.json` | Future issue orchestrator single-instance lock. |
-| `busy_check_script_path` | `config/issue-orchestrator/config.json` | Future issue orchestrator guest-busy check hook. |
-| `resume_script_path` | `config/issue-orchestrator/config.json` | Future issue orchestrator VM resume hook. |
-| `wake_state_path` | `config/issue-orchestrator/config.json` | Future issue orchestrator wake state file. |
-| `vm_user` | `config/issue-orchestrator/config.json` | Future issue orchestrator guest user name. |
-| `resume_timeout_seconds` | `config/issue-orchestrator/config.json` | Future issue orchestrator resume timeout. |
-
 ## `config/trigger-orchestrator/config.json`
 
 This JSON file stores the workflow orchestrator worker's global settings.
@@ -177,6 +156,9 @@ Type-specific keys:
 | `trigger:pull-request:completed` | `provider` | `organization_url`, `project` (but `organization_url` becomes required when `provider=ado`) |
 | `trigger:review:new-request` | — | — |
 | `trigger:git:push` | `path_to_repo` | — |
+
+`trigger:cron.expression` uses a standard 5-field cron expression. Field syntax supports
+ranges, stepped ranges, lists, and month/weekday names.
 
 `trigger:pull-request:completed` emits `session_id`, `status`, `merged`, `completed_at`, and a
 normalized `pr` object when the tracked PR reaches a terminal state such as merged, completed,
@@ -597,7 +579,7 @@ In the root-only model, this file is an import source for seeding `runtime/direc
 | `audit_log_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py` audit logger destination. |
 | `session_store_path`, `approval_store_path`, `draft_store_path`, `email_store_path`, `email_cursor_store_path`, `discord_command_store_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py` persistent JSON stores. |
 | `directories_store_path` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/directories.py`, directory admin/config services. |
-| `enable_directory_scoped_config` | legacy gateway YAML | `src/agent_sandbox/admin/directory.py`, `src/agent_sandbox/admin/app.py`, `src/agent_sandbox/daemons/ado_issue_worker.py`, and `src/agent_sandbox/daemons/pr_feedback_worker.py` (transition flag for directory edit surfaces and worker shadow resolution). |
+| `enable_directory_scoped_config` | legacy gateway YAML | `src/agent_sandbox/admin/directory.py`, Admin Web directory edit surfaces, `src/agent_sandbox/daemons/ado_issue_worker.py`, and `src/agent_sandbox/daemons/pr_feedback_worker.py` (transition flag for directory edit surfaces and worker shadow resolution). |
 | `approval_ttl_seconds` | legacy gateway YAML | `src/agent_sandbox/policy.py` approval expiry computation. |
 | `default_session_ttl_seconds` | legacy gateway YAML | `src/agent_sandbox/cli.py` session creation defaults. |
 | `bind_network_cidr` | legacy gateway YAML | `src/agent_sandbox/config.py` validation/normalization (policy-bound network constraints). |
@@ -724,7 +706,7 @@ environment.
 | `azure_devops_pr_pat_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/daemons/ado_issue_worker.py`, `src/agent_sandbox/reviews/request_service.py`, and PR feedback/completion trigger providers. |
 | `azure_devops_organization_url` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/daemons/ado_issue_worker.py`, `src/agent_sandbox/issues/service.py`, and PR feedback trigger providers. |
 | `azure_devops_project` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/daemons/ado_issue_worker.py`, `src/agent_sandbox/issues/service.py`, and PR feedback trigger providers. |
-| `host_heartbeat_pr_resume_prompt` | legacy gateway YAML | Legacy prompt key retained for directory-config compatibility; the `agent-sandbox-host-heartbeat.service` consumer is retired. |
+| `pr_feedback_resume_prompt` | legacy gateway YAML / directory wake config | Prompt used when resuming for unread PR feedback. |
 | `discord_resume_prompt` | legacy gateway YAML | `src/agent_sandbox/messaging/discord_wake.py`. |
 | `pr_map_path` | legacy gateway YAML | `src/agent_sandbox/daemons/ado_issue_worker.py`, PR feedback/completion trigger providers, PR status tracking, ownership cleanup, and admin/session pruning. |
 
@@ -765,7 +747,7 @@ Supported directory config domains:
 | `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, HTTP target relay, NuGet, GitHub, Azure DevOps, Teams, container worker, Retell |
 | `contacts.json` | Directory contact list and admin-user contact attachments | `contacts`, `user_contact_links` |
 | `email.json` | Mailbox provider definitions and email provider runtime settings | `email_mailboxes`, `email_provider_timeout_seconds` |
-| `heartbeat.json` | Directory-scoped wake prompt behavior | `host_heartbeat_pr_resume_prompt`, `discord_resume_prompt` |
+| `wake.json` | Directory-scoped wake prompt behavior | `pr_feedback_resume_prompt`, `discord_resume_prompt` |
 | `ado-worker.json` | Azure DevOps backlog worker setup/bootstrap behavior | `ado_area_filters`, `ado_team_filters`, `ado_project_or_solution`, `ado_prewarm_target`, `ado_repo_source`, `create_prs_automatically`, `create_prs_as_draft`, `ado_bootstrap_*`, `ado_mssql_sa_password_env`, frontend bootstrap fields |
 | `issue-setup.json` | VM issue setup/git hand-off defaults | `git_root`, `git_host`, `git_user`, `git_ssh_alias`, optional `default_model`, `post_exec_verification_prompt`, `enable_guest_heartbeat`, `guest_heartbeat_prompt`, optional `issue_setup_azure_devops_pr_pat_env` |
 | `pr-template.json` | Directory-scoped markdown boilerplate prepended to automated PR bodies | `pr_template_markdown` |

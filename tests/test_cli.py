@@ -269,7 +269,7 @@ def test_help_groups_commands_by_panel_then_alphabetically() -> None:
     assert "migrate-issue-setup-env-to-root" in output
     assert "migrate-pr-template-to-root" in output
     assert "migrate-directory-ownership" in output
-    assert "Backfill missing directory ownership fields" in output
+    assert "Backfill missing directory ownership" in output
     assert "create-issue-vm" in output and "Create an issue VM." in output
     assert "create-vm" in output and "Create and bootstrap a standalone VM." in output
     assert "teams-auth" in output
@@ -976,7 +976,7 @@ def test_migrate_global_config_to_root_materializes_all_domain_files(tmp_path: P
     assert (runtime_dir / "directory-config" / "root" / "policy.json").exists()
     assert (runtime_dir / "directory-config" / "root" / "providers.json").exists()
     assert (runtime_dir / "directory-config" / "root" / "email.json").exists()
-    assert (runtime_dir / "directory-config" / "root" / "heartbeat.json").exists()
+    assert (runtime_dir / "directory-config" / "root" / "wake.json").exists()
     assert (runtime_dir / "directory-config" / "root" / "ado-worker.json").exists()
     assert (runtime_dir / "directory-config" / "root" / "issue-setup.json").exists()
     assert (runtime_dir / "directory-config" / "root" / "vm.json").exists()
@@ -985,12 +985,85 @@ def test_migrate_global_config_to_root_materializes_all_domain_files(tmp_path: P
     assert directories["root"].metadata["directory_config"]["domains"] == [
         "ado_worker",
         "email",
-        "heartbeat",
         "issue_setup",
         "policy",
         "providers",
         "vm",
+        "wake",
     ]
+
+
+def test_migrate_heartbeat_config_to_wake_renames_file_and_metadata(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
+    runtime_dir = tmp_path / "runtime"
+    directory_store = DirectoryStore(runtime_dir / "directories.json")
+    directory_store.ensure_root()
+    root = directory_store.get("root")
+    assert root is not None
+    directory_store.put(
+        root.model_copy(update={"metadata": {"directory_config": {"domains": ["heartbeat"]}}})
+    )
+    legacy_path = runtime_dir / "directory-config" / "root" / "heartbeat.json"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(
+        json.dumps(
+            {
+                "host_heartbeat_pr_resume_prompt": "review feedback",
+                "discord_resume_prompt": "discord wake",
+                "wake_poll_interval_seconds": 12.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        app, ["migrate-heartbeat-config-to-wake", "--config", str(config_path)]
+    )
+
+    assert result.exit_code == 0
+    assert "scanned=1 written=1 skipped=0 removed_legacy=1 metadata_updated=0" in result.output
+    assert not legacy_path.exists()
+    wake_payload = json.loads(
+        (runtime_dir / "directory-config" / "root" / "wake.json").read_text(encoding="utf-8")
+    )
+    assert wake_payload == {
+        "discord_resume_prompt": "discord wake",
+        "pr_feedback_resume_prompt": "review feedback",
+    }
+    directories = DirectoryStore(runtime_dir / "directories.json").read_all()
+    configured_domains = directories["root"].metadata["directory_config"]["domains"]
+    assert "wake" in configured_domains
+    assert "heartbeat" not in configured_domains
+
+
+def test_migrate_heartbeat_config_to_wake_preserves_divergent_wake_file(
+    tmp_path: Path,
+) -> None:
+    config_path = write_config(tmp_path, enable_directory_scoped_config=True)
+    runtime_dir = tmp_path / "runtime"
+    DirectoryStore(runtime_dir / "directories.json").ensure_root()
+    legacy_path = runtime_dir / "directory-config" / "root" / "heartbeat.json"
+    wake_path = runtime_dir / "directory-config" / "root" / "wake.json"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(
+        json.dumps({"host_heartbeat_pr_resume_prompt": "legacy"}),
+        encoding="utf-8",
+    )
+    wake_path.write_text(
+        json.dumps({"pr_feedback_resume_prompt": "current"}),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        app, ["migrate-heartbeat-config-to-wake", "--config", str(config_path)]
+    )
+
+    assert result.exit_code == 0
+    assert "scanned=1 written=0 skipped=1 removed_legacy=0" in result.output
+    assert legacy_path.exists()
+    assert json.loads(wake_path.read_text(encoding="utf-8")) == {
+        "pr_feedback_resume_prompt": "current"
+    }
 
 
 def test_migrate_global_config_to_root_skips_existing_divergent_root_domains_without_overwrite(

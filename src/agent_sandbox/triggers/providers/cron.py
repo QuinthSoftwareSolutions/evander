@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 
+from agent_sandbox.cron import next_cron_time, validate_cron_expression
 from agent_sandbox.events.models import (
     TriggerDefinitionDiscriminated,
     TriggerEvent,
@@ -11,6 +13,8 @@ from agent_sandbox.events.provider_models import CronTriggerDefinition
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 from agent_sandbox.triggers.providers.cron_schema import CronTriggerConfigSchema
+
+logger = logging.getLogger(__name__)
 
 
 class CronTriggerProvider(TriggerProviderBase):
@@ -39,9 +43,19 @@ class CronTriggerProvider(TriggerProviderBase):
         now = datetime.now(UTC).replace(second=0, microsecond=0)
         last_fired_at = _parse_dt(state.get("last_fired_at"))
         base = last_fired_at or (now - timedelta(minutes=1))
+        try:
+            expression = validate_cron_expression(trigger.expression)
+        except ValueError as exc:
+            logger.warning(
+                "Skipping invalid cron trigger expression trigger_id=%s expression=%r error=%s",
+                trigger.id,
+                trigger.expression,
+                exc,
+            )
+            return []
 
         events: list[TriggerEvent] = []
-        next_fire_at = _next_cron_time(trigger.expression, base)
+        next_fire_at = next_cron_time(expression, base)
         iterations = 0
         while next_fire_at is not None and next_fire_at <= now and iterations < 100:
             events.append(
@@ -54,7 +68,7 @@ class CronTriggerProvider(TriggerProviderBase):
                 )
             )
             base = next_fire_at
-            next_fire_at = _next_cron_time(trigger.expression, base)
+            next_fire_at = next_cron_time(expression, base)
             iterations += 1
 
         if events:
@@ -87,71 +101,3 @@ def _parse_dt(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
-
-
-def _next_cron_time(expression: str, base: datetime) -> datetime | None:
-    fields = expression.split()
-    if len(fields) != 5:
-        return None
-    minute_values = _parse_cron_field(fields[0], 0, 59)
-    hour_values = _parse_cron_field(fields[1], 0, 23)
-    day_values = _parse_cron_field(fields[2], 1, 31)
-    month_values = _parse_cron_field(fields[3], 1, 12)
-    weekday_values = _parse_cron_field(fields[4], 0, 6)
-    if any(
-        value is None
-        for value in (minute_values, hour_values, day_values, month_values, weekday_values)
-    ):
-        return None
-
-    assert minute_values is not None
-    assert hour_values is not None
-    assert day_values is not None
-    assert month_values is not None
-    assert weekday_values is not None
-
-    candidate = base.astimezone(UTC).replace(second=0, microsecond=0) + timedelta(minutes=1)
-    deadline = candidate + timedelta(days=366)
-    while candidate <= deadline:
-        cron_weekday = (candidate.weekday() + 1) % 7
-        if (
-            candidate.minute in minute_values
-            and candidate.hour in hour_values
-            and candidate.day in day_values
-            and candidate.month in month_values
-            and cron_weekday in weekday_values
-        ):
-            return candidate
-        candidate += timedelta(minutes=1)
-    return None
-
-
-def _parse_cron_field(token: str, lower: int, upper: int) -> set[int] | None:
-    normalized = token.strip()
-    if not normalized:
-        return None
-    if normalized == "*":
-        return set(range(lower, upper + 1))
-
-    values: set[int] = set()
-    for chunk in normalized.split(","):
-        part = chunk.strip()
-        if not part:
-            return None
-        if part.startswith("*/"):
-            try:
-                step = int(part[2:])
-            except ValueError:
-                return None
-            if step <= 0:
-                return None
-            values.update(range(lower, upper + 1, step))
-            continue
-        try:
-            value = int(part)
-        except ValueError:
-            return None
-        if value < lower or value > upper:
-            return None
-        values.add(value)
-    return values

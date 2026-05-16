@@ -2527,6 +2527,37 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(tmp_path: Path) -> None:
     assert isinstance(responses["reports"].json()["graphs"], list)
 
 
+def test_admin_web_active_issue_filter_excludes_done_issues(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    active_issue = service.create_local_issue(title="Active issue", body="body")
+    done_issue = LocalIssueRecord(
+        issue_id="root::azure_devops::42",
+        issue_number="42",
+        title="Done issue",
+        body="body",
+        yaml_path=str(tmp_path / "done-issue.yaml"),
+        directory_path="root",
+        source_type="remote_proxy",
+        source="azure_devops",
+        state="Done",
+    )
+    service.local_issue_store.put(done_issue.issue_id, done_issue)
+    client = TestClient(create_app(service))
+
+    active_response = client.get("/api/admin/issues?state_filter=active")
+    all_response = client.get("/api/admin/issues?state_filter=all")
+
+    assert active_response.status_code == 200
+    assert all_response.status_code == 200
+    assert [item["issue_id"] for item in active_response.json()["items"]] == [
+        active_issue.issue_id
+    ]
+    assert {item["issue_id"] for item in all_response.json()["items"]} == {
+        active_issue.issue_id,
+        done_issue.issue_id,
+    }
+
+
 def test_admin_web_workers_expose_config_schema(tmp_path: Path) -> None:
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
@@ -2723,7 +2754,7 @@ def test_admin_web_configuration_state_exposes_unified_directory_overrides(
     assert overrides["payload"] == {
         "directory_path": "root/ops",
         "overrides": {
-            "heartbeat": {"discord_resume_prompt": "Resume this session."},
+            "wake": {"discord_resume_prompt": "Resume this session."},
             "policy": {"discord_operator_channel_allowlist": ["chan-1"]},
             "providers": {
                 "discord_backend": "stub",
@@ -2838,16 +2869,16 @@ def test_admin_web_communications_tab_assistant_only_save_preserves_directory_do
 
     providers_result = service.read_directory_domain_config("ops", "providers")
     policy_result = service.read_directory_domain_config("ops", "policy")
-    heartbeat_result = service.read_directory_domain_config("ops", "heartbeat")
+    wake_result = service.read_directory_domain_config("ops", "wake")
     assert providers_result.ok is True
     assert policy_result.ok is True
-    assert heartbeat_result.ok is True
+    assert wake_result.ok is True
     assert providers_result.data is not None
     assert policy_result.data is not None
-    assert heartbeat_result.data is not None
+    assert wake_result.data is not None
     assert providers_result.data.config["discord_backend"] == "stub"
     assert policy_result.data.config["discord_operator_channel_allowlist"] == ["chan-1"]
-    assert heartbeat_result.data.config["discord_resume_prompt"] == "Resume this session."
+    assert wake_result.data.config["discord_resume_prompt"] == "Resume this session."
     assert service.read_assistant_settings()["default_model"] == "gpt-test"
 
 

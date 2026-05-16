@@ -12,6 +12,8 @@ import yaml
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directory_config import (
+    DIRECTORY_CONFIG_METADATA_DOMAINS_KEY,
+    DIRECTORY_CONFIG_METADATA_KEY,
     AdoWorkerDirectoryConfig,
     DIRECTORY_CONFIG_DOMAIN_FILENAMES,
     DirectoryConfigStore,
@@ -39,6 +41,15 @@ class RootConfigMigrationSummary:
 
 
 @dataclass(frozen=True)
+class WakeConfigMigrationSummary:
+    scanned_files: int
+    written_files: int
+    skipped_files: int
+    removed_legacy_files: int
+    metadata_updated: int
+
+
+@dataclass(frozen=True)
 class DomainMigrationResult:
     domain: str
     status: str
@@ -60,7 +71,7 @@ GLOBAL_DIRECTORY_CONFIG_DOMAINS = (
     "policy",
     "providers",
     "email",
-    "heartbeat",
+    "wake",
     "vm",
     "ado_worker",
     "issue_setup",
@@ -222,6 +233,118 @@ def migrate_global_config_to_root(
         skipped_domains=skipped_domains,
         unchanged_domains=unchanged_domains,
     )
+
+
+def migrate_heartbeat_config_to_wake(
+    config: GatewayConfig, *, overwrite: bool = False
+) -> WakeConfigMigrationSummary:
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
+    config_store.ensure_root()
+
+    scanned_files = 0
+    written_files = 0
+    skipped_files = 0
+    removed_legacy_files = 0
+    default_wake_payload = DirectoryConfigStore.validate_domain_payload(
+        "wake", get_domain_base_config(config, "wake")
+    )
+    for legacy_path in sorted(config_store.root_path.rglob("heartbeat.json")):
+        scanned_files += 1
+        try:
+            raw_payload = json.loads(legacy_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            skipped_files += 1
+            continue
+        if not isinstance(raw_payload, dict):
+            skipped_files += 1
+            continue
+
+        wake_payload = _heartbeat_payload_to_wake(raw_payload)
+        try:
+            normalized = DirectoryConfigStore.validate_domain_payload("wake", wake_payload)
+        except ValueError:
+            skipped_files += 1
+            continue
+
+        wake_path = legacy_path.with_name(DIRECTORY_CONFIG_DOMAIN_FILENAMES["wake"])
+        if wake_path.exists():
+            try:
+                existing_payload = json.loads(wake_path.read_text(encoding="utf-8"))
+                existing_normalized = DirectoryConfigStore.validate_domain_payload(
+                    "wake", existing_payload
+                )
+            except (OSError, json.JSONDecodeError, ValueError):
+                existing_normalized = None
+            if existing_normalized != normalized and not overwrite:
+                if existing_normalized != default_wake_payload:
+                    skipped_files += 1
+                    continue
+
+        relative_directory = legacy_path.parent.relative_to(config_store.root_path)
+        canonical_path = "/".join(relative_directory.parts) or "root"
+        config_store.write(canonical_path, domain="wake", payload=normalized)
+        written_files += 1
+        legacy_path.unlink()
+        removed_legacy_files += 1
+
+    metadata_updated = _replace_directory_config_metadata_domain(
+        directory_store, old_domain="heartbeat", new_domain="wake"
+    )
+    return WakeConfigMigrationSummary(
+        scanned_files=scanned_files,
+        written_files=written_files,
+        skipped_files=skipped_files,
+        removed_legacy_files=removed_legacy_files,
+        metadata_updated=metadata_updated,
+    )
+
+
+def _heartbeat_payload_to_wake(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated: dict[str, Any] = {}
+    if "pr_feedback_resume_prompt" in payload:
+        migrated["pr_feedback_resume_prompt"] = payload["pr_feedback_resume_prompt"]
+    elif "host_heartbeat_pr_resume_prompt" in payload:
+        migrated["pr_feedback_resume_prompt"] = payload["host_heartbeat_pr_resume_prompt"]
+    if "discord_resume_prompt" in payload:
+        migrated["discord_resume_prompt"] = payload["discord_resume_prompt"]
+    return migrated
+
+
+def _replace_directory_config_metadata_domain(
+    directory_store: DirectoryStore, *, old_domain: str, new_domain: str
+) -> int:
+    changed = 0
+
+    def update(items):
+        nonlocal changed
+        for directory_id, directory in list(items.items()):
+            metadata = dict(directory.metadata)
+            config_metadata = metadata.get(DIRECTORY_CONFIG_METADATA_KEY)
+            if not isinstance(config_metadata, dict):
+                continue
+            raw_domains = config_metadata.get(DIRECTORY_CONFIG_METADATA_DOMAINS_KEY, [])
+            if not isinstance(raw_domains, list) or old_domain not in {
+                str(value).strip() for value in raw_domains
+            }:
+                continue
+            domains = {
+                new_domain if str(value).strip() == old_domain else str(value).strip()
+                for value in raw_domains
+                if str(value).strip()
+            }
+            domains = {domain for domain in domains if domain in DIRECTORY_CONFIG_DOMAIN_FILENAMES}
+            if domains:
+                config_metadata[DIRECTORY_CONFIG_METADATA_DOMAINS_KEY] = sorted(domains)
+                metadata[DIRECTORY_CONFIG_METADATA_KEY] = config_metadata
+            else:
+                metadata.pop(DIRECTORY_CONFIG_METADATA_KEY, None)
+            items[directory_id] = directory.model_copy(update={"metadata": metadata})
+            changed += 1
+
+    directory_store.update_all(update)
+    return changed
 
 
 def migrate_ado_worker_env_to_root(

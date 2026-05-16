@@ -24,7 +24,7 @@ DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
     "providers": "providers.json",
     "contacts": "contacts.json",
     "email": "email.json",
-    "heartbeat": "heartbeat.json",
+    "wake": "wake.json",
     "ado_worker": "ado-worker.json",
     "vm": "vm.json",
     "issue_setup": "issue-setup.json",
@@ -40,7 +40,6 @@ LEGACY_DIRECTORY_CONFIG_DOMAIN_FILENAMES = {
 }
 
 LEGACY_DIRECTORY_DOMAIN_ALIASES = {
-    "workers": "heartbeat",
     "vm-defaults": "vm",
     "ado-worker": "ado_worker",
     "issue-setup": "issue_setup",
@@ -157,9 +156,9 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "email_provider_timeout_seconds",
         }
     ),
-    "heartbeat": frozenset(
+    "wake": frozenset(
         {
-            "host_heartbeat_pr_resume_prompt",
+            "pr_feedback_resume_prompt",
             "discord_resume_prompt",
         }
     ),
@@ -438,9 +437,6 @@ LEGACY_DOMAIN_FIELD_SUBSETS: dict[str, dict[str, frozenset[str]]] = {
         "providers": DIRECTORY_CONFIG_DOMAIN_FIELDS["providers"],
         "email": DIRECTORY_CONFIG_DOMAIN_FIELDS["email"],
     },
-    "workers": {
-        "heartbeat": DIRECTORY_CONFIG_DOMAIN_FIELDS["heartbeat"],
-    },
     "vm-defaults": {
         "vm": DIRECTORY_CONFIG_DOMAIN_FIELDS["vm"],
     },
@@ -639,27 +635,12 @@ class DirectoryConfigStore:
                 f"directory config payload for domain {domain!r} must be a JSON object"
             )
         allowed_fields = DIRECTORY_CONFIG_DOMAIN_FIELDS[domain]
-        if domain == "heartbeat":
-            legacy_fields = {
-                "host_busy_check_script_path",
-                "host_heartbeat_cooldown_seconds",
-                "host_heartbeat_http_timeout_seconds",
-                "host_heartbeat_jitter_seconds",
-                "host_heartbeat_lock_path",
-                "host_heartbeat_poll_interval_seconds",
-                "host_heartbeat_resume_timeout_seconds",
-                "host_heartbeat_session_cooldown_path",
-                "host_heartbeat_stream_conflict_policy",
-                "host_heartbeat_vm_user",
-                "host_heartbeat_wake_state_path",
-                "host_resume_script_path",
-            }
-            unknown_fields = sorted(set(payload) - allowed_fields - legacy_fields)
+        if domain == "wake":
+            unknown_fields = sorted(set(payload) - allowed_fields)
             if unknown_fields:
                 raise ValueError(
                     f"directory config domain {domain!r} does not allow fields: {', '.join(unknown_fields)}"
                 )
-            payload = {key: value for key, value in payload.items() if key in allowed_fields}
             validated = GatewayConfig.model_validate(payload)
             return validated.model_dump(mode="json", include=set(payload))
         if domain == "providers":
@@ -719,9 +700,7 @@ class DirectoryConfigStore:
 
     def _legacy_domain_file_path(self, canonical_path: str, *, domain: str) -> Path | None:
         legacy_domain = None
-        if domain == "heartbeat":
-            legacy_domain = "workers"
-        elif domain == "vm":
+        if domain == "vm":
             legacy_domain = "vm-defaults"
         elif domain in {"policy", "providers", "email"}:
             legacy_domain = "providers" if domain in {"providers", "email"} else "policy"
@@ -743,16 +722,12 @@ class DirectoryConfigStore:
             return payload
         if domain in {"providers", "email"}:
             source_domain = "providers"
-        elif domain == "heartbeat":
-            source_domain = "workers"
         elif domain == "vm":
             source_domain = "vm-defaults"
         else:
             return None
         allowed_fields = LEGACY_DOMAIN_FIELD_SUBSETS[source_domain][domain]
         extracted = {key: payload[key] for key in sorted(allowed_fields) if key in payload}
-        if domain == "heartbeat":
-            return extracted
         return extracted or None
 
     def _record_domain(self, directory_id: str, *, domain: str) -> None:
@@ -874,7 +849,7 @@ class DirectoryConfigResolver:
     ) -> GatewayConfig:
         root_bootstrap = base_gateway_config or build_runtime_gateway_config(host_config)
         payload = root_bootstrap.model_dump(mode="json")
-        for domain in ("policy", "providers", "email", "heartbeat", "vm"):
+        for domain in ("policy", "providers", "email", "wake", "vm"):
             resolution = self.resolve_domain(
                 "root",
                 domain=domain,

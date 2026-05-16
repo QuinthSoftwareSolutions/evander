@@ -98,6 +98,7 @@ class ToolName(str, Enum):
     LIST_PENDING_AGENT_PROMPTS = "list_pending_agent_prompts"
     RESPOND_TO_AGENT = "respond_to_agent"
     RUN_SCRIPT = "run_script"
+    GET_WORKFLOW_SNAPSHOT = "get_workflow_snapshot"
     SEMANTIC_UPSERT_TEXT = "semantic_upsert_text"
     SEMANTIC_SEARCH = "semantic_search"
     SEMANTIC_GET_POINTS = "semantic_get_points"

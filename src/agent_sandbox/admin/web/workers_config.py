@@ -52,7 +52,7 @@ _DISCORD_CONFIG_FIELDS: tuple[tuple[str, str], ...] = (
     ("policy", "discord_inbox_routes"),
     ("policy", "discord_operator_user_allowlist"),
     ("policy", "discord_poll_operator_dms"),
-    ("heartbeat", "discord_resume_prompt"),
+    ("wake", "discord_resume_prompt"),
 )
 _TEAMS_PROVIDER_CONFIG_FIELDS: tuple[tuple[str, str], ...] = tuple(
     ("providers", field_name)

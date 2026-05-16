@@ -82,3 +82,58 @@ def test_scheduled_wake_worker_dispatches_due_request(tmp_path: Path, monkeypatc
     assert result.requests_due == 1
     assert result.wakes_dispatched == 1
     assert dispatched == ["session-a"]
+
+
+def test_scheduled_wake_worker_dispatches_due_cron_range_request(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project_dir = tmp_path / "project"
+    worker_config_path = project_dir / "config" / "scheduled-wake" / "config.json"
+    worker_config_path.parent.mkdir(parents=True, exist_ok=True)
+    worker_config_path.write_text(
+        json.dumps({"directories": ["root/team-a"], "jitter_seconds": 0.0}), encoding="utf-8"
+    )
+
+    config = GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")})
+    worker = build_scheduled_wake_worker(config, project_dir=project_dir)
+    worker.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-a",
+            vm_id="vm-a",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    worker.runtime.wake_store.schedule_resume_request(
+        session_id="session-a",
+        prompt="Resume work.",
+        schedule=WakeScheduleDefinition(cron="* * * * 0-6"),
+        request_id="wake-cron",
+        source="test",
+        resume_mode="same_context",
+        enabled=True,
+        metadata={},
+    )
+
+    dispatched: list[str] = []
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
+    )
+    monkeypatch.setattr(
+        worker.dispatcher,
+        "resume_binding",
+        lambda binding, **kwargs: (
+            dispatched.append(binding.session_id) or SimpleNamespace(status="dispatched")
+        ),
+    )
+
+    result = worker.run_once()
+
+    assert result.requests_due == 1
+    assert result.wakes_dispatched == 1
+    assert dispatched == ["session-a"]
+    refreshed = worker.runtime.wake_store.get_request("wake-cron")
+    assert refreshed is not None
+    assert refreshed.enabled is True
+    assert refreshed.next_run_at is not None

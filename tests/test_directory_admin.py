@@ -177,11 +177,11 @@ def test_directory_admin_service_surfaces_validation_diagnostics_and_config_writ
     team = admin.create_child(parent="root", name="team").data.details.directory
 
     invalid_write = admin.write_domain_config(
-        team.id, domain="heartbeat", payload={"unexpected": True}
+        team.id, domain="wake", payload={"unexpected": True}
     )
     assert invalid_write.ok is False
     assert invalid_write.errors[0].message.startswith(
-        "directory config domain 'heartbeat' does not allow fields"
+        "directory config domain 'wake' does not allow fields"
     )
 
     directory = store.get(team.id)

@@ -149,7 +149,6 @@ renders these host-local managed artifacts with restricted permissions:
 - `config/discord-wake/config.json`
 - `config/scheduled-wake/config.json`
 - `config/teams-ingest/config.json`
-- `config/host-heartbeat/config.json`
 - `config/trigger-orchestrator/config.json`
 - optional `secrets.env`
 

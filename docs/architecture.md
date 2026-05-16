@@ -134,7 +134,7 @@ boundaries.
 
 ### Required MCP calls
 
-Per heartbeat loop, the host worker performs provider polling for streams allowlisted in active session manifests and updates the shared feedback store.
+Per PR feedback polling loop, the host worker processes streams allowlisted in active session manifests and updates the shared feedback store.
 
 Guests continue to use MCP tools (`has_pending_feedback`, `list_unread_feedback`, `list_all_feedback`, `post_pr_feedback_reply`) for consumption and reply actions.
 
@@ -159,7 +159,7 @@ This sequence minimizes payload volume when there is no new feedback and support
   - recurring (`cron` expression).
 - Due schedules are dispatched by the host scheduled-wake loop, not by guests directly.
 - Prompt composition for scheduled wakes is:
-  - `host_heartbeat_scheduled_wake_prefix_text + requested_prompt`.
+  - `wake_scheduled_prefix_text + requested_prompt`.
 - MCP-created schedules are restricted to `resume_mode=same_context`; admin-created schedules may also use `new_context`.
 
 ### Failure behavior

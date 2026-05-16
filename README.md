@@ -316,7 +316,7 @@ config, while service env vars can come from optional per-service `config/*.env`
 optional `secrets.env`.
 For private PR feedback polling, the service environment must provide `GITHUB_TOKEN` and/or
 `AZURE_DEVOPS_PR_PAT` as needed, and the effective `root` config must set the correct
-`azure_devops_organization_url`, `azure_devops_project`, and heartbeat timing/lock settings.
+`azure_devops_organization_url`, `azure_devops_project`, and wake timing settings.
 
 ### Azure DevOps backlog worker
 
@@ -367,25 +367,15 @@ when the mirrored repo source is remote.
 Directory-scoped `ado_worker` config can also set `ado_repo_source` so backlog-driven setup uses
 the correct host repo path or remote URL per directory.
 
-## Desktop Admin Console
+## Admin Web And CLI
 
-Install the optional desktop dependency set when you want a local Ubuntu operator GUI:
-
-```bash
-uv pip install -e '.[desktop]'
-```
-
-The desktop console is intended for a single operator on the host machine. It shows all
-libvirt guests, separates VM power state from guest agent state, and exposes one-click
-`Start`, `Shutdown`, `Enable`, `Disable`, and `Resume` actions together with local issue
-creation and issue-VM startup.
-
-Issue handling is now a single local abstraction in both Desktop and CLI flows:
+Use `agent-sandbox-admin-web` for the operator GUI and `agent-sandbox-cli` for terminal
+automation. Issue handling is a single local abstraction in both Admin Web and CLI flows:
 
 - local-only issues are created and managed in `runtime/local-issues.json`
 - ADO-backed issues are stored as local **proxy issues** (`source: proxy_azure_devops`) with
   remote identity under `metadata.remote` plus a cached snapshot under `metadata.proxy_cache`
-- Desktop/CLI read/comment/state operations use the same command surface for both types; proxy
+- Admin Web/CLI read/comment/state operations use the same command surface for both types; proxy
   records forward those operations to Azure DevOps and refresh the local cache afterward
 - VM setup can target either a local issue number (`77`) or proxy identifier forms like
   `proxy:ado/77`, and both resolve through the same local issue record before invoking the
@@ -395,12 +385,6 @@ Issue handling is now a single local abstraction in both Desktop and CLI flows:
   The parent ID must be non-empty digits. If that validation fails, the request is rejected before
   contacting ADO; if ADO rejects the relation (for example parent is in a different project/team
   path), the create call returns a parent-linkage error from ADO.
-
-Run it with:
-
-```bash
-agent-sandbox-admin
-```
 
 The CLI also exposes machine-readable and GUI-supporting surfaces:
 
@@ -828,6 +812,10 @@ Response:
   `directory_path`.
 - Requests for VMs outside the caller's directory scope are rejected at the gateway boundary with a
   scope-specific error.
+- `get_workflow_snapshot` is a read-only inspection tool for the current workflow editor document.
+  Add `get_workflow_snapshot` to a session manifest's `allowed_tools` when an agent should be able
+  to view the active workflow config, layout, graph metadata, output schemas, and optional run
+  snapshot.
 
 ## Agent Prompt Tools (`prompt_agent` / `respond_to_agent`)
 
@@ -898,7 +886,7 @@ Use this when you want the guest to wake only for new review feedback and post t
 1. Include PR feedback tools/stream metadata in the session manifest (same `session_id` the guest uses).
 2. Bootstrap a provider runtime in the guest (`./scripts/bootstrap_codex_vm.sh <vm-name>` or `./scripts/bootstrap_copilot_vm.sh <vm-name>`).
 3. For Azure DevOps PR feedback and completion cleanup, keep `agent-sandbox-ado-worker` running; it owns Azure DevOps feedback ingestion, PR status tracking, and trigger publication.
-4. `agent-sandbox-discord-wake.service` and `agent-sandbox-scheduled-wake.service` cover Discord inbox wakeups and scheduled resumes. No separate heartbeat worker is required for Azure DevOps PR feedback ingestion.
+4. `agent-sandbox-discord-wake.service` and `agent-sandbox-scheduled-wake.service` cover Discord inbox wakeups and scheduled resumes. Azure DevOps PR feedback ingestion runs in `agent-sandbox-ado-worker`.
 5. Use MCP calls from the agent in this order:
    `has_pending_feedback` → `list_unread_feedback` → `post_pr_feedback_reply` (with an idempotency key).
    Use `list_pull_requests(session_id, provider, repo, status?, creator_id?, reviewer_id?, top?, cursor?)`
@@ -976,6 +964,9 @@ Example `get_pull_request` result shape (Azure DevOps):
     --mode new_context \
     --source admin_cli
   ```
+
+- Cron schedules use standard 5-field expressions, including ranges, stepped ranges, lists,
+  and month/weekday names.
 
 - MCP-sourced schedules enforce `resume_mode=same_context`; `new_context` is valid for admin/CLI-created schedules.
 
