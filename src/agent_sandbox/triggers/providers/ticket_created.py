@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from agent_sandbox.models import LocalIssueRecord
-from agent_sandbox.storage import JsonStore
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import TicketCreatedTriggerDefinition
 from agent_sandbox.triggers.providers._cursor_state import (
@@ -11,17 +9,23 @@ from agent_sandbox.triggers.providers._cursor_state import (
     latest_cursor_timestamp_text,
     merge_cursor_ids,
 )
+from agent_sandbox.triggers.providers._local_tickets import (
+    TICKET_CREATED_CURSOR_FIELD,
+    RECENT_ISSUE_LIMIT,
+    parse_ticket_timestamp,
+    read_local_ticket_issues,
+    ticket_cursor_path,
+    within_ticket_directories,
+)
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 
 
 class TicketCreatedTriggerProvider(TriggerProviderBase):
-    _RECENT_ISSUE_LIMIT = 512
-
     def poll(self) -> list[TriggerEvent]:
         trigger = self._trigger()
         cursor_store = self._cursor_store()
         state = cursor_store.get(trigger.id)
-        cursor = _parse_dt(state.get("last_created_at"))
+        cursor = parse_ticket_timestamp(state.get(TICKET_CREATED_CURSOR_FIELD))
         recent_issue_ids = [
             value
             for value in state.get("recent_issue_ids", [])
@@ -29,11 +33,10 @@ class TicketCreatedTriggerProvider(TriggerProviderBase):
         ]
         recent_issue_id_set = set(recent_issue_ids)
 
-        issues_store = JsonStore(self._runtime_dir() / "local-issues.json", LocalIssueRecord)
         candidates = [
             issue
-            for issue in issues_store.read_all().values()
-            if _within_directories(issue.directory_path, trigger.directories)
+            for issue in read_local_ticket_issues(self._runtime_dir()).values()
+            if within_ticket_directories(issue.directory_path, trigger.directories)
         ]
         candidates.sort(key=lambda issue: (issue.created_at, issue.issue_id))
 
@@ -64,7 +67,7 @@ class TicketCreatedTriggerProvider(TriggerProviderBase):
         if not isinstance(payload, dict):
             return
         issue_id = str(payload.get("issue_id") or "").strip()
-        occurred_at = _parse_dt(payload.get("created_at")) or event.occurred_at
+        occurred_at = parse_ticket_timestamp(payload.get("created_at")) or event.occurred_at
         if not issue_id or occurred_at is None:
             return
         self._cursor_store().update(
@@ -85,29 +88,7 @@ class TicketCreatedTriggerProvider(TriggerProviderBase):
         return self.runtime_context.resolved_config.runtime_dir
 
     def _cursor_store(self) -> TriggerCursorStore:
-        return TriggerCursorStore(self._runtime_dir() / "trigger-cursors-ticket-created.json")
-
-
-def _within_directories(candidate: str, directories: list[str]) -> bool:
-    if not directories:
-        return True
-    for directory in directories:
-        normalized = directory.strip().strip("/")
-        if candidate == normalized or candidate.startswith(f"{normalized}/"):
-            return True
-    return False
-
-
-def _parse_dt(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    normalized = value.strip()
-    if normalized.endswith("Z"):
-        normalized = normalized[:-1] + "+00:00"
-    parsed = datetime.fromisoformat(normalized)
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+        return TriggerCursorStore(ticket_cursor_path(self._runtime_dir(), "created"))
 
 
 def _acknowledge_issue(
@@ -122,6 +103,6 @@ def _acknowledge_issue(
     state["recent_issue_ids"] = merge_cursor_ids(
         state.get("recent_issue_ids"),
         [issue_id],
-        limit=TicketCreatedTriggerProvider._RECENT_ISSUE_LIMIT,
+        limit=RECENT_ISSUE_LIMIT,
     )
     return state
