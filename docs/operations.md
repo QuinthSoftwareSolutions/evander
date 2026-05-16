@@ -337,8 +337,8 @@ Storage layout for directory config:
   PR and chat wakeups, which are handled by the ADO worker, Discord wake worker, and scheduled wake
   worker. The old `agent-sandbox-host-heartbeat.service` is retired.
 - Teams targets can be channel threads, group chats, or explicitly allowlisted one-on-one users:
-  - channel targets use `team-id/channel-id`
-  - chat targets use `chat:<chat-id>`
+  - channel targets use `team-id/channel-id` and should be declared in `session.teams_channel_allowlist`
+  - chat targets use `chat:<chat-id>` and should be declared in `session.teams_chat_allowlist`
   - user targets use `user:<user-id-or-upn>` and are resolved host-side into a one-on-one
     `chat:<chat-id>` before sending. User targets require `session.teams_user_allowlist` or a
     declared communication target; they are not valid for message reads, reactions, or attachment
@@ -788,9 +788,10 @@ Audit/result behavior:
   - `discord_operator_user_allowlist` does not override post destination checks.
 - Reaction precedence for `add_message_reaction`:
   - `provider=discord` requires `channel_id` in `session.discord_channel_allowlist`.
-  - `provider=teams` requires `channel_target` in `session.teams_channel_allowlist` for reads and
-    downloads. Send tools can also target entries declared in `session.teams_user_allowlist` with
-    `user:<user-id-or-upn>`.
+  - `provider=teams` requires `channel_target` in the effective Teams channel/chat allowlist:
+    `session.teams_channel_allowlist` for channel targets or `session.teams_chat_allowlist` for
+    chat targets. Send tools can also target entries declared in `session.teams_user_allowlist`
+    with `user:<user-id-or-upn>`.
   - Message reads do not apply automatic read reactions; agents must call this tool explicitly.
 - Retry/backoff and failure handling:
   - The Discord `bot_api` adapter retries transient failures with exponential backoff and jitter.

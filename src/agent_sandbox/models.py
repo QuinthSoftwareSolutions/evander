@@ -160,6 +160,7 @@ class SessionManifest(BaseModel):
     allowed_script_names: list[str] = Field(default_factory=list)
     discord_channel_allowlist: list[str] = Field(default_factory=list)
     teams_channel_allowlist: list[str] = Field(default_factory=list)
+    teams_chat_allowlist: list[str] = Field(default_factory=list)
     teams_user_allowlist: list[str] = Field(default_factory=list)
     email_folder_allowlist: list[str] = Field(default_factory=list)
     email_mailbox_allowlist: list[str] = Field(default_factory=list)

@@ -287,6 +287,51 @@ def test_teams_get_messages_passes_channel_target_for_targeted_reads(
     assert result["next_cursor"] == "chat:chat-1/msg-2"
 
 
+def test_teams_get_messages_allows_chat_allowlist_entries(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_chat_allowlist=["chat:chat-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    context.teams_service = FakeTeamsService(
+        [
+            TeamsMessageEnvelope(
+                cursor="chat:chat-1/msg-1",
+                message_id="msg-1",
+                author_id="user-1",
+                chat_id="chat-1",
+                thread_id="msg-1",
+                content="chat",
+                metadata={"source": "teams_graph_api"},
+            ),
+            TeamsMessageEnvelope(
+                cursor="chat:chat-2/msg-2",
+                message_id="msg-2",
+                author_id="user-2",
+                chat_id="chat-2",
+                thread_id="msg-2",
+                content="other chat",
+                metadata={"source": "teams_graph_api"},
+            ),
+        ]
+    )
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "teams_get_messages",
+        {"session_id": "session-1", "channel_target": "chat:chat-1", "limit": 5},
+    )
+
+    assert context.teams_service.last_channel_target == "chat:chat-1"
+    assert [entry["cursor"] for entry in result["messages"]] == ["chat:chat-1/msg-1"]
+    assert result["next_cursor"] == "chat:chat-1/msg-1"
+
+
 def test_teams_get_messages_supports_limit_and_includes_session_authored_messages(
     tmp_path: Path,
 ) -> None:
@@ -609,6 +654,54 @@ def test_add_message_reaction_adds_teams_reaction_to_allowlisted_target(tmp_path
 
     assert context.teams_service.reaction_calls == [
         ("team-a/channel-1", "msg-3", "heart", "session-1")
+    ]
+    assert result["status"] == "reacted"
+
+
+def test_add_message_reaction_allows_chat_allowlist_entries(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.ADD_MESSAGE_REACTION],
+            teams_chat_allowlist=["chat:chat-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    fake_teams = FakeTeamsService(
+        [
+            TeamsMessageEnvelope(
+                cursor="chat:chat-1/msg-3",
+                message_id="msg-3",
+                author_id="user-3",
+                chat_id="chat-1",
+                thread_id="msg-1",
+                content="newest",
+                metadata={
+                    "source": "teams_graph_api",
+                    "author_id": "user-3",
+                    "chat_id": "chat-1",
+                },
+            ),
+        ]
+    )
+    context.teams_service = fake_teams
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "add_message_reaction",
+        {
+            "session_id": "session-1",
+            "provider": "teams",
+            "channel_target": "chat:chat-1",
+            "message_id": "msg-3",
+            "emoji": "heart",
+        },
+    )
+
+    assert context.teams_service.reaction_calls == [
+        ("chat:chat-1", "msg-3", "heart", "session-1")
     ]
     assert result["status"] == "reacted"
 

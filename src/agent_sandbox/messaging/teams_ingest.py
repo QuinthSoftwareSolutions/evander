@@ -30,7 +30,12 @@ from agent_sandbox.runtime import (
     build_runtime,
 )
 from agent_sandbox.repositories.records import JsonTeamsRecordsRepository
-from agent_sandbox.services import GraphTeamsService, normalize_teams_target, parse_teams_target
+from agent_sandbox.services import (
+    GraphTeamsService,
+    effective_teams_channel_targets,
+    normalize_teams_target,
+    parse_teams_target,
+)
 from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage
 
 logger = logging.getLogger(__name__)
@@ -173,10 +178,7 @@ class TeamsIngestWorker:
             for session in active_sessions
             if ToolName.TEAMS_GET_MESSAGES in session.allowed_tools
             and _directory_is_within_scope(session.directory_path, directory_path)
-            for target in session.teams_channel_allowlist
-            if target.strip()
-            for normalized in [normalize_teams_target(target)]
-            if not normalized.startswith("user:")
+            for normalized in effective_teams_channel_targets(session, skip_user_targets=True)
         }
         return sorted(targets)
 
