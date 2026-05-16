@@ -10,12 +10,12 @@ from agent_sandbox.triggers.providers._cursor_state import (
     merge_cursor_ids,
 )
 from agent_sandbox.triggers.providers._local_tickets import (
+    RECENT_ISSUE_IDS_FIELD,
     TICKET_CHANGED_CURSOR_FIELD,
     RECENT_ISSUE_LIMIT,
+    local_ticket_candidates,
     parse_ticket_timestamp,
-    read_local_ticket_issues,
     ticket_cursor_path,
-    within_ticket_directories,
 )
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 
@@ -28,17 +28,16 @@ class TicketChangedTriggerProvider(TriggerProviderBase):
         cursor = parse_ticket_timestamp(state.get(TICKET_CHANGED_CURSOR_FIELD))
         recent_issue_ids = [
             value
-            for value in state.get("recent_issue_ids", [])
+            for value in state.get(RECENT_ISSUE_IDS_FIELD, [])
             if isinstance(value, str) and value.strip()
         ]
         recent_issue_id_set = set(recent_issue_ids)
 
-        candidates = [
-            issue
-            for issue in read_local_ticket_issues(self._runtime_dir()).values()
-            if within_ticket_directories(issue.directory_path, trigger.directories)
-        ]
-        candidates.sort(key=lambda issue: (issue.updated_at, issue.issue_id))
+        candidates = local_ticket_candidates(
+            self._runtime_dir(),
+            trigger.directories,
+            "updated_at",
+        )
 
         events: list[TriggerEvent] = []
         for issue in candidates:
@@ -96,12 +95,12 @@ def _acknowledge_issue(
     issue_id: str,
     occurred_at: datetime,
 ) -> dict[str, object]:
-    state["last_updated_at"] = latest_cursor_timestamp_text(
-        state.get("last_updated_at"),
+    state[TICKET_CHANGED_CURSOR_FIELD] = latest_cursor_timestamp_text(
+        state.get(TICKET_CHANGED_CURSOR_FIELD),
         occurred_at,
     )
-    state["recent_issue_ids"] = merge_cursor_ids(
-        state.get("recent_issue_ids"),
+    state[RECENT_ISSUE_IDS_FIELD] = merge_cursor_ids(
+        state.get(RECENT_ISSUE_IDS_FIELD),
         [issue_id],
         limit=RECENT_ISSUE_LIMIT,
     )
