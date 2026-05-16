@@ -6,12 +6,16 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .base import EffectProviderBase
+from .vm_targeting import resolve_vm_target
 
 
 class VmExecEffectProvider(EffectProviderBase):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         payload = self._payload(resolved_config)
-        vm_name, session_id = self._resolve_target(payload)
+        context = self._context()
+        resolved = resolve_vm_target(context, payload, effect_type="effect:vm:exec")
+        vm_name = resolved.vm_name
+        session_id = resolved.session_id
         vm_user = self._normalize_optional_string(payload.get("vm_user")) or "agent"
         command = self._normalize_command(payload.get("command"))
         working_directory = self._normalize_optional_string(payload.get("working_directory"))
@@ -20,7 +24,6 @@ class VmExecEffectProvider(EffectProviderBase):
         stdin = self._normalize_optional_string(payload.get("stdin"))
         environment = self._normalize_environment(payload.get("environment"))
 
-        context = self._context()
         vm_exec = getattr(context.vm_executor, "vm_exec", None)
         if callable(vm_exec):
             result = vm_exec(
@@ -44,6 +47,8 @@ class VmExecEffectProvider(EffectProviderBase):
             payload.setdefault("exit_code", 0 if payload.get("success") else 1)
             payload.setdefault("message", "")
             payload.setdefault("session_id", session_id)
+            if not payload.get("session_id"):
+                payload["session_id"] = session_id
             if check and not bool(payload.get("success")):
                 raise RuntimeError(
                     str(
@@ -72,40 +77,6 @@ class VmExecEffectProvider(EffectProviderBase):
         if resolved_config:
             payload.update(dict(resolved_config))
         return payload
-
-    def _resolve_target(self, payload: Mapping[str, Any]) -> tuple[str, str | None]:
-        session_id = self._normalize_optional_string(payload.get("session_id"))
-        vm_name = self._normalize_optional_string(payload.get("vm_name"))
-        target = self._normalize_optional_string(payload.get("target"))
-
-        if session_id:
-            return self._resolve_vm_name_from_session(session_id), session_id
-        if vm_name:
-            return vm_name, None
-        if target:
-            session = self._lookup_session(target)
-            if session is not None:
-                resolved_vm_name = self._normalize_optional_string(getattr(session, "vm_id", None))
-                if not resolved_vm_name:
-                    raise RuntimeError(f"Session {target!r} does not have an associated VM")
-                return resolved_vm_name, target
-            return target, None
-        raise RuntimeError("effect:vm:exec requires one of target, session_id, or vm_name")
-
-    def _resolve_vm_name_from_session(self, session_id: str) -> str:
-        session = self._lookup_session(session_id)
-        if session is None:
-            raise RuntimeError(f"Unknown session: {session_id}")
-        vm_name = self._normalize_optional_string(getattr(session, "vm_id", None))
-        if not vm_name:
-            raise RuntimeError(f"Session {session_id!r} does not have an associated VM")
-        return vm_name
-
-    def _lookup_session(self, session_id: str) -> Any | None:
-        context = self._context()
-        if context.session_lookup is None:
-            raise RuntimeError("VmExecEffectProvider requires session_lookup")
-        return context.session_lookup.read_all_sessions().get(session_id)
 
     def _context(self):
         if self.runtime_context is None:
