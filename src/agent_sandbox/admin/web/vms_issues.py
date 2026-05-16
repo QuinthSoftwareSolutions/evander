@@ -15,7 +15,7 @@ from agent_sandbox.admin.service import ISSUE_STATES, AdminService
 from agent_sandbox.admin.web.shared import AdminWebAuth, json_error
 from agent_sandbox.models import LocalIssueRecord, VmActionResult, VmSummary
 
-_INACTIVE_ISSUE_STATES = frozenset({"Completed", "Closed"})
+_INACTIVE_ISSUE_STATES = frozenset({"Completed", "Closed", "Done"})
 
 
 def _jsonable(value: Any) -> Any:
