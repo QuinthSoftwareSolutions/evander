@@ -150,6 +150,19 @@ class ApprovalStatus(str, Enum):
     EXPIRED = "expired"
 
 
+class ApprovalNotificationStatus(str, Enum):
+    DISABLED = "disabled"
+    QUEUED = "queued"
+    DELIVERED = "delivered"
+    PARTIAL = "partial"
+    FAILED = "failed"
+
+
+class ApprovalNotificationDeliveryStatus(str, Enum):
+    SENT = "sent"
+    FAILED = "failed"
+
+
 class SessionManifest(BaseModel):
     session_id: str
     vm_id: str | None = None
@@ -631,6 +644,32 @@ class ApprovalDecisionRecord(BaseModel):
     decided_at: datetime = Field(default_factory=utc_now)
 
 
+class ApprovalNotificationDeliveryRecord(BaseModel):
+    target_id: str
+    status: ApprovalNotificationDeliveryStatus
+    attempted_at: datetime = Field(default_factory=utc_now)
+    provider: str | None = None
+    message_id: str | None = None
+    result_summary: str | None = None
+    error: str | None = None
+
+    @field_validator("target_id", mode="before")
+    @classmethod
+    def normalize_target_id(cls, value: object) -> str:
+        text = str(value or "").strip().lower()
+        if not text:
+            raise ValueError("target_id cannot be empty")
+        return text
+
+    @field_validator("provider", "message_id", "result_summary", "error", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+
 class ApprovalRequest(BaseModel):
     request_id: str
     session_id: str
@@ -642,6 +681,13 @@ class ApprovalRequest(BaseModel):
     vm_id: str | None = None
     tool_name: str | None = None
     status: ApprovalStatus = ApprovalStatus.PENDING
+    notification_status: ApprovalNotificationStatus = ApprovalNotificationStatus.DISABLED
+    notification_target_ids: list[str] = Field(default_factory=list)
+    notification_attempted_at: datetime | None = None
+    notification_error: str | None = None
+    notification_deliveries: list[ApprovalNotificationDeliveryRecord] = Field(
+        default_factory=list
+    )
     created_at: datetime = Field(default_factory=utc_now)
     expires_at: datetime
     approver: str | None = None
@@ -653,6 +699,25 @@ class ApprovalRequest(BaseModel):
     @classmethod
     def validate_directory_path(cls, value: str) -> str:
         return DirectoryPath(segments=value).as_posix()
+
+    @field_validator("notification_target_ids", mode="before")
+    @classmethod
+    def normalize_notification_target_ids(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("notification_target_ids must be a list of strings")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            target_id = str(item or "").strip().lower()
+            if not target_id or target_id in seen:
+                continue
+            seen.add(target_id)
+            normalized.append(target_id)
+        return normalized
 
 
 class ApprovalQueueHealth(BaseModel):

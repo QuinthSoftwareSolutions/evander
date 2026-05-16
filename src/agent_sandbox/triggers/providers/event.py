@@ -11,7 +11,7 @@ from agent_sandbox.events.models import (
     WorkflowNodeEnvelope,
 )
 from agent_sandbox.events.provider_models import EventTriggerDefinition
-from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
+from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore, merge_cursor_ids
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 
 
@@ -48,7 +48,6 @@ class EventTriggerProvider(TriggerProviderBase):
             event for event in self._event_bus().list_events() if _matches(trigger, event)
         ]
         events: list[TriggerEvent] = []
-        current_ids = {event.event_id for event in matched}
         for event in matched:
             if event.event_id in emitted_ids:
                 continue
@@ -65,8 +64,19 @@ class EventTriggerProvider(TriggerProviderBase):
                 )
             )
 
-        cursor_store.put(trigger.id, {"emitted_internal_event_ids": sorted(current_ids)})
         return events
+
+    def acknowledge_published_event(self, event: TriggerEvent) -> None:
+        trigger = self._trigger()
+        if event.trigger_id != trigger.id or event.trigger_type != trigger.type:
+            return
+        internal_event_id = str(event.payload.get("event_id") or "").strip()
+        if not internal_event_id:
+            return
+        self._cursor_store().update(
+            trigger.id,
+            lambda state: _acknowledge_internal_event_id(state, internal_event_id),
+        )
 
     def _trigger(self) -> EventTriggerDefinition:
         if not isinstance(self.trigger_definition, EventTriggerDefinition):
@@ -117,3 +127,11 @@ def _trigger_payload(event: InternalEvent) -> dict[str, Any]:
         "source": source,
         "idempotency_key": event.idempotency_key,
     }
+
+
+def _acknowledge_internal_event_id(state: dict[str, object], internal_event_id: str) -> dict[str, object]:
+    state["emitted_internal_event_ids"] = merge_cursor_ids(
+        state.get("emitted_internal_event_ids"),
+        [internal_event_id],
+    )
+    return state

@@ -20,7 +20,7 @@ class TeamsMeetingNewTranscriptTriggerProvider(TriggerProviderBase):
         last_sequences = _last_sequences_by_meeting(state)
         session_filter = {value.strip() for value in trigger.session_ids if value.strip()}
 
-        transcript_events, next_last_sequences = self._list_transcript_events(
+        transcript_events = self._list_transcript_events(
             last_sequences=last_sequences,
             session_filter=session_filter,
         )
@@ -53,21 +53,32 @@ class TeamsMeetingNewTranscriptTriggerProvider(TriggerProviderBase):
                 )
             )
 
-        cursor_store.put(
-            trigger.id,
-            {"last_sequences_by_meeting": next_last_sequences},
-        )
         return events
+
+    def acknowledge_published_event(self, event: TriggerEvent) -> None:
+        trigger = self._trigger()
+        if event.trigger_id != trigger.id or event.trigger_type != trigger.type:
+            return
+        meeting_id = str(event.payload.get("meeting_id") or "").strip()
+        transcript = event.payload.get("transcript")
+        if not meeting_id or not isinstance(transcript, dict):
+            return
+        sequence = transcript.get("sequence")
+        if not isinstance(sequence, int) or sequence < 0:
+            return
+        self._cursor_store().update(
+            trigger.id,
+            lambda state: _acknowledge_sequence(state, meeting_id, sequence),
+        )
 
     def _list_transcript_events(
         self,
         *,
         last_sequences: dict[str, int],
         session_filter: set[str],
-    ) -> tuple[list[TeamsMeetingEvent], dict[str, int]]:
+    ) -> list[TeamsMeetingEvent]:
         store = TeamsMeetingStore(Path(self.runtime_context.resolved_config.teams_meeting_store_path))
         transcript_events: list[TeamsMeetingEvent] = []
-        next_last_sequences = dict(last_sequences)
         for binding in store.list_bindings():
             if session_filter and binding.session_id not in session_filter:
                 continue
@@ -77,13 +88,8 @@ class TeamsMeetingNewTranscriptTriggerProvider(TriggerProviderBase):
                 since_sequence=since_sequence,
                 limit=10_000,
             )
-            if events:
-                next_last_sequences[binding.meeting_id] = max(
-                    since_sequence,
-                    *(event.sequence for event in events),
-                )
             transcript_events.extend(event for event in events if event.event_type == "transcript")
-        return transcript_events, next_last_sequences
+        return transcript_events
 
     def _cursor_store(self) -> TriggerCursorStore:
         return TriggerCursorStore(
@@ -123,3 +129,24 @@ def _last_sequences_by_meeting(state: dict[str, object]) -> dict[str, int]:
             if sequence >= 0:
                 sequences[meeting_id] = max(sequences.get(meeting_id, 0), sequence)
     return sequences
+
+
+def _acknowledge_sequence(
+    state: dict[str, object],
+    meeting_id: str,
+    sequence: int,
+) -> dict[str, object]:
+    raw_sequences = state.get("last_sequences_by_meeting")
+    if isinstance(raw_sequences, dict):
+        sequences = {
+            str(existing_meeting_id): int(existing_sequence)
+            for existing_meeting_id, existing_sequence in raw_sequences.items()
+            if str(existing_meeting_id).strip()
+            and isinstance(existing_sequence, int)
+            and existing_sequence >= 0
+        }
+    else:
+        sequences = _last_sequences_by_meeting(state)
+    sequences[meeting_id] = max(sequences.get(meeting_id, 0), sequence)
+    state["last_sequences_by_meeting"] = sequences
+    return state

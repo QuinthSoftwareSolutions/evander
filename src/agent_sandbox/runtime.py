@@ -4,6 +4,7 @@ import os
 from datetime import UTC, datetime
 from dataclasses import dataclass
 from typing import Callable
+from pathlib import Path
 
 from agent_sandbox.messaging.agent_prompt_store import AgentPromptStore
 from agent_sandbox.audit import AuditLogger
@@ -296,7 +297,7 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         user_chat_cache=teams_user_chat_cache,
     )
 
-    return RuntimeContext(
+    runtime_context = RuntimeContext(
         config=config,
         policy_config=policy_config,
         provider_config=provider_config,
@@ -334,6 +335,12 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         teams_meeting_store=teams_meeting_store,
         teams_meeting_bridge_client=teams_meeting_bridge_client,
     )
+    from agent_sandbox.approval_notifications import ApprovalNotificationDispatcher
+
+    runtime_context.policy.set_approval_notification_dispatcher(
+        ApprovalNotificationDispatcher(runtime=runtime_context, project_dir=Path.cwd())
+    )
+    return runtime_context
 
 
 def build_runtime(config: GatewayConfig) -> RuntimeContext:

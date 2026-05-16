@@ -159,8 +159,10 @@ Type-specific keys:
 
 `trigger:cron.expression` uses a standard 5-field cron expression. Field syntax supports
 ranges, stepped ranges, lists, and month/weekday names. When a cron trigger is overdue, the
-trigger orchestrator queues only the latest due occurrence and advances the trigger cursor past
-older missed occurrences; editing a trigger to a higher frequency does not replay historical runs.
+trigger orchestrator queues only the latest due occurrence. The provider stages that occurrence
+as pending and advances `last_fired_at` only after the trigger event is durably published and
+acknowledged, so a queue publish failure can retry the same scheduled occurrence. Editing a
+trigger to a higher frequency still does not replay historical runs.
 
 `trigger:pull-request:completed` emits `session_id`, `status`, `merged`, `completed_at`, and a
 normalized `pr` object when the tracked PR reaches a terminal state such as merged, completed,
@@ -747,7 +749,7 @@ Supported directory config domains:
 
 | Domain file | Purpose | YAML fields allowed |
 |---|---|---|
-| `policy.json` | Session/policy defaults and operator restrictions | `approval_ttl_seconds`, `default_session_ttl_seconds`, Discord/email allowlists, `email_send_enabled`, `pr_reply_require_approval`, `redacted_keys` |
+| `policy.json` | Session/policy defaults and operator restrictions | `approval_ttl_seconds`, `approval_notification_target_ids`, `default_session_ttl_seconds`, Discord/email allowlists, `email_send_enabled`, `pr_reply_require_approval`, `redacted_keys` |
 | `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, HTTP target relay, NuGet, GitHub, Azure DevOps, Teams, container worker, Retell |
 | `contacts.json` | Directory contact list and admin-user contact attachments | `contacts`, `user_contact_links` |
 | `email.json` | Mailbox provider definitions and email provider runtime settings | `email_mailboxes`, `email_provider_timeout_seconds` |
@@ -770,6 +772,20 @@ Inheritance path:
 - effective config is resolved in ancestor order: `root -> ... -> selected`
 - `runtime/directory-config/root/*.json` is the top of the directory-scoped inheritance chain
 - provenance metadata records which directory last set each effective value
+
+Approval notification policy:
+
+- `approval_notification_target_ids` is a list of host-owned communication target IDs. The targets
+  are configured in Admin Web under Configuration -> Communications and stored in
+  `runtime/communication-targets.db`; each selected target must include the `notify` capability.
+- In Admin Web, this field is presented as a selectable list of known notify-capable communication
+  targets with an `Add communication target` action.
+- The default is an empty list, which disables approval notifications.
+- Lists replace inherited values, so set the complete target list on the directory overlay that
+  should own notifications.
+- This is not a session manifest setting and does not grant guests Discord, Teams, or email send
+  permission. The host sends notifications for newly created approval records, and operators still
+  decide through Admin Web, the admin service, or `agent-sandbox-cli approve`.
 
 Teams delegated auth follows the same host-side model. The preferred operator flow is to sign in on
 the host with device code flow and keep the credential host-only. Directory-scoped `providers.json`

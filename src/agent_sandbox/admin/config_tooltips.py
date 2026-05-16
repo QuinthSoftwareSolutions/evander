@@ -7,6 +7,9 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "approval_ttl_seconds": (
         "Default approval-request lifetime in seconds before pending approval prompts expire."
     ),
+    "approval_notification_target_ids": (
+        "Host-side operator target IDs that receive approval request notifications. Select from known notify-capable communication targets; leave empty to disable approval notifications."
+    ),
     "discord_operator_channel_allowlist": (
         "Channel IDs that the host Discord bot may poll for operator commands in addition to any "
         "session-specific Discord channel allowlists."

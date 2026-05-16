@@ -833,6 +833,70 @@ Audit/result behavior:
 - Email is **read + draft only by default**. Keep `email_send_enabled: false` unless you are ready
   to enforce explicit approval checks for send.
 
+## Operator Approval Notifications
+
+Approval notifications are host-side operator alerts for newly created `ApprovalRequest` records.
+They are separate from guest communication permissions: a session does not need Discord, Teams, or
+email send allowlists for the host to notify an operator target.
+
+1. Define one or more host-owned communication targets with the `notify` capability. In Admin Web,
+   use Configuration -> Communications; the targets are stored in
+   `runtime/communication-targets.db`. For example, a Teams channel target uses this payload shape:
+
+   ```json
+   {
+     "targets": [
+       {
+         "id": "ops-approvals",
+         "provider": "teams",
+         "kind": "teams",
+         "address": "team-id/channel-id",
+         "policy": {"capabilities": ["notify"]}
+       }
+     ]
+   }
+   ```
+
+2. Configure the owning directory policy with those target IDs:
+
+   ```bash
+   agent-sandbox-cli directories config-set \
+     --runtime-dir runtime \
+     --domain policy \
+     root \
+     '{"approval_notification_target_ids":["ops-approvals"]}'
+   ```
+
+   Child directories inherit the root value unless they replace the list in their own
+   `policy.json` overlay. An empty list disables approval notifications.
+
+   In Admin Web, the Access Policy tab exposes `approval_notification_target_ids` as an explicit
+   list of known notify-capable communication targets with an `Add communication target` control
+   instead of free-form text entry.
+
+3. Have the guest create the approval request through `approval_submit`. The notification message
+   includes the `request_id`, action/tool name, directory, session and VM context, expiry,
+   `human_summary`, payload digest, and review commands. It does not include the approval payload.
+
+4. Review with Admin Web Approvals or with:
+
+   ```bash
+   agent-sandbox-cli show-approval <request_id> --runtime-dir runtime
+   ```
+
+   The review payload includes notification status and delivery attempts, so failed delivery is
+   visible without changing the approval state.
+
+5. Decide through the existing audited path:
+
+   ```bash
+   agent-sandbox-cli approve <request_id> <approver> --approve --reason "approved reason" --runtime-dir runtime
+   agent-sandbox-cli approve <request_id> <approver> --deny --reason "denied reason" --runtime-dir runtime
+   ```
+
+Delivery failure logs `metric_approval_notification` with the target id, request id, review command,
+and error. It never auto-approves, denies, or blocks the pending approval record.
+
 ## Communication File Transfer Runbook
 
 Use this runbook only for dedicated operator channels/mailboxes that are already covered by the
@@ -1027,6 +1091,7 @@ without exposing provider credentials in the VM.
 - `discord_resume_prompt` remains directory-scoped and is surfaced in the admin GUI under Communications; it is used by the Discord wake worker.
 - `scheduled_wake_prefix_text` lives in the scheduled-wake worker global config and is used as the shared prompt prefix for scheduled wake dispatch.
 - MCP-triggered scheduled resumes are always dispatched with `resume_mode=same_context`.
+- Recurring cron wake schedules are consumed only after a successful host resume dispatch. Failed, timed-out, or missing-script attempts stay due/retryable and remain visible through wake dispatch history.
 - Wake schedule CRUD is available in the CLI under `wake-schedules`:
   - create one-time wake: `agent-sandbox-cli wake-schedules create --runtime-dir runtime --session-id issue-11-session --resume-at 2026-04-01T10:30:00Z --prompt "Resume pending work."`
   - create recurring wake: `agent-sandbox-cli wake-schedules create --runtime-dir runtime --session-id issue-11-session --cron "*/10 * * * *" --prompt "Periodic check-in." --mode new_context`

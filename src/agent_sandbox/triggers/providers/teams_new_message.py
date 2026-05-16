@@ -14,7 +14,11 @@ from agent_sandbox.services import (
     teams_target_from_message,
 )
 from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage
-from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
+from agent_sandbox.triggers.providers._cursor_state import (
+    TriggerCursorStore,
+    latest_cursor_timestamp_text,
+    merge_cursor_ids,
+)
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 
 
@@ -65,11 +69,8 @@ class TeamsNewMessageTriggerProvider(TriggerProviderBase):
         candidates.sort(key=lambda message: (message.created_at, message.cursor))
 
         events: list[TriggerEvent] = []
-        max_created_at = cursor
-        new_cursors = list(recent_cursors)
         for message in candidates:
             occurred_at = message.created_at.astimezone(UTC)
-            new_cursors.append(message.cursor)
             events.append(
                 TriggerEvent(
                     event_id=f"{trigger.id}:{message.cursor}",
@@ -79,21 +80,21 @@ class TeamsNewMessageTriggerProvider(TriggerProviderBase):
                     payload=_message_payload(message),
                 )
             )
-            if max_created_at is None or occurred_at > max_created_at:
-                max_created_at = occurred_at
-
-        if not events:
-            return []
-
-        if max_created_at is not None:
-            cursor_store.put(
-                trigger.id,
-                {
-                    "last_created_at": max_created_at.isoformat().replace("+00:00", "Z"),
-                    "recent_cursors": new_cursors[-self._RECENT_CURSOR_LIMIT :],
-                },
-            )
         return events
+
+    def acknowledge_published_event(self, event: TriggerEvent) -> None:
+        trigger = self._trigger()
+        if event.trigger_id != trigger.id or event.trigger_type != trigger.type:
+            return
+        payload = event.payload
+        cursor = str(payload.get("cursor") or "").strip()
+        created_at = _parse_dt(payload.get("created_at")) or event.occurred_at
+        if not cursor or created_at is None:
+            return
+        self._cursor_store().update(
+            trigger.id,
+            lambda state: _acknowledge_message(state, cursor, created_at),
+        )
 
     def _trigger(self) -> TeamsNewMessageTriggerDefinition:
         if not isinstance(self.trigger_definition, TeamsNewMessageTriggerDefinition):
@@ -173,6 +174,23 @@ def _parse_dt(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _acknowledge_message(
+    state: dict[str, object],
+    cursor: str,
+    occurred_at: datetime,
+) -> dict[str, object]:
+    state["last_created_at"] = latest_cursor_timestamp_text(
+        state.get("last_created_at"),
+        occurred_at,
+    )
+    state["recent_cursors"] = merge_cursor_ids(
+        state.get("recent_cursors"),
+        [cursor],
+        limit=TeamsNewMessageTriggerProvider._RECENT_CURSOR_LIMIT,
+    )
+    return state
 
 
 def _message_matches_filter(
