@@ -24,6 +24,16 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     assert "--security-opt no-new-privileges" in docs
     assert "--sandbox-profile strict" in docs
     assert "--tmpfs /tmp:rw,noexec,nosuid,size=512m" in docs
+    assert "Phase 5 first slice" in docs
+    assert "single-worker" in docs
+    assert "agent_sandbox_worker_egress_policy_enabled" in docs
+    assert "DOCKER-USER" in docs
+    assert "169.254.0.0/16" in docs
+    assert "169.254.169.254" in docs
+    assert "agent-sandbox-worker-egress-policy.service" in docs
+    assert "sudo systemctl status agent-sandbox-worker-egress-policy.service" in docs
+    assert "sudo iptables -S DOCKER-USER" in docs
+    assert "agent-sandbox-cli execution smoke-container-worker --json" in docs
     assert "container_worker_guest_http_target_relay_base_url" in docs
     assert "container_worker_guest_pypi_index_url" in docs
     assert "container_worker_guest_npm_registry_url" in docs
@@ -38,6 +48,9 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     assert "mssql_provision_database" in docs
     assert "session-owned" in docs
     assert "/v1/sessions/{session_id}/mssql/databases" in docs
+    assert "one configured worker" in docs
+    assert "explicit egress policy" in docs
+    assert "The worker VM only covers this bounded first slice" in docs
 
 
 def test_execution_backend_docs_distinguish_daemon_from_gateway_integration() -> None:
@@ -45,8 +58,10 @@ def test_execution_backend_docs_distinguish_daemon_from_gateway_integration() ->
 
     assert "agent-sandbox-worker-daemon" in docs
     assert "one configured worker URL" in docs
+    assert "single-worker Phase 5 deployment slice" in docs
     assert "libvirt_vm` remains the default" in docs
     assert "## Current Scope" in docs
     assert "backend-aware `effect:agent:*` workflow nodes" in docs
+    assert "agent_sandbox_worker_egress_policy_enabled: true" in docs
     assert "## Remaining Migration Work" in docs
-    assert "Phase " not in docs
+    assert "Phase 5" in docs

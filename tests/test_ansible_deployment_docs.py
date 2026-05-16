@@ -28,6 +28,11 @@ def test_ansible_readme_covers_ubuntu_azure_and_repo_native_entrypoints() -> Non
     assert "service/rest/v1/status" in text
     assert "registry.npmjs.org" in text
     assert "Ubuntu mirrors" in text
+    assert "agent_sandbox_worker_egress_policy_enabled: true" in text
+    assert "agent-sandbox-worker-egress-policy.service" in text
+    assert "DOCKER-USER" in text
+    assert "169.254.169.254" in text
+    assert "agent-sandbox-cli execution smoke-container-worker --json" in text
     assert "agent-sandbox-qdrant.service" in text
     assert "qdrant/qdrant:v1.18.0" in text
     assert "/var/lib/agent-sandbox/qdrant" in text

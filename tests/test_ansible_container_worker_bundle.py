@@ -474,7 +474,17 @@ def test_worker_docs_and_inventory_reference_playbook() -> None:
     assert "Worker outbound rules should still deny direct access" in ansible_docs
     assert "allowed Git source prefix" in ansible_docs
     assert "GitHub/Azure DevOps egress" in ansible_docs
+    assert "agent_sandbox_worker_egress_policy_enabled: true" in ansible_docs
+    assert "agent_sandbox_worker_docker_network: \"bridge\"" in ansible_docs
+    assert "agent-sandbox-worker-egress-policy.service" in ansible_docs
+    assert "sudo systemctl status agent-sandbox-worker-egress-policy.service" in ansible_docs
+    assert "sudo iptables -S DOCKER-USER" in ansible_docs
+    assert "agent-sandbox-cli execution smoke-container-worker --json" in ansible_docs
+    assert "169.254.169.254" in ansible_docs
     assert "smoke-container-worker" in ansible_docs
     assert "ansible/worker.yml" in worker_docs
+    assert "Phase 5 first slice" in worker_docs
+    assert "single-worker" in worker_docs
+    assert "DOCKER-USER" in worker_docs
     assert "dedicated container-worker VM playbook" in readme
     assert "dedicated container-worker VM playbook" in operations
