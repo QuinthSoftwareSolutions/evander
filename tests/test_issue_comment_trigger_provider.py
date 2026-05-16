@@ -215,6 +215,31 @@ def test_non_matching_directories_and_projects_are_ignored(tmp_path: Path) -> No
     assert [event.payload["comment_id"] for event in events] == ["match"]
 
 
+def test_directory_scope_allows_descendants_via_shared_helper(tmp_path: Path) -> None:
+    _store_issue(
+        tmp_path,
+        _ado_issue(
+            issue_id="ado:APP:10",
+            issue_number="10",
+            directory_path="root/example-industry/app/subteam",
+            comments=[{"id": "nested", "text": "emit me"}],
+        ),
+    )
+    _store_issue(
+        tmp_path,
+        _ado_issue(
+            issue_id="ado:APP:11",
+            issue_number="11",
+            directory_path="root/example-industry/other",
+            comments=[{"id": "sibling", "text": "ignore me"}],
+        ),
+    )
+
+    events = _provider(tmp_path).poll()
+
+    assert [event.payload["comment_id"] for event in events] == ["nested"]
+
+
 def test_alias_trigger_type_materializes_and_runs(tmp_path: Path) -> None:
     _store_issue(tmp_path, _ado_issue(comments=[{"id": "alias", "text": "hello"}]))
 
