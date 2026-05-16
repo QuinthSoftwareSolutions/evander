@@ -549,6 +549,15 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "codex_skills",
         "directory_path",
     ]
+    agent_create_fields = {field["key"]: field for field in agent_create["fields"]}
+    assert agent_create_fields["labels"]["kind"] == "string_map"
+    assert agent_create_fields["labels"]["description"]
+    assert agent_create_fields["directory_path"]["description"]
+    assert agent_create_fields["allowed_tools"]["options"]
+    assert {
+        "value": ToolName.RUN_SCRIPT.value,
+        "label": ToolName.RUN_SCRIPT.value.replace("_", " "),
+    } in agent_create_fields["allowed_tools"]["options"]
     execution_backend = next(
         field for field in agent_create["fields"] if field["key"] == "execution_backend"
     )

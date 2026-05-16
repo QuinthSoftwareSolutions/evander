@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -44,7 +45,7 @@ import {
   type WorkflowRunSummary,
   type WorkflowValidationDiagnostic,
 } from "./types";
-import { useAdminUi } from "./features/admin/AdminContext";
+import { useAdminUi, type DirectoryTreeNode } from "./features/admin/AdminContext";
 import { Tooltip } from "./features/admin/Tooltip";
 import {
   BindingParseError,
@@ -100,6 +101,19 @@ type GraphNodeStatusBadge = {
 type SaveState = "idle" | "saving" | "saved";
 
 type BindingOption = {
+  value: string;
+  label: string;
+};
+
+type WorkflowFieldOption = WorkflowEditorFieldDefinition["options"][number];
+
+type StringMapDraftRow = {
+  id: string;
+  key: string;
+  value: string;
+};
+
+type DirectorySelectOption = {
   value: string;
   label: string;
 };
@@ -172,6 +186,25 @@ const NODE_GROUPS: ReadonlyArray<{
   { kind: "effect", label: "Effects", description: "Perform side effects in VMs, agents, or Git providers." },
   { kind: "query", label: "Queries", description: "Read workflow state without producing a side effect." },
 ];
+
+const TOOL_GROUP_ORDER = [
+  "Issue intake",
+  "Azure DevOps",
+  "Pull requests",
+  "Approvals",
+  "Agent control",
+  "Messaging",
+  "Voice calling",
+  "SQL Server",
+  "Files",
+  "Discord",
+  "Teams",
+  "Email",
+  "Feedback",
+  "Assistant",
+  "Semantic store",
+  "Other",
+] as const;
 
 const NODE_KIND_DESCRIPTIONS: Record<WorkflowNodeKind, string> = {
   trigger: "Triggers start workflow execution from incoming events.",
@@ -691,6 +724,198 @@ function renderStringInput(
       disabled={disabled}
     />
   );
+}
+
+function createStringMapDraftRow(key = "", value = ""): StringMapDraftRow {
+  const randomSuffix = Math.random().toString(36).slice(2);
+  return { id: `map-row-${Date.now()}-${randomSuffix}`, key, value };
+}
+
+function stringMapDraftRows(value: unknown): StringMapDraftRow[] {
+  if (!isRecord(value)) return [];
+  return Object.entries(value).map(([key, entry]) => createStringMapDraftRow(key, String(entry ?? "")));
+}
+
+function stringMapRowsToObject(rows: StringMapDraftRow[]): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const row of rows) {
+    const key = row.key.trim();
+    if (!key) continue;
+    result[key] = row.value;
+  }
+  return result;
+}
+
+function parseStringMapDraftRows(
+  rows: StringMapDraftRow[],
+  fieldLabel: string,
+  required: boolean,
+): Record<string, string> | undefined {
+  const result: Record<string, string> = {};
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const key = row.key.trim();
+    const value = row.value;
+    if (!key && !value.trim()) continue;
+    if (!key) throw new Error(`${fieldLabel} contains a value without a key.`);
+    if (seen.has(key)) throw new Error(`${fieldLabel} contains duplicate key '${key}'.`);
+    seen.add(key);
+    result[key] = value;
+  }
+  if (Object.keys(result).length === 0 && !required) return undefined;
+  return result;
+}
+
+function directoryOptionLabel(path: string, name: string | undefined, depth: number): string {
+  if (path === "root") return "root";
+  const prefix = depth > 0 ? `${"  ".repeat(depth)}` : "";
+  return name && name !== path ? `${prefix}${name} (${path})` : `${prefix}${path}`;
+}
+
+function flattenDirectorySelectOptions(node: DirectoryTreeNode, depth = 0): DirectorySelectOption[] {
+  const path = node.directory.path;
+  const current = {
+    value: path,
+    label: directoryOptionLabel(path, node.directory.name, depth),
+  };
+  return [
+    current,
+    ...node.children.flatMap((child) => flattenDirectorySelectOptions(child, depth + 1)),
+  ];
+}
+
+function ensureDirectorySelectOption(
+  options: DirectorySelectOption[],
+  value: string,
+  label: string,
+): DirectorySelectOption[] {
+  if (!value || options.some((option) => option.value === value)) return options;
+  return [...options, { value, label }];
+}
+
+function groupToolOption(option: WorkflowFieldOption): string {
+  const { value } = option;
+  if ([
+    "create_local_issue",
+    "list_issues",
+    "get_issue",
+    "set_issue_plan",
+    "approve_issue",
+    "commit_issue",
+    "reject_issue",
+    "claim_next_issue",
+    "complete_issue",
+  ].includes(value)) {
+    return "Issue intake";
+  }
+  if ([
+    "create_ado_backlog_item",
+    "post_ado_backlog_comment",
+    "update_ado_backlog_text",
+    "update_ado_backlog_tags",
+    "query_ado_backlog_items",
+    "list_ado_current_iteration_backlog_items",
+    "get_ado_backlog_item",
+    "get_ado_daily_status_report_data",
+  ].includes(value)) {
+    return "Azure DevOps";
+  }
+  if ([
+    "list_pull_requests",
+    "get_pull_request",
+    "request_pr_review",
+    "post_pr_comment",
+    "post_pr_inline_comment",
+    "submit_pr_review",
+    "post_pr_feedback_reply",
+  ].includes(value)) {
+    return "Pull requests";
+  }
+  if (value.startsWith("approval_")) return "Approvals";
+  if ([
+    "get_agent_status",
+    "get_agent_logs",
+    "prompt_agent",
+    "list_pending_agent_prompts",
+    "respond_to_agent",
+    "schedule_resume",
+    "run_script",
+    "copilot_host_auth",
+  ].includes(value)) {
+    return "Agent control";
+  }
+  if ([
+    "assistant_read_status",
+    "assistant_list_agents",
+    "assistant_inspect_workflows",
+    "assistant_read_config",
+    "assistant_upsert_config",
+    "assistant_create_workflow",
+    "assistant_run_safe_operation",
+    "assistant_post_chat_reply",
+  ].includes(value)) {
+    return "Assistant";
+  }
+  if ([
+    "discord_get_commands",
+    "discord_post_status",
+    "has_pending_discord_messages",
+    "list_unread_discord_messages",
+    "list_all_discord_messages",
+  ].includes(value)) {
+    return "Discord";
+  }
+  if (["add_message_reaction"].includes(value)) return "Messaging";
+  if (["list_contacts", "make_phone_call", "get_phone_call_result"].includes(value)) {
+    return "Voice calling";
+  }
+  if (["mssql_provision_database", "mssql_list_databases", "mssql_drop_database"].includes(value)) {
+    return "SQL Server";
+  }
+  if ([
+    "communication_list_attachments",
+    "communication_download_attachment",
+    "communication_copy_artifact_to_workspace",
+    "communication_stage_workspace_file",
+    "discord_post_file",
+    "teams_post_file",
+    "email_create_draft_with_attachments",
+    "email_send_approved_with_attachments",
+  ].includes(value)) {
+    return "Files";
+  }
+  if ([
+    "teams_get_messages",
+    "teams_post_status",
+    "teams_meeting_get_events",
+    "teams_meeting_speak",
+    "teams_meeting_stop",
+  ].includes(value)) {
+    return "Teams";
+  }
+  if (["email_list_unread", "email_get_message", "email_create_draft", "email_send_approved"].includes(value)) {
+    return "Email";
+  }
+  if (["has_pending_feedback", "list_unread_feedback", "list_all_feedback"].includes(value)) {
+    return "Feedback";
+  }
+  if (value.startsWith("semantic_")) return "Semantic store";
+  return "Other";
+}
+
+function groupToolOptions(options: WorkflowFieldOption[]) {
+  const groups = new Map<string, WorkflowFieldOption[]>();
+  for (const option of options) {
+    const group = groupToolOption(option);
+    groups.set(group, [...(groups.get(group) ?? []), option]);
+  }
+  return TOOL_GROUP_ORDER
+    .map((name) => ({ name, items: groups.get(name) ?? [] }))
+    .filter((group) => group.items.length > 0)
+    .map((group) => ({
+      ...group,
+      items: [...group.items].sort((left, right) => left.label.localeCompare(right.label, undefined, { sensitivity: "base" })),
+    }));
 }
 
 function cloneConfig(config: WorkflowConfig): WorkflowConfig {
@@ -1723,7 +1948,7 @@ function parseNodeTypeDragPayload(dataTransfer: DataTransfer): NodeTypeDragPaylo
 }
 
 export default function App() {
-  const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
+  const { privilegedUnlocked, selectedDirectoryPath, directoryTree } = useAdminUi();
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const canvasShellRef = useRef<HTMLElement | null>(null);
   const hasAutoFitRef = useRef(false);
@@ -1754,6 +1979,7 @@ export default function App() {
   const [inspectorUnknownValues, setInspectorUnknownValues] = useState<Record<string, unknown>>({});
   const [inspectorJsonDrafts, setInspectorJsonDrafts] = useState<Record<string, string>>({});
   const [inspectorStringListDrafts, setInspectorStringListDrafts] = useState<Record<string, string>>({});
+  const [inspectorStringMapDrafts, setInspectorStringMapDrafts] = useState<Record<string, StringMapDraftRow[]>>({});
   const [inspectorFieldModes, setInspectorFieldModes] = useState<Record<string, "literal" | "bind" | "template">>({});
   const [rawJsonDraft, setRawJsonDraft] = useState("{}");
   const [clearingRunIds, setClearingRunIds] = useState<Record<string, boolean>>({});
@@ -1829,6 +2055,13 @@ export default function App() {
     : undefined;
   const graphLabels = workflowGraphLabels(visibleWorkflowGraphs, displayedFlowNodes, canvasViewport);
   const graphViewContext = `Directory: ${selectedDirectoryPath}`;
+  const directoryPathOptions = useMemo(() => {
+    const treeOptions = directoryTree?.ok && directoryTree.data
+      ? flattenDirectorySelectOptions(directoryTree.data)
+      : [];
+    const withRoot = ensureDirectorySelectOption(treeOptions, "root", "root");
+    return ensureDirectorySelectOption(withRoot, selectedDirectoryPath, selectedDirectoryPath);
+  }, [directoryTree, selectedDirectoryPath]);
   const selectedNodeBindingOptions = selectedNode
     ? upstreamBindingOptions(config, selectedNode.id, document?.output_schemas ?? {})
     : [];
@@ -2114,6 +2347,7 @@ export default function App() {
       setInspectorUnknownValues({});
       setInspectorJsonDrafts({});
       setInspectorStringListDrafts({});
+      setInspectorStringMapDrafts({});
       setInspectorFieldModes({});
       setRawJsonDraft("{}");
       return;
@@ -2124,6 +2358,7 @@ export default function App() {
     const nextUnknownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => !knownFieldKeys.has(key)));
     const nextJsonDrafts: Record<string, string> = {};
     const nextStringListDrafts: Record<string, string> = {};
+    const nextStringMapDrafts: Record<string, StringMapDraftRow[]> = {};
     const nextFieldModes: Record<string, "literal" | "bind" | "template"> = {};
     for (const field of selectedCatalogEntry?.fields ?? []) {
       nextFieldModes[field.key] = fieldValueMode(field, nextKnownValues[field.key]);
@@ -2153,12 +2388,17 @@ export default function App() {
         ? (nextKnownValues[field.key] as unknown[]).map((item) => String(item)).join("\n")
         : "";
     }
+    for (const field of selectedCatalogEntry?.fields ?? []) {
+      if (field.kind !== "string_map") continue;
+      nextStringMapDrafts[field.key] = stringMapDraftRows(nextKnownValues[field.key]);
+    }
     setInspectorNodeId(selectedNode.id);
     setInspectorDisplayName(selectedNode.display_name);
     setInspectorKnownValues(nextKnownValues);
     setInspectorUnknownValues(nextUnknownValues);
     setInspectorJsonDrafts(nextJsonDrafts);
     setInspectorStringListDrafts(nextStringListDrafts);
+    setInspectorStringMapDrafts(nextStringMapDrafts);
     setInspectorFieldModes(nextFieldModes);
     setRawJsonDraft(JSON.stringify(extras, null, 2));
   }, [selectedNode, selectedCatalogEntry]);
@@ -2775,6 +3015,16 @@ export default function App() {
           .filter(Boolean);
       }
       for (const field of selectedCatalogEntry?.fields ?? []) {
+        if (field.kind !== "string_map") continue;
+        if (isExactBindingValue(nextKnownValues[field.key])) continue;
+        if (field.read_only) continue;
+        nextKnownValues[field.key] = parseStringMapDraftRows(
+          inspectorStringMapDrafts[field.key] ?? [],
+          field.label,
+          field.required,
+        );
+      }
+      for (const field of selectedCatalogEntry?.fields ?? []) {
         if (field.kind !== "object_list") continue;
         const currentItems = Array.isArray(nextKnownValues[field.key]) ? [...(nextKnownValues[field.key] as unknown[])] : [];
         field.item_fields.forEach((itemField) => {
@@ -3085,6 +3335,135 @@ export default function App() {
     setInspectorStringListDrafts((current) => ({ ...current, [key]: value }));
   }
 
+  function addStringMapRow(key: string) {
+    if (editLocked) return;
+    setInspectorStringMapDrafts((current) => ({
+      ...current,
+      [key]: [...(current[key] ?? []), createStringMapDraftRow()],
+    }));
+  }
+
+  function updateStringMapRow(
+    fieldKey: string,
+    rowId: string,
+    key: "key" | "value",
+    value: string,
+  ) {
+    setInspectorStringMapDrafts((current) => ({
+      ...current,
+      [fieldKey]: (current[fieldKey] ?? []).map((row) =>
+        row.id === rowId ? { ...row, [key]: value } : row,
+      ),
+    }));
+  }
+
+  function removeStringMapRow(fieldKey: string, rowId: string) {
+    if (editLocked) return;
+    setInspectorStringMapDrafts((current) => ({
+      ...current,
+      [fieldKey]: (current[fieldKey] ?? []).filter((row) => row.id !== rowId),
+    }));
+  }
+
+  function renderDirectoryPathSelect(
+    field: WorkflowEditorFieldDefinition,
+    value: unknown,
+    onChange: (nextValue: string) => void,
+    disabled: boolean,
+  ) {
+    const stringValue = typeof value === "string" ? value : "";
+    const options = ensureDirectorySelectOption(
+      directoryPathOptions,
+      stringValue,
+      `${stringValue} (not in directory tree)`,
+    );
+    return (
+      <select
+        value={stringValue}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={disabled}
+        aria-label={field.label}
+      >
+        <option value="">Use workflow context</option>
+        {options.map((option) => (
+          <option key={`${field.key}-${option.value}`} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  function renderOptionCheckboxRows(
+    field: WorkflowEditorFieldDefinition,
+    options: WorkflowFieldOption[],
+    selectedValues: Set<string>,
+    disabled: boolean,
+  ) {
+    return options.map((option) => {
+      const checked = selectedValues.has(option.value);
+      return (
+        <label key={option.value} className="checkbox-row option-checkbox-row">
+          <input
+            type="checkbox"
+            checked={checked}
+            onChange={(event) => {
+              const nextValues = new Set(selectedValues);
+              if (event.target.checked) {
+                nextValues.add(option.value);
+              } else {
+                nextValues.delete(option.value);
+              }
+              updateStringListField(field.key, Array.from(nextValues).join("\n"));
+            }}
+            disabled={disabled}
+          />
+          <span>{option.label}</span>
+        </label>
+      );
+    });
+  }
+
+  function renderStringMapEditor(field: WorkflowEditorFieldDefinition, disabled: boolean) {
+    const rows = inspectorStringMapDrafts[field.key] ?? [];
+    return (
+      <div className="string-map-editor">
+        {rows.map((row, index) => (
+          <div key={row.id} className="string-map-row">
+            <label>
+              <span>Key</span>
+              <input
+                value={row.key}
+                onChange={(event) => updateStringMapRow(field.key, row.id, "key", event.target.value)}
+                disabled={disabled}
+              />
+            </label>
+            <label>
+              <span>Value</span>
+              <input
+                value={row.value}
+                onChange={(event) => updateStringMapRow(field.key, row.id, "value", event.target.value)}
+                disabled={disabled}
+              />
+            </label>
+            <button
+              type="button"
+              className="subtle-button string-map-remove"
+              onClick={() => removeStringMapRow(field.key, row.id)}
+              disabled={disabled}
+              aria-label={`Remove ${field.label} row ${index + 1}`}
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+        <button type="button" className="subtle-button" onClick={() => addStringMapRow(field.key)} disabled={disabled}>
+          Add label
+        </button>
+      </div>
+    );
+  }
+
   function updateObjectListItem(fieldKey: string, index: number, key: string, value: unknown) {
     setInspectorKnownValues((current) => {
       const currentItems = Array.isArray(current[fieldKey]) ? [...(current[fieldKey] as unknown[])] : [];
@@ -3180,13 +3559,20 @@ export default function App() {
                 </div>
               )
             : (
-              renderStringInput(
-                field,
-                value,
-                (nextValue) => updateKnownField(field.key, nextValue),
-                isDisabled,
-                "",
-              )
+              field.key === "directory_path"
+                ? renderDirectoryPathSelect(
+                  field,
+                  value,
+                  (nextValue) => updateKnownField(field.key, nextValue || undefined),
+                  isDisabled,
+                )
+                : renderStringInput(
+                  field,
+                  value,
+                  (nextValue) => updateKnownField(field.key, nextValue),
+                  isDisabled,
+                  "",
+                )
             )}
         </div>
       );
@@ -3286,34 +3672,38 @@ export default function App() {
           .filter(Boolean),
       );
       if (field.options.length > 0) {
+        if (field.key === "allowed_tools") {
+          return (
+            <div key={field.key} className="inspector-field">
+              <div className="field-toolbar">
+                {renderFieldHeader(field)}
+              </div>
+              <div className="option-checkbox-groups">
+                {groupToolOptions(field.options).map((group) => {
+                  const enabledCount = group.items.filter((option) => selectedValues.has(option.value)).length;
+                  return (
+                    <section key={group.name} className="option-checkbox-section">
+                      <div className="option-checkbox-section-header">
+                        <span>{group.name}</span>
+                        <span>{enabledCount} of {group.items.length}</span>
+                      </div>
+                      <div className="option-checkbox-list">
+                        {renderOptionCheckboxRows(field, group.items, selectedValues, isDisabled)}
+                      </div>
+                    </section>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        }
         return (
           <div key={field.key} className="inspector-field">
             <div className="field-toolbar">
               {renderFieldHeader(field)}
             </div>
             <div className="option-checkbox-list">
-              {field.options.map((option) => {
-                const checked = selectedValues.has(option.value);
-                return (
-                  <label key={option.value} className="checkbox-row option-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={(event) => {
-                        const nextValues = new Set(selectedValues);
-                        if (event.target.checked) {
-                          nextValues.add(option.value);
-                        } else {
-                          nextValues.delete(option.value);
-                        }
-                        updateStringListField(field.key, Array.from(nextValues).join("\n"));
-                      }}
-                      disabled={isDisabled}
-                    />
-                    <span>{option.label}</span>
-                  </label>
-                );
-              })}
+              {renderOptionCheckboxRows(field, field.options, selectedValues, isDisabled)}
             </div>
           </div>
         );
@@ -3331,6 +3721,27 @@ export default function App() {
             disabled={isDisabled}
           />
         </label>
+      );
+    }
+
+    if (field.kind === "string_map") {
+      return (
+        <div key={field.key} className="inspector-field">
+          <div className="field-toolbar">
+            {renderFieldHeader(field)}
+            {renderModeSelect(field, mode, (nextMode) => {
+              updateFieldMode(field.key, nextMode);
+              if (nextMode === "bind") {
+                updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
+              } else {
+                updateKnownField(field.key, stringMapRowsToObject(inspectorStringMapDrafts[field.key] ?? []));
+              }
+            }, isDisabled)}
+          </div>
+          {mode === "bind"
+            ? renderBindingSelect(field, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(field.key, nextValue))
+            : renderStringMapEditor(field, isDisabled)}
+        </div>
       );
     }
 

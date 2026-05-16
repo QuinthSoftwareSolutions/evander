@@ -785,6 +785,13 @@ def _field_option(value: str, label: str | None = None) -> WorkflowEditorFieldOp
     return WorkflowEditorFieldOption(value=value, label=label or value)
 
 
+def _tool_field_options() -> list[WorkflowEditorFieldOption]:
+    return [
+        _field_option(tool.value, tool.value.replace("_", " "))
+        for tool in sorted(ToolName, key=lambda item: item.value)
+    ]
+
+
 def _port(
     key: str, label: str, *, description: str | None = None
 ) -> WorkflowEditorNodePortDefinition:
@@ -1513,27 +1520,70 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="effect:agent:create",
         label="Agent create",
         fields=[
-            _field("provider", "Provider", "string", bindable=True),
+            _field(
+                "provider",
+                "Provider",
+                "string",
+                bindable=True,
+                description="Optional agent provider override. Leave blank to use the directory default.",
+            ),
             _field(
                 "execution_backend",
                 "Execution backend",
                 "enum",
+                description="Runtime backend that will host the created agent session.",
                 options=[
                     _field_option("libvirt_vm", "Libvirt VM"),
                     _field_option("container_worker_vm", "Container worker VM"),
                 ],
             ),
-            _field("vm_name", "VM name", "string", bindable=True),
-            _field("session_id", "Session ID", "string", bindable=True),
-            _field("labels", "Labels", "json", bindable=True),
-            _field("model", "Model", "string", bindable=True),
-            _field("vm_user", "VM user", "string", bindable=True),
-            _field("ttl_hours", "TTL hours", "number", bindable=True),
+            _field(
+                "vm_name",
+                "VM name",
+                "string",
+                bindable=True,
+                description="Optional VM name for libvirt-backed agents. Container-backed agents usually leave this blank.",
+            ),
+            _field(
+                "session_id",
+                "Session ID",
+                "string",
+                bindable=True,
+                description="Optional durable session id. Leave blank to let the runtime allocate one.",
+            ),
+            _field(
+                "labels",
+                "Labels",
+                "string_map",
+                bindable=True,
+                description="String key/value labels stored on the created agent session.",
+            ),
+            _field(
+                "model",
+                "Model",
+                "string",
+                bindable=True,
+                description="Model name the agent should use. Leave blank to inherit the directory default.",
+            ),
+            _field(
+                "vm_user",
+                "VM user",
+                "string",
+                bindable=True,
+                description="Guest user for libvirt-backed sessions. Defaults to agent.",
+            ),
+            _field(
+                "ttl_hours",
+                "TTL hours",
+                "number",
+                bindable=True,
+                description="Session lifetime in hours before the host considers it expired.",
+            ),
             _field(
                 "allowed_tools",
                 "Allowed tools",
                 "string_list",
-                description="Additional MCP tools to allow for the created session.",
+                description="MCP tools the created session may invoke through the host gateway.",
             ),
             _field(
                 "allowed_script_names",
@@ -1541,52 +1591,114 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string_list",
                 description="Additional script names the created session may invoke with run_script.",
             ),
-            _field("discord_channels", "Discord channels", "string_list"),
+            _field(
+                "discord_channels",
+                "Discord channels",
+                "string_list",
+                description="Discord channel ids the created session may read or post to.",
+            ),
             _field(
                 "teams_channel_allowlist",
                 "Teams targets",
                 "string_list",
+                description="Teams channels or chats the created session may use.",
                 placeholder="team-id/channel-id or chat:<chat-id>",
             ),
             _field(
                 "teams_user_allowlist",
                 "Teams users",
                 "string_list",
+                description="Teams users the created session may interact with.",
                 placeholder="user:<user-id-or-upn>",
             ),
-            _field("email_mailboxes", "Email mailboxes", "string_list"),
-            _field("email_folders", "Email folders", "string_list"),
+            _field(
+                "email_mailboxes",
+                "Email mailboxes",
+                "string_list",
+                description="Email mailboxes the created session may inspect.",
+            ),
+            _field(
+                "email_folders",
+                "Email folders",
+                "string_list",
+                description="Email folders the created session may inspect.",
+            ),
             _field(
                 "communication_file_receive_enabled",
                 "Receive inbound files",
                 "boolean",
                 bindable=True,
+                description="Allow the session to download inbound communication attachments into host-managed artifacts.",
             ),
             _field(
                 "communication_file_send_enabled",
                 "Send files",
                 "boolean",
                 bindable=True,
+                description="Allow the session to send staged communication artifacts through approved targets.",
             ),
             _field(
                 "communication_file_require_approval_for_send",
                 "Require approval for file sends",
                 "boolean",
                 bindable=True,
+                description="Require an approval before the session can send staged communication files.",
             ),
             _field(
                 "communication_file_max_bytes",
                 "Communication file max bytes",
                 "number",
                 bindable=True,
+                description="Maximum size in bytes for a single communication file. Leave blank to inherit policy defaults.",
             ),
-            _field("dotnet", "Dotnet", "boolean", bindable=True),
-            _field("nuget", "NuGet", "boolean", bindable=True),
-            _field("mssql", "MSSQL", "boolean", bindable=True),
-            _field("mssql_init_root", "MSSQL init root", "string", bindable=True),
-            _field("playwright", "Playwright", "boolean", bindable=True),
-            _field("codex_skills", "Codex skills", "string_list"),
-            _field("directory_path", "Directory path", "string", bindable=True),
+            _field(
+                "dotnet",
+                "Dotnet",
+                "boolean",
+                bindable=True,
+                description="Bootstrap the .NET toolchain for libvirt-backed agents.",
+            ),
+            _field(
+                "nuget",
+                "NuGet",
+                "boolean",
+                bindable=True,
+                description="Bootstrap NuGet relay support for libvirt-backed agents.",
+            ),
+            _field(
+                "mssql",
+                "MSSQL",
+                "boolean",
+                bindable=True,
+                description="Bootstrap SQL Server tooling for libvirt-backed agents.",
+            ),
+            _field(
+                "mssql_init_root",
+                "MSSQL init root",
+                "string",
+                bindable=True,
+                description="Optional host init-script root for MSSQL provisioning.",
+            ),
+            _field(
+                "playwright",
+                "Playwright",
+                "boolean",
+                bindable=True,
+                description="Bootstrap Playwright for browser automation in libvirt-backed agents.",
+            ),
+            _field(
+                "codex_skills",
+                "Codex skills",
+                "string_list",
+                description="Managed Codex skills to install into the created session.",
+            ),
+            _field(
+                "directory_path",
+                "Directory path",
+                "string",
+                bindable=True,
+                description="Directory scope that owns the created session and resolves inherited configuration.",
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -8092,6 +8204,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
     def _read_workflow_editor_catalog(self) -> WorkflowEditorCatalogPayload:
         skill_options = [_field_option(skill.name) for skill in self.skill_library.list_skills()]
+        tool_options = _tool_field_options()
         nodes: list[WorkflowEditorNodeCatalogEntry] = []
         for entry in _WORKFLOW_EDITOR_NODE_CATALOG:
             node = entry.model_copy(
@@ -8106,6 +8219,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 node.fields = [
                     field.model_copy(update={"options": skill_options})
                     if field.key == "codex_skills"
+                    else field.model_copy(update={"options": tool_options})
+                    if field.key == "allowed_tools"
                     else field
                     for field in node.fields
                 ]
