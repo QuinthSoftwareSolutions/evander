@@ -7,14 +7,14 @@ from pathlib import Path
 import httpx
 
 from agent_sandbox.models import PrFeedbackItem
-from agent_sandbox.daemons.pr_feedback_worker import (
-    AzureDevOpsFeedbackAdapter,
-    GitHubFeedbackAdapter,
-    _stream_key,
-    pr_feedback_item_payload,
-)
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import PullRequestNewFeedbackTriggerDefinition
+from agent_sandbox.pr_feedback.providers import (
+    AzureDevOpsFeedbackAdapter,
+    GitHubFeedbackAdapter,
+    pr_feedback_item_payload,
+)
+from agent_sandbox.pr_feedback.store import _stream_key
 from agent_sandbox.triggers.providers._cursor_state import (
     TriggerCursorStore,
     latest_cursor_timestamp_text,

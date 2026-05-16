@@ -1426,3 +1426,36 @@ def build_pr_feedback_worker(
         audit_logger=audit,
         directory_context_resolver=directory_context_resolver,
     )
+
+
+from agent_sandbox.pr_feedback.providers import (  # noqa: E402
+    AzureDevOpsFeedbackAdapter as _AzureDevOpsFeedbackAdapter,
+    FeedbackProviderAdapter as _FeedbackProviderAdapter,
+    GitHubFeedbackAdapter as _GitHubFeedbackAdapter,
+    pr_feedback_item_payload as _pr_feedback_item_payload,
+)
+from agent_sandbox.pr_feedback.store import (  # noqa: E402
+    FeedbackEnvelope as _FeedbackEnvelope,
+    FeedbackProviderAuthError as _FeedbackProviderAuthError,
+    FeedbackProviderConfigurationError as _FeedbackProviderConfigurationError,
+    PrFeedbackRepository as _PrFeedbackRepository,
+    PrFeedbackStore as _PrFeedbackStore,
+    ProviderPollResult as _ProviderPollResult,
+    _latest_cursor as _latest_cursor_shared,
+    _parse_dt as _parse_dt_shared,
+    _stream_key as _stream_key_shared,
+)
+
+FeedbackEnvelope = _FeedbackEnvelope
+ProviderPollResult = _ProviderPollResult
+FeedbackProviderConfigurationError = _FeedbackProviderConfigurationError
+FeedbackProviderAuthError = _FeedbackProviderAuthError
+PrFeedbackRepository = _PrFeedbackRepository
+PrFeedbackStore = _PrFeedbackStore
+_stream_key = _stream_key_shared
+_latest_cursor = _latest_cursor_shared
+_parse_dt = _parse_dt_shared
+FeedbackProviderAdapter = _FeedbackProviderAdapter
+GitHubFeedbackAdapter = _GitHubFeedbackAdapter
+AzureDevOpsFeedbackAdapter = _AzureDevOpsFeedbackAdapter
+pr_feedback_item_payload = _pr_feedback_item_payload

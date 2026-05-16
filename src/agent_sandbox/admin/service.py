@@ -57,7 +57,6 @@ from agent_sandbox.host_config import DEFAULT_RUNTIME_DIR
 from agent_sandbox.bootstrap import resolve_runtime_dir
 from agent_sandbox.ownership import DirectoryOwnershipQueries
 from agent_sandbox.policy_config import EffectivePolicyConfig
-from agent_sandbox.daemons.pr_feedback_worker import PrFeedbackStore
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.repositories.session_manifests import as_session_manifest_repository
 from agent_sandbox.session_artifacts import (
@@ -73,6 +72,7 @@ from agent_sandbox.repositories.skills_library import (
 )
 from agent_sandbox.issues.service import IssueService
 from agent_sandbox.vm.defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
+from agent_sandbox.pr_feedback.store import PrFeedbackStore
 from agent_sandbox.models import (
     ApprovalQueueHealth,
     ApprovalRequest,

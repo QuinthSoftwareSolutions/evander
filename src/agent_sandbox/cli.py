@@ -73,12 +73,12 @@ from agent_sandbox.models import (
     ToolName,
 )
 from agent_sandbox.policy_config import EffectivePolicyConfig
-from agent_sandbox.daemons.pr_feedback_worker import PrFeedbackStore
 from agent_sandbox.runtime import build_runtime
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from agent_sandbox.messaging.teams_auth import TeamsAuthError
 from agent_sandbox.vm.defaults_config import EffectiveVmDefaultsConfig, VmDefaultsConfigResolver
 from agent_sandbox.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
+from agent_sandbox.pr_feedback.store import PrFeedbackStore
 
 _COMMAND_PANELS = {
     "Health and State": 0,
