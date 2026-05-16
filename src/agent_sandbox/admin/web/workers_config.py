@@ -173,6 +173,11 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
             (),
         ),
         (
+            "Approval notifications",
+            (("policy", "approval_notification_target_ids"),),
+            (),
+        ),
+        (
             "Email",
             (
                 ("policy", "email_draft_domain_allowlist"),
@@ -711,8 +716,8 @@ def _directory_tab_help_text(tab_key: str) -> str | None:
         return "Messaging integrations for Discord and Teams, including routing, read reactions, and wake prompts."
     if tab_key == "access_policy":
         return (
-            "Directory-level guardrails for approvals, recipients, mailboxes, "
-            "communication files, and audit redaction defaults."
+            "Directory-level guardrails for approvals, approval notifications, recipients, "
+            "mailboxes, communication files, and audit redaction defaults."
         )
     if tab_key == "contacts":
         return "Directory contacts available to host-side communication integrations."

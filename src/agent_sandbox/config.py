@@ -93,6 +93,7 @@ class GatewayConfig(BaseModel):
     port: int = 8000
     log_level: str = "INFO"
     approval_ttl_seconds: int = 3600
+    approval_notification_target_ids: list[str] = Field(default_factory=list)
     runtime_dir: Path = Path("/var/lib/agent-sandbox")
     audit_log_path: Path = Path("/var/log/agent-sandbox/audit.jsonl")
     session_store_path: Path = Path("/var/lib/agent-sandbox/sessions.json")
@@ -357,6 +358,25 @@ class GatewayConfig(BaseModel):
         from agent_sandbox.semantic.settings import normalize_vector_distance
 
         return normalize_vector_distance(value)
+
+    @field_validator("approval_notification_target_ids", mode="before")
+    @classmethod
+    def normalize_approval_notification_target_ids(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("approval_notification_target_ids must be a JSON array of strings")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            target_id = str(item or "").strip().lower()
+            if not target_id or target_id in seen:
+                continue
+            seen.add(target_id)
+            normalized.append(target_id)
+        return normalized
 
     @field_validator("qdrant_api_key_env", mode="before")
     @classmethod

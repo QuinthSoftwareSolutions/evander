@@ -2642,6 +2642,19 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
                 assert field["tooltip"], f"{tab['key']}.{field['field_name']} is missing a tooltip"
                 assert "Value:" in field["tooltip"]
     access_policy = next(tab for tab in payload["tabs"] if tab["key"] == "access_policy")
+    approval_notifications = next(
+        section
+        for section in access_policy["sections"]
+        if section["title"] == "Approval notifications"
+    )
+    approval_notification_fields = {
+        field["field_name"]: field for field in approval_notifications["fields"]
+    }
+    assert approval_notification_fields["approval_notification_target_ids"]["kind"] == "string_list"
+    assert (
+        "approval request notifications"
+        in approval_notification_fields["approval_notification_target_ids"]["tooltip"]
+    )
     communication_files = next(
         section
         for section in access_policy["sections"]

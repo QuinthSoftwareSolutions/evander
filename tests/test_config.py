@@ -9,6 +9,7 @@ from agent_sandbox.config import (
     TeamsIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
+from agent_sandbox.policy_config import EffectivePolicyConfig
 from agent_sandbox.effects.providers.agent_session import (
     container_worker_guest_http_target_relay_base_url,
     container_worker_guest_npm_registry_url,
@@ -56,6 +57,30 @@ def test_duplicate_email_mailbox_ids_fail_validation() -> None:
                 ]
             }
         )
+
+
+def test_approval_notification_target_ids_are_normalized_and_deduplicated() -> None:
+    payload = {
+        "approval_notification_target_ids": [
+            " Ops-Primary ",
+            "ops-primary",
+            "",
+            "OPS-Secondary",
+            "ops-secondary",
+        ]
+    }
+
+    gateway_config = GatewayConfig.model_validate(payload)
+    policy_config = EffectivePolicyConfig.model_validate(payload)
+
+    assert gateway_config.approval_notification_target_ids == [
+        "ops-primary",
+        "ops-secondary",
+    ]
+    assert policy_config.approval_notification_target_ids == [
+        "ops-primary",
+        "ops-secondary",
+    ]
 
 
 def test_unique_email_mailbox_ids_pass_validation_with_alias_fields() -> None:
