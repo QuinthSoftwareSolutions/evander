@@ -1088,6 +1088,9 @@ without exposing provider credentials in the VM.
   - `sudo systemctl status agent-sandbox-scheduled-wake.service`
 - Discord wake cadence and resume behavior are controlled by `config/discord-wake/config.json`.
 - Scheduled wake cadence and resume behavior are controlled by `config/scheduled-wake/config.json`.
+- In both wake worker configs, `backoff_seconds` controls how long the worker waits before
+  retrying after a whole-cycle exception. `cooldown_seconds` remains the per-session delay used
+  after activity or busy-session checks, not the process-level exception retry delay.
 - `discord_resume_prompt` remains directory-scoped and is surfaced in the admin GUI under Communications; it is used by the Discord wake worker.
 - `scheduled_wake_prefix_text` lives in the scheduled-wake worker global config and is used as the shared prompt prefix for scheduled wake dispatch.
 - MCP-triggered scheduled resumes are always dispatched with `resume_mode=same_context`.
