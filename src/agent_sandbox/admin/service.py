@@ -130,6 +130,9 @@ from agent_sandbox.events.models import (
     TriggerDefinitionDiscriminated,
     materialize_node_definition,
 )
+from agent_sandbox.triggers.providers._local_tickets import (
+    seed_new_ticket_created_trigger_cursors,
+)
 from agent_sandbox.triggers.queue import (
     SqliteTriggerEventQueue,
     TriggerEventQueue,
@@ -2492,72 +2495,6 @@ def _resolve_path_setting(*, base_dir: Path, value: object | None, fallback: Pat
     if candidate.is_absolute():
         return candidate.resolve()
     return (base_dir / candidate).resolve()
-
-
-def _ticket_created_trigger_ids(config: dict[str, object]) -> set[str]:
-    return {trigger["id"] for trigger in _ticket_created_trigger_definitions(config)}
-
-
-def _ticket_created_trigger_definitions(
-    config: dict[str, object],
-) -> list[dict[str, object]]:
-    triggers = config.get("triggers")
-    if not isinstance(triggers, list):
-        return []
-    results: list[dict[str, object]] = []
-    for entry in triggers:
-        if not isinstance(entry, dict):
-            continue
-        try:
-            materialized = materialize_node_definition(
-                _TRIGGER_DEFINITION_ADAPTER.validate_python(entry)
-            )
-        except ValidationError:
-            continue
-        if str(getattr(materialized, "type", "")).strip() != "trigger:ticket:created":
-            continue
-        trigger_id = str(getattr(materialized, "id", "")).strip()
-        if not trigger_id:
-            continue
-        raw_directories = getattr(materialized, "directories", [])
-        directories = [
-            str(directory).strip().strip("/")
-            for directory in raw_directories
-            if str(directory).strip().strip("/")
-        ]
-        results.append({"id": trigger_id, "directories": directories})
-    return results
-
-
-def _max_ticket_created_at_for_directories(
-    issues: object, directories: list[object]
-) -> datetime | None:
-    max_created_at: datetime | None = None
-    for issue in issues:
-        if not isinstance(issue, LocalIssueRecord):
-            continue
-        if not _issue_within_ticket_created_directories(issue.directory_path, directories):
-            continue
-        created_at = _as_utc(issue.created_at)
-        if max_created_at is None or created_at > max_created_at:
-            max_created_at = created_at
-    return max_created_at
-
-
-def _issue_within_ticket_created_directories(candidate: str, directories: list[object]) -> bool:
-    if not directories:
-        return True
-    normalized_candidate = str(candidate).strip().strip("/")
-    for directory in directories:
-        normalized_directory = str(directory).strip().strip("/")
-        if not normalized_directory:
-            continue
-        if (
-            normalized_candidate == normalized_directory
-            or normalized_candidate.startswith(f"{normalized_directory}/")
-        ):
-            return True
-    return False
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -8353,43 +8290,16 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def _seed_new_ticket_created_trigger_cursors(
         self, *, previous_config: dict[str, object], next_config: dict[str, object]
     ) -> None:
-        previous_trigger_ids = _ticket_created_trigger_ids(previous_config)
-        new_triggers = [
-            trigger
-            for trigger in _ticket_created_trigger_definitions(next_config)
-            if trigger["id"] not in previous_trigger_ids
-        ]
-        if not new_triggers:
-            return
-
         runtime_dir = _resolve_path_setting(
             base_dir=self.project_dir,
             value=next_config.get("runtime_dir"),
             fallback=self.config.runtime_dir,
         )
-        issues = JsonStore(runtime_dir / "local-issues.json", LocalIssueRecord).read_all()
-        if not issues:
-            return
-
-        cursor_path = runtime_dir / "trigger-cursors-ticket-created.json"
-        cursor_payload = _read_json_object(cursor_path)
-        changed = False
-        for trigger in new_triggers:
-            trigger_id = trigger["id"]
-            if isinstance(cursor_payload.get(trigger_id), dict):
-                continue
-            max_created_at = _max_ticket_created_at_for_directories(
-                issues.values(), trigger["directories"]
-            )
-            if max_created_at is None:
-                continue
-            cursor_payload[trigger_id] = {
-                "last_created_at": max_created_at.isoformat().replace("+00:00", "Z")
-            }
-            changed = True
-        if changed:
-            cursor_path.parent.mkdir(parents=True, exist_ok=True)
-            self._write_json_file_atomic(cursor_path, cursor_payload)
+        seed_new_ticket_created_trigger_cursors(
+            runtime_dir=runtime_dir,
+            previous_config=previous_config,
+            next_config=next_config,
+        )
 
     def _read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
         stores = self._workflow_run_store_paths()
