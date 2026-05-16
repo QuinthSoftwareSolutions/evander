@@ -9,6 +9,7 @@ from agent_sandbox.pr_tracking import (
     PrMapStore,
     completion_event_id,
     completion_event_payload,
+    is_pr_completed,
     status_snapshot_from_pull_request,
 )
 
@@ -81,3 +82,34 @@ def test_pr_map_store_updates_status_and_tracks_completion_publication(
         "trigger-pr-completed"
     ]
     assert event_record["event_id"] == event_id
+
+
+def test_pr_terminal_state_detection_includes_closed_and_abandoned() -> None:
+    assert is_pr_completed(
+        {"provider": "azure_devops", "status": "abandoned", "merged": False}
+    )
+    assert is_pr_completed({"provider": "github", "status": "closed", "merged": False})
+    assert is_pr_completed({"provider": "local", "status": "closed", "merged": False})
+    assert not is_pr_completed({"provider": "azure_devops", "status": "active", "merged": False})
+
+
+def test_azure_abandoned_pr_snapshot_is_terminal_without_merge() -> None:
+    response = GetPullRequestResponse(
+        provider="azure_devops",
+        repo="org/repo",
+        pr_id="43",
+        title="Abandoned feature",
+        status="abandoned",
+        url="https://dev.azure.com/example/_git/repo/pullrequest/43",
+        source_branch="refs/heads/feature",
+        target_branch="refs/heads/main",
+        source_commit="abc123",
+        target_commit="def456",
+        raw={"status": "abandoned", "closedDate": "2026-05-15T11:00:00Z"},
+    )
+
+    snapshot = status_snapshot_from_pull_request(response, repo="org/repo", pr_id="43")
+
+    assert snapshot["status"] == "abandoned"
+    assert snapshot["merged"] is False
+    assert snapshot["completed_at"] == "2026-05-15T11:00:00Z"

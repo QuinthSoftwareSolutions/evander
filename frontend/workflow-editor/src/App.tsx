@@ -224,6 +224,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "trigger:teams:new-message": "Start from new Microsoft Teams messages that match the configured targets.",
   "trigger:email:new-message": "Start from newly ingested email messages for the configured mailbox scope.",
   "trigger:pull-request:new-feedback": "Start when new pull-request feedback arrives from the configured provider.",
+  "trigger:pull-request:completed": "Start when a tracked pull request reaches a terminal state.",
   "trigger:git:push": "Start from Git push events captured by the host-side bare-repo hook.",
   "trigger:agent:run:completed": "Start when a guest agent run completes.",
   "gate:filter": "Allow only matching events to continue downstream.",

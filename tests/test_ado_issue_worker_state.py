@@ -2519,9 +2519,19 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
     )
 
 
+@pytest.mark.parametrize(
+    ("pr_status", "expected_merged", "expected_completed_at"),
+    [
+        ("completed", True, "2026-05-15T10:00:00Z"),
+        ("abandoned", False, "2026-05-15T10:00:00Z"),
+    ],
+)
 def test_publish_directory_pr_completion_events_updates_pr_map_and_enqueues_event(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
+    pr_status: str,
+    expected_merged: bool,
+    expected_completed_at: str,
 ) -> None:
     from agent_sandbox.daemons import ado_issue_worker as ado_worker
 
@@ -2589,13 +2599,13 @@ def test_publish_directory_pr_completion_events_updates_pr_map_and_enqueues_even
             repo=repo,
             pr_id=pr_id,
             title="Feature PR",
-            status="completed",
+            status=pr_status,
             url="https://dev.azure.com/example-org/Example%20Project/_git/repo/pullrequest/6070",
             source_branch="refs/heads/feature/6070",
             target_branch="refs/heads/main",
             source_commit="abc123",
             target_commit="def456",
-            raw={"status": "completed", "closedDate": "2026-05-15T10:00:00Z"},
+            raw={"status": pr_status, "closedDate": "2026-05-15T10:00:00Z"},
         )
 
     monkeypatch.setattr(
@@ -2618,15 +2628,15 @@ def test_publish_directory_pr_completion_events_updates_pr_map_and_enqueues_even
     events = queue.list_pending(trigger_id="trigger-pr-completed")
     assert len(events) == 1
     assert events[0].payload["session_id"] == "session-6070"
-    assert events[0].payload["status"] == "completed"
-    assert events[0].payload["merged"] is True
-    assert events[0].payload["completed_at"] == "2026-05-15T10:00:00Z"
+    assert events[0].payload["status"] == pr_status
+    assert events[0].payload["merged"] is expected_merged
+    assert events[0].payload["completed_at"] == expected_completed_at
     assert events[0].payload["pr"]["target_branch"] == "refs/heads/main"
 
     pr_map_payload = json.loads(pr_map_path.read_text(encoding="utf-8"))
     entry = pr_map_payload["entries"]["azure_devops:org/repo:6070"]
-    assert entry["status"] == "completed"
-    assert entry["merged"] is True
+    assert entry["status"] == pr_status
+    assert entry["merged"] is expected_merged
     assert entry["completion_events"]["trigger-pr-completed"]["event_id"] == events[0].event_id
     audit_log_path = worker_config.runtime_dir / "audit.jsonl"
     audit_records = [

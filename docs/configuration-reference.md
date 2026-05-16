@@ -179,8 +179,9 @@ Type-specific keys:
 | `trigger:git:push` | `path_to_repo` | — |
 
 `trigger:pull-request:completed` emits `session_id`, `status`, `merged`, `completed_at`, and a
-normalized `pr` object. Wire `session_id` into `effect:agent:destroy.session_id` when a workflow
-should delete the agent after the tracked PR is merged or completed.
+normalized `pr` object when the tracked PR reaches a terminal state such as merged, completed,
+closed, or abandoned. Wire `session_id` into `effect:agent:destroy.session_id` when a workflow
+should delete the agent after the tracked PR is terminal.
 
 The current trigger set also includes `trigger:teams:new-message`, `trigger:review:new-request`,
 and `trigger:script-run-request`. Teams is fed by a host-side ingest worker that reads the same
