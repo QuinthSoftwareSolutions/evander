@@ -363,6 +363,7 @@ def test_scheduled_wake_worker_global_config_defaults_follow_runtime_dir() -> No
         {"runtime_dir": "/tmp/agent-sandbox-runtime"}
     )
     assert str(config.lock_path) == "/tmp/agent-sandbox-runtime/scheduled-wake.lock"
+    assert config.backoff_seconds == 60.0
     assert (
         str(config.session_cooldown_path)
         == "/tmp/agent-sandbox-runtime/scheduled-wake-session-cooldown.json"
