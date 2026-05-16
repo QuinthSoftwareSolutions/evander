@@ -9,7 +9,7 @@ from agent_sandbox.repositories.script_run_requests import (
     ScriptRunRequestStore,
 )
 
-from ._cursor_state import TriggerCursorRepository, TriggerCursorStore
+from ._cursor_state import TriggerCursorRepository, TriggerCursorStore, merge_cursor_ids
 from .base import TriggerProviderBase
 
 
@@ -31,7 +31,6 @@ class ScriptRunRequestTriggerProvider(TriggerProviderBase):
             for request in self._store().list_requests()
             if self._in_directory_scope(request.directory_path)
         ]
-        current_ids = {request.request_id for request in requests}
 
         events: list[TriggerEvent] = []
         for request in requests:
@@ -52,8 +51,19 @@ class ScriptRunRequestTriggerProvider(TriggerProviderBase):
                 )
             )
 
-        cursor_store.put(trigger.id, {"emitted_request_ids": sorted(current_ids)})
         return events
+
+    def acknowledge_published_event(self, event: TriggerEvent) -> None:
+        trigger = self._trigger()
+        if event.trigger_id != trigger.id or event.trigger_type != trigger.type:
+            return
+        request_id = str(event.payload.get("request_id") or "").strip()
+        if not request_id:
+            return
+        self._cursor_store().update(
+            trigger.id,
+            lambda state: _acknowledge_request_id(state, request_id),
+        )
 
     def _in_directory_scope(self, request_directory_path: str) -> bool:
         directory_scope = (
@@ -78,3 +88,8 @@ class ScriptRunRequestTriggerProvider(TriggerProviderBase):
         if not isinstance(self.trigger_definition, ScriptRunRequestTriggerDefinition):
             raise RuntimeError("ScriptRunRequestTriggerProvider initialized with wrong definition")
         return self.trigger_definition
+
+
+def _acknowledge_request_id(state: dict[str, object], request_id: str) -> dict[str, object]:
+    state["emitted_request_ids"] = merge_cursor_ids(state.get("emitted_request_ids"), [request_id])
+    return state

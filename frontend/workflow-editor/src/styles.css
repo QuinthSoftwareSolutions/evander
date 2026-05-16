@@ -3176,6 +3176,19 @@ select {
   gap: 1rem;
 }
 
+.string-list-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.string-list-selector-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: end;
+}
+
 .contacts-editor-header,
 .contact-editor-item-header,
 .contact-subsection-header {
@@ -4482,7 +4495,8 @@ select {
 
   .contact-editor-grid,
   .contact-row,
-  .contact-phone-row {
+  .contact-phone-row,
+  .string-list-selector-row {
     grid-template-columns: 1fr;
   }
 

@@ -10,6 +10,7 @@ from agent_sandbox.directory_config import (
     validate_effective_domain_payload,
 )
 from agent_sandbox.directories import DirectoryService, DirectoryStore
+from agent_sandbox.policy_config import PolicyConfigResolver
 
 
 def test_directory_config_resolver_merges_ancestor_overlays_and_tracks_provenance(
@@ -426,6 +427,57 @@ def test_directory_config_store_writes_validated_domain_files_and_updates_direct
     stored_directory = store.get(sandbox.id)
     assert stored_directory is not None
     assert stored_directory.metadata["directory_config"]["domains"] == ["policy"]
+
+
+def test_policy_config_resolver_inherits_approval_notification_targets(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = PolicyConfigResolver(GatewayConfig(runtime_dir=runtime_dir))
+
+    team = service.create(parent="root", name="team")
+    sandbox = service.create(parent=team.id, name="sandbox")
+
+    config_store.write(
+        "root",
+        domain="policy",
+        payload={
+            "approval_notification_target_ids": [
+                " ROOT-OPS ",
+                "root-ops",
+                "ROOT-BACKUP",
+            ]
+        },
+    )
+    config_store.write(team.path, domain="policy", payload={"default_session_ttl_seconds": 120})
+    config_store.write(
+        sandbox.path,
+        domain="policy",
+        payload={
+            "approval_notification_target_ids": [
+                " CHILD-OPS ",
+                "child-ops",
+                "",
+                "CHILD-BACKUP",
+            ]
+        },
+    )
+
+    assert resolver.resolve_for_directory("root").approval_notification_target_ids == [
+        "root-ops",
+        "root-backup",
+    ]
+    assert resolver.resolve_for_directory(team.path).approval_notification_target_ids == [
+        "root-ops",
+        "root-backup",
+    ]
+    assert resolver.resolve_for_directory(sandbox.path).approval_notification_target_ids == [
+        "child-ops",
+        "child-backup",
+    ]
 
 
 def test_directory_config_store_deletes_empty_domain_payload_and_clears_metadata(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -143,7 +144,15 @@ def test_duplicate_comments_are_not_emitted_twice(tmp_path: Path) -> None:
     _store_issue(tmp_path, issue)
     provider = _provider(tmp_path)
 
-    assert [event.payload["comment_id"] for event in provider.poll()] == ["c3"]
+    events = provider.poll()
+    assert [event.payload["comment_id"] for event in events] == ["c3"]
+
+    cursor_path = tmp_path / "trigger-cursors-issue-comments.json"
+    assert json.loads(cursor_path.read_text(encoding="utf-8")) == {}
+
+    provider.acknowledge_published_event(events[0])
+    cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+    assert cursor_payload["issue-comment"]["seen_comment_keys"] == ["ado:APP:123:c3"]
     assert provider.poll() == []
 
     issue.comments.append(

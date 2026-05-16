@@ -11,6 +11,7 @@ import pytest
 from pydantic import TypeAdapter
 
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from agent_sandbox.email.providers import EmailMessageSummary
 from agent_sandbox.models import (
     DiscordMessageEnvelope,
     EmailMessage,
@@ -579,10 +580,207 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
     )
 
 
-def test_conformance_cron_due_and_cursor_persistence(
-    tmp_path: Path, report_collector: dict[str, Any]
+def test_conformance_email_new_message_acknowledges_after_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    provider = EmailNewMessageTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "email-gmail",
+                "display_name": "Email",
+                "type": "trigger:email:new-message",
+                "provider": "gmail",
+                "account_identifier": "ops@example.com",
+                "mailbox_ids": ["mailbox-1"],
+                "auth_secret_refs": {"access_token": "GMAIL_ACCESS_TOKEN"},
+            }
+        ),
+        _build_runtime_context(runtime_dir, env={"GMAIL_ACCESS_TOKEN": "secret"}),
+    )
+
+    captured: dict[str, object] = {}
+
+    class _FakeGmailProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def list_unread(
+            self, *, mailbox_id: str, folder: str, limit: int
+        ) -> list[EmailMessageSummary]:
+            _ = folder, limit
+            received_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+            return [
+                EmailMessageSummary(
+                    mailbox_id=mailbox_id,
+                    provider="gmail",
+                    folder="inbox",
+                    message_id="msg-1",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    received_at=received_at,
+                    unread=True,
+                    body_snippet="first",
+                    metadata={},
+                ),
+                EmailMessageSummary(
+                    mailbox_id=mailbox_id,
+                    provider="gmail",
+                    folder="inbox",
+                    message_id="msg-2",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    received_at=received_at,
+                    unread=True,
+                    body_snippet="second",
+                    metadata={},
+                ),
+            ]
+
+    monkeypatch.setattr(
+        "agent_sandbox.triggers.providers.email_new_message.GmailEmailProvider",
+        _FakeGmailProvider,
+    )
+
+    first_events = provider.poll()
+    cursor_path = runtime_dir / "trigger-cursors-email.json"
+
+    assert captured["cursor_store"] is None
+    assert [event.payload["message"]["message_id"] for event in first_events] == [
+        "msg-1",
+        "msg-2",
+    ]
+    assert json.loads(cursor_path.read_text(encoding="utf-8")) == {}
+
+    provider.acknowledge_published_event(first_events[0])
+    acknowledged_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+
+    assert acknowledged_payload["email-gmail"]["last_received_at"] == "2026-04-03T12:00:00Z"
+    assert acknowledged_payload["email-gmail"]["recent_message_ids"] == ["msg-1"]
+
+    second_events = provider.poll()
+    assert [event.payload["message"]["message_id"] for event in second_events] == ["msg-2"]
+
+    provider.acknowledge_published_event(second_events[0])
+    final_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+    assert final_payload["email-gmail"]["recent_message_ids"] == ["msg-1", "msg-2"]
+
+
+def test_conformance_pr_feedback_acknowledges_after_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    (runtime_dir / "pr-map.json").write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "github:org/repo:11": {
+                        "provider": "github",
+                        "repo": "org/repo",
+                        "pr_id": "11",
+                        "session_id": "session-11",
+                        "directory_path": "root",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    provider = PullRequestNewFeedbackTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-github",
+                "display_name": "PR feedback",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "github",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+
+    class _PollResult:
+        def __init__(self) -> None:
+            created_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+            self.feedback = [
+                PrFeedbackItem(
+                    feedback_id="github:issue_comment:1",
+                    provider="github",
+                    repo="org/repo",
+                    pr_id="11",
+                    author="reviewer-1",
+                    body="first",
+                    created_at=created_at,
+                ),
+                PrFeedbackItem(
+                    feedback_id="github:issue_comment:2",
+                    provider="github",
+                    repo="org/repo",
+                    pr_id="11",
+                    author="reviewer-2",
+                    body="second",
+                    created_at=created_at,
+                ),
+            ]
+            self.next_cursor = "2026-04-03T12:00:00Z"
+
+    class _Adapter:
+        def poll(self, **_kwargs):
+            return _PollResult()
+
+    monkeypatch.setattr(provider, "_build_adapter", lambda _provider: _Adapter())
+
+    first_events = provider.poll()
+    cursor_path = runtime_dir / "trigger-cursors-pr-feedback.json"
+
+    assert [event.payload["feedback"]["feedback_id"] for event in first_events] == [
+        "github:issue_comment:1",
+        "github:issue_comment:2",
+    ]
+    assert json.loads(cursor_path.read_text(encoding="utf-8")) == {}
+
+    provider.acknowledge_published_event(first_events[0])
+    acknowledged_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+
+    assert acknowledged_payload["pr-github"]["stream_cursors"]["github:org/repo:11"] == (
+        "2026-04-03T12:00:00Z"
+    )
+    assert acknowledged_payload["pr-github"]["recent_feedback_ids"]["github:org/repo:11"] == [
+        "github:issue_comment:1"
+    ]
+
+    second_events = provider.poll()
+    assert [event.payload["feedback"]["feedback_id"] for event in second_events] == [
+        "github:issue_comment:2"
+    ]
+
+    provider.acknowledge_published_event(second_events[0])
+    final_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+    assert final_payload["pr-github"]["recent_feedback_ids"]["github:org/repo:11"] == [
+        "github:issue_comment:1",
+        "github:issue_comment:2",
+    ]
+
+
+def test_conformance_cron_due_and_cursor_persistence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, report_collector: dict[str, Any]
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    frozen_now = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz: timezone | None = None) -> datetime:
+            if tz is None:
+                return frozen_now.replace(tzinfo=None)
+            return frozen_now.astimezone(tz)
+
+    monkeypatch.setattr("agent_sandbox.triggers.providers.cron.datetime", _FrozenDatetime)
+
     provider = CronTriggerProvider()
     provider.initialize(
         _trigger_adapter().validate_python(
@@ -597,21 +795,34 @@ def test_conformance_cron_due_and_cursor_persistence(
     )
 
     first_events = provider.poll()
-    second_events = provider.poll()
     cursor_payload = json.loads(
         (runtime_dir / "trigger-cursors-cron.json").read_text(encoding="utf-8")
     )
 
     assert first_events
-    assert second_events == []
-    assert "last_fired_at" in cursor_payload["cron-every-minute-range"]
+    assert first_events[0].occurred_at == frozen_now
+    assert first_events[0].payload["scheduled_for"] == "2026-04-03T12:00:00Z"
+    assert cursor_payload["cron-every-minute-range"]["pending_scheduled_for"] == (
+        "2026-04-03T12:00:00Z"
+    )
+    assert "last_fired_at" not in cursor_payload["cron-every-minute-range"]
+
+    provider.acknowledge_published_event(first_events[0])
+    acked_cursor_payload = json.loads(
+        (runtime_dir / "trigger-cursors-cron.json").read_text(encoding="utf-8")
+    )
+    assert acked_cursor_payload["cron-every-minute-range"]["last_fired_at"] == (
+        "2026-04-03T12:00:00Z"
+    )
+    assert "pending_scheduled_for" not in acked_cursor_payload["cron-every-minute-range"]
+    assert provider.poll() == []
     _record_result(
         report_collector,
         requirement_id="provider:cron:cursor",
         trigger_type="trigger:cron",
         status="pass",
         coverage=["provider behavior correctness"],
-        details="Cron emits when due and persists last_fired_at cursor.",
+        details="Cron emits when due, stages pending_scheduled_for until acknowledgement, and then persists last_fired_at.",
     )
 
 
@@ -658,13 +869,18 @@ def test_conformance_cron_high_frequency_edit_skips_backlog(
 
     events = provider.poll()
     cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
-    second_events = provider.poll()
 
     assert len(events) == 1
     assert events[0].occurred_at == frozen_now
     assert events[0].payload["scheduled_for"] == "2026-04-03T12:10:00Z"
-    assert cursor_payload["cron-edited"]["last_fired_at"] == "2026-04-03T12:10:00Z"
-    assert second_events == []
+    assert cursor_payload["cron-edited"]["last_fired_at"] == "2026-04-03T10:00:00Z"
+    assert cursor_payload["cron-edited"]["pending_scheduled_for"] == "2026-04-03T12:10:00Z"
+
+    provider.acknowledge_published_event(events[0])
+    acked_cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+    assert acked_cursor_payload["cron-edited"]["last_fired_at"] == "2026-04-03T12:10:00Z"
+    assert "pending_scheduled_for" not in acked_cursor_payload["cron-edited"]
+    assert provider.poll() == []
 
     _record_result(
         report_collector,
@@ -672,7 +888,7 @@ def test_conformance_cron_high_frequency_edit_skips_backlog(
         trigger_type="trigger:cron",
         status="pass",
         coverage=["provider behavior correctness"],
-        details="Edited high-frequency cron schedules emit only the latest due occurrence and advance the cursor past older missed times.",
+        details="Edited high-frequency cron schedules emit the latest due occurrence, keep it pending until acknowledgement, and then advance last_fired_at past older missed times.",
     )
 
 

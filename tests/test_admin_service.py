@@ -29,6 +29,9 @@ from agent_sandbox.execution.container_worker_repository import (
 )
 from agent_sandbox.execution.container_worker_client import ContainerWorkerClient
 from agent_sandbox.models import (
+    ApprovalNotificationDeliveryRecord,
+    ApprovalNotificationDeliveryStatus,
+    ApprovalNotificationStatus,
     ApprovalRequest,
     ApprovalStatus,
     SessionManifest,
@@ -1666,6 +1669,20 @@ def test_list_approval_requests_filters_health_and_redacts_payload(tmp_path: Pat
             payload={"token": "secret", "body": "ok"},
             directory_path=team_path,
             vm_id="vm-42",
+            notification_status=ApprovalNotificationStatus.PARTIAL,
+            notification_target_ids=["ops-approvals"],
+            notification_attempted_at=datetime.now(UTC),
+            notification_error="notification relay unavailable",
+            notification_deliveries=[
+                ApprovalNotificationDeliveryRecord(
+                    target_id="ops-approvals",
+                    status=ApprovalNotificationDeliveryStatus.FAILED,
+                    provider="teams",
+                    message_id="msg-123",
+                    result_summary="status=failed",
+                    error="notification relay unavailable",
+                )
+            ],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
@@ -1704,6 +1721,12 @@ def test_list_approval_requests_filters_health_and_redacts_payload(tmp_path: Pat
     assert health.denied == 1
     assert review["redacted_payload"]["token"] == "<redacted>"
     assert review["request"]["payload"]["token"] == "<redacted>"
+    assert review["request"]["notification_status"] == "partial"
+    assert review["request"]["notification_target_ids"] == ["ops-approvals"]
+    assert review["request"]["notification_error"] == "notification relay unavailable"
+    assert review["request"]["notification_deliveries"][0]["target_id"] == "ops-approvals"
+    assert review["request"]["notification_deliveries"][0]["status"] == "failed"
+    assert review["request"]["notification_deliveries"][0]["message_id"] == "msg-123"
 
 
 def test_decide_approval_request_records_reason_history_and_audit(tmp_path: Path) -> None:

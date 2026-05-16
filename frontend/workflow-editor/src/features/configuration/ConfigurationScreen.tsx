@@ -87,6 +87,7 @@ type TabDrafts = Record<string, TabDraft>;
 
 const CONTACTS_TAB_KEY = "contacts";
 const CONTACTS_FIELD_NAME = "contacts";
+const APPROVAL_NOTIFICATION_TARGET_FIELD_NAME = "approval_notification_target_ids";
 
 type ContactPhoneDraft = {
   label: string;
@@ -116,11 +117,39 @@ function isContactsConfigField(field: ConfigurationField): boolean {
   return field.source_domain === CONTACTS_TAB_KEY && field.field_name === CONTACTS_FIELD_NAME;
 }
 
+function isApprovalNotificationTargetField(field: ConfigurationField): boolean {
+  return field.source_domain === "policy" && field.field_name === APPROVAL_NOTIFICATION_TARGET_FIELD_NAME;
+}
+
 function stringListFromValue(value: unknown): string[] {
   if (value == null) return [];
   if (Array.isArray(value)) return value.map((item) => String(item ?? ""));
   if (typeof value === "string") return [value];
   return [];
+}
+
+function parseStringListDraftValue(value: string | boolean): string[] {
+  if (typeof value === "boolean") return [];
+  return String(value)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function encodeStringListDraftValue(entries: string[]): string {
+  return entries.join("\n");
+}
+
+function dedupeStrings(entries: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const entry of entries) {
+    const normalized = entry.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
 }
 
 function phoneDraftsFromValue(value: unknown): ContactPhoneDraft[] {
@@ -647,6 +676,14 @@ export function ConfigurationScreen() {
     });
   }
 
+  function updateStringListField(fieldName: string, nextEntries: string[]) {
+    updateFieldState(fieldName, {
+      include: true,
+      clear: false,
+      value: encodeStringListDraftValue(dedupeStrings(nextEntries)),
+    });
+  }
+
   function mutateContactsField(
     field: ConfigurationField,
     fieldState: DraftFieldState,
@@ -934,6 +971,87 @@ export function ConfigurationScreen() {
     );
   }
 
+  function renderApprovalNotificationTargetEditor(
+    field: ConfigurationField,
+    fieldState: DraftFieldState,
+    disabled: boolean,
+  ) {
+    const entries = parseStringListDraftValue(fieldState.value);
+    const knownTargets = field.options;
+    const nextAvailableTarget = knownTargets.find((option) => !entries.includes(option)) ?? "";
+
+    return (
+      <div className="string-list-selector">
+        <div className="contacts-editor-header">
+          <p className="muted-text">
+            Select notify-capable communication targets declared in{" "}
+            <code>config/communication-targets/config.json</code>.
+          </p>
+          <div className="inline-actions contacts-editor-actions">
+            <button
+              type="button"
+              onClick={() => updateStringListField(field.field_name, [...entries, nextAvailableTarget])}
+              disabled={disabled || !nextAvailableTarget}
+            >
+              Add communication target
+            </button>
+          </div>
+        </div>
+        {entries.length === 0 ? (
+          <div className="empty-state">
+            {knownTargets.length
+              ? "No communication targets selected."
+              : "No notify-capable communication targets are currently declared."}
+          </div>
+        ) : null}
+        {entries.map((entry, index) => {
+          const rowOptions = dedupeStrings([
+            entry,
+            ...knownTargets.filter((option) => option === entry || !entries.includes(option)),
+          ]);
+          const isUnknownTarget = !knownTargets.includes(entry);
+          return (
+            <div key={`${field.field_name}-${index}-${entry}`} className="string-list-selector-row">
+              <label className="field-stack">
+                <span>Communication target</span>
+                <select
+                  value={entry}
+                  onChange={(event) => {
+                    const nextEntries = [...entries];
+                    nextEntries[index] = event.target.value;
+                    updateStringListField(field.field_name, nextEntries);
+                  }}
+                  disabled={disabled}
+                >
+                  {rowOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option === entry && isUnknownTarget ? `${option} (unknown target)` : option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="inline-actions compact-actions">
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={() =>
+                    updateStringListField(
+                      field.field_name,
+                      entries.filter((_, itemIndex) => itemIndex !== index),
+                    )
+                  }
+                  disabled={disabled}
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   function sectionStorageKey(sectionTitle: string) {
     return `${selectedTabKey}:${sectionTitle}`;
   }
@@ -1135,6 +1253,7 @@ export function ConfigurationScreen() {
                       ? fieldState.clear
                       : !fieldState.include || fieldState.clear;
                     const isContactsField = isContactsConfigField(field);
+                    const isApprovalNotificationTargetList = isApprovalNotificationTargetField(field);
                     return (
                       <div
                         key={field.field_name}
@@ -1185,6 +1304,12 @@ export function ConfigurationScreen() {
                         <div className={inputDisabled ? "disabled-block" : ""}>
                           {isContactsField
                             ? renderContactsEditor(field, fieldState, inputDisabled || loading || saving || !state?.directory_scoped_config_enabled)
+                            : isApprovalNotificationTargetList
+                            ? renderApprovalNotificationTargetEditor(
+                                field,
+                                fieldState,
+                                inputDisabled || loading || saving || !state?.directory_scoped_config_enabled,
+                              )
                             : renderFieldInput(field, fieldState)}
                         </div>
                         {fieldIsGlobal ? (

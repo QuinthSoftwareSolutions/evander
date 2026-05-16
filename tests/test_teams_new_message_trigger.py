@@ -55,7 +55,7 @@ def _assert_payload(
     assert message["target_type"] == target_type
 
 
-def test_teams_trigger_emits_one_event_per_matching_message_when_messages_share_timestamp_and_persists_cursor(
+def test_teams_trigger_emits_one_event_per_matching_message_when_messages_share_timestamp_and_acks_cursor(
     tmp_path: Path,
 ) -> None:
     context = _runtime_context(tmp_path)
@@ -94,7 +94,22 @@ def test_teams_trigger_emits_one_event_per_matching_message_when_messages_share_
     provider.initialize(_trigger_definition(), context)
 
     first = provider.poll()
+    cursor_payload = json.loads(
+        (context.resolved_config.runtime_dir / "trigger-cursors-teams.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert cursor_payload == {}
+
+    provider.acknowledge_published_event(first[0])
     second = provider.poll()
+
+    assert [event.event_id for event in first] == [
+        "teams-trigger:team-a/channel-1/msg-1",
+        "teams-trigger:team-a/channel-1/msg-2",
+    ]
+    assert [event.event_id for event in second] == ["teams-trigger:team-a/channel-1/msg-2"]
+    provider.acknowledge_published_event(second[0])
 
     store.add_message_if_new(
         TeamsInboxMessage(
@@ -112,13 +127,9 @@ def test_teams_trigger_emits_one_event_per_matching_message_when_messages_share_
     )
 
     third = provider.poll()
+    provider.acknowledge_published_event(third[0])
     fourth = provider.poll()
 
-    assert [event.event_id for event in first] == [
-        "teams-trigger:team-a/channel-1/msg-1",
-        "teams-trigger:team-a/channel-1/msg-2",
-    ]
-    assert second == []
     assert [event.event_id for event in third] == ["teams-trigger:team-a/channel-1/msg-3"]
     assert fourth == []
     _assert_payload(
@@ -184,10 +195,19 @@ def test_teams_trigger_emits_all_matching_messages_in_timestamp_order_and_trims_
     provider.initialize(_trigger_definition(), context)
 
     events = provider.poll()
+    cursor_payload = json.loads(
+        (context.resolved_config.runtime_dir / "trigger-cursors-teams.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert cursor_payload == {}
 
     assert [event.event_id for event in events] == [
         f"teams-trigger:{message.cursor}" for message in messages
     ]
+    for event in events:
+        provider.acknowledge_published_event(event)
     for event, message in zip(events, messages, strict=True):
         assert event.occurred_at == message.created_at
 

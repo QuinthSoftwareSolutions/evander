@@ -24,6 +24,9 @@ from agent_sandbox.execution.container_worker_repository import (
     ContainerWorkerExecutionRepository,
 )
 from agent_sandbox.models import (
+    ApprovalNotificationDeliveryRecord,
+    ApprovalNotificationDeliveryStatus,
+    ApprovalNotificationStatus,
     ApprovalRequest,
     Directory,
     LocalIssueRecord,
@@ -940,6 +943,20 @@ def test_show_approval_and_approve_record_reason(tmp_path: Path) -> None:
                     payload_digest="abc",
                     human_summary="send email",
                     payload={"token": "secret", "body": "hello"},
+                    notification_status=ApprovalNotificationStatus.PARTIAL,
+                    notification_target_ids=["ops-approvals"],
+                    notification_attempted_at=datetime.now(UTC),
+                    notification_error="notification relay unavailable",
+                    notification_deliveries=[
+                        ApprovalNotificationDeliveryRecord(
+                            target_id="ops-approvals",
+                            status=ApprovalNotificationDeliveryStatus.FAILED,
+                            provider="teams",
+                            message_id="msg-123",
+                            result_summary="status=failed",
+                            error="notification relay unavailable",
+                        )
+                    ],
                     expires_at=datetime.now(UTC) + timedelta(hours=1),
                 ).model_dump(mode="json")
             }
@@ -954,7 +971,12 @@ def test_show_approval_and_approve_record_reason(tmp_path: Path) -> None:
     )
 
     assert show_result.exit_code == 0
-    assert "<redacted>" in show_result.output
+    show_payload = json.loads(show_result.output)
+    assert show_payload["request"]["payload"]["token"] == "<redacted>"
+    assert show_payload["request"]["notification_status"] == "partial"
+    assert show_payload["request"]["notification_target_ids"] == ["ops-approvals"]
+    assert show_payload["request"]["notification_error"] == "notification relay unavailable"
+    assert show_payload["request"]["notification_deliveries"][0]["status"] == "failed"
     assert approve_result.exit_code == 0
     approvals = json.loads(approvals_path.read_text(encoding="utf-8"))
     assert approvals["approval-1"]["decision_reason"] == "looks safe"

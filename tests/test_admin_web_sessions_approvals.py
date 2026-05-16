@@ -7,7 +7,14 @@ from starlette.testclient import TestClient
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.app import create_app
-from agent_sandbox.models import ApprovalRequest, SessionManifest, ToolName
+from agent_sandbox.models import (
+    ApprovalNotificationDeliveryRecord,
+    ApprovalNotificationDeliveryStatus,
+    ApprovalNotificationStatus,
+    ApprovalRequest,
+    SessionManifest,
+    ToolName,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,6 +72,18 @@ def test_admin_web_exposes_approvals_index_detail_and_decision(tmp_path: Path) -
             payload={"token": "secret", "body": "hello"},
             directory_path="root",
             vm_id="vm-14084",
+            notification_status=ApprovalNotificationStatus.DELIVERED,
+            notification_target_ids=["ops-approvals"],
+            notification_attempted_at=datetime.now(UTC),
+            notification_deliveries=[
+                ApprovalNotificationDeliveryRecord(
+                    target_id="ops-approvals",
+                    status=ApprovalNotificationDeliveryStatus.SENT,
+                    provider="teams",
+                    message_id="msg-123",
+                    result_summary="status=sent",
+                )
+            ],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
@@ -81,9 +100,14 @@ def test_admin_web_exposes_approvals_index_detail_and_decision(tmp_path: Path) -
     assert index_response.json()["health"]["pending"] == 1
     assert index_response.json()["items"][0]["request_id"] == "approval-1"
     assert detail_response.status_code == 200
-    assert detail_response.json()["request"]["tool_name"] == "email_send_approved"
-    assert detail_response.json()["request"]["payload"]["token"] == "<redacted>"
-    assert detail_response.json()["redacted_payload"]["token"] == "<redacted>"
+    detail_payload = detail_response.json()
+    assert detail_payload["request"]["tool_name"] == "email_send_approved"
+    assert detail_payload["request"]["payload"]["token"] == "<redacted>"
+    assert detail_payload["redacted_payload"]["token"] == "<redacted>"
+    assert detail_payload["request"]["notification_status"] == "delivered"
+    assert detail_payload["request"]["notification_target_ids"] == ["ops-approvals"]
+    assert detail_payload["request"]["notification_deliveries"][0]["target_id"] == "ops-approvals"
+    assert detail_payload["request"]["notification_deliveries"][0]["status"] == "sent"
     assert decision_response.status_code == 200
     assert decision_response.json()["request"]["status"] == "denied"
 

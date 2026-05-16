@@ -69,6 +69,12 @@ def test_script_run_request_trigger_emits_once_per_visible_request(tmp_path: Pat
         "script_name": "deploy-review",
         "parameters": ["--pr", "42"],
     }
+    cursor_path = runtime_dir / "trigger-cursors-script-run-request.json"
+    assert json.loads(cursor_path.read_text(encoding="utf-8")) == {}
+
+    provider.acknowledge_published_event(events[0])
+    cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+    assert cursor_payload["script-run-trigger"]["emitted_request_ids"] == ["req-1"]
     assert provider.poll() == []
 
     raw_payload = store.read_raw()

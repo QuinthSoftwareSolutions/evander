@@ -15,11 +15,17 @@ from agent_sandbox.daemons.pr_feedback_worker import (
 )
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import PullRequestNewFeedbackTriggerDefinition
-from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
+from agent_sandbox.triggers.providers._cursor_state import (
+    TriggerCursorStore,
+    latest_cursor_timestamp_text,
+    merge_cursor_ids,
+)
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 
 
 class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
+    _RECENT_FEEDBACK_LIMIT = 512
+
     def poll(self) -> list[TriggerEvent]:
         trigger = self._trigger()
         if trigger.provider == "ado":
@@ -29,6 +35,9 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
         state_cursors = state.get("stream_cursors", {})
         if not isinstance(state_cursors, dict):
             state_cursors = {}
+        recent_feedback_ids = state.get("recent_feedback_ids", {})
+        if not isinstance(recent_feedback_ids, dict):
+            recent_feedback_ids = {}
         previous_cursors = dict(state_cursors)
         pr_sessions = self._load_pr_sessions()
 
@@ -48,7 +57,16 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                     stream = {"provider": item.provider, "repo": item.repo, "pr_id": item.pr_id}
                     key = _stream_key(item.provider, item.repo, item.pr_id)
                     cursor = _parse_dt(previous_cursors.get(key))
-                    if cursor is not None and item.created_at <= cursor:
+                    recent_ids = {
+                        value
+                        for value in recent_feedback_ids.get(key, [])
+                        if isinstance(value, str) and value.strip()
+                    }
+                    if (
+                        cursor is not None
+                        and item.created_at <= cursor
+                        and item.feedback_id in recent_ids
+                    ):
                         continue
                     discovered.append((stream, item))
         else:
@@ -75,10 +93,6 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                                 PrFeedbackItem.model_validate(pr_feedback_item_payload(envelope)),
                             )
                         )
-                    if result.next_cursor:
-                        state_cursors[stream_key] = _latest_cursor(
-                            state_cursors.get(stream_key), result.next_cursor
-                        )
 
         discovered.sort(key=lambda item: item[1].created_at)
 
@@ -87,7 +101,16 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
             provider_name = stream["provider"]
             stream_key = _stream_key(provider_name, stream["repo"], stream["pr_id"])
             previous = _parse_dt(previous_cursors.get(stream_key))
-            if previous is not None and feedback.created_at <= previous:
+            recent_ids = {
+                value
+                for value in recent_feedback_ids.get(stream_key, [])
+                if isinstance(value, str) and value.strip()
+            }
+            if (
+                previous is not None
+                and feedback.created_at <= previous
+                and feedback.feedback_id in recent_ids
+            ):
                 continue
             occurred_at = feedback.created_at.astimezone(UTC)
             events.append(
@@ -113,13 +136,27 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                     ),
                 )
             )
-            state_cursors[stream_key] = _latest_cursor(
-                state_cursors.get(stream_key),
-                occurred_at.isoformat().replace("+00:00", "Z"),
-            )
-
-        cursor_store.put(trigger.id, {"stream_cursors": state_cursors})
         return events
+
+    def acknowledge_published_event(self, event: TriggerEvent) -> None:
+        trigger = self._trigger()
+        if event.trigger_id != trigger.id or event.trigger_type != trigger.type:
+            return
+        payload = event.payload.get("feedback")
+        if not isinstance(payload, dict):
+            return
+        feedback_id = str(payload.get("feedback_id") or "").strip()
+        provider = str(payload.get("provider") or "").strip()
+        repo = str(payload.get("repo") or "").strip()
+        pr_id = str(payload.get("pr_id") or "").strip()
+        occurred_at = _parse_dt(payload.get("created_at")) or event.occurred_at
+        if not feedback_id or not provider or not repo or not pr_id or occurred_at is None:
+            return
+        stream_key = _stream_key(provider, repo, pr_id)
+        self._cursor_store().update(
+            trigger.id,
+            lambda state: _acknowledge_feedback(state, stream_key, feedback_id, occurred_at),
+        )
 
     def _runtime_dir(self) -> Path:
         if self.runtime_context is None:
@@ -238,14 +275,28 @@ def _parse_dt(value: object) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-def _latest_cursor(*values: object) -> str | None:
-    latest: datetime | None = None
-    latest_raw: str | None = None
-    for value in values:
-        parsed = _parse_dt(value)
-        if parsed is None:
-            continue
-        if latest is None or parsed > latest:
-            latest = parsed
-            latest_raw = str(value)
-    return latest_raw
+def _acknowledge_feedback(
+    state: dict[str, object],
+    stream_key: str,
+    feedback_id: str,
+    occurred_at: datetime,
+) -> dict[str, object]:
+    stream_cursors = state.get("stream_cursors")
+    if not isinstance(stream_cursors, dict):
+        stream_cursors = {}
+        state["stream_cursors"] = stream_cursors
+    recent_feedback_ids = state.get("recent_feedback_ids")
+    if not isinstance(recent_feedback_ids, dict):
+        recent_feedback_ids = {}
+        state["recent_feedback_ids"] = recent_feedback_ids
+
+    stream_cursors[stream_key] = latest_cursor_timestamp_text(
+        stream_cursors.get(stream_key),
+        occurred_at,
+    )
+    recent_feedback_ids[stream_key] = merge_cursor_ids(
+        recent_feedback_ids.get(stream_key),
+        [feedback_id],
+        limit=PullRequestNewFeedbackTriggerProvider._RECENT_FEEDBACK_LIMIT,
+    )
+    return state
