@@ -26,7 +26,7 @@ test("conformance states map to clear labels and classes", () => {
   assert.equal(stateClassName("stale"), "state-stale");
 });
 
-test("requirement count summaries are stable and concise", () => {
+test("conformance report payload keeps the UI contract small and explicit", () => {
   const payload = {
     generated_at: "2026-05-16T12:00:00Z",
     stale_after_seconds: 7 * 24 * 60 * 60,
@@ -78,17 +78,89 @@ test("requirement count summaries are stable and concise", () => {
     ],
   };
 
+  assert.equal(payload.generated_at, "2026-05-16T12:00:00Z");
+  assert.equal(payload.stale_after_seconds, 7 * 24 * 60 * 60);
   assert.equal(payload.reports.length, 2);
-  assert.equal(payload.reports[0].kind, "trigger");
-  assert.equal(payload.reports[1].kind, "effect");
-  assert.equal(payload.reports[0].state, "pass");
-  assert.equal(payload.reports[1].state, "invalid");
+  assert.deepEqual(
+    payload.reports.map(
+      ({
+        artifact_path,
+        generated_at,
+        kind,
+        missing_coverage_count,
+        requirement_count,
+        state,
+        status,
+        traceability_task_count,
+      }) => ({
+        artifact_path,
+        generated_at,
+        kind,
+        missing_coverage_count,
+        requirement_count,
+        state,
+        status,
+        traceability_task_count,
+      }),
+    ),
+    [
+      {
+        artifact_path: "trigger-conformance-report.json",
+        generated_at: "2026-05-16T12:00:00Z",
+        kind: "trigger",
+        missing_coverage_count: 0,
+        requirement_count: 6,
+        state: "pass",
+        status: "pass",
+        traceability_task_count: 4,
+      },
+      {
+        artifact_path: "effect-conformance-report.json",
+        generated_at: "2026-05-15T12:00:00Z",
+        kind: "effect",
+        missing_coverage_count: 3,
+        requirement_count: 4,
+        state: "invalid",
+        status: "fail",
+        traceability_task_count: 2,
+      },
+    ],
+  );
+  assert.deepEqual(payload.reports[0].failing_requirements, []);
+  assert.deepEqual(payload.reports[0].remediation_snippets, []);
+  assert.equal(payload.reports[1].failing_requirements.length, 1);
   assert.equal(
-    summarizeRequirementCounts(payload.reports[0].requirement_counts),
+    payload.reports[1].failing_requirements[0].requirement_id,
+    "binding:resolution-and-chaining",
+  );
+  assert.equal(payload.reports[1].failing_requirements[0].status, "fail");
+  assert.equal(payload.reports[1].failing_requirements[0].details, "binding mismatch");
+  assert.equal(
+    payload.reports[1].failing_requirements[0].remediation,
+    "update the binding expression",
+  );
+  assert.deepEqual(payload.reports[1].remediation_snippets, []);
+  assert.equal(payload.reports[1].missing_coverage.task_binding.length, 2);
+  assert.equal(payload.reports[1].missing_coverage.task_runtime.length, 1);
+  assert.equal(payload.reports[1].error, "malformed report");
+  assert.equal(
+    payload.reports[1].guidance,
+    "PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py",
+  );
+});
+
+test("requirement count summaries are stable and concise", () => {
+  const payload = {
+    pass: { pass: 5, unknown: 1 },
+    fail: { fail: 1, missing: 2, stale: 1 },
+  };
+
+  assert.equal(
+    summarizeRequirementCounts(payload.pass),
     "Pass 5, Unknown 1",
   );
   assert.equal(
-    summarizeRequirementCounts(payload.reports[1].requirement_counts),
+    summarizeRequirementCounts(payload.fail),
     "Fail 1, Missing 2, Stale 1",
   );
 });
