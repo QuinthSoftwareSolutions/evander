@@ -346,6 +346,7 @@ def test_discord_wake_worker_global_config_defaults_follow_runtime_dir() -> None
     )
     assert str(config.wake_state_path) == "/tmp/agent-sandbox-runtime/discord-wake-state.json"
     assert config.directories == []
+    assert config.backoff_seconds == 60.0
 
 
 def test_discord_wake_worker_global_config_directory_paths_are_normalized() -> None:
@@ -370,6 +371,7 @@ def test_scheduled_wake_worker_global_config_defaults_follow_runtime_dir() -> No
     )
     assert str(config.wake_state_path) == "/tmp/agent-sandbox-runtime/scheduled-wake-state.json"
     assert config.directories == []
+    assert config.backoff_seconds == 60.0
 
 
 def test_scheduled_wake_worker_global_config_directory_paths_are_normalized() -> None:

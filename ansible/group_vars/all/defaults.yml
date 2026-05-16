@@ -287,6 +287,7 @@ agent_sandbox_discord_wake_config:
   directories: []
   poll_interval_seconds: 30
   jitter_seconds: 5
+  backoff_seconds: 60
   cooldown_seconds: 60
   lock_path: null
   session_cooldown_path: null
@@ -301,6 +302,7 @@ agent_sandbox_scheduled_wake_config:
   directories: []
   poll_interval_seconds: 30
   jitter_seconds: 5
+  backoff_seconds: 60
   cooldown_seconds: 60
   lock_path: null
   session_cooldown_path: null
