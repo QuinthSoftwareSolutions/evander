@@ -168,6 +168,39 @@ def test_worker_azure_inventory_uses_truman_control_plane_identity() -> None:
     assert "hostvars[agent_sandbox_control_plane_host].agent_sandbox_deploy_path" in worker_defaults
 
 
+def test_worker_egress_policy_defaults_expose_private_control_plane_endpoints() -> None:
+    defaults = (ROOT / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    azure = (ROOT / "ansible" / "group_vars" / "azure.yml").read_text(encoding="utf-8")
+    worker_defaults = (
+        ROOT / "ansible" / "group_vars" / "agent_sandbox_worker_hosts.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "agent_sandbox_worker_egress_policy_enabled: false" in worker_defaults
+    assert "agent_sandbox_worker_egress_policy_allow_tcp_endpoints" in defaults
+    assert "agent_sandbox_worker_egress_policy_extra_allow_tcp_endpoints: []" in defaults
+    assert 'agent_sandbox_git_host: "{{ agent_sandbox_control_plane_private_ip }}"' in defaults
+    assert "name: control-plane git ssh" in defaults
+    assert 'host: "{{ agent_sandbox_git_host }}"' in defaults
+    assert "name: control-plane mcp gateway" in defaults
+    assert "name: control-plane openai relay" in defaults
+    assert "name: control-plane nuget relay" in defaults
+    assert "name: control-plane http target relay" in defaults
+    assert "name: control-plane nexus package cache" in defaults
+    assert "name: control-plane apt-cacher-ng" in defaults
+    assert "port: 22" in defaults
+    assert "port: 8000" in defaults
+    assert "port: 11434" in defaults
+    assert "port: 11666" in defaults
+    assert "port: 11777" in defaults
+    assert "port: 8081" in defaults
+    assert "port: 3142" in defaults
+    assert 'host: "{{ agent_sandbox_control_plane_private_ip }}"' in defaults
+    assert "<control-plane-private-ip>" not in defaults
+    assert "agent_sandbox_worker_egress_policy_enabled: true" in azure
+
+
 def test_worker_service_role_renders_env_and_daemon_unit() -> None:
     role = ROOT / "ansible" / "roles" / "container_worker_service"
     tasks = (role / "tasks" / "main.yml").read_text(encoding="utf-8")

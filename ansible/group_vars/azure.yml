@@ -16,6 +16,7 @@ agent_sandbox_worker_token: "{{ vault_agent_sandbox_worker_token }}"
 agent_sandbox_nexus_admin_password: "{{ vault_agent_sandbox_nexus_admin_password | default('') }}"
 agent_sandbox_control_plane_private_ip: "10.2.0.4"
 agent_sandbox_git_host: "{{ agent_sandbox_control_plane_private_ip }}"
+agent_sandbox_worker_egress_policy_enabled: true
 agent_sandbox_example_app_repo_source: "git@ssh.dev.azure.com:v3/exampleindustry/Example%20Industry%20APP/ExampleIndustryAPP"
 agent_sandbox_example_app_repo_cache_key: "{{ agent_sandbox_example_app_repo_source | hash('sha256') }}"
 agent_sandbox_example_app_deploy_demo_script_path: "{{ agent_sandbox_runtime_dir }}/repo-cache/{{ agent_sandbox_example_app_repo_cache_key }}-worktree/Scripts/Azure/Environment/deploy-demo-environment.sh"

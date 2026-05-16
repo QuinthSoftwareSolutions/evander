@@ -131,6 +131,34 @@ agent_sandbox_allowed_tcp_ports: >-
     + agent_sandbox_package_cache_allowed_tcp_ports
     + agent_sandbox_apt_cache_allowed_tcp_ports
   }}
+agent_sandbox_git_host: "{{ agent_sandbox_control_plane_private_ip }}"
+
+# Explicit worker egress destinations stay private to the control plane. The
+# worker playbook can append operator-defined endpoints, but it should not need
+# broad CIDRs or public internet destinations.
+agent_sandbox_worker_egress_policy_allow_tcp_endpoints:
+  - name: control-plane git ssh
+    host: "{{ agent_sandbox_git_host }}"
+    port: 22
+  - name: control-plane mcp gateway
+    host: "{{ agent_sandbox_control_plane_private_ip }}"
+    port: 8000
+  - name: control-plane openai relay
+    host: "{{ agent_sandbox_control_plane_private_ip }}"
+    port: 11434
+  - name: control-plane nuget relay
+    host: "{{ agent_sandbox_control_plane_private_ip }}"
+    port: 11666
+  - name: control-plane http target relay
+    host: "{{ agent_sandbox_control_plane_private_ip }}"
+    port: 11777
+  - name: control-plane nexus package cache
+    host: "{{ agent_sandbox_control_plane_private_ip }}"
+    port: 8081
+  - name: control-plane apt-cacher-ng
+    host: "{{ agent_sandbox_control_plane_private_ip }}"
+    port: 3142
+agent_sandbox_worker_egress_policy_extra_allow_tcp_endpoints: []
 
 # Control-plane package cache. Nexus Repository Community Edition proxies only
 # public PyPI and npm in v1; publishing/internal hosted repositories are not

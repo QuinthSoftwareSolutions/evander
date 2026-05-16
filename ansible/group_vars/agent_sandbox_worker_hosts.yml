@@ -63,6 +63,7 @@ agent_sandbox_worker_sandbox_profile: "default"
 # Override this with a tighter custom Docker network when one is available; the
 # worker daemon still refuses Docker host networking.
 agent_sandbox_worker_docker_network: "bridge"
+agent_sandbox_worker_egress_policy_enabled: false
 agent_sandbox_worker_read_only_rootfs: false
 agent_sandbox_worker_tmpfs: []
 # Empty means the playbook runs containers as the worker service account uid:gid so

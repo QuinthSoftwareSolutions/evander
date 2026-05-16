@@ -455,6 +455,35 @@ def test_ansible_azure_inventory_maps_nexus_password_from_vault() -> None:
     assert "vault_agent_sandbox_nexus_admin_password" in docs
 
 
+def test_ansible_worker_egress_policy_defaults_are_private_control_plane_endpoints() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    azure = (repo / "ansible" / "group_vars" / "azure.yml").read_text(encoding="utf-8")
+
+    assert "agent_sandbox_worker_egress_policy_allow_tcp_endpoints" in defaults
+    assert "agent_sandbox_worker_egress_policy_extra_allow_tcp_endpoints: []" in defaults
+    assert 'agent_sandbox_git_host: "{{ agent_sandbox_control_plane_private_ip }}"' in defaults
+    assert "name: control-plane git ssh" in defaults
+    assert 'host: "{{ agent_sandbox_git_host }}"' in defaults
+    assert "name: control-plane mcp gateway" in defaults
+    assert "name: control-plane openai relay" in defaults
+    assert "name: control-plane nuget relay" in defaults
+    assert "name: control-plane http target relay" in defaults
+    assert "name: control-plane nexus package cache" in defaults
+    assert "name: control-plane apt-cacher-ng" in defaults
+    assert "port: 22" in defaults
+    assert "port: 8000" in defaults
+    assert "port: 11434" in defaults
+    assert "port: 11666" in defaults
+    assert "port: 11777" in defaults
+    assert "port: 8081" in defaults
+    assert "port: 3142" in defaults
+    assert 'host: "{{ agent_sandbox_control_plane_private_ip }}"' in defaults
+    assert "agent_sandbox_worker_egress_policy_enabled: true" in azure
+
+
 def test_worker_apt_proxy_runs_before_host_prereqs_and_can_be_disabled() -> None:
     repo = Path(__file__).resolve().parents[1]
     worker = (repo / "ansible" / "worker.yml").read_text(encoding="utf-8")
