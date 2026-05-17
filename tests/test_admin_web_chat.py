@@ -54,7 +54,12 @@ class FakeAdminService:
         self.published_chat_events: list[dict[str, Any]] = []
 
     def read_assistant_settings(self) -> dict[str, Any]:
-        return {"enabled": True, "read_only": False, "default_model": "gpt-test"}
+        return {
+            "enabled": True,
+            "read_only": False,
+            "default_model": "gpt-test",
+            "default_profile": "full-admin",
+        }
 
     def privileged_operations_unlocked(self) -> bool:
         return False
