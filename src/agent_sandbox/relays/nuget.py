@@ -17,7 +17,6 @@ from starlette.routing import Route
 from agent_sandbox.bootstrap import load_runtime_gateway_config, resolve_runtime_dir
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.provider_config import ProviderConfigResolver
-from agent_sandbox.vm.defaults_config import VmDefaultsConfigResolver
 
 HOP_BY_HOP_HEADERS = {
     "authorization",

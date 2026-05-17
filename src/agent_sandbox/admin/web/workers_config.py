@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from types import UnionType
 from typing import Any, get_args, get_origin
@@ -12,6 +13,7 @@ from starlette.routing import BaseRoute, Route
 
 from agent_sandbox.admin.service import (
     COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
+    AdminRevisionConflict,
     AdminService,
 )
 from agent_sandbox.admin.config_tooltips import CONFIG_FIELD_TOOLTIPS
@@ -506,8 +508,25 @@ def _json_payload(value: Any) -> Any:
     return value
 
 
-def _error_response(message: str, *, status_code: int = 400) -> JSONResponse:
-    return JSONResponse({"error": message}, status_code=status_code)
+def _error_response(
+    message: str, *, status_code: int = 400, details: dict[str, Any] | None = None
+) -> JSONResponse:
+    payload: dict[str, Any] = {"error": message}
+    if details:
+        payload["details"] = details
+    return JSONResponse(payload, status_code=status_code)
+
+
+def _json_revision(payload: object) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _expected_revision(payload: dict[str, Any]) -> str | None:
+    expected = payload.get("expected_revision")
+    if not isinstance(expected, str) or not expected.strip():
+        return None
+    return expected.strip()
 
 
 async def _json_body(request: Request) -> dict[str, Any]:
@@ -914,6 +933,15 @@ def _domain_snapshot(service: AdminService, directory_path: str, domain: str) ->
     )
     return {
         "domain": domain,
+        "revision": _json_revision(
+            {
+                "domain": domain,
+                "exists": bool(
+                    raw_result.ok and raw_result.data is not None and raw_result.data.exists
+                ),
+                "config": raw_config,
+            }
+        ),
         "raw": {
             "exists": bool(
                 raw_result.ok and raw_result.data is not None and raw_result.data.exists
@@ -949,6 +977,13 @@ def _assistant_settings_snapshot(service: AdminService) -> dict[str, Any]:
     }
     return {
         "domain": _ASSISTANT_SETTINGS_DOMAIN,
+        "revision": _json_revision(
+            {
+                "domain": _ASSISTANT_SETTINGS_DOMAIN,
+                "exists": path.exists(),
+                "config": config,
+            }
+        ),
         "raw": {
             "exists": path.exists(),
             "config": config,
@@ -1010,9 +1045,20 @@ def _aggregate_tab_snapshot(
             "directory_path": None,
             "note": "Root directory has no parent directory. It is the top of the directory config chain.",
         }
+    revision_payload = {
+        "tab": tab_key,
+        "domains": {
+            source_domain: {
+                "exists": bool(domain_snapshots[source_domain]["raw"]["exists"]),
+                "config": domain_snapshots[source_domain]["raw"]["config"],
+            }
+            for source_domain in _directory_tab_underlying_domains(tab_key)
+        },
+    }
     return {
         "key": tab_key,
         "title": _DIRECTORY_CONFIG_UI_TAB_TITLES.get(tab_key, tab_key),
+        "revision": _json_revision(revision_payload),
         "raw": {
             "exists": raw_exists,
             "config": raw_config,
@@ -1137,9 +1183,16 @@ def worker_config_routes(service: AdminService, auth: AdminWebAuth) -> list[Base
         config = payload.get("config")
         if not isinstance(config, dict):
             return _error_response("config must be a JSON object", status_code=400)
+        expected_revision = _expected_revision(payload)
+        if expected_revision is None:
+            return _error_response("expected_revision is required", status_code=428)
         try:
-            service.write_worker_global_config(worker_id, config)
+            service.write_worker_global_config(
+                worker_id, config, expected_revision=expected_revision
+            )
             detail = _worker_detail(service, worker_id)
+        except AdminRevisionConflict as exc:
+            return _error_response(str(exc), status_code=409, details=exc.details)
         except ValueError as exc:
             message = str(exc)
             status_code = 404 if message.startswith("Unknown worker:") else 400
@@ -1243,80 +1296,117 @@ def worker_config_routes(service: AdminService, auth: AdminWebAuth) -> list[Base
         config = payload.get("config")
         if not isinstance(config, dict):
             return _error_response("config must be a JSON object", status_code=400)
+        expected_revision = _expected_revision(payload)
+        if expected_revision is None:
+            return _error_response("expected_revision is required", status_code=428)
 
         if domain in _DIRECTORY_CONFIG_UI_TAB_FIELD_SOURCES:
-            payloads_by_source = _split_tab_payload(domain, config)
+            try:
+                payloads_by_source = _split_tab_payload(domain, config)
+            except ValueError as exc:
+                return _error_response(str(exc), status_code=400)
             tab_fields_by_source = _tab_fields_by_source_domain(domain)
-            for source_domain, source_payload in payloads_by_source.items():
-                if source_domain == _ASSISTANT_SETTINGS_DOMAIN:
-                    if not request_has_privileged_operations(
-                        auth=auth,
-                        service=service,
-                        request=request,
-                    ):
-                        return _error_response("Privileged operations are locked.", status_code=403)
-                    existing_settings = service.read_assistant_settings()
-                    merged_settings = dict(existing_settings)
-                    merged_settings.update(source_payload)
-                    try:
-                        service.write_assistant_settings(merged_settings)
-                    except Exception as exc:
-                        return _error_response(str(exc), status_code=400)
-                    continue
-                existing_result = service.read_directory_domain_config(
-                    directory_path, source_domain
-                )
-                existing_config = (
-                    dict(existing_result.data.config)
-                    if existing_result.ok
-                    and existing_result.data is not None
-                    and existing_result.data.config is not None
-                    else {}
-                )
-                merged_payload = {
-                    field_name: value
-                    for field_name, value in existing_config.items()
-                    if field_name not in tab_fields_by_source[source_domain]
+            with service.admin_config_mutation_lock():
+                domain_snapshots = {
+                    source_domain: _domain_snapshot(service, directory_path, source_domain)
+                    for source_domain in _DIRECTORY_CONFIG_SNAPSHOT_DOMAINS
                 }
-                merged_payload.update(source_payload)
-                result = service.write_directory_domain_config(
-                    directory_path, source_domain, merged_payload
+                domain_snapshots[_ASSISTANT_SETTINGS_DOMAIN] = _assistant_settings_snapshot(
+                    service
                 )
-                if not result.ok:
-                    return JSONResponse(
-                        {
-                            "write_result": _normalize_admin_result(result),
-                            "source_domain": source_domain,
-                            "tab_snapshot": None,
+                current_tab_snapshot = _aggregate_tab_snapshot(
+                    service, directory_path, domain, domain_snapshots
+                )
+                if current_tab_snapshot["revision"] != expected_revision:
+                    return _error_response(
+                        "Configuration changed before save. Reload this tab before saving again.",
+                        status_code=409,
+                        details={
+                            "current_revision": current_tab_snapshot["revision"],
+                            "tab_snapshot": current_tab_snapshot,
                         },
-                        status_code=400,
                     )
-            domain_snapshots = {
-                source_domain: _domain_snapshot(service, directory_path, source_domain)
-                for source_domain in _DIRECTORY_CONFIG_SNAPSHOT_DOMAINS
-            }
-            domain_snapshots[_ASSISTANT_SETTINGS_DOMAIN] = _assistant_settings_snapshot(service)
-            return JSONResponse(
-                {
-                    "write_result": {
-                        "ok": True,
-                        "data": None,
-                        "errors": [],
-                        "validation_diagnostics": [],
-                    },
-                    "tab_snapshot": _aggregate_tab_snapshot(
-                        service, directory_path, domain, domain_snapshots
-                    ),
+                for source_domain, source_payload in payloads_by_source.items():
+                    if source_domain == _ASSISTANT_SETTINGS_DOMAIN:
+                        if not request_has_privileged_operations(
+                            auth=auth,
+                            service=service,
+                            request=request,
+                        ):
+                            return _error_response(
+                                "Privileged operations are locked.", status_code=403
+                            )
+                        existing_settings = domain_snapshots[source_domain]["raw"]["config"]
+                        merged_settings = dict(existing_settings)
+                        merged_settings.update(source_payload)
+                        try:
+                            service.write_assistant_settings(merged_settings)
+                        except Exception as exc:
+                            return _error_response(str(exc), status_code=400)
+                        continue
+                    existing_config = dict(domain_snapshots[source_domain]["raw"]["config"])
+                    merged_payload = {
+                        field_name: value
+                        for field_name, value in existing_config.items()
+                        if field_name not in tab_fields_by_source[source_domain]
+                    }
+                    merged_payload.update(source_payload)
+                    result = service.write_directory_domain_config(
+                        directory_path, source_domain, merged_payload
+                    )
+                    if not result.ok:
+                        return JSONResponse(
+                            {
+                                "write_result": _normalize_admin_result(result),
+                                "source_domain": source_domain,
+                                "tab_snapshot": None,
+                            },
+                            status_code=400,
+                        )
+                refreshed_domain_snapshots = {
+                    source_domain: _domain_snapshot(service, directory_path, source_domain)
+                    for source_domain in _DIRECTORY_CONFIG_SNAPSHOT_DOMAINS
                 }
-            )
+                refreshed_domain_snapshots[_ASSISTANT_SETTINGS_DOMAIN] = (
+                    _assistant_settings_snapshot(service)
+                )
+                return JSONResponse(
+                    {
+                        "write_result": {
+                            "ok": True,
+                            "data": None,
+                            "errors": [],
+                            "validation_diagnostics": [],
+                        },
+                        "tab_snapshot": _aggregate_tab_snapshot(
+                            service, directory_path, domain, refreshed_domain_snapshots
+                        ),
+                    }
+                )
 
-        result = service.write_directory_domain_config(directory_path, domain, config)
-        status_code = 200 if result.ok else 400
-        response_payload = {
-            "write_result": _normalize_admin_result(result),
-            "snapshot": _domain_snapshot(service, directory_path, domain) if result.ok else None,
-        }
-        return JSONResponse(response_payload, status_code=status_code)
+        with service.admin_config_mutation_lock():
+            try:
+                current_snapshot = _domain_snapshot(service, directory_path, domain)
+            except ValueError as exc:
+                return _error_response(str(exc), status_code=400)
+            if current_snapshot["revision"] != expected_revision:
+                return _error_response(
+                    "Configuration changed before save. Reload this domain before saving again.",
+                    status_code=409,
+                    details={
+                        "current_revision": current_snapshot["revision"],
+                        "snapshot": current_snapshot,
+                    },
+                )
+            result = service.write_directory_domain_config(directory_path, domain, config)
+            status_code = 200 if result.ok else 400
+            response_payload = {
+                "write_result": _normalize_admin_result(result),
+                "snapshot": _domain_snapshot(service, directory_path, domain)
+                if result.ok
+                else None,
+            }
+            return JSONResponse(response_payload, status_code=status_code)
 
     routes = [
         Route("/api/workers", list_workers, methods=["GET"]),

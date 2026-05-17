@@ -26,6 +26,7 @@ from agent_sandbox.execution.models import (
     ExecutionStatusKind,
 )
 from agent_sandbox.messaging.targets import (
+    COMMUNICATION_TARGETS_DOMAIN,
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
@@ -65,6 +66,28 @@ def write_config(
         lines.append(f'execution_backend: "{execution_backend}"')
     config_path.write_text("\n".join(lines), encoding="utf-8")
     return config_path
+
+
+def _workflow_expected_revision(client: TestClient) -> str:
+    response = client.get("/api/workflow-editor/document")
+    assert response.status_code == 200
+    revision = response.json()["revision"]
+    assert isinstance(revision, str)
+    return revision
+
+
+def _configuration_expected_revision(
+    client: TestClient, directory_path: str, tab_or_domain: str
+) -> str:
+    response = client.get(
+        f"/api/configuration/state?directory_path={directory_path}"
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    snapshot = payload["tab_snapshots"].get(tab_or_domain) or payload["snapshots"][tab_or_domain]
+    revision = snapshot["revision"]
+    assert isinstance(revision, str)
+    return revision
 
 
 def _set_azure_sso_env(
@@ -310,6 +333,9 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "message",
         "thread_id",
     ]
+    assert next(
+        field for field in communication["fields"] if field["key"] == "communication_target_id"
+    )["kind"] == "enum"
     assert any(
         field["key"] == "message" and field["bindable"] and field["multiline"]
         for field in communication["fields"]
@@ -532,6 +558,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "execution_backend",
         "vm_name",
         "session_id",
+        "existing_agent_behavior",
         "labels",
         "model",
         "vm_user",
@@ -571,6 +598,13 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert execution_backend["options"] == [
         {"value": "libvirt_vm", "label": "Libvirt VM"},
         {"value": "container_worker_vm", "label": "Container worker VM"},
+    ]
+    existing_agent_behavior = next(
+        field for field in agent_create["fields"] if field["key"] == "existing_agent_behavior"
+    )
+    assert existing_agent_behavior["options"] == [
+        {"value": "upsert", "label": "Upsert existing agent"},
+        {"value": "noop", "label": "No-op if existing"},
     ]
     agent_destroy = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:destroy"
@@ -670,6 +704,107 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "playwright",
         "codex_skills",
         "directory_path",
+    ]
+
+
+def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "ops")
+    assert created.ok is True and created.data is not None
+    root_write = service.write_directory_domain_config(
+        "root",
+        COMMUNICATION_TARGETS_DOMAIN,
+        {
+            "targets": [
+                {
+                    "id": "root-chat",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team/channel",
+                    "policy": {"capabilities": ["write"]},
+                },
+                {
+                    "id": "root-notify",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team/notify",
+                    "policy": {"capabilities": ["notify"]},
+                },
+                {
+                    "id": "mail-write",
+                    "provider": "email",
+                    "kind": "email",
+                    "address": "ops@example.com",
+                    "policy": {"capabilities": ["write"], "auth_profile_ref": "email.ops"},
+                },
+            ]
+        },
+    )
+    child_write = service.write_directory_domain_config(
+        "root/ops",
+        COMMUNICATION_TARGETS_DOMAIN,
+        {
+            "targets": [
+                {"id": "root-chat", "disabled": True},
+                {
+                    "id": "ops-chat",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team/ops",
+                    "policy": {"capabilities": ["reply"]},
+                },
+                {
+                    "id": "ops-discord",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345678",
+                    "policy": {"capabilities": ["write"]},
+                },
+                {
+                    "id": "discord-reply-only",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345679",
+                    "policy": {"capabilities": ["reply"]},
+                },
+            ]
+        },
+    )
+    assert root_write.ok is True
+    assert child_write.ok is True
+    client = TestClient(create_app(service))
+
+    root_response = client.get("/api/workflow-editor/catalog?directory_path=root")
+    ops_response = client.get("/api/workflow-editor/catalog?directory_path=root/ops")
+
+    assert root_response.status_code == 200
+    assert ops_response.status_code == 200
+
+    def send_target_options(payload: dict[str, object]) -> list[dict[str, str]]:
+        nodes = payload["nodes"]
+        assert isinstance(nodes, list)
+        node = next(
+            candidate
+            for candidate in nodes
+            if isinstance(candidate, dict)
+            and candidate["type"] == "effect:communication:send-message"
+        )
+        field = next(
+            candidate
+            for candidate in node["fields"]
+            if candidate["key"] == "communication_target_id"
+        )
+        assert field["kind"] == "enum"
+        return field["options"]
+
+    assert send_target_options(root_response.json()) == [
+        {"value": "root-chat", "label": "root-chat (teams, write)"}
+    ]
+    assert send_target_options(ops_response.json()) == [
+        {"value": "ops-chat", "label": "ops-chat (teams, reply)"},
+        {"value": "ops-discord", "label": "ops-discord (discord, write)"},
     ]
 
 
@@ -905,6 +1040,7 @@ def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) 
     }
 
     validate_response = client.post("/api/workflow-editor/validate", json=payload)
+    payload["expected_revision"] = _workflow_expected_revision(client)
     save_response = client.put("/api/workflow-editor/document", json=payload)
 
     assert validate_response.status_code == 200
@@ -949,10 +1085,43 @@ def test_admin_web_saves_disconnected_workflow_editor_document(tmp_path: Path) -
         },
     }
 
+    payload["expected_revision"] = _workflow_expected_revision(client)
     save_response = client.put("/api/workflow-editor/document", json=payload)
 
     assert save_response.status_code == 200
     assert save_response.json()["config"]["edges"] == []
+
+
+def test_admin_web_workflow_editor_save_requires_matching_revision(tmp_path: Path) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = {
+        "config": {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [],
+            "gates": [],
+            "effects": [],
+            "queries": [],
+            "edges": [],
+        },
+        "layout": {"nodes": {}},
+    }
+
+    missing = client.put("/api/workflow-editor/document", json=payload)
+    stale = client.put(
+        "/api/workflow-editor/document",
+        json={**payload, "expected_revision": "stale"},
+    )
+    current_revision = _workflow_expected_revision(client)
+    saved = client.put(
+        "/api/workflow-editor/document",
+        json={**payload, "expected_revision": current_revision},
+    )
+
+    assert missing.status_code == 428
+    assert stale.status_code == 409
+    assert stale.json()["details"]["current_revision"] == current_revision
+    assert saved.status_code == 200
+    assert saved.json()["revision"] == _workflow_expected_revision(client)
 
 
 def _workflow_binding_validation_payload(tmp_path: Path, prompt: str) -> dict[str, object]:
@@ -1042,6 +1211,7 @@ def test_admin_web_validate_reports_deleted_binding_node_without_rejecting_save(
     )
 
     validate_response = client.post("/api/workflow-editor/validate", json=payload)
+    payload["expected_revision"] = _workflow_expected_revision(client)
     save_response = client.put("/api/workflow-editor/document", json=payload)
 
     assert validate_response.status_code == 200
@@ -1137,6 +1307,7 @@ def test_admin_web_save_seeds_new_ticket_created_trigger_cursor(tmp_path: Path) 
                 "edges": [],
             },
             "layout": {"nodes": {}},
+            "expected_revision": _workflow_expected_revision(client),
         },
     )
 
@@ -2498,7 +2669,12 @@ def test_admin_web_state_exposes_effective_execution_backend(tmp_path: Path) -> 
     )
     write_backend = client.put(
         "/api/configuration/domains/providers?directory_path=root/ops",
-        json={"config": {"execution_backend": "container_worker_vm"}},
+        json={
+            "config": {"execution_backend": "container_worker_vm"},
+            "expected_revision": _configuration_expected_revision(
+                client, "root/ops", "providers"
+            ),
+        },
     )
     ops_state = client.get("/api/admin/state?directory_path=root/ops")
     ops_configuration = client.get("/api/configuration/state?directory_path=root/ops")
@@ -2985,6 +3161,40 @@ def test_admin_web_conformance_report_endpoint_returns_invalid_records(
     assert reports["effect"]["state"] == "missing"
 
 
+def test_admin_web_run_conformance_report_endpoint_delegates_to_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    client = TestClient(create_app(service))
+    calls: list[str] = []
+
+    def fake_run(kind: str) -> SimpleNamespace:
+        calls.append(kind)
+        return SimpleNamespace(
+            model_dump=lambda mode: {
+                "kind": kind,
+                "exit_code": 0,
+                "started_at": "2026-05-17T09:00:00Z",
+                "completed_at": "2026-05-17T09:00:01Z",
+                "duration_seconds": 1.0,
+                "output": "ok",
+                "reports": {
+                    "generated_at": "2026-05-17T09:00:01Z",
+                    "stale_after_seconds": 604800,
+                    "reports": [],
+                },
+            }
+        )
+
+    monkeypatch.setattr(service, "run_conformance_report", fake_run)
+
+    response = client.post("/api/admin/reports/conformance/trigger/run")
+
+    assert response.status_code == 200
+    assert calls == ["trigger"]
+    assert response.json()["kind"] == "trigger"
+
+
 def test_admin_web_active_issue_filter_excludes_done_issues(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     active_issue = service.create_local_issue(title="Active issue", body="body")
@@ -3026,8 +3236,40 @@ def test_admin_web_workers_expose_config_schema(tmp_path: Path) -> None:
     assert detail_response.status_code == 200
     payload = detail_response.json()
     assert payload["config"]["worker_id"] == worker_id
+    assert isinstance(payload["config"]["revision"], str)
     assert payload["config_schema"]["worker_id"] == worker_id
     assert any(field["field_name"] == "runtime_dir" for field in payload["config_schema"]["fields"])
+
+
+def test_admin_web_worker_config_save_requires_matching_revision(tmp_path: Path) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    worker_id = "trigger-orchestrator"
+    detail_response = client.get(f"/api/workers/{worker_id}")
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    config = dict(detail["config"]["config"])
+    config["poll_interval_seconds"] = int(config.get("poll_interval_seconds") or 5) + 1
+
+    missing = client.put(f"/api/workers/{worker_id}/config", json={"config": config})
+    stale = client.put(
+        f"/api/workers/{worker_id}/config",
+        json={"config": config, "expected_revision": "stale"},
+    )
+    saved = client.put(
+        f"/api/workers/{worker_id}/config",
+        json={"config": config, "expected_revision": detail["config"]["revision"]},
+    )
+
+    assert missing.status_code == 428
+    assert stale.status_code == 409
+    assert stale.json()["details"]["current_revision"] == detail["config"]["revision"]
+    assert saved.status_code == 200
+    assert detail["config"]["exists"] is False
+    assert saved.json()["config"]["exists"] is True
+    assert saved.json()["config"]["revision"] != detail["config"]["revision"]
+    assert saved.json()["config"]["config"]["poll_interval_seconds"] == config[
+        "poll_interval_seconds"
+    ]
 
 
 def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> None:
@@ -3069,6 +3311,8 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
 
     assert response.status_code == 200
     payload = response.json()
+    assert isinstance(payload["tab_snapshots"]["communications"]["revision"], str)
+    assert isinstance(payload["snapshots"]["providers"]["revision"], str)
     communications = next(tab for tab in payload["tabs"] if tab["key"] == "communications")
     assert communications["title"] == "Communications"
     assert any(section["title"] == "Discord" for section in communications["sections"])
@@ -3223,7 +3467,8 @@ def test_admin_web_contacts_tab_save_preserves_user_contact_links(
                         "phone_numbers": [],
                     },
                 }
-            }
+            },
+            "expected_revision": _configuration_expected_revision(client, "root", "contacts"),
         },
     )
 
@@ -3253,12 +3498,20 @@ def test_admin_web_configuration_state_exposes_unified_directory_overrides(
                 "discord_backend": "stub",
                 "discord_operator_channel_allowlist": ["chan-1"],
                 "discord_resume_prompt": "Resume this session.",
-            }
+            },
+            "expected_revision": _configuration_expected_revision(
+                client, "root/ops", "communications"
+            ),
         },
     )
     providers_response = client.put(
         "/api/configuration/domains/providers?directory_path=root/ops",
-        json={"config": {"github_token_env": "GITHUB_TOKEN_OPS"}},
+        json={
+            "config": {"github_token_env": "GITHUB_TOKEN_OPS"},
+            "expected_revision": _configuration_expected_revision(
+                client, "root/ops", "providers"
+            ),
+        },
     )
     state_response = client.get("/api/configuration/state?directory_path=root/ops")
 
@@ -3302,7 +3555,10 @@ def test_admin_web_configuration_tab_save_splits_underlying_domains(tmp_path: Pa
                 "discord_backend": "stub",
                 "discord_operator_channel_allowlist": ["chan-1", "chan-2"],
                 "discord_resume_prompt": "Resume this session.",
-            }
+            },
+            "expected_revision": _configuration_expected_revision(
+                client, "ops", "communications"
+            ),
         },
     )
 
@@ -3313,6 +3569,47 @@ def test_admin_web_configuration_tab_save_splits_underlying_domains(tmp_path: Pa
     assert snapshot["raw"]["config"]["discord_backend"] == "stub"
     assert snapshot["raw"]["config"]["discord_operator_channel_allowlist"] == ["chan-1", "chan-2"]
     assert snapshot["raw"]["config"]["discord_resume_prompt"] == "Resume this session."
+
+
+def test_admin_web_configuration_tab_save_rejects_missing_and_stale_revision(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(
+        create_app(AdminService(write_config(tmp_path, enable_directory_scoped_config=True)))
+    )
+    create_response = client.post(
+        "/api/configuration/directories",
+        json={"parent_path": "root", "name": "ops"},
+    )
+    assert create_response.status_code == 200
+    initial_revision = _configuration_expected_revision(client, "ops", "communications")
+
+    missing = client.put(
+        "/api/configuration/domains/communications?directory_path=ops",
+        json={"config": {"discord_backend": "stub"}},
+    )
+    first_save = client.put(
+        "/api/configuration/domains/communications?directory_path=ops",
+        json={
+            "config": {"discord_backend": "stub"},
+            "expected_revision": initial_revision,
+        },
+    )
+    stale = client.put(
+        "/api/configuration/domains/communications?directory_path=ops",
+        json={
+            "config": {"discord_operator_channel_allowlist": ["chan-2"]},
+            "expected_revision": initial_revision,
+        },
+    )
+
+    assert missing.status_code == 428
+    assert first_save.status_code == 200
+    assert first_save.json()["tab_snapshot"]["revision"] != initial_revision
+    assert stale.status_code == 409
+    assert stale.json()["details"]["current_revision"] == first_save.json()["tab_snapshot"][
+        "revision"
+    ]
 
 
 def test_admin_web_communications_tab_saves_sqlite_communication_targets(
@@ -3334,7 +3631,10 @@ def test_admin_web_communications_tab_saves_sqlite_communication_targets(
                         "policy": {"capabilities": ["notify"]},
                     }
                 ]
-            }
+            },
+            "expected_revision": _configuration_expected_revision(
+                client, "root", "communications"
+            ),
         },
     )
     create_response = client.post(
@@ -3355,7 +3655,10 @@ def test_admin_web_communications_tab_saves_sqlite_communication_targets(
                         "policy": {"capabilities": ["write"]},
                     },
                 ]
-            }
+            },
+            "expected_revision": _configuration_expected_revision(
+                client, "root/ops", "communications"
+            ),
         },
     )
     state_response = client.get("/api/configuration/state?directory_path=root/ops")
@@ -3401,7 +3704,10 @@ def test_admin_web_communications_tab_saves_assistant_settings(tmp_path: Path) -
                 "default_model": "gpt-test",
                 "default_profile": "full-admin",
                 "custom_system_instructions": "Use the admin context.",
-            }
+            },
+            "expected_revision": _configuration_expected_revision(
+                client, "root", "communications"
+            ),
         },
     )
 
@@ -3441,7 +3747,10 @@ def test_admin_web_communications_tab_assistant_only_save_preserves_directory_do
                 "discord_backend": "stub",
                 "discord_operator_channel_allowlist": ["chan-1"],
                 "discord_resume_prompt": "Resume this session.",
-            }
+            },
+            "expected_revision": _configuration_expected_revision(
+                client, "ops", "communications"
+            ),
         },
     )
     assert communications_response.status_code == 200
@@ -3451,7 +3760,12 @@ def test_admin_web_communications_tab_assistant_only_save_preserves_directory_do
 
     assistant_response = client.put(
         "/api/configuration/domains/communications?directory_path=ops",
-        json={"config": {"enabled": True, "read_only": True, "default_model": "gpt-test"}},
+        json={
+            "config": {"enabled": True, "read_only": True, "default_model": "gpt-test"},
+            "expected_revision": _configuration_expected_revision(
+                client, "ops", "communications"
+            ),
+        },
     )
     assert assistant_response.status_code == 200
 
@@ -3509,7 +3823,12 @@ def test_admin_web_communications_tab_preserves_assistant_settings_when_absent(
 
     response = client.put(
         "/api/configuration/domains/communications?directory_path=root",
-        json={"config": {"discord_backend": "stub"}},
+        json={
+            "config": {"discord_backend": "stub"},
+            "expected_revision": _configuration_expected_revision(
+                client, "root", "communications"
+            ),
+        },
     )
 
     assert response.status_code == 200
@@ -3565,13 +3884,21 @@ def test_admin_web_grouped_tab_save_preserves_unrelated_shared_domain_fields(
 
     provider_response = client.put(
         "/api/configuration/domains/providers?directory_path=ops",
-        json={"config": {"openai_api_base_url": "http://relay.internal/v1"}},
+        json={
+            "config": {"openai_api_base_url": "http://relay.internal/v1"},
+            "expected_revision": _configuration_expected_revision(client, "ops", "providers"),
+        },
     )
     assert provider_response.status_code == 200
 
     communications_response = client.put(
         "/api/configuration/domains/communications?directory_path=ops",
-        json={"config": {"discord_backend": "stub"}},
+        json={
+            "config": {"discord_backend": "stub"},
+            "expected_revision": _configuration_expected_revision(
+                client, "ops", "communications"
+            ),
+        },
     )
     assert communications_response.status_code == 200
 
@@ -3585,7 +3912,12 @@ def test_admin_web_grouped_tab_save_preserves_unrelated_shared_domain_fields(
 
     clear_response = client.put(
         "/api/configuration/domains/communications?directory_path=ops",
-        json={"config": {}},
+        json={
+            "config": {},
+            "expected_revision": _configuration_expected_revision(
+                client, "ops", "communications"
+            ),
+        },
     )
     assert clear_response.status_code == 200
 

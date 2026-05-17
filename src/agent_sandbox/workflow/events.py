@@ -9,7 +9,7 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Generic, TypeVar
+from typing import Any, TypeVar
 from uuid import uuid4
 
 from pydantic import BaseModel, Field

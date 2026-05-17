@@ -111,6 +111,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
     execution_backend: ConfigValue | None = None
     vm_name: ConfigValue | None = None
     session_id: ConfigValue | None = None
+    existing_agent_behavior: ConfigValue | None = None
     labels: ConfigValue | None = None
     model: ConfigValue | None = None
     vm_user: ConfigValue | None = None

@@ -179,7 +179,7 @@ def test_build_git_push_payloads_maps_notes_push_to_matching_agent_branch_tip(
         text=True,
     ).stdout.strip()
     subprocess.run(
-        ["git", "-C", str(worktree), "push", "origin", f"HEAD:refs/heads/agents/session-1/topic"],
+        ["git", "-C", str(worktree), "push", "origin", "HEAD:refs/heads/agents/session-1/topic"],
         check=True,
         capture_output=True,
         text=True,
@@ -253,7 +253,7 @@ def test_build_git_push_payloads_maps_per_session_notes_push_to_matching_agent_b
         text=True,
     ).stdout.strip()
     subprocess.run(
-        ["git", "-C", str(worktree), "push", "origin", f"HEAD:refs/heads/agents/session-1/topic"],
+        ["git", "-C", str(worktree), "push", "origin", "HEAD:refs/heads/agents/session-1/topic"],
         check=True,
         capture_output=True,
         text=True,

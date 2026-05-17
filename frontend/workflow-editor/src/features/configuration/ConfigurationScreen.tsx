@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { fetchJson } from "../admin/api";
+import { ApiError, fetchJson } from "../admin/api";
 import type { AdminResult } from "../admin/AdminContext";
 import { useAdminUi } from "../admin/AdminContext";
 import { CopyIcon, SaveIcon } from "../admin/PageActionIcons";
@@ -35,6 +35,7 @@ type ConfigurationTab = {
 type TabSnapshot = {
   key: string;
   title: string;
+  revision: string;
   raw: {
     exists: boolean;
     config: Record<string, unknown>;
@@ -591,7 +592,18 @@ export function ConfigurationScreen() {
     const payload = await fetchJson<ConfigurationState>(
       `/api/configuration/state?directory_path=${encodeURIComponent(directoryPath)}`,
     );
-    setState(payload);
+    setState((current) => {
+      if (!options?.preserveDirty || !current) {
+        return payload;
+      }
+      const tab_snapshots = { ...payload.tab_snapshots };
+      for (const tab of payload.tabs) {
+        if (dirtyTabs[tab.key] && current.tab_snapshots[tab.key]) {
+          tab_snapshots[tab.key] = current.tab_snapshots[tab.key];
+        }
+      }
+      return { ...payload, tab_snapshots };
+    });
     setSelectedDirectoryPath(payload.selected_directory_path);
     if (payload.selected_directory_path !== globalSelectedDirectoryPath) {
       setGlobalSelectedDirectoryPath(payload.selected_directory_path);
@@ -723,7 +735,7 @@ export function ConfigurationScreen() {
         tab_snapshot: TabSnapshot | null;
       }>(`/api/configuration/domains/${encodeURIComponent(selectedTab)}?directory_path=${encodeURIComponent(selectedDirectoryPath)}`, {
         method: "PUT",
-        body: JSON.stringify({ config: payload }),
+        body: JSON.stringify({ config: payload, expected_revision: snapshot.revision }),
       });
       if (!payloadResponse.write_result.ok || !payloadResponse.tab_snapshot) {
         throw new Error(payloadResponse.write_result.errors[0]?.message ?? "Save failed.");
@@ -755,7 +767,13 @@ export function ConfigurationScreen() {
       }
       await reloadCurrentDirectory();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(
+        reason instanceof ApiError && reason.status === 409
+          ? "This configuration tab changed on the server. Reload this tab before saving again; your draft is still visible."
+          : reason instanceof Error
+            ? reason.message
+            : String(reason),
+      );
     } finally {
       setSaving(false);
     }

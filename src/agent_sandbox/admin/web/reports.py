@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
+from starlette.concurrency import run_in_threadpool
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.shared import json_error
@@ -57,6 +58,16 @@ def report_routes(service: AdminService) -> list[Route]:
         payload = service.read_conformance_reports()
         return JSONResponse(payload.model_dump(mode="json"))
 
+    async def run_conformance(request: Request) -> JSONResponse:
+        kind = request.path_params["kind"]
+        try:
+            payload = await run_in_threadpool(service.run_conformance_report, kind)
+        except ValueError as exc:
+            return json_error(str(exc))
+        except RuntimeError as exc:
+            return json_error(str(exc), status_code=500)
+        return JSONResponse(payload.model_dump(mode="json"))
+
     return [
         Route(
             "/api/admin/reports/workflow-graph-activity",
@@ -64,6 +75,7 @@ def report_routes(service: AdminService) -> list[Route]:
             methods=["GET"],
         ),
         Route("/api/admin/reports/conformance", conformance, methods=["GET"]),
+        Route("/api/admin/reports/conformance/{kind}/run", run_conformance, methods=["POST"]),
     ]
 
 

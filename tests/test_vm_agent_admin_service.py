@@ -902,6 +902,7 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
                 "playwright": True,
                 "codex_skills": ["skill"],
                 "directory_path": "root/team",
+                "allow_existing_session": False,
             },
         ),
         CallRecord(

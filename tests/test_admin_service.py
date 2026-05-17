@@ -2057,6 +2057,44 @@ def test_admin_service_can_read_and_mutate_trigger_orchestrator_triggers_by_id(
     assert removed.config["triggers"] == []
 
 
+def test_trigger_mutations_do_not_reenter_admin_config_mutation_lock(
+    tmp_path: Path,
+) -> None:
+    class NonReentrantLock:
+        def __init__(self) -> None:
+            self.depth = 0
+            self.enter_count = 0
+
+        def __call__(self):
+            return self
+
+        def __enter__(self):
+            if self.depth:
+                raise AssertionError("admin config mutation lock was re-entered")
+            self.depth += 1
+            self.enter_count += 1
+
+        def __exit__(self, exc_type, exc, traceback):
+            self.depth -= 1
+
+    service = AdminService(write_config(tmp_path))
+    lock = NonReentrantLock()
+    service.admin_config_mutation_lock = lock
+
+    service.upsert_trigger_config(
+        "cron-15m",
+        {
+            "display_name": "Every 15 minutes",
+            "type": "trigger:cron",
+            "expression": "*/15 * * * *",
+        },
+    )
+    service.delete_trigger_config("cron-15m")
+    service.ensure_chat_assistant_workflow()
+
+    assert lock.enter_count == 3
+
+
 def test_admin_service_can_read_and_mutate_trigger_orchestrator_effects_by_id(
     tmp_path: Path,
 ) -> None:
@@ -2356,9 +2394,86 @@ def test_workflow_editor_document_round_trips_config_and_separate_layout(tmp_pat
 
     normalized_config = json.loads(Path(save_result.config_path).read_text(encoding="utf-8"))
     expected_revision = hashlib.sha256(
-        json.dumps(normalized_config, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(
+            {
+                "config": normalized_config,
+                "layout": save_result.layout,
+                "graphs": [graph.model_dump(mode="json") for graph in save_result.graphs],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
     ).hexdigest()
     assert save_result.revision == expected_revision
+
+
+def test_workflow_editor_revision_changes_for_layout_only_edit(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    config = {
+        "runtime_dir": str(tmp_path / "runtime"),
+        "triggers": [
+            {
+                "id": "cron-15m",
+                "display_name": "Every 15 minutes",
+                "type": "trigger:cron",
+                "expression": "*/15 * * * *",
+            }
+        ],
+        "effects": [],
+        "edges": [],
+    }
+
+    first = service.save_workflow_editor_document(
+        config=config,
+        layout={"nodes": {"cron-15m": {"x": 100, "y": 50}}},
+    )
+    second = service.save_workflow_editor_document(
+        config=config,
+        layout={"nodes": {"cron-15m": {"x": 200, "y": 50}}},
+    )
+
+    assert second.revision != first.revision
+
+
+def test_workflow_editor_revision_changes_for_graph_metadata_only_edit(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    config = {
+        "runtime_dir": str(tmp_path / "runtime"),
+        "triggers": [
+            {
+                "id": "cron-15m",
+                "display_name": "Every 15 minutes",
+                "type": "trigger:cron",
+                "expression": "*/15 * * * *",
+            }
+        ],
+        "effects": [],
+        "edges": [],
+    }
+    first = service.save_workflow_editor_document(config=config, layout={"nodes": {}})
+    edited_graphs = [graph.model_dump(mode="json") for graph in first.graphs]
+    edited_graphs[0]["name"] = "Renamed graph"
+
+    second = service.save_workflow_editor_document(
+        config=config,
+        layout={"nodes": {}},
+        graphs=edited_graphs,
+    )
+
+    assert second.revision != first.revision
+
+
+def test_worker_global_config_revision_changes_for_config_edit(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    first = service.read_worker_global_config("trigger-orchestrator")
+    config = dict(first.config)
+    config["poll_interval_seconds"] = int(config.get("poll_interval_seconds") or 5) + 1
+
+    second = service.write_worker_global_config("trigger-orchestrator", config)
+
+    assert second.revision != first.revision
 
 
 def test_workflow_editor_document_uses_runtime_parent_as_project_root(
@@ -3241,6 +3356,175 @@ def test_conformance_reports_marks_old_valid_artifacts_stale(tmp_path: Path) -> 
     assert reports["trigger"].status == "pass"
     assert reports["effect"].state == "stale"
     assert reports["effect"].status == "pass"
+
+
+def test_run_conformance_report_executes_fixed_suite_and_refreshes_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = write_config(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    service = AdminService(config_path)
+    service.project_dir = REPO_ROOT
+    calls: list[dict[str, Any]] = []
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        text: bool,
+        capture_output: bool,
+        timeout: int,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(
+            {
+                "command": command,
+                "cwd": cwd,
+                "env": env,
+                "text": text,
+                "capture_output": capture_output,
+                "timeout": timeout,
+            }
+        )
+        Path(env["AGENT_SANDBOX_TRIGGER_CONFORMANCE_REPORT"]).write_text(
+            json.dumps(
+                {
+                    "generated_at": "2099-01-01T00:00:00Z",
+                    "status": "pass",
+                    "requirements": [
+                        {
+                            "requirement_id": "schema:trigger:cron",
+                            "status": "pass",
+                            "coverage": ["cron"],
+                            "details": "Cron trigger validates.",
+                        }
+                    ],
+                    "traceability_matrix": {"task_trigger_schema": ["schema:trigger:cron"]},
+                    "missing_coverage": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(admin_service.subprocess, "run", fake_run)
+
+    payload = service.run_conformance_report("trigger")
+
+    assert payload.kind == "trigger"
+    assert payload.exit_code == 0
+    assert payload.output == "ok"
+    assert len(calls) == 1
+    assert calls[0]["command"][1:] == ["-m", "pytest", "-q", "tests/test_trigger_conformance_suite.py"]
+    assert calls[0]["cwd"] == REPO_ROOT
+    assert calls[0]["text"] is True
+    assert calls[0]["capture_output"] is True
+    assert calls[0]["timeout"] == admin_service.CONFORMANCE_REPORT_RUN_TIMEOUT_SECONDS
+    assert (
+        calls[0]["env"]["AGENT_SANDBOX_TRIGGER_CONFORMANCE_REPORT"]
+        == str(runtime_dir / "trigger-conformance-report.json")
+    )
+    reports = {report.kind: report for report in payload.reports.reports}
+    assert reports["trigger"].state == "pass"
+    assert reports["trigger"].requirement_count == 1
+    assert reports["effect"].state == "missing"
+
+
+def test_run_conformance_report_rejects_unknown_kind(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    with pytest.raises(ValueError, match="Unknown conformance report"):
+        service.run_conformance_report("workflow")
+
+
+def test_run_conformance_report_timeout_decodes_captured_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.project_dir = REPO_ROOT
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        text: bool,
+        capture_output: bool,
+        timeout: int,
+    ) -> subprocess.CompletedProcess[str]:
+        _ = cwd, env, text, capture_output
+        raise subprocess.TimeoutExpired(
+            command,
+            timeout=timeout,
+            output=b"partial stdout\n",
+            stderr=b"partial stderr\n",
+        )
+
+    monkeypatch.setattr(admin_service.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.run_conformance_report("trigger")
+
+    message = str(exc_info.value)
+    assert "Trigger conformance suite timed out after" in message
+    assert "partial stdout" in message
+    assert "partial stderr" in message
+    assert "b'partial" not in message
+
+
+def test_run_conformance_report_returns_payload_for_pytest_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    service.project_dir = REPO_ROOT
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        text: bool,
+        capture_output: bool,
+        timeout: int,
+    ) -> subprocess.CompletedProcess[str]:
+        _ = cwd, env, text, capture_output, timeout
+        Path(env["AGENT_SANDBOX_EFFECT_CONFORMANCE_REPORT"]).write_text(
+            json.dumps(
+                {
+                    "generated_at": "2099-01-01T00:00:00Z",
+                    "status": "fail",
+                    "requirements": [
+                        {
+                            "requirement_id": "binding:resolution-and-chaining",
+                            "status": "fail",
+                            "coverage": ["binding"],
+                            "details": "Binding coverage failed.",
+                        }
+                    ],
+                    "traceability_matrix": {
+                        "task_binding_and_chain": ["binding:resolution-and-chaining"]
+                    },
+                    "missing_coverage": {
+                        "task_queue_idempotency": ["queue:idempotency"],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 1, stdout="failed stdout", stderr="failed stderr")
+
+    monkeypatch.setattr(admin_service.subprocess, "run", fake_run)
+
+    payload = service.run_conformance_report("effect")
+
+    assert payload.exit_code == 1
+    assert payload.output == "failed stdout\nfailed stderr"
+    reports = {report.kind: report for report in payload.reports.reports}
+    assert reports["effect"].state == "fail"
+    assert reports["effect"].missing_coverage_count == 1
 
 
 def test_workflow_editor_rejects_graph_metadata_that_crosses_connected_components(
@@ -4716,9 +5000,10 @@ def test_worker_admin_dependencies_backwards_compatible_without_clear_workflow_r
             normalize_directory_path=lambda directory_path: directory_path or "root",
             direct_owned_entity_ids=lambda directory_path, **kwargs: set(),
             read_worker_global_config=lambda worker_id: {"worker_id": worker_id},
-            write_worker_global_config=lambda worker_id, payload: {
+            write_worker_global_config=lambda worker_id, payload, **kwargs: {
                 "worker_id": worker_id,
                 "payload": payload,
+                **kwargs,
             },
             read_workflow_editor_document=lambda: {"kind": "document"},
             read_workflow_editor_catalog=lambda: {"kind": "catalog"},

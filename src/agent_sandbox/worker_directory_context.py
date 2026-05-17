@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,6 @@ from agent_sandbox.directory_config import (
 )
 from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.policy_config import EffectivePolicyConfig
-from agent_sandbox.models import SessionManifest
 from agent_sandbox.vm.defaults_config import EffectiveVmDefaultsConfig
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 

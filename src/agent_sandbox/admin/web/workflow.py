@@ -8,7 +8,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
-from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.service import AdminRevisionConflict, AdminService
 from agent_sandbox.admin.web.shared import json_error
 
 
@@ -20,6 +20,15 @@ async def json_body(request: Request) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("Request body must be a JSON object")
     return payload
+
+
+def expected_revision_from_payload(payload: dict[str, Any]) -> str:
+    if "expected_revision" not in payload:
+        raise KeyError("expected_revision is required")
+    expected_revision = payload.get("expected_revision")
+    if not isinstance(expected_revision, str) or not expected_revision.strip():
+        raise KeyError("expected_revision must be a non-empty string")
+    return expected_revision.strip()
 
 
 async def workflow_run_events(service: AdminService, request: Request) -> AsyncIterator[str]:
@@ -78,9 +87,11 @@ def workflow_routes(service: AdminService) -> list[Route]:
             return json_error(str(exc))
         return JSONResponse(document.model_dump(mode="json"))
 
-    async def get_catalog(_: Request) -> JSONResponse:
+    async def get_catalog(request: Request) -> JSONResponse:
         try:
-            catalog = service.read_workflow_editor_catalog()
+            catalog = service.read_workflow_editor_catalog(
+                directory_path=request.query_params.get("directory_path")
+            )
         except ValueError as exc:
             return json_error(str(exc))
         return JSONResponse(catalog.model_dump(mode="json"))
@@ -148,11 +159,17 @@ def workflow_routes(service: AdminService) -> list[Route]:
     async def save_document(request: Request) -> JSONResponse:
         try:
             payload = await json_body(request)
+            expected_revision = expected_revision_from_payload(payload)
             save_result = service.save_workflow_editor_document(
                 config=payload.get("config") if isinstance(payload.get("config"), dict) else {},
                 layout=payload.get("layout") if isinstance(payload.get("layout"), dict) else {},
                 graphs=payload.get("graphs") if isinstance(payload.get("graphs"), list) else None,
+                expected_revision=expected_revision,
             )
+        except KeyError as exc:
+            return json_error(str(exc).strip("'"), status_code=428)
+        except AdminRevisionConflict as exc:
+            return json_error(str(exc), status_code=409, details=exc.details)
         except ValueError as exc:
             return json_error(str(exc))
         return JSONResponse(save_result.model_dump(mode="json"))
