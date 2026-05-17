@@ -630,6 +630,13 @@ def _require_target_session_visible_within_directory(
     if target_session.directory_path == source_session.directory_path:
         return target_session
 
+    target_vm_id = str(getattr(target_session, "vm_id", "") or "").strip()
+    if not target_vm_id:
+        raise PolicyError(
+            f"Session '{target_session_id}' is outside the session directory scope "
+            f"'{source_session.directory_path}'."
+        )
+
     visible_vms = _visible_vm_summaries_for_session(context, source_session, vm_user=vm_user)
     if any(target_session_id in summary.session_ids for summary in visible_vms):
         return target_session

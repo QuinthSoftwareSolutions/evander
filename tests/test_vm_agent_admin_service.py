@@ -966,9 +966,51 @@ def test_admin_service_routes_phase_1_vm_operations_through_execution_backend() 
     ]
 
 
-def test_vm_agent_admin_service_list_vms_uses_worker_admin() -> None:
+def test_vm_agent_admin_service_list_vms_uses_worker_admin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     admin = FakeAdmin()
     service = VmAgentAdminService(_vm_agent_dependencies(admin))
+
+    class EmptyProviderRegistry:
+        def list_vms(self, **kwargs: Any) -> list[Any]:
+            del kwargs
+            return []
+
+    monkeypatch.setattr(service, "_provider_registry", lambda: EmptyProviderRegistry())
+
+    summaries = service.list_vms(
+        include_inactive=False,
+        omit_state=True,
+        vm_user="root",
+        directory_path="root/team",
+        direct_only=True,
+    )
+
+    assert summaries == ["vm-summary"]
+    assert admin.worker_admin.calls == [
+        {
+            "include_inactive": False,
+            "omit_state": True,
+            "vm_user": "root",
+            "directory_path": "root/team",
+            "direct_only": True,
+        }
+    ]
+
+
+def test_vm_agent_admin_service_list_vms_falls_back_when_provider_listing_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = FakeAdmin()
+    service = VmAgentAdminService(_vm_agent_dependencies(admin))
+
+    class FailingProviderRegistry:
+        def list_vms(self, **kwargs: Any) -> list[Any]:
+            del kwargs
+            raise RuntimeError("provider inventory unavailable")
+
+    monkeypatch.setattr(service, "_provider_registry", lambda: FailingProviderRegistry())
 
     summaries = service.list_vms(
         include_inactive=False,

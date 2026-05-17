@@ -8,9 +8,15 @@ from typing import Any
 import pytest
 
 from agent_sandbox.models import SessionManifest
+from agent_sandbox.models import VmSummary
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from agent_sandbox.vm.power_state import normalize_power_state
-from agent_sandbox.vm.provider import AzureVmProvider, VmProviderContext, session_vm_provider
+from agent_sandbox.vm.provider import (
+    AzureVmProvider,
+    VmProviderContext,
+    VmProviderRegistry,
+    session_vm_provider,
+)
 
 
 def test_normalize_power_state_supports_libvirt_and_azure_values() -> None:
@@ -95,6 +101,48 @@ def test_azure_provider_lists_provider_neutral_vm_summaries(tmp_path: Path) -> N
     assert summaries[0].power_state == "running"
     assert summaries[0].provider_state == "PowerState/running"
     assert summaries[0].ip_address == "10.0.0.5"
+
+
+def test_provider_registry_keeps_successful_provider_results_when_another_provider_fails() -> None:
+    class FailingProvider:
+        def list_vms(self, **kwargs: Any) -> list[VmSummary]:
+            del kwargs
+            raise RuntimeError("libvirt unavailable")
+
+    class StaticProvider:
+        def list_vms(self, **kwargs: Any) -> list[VmSummary]:
+            del kwargs
+            return [
+                VmSummary(
+                    vm_name="vm-azure-1",
+                    provider="azure",
+                    power_state="running",
+                    agent_state="omitted",
+                )
+            ]
+
+    registry = VmProviderRegistry(SimpleNamespace())
+    registry._providers = {  # type: ignore[attr-defined]
+        "libvirt": FailingProvider(),  # type: ignore[dict-item]
+        "azure": StaticProvider(),  # type: ignore[dict-item]
+    }
+
+    summaries = registry.list_vms()
+
+    assert [summary.vm_name for summary in summaries] == ["vm-azure-1"]
+
+
+def test_provider_registry_raises_when_all_provider_inventory_fails() -> None:
+    class FailingProvider:
+        def list_vms(self, **kwargs: Any) -> list[VmSummary]:
+            del kwargs
+            raise RuntimeError("libvirt unavailable")
+
+    registry = VmProviderRegistry(SimpleNamespace())
+    registry._providers = {"libvirt": FailingProvider()}  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="libvirt unavailable"):
+        registry.list_vms()
 
 
 def test_azure_cloud_init_adds_default_host_key_to_agent_admin(

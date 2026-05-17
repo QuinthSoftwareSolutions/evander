@@ -148,7 +148,10 @@ def test_prompt_agent_and_respond_to_agent_round_trip(tmp_path: Path) -> None:
         )
 
 
-def test_prompt_agent_rejects_cross_directory_dispatch(tmp_path: Path) -> None:
+def test_prompt_agent_rejects_cross_directory_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -166,6 +169,16 @@ def test_prompt_agent_rejects_cross_directory_dispatch(tmp_path: Path) -> None:
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         ),
     )
+
+    class FailingAdminService:
+        def __init__(self, runtime_dir: Path) -> None:
+            del runtime_dir
+
+        def list_vms(self, **kwargs: object) -> list[object]:
+            del kwargs
+            raise AssertionError("VM inventory should not be read for a target without a VM")
+
+    monkeypatch.setattr("agent_sandbox.gateway.AdminService", FailingAdminService)
     server = create_server(context)
 
     with pytest.raises(ToolError, match="outside the session directory scope"):
