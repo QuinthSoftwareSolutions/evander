@@ -1854,6 +1854,7 @@ def test_admin_service_reads_and_writes_discord_wake_worker_global_config(tmp_pa
         == DiscordWakeWorkerGlobalConfig().poll_interval_seconds
     )
     assert read_result.config["directories"] == []
+    assert read_result.config["backoff_seconds"] == DiscordWakeWorkerGlobalConfig().backoff_seconds
 
     write_result = service.write_worker_global_config(
         "discord-wake",
@@ -1862,6 +1863,7 @@ def test_admin_service_reads_and_writes_discord_wake_worker_global_config(tmp_pa
             "directories": ["root/team-a", "root/team-b"],
             "poll_interval_seconds": 12.5,
             "jitter_seconds": 1.5,
+            "backoff_seconds": 45.0,
             "cooldown_seconds": 90.0,
             "lock_path": None,
             "session_cooldown_path": None,
@@ -1879,10 +1881,12 @@ def test_admin_service_reads_and_writes_discord_wake_worker_global_config(tmp_pa
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     assert payload["directories"] == ["root/team-a", "root/team-b"]
     assert payload["poll_interval_seconds"] == 12.5
+    assert payload["backoff_seconds"] == 45.0
     assert payload["vm_user"] == "worker"
 
     reread = service.read_worker_global_config("discord-wake")
     assert reread.config["directories"] == ["root/team-a", "root/team-b"]
+    assert reread.config["backoff_seconds"] == 45.0
     assert reread.config["vm_user"] == "worker"
 
 
@@ -1897,6 +1901,7 @@ def test_admin_service_reads_and_writes_scheduled_wake_worker_global_config(tmp_
         == ScheduledWakeWorkerGlobalConfig().poll_interval_seconds
     )
     assert read_result.config["directories"] == []
+    assert read_result.config["backoff_seconds"] == ScheduledWakeWorkerGlobalConfig().backoff_seconds
 
     write_result = service.write_worker_global_config(
         "scheduled-wake",
@@ -1905,6 +1910,7 @@ def test_admin_service_reads_and_writes_scheduled_wake_worker_global_config(tmp_
             "directories": ["root/team-a"],
             "poll_interval_seconds": 20.0,
             "jitter_seconds": 2.0,
+            "backoff_seconds": 90.0,
             "cooldown_seconds": 90.0,
             "lock_path": None,
             "session_cooldown_path": None,
@@ -1923,9 +1929,11 @@ def test_admin_service_reads_and_writes_scheduled_wake_worker_global_config(tmp_
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     assert payload["directories"] == ["root/team-a"]
     assert payload["scheduled_wake_prefix_text"] == "Scheduled wake prefix."
+    assert payload["backoff_seconds"] == 90.0
 
     reread = service.read_worker_global_config("scheduled-wake")
     assert reread.config["directories"] == ["root/team-a"]
+    assert reread.config["backoff_seconds"] == 90.0
 
 
 def test_admin_service_reads_and_writes_discord_ingest_worker_global_config(tmp_path: Path) -> None:

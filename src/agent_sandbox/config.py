@@ -618,6 +618,7 @@ class DiscordWakeWorkerGlobalConfig(BaseModel):
     directories: list[str] = Field(default_factory=list)
     poll_interval_seconds: float = Field(default=30.0, gt=0)
     jitter_seconds: float = Field(default=5.0, ge=0)
+    backoff_seconds: float = Field(default=60.0, ge=0)
     cooldown_seconds: float = Field(default=60.0, ge=0)
     lock_path: Path | None = None
     session_cooldown_path: Path | None = None
@@ -660,6 +661,7 @@ class ScheduledWakeWorkerGlobalConfig(BaseModel):
     directories: list[str] = Field(default_factory=list)
     poll_interval_seconds: float = Field(default=30.0, gt=0)
     jitter_seconds: float = Field(default=5.0, ge=0)
+    backoff_seconds: float = Field(default=60.0, ge=0)
     cooldown_seconds: float = Field(default=60.0, ge=0)
     lock_path: Path | None = None
     session_cooldown_path: Path | None = None
