@@ -1224,15 +1224,18 @@ class VmAgentAdminService:
         directory_path: str | None = None,
         direct_only: bool = False,
     ) -> list[VmSummary]:
-        summaries = self._provider_registry().list_vms(
-            include_inactive=include_inactive,
-            omit_state=omit_state,
-            vm_user=vm_user,
-            directory_path=directory_path,
-            direct_only=direct_only,
-        )
-        if summaries:
-            return summaries
+        try:
+            summaries = self._provider_registry().list_vms(
+                include_inactive=include_inactive,
+                omit_state=omit_state,
+                vm_user=vm_user,
+                directory_path=directory_path,
+                direct_only=direct_only,
+            )
+            if summaries:
+                return summaries
+        except RuntimeError:
+            pass
         return self._deps.worker_admin.list_vms(
             include_inactive=include_inactive,
             omit_state=omit_state,

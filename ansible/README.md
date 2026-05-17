@@ -428,6 +428,40 @@ in-container `git fetch` and `git push agent` use only the control-plane mirror.
 The default allowed Git source prefix is
 `ssh://{{ agent_sandbox_git_ssh_alias }}{{ agent_sandbox_git_root }}/`. The worker rejects
 job-level and session repo clone requests outside `agent_sandbox_worker_allowed_git_source_prefixes`.
+
+The worker daemon still treats `none` as the safe default for disposable job containers. The
+Azure/single-worker deployment slice uses a non-`none` network only when
+`agent_sandbox_worker_egress_policy_enabled: true` is set alongside the worker network override.
+That worker-managed policy lives in `DOCKER-USER`, blocks `169.254.0.0/16` including
+`169.254.169.254`, and only allows the explicit private control-plane endpoints from
+`group_vars/all/defaults.yml` unless you append more entries.
+
+Those default endpoints are:
+
+- control-plane Git SSH on `22`
+- control-plane MCP gateway on `8000`
+- control-plane OpenAI relay on `11434`
+- control-plane NuGet relay on `11666`
+- control-plane HTTP target relay on `11777`
+- control-plane Nexus package cache on `8081`
+- control-plane apt-cacher-ng on `3142`
+
+The single-worker override is intentionally narrow. It does not grant public internet egress, and
+it does not replace the worker-host SQL Server rules that already manage container-to-host SQL
+access when `worker_mssql` is enabled.
+
+Example inventory override and worker-side verification:
+
+```yaml
+agent_sandbox_worker_docker_network: "bridge"
+agent_sandbox_worker_egress_policy_enabled: true
+```
+
+```bash
+sudo systemctl status agent-sandbox-worker-egress-policy.service
+sudo iptables -S DOCKER-USER
+agent-sandbox-cli execution smoke-container-worker --json
+```
 Do not grant worker hosts or runner containers direct GitHub/Azure DevOps egress for this mode; the
 control plane owns upstream credentials and mirror refresh. Worker host apt provisioning uses
 apt-cacher-ng on `3142`; npm and pip package access uses the separate Nexus registry proxies on

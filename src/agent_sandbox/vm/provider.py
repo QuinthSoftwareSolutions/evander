@@ -780,8 +780,16 @@ class VmProviderRegistry:
         requested_provider = str(kwargs.pop("provider", "") or "").strip().lower() or None
         provider_names = [requested_provider] if requested_provider else list(self._providers)
         summaries: list[VmSummary] = []
+        errors: list[RuntimeError] = []
         for provider_name in provider_names:
-            summaries.extend(self.get(provider_name).list_vms(**kwargs))
+            try:
+                summaries.extend(self.get(provider_name).list_vms(**kwargs))
+            except RuntimeError as exc:
+                if requested_provider:
+                    raise
+                errors.append(exc)
+        if not summaries and errors:
+            raise errors[-1]
         return summaries
 
     def resolve_target(

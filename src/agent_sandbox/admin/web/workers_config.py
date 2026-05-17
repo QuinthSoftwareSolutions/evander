@@ -481,7 +481,7 @@ _WORKER_GLOBAL_CONFIG_TOOLTIPS: dict[str, str] = {
     "host_busy_check_script_path": "Host script used to determine whether a session VM is busy before resuming it.",
     "host_resume_script_path": "Host script invoked to resume a session VM when feedback is waiting.",
     "jitter_seconds": "Random delay added to each worker sleep interval.",
-    "backoff_seconds": "Sleep interval used after an ingest cycle fails before retrying.",
+    "backoff_seconds": "Sleep interval used after a worker cycle fails before retrying.",
     "cooldown_seconds": "Minimum cooldown before the worker retries the same session.",
     "lock_path": "Single-instance lock file for the worker.",
     "busy_check_script_path": "Host script used to detect whether a session VM is busy.",

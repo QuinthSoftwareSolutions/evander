@@ -133,6 +133,11 @@ Troubleshooting checklist:
 - Admin Web also exposes read-only conformance snapshots under the same **Reports** section. See
   [conformance-reports.md](conformance-reports.md) for the trigger/effect artifact names,
   regeneration commands, and report states.
+- For a repeatable local workflow run inspector demo, see
+  [workflow-run-inspector-demo.md](workflow-run-inspector-demo.md). It seeds a dedicated
+  `runtime/workflow-run-inspector-demo` tree with a deterministic trigger, gate, effect,
+  approval, artifact, and graph snapshot that the workflow tab can inspect by exact
+  `event_id`, `trace_id`, `session_id`, or `artifact_id`.
 - To add a new domain workflow, add a new pack file and list it in `workflow_packs`. No core
   orchestrator Python code changes are required for that path.
 - `config/trigger-orchestrator/config.json` is operator-local too. Start from
@@ -1088,6 +1093,9 @@ without exposing provider credentials in the VM.
   - `sudo systemctl status agent-sandbox-scheduled-wake.service`
 - Discord wake cadence and resume behavior are controlled by `config/discord-wake/config.json`.
 - Scheduled wake cadence and resume behavior are controlled by `config/scheduled-wake/config.json`.
+- In both wake worker configs, `backoff_seconds` controls how long the worker waits before
+  retrying after a whole-cycle exception. `cooldown_seconds` remains the per-session delay used
+  after activity or busy-session checks, not the process-level exception retry delay.
 - `discord_resume_prompt` remains directory-scoped and is surfaced in the admin GUI under Communications; it is used by the Discord wake worker.
 - `scheduled_wake_prefix_text` lives in the scheduled-wake worker global config and is used as the shared prompt prefix for scheduled wake dispatch.
 - MCP-triggered scheduled resumes are always dispatched with `resume_mode=same_context`.

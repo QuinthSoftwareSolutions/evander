@@ -16,6 +16,7 @@ from agent_sandbox.admin.service import (
     WorkflowEditorDocumentPayload,
     WorkflowEditorSavePayload,
     WorkflowEditorValidationPayload,
+    WorkflowRunDetailPayload,
     WorkflowRunSnapshotPayload,
     WorkerActionResult,
     WorkerSummary,
@@ -73,6 +74,7 @@ class WorkerAdminDependencies:
     delete_trigger_config: Any
     upsert_effect_config: Any
     delete_effect_config: Any
+    read_workflow_run_detail: Any | None = None
     clear_workflow_run: Any | None = None
     resume_workflow_run: Any | None = None
 
@@ -952,6 +954,29 @@ class WorkerAdminFacade:
 
     def read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
         return self._deps.read_workflow_run_snapshot()
+
+    def read_workflow_run_detail(
+        self,
+        *,
+        run_id: str | None = None,
+        event_id: str | None = None,
+        trigger_event_id: str | None = None,
+        trace_id: str | None = None,
+        session_id: str | None = None,
+        artifact_id: str | None = None,
+    ) -> WorkflowRunDetailPayload:
+        if self._deps.read_workflow_run_detail is None:
+            raise NotImplementedError(
+                "read_workflow_run_detail is not configured for this worker admin facade."
+            )
+        return self._deps.read_workflow_run_detail(
+            run_id=run_id,
+            event_id=event_id,
+            trigger_event_id=trigger_event_id,
+            trace_id=trace_id,
+            session_id=session_id,
+            artifact_id=artifact_id,
+        )
 
     def clear_workflow_run(self, event_id: str):
         if self._deps.clear_workflow_run is None:

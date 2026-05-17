@@ -12,7 +12,10 @@ from agent_sandbox.gates.providers.base import GateProviderBase
 from agent_sandbox.orchestration.effect_extensions import list_vm_summaries_for_agent_reconciliation
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.triggers.queue import TriggerQueueRecord
-from agent_sandbox.workflow.binding import resolve_workflow_bindings
+from agent_sandbox.workflow.binding import (
+    binding_trace_to_payload,
+    resolve_workflow_bindings,
+)
 from agent_sandbox.workflow.validation import NodeCapability, WorkflowValidationDiagnostic
 from agent_sandbox.workflow.transforms.await_agent import validate_await_agent_gate
 
@@ -121,6 +124,7 @@ class AwaitAgentGateProvider(GateProviderBase):
             resolved_config=resolved_config,
             config_revision=config_revision,
             started_at=started_at,
+            binding_trace=binding_trace_to_payload(resolved.trace),
         )
         return True
 
@@ -194,6 +198,7 @@ class AwaitAgentGateProvider(GateProviderBase):
         resolved_config: dict[str, Any],
         config_revision: str,
         started_at: datetime,
+        binding_trace: dict[str, Any] | None,
     ) -> None:
         dispatch_id = str(queue_record.payload.get("dispatch_id") or "").strip()
         session_id = str(resolved_config.get("session_id") or "").strip() or None
@@ -258,6 +263,7 @@ class AwaitAgentGateProvider(GateProviderBase):
             input_event_ids_by_source={queue_record.trigger_id: queue_record.event_id},
             input_occurred_at_by_source={queue_record.trigger_id: queue_record.occurred_at},
             config_revision=config_revision,
+            binding_trace=binding_trace,
         )
 
     def _execute_completion(

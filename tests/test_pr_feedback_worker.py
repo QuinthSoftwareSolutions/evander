@@ -10,15 +10,18 @@ import pytest
 
 from agent_sandbox.audit import AuditLogger
 from agent_sandbox.config import GatewayConfig
+import agent_sandbox.daemons.pr_feedback_worker as daemon_pr_feedback_worker
 from agent_sandbox.daemons.pr_feedback_worker import (
-    AzureDevOpsFeedbackAdapter,
+    PullRequestFeedbackWorker,
+    build_pr_feedback_worker,
+)
+from agent_sandbox.pr_feedback import (
     FeedbackEnvelope,
     FeedbackProviderAuthError,
     FeedbackProviderConfigurationError,
     GitHubFeedbackAdapter,
     PrFeedbackStore,
-    PullRequestFeedbackWorker,
-    build_pr_feedback_worker,
+    AzureDevOpsFeedbackAdapter,
     pr_feedback_item_payload,
 )
 from agent_sandbox.worker_directory_context import ShadowDomainContext, WorkerDirectoryContext
@@ -45,6 +48,13 @@ def test_pr_feedback_store_dedupes_feedback(tmp_path: Path) -> None:
         (tmp_path / "runtime" / "pr-feedback-store.json").read_text(encoding="utf-8")
     )
     assert list(payload["feedback"].keys()) == ["github:issue_comment:1"]
+
+
+def test_pr_feedback_daemon_reexports_match_shared_package() -> None:
+    assert daemon_pr_feedback_worker.FeedbackEnvelope is FeedbackEnvelope
+    assert daemon_pr_feedback_worker.PrFeedbackStore is PrFeedbackStore
+    assert daemon_pr_feedback_worker.GitHubFeedbackAdapter is GitHubFeedbackAdapter
+    assert daemon_pr_feedback_worker.AzureDevOpsFeedbackAdapter is AzureDevOpsFeedbackAdapter
 
 
 def test_pr_feedback_store_preserves_raw_embedded_inline_media_payload(

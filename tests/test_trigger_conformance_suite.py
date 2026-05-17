@@ -12,6 +12,7 @@ from pydantic import TypeAdapter
 
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from agent_sandbox.email.providers import EmailMessageSummary
+from agent_sandbox.pr_feedback import AzureDevOpsFeedbackAdapter
 from agent_sandbox.models import (
     DiscordMessageEnvelope,
     EmailMessage,
@@ -36,7 +37,6 @@ from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTr
 from agent_sandbox.triggers.providers.ticket_changed import TicketChangedTriggerProvider
 from agent_sandbox.triggers.providers.ticket_created import TicketCreatedTriggerProvider
 from agent_sandbox.triggers.queue import TriggerEventQueue
-from agent_sandbox.daemons.pr_feedback_worker import AzureDevOpsFeedbackAdapter
 
 
 REPORT_ENV_VAR = "AGENT_SANDBOX_TRIGGER_CONFORMANCE_REPORT"
@@ -1398,6 +1398,59 @@ def test_conformance_pr_provider_modes_and_git_push_contract(
         coverage=["provider behavior correctness", "event/output contract verification"],
         details="PR feedback and completion triggers exercise local/github modes; git push emits branch/hash contract.",
     )
+
+
+def test_pr_feedback_trigger_local_missing_store_creates_empty_store_and_emits_no_events(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    provider = PullRequestNewFeedbackTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-local",
+                "display_name": "PR Local",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "local",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+
+    events = provider.poll()
+    store_path = runtime_dir / "pr-feedback-store.json"
+
+    assert events == []
+    assert store_path.exists()
+    assert json.loads(store_path.read_text(encoding="utf-8")) == {
+        "cursors": {},
+        "feedback": {},
+        "session_reads": {},
+    }
+
+
+def test_pr_feedback_trigger_local_malformed_store_raises_like_shared_store(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    (runtime_dir / "pr-feedback-store.json").write_text("{not json", encoding="utf-8")
+
+    provider = PullRequestNewFeedbackTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-local",
+                "display_name": "PR Local",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "local",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+
+    with pytest.raises(json.JSONDecodeError):
+        provider.poll()
 
 
 def test_pr_feedback_trigger_ado_adapter_uses_trigger_org_and_project(tmp_path: Path) -> None:

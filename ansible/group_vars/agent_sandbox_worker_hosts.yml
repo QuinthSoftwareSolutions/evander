@@ -29,6 +29,7 @@ agent_sandbox_worker_revision_guard_paths:
   - ansible/roles/worker_node_toolchain
   - ansible/roles/worker_playwright_toolchain
   - ansible/roles/worker_mssql
+  - ansible/roles/worker_container_egress_policy
   - ansible/roles/container_worker_service
   - ansible/roles/container_worker_verification
   - pyproject.toml
@@ -59,10 +60,16 @@ agent_sandbox_worker_port: 11888
 agent_sandbox_worker_root: "/var/lib/agent-worker"
 agent_sandbox_worker_runtime_dir: "{{ agent_sandbox_worker_root }}/runtime"
 agent_sandbox_worker_sandbox_profile: "default"
-# Agent prompt containers must reach the control-plane relay and MCP gateway.
-# Override this with a tighter custom Docker network when one is available; the
-# worker daemon still refuses Docker host networking.
-agent_sandbox_worker_docker_network: "bridge"
+# The worker daemon and generic worker inventory default to isolated containers.
+# Deployments that need private control-plane reachability must opt into a
+# non-none Docker network and the worker egress policy together.
+agent_sandbox_worker_docker_network: "none"
+agent_sandbox_worker_egress_policy_enabled: false
+agent_sandbox_worker_egress_policy_chain: "AGENT-SANDBOX-WORKER-EGRESS"
+agent_sandbox_worker_egress_policy_script_path: "/usr/local/sbin/agent-sandbox-worker-egress-policy"
+agent_sandbox_worker_egress_policy_source_cidrs: []
+agent_sandbox_worker_egress_policy_block_cidrs:
+  - "169.254.0.0/16"
 agent_sandbox_worker_read_only_rootfs: false
 agent_sandbox_worker_tmpfs: []
 # Empty means the playbook runs containers as the worker service account uid:gid so

@@ -56,6 +56,7 @@ from agent_sandbox.workflow.runtime_config import (
 )
 from agent_sandbox.workflow.binding import (
     BindingResolutionError,
+    binding_trace_to_payload,
     resolve_effect_config_bindings,
 )
 from agent_sandbox.workflow.graph import (
@@ -127,6 +128,8 @@ class EffectExecutionRecord(BaseModel):
     published_event_id: str | None = None
     error: str | None = None
     completion_event_enqueued_at: datetime | None = None
+    binding_trace: dict[str, Any] | None = None
+    binding_error: str | None = None
     config_revision: str | None = None
     cleared_at: datetime | None = None
     clear_reason: str | None = None
@@ -158,6 +161,8 @@ class GateExecutionRecord(BaseModel):
     published_event_id: str | None = None
     error: str | None = None
     completion_event_enqueued_at: datetime | None = None
+    binding_trace: dict[str, Any] | None = None
+    binding_error: str | None = None
     config_revision: str | None = None
     cleared_at: datetime | None = None
     clear_reason: str | None = None
@@ -284,6 +289,7 @@ class EffectOrchestratorWorker:
             fallback=self.worker_config.runtime_dir / "gate-orchestrator-executions.json",
         )
         self.gate_execution_store: GateExecutionRepository = resolved_wiring.gate_execution_store
+        self.workflow_config_snapshot_store = resolved_wiring.workflow_config_snapshot_store
         self.queued_agent_prompt_store = resolved_wiring.queued_agent_prompt_store
         self._executor = resolved_wiring.executor
         self._inflight: dict[str, InflightExecution] = {}
@@ -394,6 +400,21 @@ class EffectOrchestratorWorker:
         completion_events_published = 0
 
         graph = _build_execution_graph(active_config)
+        snapshot_captured_at = datetime.now(UTC)
+        try:
+            self.workflow_config_snapshot_store.put_snapshot(
+                _build_workflow_config_snapshot(
+                    active_config=active_config,
+                    graph=graph,
+                    config_revision=config_revision,
+                    captured_at=snapshot_captured_at,
+                )
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Effect orchestrator failed to persist workflow config snapshot revision=%s",
+                config_revision,
+            )
         self._log_graph_revision_change(
             config_revision=config_revision,
             node_count=len(graph.nodes_by_id),
@@ -862,12 +883,14 @@ class EffectOrchestratorWorker:
                 resolved_config={},
                 config_revision=config_revision,
                 error=str(exc),
+                binding_error=str(exc),
             )
             return False
 
         resolved_config = (
             resolved.resolved_config if isinstance(resolved.resolved_config, dict) else {}
         )
+        binding_trace = binding_trace_to_payload(resolved.trace)
         record = EffectExecutionRecord(
             execution_id=f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}",
             idempotency_key=idempotency_key,
@@ -884,6 +907,7 @@ class EffectOrchestratorWorker:
             resolved_config=resolved_config,
             input_payload=dict(queue_record.payload),
             outputs={},
+            binding_trace=binding_trace,
             config_revision=config_revision,
         )
         self.execution_store.record_execution(record)
@@ -961,12 +985,14 @@ class EffectOrchestratorWorker:
                 resolved_config={},
                 config_revision=config_revision,
                 error=str(exc),
+                binding_error=str(exc),
             )
             return False
 
         resolved_config = (
             resolved.resolved_config if isinstance(resolved.resolved_config, dict) else {}
         )
+        binding_trace = binding_trace_to_payload(resolved.trace)
         executor = self.effect_executor_registry.get(effect.type)
         if executor is None:
             self._write_failed_effect_record(
@@ -976,6 +1002,7 @@ class EffectOrchestratorWorker:
                 resolved_config=resolved_config,
                 config_revision=config_revision,
                 error=f"no_effect_executor_registered:{effect.type}",
+                binding_trace=binding_trace,
             )
             return False
         try:
@@ -999,6 +1026,7 @@ class EffectOrchestratorWorker:
                 resolved_config=resolved_config,
                 config_revision=config_revision,
                 error=str(exc),
+                binding_trace=binding_trace,
             )
             return False
         record = EffectExecutionRecord(
@@ -1017,6 +1045,7 @@ class EffectOrchestratorWorker:
             resolved_config=resolved_config,
             input_payload=dict(queue_record.payload),
             outputs={},
+            binding_trace=binding_trace,
             config_revision=config_revision,
         )
         self.execution_store.record_execution(record)
@@ -1101,6 +1130,7 @@ class EffectOrchestratorWorker:
                 input_occurred_at_by_source=input_occurred_at_by_source,
                 config_revision=config_revision,
                 error=str(exc),
+                binding_error=str(exc),
             )
 
     def _execute_provider(
@@ -1379,6 +1409,8 @@ class EffectOrchestratorWorker:
         resolved_config: dict[str, Any],
         config_revision: str | None = None,
         error: str,
+        binding_trace: dict[str, Any] | None = None,
+        binding_error: str | None = None,
     ) -> None:
         self._write_terminal_effect_record(
             queue_record=queue_record,
@@ -1388,6 +1420,8 @@ class EffectOrchestratorWorker:
             resolved_config=resolved_config,
             config_revision=config_revision,
             error=error,
+            binding_trace=binding_trace,
+            binding_error=binding_error,
         )
 
     def _write_terminal_effect_record(
@@ -1400,6 +1434,8 @@ class EffectOrchestratorWorker:
         resolved_config: dict[str, Any],
         config_revision: str | None = None,
         error: str,
+        binding_trace: dict[str, Any] | None = None,
+        binding_error: str | None = None,
     ) -> None:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, effect.id)
         if self.execution_store.find_execution_by_idempotency_key(idempotency_key) is not None:
@@ -1422,6 +1458,8 @@ class EffectOrchestratorWorker:
             input_payload=dict(queue_record.payload),
             outputs={},
             error=error,
+            binding_trace=binding_trace,
+            binding_error=binding_error,
             config_revision=config_revision,
         )
         self.execution_store.record_execution(record)
@@ -1440,6 +1478,8 @@ class EffectOrchestratorWorker:
         input_occurred_at_by_source: dict[str, datetime],
         config_revision: str | None = None,
         error: str | None = None,
+        binding_trace: dict[str, Any] | None = None,
+        binding_error: str | None = None,
         publish_completion_event: bool = False,
         branch_port: str | None = None,
         for_execution_ids: dict[str, str] | None = None,
@@ -1468,6 +1508,8 @@ class EffectOrchestratorWorker:
             input_event_ids_by_source=input_event_ids_by_source,
             input_occurred_at_by_source=input_occurred_at_by_source,
             error=error,
+            binding_trace=binding_trace,
+            binding_error=binding_error,
             config_revision=config_revision,
         )
         if publish_completion_event:
@@ -1899,6 +1941,32 @@ def _config_revision_hash(worker_config: TriggerOrchestratorWorkerGlobalConfig) 
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _build_workflow_config_snapshot(
+    *,
+    active_config: TriggerOrchestratorWorkerGlobalConfig,
+    graph: ExecutionGraph,
+    config_revision: str,
+    captured_at: datetime,
+) -> dict[str, Any]:
+    snapshot: dict[str, Any] = {
+        "revision": config_revision,
+        "captured_at": captured_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        "snapshot_type": "compiled_runtime_graph",
+        "source": "effect_orchestrator.run_once",
+        "node_count": len(graph.nodes_by_id),
+        "edge_count": len(active_config.edges),
+        "triggers": [_snapshot_json_value(trigger) for trigger in active_config.triggers],
+        "gates": [_snapshot_json_value(gate) for gate in active_config.gates],
+        "effects": [_snapshot_json_value(effect) for effect in active_config.effects],
+        "queries": [_snapshot_json_value(query) for query in active_config.queries],
+        "edges": [_snapshot_json_value(edge) for edge in active_config.edges],
+    }
+    workflow_graphs = _active_workflow_graphs(active_config)
+    if workflow_graphs is not None:
+        snapshot["workflow_graphs"] = _snapshot_json_value(workflow_graphs)
+    return snapshot
+
+
 def _provider_loader_signature(worker_config: TriggerOrchestratorWorkerGlobalConfig) -> str:
     payload = {
         "provider_loader": worker_config.provider_loader.model_dump(mode="json"),
@@ -1912,6 +1980,35 @@ def _json_sha256(value: Any) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def _active_workflow_graphs(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+) -> Any | None:
+    extra = getattr(worker_config, "model_extra", None)
+    if isinstance(extra, dict) and "workflow_graphs" in extra:
+        return extra["workflow_graphs"]
+    if hasattr(worker_config, "workflow_graphs"):
+        return getattr(worker_config, "workflow_graphs")
+    return None
+
+
+def _snapshot_json_value(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return {str(key): _snapshot_json_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_snapshot_json_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_snapshot_json_value(item) for item in value]
+    if isinstance(value, set):
+        return [_snapshot_json_value(item) for item in sorted(value, key=repr)]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    return value
 
 
 def _compute_depth(

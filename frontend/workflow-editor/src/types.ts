@@ -164,3 +164,169 @@ export type WorkflowRunSnapshot = {
   runs: WorkflowRunSummary[];
   node_activity: Record<string, WorkflowNodeActivityCounts>;
 };
+
+export type WorkflowRunDataAvailability = {
+  graph_snapshot: string;
+  binding_trace: string;
+  approvals: string;
+  agent_links: string;
+  communication_artifacts: string;
+  trigger_event: string;
+};
+
+export type WorkflowRunGraphSnapshot = {
+  revision: string;
+  captured_at: string;
+  snapshot_type?: string | null;
+  source?: string | null;
+  node_count: number;
+  edge_count: number;
+  triggers: WorkflowNodeConfig[];
+  gates: WorkflowNodeConfig[];
+  effects: WorkflowNodeConfig[];
+  queries: WorkflowNodeConfig[];
+  edges: Array<WorkflowEdge | { source?: string; target?: string; source_id?: string; target_id?: string; source_port?: string | null }>;
+  workflow_graphs?: unknown;
+};
+
+export type WorkflowRunGraph = {
+  config_revision?: string | null;
+  config: WorkflowConfig;
+  snapshot?: WorkflowRunGraphSnapshot | null;
+  data_availability: WorkflowRunDataAvailability;
+};
+
+export type WorkflowRunApprovalLink = {
+  request_id: string;
+  session_id?: string | null;
+  action_type: string;
+  tool_name?: string | null;
+  directory_path: string;
+  payload_digest: string;
+  status: string;
+  approver?: string | null;
+  decision_at?: string | null;
+  decision_reason?: string | null;
+  expires_at?: string | null;
+  human_summary?: string | null;
+};
+
+export type WorkflowRunAgentLink = {
+  node_id: string;
+  node_type?: string | null;
+  session_id?: string | null;
+  vm_name?: string | null;
+  prompt?: string | null;
+  dispatch_id?: string | null;
+  thread_id?: string | null;
+  execution_id?: string | null;
+  artifact_ids: string[];
+  status?: string | null;
+  waiting?: boolean | null;
+  completed?: boolean | null;
+  log_reference?: Record<string, unknown> | null;
+};
+
+export type WorkflowRunCommunicationArtifactLink = {
+  artifact_id: string;
+  session_id?: string | null;
+  provider?: string | null;
+  original_filename?: string | null;
+  filename?: string | null;
+  mime_type?: string | null;
+  byte_count?: number | null;
+  sha256?: string | null;
+  status?: string | null;
+  metadata: Record<string, unknown>;
+};
+
+export type WorkflowRunNodeRecord = {
+  record_kind: string;
+  execution_id?: string | null;
+  event_id?: string | null;
+  trace_id?: string | null;
+  node_id?: string | null;
+  node_type?: string | null;
+  status?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  duration_ms?: number | null;
+  input_payload: Record<string, unknown>;
+  outputs: Record<string, unknown>;
+  resolved_config: Record<string, unknown>;
+  binding_trace?: Record<string, unknown> | null;
+  binding_error?: string | null;
+  error?: string | null;
+  config_revision?: string | null;
+};
+
+export type WorkflowRunNodeDetail = {
+  node_id: string;
+  node_type?: string | null;
+  display_name?: string | null;
+  source_kind?: string | null;
+  execution_id?: string | null;
+  event_id?: string | null;
+  trace_id?: string | null;
+  status?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  duration_ms?: number | null;
+  occurred_at?: string | null;
+  delivery_state?: string | null;
+  resolved_config: Record<string, unknown>;
+  binding_trace?: Record<string, unknown> | null;
+  binding_error?: string | null;
+  input_payload: Record<string, unknown>;
+  outputs: Record<string, unknown>;
+  inputs_by_source: Record<string, Record<string, unknown>>;
+  error?: string | null;
+  published_event_id?: string | null;
+  completion_event_enqueued_at?: string | null;
+  config_revision?: string | null;
+  retry_resume_eligible: boolean;
+  retry_resume_reason?: string | null;
+  missing_fields: string[];
+  approval_links: WorkflowRunApprovalLink[];
+  agent_links: WorkflowRunAgentLink[];
+  communication_artifact_links: WorkflowRunCommunicationArtifactLink[];
+  records: WorkflowRunNodeRecord[];
+};
+
+export type WorkflowRunRecoveryAction = {
+  eligible: boolean;
+  reason?: string | null;
+  event_id?: string | null;
+  target_node_id?: string | null;
+  source_node_id?: string | null;
+  source_trigger_type?: string | null;
+  source_event_id?: string | null;
+};
+
+export type WorkflowRunDetail = WorkflowRunSummary & {
+  worker_id: string;
+  generated_at: string;
+  matched_by: string[];
+  lookup_candidates: Array<{
+    event_id: string;
+    trace_id?: string | null;
+    latest_activity_at?: string | null;
+    matched_by: string[];
+  }>;
+  recovery: {
+    clear: WorkflowRunRecoveryAction;
+    resume: WorkflowRunRecoveryAction;
+  };
+  trigger_event?: {
+    event_id: string;
+    trigger_id: string;
+    trigger_type: string;
+    trace_id: string;
+    occurred_at?: string | null;
+    delivery_state?: string | null;
+    payload: Record<string, unknown>;
+  } | null;
+  graph: WorkflowRunGraph;
+  nodes: WorkflowRunNodeDetail[];
+  data_availability: WorkflowRunDataAvailability;
+};

@@ -9,8 +9,8 @@ from agent_sandbox.events.provider_models import IssueCommentCreatedTriggerDefin
 from agent_sandbox.models import LocalIssueRecord
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore, merge_cursor_ids
+from agent_sandbox.triggers.providers._local_tickets import within_ticket_directories
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
-from agent_sandbox.triggers.providers.ticket_created import _within_directories
 
 
 class IssueCommentCreatedTriggerProvider(TriggerProviderBase):
@@ -91,7 +91,7 @@ class IssueCommentCreatedTriggerProvider(TriggerProviderBase):
 def _matches_trigger(
     issue: LocalIssueRecord, trigger: IssueCommentCreatedTriggerDefinition
 ) -> bool:
-    if not _within_directories(issue.directory_path, trigger.directories):
+    if not within_ticket_directories(issue.directory_path, trigger.directories):
         return False
     provider = _normalize_provider(trigger.provider)
     if provider is None:

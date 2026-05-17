@@ -295,7 +295,7 @@ def test_inline_media_pr_feedback_downloads_and_copies_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agent_sandbox.daemons.pr_feedback_worker import FeedbackEnvelope
+    from agent_sandbox.pr_feedback import FeedbackEnvelope
 
     FakeAgentCopyFilesEffectProvider.calls = []
     monkeypatch.setattr(
@@ -600,7 +600,7 @@ def test_ado_backlog_inline_media_does_not_duplicate_aggregate_comment_media(
 
 
 def test_pr_feedback_inline_media_rejects_mime_before_staging(tmp_path: Path) -> None:
-    from agent_sandbox.daemons.pr_feedback_worker import FeedbackEnvelope
+    from agent_sandbox.pr_feedback import FeedbackEnvelope
 
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
@@ -754,7 +754,7 @@ def test_ado_backlog_inline_media_rejects_oversize_before_staging(
 
 
 def test_pr_feedback_inline_media_requires_receive_permission(tmp_path: Path) -> None:
-    from agent_sandbox.daemons.pr_feedback_worker import FeedbackEnvelope
+    from agent_sandbox.pr_feedback import FeedbackEnvelope
 
     context = make_context(tmp_path)
     context.session_repository.upsert_session(

@@ -60,10 +60,6 @@ from agent_sandbox.effects.providers.schemas import (
     AgentExecEffectDefinition,
     VmCopyFilesItemDefinition,
 )
-from agent_sandbox.daemons.pr_feedback_worker import (
-    AzureDevOpsFeedbackAdapter,
-    GitHubFeedbackAdapter,
-)
 from agent_sandbox.email.http_utils import ProviderRequestError
 from agent_sandbox.inline_media import (
     download_url_with_limit,
@@ -74,6 +70,10 @@ from agent_sandbox.inline_media import (
 )
 from agent_sandbox.email.providers import EmailDraftAttachment
 from agent_sandbox.issues.service import AzureDevOpsIssueInlineMediaProvider, IssueService
+from agent_sandbox.pr_feedback.providers import (
+    AzureDevOpsFeedbackAdapter,
+    GitHubFeedbackAdapter,
+)
 from agent_sandbox.models import (
     AdoBacklogCreateRequest,
     AdoBacklogCreateResponse,
@@ -629,6 +629,13 @@ def _require_target_session_visible_within_directory(
     target_session = context.policy.get_session(target_session_id)
     if target_session.directory_path == source_session.directory_path:
         return target_session
+
+    target_vm_id = str(getattr(target_session, "vm_id", "") or "").strip()
+    if not target_vm_id:
+        raise PolicyError(
+            f"Session '{target_session_id}' is outside the session directory scope "
+            f"'{source_session.directory_path}'."
+        )
 
     visible_vms = _visible_vm_summaries_for_session(context, source_session, vm_user=vm_user)
     if any(target_session_id in summary.session_ids for summary in visible_vms):

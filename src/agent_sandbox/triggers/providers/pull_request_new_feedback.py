@@ -7,14 +7,14 @@ from pathlib import Path
 import httpx
 
 from agent_sandbox.models import PrFeedbackItem
-from agent_sandbox.daemons.pr_feedback_worker import (
-    AzureDevOpsFeedbackAdapter,
-    GitHubFeedbackAdapter,
-    _stream_key,
-    pr_feedback_item_payload,
-)
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import PullRequestNewFeedbackTriggerDefinition
+from agent_sandbox.pr_feedback.providers import (
+    AzureDevOpsFeedbackAdapter,
+    GitHubFeedbackAdapter,
+    pr_feedback_item_payload,
+)
+from agent_sandbox.pr_feedback.store import PrFeedbackStore, _stream_key
 from agent_sandbox.triggers.providers._cursor_state import (
     TriggerCursorStore,
     latest_cursor_timestamp_text,
@@ -46,30 +46,13 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
 
         if trigger.provider == "local":
             feedback_store_path = self._runtime_dir() / "pr-feedback-store.json"
-            if feedback_store_path.exists():
-                payload = json.loads(feedback_store_path.read_text(encoding="utf-8"))
-                for raw in payload.get("feedback", {}).values():
-                    if not isinstance(raw, dict):
-                        continue
-                    item = PrFeedbackItem.model_validate(pr_feedback_item_payload(raw))
-                    if item.provider not in {"local", "github", "azure_devops"}:
-                        continue
-                    stream = {"provider": item.provider, "repo": item.repo, "pr_id": item.pr_id}
-                    key = _stream_key(item.provider, item.repo, item.pr_id)
-                    cursor = _parse_dt(previous_cursors.get(key))
-                    recent_ids = {
-                        value
-                        for value in recent_feedback_ids.get(key, [])
-                        if isinstance(value, str) and value.strip()
-                    }
-                    if _feedback_is_behind_cursor(
-                        cursor,
-                        created_at=item.created_at,
-                        feedback_id=item.feedback_id,
-                        recent_ids=recent_ids,
-                    ):
-                        continue
-                    discovered.append((stream, item))
+            feedback_store = PrFeedbackStore(feedback_store_path)
+            for envelope in feedback_store.list_all_feedback(
+                allowed_providers={"local", "github", "azure_devops"},
+            ):
+                item = PrFeedbackItem.model_validate(pr_feedback_item_payload(envelope))
+                stream = {"provider": item.provider, "repo": item.repo, "pr_id": item.pr_id}
+                discovered.append((stream, item))
         else:
             adapter = self._build_adapter(trigger.provider)
             with httpx.Client(timeout=30.0) as client:

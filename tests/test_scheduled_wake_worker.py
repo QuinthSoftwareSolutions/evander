@@ -4,6 +4,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.models import (
     SessionManifest,
@@ -12,16 +14,25 @@ from agent_sandbox.models import (
     WakeResumePromptPayload,
     WakeScheduleDefinition,
 )
-from agent_sandbox.messaging.scheduled_wake import build_scheduled_wake_worker
+from agent_sandbox.messaging.scheduled_wake import (
+    ScheduledWakeCycleResult,
+    build_scheduled_wake_worker,
+)
+from agent_sandbox.orchestration.host_polling import HostFileLockManager
 
 
-def _build_worker(tmp_path: Path):
+def _build_worker(
+    tmp_path: Path,
+    *,
+    config_payload: dict[str, object] | None = None,
+):
     project_dir = tmp_path / "project"
     worker_config_path = project_dir / "config" / "scheduled-wake" / "config.json"
     worker_config_path.parent.mkdir(parents=True, exist_ok=True)
-    worker_config_path.write_text(
-        json.dumps({"directories": ["root/team-a"], "jitter_seconds": 0.0}), encoding="utf-8"
-    )
+    payload = {"directories": ["root/team-a"], "jitter_seconds": 0.0}
+    if config_payload is not None:
+        payload.update(config_payload)
+    worker_config_path.write_text(json.dumps(payload), encoding="utf-8")
 
     config = GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")})
     return build_scheduled_wake_worker(config, project_dir=project_dir)
@@ -91,6 +102,82 @@ def test_build_scheduled_wake_worker_uses_worker_config_and_normalizes_directori
 
     assert worker.worker_config.directories == ["root/team-a", "root/team-b"]
     assert str(worker.worker_config.lock_path) == str(tmp_path / "runtime" / "scheduled-wake.lock")
+
+
+def test_scheduled_wake_worker_run_once_with_lock_uses_configured_lock_path(
+    tmp_path: Path,
+) -> None:
+    worker = _build_worker(tmp_path)
+
+    assert isinstance(worker._kernel._lock_manager, HostFileLockManager)
+    assert worker._kernel.config.lock_path == worker.worker_config.lock_path
+
+    sentinel = object()
+    worker._kernel.run_once_with_lock = lambda: sentinel  # type: ignore[method-assign]
+
+    assert worker.run_once_with_lock() is sentinel
+
+
+def test_scheduled_wake_worker_reports_busy_lock_message(tmp_path: Path) -> None:
+    worker = _build_worker(tmp_path)
+
+    with worker._kernel._lock_manager.lock(worker.worker_config.lock_path):
+        with pytest.raises(RuntimeError, match="Scheduled wake worker already running"):
+            worker.run_once_with_lock()
+        with pytest.raises(RuntimeError, match=str(worker.worker_config.lock_path)):
+            worker.run_once_with_lock()
+
+
+def test_scheduled_wake_worker_backoffs_after_cycle_exception(
+    tmp_path: Path,
+) -> None:
+    worker = _build_worker(tmp_path, config_payload={"backoff_seconds": 12.5})
+    _register_session(worker)
+
+    result = ScheduledWakeCycleResult(
+        requests_due=1,
+        wakes_dispatched=1,
+        next_sleep_seconds=3.25,
+    )
+    calls = {"count": 0}
+
+    def run_cycle():
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("cycle failed")
+        return result
+
+    class _RecordingSleeper:
+        def __init__(self) -> None:
+            self.calls: list[float] = []
+
+        def sleep(self, seconds: float) -> None:
+            self.calls.append(seconds)
+            if len(self.calls) == 2:
+                raise StopIteration
+
+    sleeper = _RecordingSleeper()
+    worker._kernel._run_cycle = run_cycle  # type: ignore[method-assign]
+    worker._kernel._sleeper = sleeper  # type: ignore[assignment]
+
+    with pytest.raises(StopIteration):
+        worker.run_forever()
+
+    assert sleeper.calls == [12.5, 3.25]
+
+
+def test_scheduled_wake_worker_run_once_with_lock_propagates_cycle_exceptions(
+    tmp_path: Path,
+) -> None:
+    worker = _build_worker(tmp_path)
+
+    def run_cycle():
+        raise RuntimeError("boom")
+
+    worker._kernel._run_cycle = run_cycle  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="boom"):
+        worker.run_once_with_lock()
 
 
 def test_scheduled_wake_worker_dispatches_due_request(tmp_path: Path, monkeypatch) -> None:

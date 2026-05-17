@@ -113,12 +113,56 @@
         fail_msg: "agent_sandbox_worker_sandbox_profile must be either 'default' or 'strict'."
         success_msg: Worker sandbox profile is supported.
 
+    - name: Resolve worker Docker network and egress allowlist
+      ansible.builtin.set_fact:
+        agent_sandbox_worker_docker_network_normalized: >-
+          {{ agent_sandbox_worker_docker_network | default('none') | string | trim | lower }}
+        agent_sandbox_worker_effective_egress_policy_allow_tcp_endpoints: >-
+          {{
+            (agent_sandbox_worker_egress_policy_allow_tcp_endpoints | default([]))
+            + (agent_sandbox_worker_egress_policy_extra_allow_tcp_endpoints | default([]))
+          }}
+
     - name: Assert the worker Docker network is not host
       ansible.builtin.assert:
         that:
-          - (agent_sandbox_worker_docker_network | default('') | string | trim | lower) != 'host'
+          - agent_sandbox_worker_docker_network_normalized != 'host'
         fail_msg: "The container worker daemon refuses Docker host networking."
         success_msg: Worker Docker network is acceptable.
+
+    - name: Assert non-none worker Docker networking has egress policy
+      ansible.builtin.assert:
+        that:
+          - agent_sandbox_worker_egress_policy_enabled | bool
+          - (agent_sandbox_worker_effective_egress_policy_allow_tcp_endpoints | length) > 0
+        fail_msg: >-
+          agent_sandbox_worker_docker_network={{ agent_sandbox_worker_docker_network }}
+          requires agent_sandbox_worker_egress_policy_enabled=true and at least
+          one allowlisted endpoint in
+          agent_sandbox_worker_egress_policy_allow_tcp_endpoints or
+          agent_sandbox_worker_egress_policy_extra_allow_tcp_endpoints. Use
+          agent_sandbox_worker_docker_network=none for isolated containers.
+        success_msg: Worker Docker network is paired with an egress policy.
+      when: agent_sandbox_worker_docker_network_normalized not in ['', 'none']
+
+    - name: Assert worker egress allowlist endpoints are concrete
+      ansible.builtin.assert:
+        that:
+          - (item.host | default('') | string | trim | length) > 0
+          - "'<' not in (item.host | string)"
+          - "'>' not in (item.host | string)"
+          - (item.port | int) > 0
+          - (item.port | int) <= 65535
+        fail_msg: >-
+          Worker egress allowlist endpoints must use concrete private host or
+          CIDR values and TCP ports from 1 through 65535. Invalid endpoint={{
+            item
+          }}.
+        success_msg: Worker egress allowlist endpoint is concrete.
+      loop: "{{ agent_sandbox_worker_effective_egress_policy_allow_tcp_endpoints }}"
+      when:
+        - agent_sandbox_worker_egress_policy_enabled | bool
+        - agent_sandbox_worker_docker_network_normalized not in ['', 'none']
 
     - name: Assert worker state paths are absolute
       ansible.builtin.assert:
@@ -140,5 +184,6 @@
     - role: worker_node_toolchain
     - role: worker_playwright_toolchain
     - role: worker_mssql
+    - role: worker_container_egress_policy
     - role: container_worker_service
     - role: container_worker_verification

@@ -2066,12 +2066,202 @@ select {
 .runtime-run-actions {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.45rem;
   margin-top: 0.7rem;
 }
 
 .runtime-run-clear {
   white-space: nowrap;
   margin-bottom: 0;
+}
+
+.run-detail-lookup {
+  display: grid;
+  grid-template-columns: minmax(5.5rem, 0.45fr) minmax(0, 1fr) auto;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+}
+
+.run-detail-lookup select,
+.run-detail-lookup input {
+  min-width: 0;
+  height: 2.1rem;
+  border: 1px solid rgba(91, 67, 37, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 252, 246, 0.78);
+  color: #3d3224;
+  font-size: 0.82rem;
+}
+
+.run-detail-panel {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.9rem;
+  padding: 0.85rem;
+  border: 1px solid rgba(35, 89, 79, 0.22);
+  border-radius: 8px;
+  background: rgba(246, 249, 244, 0.82);
+}
+
+.run-detail-header,
+.run-detail-graph-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.run-detail-meta-grid,
+.run-detail-availability,
+.run-detail-node-meta,
+.run-detail-node-status-line {
+  display: grid;
+  gap: 0.35rem;
+  color: #66543f;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.run-detail-availability {
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+}
+
+.run-detail-availability span,
+.run-detail-node-status-line span {
+  padding: 0.35rem 0.45rem;
+  border: 1px solid rgba(91, 67, 37, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 252, 246, 0.64);
+}
+
+.run-detail-availability .missing,
+.run-detail-missing,
+.run-detail-missing-fields {
+  border-color: rgba(178, 59, 26, 0.18);
+  background: #fff0eb;
+  color: #8a3b1b;
+}
+
+.run-detail-trigger,
+.run-detail-graph,
+.run-detail-recovery,
+.run-detail-candidates,
+.run-detail-node-list {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.run-detail-trigger {
+  font-size: 0.82rem;
+  color: #4c3d2c;
+}
+
+.run-detail-graph-nodes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: 0.45rem;
+}
+
+.run-detail-graph-node {
+  display: grid;
+  gap: 0.2rem;
+  min-height: 4.4rem;
+  padding: 0.55rem;
+  border: 1px solid rgba(91, 67, 37, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 252, 246, 0.72);
+  overflow-wrap: anywhere;
+}
+
+.run-detail-graph-node span,
+.run-detail-node-title {
+  font-weight: 700;
+  color: #3d3224;
+}
+
+.run-detail-graph-node small,
+.run-detail-edges,
+.run-detail-link-item span {
+  color: #725e48;
+  font-size: 0.76rem;
+}
+
+.run-detail-graph-node strong {
+  align-self: end;
+  color: #23594f;
+  font-size: 0.76rem;
+  text-transform: uppercase;
+}
+
+.run-detail-edges {
+  display: grid;
+  gap: 0.3rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid rgba(91, 67, 37, 0.12);
+  font-family: "SFMono-Regular", "Consolas", monospace;
+  overflow-wrap: anywhere;
+}
+
+.run-detail-node-card,
+.run-detail-json {
+  border: 1px solid rgba(91, 67, 37, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 252, 246, 0.72);
+}
+
+.run-detail-node-card > summary,
+.run-detail-json > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.55rem 0.65rem;
+  cursor: pointer;
+}
+
+.run-detail-node-card > *:not(summary),
+.run-detail-json > pre {
+  margin: 0.55rem 0.65rem;
+}
+
+.run-detail-json pre {
+  max-height: 15rem;
+  overflow: auto;
+  padding: 0.55rem;
+  border-radius: 8px;
+  background: #2f312c;
+  color: #fff8e8;
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+.run-detail-data-block,
+.run-detail-missing-fields {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 8px;
+  font-size: 0.8rem;
+}
+
+.run-detail-node-links {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.run-detail-link-item {
+  display: grid;
+  gap: 0.18rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+  background: rgba(231, 220, 201, 0.48);
+  overflow-wrap: anywhere;
+}
+
+.run-detail-candidates {
+  align-items: start;
 }
 
 .error-box {

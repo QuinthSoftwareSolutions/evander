@@ -61,6 +61,25 @@ class WorkflowConfigAdminService:
     def read_workflow_run_snapshot(self):
         return self._worker_admin.read_workflow_run_snapshot()
 
+    def read_workflow_run_detail(
+        self,
+        *,
+        run_id: str | None = None,
+        event_id: str | None = None,
+        trigger_event_id: str | None = None,
+        trace_id: str | None = None,
+        session_id: str | None = None,
+        artifact_id: str | None = None,
+    ):
+        return self._worker_admin.read_workflow_run_detail(
+            run_id=run_id,
+            event_id=event_id,
+            trigger_event_id=trigger_event_id,
+            trace_id=trace_id,
+            session_id=session_id,
+            artifact_id=artifact_id,
+        )
+
     def clear_workflow_run(self, event_id: str):
         return self._worker_admin.clear_workflow_run(event_id)
 

@@ -15,6 +15,7 @@ from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.app import _workflow_run_events, create_app
 from agent_sandbox.admin.web.shared import AdminWebConfig
 from agent_sandbox.admin.web.user_store import AdminWebUserStore
+from agent_sandbox.communication_artifacts import CommunicationArtifactStore
 from agent_sandbox.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
@@ -31,6 +32,7 @@ from agent_sandbox.messaging.targets import (
 )
 from agent_sandbox.models import (
     ApprovalRequest,
+    ApprovalStatus,
     LocalIssueRecord,
     SessionManifest,
     SessionSummary,
@@ -1260,6 +1262,16 @@ def test_admin_web_save_seeds_new_ticket_created_trigger_cursor(tmp_path: Path) 
         encoding="utf-8",
     )
     cursor_path = runtime_dir / "trigger-cursors-ticket-created.json"
+    cursor_path.write_text(
+        json.dumps(
+            {
+                "preserve-me": {"last_created_at": "2026-05-01T00:00:00Z"},
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     for issue_number, directory_path, created_at in [
         ("1", "root/team-a", datetime(2026, 5, 2, 8, 0, tzinfo=timezone.utc)),
         ("2", "root/team-a/subteam", datetime(2026, 5, 2, 11, 30, tzinfo=timezone.utc)),
@@ -1301,6 +1313,7 @@ def test_admin_web_save_seeds_new_ticket_created_trigger_cursor(tmp_path: Path) 
 
     assert response.status_code == 200
     cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+    assert cursor_payload["preserve-me"] == {"last_created_at": "2026-05-01T00:00:00Z"}
     assert "ticket-existing" not in cursor_payload
     assert cursor_payload["ticket-copy"]["last_created_at"] == "2026-05-02T11:30:00Z"
 
@@ -1774,6 +1787,421 @@ def test_admin_web_can_dismiss_errored_workflow_run(tmp_path: Path) -> None:
     )
     assert '"dismissed_at"' in updated_effects
     assert '"dismiss_reason": "manual_dismiss_errored_workflow_run"' in updated_effects
+
+
+def _write_json_payload(path: Path, payload: dict[str, object]) -> None:
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    rich_revision = "rev-detail-rich"
+    session_id = "session-detail"
+    artifact_store = CommunicationArtifactStore(runtime_dir)
+    artifact = artifact_store.stage(
+        provider="teams",
+        session_id=session_id,
+        content=b"hello from the run detail fixture\n",
+        original_filename="notes.txt",
+        created_at=datetime(2026, 5, 16, 10, 4, tzinfo=timezone.utc),
+        expires_at=datetime(2099, 1, 1, tzinfo=timezone.utc),
+        metadata={"source": "fixture"},
+    )
+    approval_request = ApprovalRequest(
+        request_id="approval-rich",
+        session_id=session_id,
+        action_type="effect:agent:prompt",
+        payload_digest="digest-rich",
+        human_summary="Prompt the agent after review.",
+        payload={
+            "request_id": "approval-rich",
+            "session_id": session_id,
+            "artifact_ids": [artifact.artifact_id],
+        },
+        directory_path="root",
+        tool_name="codex",
+        status=ApprovalStatus.APPROVED,
+        approver="workflow-admin",
+        decision_at=datetime(2026, 5, 1, 10, 2, tzinfo=timezone.utc),
+        decision_reason="Approved for the run detail fixture.",
+        expires_at=datetime(2026, 5, 2, 10, 0, tzinfo=timezone.utc),
+        created_at=datetime(2026, 5, 1, 10, 0, tzinfo=timezone.utc),
+    )
+    _write_json_payload(
+        runtime_dir / "approvals.json",
+        {approval_request.request_id: approval_request.model_dump(mode="json")},
+    )
+    _write_json_payload(
+        runtime_dir / "trigger-orchestrator-events.json",
+        {
+            "evt-detail": {
+                "event_id": "evt-detail",
+                "trigger_id": "trigger-ticket",
+                "trigger_type": "trigger:ticket:created",
+                "trace_id": "trace-detail",
+                "occurred_at": "2026-05-01T10:00:00Z",
+                "payload": {"issue_number": "99"},
+                "delivery_state": "delivered",
+                "inflight_at": "2026-05-01T10:00:05Z",
+                "delivered_at": "2026-05-01T10:00:06Z",
+                "idempotency_key": None,
+            },
+            "evt-legacy": {
+                "event_id": "evt-legacy",
+                "trigger_id": "trigger-ticket",
+                "trigger_type": "trigger:ticket:created",
+                "trace_id": "trace-legacy",
+                "occurred_at": "2026-05-01T09:00:00Z",
+                "payload": {"issue_number": "12"},
+                "delivery_state": "delivered",
+                "inflight_at": "2026-05-01T09:00:04Z",
+                "delivered_at": "2026-05-01T09:00:05Z",
+                "idempotency_key": None,
+            },
+        },
+    )
+    _write_json_payload(
+        runtime_dir / "effect-orchestrator-executions.json",
+        {
+            "exec-detail": {
+                "execution_id": "exec-detail",
+                "idempotency_key": "evt-detail::effect-prompt",
+                "event_id": "evt-detail",
+                "trace_id": "trace-detail",
+                "source_node_id": "trigger-ticket",
+                "source_trigger_type": "trigger:ticket:created",
+                "effect_id": "effect-prompt",
+                "effect_type": "effect:agent:prompt",
+                "status": "failed",
+                "started_at": "2026-05-01T10:00:10Z",
+                "finished_at": "2026-05-01T10:00:11Z",
+                "resolved_config_hash": "hash-rich",
+                "resolved_config": {
+                    "session_id": session_id,
+                    "vm_name": "vm-detail",
+                    "prompt": "Investigate the issue",
+                    "dispatch_id": "dispatch-detail",
+                    "thread_id": "thread-detail",
+                    "execution_id": "execution-detail",
+                    "artifact_ids": [artifact.artifact_id],
+                    "request_id": "approval-rich",
+                },
+                "input_payload": {
+                    "issue_number": "99",
+                    "session_id": session_id,
+                    "request_id": "approval-rich",
+                },
+                "outputs": {
+                    "dispatch_id": "dispatch-detail",
+                    "execution_id": "execution-detail",
+                    "thread_id": "thread-detail",
+                },
+                "binding_trace": {
+                    "consumed_output_keys": ["trigger-ticket.issue_number"],
+                    "entries": [
+                        {
+                            "config_path": "$.prompt",
+                            "expression": "${{trigger-ticket.issue_number}}",
+                            "reference": "trigger-ticket.issue_number",
+                            "source_node_id": "trigger-ticket",
+                            "output_path": "issue_number",
+                            "fallback_used": False,
+                            "status": "resolved",
+                            "resolved_value_preview": '"99"',
+                            "value_type": "str",
+                            "error": None,
+                        }
+                    ],
+                },
+                "binding_error": None,
+                "published_event_id": "evt-detail-published",
+                "completion_event_enqueued_at": "2026-05-01T10:00:12Z",
+                "config_revision": rich_revision,
+            },
+            "exec-legacy": {
+                "execution_id": "exec-legacy",
+                "idempotency_key": "evt-legacy::effect-prompt",
+                "event_id": "evt-legacy",
+                "trace_id": "trace-legacy",
+                "source_node_id": "trigger-ticket",
+                "source_trigger_type": "trigger:ticket:created",
+                "effect_id": "effect-prompt",
+                "effect_type": "effect:agent:prompt",
+                "status": "failed",
+                "started_at": "2026-05-01T09:00:06Z",
+                "finished_at": "2026-05-01T09:00:07Z",
+                "resolved_config_hash": "hash-legacy",
+                "resolved_config": {},
+                "input_payload": {"issue_number": "12"},
+                "outputs": {},
+                "error": "legacy failure",
+            },
+        },
+    )
+    _write_json_payload(
+        runtime_dir / "gate-orchestrator-executions.json",
+        {
+            "gate-detail": {
+                "execution_id": "gate-detail",
+                "idempotency_key": "evt-detail::gate-await",
+                "event_id": "evt-detail",
+                "trace_id": "trace-detail",
+                "source_node_id": "effect-prompt",
+                "source_trigger_type": "trigger:ticket:created",
+                "gate_id": "gate-await",
+                "gate_type": "gate:await-agent",
+                "status": "waiting",
+                "started_at": "2026-05-01T10:00:13Z",
+                "finished_at": "2026-05-01T10:00:14Z",
+                "resolved_config_hash": "hash-rich",
+                "resolved_config": {
+                    "session_id": session_id,
+                    "vm_name": "vm-detail",
+                    "dispatch_id": "dispatch-detail",
+                    "prompt": "Investigate the issue",
+                },
+                "input_payload": {
+                    "session_id": session_id,
+                    "vm_name": "vm-detail",
+                    "dispatch_id": "dispatch-detail",
+                },
+                "outputs": {
+                    "session_id": session_id,
+                    "vm_name": "vm-detail",
+                    "dispatch_id": "dispatch-detail",
+                },
+                "inputs_by_source": {
+                    "effect-prompt": {"issue_number": "99"}
+                },
+                "input_event_ids_by_source": {
+                    "effect-prompt": "evt-detail"
+                },
+                "input_occurred_at_by_source": {
+                    "effect-prompt": "2026-05-01T10:00:00Z"
+                },
+                "published_event_id": "evt-detail-gate",
+                "completion_event_enqueued_at": "2026-05-01T10:00:15Z",
+                "config_revision": rich_revision,
+            }
+        },
+    )
+    _write_json_payload(
+        runtime_dir / "await-agent-pending.json",
+        {
+            "gate-await:dispatch-detail": {
+                "gate_id": "gate-await",
+                "dispatch_id": "dispatch-detail",
+                "prompt_event_id": "evt-detail",
+                "prompt_source_node_id": "effect-prompt",
+                "trace_id": "trace-detail",
+                "session_id": session_id,
+                "vm_name": "vm-detail",
+                "payload": {"artifact_ids": [artifact.artifact_id]},
+                "occurred_at": "2026-05-01T10:00:16Z",
+            },
+            "gate-await:dispatch-legacy": {
+                "gate_id": "gate-await",
+                "dispatch_id": "dispatch-legacy",
+                "prompt_event_id": "evt-legacy",
+                "prompt_source_node_id": "effect-prompt",
+                "trace_id": "trace-legacy",
+                "session_id": session_id,
+                "vm_name": "vm-legacy",
+                "payload": {},
+                "occurred_at": "2026-05-01T09:00:16Z",
+            }
+        },
+    )
+    (runtime_dir / "providers" / "gates" / "await-agent").mkdir(parents=True, exist_ok=True)
+    _write_json_payload(
+        runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
+        {
+            "gate-await:dispatch-provider": {
+                "gate_id": "gate-await",
+                "dispatch_id": "dispatch-provider",
+                "prompt_event_id": "evt-provider",
+                "prompt_source_node_id": "effect-prompt",
+                "trace_id": "trace-provider",
+                "session_id": "session-provider",
+                "vm_name": "vm-provider",
+                "payload": {},
+                "occurred_at": "2026-05-01T11:00:16Z",
+            }
+        },
+    )
+    _write_json_payload(
+        runtime_dir / "workflow-config-snapshots.json",
+        {
+            rich_revision: {
+                "revision": rich_revision,
+                "captured_at": "2026-05-01T10:00:30Z",
+                "snapshot_type": "compiled_runtime_graph",
+                "source": "effect_orchestrator.run_once",
+                "node_count": 3,
+                "edge_count": 2,
+                "triggers": [
+                    {
+                        "id": "trigger-ticket",
+                        "type": "trigger:ticket:created",
+                        "display_name": "Ticket Created",
+                    }
+                ],
+                "gates": [
+                    {
+                        "id": "gate-await",
+                        "type": "gate:await-agent",
+                        "display_name": "Await Agent",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "effect-prompt",
+                        "type": "effect:agent:prompt",
+                        "display_name": "Prompt Agent",
+                    }
+                ],
+                "queries": [],
+                "edges": [
+                    {
+                        "id": "edge-1",
+                        "source": "trigger-ticket",
+                        "target": "effect-prompt",
+                    },
+                    {
+                        "id": "edge-2",
+                        "source": "effect-prompt",
+                        "target": "gate-await",
+                    },
+                ],
+                "workflow_graphs": [
+                    {
+                        "id": "graph-detail",
+                        "name": "Detail Graph",
+                        "description": "Workflow run detail fixture",
+                        "directory_paths": ["root"],
+                        "user_ids": ["operator"],
+                        "node_ids": ["trigger-ticket", "effect-prompt", "gate-await"],
+                    }
+                ],
+            }
+        },
+    )
+    return {
+        "runtime_dir": str(runtime_dir),
+        "session_id": session_id,
+        "artifact_id": artifact.artifact_id,
+        "rich_revision": rich_revision,
+        "rich_event_id": "evt-detail",
+        "legacy_event_id": "evt-legacy",
+        "trace_id": "trace-detail",
+    }
+
+
+def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> None:
+    fixture = _seed_workflow_run_detail_fixture(tmp_path)
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    event_response = client.get(
+        "/api/workflow-editor/run-detail", params={"event_id": fixture["rich_event_id"]}
+    )
+    trace_response = client.get(
+        "/api/workflow-editor/run-detail", params={"trace_id": fixture["trace_id"]}
+    )
+    session_response = client.get(
+        "/api/workflow-editor/run-detail", params={"session_id": fixture["session_id"]}
+    )
+    artifact_response = client.get(
+        "/api/workflow-editor/run-detail", params={"artifact_id": fixture["artifact_id"]}
+    )
+
+    assert event_response.status_code == 200
+    assert trace_response.status_code == 200
+    assert session_response.status_code == 200
+    assert artifact_response.status_code == 200
+
+    event_payload = event_response.json()
+    session_payload = session_response.json()
+    assert event_payload["event_id"] == fixture["rich_event_id"]
+    assert event_payload["trace_id"] == fixture["trace_id"]
+    assert event_payload["run_state"] == "errored"
+    assert event_payload["resumable"] is True
+    assert event_payload["graph"]["config_revision"] == fixture["rich_revision"]
+    assert event_payload["graph"]["snapshot"]["revision"] == fixture["rich_revision"]
+    assert event_payload["graph"]["snapshot"]["snapshot_type"] == "compiled_runtime_graph"
+    assert event_payload["graph"]["data_availability"]["graph_snapshot"] == "available"
+    assert event_payload["graph"]["data_availability"]["approvals"] == "available"
+    assert event_payload["graph"]["data_availability"]["agent_links"] == "available"
+    assert event_payload["graph"]["data_availability"]["communication_artifacts"] == "available"
+    assert event_payload["trigger_event"]["payload"] == {"issue_number": "99"}
+    assert event_payload["lookup"]["event_id"] == fixture["rich_event_id"]
+
+    candidate_event_ids = [
+        candidate["event_id"] for candidate in session_payload["lookup_candidates"]
+    ]
+    assert candidate_event_ids == [fixture["rich_event_id"], fixture["legacy_event_id"]]
+    assert session_payload["event_id"] == fixture["rich_event_id"]
+    assert artifact_response.json()["event_id"] == fixture["rich_event_id"]
+    assert trace_response.json()["event_id"] == fixture["rich_event_id"]
+
+    rich_node = next(node for node in event_payload["nodes"] if node["node_id"] == "effect-prompt")
+    assert rich_node["status"] == "failed"
+    assert rich_node["duration_ms"] == 1000
+    assert rich_node["resolved_config"]["prompt"] == "Investigate the issue"
+    assert rich_node["input_payload"]["request_id"] == "approval-rich"
+    assert rich_node["outputs"]["execution_id"] == "execution-detail"
+    assert rich_node["binding_trace"]["entries"][0]["config_path"] == "$.prompt"
+    assert rich_node["binding_error"] is None
+    assert rich_node["retry_resume_eligible"] is True
+    approval_link = rich_node["approval_links"][0]
+    assert approval_link["request_id"] == "approval-rich"
+    assert approval_link["payload_digest"] == "digest-rich"
+    assert approval_link["status"] == "approved"
+    assert approval_link["approver"] == "workflow-admin"
+    assert approval_link["decision_at"] == "2026-05-01T10:02:00Z"
+    assert approval_link["decision_reason"] == "Approved for the run detail fixture."
+    assert approval_link["expires_at"] == "2026-05-02T10:00:00Z"
+
+    agent_link = rich_node["agent_links"][0]
+    assert agent_link["session_id"] == fixture["session_id"]
+    assert agent_link["prompt"] == "Investigate the issue"
+    assert agent_link["thread_id"] == "thread-detail"
+    assert agent_link["execution_id"] == "execution-detail"
+    assert agent_link["log_reference"]["source_kind"] == "effect_execution"
+    assert agent_link["log_reference"]["vm_name"] == "vm-detail"
+    assert agent_link["log_reference"]["dispatch_id"] == "dispatch-detail"
+
+    artifact_link = rich_node["communication_artifact_links"][0]
+    assert artifact_link["artifact_id"] == fixture["artifact_id"]
+    assert artifact_link["session_id"] == fixture["session_id"]
+    assert artifact_link["provider"] == "teams"
+    assert artifact_link["original_filename"] == "notes.txt"
+    assert artifact_link["metadata"] == {"storage": "host_artifact_store", "source": "fixture"}
+    assert rich_node["records"][0]["record_kind"] == "effect_execution"
+    assert rich_node["records"][0]["config_revision"] == fixture["rich_revision"]
+    assert rich_node["records"][0]["binding_trace"]["entries"][0]["resolved_value_preview"] == '"99"'
+
+
+def test_admin_web_run_detail_marks_missing_legacy_data(tmp_path: Path) -> None:
+    fixture = _seed_workflow_run_detail_fixture(tmp_path)
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    response = client.get(
+        "/api/workflow-editor/run-detail", params={"event_id": fixture["legacy_event_id"]}
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["event_id"] == fixture["legacy_event_id"]
+    assert payload["graph"]["data_availability"]["graph_snapshot"] == "missing_legacy_or_unrecorded"
+    assert payload["graph"]["snapshot"] is None
+    legacy_node = next(node for node in payload["nodes"] if node["node_id"] == "effect-prompt")
+    assert "binding_trace" in legacy_node["missing_fields"]
+    assert legacy_node["binding_trace"] is None
+    assert legacy_node["records"][0]["binding_trace"] is None
+    assert legacy_node["records"][0]["resolved_config"] == {}
+    assert legacy_node["approval_links"] == []
+    assert legacy_node["agent_links"] == []
 
 
 def test_admin_web_workflow_runs_resolve_relative_paths_independent_of_cwd(

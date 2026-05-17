@@ -6,7 +6,10 @@ from agent_sandbox.events.models import NODE_OUTPUTS_CONTEXT_KEY
 from agent_sandbox.gate_runtime import filter_payload_matches, filter_when_matches
 from agent_sandbox.gates.providers.base import GateProviderBase
 from agent_sandbox.workflow.validation import NodeCapability
-from agent_sandbox.workflow.binding import resolve_workflow_bindings
+from agent_sandbox.workflow.binding import (
+    binding_trace_to_payload,
+    resolve_workflow_bindings,
+)
 
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
@@ -70,6 +73,7 @@ class FilterGateProvider(GateProviderBase):
                 input_event_ids_by_source=input_event_ids_by_source,
                 input_occurred_at_by_source=input_occurred_at_by_source,
                 config_revision=config_revision,
+                binding_trace=binding_trace_to_payload(resolved.trace),
                 publish_completion_event=True,
             )
             return True
@@ -85,5 +89,6 @@ class FilterGateProvider(GateProviderBase):
             input_event_ids_by_source=input_event_ids_by_source,
             input_occurred_at_by_source=input_occurred_at_by_source,
             config_revision=config_revision,
+            binding_trace=binding_trace_to_payload(resolved.trace),
         )
         return True
