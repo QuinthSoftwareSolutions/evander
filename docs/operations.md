@@ -304,8 +304,10 @@ Storage layout for directory config:
 
 ### Microsoft Teams delegated auth
 
-- Teams access is host-side and delegated. Use the host CLI device code flow to sign in, and keep
-  the resulting credential on the host only.
+- Teams access is host-side and delegated. The preferred operator flow is Admin Web ->
+  Configuration -> Communications: verify the directory-scoped Teams provider settings, inspect
+  delegated auth status, and start the device code flow sign-in or sign-out from the browser while
+  keeping the resulting credential on the host only.
 - Bind each directory to the intended Teams identity through per-directory Teams identity binding
   in directory-scoped provider config. Subdirectories inherit the binding, so different directory
   trees can point at different Teams accounts without guest-side secrets.
@@ -319,7 +321,13 @@ Storage layout for directory config:
 - The Entra app behind `teams_delegated_client_id` must be configured for public client /
   device-code auth. `AADSTS7000218` means the app is being treated as a confidential client and
   the host-side delegated flow in this repo cannot complete until that registration is fixed.
-- Use the host CLI for delegated auth lifecycle:
+- In Admin Web -> Configuration -> Communications, use the Teams auth panel to:
+  - inspect the current delegated auth state for the selected directory
+  - start device-code sign-in and complete the login polling flow
+  - sign out when you need to revoke the stored host-side credential
+- Use the channel lookup helper in the same Communications area to resolve `team-id/channel-id`
+  entries and copy them into communication targets.
+- Use the host CLI for delegated auth lifecycle when you need a headless fallback:
   - `agent-sandbox-cli teams-auth login --directory <directory-path>`
   - `agent-sandbox-cli teams-auth status --directory <directory-path>`
   - `agent-sandbox-cli teams-auth logout --directory <directory-path>`
