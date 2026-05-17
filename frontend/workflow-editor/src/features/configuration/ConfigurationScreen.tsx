@@ -92,6 +92,15 @@ const COMMUNICATION_TARGETS_DOMAIN = "communication_targets";
 const COMMUNICATION_TARGETS_FIELD_NAME = "targets";
 const COMMUNICATION_TARGET_PROVIDERS = ["teams", "discord", "email", "github", "ado", "jira", "linear"];
 const COMMUNICATION_TARGET_KINDS = ["teams", "discord", "email", "pull-request", "ticket"];
+const COMMUNICATION_TARGET_KINDS_BY_PROVIDER: Record<string, string[]> = {
+  teams: ["teams"],
+  discord: ["discord"],
+  email: ["email"],
+  github: ["pull-request", "ticket"],
+  ado: ["pull-request", "ticket"],
+  jira: ["ticket"],
+  linear: ["ticket"],
+};
 const COMMUNICATION_TARGET_CAPABILITIES = ["read", "write", "reply", "notify", "comment"];
 const APPROVAL_NOTIFICATION_TARGET_FIELD_NAME = "approval_notification_target_ids";
 
@@ -356,14 +365,17 @@ function communicationTargetEntriesFromConfig(value: unknown): CommunicationTarg
   return rawTargets.map((item) => {
     const target = isRecord(item) ? item : {};
     const policy = isRecord(target.policy) ? target.policy : {};
+    const provider = String(target.provider ?? "teams");
+    const draftCapabilities = stringListFromValue(target.capabilities);
+    const policyCapabilities = stringListFromValue(policy.capabilities);
     return {
       id: String(target.id ?? ""),
       disabled: Boolean(target.disabled),
-      provider: String(target.provider ?? "teams"),
-      kind: String(target.kind ?? "teams"),
+      provider,
+      kind: normalizeCommunicationTargetKind(provider, String(target.kind ?? "")),
       address: String(target.address ?? ""),
-      capabilities: stringListFromValue(policy.capabilities),
-      authProfileRef: String(policy.auth_profile_ref ?? ""),
+      capabilities: draftCapabilities.length ? draftCapabilities : policyCapabilities,
+      authProfileRef: String(target.authProfileRef ?? policy.auth_profile_ref ?? ""),
     };
   });
 }
@@ -390,12 +402,30 @@ function communicationTargetsDraftValue(entries: CommunicationTargetDraftEntry[]
   return JSON.stringify(entries, null, 2);
 }
 
+function communicationTargetKindsForProvider(provider: string): string[] {
+  return COMMUNICATION_TARGET_KINDS_BY_PROVIDER[provider.trim()] ?? COMMUNICATION_TARGET_KINDS;
+}
+
 function defaultKindForCommunicationTargetProvider(provider: string): string {
-  if (provider === "teams") return "teams";
-  if (provider === "discord") return "discord";
-  if (provider === "email") return "email";
-  if (provider === "github" || provider === "ado") return "pull-request";
-  return "ticket";
+  return communicationTargetKindsForProvider(provider)[0] ?? "ticket";
+}
+
+function normalizeCommunicationTargetKind(provider: string, kind: string): string {
+  const normalizedKind = kind.trim();
+  const providerKinds = communicationTargetKindsForProvider(provider);
+  if (providerKinds.includes(normalizedKind)) {
+    return normalizedKind;
+  }
+  return defaultKindForCommunicationTargetProvider(provider);
+}
+
+function communicationTargetAddressPlaceholder(provider: string, kind: string): string {
+  if (provider === "teams") return "team-id/channel-id";
+  if (provider === "discord") return "123456789012345678";
+  if (provider === "email") return "ops@example.com";
+  if (kind === "pull-request") return "owner/repo#123";
+  if (kind === "ticket") return "project/TICKET-123";
+  return "target address";
 }
 
 function communicationTargetDraftEntriesToConfig(entries: CommunicationTargetDraftEntry[]): unknown[] {
@@ -418,21 +448,23 @@ function communicationTargetDraftEntriesToConfig(entries: CommunicationTargetDra
     }
 
     const provider = entry.provider.trim();
-    const kind = entry.kind.trim();
+    const kind = normalizeCommunicationTargetKind(provider, entry.kind);
     const address = entry.address.trim();
     if (!provider || !kind || !address) {
       throw new Error(`Communication target ${id} requires provider, kind, and address.`);
     }
     const capabilities = entry.capabilities.map((capability) => capability.trim()).filter(Boolean);
+    const policy: { capabilities: string[]; auth_profile_ref?: string } = { capabilities };
+    const authProfileRef = entry.authProfileRef.trim();
+    if (provider === "email" && authProfileRef) {
+      policy.auth_profile_ref = authProfileRef;
+    }
     return {
       id,
       provider,
       kind,
       address,
-      policy: {
-        capabilities,
-        auth_profile_ref: entry.authProfileRef.trim() || null,
-      },
+      policy,
     };
   });
 }
@@ -1190,7 +1222,12 @@ export function ConfigurationScreen() {
           <div className="empty-state">No communication targets are configured for this override.</div>
         ) : null}
         {!parsed.error
-          ? entries.map((target, targetIndex) => (
+          ? entries.map((target, targetIndex) => {
+              const kindOptions = communicationTargetKindsForProvider(target.provider);
+              const showKindSelector = kindOptions.length > 1;
+              const selectedKind = normalizeCommunicationTargetKind(target.provider, target.kind);
+              const showAuthProfile = target.provider === "email";
+              return (
               <div key={`communication-target-${targetIndex}`} className="contact-editor-item communication-target-editor-item">
                 <div className="contact-editor-item-header">
                   <strong>{target.id.trim() || `Target ${targetIndex + 1}`}</strong>
@@ -1233,7 +1270,8 @@ export function ConfigurationScreen() {
                         updateCommunicationTargetEntry(field, fieldState, targetIndex, {
                           ...target,
                           provider,
-                          kind: defaultKindForCommunicationTargetProvider(provider),
+                          kind: normalizeCommunicationTargetKind(provider, target.kind),
+                          authProfileRef: provider === "email" ? target.authProfileRef : "",
                         });
                       }}
                       disabled={disabled || target.disabled}
@@ -1243,23 +1281,25 @@ export function ConfigurationScreen() {
                       ))}
                     </select>
                   </label>
-                  <label className="field-stack">
-                    <span>Kind</span>
-                    <select
-                      value={target.kind}
-                      onChange={(event) =>
-                        updateCommunicationTargetEntry(field, fieldState, targetIndex, {
-                          ...target,
-                          kind: event.target.value,
-                        })
-                      }
-                      disabled={disabled || target.disabled}
-                    >
-                      {COMMUNICATION_TARGET_KINDS.map((kind) => (
-                        <option key={kind} value={kind}>{kind}</option>
-                      ))}
-                    </select>
-                  </label>
+                  {showKindSelector ? (
+                    <label className="field-stack">
+                      <span>Kind</span>
+                      <select
+                        value={selectedKind}
+                        onChange={(event) =>
+                          updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                            ...target,
+                            kind: event.target.value,
+                          })
+                        }
+                        disabled={disabled || target.disabled}
+                      >
+                        {kindOptions.map((kind) => (
+                          <option key={kind} value={kind}>{kind}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
                   <label className="field-stack communication-target-address-field">
                     <span>Address</span>
                     <input
@@ -1271,23 +1311,25 @@ export function ConfigurationScreen() {
                         })
                       }
                       disabled={disabled || target.disabled}
-                      placeholder="team-id/channel-id"
+                      placeholder={communicationTargetAddressPlaceholder(target.provider, selectedKind)}
                     />
                   </label>
-                  <label className="field-stack">
-                    <span>Auth profile</span>
-                    <input
-                      value={target.authProfileRef}
-                      onChange={(event) =>
-                        updateCommunicationTargetEntry(field, fieldState, targetIndex, {
-                          ...target,
-                          authProfileRef: event.target.value,
-                        })
-                      }
-                      disabled={disabled || target.disabled}
-                      placeholder="email.default"
-                    />
-                  </label>
+                  {showAuthProfile ? (
+                    <label className="field-stack">
+                      <span>Auth profile</span>
+                      <input
+                        value={target.authProfileRef}
+                        onChange={(event) =>
+                          updateCommunicationTargetEntry(field, fieldState, targetIndex, {
+                            ...target,
+                            authProfileRef: event.target.value,
+                          })
+                        }
+                        disabled={disabled || target.disabled}
+                        placeholder="email.default"
+                      />
+                    </label>
+                  ) : null}
                 </div>
                 <div className="communication-target-capabilities">
                   {COMMUNICATION_TARGET_CAPABILITIES.map((capability) => (
@@ -1325,7 +1367,8 @@ export function ConfigurationScreen() {
                   </label>
                 </div>
               </div>
-            ))
+              );
+            })
           : null}
         {availableInheritedTargets.length ? (
           <div className="contact-subsection communication-target-inherited">
