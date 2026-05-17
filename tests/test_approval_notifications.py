@@ -279,6 +279,63 @@ def test_duplicate_approval_submission_does_not_resend_notifications(
     assert len(second.notification_deliveries) == 1
 
 
+@pytest.mark.parametrize(
+    ("stale_status", "expires_delta"),
+    [
+        (ApprovalStatus.DENIED, timedelta(hours=1)),
+        (ApprovalStatus.PENDING, timedelta(seconds=-1)),
+        (ApprovalStatus.EXPIRED, timedelta(hours=1)),
+    ],
+)
+def test_stale_approval_submission_refreshes_and_resends_notifications(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stale_status: ApprovalStatus,
+    expires_delta: timedelta,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    runtime = _runtime(tmp_path, approval_notification_target_ids=["ops-approvals"])
+    runtime.session_repository.upsert_session(_session_manifest())
+
+    send_calls: list[dict[str, object]] = []
+
+    def fake_send(self, **kwargs: object) -> dict[str, object]:
+        send_calls.append(kwargs)
+        return {"success": True, "provider": "teams", "communication_target_id": "ops-approvals"}
+
+    with patch("agent_sandbox.approval_notifications.NotificationSender.send", new=fake_send):
+        first = runtime.policy.create_approval(
+            "session-1",
+            "email_send_approved",
+            {"subject": "hello", "body": "secret"},
+            "send email",
+        )
+        first.status = stale_status
+        first.expires_at = datetime.now(UTC) + expires_delta
+        first.approver = "alice"
+        first.decision_at = datetime.now(UTC)
+        first.decision_reason = "unsafe"
+        runtime.approvals.put(first.request_id, first)
+
+        second = runtime.policy.create_approval(
+            "session-1",
+            "email_send_approved",
+            {"subject": "hello", "body": "secret"},
+            "send email",
+        )
+
+    assert first.request_id == second.request_id
+    assert len(send_calls) == 2
+    assert second.status == ApprovalStatus.PENDING
+    assert second.expires_at > datetime.now(UTC)
+    assert second.approver is None
+    assert second.decision_at is None
+    assert second.decision_reason is None
+    assert second.notification_status == ApprovalNotificationStatus.DELIVERED
+    assert second.notification_target_ids == ["ops-approvals"]
+    assert len(second.notification_deliveries) == 1
+
+
 def test_approval_notification_failures_are_recorded_per_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
