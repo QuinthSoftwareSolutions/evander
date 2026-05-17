@@ -265,6 +265,30 @@ def test_worker_container_egress_policy_role_applies_docker_user_default_deny() 
     assert "Verify worker egress policy service is active" in verification
 
 
+def _remove_jinja_raw_blocks(text: str) -> str:
+    raw_start = "{% raw %}"
+    raw_end = "{% endraw %}"
+    while raw_start in text:
+        start = text.index(raw_start)
+        end = text.index(raw_end, start)
+        text = text[:start] + text[end + len(raw_end) :]
+    return text
+
+
+def test_worker_container_egress_policy_script_escapes_jinja_comment_sequences() -> None:
+    template_text = (
+        ROOT
+        / "ansible"
+        / "roles"
+        / "worker_container_egress_policy"
+        / "templates"
+        / "agent-sandbox-worker-egress-policy.sh.j2"
+    ).read_text(encoding="utf-8")
+
+    assert "{% raw %}${#filtered_source_cidrs[@]}{% endraw %}" in template_text
+    assert "{#" not in _remove_jinja_raw_blocks(template_text)
+
+
 def test_worker_service_role_renders_env_and_daemon_unit() -> None:
     role = ROOT / "ansible" / "roles" / "container_worker_service"
     tasks = (role / "tasks" / "main.yml").read_text(encoding="utf-8")
