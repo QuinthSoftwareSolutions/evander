@@ -12,9 +12,14 @@ from agent_sandbox.messaging.teams_auth import DeviceCodeLoginSession
 
 _SENSITIVE_KEY_NAMES = {
     "access_token",
+    "authorization_header",
+    "bearer_token",
+    "client_secret",
+    "session_cookie",
     "refresh_token",
     "device_code",
     "store_path",
+    "token",
 }
 
 
@@ -104,7 +109,10 @@ def test_admin_web_teams_auth_routes_use_directory_and_sanitize_sensitive_fields
             "issued_at": "2026-05-01T12:00:00Z",
             "expires_at": "2026-05-01T12:15:00Z",
             "access_token": "should-not-leak",
+            "authorization_header": "Bearer should-not-leak",
+            "bearer_token": "should-not-leak",
             "refresh_token": "should-not-leak",
+            "session_cookie": "should-not-leak",
             "store_path": "/tmp/secret",
         }
 
@@ -119,6 +127,7 @@ def test_admin_web_teams_auth_routes_use_directory_and_sanitize_sensitive_fields
                 "tenant_id": "tenant-123",
                 "scopes": ["scope-a"],
                 "refresh_token": "should-not-leak",
+                "token": "should-not-leak",
                 "store_path": "/tmp/secret",
             }
         ]
@@ -149,6 +158,7 @@ def test_admin_web_teams_auth_routes_use_directory_and_sanitize_sensitive_fields
             "expires_at": "2026-05-01T12:15:00Z",
             "access_token": "should-not-leak",
             "refresh_token": "should-not-leak",
+            "client_secret": "should-not-leak",
             "store_path": "/tmp/secret",
             "metadata": {"store_path": "/tmp/secret", "device_code": "should-not-leak"},
         }
@@ -222,7 +232,7 @@ def test_admin_web_teams_auth_routes_use_directory_and_sanitize_sensitive_fields
     complete = client.post(
         "/api/teams-auth/complete",
         params={"directory_path": selected_directory_path},
-        json={"login_session_id": login_session_id, "timeout_seconds": 3},
+        json={"login_session_id": login_session_id},
     )
     logout = client.post("/api/teams-auth/logout", params={"directory_path": selected_directory_path})
 
@@ -289,7 +299,7 @@ def test_admin_web_teams_auth_routes_use_directory_and_sanitize_sensitive_fields
         ("list", None),
         ("channels", selected_directory_path, "team-123", "General", False),
         ("login", selected_directory_path),
-        ("complete", selected_directory_path, 3.0),
+        ("complete", selected_directory_path, 5.0),
         ("logout", selected_directory_path),
     ]
 

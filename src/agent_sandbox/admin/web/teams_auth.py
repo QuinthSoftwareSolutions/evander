@@ -25,6 +25,8 @@ from agent_sandbox.messaging.teams_auth import (
 
 _SENSITIVE_KEYS = {
     "access_token",
+    "authorization",
+    "cookie",
     "refresh_token",
     "client_secret",
     "device_code",
@@ -32,17 +34,21 @@ _SENSITIVE_KEYS = {
     "password",
     "secret",
     "store_path",
+    "token",
 }
+_DEFAULT_COMPLETE_TIMEOUT_SECONDS = 5.0
 
 
 def _normalize_key_name(value: str) -> str:
     return "".join(character for character in value.casefold() if character.isalnum())
 
 
+_SENSITIVE_KEY_MARKERS = tuple(_normalize_key_name(item) for item in _SENSITIVE_KEYS)
+
+
 def _is_sensitive_key(key: str) -> bool:
-    return _normalize_key_name(key) in {
-        _normalize_key_name(item) for item in _SENSITIVE_KEYS
-    }
+    normalized = _normalize_key_name(key)
+    return any(marker in normalized for marker in _SENSITIVE_KEY_MARKERS)
 
 
 def _jsonable(value: Any) -> Any:
@@ -227,7 +233,7 @@ def teams_auth_routes(service: AdminService, auth: AdminWebAuth) -> list[BaseRou
         timeout_seconds_raw = payload.get("timeout_seconds")
         timeout_seconds: float | None
         if timeout_seconds_raw is None or str(timeout_seconds_raw).strip() == "":
-            timeout_seconds = None
+            timeout_seconds = _DEFAULT_COMPLETE_TIMEOUT_SECONDS
         else:
             try:
                 timeout_seconds = float(timeout_seconds_raw)
