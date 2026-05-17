@@ -26,6 +26,11 @@ class FakeAuth:
         return False
 
 
+class PrivilegedFakeAuth(FakeAuth):
+    def privileged_for_request(self, _request: Request) -> bool:
+        return True
+
+
 class FakeVmAgentAdmin:
     def __init__(self) -> None:
         self.resolve_calls: list[dict[str, Any]] = []
@@ -167,6 +172,35 @@ def test_chat_session_start_prewarms_assistant_session_with_effective_settings(
             user_id="alice",
             thread_id=session["thread_id"],
         )
+    ]
+
+
+def test_chat_session_start_preserves_full_access_settings_for_privileged_request(
+    tmp_path: Path,
+) -> None:
+    service = FakeAdminService(tmp_path)
+    alice = TestClient(Starlette(routes=chat_routes(service, PrivilegedFakeAuth({"username": "alice"}))))
+
+    response = alice.post("/api/chat/session")
+    assert response.status_code == 200
+
+    session = response.json()
+    assert session["user_id"] == "alice"
+    assert session["assistant_capability_mode"] == "full-access"
+    assert service.vm_agent_admin.resolve_calls == [
+        {
+            "user_id": "alice",
+            "backend": "libvirt_vm",
+            "assistant_scope": "admin_chat",
+            "settings": {
+                "enabled": True,
+                "read_only": False,
+                "default_model": "gpt-test",
+                "default_profile": "full-admin",
+            },
+            "thread_id": session["thread_id"],
+            "user_message_id": None,
+        }
     ]
 
 
