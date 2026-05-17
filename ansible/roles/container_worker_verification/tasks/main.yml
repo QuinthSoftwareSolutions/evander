@@ -22,6 +22,22 @@
       }}
     success_msg: "agent-sandbox-worker-daemon.service is enabled and running."
 
+- name: Verify worker egress policy service is active
+  ansible.builtin.assert:
+    that:
+      - "ansible_facts.services['agent-sandbox-worker-egress-policy.service'].status == 'enabled'"
+      - "ansible_facts.services['agent-sandbox-worker-egress-policy.service'].state == 'running'"
+    fail_msg: >-
+      agent-sandbox-worker-egress-policy.service should be enabled and active
+      whenever a non-none worker Docker network is configured with
+      agent_sandbox_worker_egress_policy_enabled=true. actual={{
+        ansible_facts.services.get('agent-sandbox-worker-egress-policy.service', {})
+      }}
+    success_msg: "agent-sandbox-worker-egress-policy.service is enabled and active."
+  when:
+    - agent_sandbox_worker_egress_policy_enabled | bool
+    - (agent_sandbox_worker_docker_network | default('none') | string | trim | lower) not in ['', 'none']
+
 - name: Verify Docker is usable by the worker user
   ansible.builtin.command:
     argv:
@@ -53,3 +69,4 @@
       - "worker daemon: http://{{ ansible_default_ipv4.address | default(agent_sandbox_worker_host) }}:{{ agent_sandbox_worker_port }}"
       - "sandbox profile: {{ agent_sandbox_worker_sandbox_profile }}"
       - "container user: {{ agent_sandbox_effective_worker_container_user }}"
+      - "worker egress policy: {{ agent_sandbox_worker_egress_policy_enabled }}"

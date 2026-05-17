@@ -12,9 +12,14 @@ the existing VM services.
 
 `container_worker_vm` has a worker-side HTTP daemon, `agent-sandbox-worker-daemon`, that can run
 jobs in disposable Docker containers while preserving durable per-session state on the worker VM.
-It is wired for one configured worker URL, explicit manual/operator use through
-`agent-sandbox-cli execution ...`, and backend-aware `effect:agent:*` workflow nodes. It is
-additive; `libvirt_vm` remains the default and is unchanged.
+It is wired for one configured worker URL, the single-worker Phase 5 deployment slice, explicit
+manual/operator use through `agent-sandbox-cli execution ...`, and backend-aware
+`effect:agent:*` workflow nodes. It is additive; `libvirt_vm` remains the default and is
+unchanged.
+
+For that single-worker slice, non-`none` Docker networking is only valid when
+`agent_sandbox_worker_egress_policy_enabled: true` is set on the worker VM and the allowlist is
+explicit.
 
 ## Current Scope
 
@@ -34,7 +39,7 @@ The current implementation does not provide:
 - worker scheduling, autoscaling, AKS, or Kubernetes
 - worker lifecycle rebuilds
 - general secret transport to workers
-- Docker networking hardening beyond the worker VM firewall and routing controls operators configure
+- general internet egress or Docker-network-only metadata protection
 - full ADO/wake automation on the manual container execution CLI surface
 - ADO issue processing
 - PR publishing

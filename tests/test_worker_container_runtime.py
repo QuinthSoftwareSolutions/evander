@@ -46,6 +46,13 @@ def test_docker_runtime_refuses_host_network() -> None:
         DockerContainerRuntime(docker_network="host")
 
 
+def test_docker_runtime_defaults_to_none_network() -> None:
+    runtime = DockerContainerRuntime()
+
+    assert runtime.docker_network == "none"
+    assert runtime.sandbox_profile.network_mode == "none"
+
+
 def test_docker_run_args_use_restricted_container_shape_and_persistent_mounts(
     tmp_path: Path,
 ) -> None:

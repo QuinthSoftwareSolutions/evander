@@ -43,6 +43,7 @@ def test_worker_cli_uses_default_sandbox_profile(monkeypatch, tmp_path: Path) ->
     assert profile.security_opt == ("no-new-privileges",)
     assert not profile.read_only_rootfs
     assert captured["create_app"]["docker_network"] is None
+    assert not any("egress" in key for key in captured["create_app"])
 
 
 def test_worker_cli_accepts_strict_profile_network_and_container_tuning(
