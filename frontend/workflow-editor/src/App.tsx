@@ -1360,6 +1360,14 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return payload as T;
 }
 
+function workflowCatalogPath(directoryPath: string): string {
+  const params = new URLSearchParams();
+  const trimmedDirectoryPath = directoryPath.trim();
+  if (trimmedDirectoryPath) params.set("directory_path", trimmedDirectoryPath);
+  const query = params.toString();
+  return query ? `/api/workflow-editor/catalog?${query}` : "/api/workflow-editor/catalog";
+}
+
 function currentPositionsFromNodes(nodes: Node<GraphNodeData>[]): Record<string, { x: number; y: number }> {
   return Object.fromEntries(nodes.map((node) => [node.id, node.position]));
 }
@@ -2148,7 +2156,7 @@ export default function App() {
     let cancelled = false;
     Promise.all([
       fetchJson<WorkflowEditorDocument>("/api/workflow-editor/document"),
-      fetchJson<WorkflowEditorCatalog>("/api/workflow-editor/catalog"),
+      fetchJson<WorkflowEditorCatalog>(workflowCatalogPath(initialGraphDirectoryPathRef.current)),
       fetchJson<WorkflowRunSnapshot>("/api/workflow-editor/runs"),
     ])
       .then(([payload, catalogPayload, runSnapshotPayload]) => {
@@ -2187,6 +2195,35 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!document) return;
+    let cancelled = false;
+    fetchJson<WorkflowEditorCatalog>(workflowCatalogPath(selectedDirectoryPath))
+      .then((catalogPayload) => {
+        if (cancelled) return;
+        setCatalog(catalogPayload);
+        setFlowNodes((currentNodes) =>
+          buildNodes(
+            document.config,
+            document.layout,
+            catalogPayload,
+            runSnapshot?.node_activity ?? {},
+            validationDiagnostics,
+            currentPositionsFromNodes(currentNodes),
+            currentNodes.filter((node) => node.selected).map((node) => node.id),
+          ),
+        );
+        setFlowEdges(buildEdges(document.config, catalogPayload));
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        setError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDirectoryPath]);
 
   useEffect(() => {
     const stream = new EventSource("/api/workflow-editor/runs/stream");
@@ -3909,6 +3946,7 @@ export default function App() {
       subgroups: groupWorkflowNodeCatalogEntries(entries, group.kind),
     };
   });
+  const createEntryCount = createEntriesByKind.reduce((total, group) => total + group.entries.length, 0);
   const appShellStyle = {
     "--workflow-sidebar-width": `${sidebarWidth}px`,
   } as CSSProperties;
@@ -3991,8 +4029,13 @@ export default function App() {
               </div>
             </details>
 
-            <div className="sidebar-section workflow-graphs-section">
-              <div className="section-label">Graphs</div>
+            <details className="sidebar-section workflow-graphs-section collapsible-sidebar-section">
+              <summary className="collapsible-sidebar-summary">
+                <span className="section-label">Graphs</span>
+                <span className="collapsible-sidebar-meta">
+                  {visibleWorkflowGraphs.length} {visibleWorkflowGraphs.length === 1 ? "graph" : "graphs"}
+                </span>
+              </summary>
               <p className="runtime-summary">{graphViewContext}</p>
               <div className="workflow-graph-list">
                 {visibleWorkflowGraphs.length === 0 ? (
@@ -4061,10 +4104,15 @@ export default function App() {
                   </button>
                 </div>
               ) : null}
-            </div>
+            </details>
 
-            <div className="sidebar-section">
-              <div className="section-label">Create</div>
+            <details className="sidebar-section collapsible-sidebar-section">
+              <summary className="collapsible-sidebar-summary">
+                <span className="section-label">Create</span>
+                <span className="collapsible-sidebar-meta">
+                  {createEntryCount} {createEntryCount === 1 ? "node" : "nodes"}
+                </span>
+              </summary>
               {createEntriesByKind.map((group) => (
                 <details key={group.kind} className="create-group" open={group.kind === "trigger"}>
                   <summary className="create-group-summary">
@@ -4103,7 +4151,7 @@ export default function App() {
                   </div>
                 </details>
               ))}
-            </div>
+            </details>
 
             <div className="sidebar-section">
               <div className="section-label">Save</div>

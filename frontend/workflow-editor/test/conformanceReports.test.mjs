@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   CONFORMANCE_REPORT_ENDPOINT,
+  conformanceReportRunEndpoint,
   stateClassName,
   stateLabel,
   summarizeRequirementCounts,
@@ -10,6 +11,14 @@ import {
 
 test("conformance report endpoint stays stable", () => {
   assert.equal(CONFORMANCE_REPORT_ENDPOINT, "/api/admin/reports/conformance");
+  assert.equal(
+    conformanceReportRunEndpoint("trigger"),
+    "/api/admin/reports/conformance/trigger/run",
+  );
+  assert.equal(
+    conformanceReportRunEndpoint("effect"),
+    "/api/admin/reports/conformance/effect/run",
+  );
 });
 
 test("conformance states map to clear labels and classes", () => {

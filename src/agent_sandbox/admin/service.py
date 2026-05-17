@@ -55,6 +55,7 @@ from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
 from agent_sandbox.host_config import DEFAULT_RUNTIME_DIR
 from agent_sandbox.bootstrap import resolve_runtime_dir
+from agent_sandbox.messaging.targets import COMMUNICATION_TARGETS_DOMAIN
 from agent_sandbox.ownership import DirectoryOwnershipQueries
 from agent_sandbox.policy_config import EffectivePolicyConfig
 from agent_sandbox.daemons.pr_feedback_worker import PrFeedbackStore
@@ -513,6 +514,16 @@ class ConformanceReportsPayload(BaseModel):
     generated_at: datetime
     stale_after_seconds: int
     reports: list[ConformanceReportPayload] = Field(default_factory=list)
+
+
+class ConformanceReportRunPayload(BaseModel):
+    kind: str
+    exit_code: int
+    started_at: datetime
+    completed_at: datetime
+    duration_seconds: float
+    output: str | None = None
+    reports: ConformanceReportsPayload
 
 
 class WorkflowRunClearPayload(BaseModel):
@@ -1598,6 +1609,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Optional durable session id. Leave blank to let the runtime allocate one.",
             ),
             _field(
+                "existing_agent_behavior",
+                "Existing agent behavior",
+                "enum",
+                description="What effect:agent:create should do when the target session already exists.",
+                options=[
+                    _field_option("upsert", "Upsert existing agent"),
+                    _field_option("noop", "No-op if existing"),
+                ],
+            ),
+            _field(
                 "labels",
                 "Labels",
                 "string_map",
@@ -2217,7 +2238,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="effect:communication:send-message",
         label="Send message",
         fields=[
-            _field("communication_target_id", "Communication target ID", "string", required=True),
+            _field("communication_target_id", "Communication target", "enum", required=True),
             _field("message", "Message", "string", required=True, bindable=True, multiline=True),
             _field("thread_id", "Thread ID", "string", bindable=True),
         ],
@@ -2470,12 +2491,31 @@ def _read_json_object(path: Path | None) -> dict[str, object]:
 CONFORMANCE_REPORT_STALE_AFTER = timedelta(days=7)
 CONFORMANCE_REPORT_SNIPPET_LIMIT = 10
 CONFORMANCE_REPORT_TEXT_LIMIT = 500
+CONFORMANCE_REPORT_RUN_TIMEOUT_SECONDS = 120
 TRIGGER_CONFORMANCE_GUIDANCE = (
     "PYTHONPATH=src python -m pytest -q tests/test_trigger_conformance_suite.py"
 )
 EFFECT_CONFORMANCE_GUIDANCE = (
     "PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py"
 )
+CONFORMANCE_REPORT_SPECS = {
+    "trigger": {
+        "kind": "trigger",
+        "label": "Trigger",
+        "artifact_path": "trigger-conformance-report.json",
+        "guidance": TRIGGER_CONFORMANCE_GUIDANCE,
+        "env_var": "AGENT_SANDBOX_TRIGGER_CONFORMANCE_REPORT",
+        "suite_path": "tests/test_trigger_conformance_suite.py",
+    },
+    "effect": {
+        "kind": "effect",
+        "label": "Effect",
+        "artifact_path": "effect-conformance-report.json",
+        "guidance": EFFECT_CONFORMANCE_GUIDANCE,
+        "env_var": "AGENT_SANDBOX_EFFECT_CONFORMANCE_REPORT",
+        "suite_path": "tests/test_effect_conformance_suite.py",
+    },
+}
 
 
 def _trim_conformance_text(
@@ -2487,6 +2527,16 @@ def _trim_conformance_text(
     if len(text) <= limit:
         return text
     return f"{text[: limit - 3].rstrip()}..."
+
+
+def _trim_conformance_process_output(value: object, *, limit: int = 2000) -> str:
+    text = _coerce_optional_string(value)
+    if text is None:
+        return ""
+    normalized = text.strip()
+    if len(normalized) <= limit:
+        return normalized
+    return f"...{normalized[-limit:].lstrip()}"
 
 
 def _resolve_path_setting(*, base_dir: Path, value: object | None, fallback: Path) -> Path:
@@ -7470,8 +7520,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def read_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
         return self.workflow_config_admin.read_workflow_editor_document()
 
-    def read_workflow_editor_catalog(self) -> WorkflowEditorCatalogPayload:
-        return self.workflow_config_admin.read_workflow_editor_catalog()
+    def read_workflow_editor_catalog(
+        self, directory_path: str | None = None
+    ) -> WorkflowEditorCatalogPayload:
+        return self.workflow_config_admin.read_workflow_editor_catalog(
+            directory_path=directory_path
+        )
 
     def list_skills(self) -> list[SkillLibraryMetadata]:
         return self.skill_library.list_skills()
@@ -7550,6 +7604,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
     def read_conformance_reports(self) -> ConformanceReportsPayload:
         return self._read_conformance_reports()
+
+    def run_conformance_report(self, kind: str) -> ConformanceReportRunPayload:
+        return self._run_conformance_report(kind)
 
     def clear_workflow_run(self, event_id: str) -> WorkflowRunClearPayload:
         return self.workflow_config_admin.clear_workflow_run(event_id)
@@ -8285,9 +8342,58 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             revision=revision,
         )
 
-    def _read_workflow_editor_catalog(self) -> WorkflowEditorCatalogPayload:
+    def _communication_send_target_options(
+        self, directory_path: str | None
+    ) -> list[WorkflowEditorFieldOption]:
+        normalized_directory = self._normalize_directory_reference(directory_path)
+        result = self.directory_admin.compute_effective_config(
+            normalized_directory,
+            domain=COMMUNICATION_TARGETS_DOMAIN,
+        )
+        if not result.ok or result.data is None:
+            messages = [error.message for error in result.errors]
+            raise ValueError(
+                "; ".join(messages)
+                or f"Communication targets could not be resolved for {normalized_directory!r}."
+            )
+        targets = result.data.resolution.effective_config.get("targets")
+        if not isinstance(targets, list):
+            return []
+
+        options: list[WorkflowEditorFieldOption] = []
+        for target in targets:
+            if not isinstance(target, dict):
+                continue
+            target_id = str(target.get("id") or "").strip()
+            provider = str(target.get("provider") or "").strip()
+            policy = target.get("policy")
+            raw_capabilities = policy.get("capabilities") if isinstance(policy, dict) else []
+            capabilities = {
+                str(capability).strip()
+                for capability in raw_capabilities
+                if str(capability).strip()
+            } if isinstance(raw_capabilities, list) else set()
+            send_capabilities = sorted(capabilities.intersection({"write", "reply"}))
+            if not target_id or provider not in {"teams", "discord"}:
+                continue
+            if provider == "discord" and "write" not in capabilities:
+                continue
+            if provider == "teams" and not send_capabilities:
+                continue
+            capability_suffix = f", {', '.join(send_capabilities)}" if send_capabilities else ""
+            options.append(
+                _field_option(target_id, f"{target_id} ({provider}{capability_suffix})")
+            )
+        return options
+
+    def _read_workflow_editor_catalog(
+        self, directory_path: str | None = None
+    ) -> WorkflowEditorCatalogPayload:
         skill_options = [_field_option(skill.name) for skill in self.skill_library.list_skills()]
         tool_options = _tool_field_options()
+        communication_send_target_options = self._communication_send_target_options(
+            directory_path
+        )
         nodes: list[WorkflowEditorNodeCatalogEntry] = []
         for entry in _WORKFLOW_EDITOR_NODE_CATALOG:
             node = entry.model_copy(
@@ -8304,6 +8410,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     if field.key == "codex_skills"
                     else field.model_copy(update={"options": tool_options})
                     if field.key == "allowed_tools"
+                    else field
+                    for field in node.fields
+                ]
+            if node.type == "effect:communication:send-message":
+                node.fields = [
+                    field.model_copy(update={"options": communication_send_target_options})
+                    if field.key == "communication_target_id"
                     else field
                     for field in node.fields
                 ]
@@ -9339,24 +9452,72 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
     def _read_conformance_reports(self) -> ConformanceReportsPayload:
         now = _utc_now()
-        specs = (
-            {
-                "kind": "trigger",
-                "label": "Trigger",
-                "artifact_path": "trigger-conformance-report.json",
-                "guidance": TRIGGER_CONFORMANCE_GUIDANCE,
-            },
-            {
-                "kind": "effect",
-                "label": "Effect",
-                "artifact_path": "effect-conformance-report.json",
-                "guidance": EFFECT_CONFORMANCE_GUIDANCE,
-            },
-        )
+        specs = (CONFORMANCE_REPORT_SPECS["trigger"], CONFORMANCE_REPORT_SPECS["effect"])
         return ConformanceReportsPayload(
             generated_at=now,
             stale_after_seconds=int(CONFORMANCE_REPORT_STALE_AFTER.total_seconds()),
             reports=[self._read_conformance_report(now=now, **spec) for spec in specs],
+        )
+
+    def _run_conformance_report(self, kind: str) -> ConformanceReportRunPayload:
+        normalized_kind = kind.strip().lower()
+        spec = CONFORMANCE_REPORT_SPECS.get(normalized_kind)
+        if spec is None:
+            allowed = ", ".join(sorted(CONFORMANCE_REPORT_SPECS))
+            raise ValueError(f"Unknown conformance report {kind!r}. Expected one of: {allowed}.")
+
+        suite_path = Path(str(spec["suite_path"]))
+        suite_file = self.project_dir / suite_path
+        if not suite_file.exists():
+            raise RuntimeError(f"{spec['label']} conformance suite is missing: {suite_path}")
+
+        artifact_path = (self.config.runtime_dir / str(spec["artifact_path"])).resolve()
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+        env[str(spec["env_var"])] = str(artifact_path)
+        src_path = str((self.project_dir / "src").resolve())
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            src_path if not existing_pythonpath else f"{src_path}{os.pathsep}{existing_pythonpath}"
+        )
+
+        command = [sys.executable, "-m", "pytest", "-q", str(suite_path)]
+        started_at = _utc_now()
+        try:
+            result = subprocess.run(
+                command,
+                cwd=self.project_dir,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=CONFORMANCE_REPORT_RUN_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            output = _trim_conformance_process_output(
+                "\n".join(part for part in (exc.stdout, exc.stderr) if part)
+            )
+            message = (
+                f"{spec['label']} conformance suite timed out after "
+                f"{CONFORMANCE_REPORT_RUN_TIMEOUT_SECONDS} seconds."
+            )
+            if output:
+                message = f"{message}\n{output}"
+            raise RuntimeError(message) from exc
+        except OSError as exc:
+            raise RuntimeError(f"{spec['label']} conformance suite could not be started: {exc}") from exc
+
+        completed_at = _utc_now()
+        output = _trim_conformance_process_output(
+            "\n".join(part for part in (result.stdout, result.stderr) if part)
+        )
+        return ConformanceReportRunPayload(
+            kind=normalized_kind,
+            exit_code=result.returncode,
+            started_at=started_at,
+            completed_at=completed_at,
+            duration_seconds=max(0.0, (completed_at - started_at).total_seconds()),
+            output=output or None,
+            reports=self._read_conformance_reports(),
         )
 
     def _read_conformance_report(
@@ -9366,6 +9527,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         label: str,
         artifact_path: str,
         guidance: str,
+        env_var: str,
+        suite_path: str,
         now: datetime,
     ) -> ConformanceReportPayload:
         path = self.config.runtime_dir / artifact_path
@@ -10445,6 +10608,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         playwright: bool = False,
         codex_skills: list[str] | None = None,
         directory_path: str = "root",
+        allow_existing_session: bool = False,
     ) -> VmActionResult:
         payload: dict[str, Any] = {}
         if provider is not None:
@@ -10484,6 +10648,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             playwright=playwright,
             codex_skills=codex_skills,
             directory_path=directory_path,
+            allow_existing_session=allow_existing_session,
             **payload,
         )
 

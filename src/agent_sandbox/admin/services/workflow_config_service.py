@@ -30,8 +30,10 @@ class WorkflowConfigAdminService:
     def read_workflow_editor_document(self):
         return self._worker_admin.read_workflow_editor_document()
 
-    def read_workflow_editor_catalog(self):
-        return self._worker_admin.read_workflow_editor_catalog()
+    def read_workflow_editor_catalog(self, directory_path: str | None = None):
+        return self._worker_admin.read_workflow_editor_catalog(
+            directory_path=directory_path
+        )
 
     def validate_workflow_editor_document(
         self,

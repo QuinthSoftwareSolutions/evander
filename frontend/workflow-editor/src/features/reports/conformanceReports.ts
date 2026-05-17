@@ -40,6 +40,20 @@ export type ConformanceReportsPayload = {
   reports: ConformanceReportRecord[];
 };
 
+export type ConformanceReportRunPayload = {
+  kind: ConformanceReportKind;
+  exit_code: number;
+  started_at: string;
+  completed_at: string;
+  duration_seconds: number;
+  output?: string | null;
+  reports: ConformanceReportsPayload;
+};
+
+export function conformanceReportRunEndpoint(kind: ConformanceReportKind): string {
+  return `${CONFORMANCE_REPORT_ENDPOINT}/${kind}/run`;
+}
+
 const STATE_LABELS: Record<ConformanceReportState, string> = {
   pass: "Pass",
   fail: "Fail",

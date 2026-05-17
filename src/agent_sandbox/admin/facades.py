@@ -922,8 +922,10 @@ class WorkerAdminFacade:
     def read_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
         return self._deps.read_workflow_editor_document()
 
-    def read_workflow_editor_catalog(self) -> WorkflowEditorCatalogPayload:
-        return self._deps.read_workflow_editor_catalog()
+    def read_workflow_editor_catalog(
+        self, directory_path: str | None = None
+    ) -> WorkflowEditorCatalogPayload:
+        return self._deps.read_workflow_editor_catalog(directory_path=directory_path)
 
     def validate_workflow_editor_document(
         self,

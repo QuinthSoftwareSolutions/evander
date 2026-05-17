@@ -25,6 +25,7 @@ from agent_sandbox.execution.models import (
     ExecutionStatusKind,
 )
 from agent_sandbox.messaging.targets import (
+    COMMUNICATION_TARGETS_DOMAIN,
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
@@ -330,6 +331,9 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "message",
         "thread_id",
     ]
+    assert next(
+        field for field in communication["fields"] if field["key"] == "communication_target_id"
+    )["kind"] == "enum"
     assert any(
         field["key"] == "message" and field["bindable"] and field["multiline"]
         for field in communication["fields"]
@@ -552,6 +556,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "execution_backend",
         "vm_name",
         "session_id",
+        "existing_agent_behavior",
         "labels",
         "model",
         "vm_user",
@@ -591,6 +596,13 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert execution_backend["options"] == [
         {"value": "libvirt_vm", "label": "Libvirt VM"},
         {"value": "container_worker_vm", "label": "Container worker VM"},
+    ]
+    existing_agent_behavior = next(
+        field for field in agent_create["fields"] if field["key"] == "existing_agent_behavior"
+    )
+    assert existing_agent_behavior["options"] == [
+        {"value": "upsert", "label": "Upsert existing agent"},
+        {"value": "noop", "label": "No-op if existing"},
     ]
     agent_destroy = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:destroy"
@@ -690,6 +702,107 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "playwright",
         "codex_skills",
         "directory_path",
+    ]
+
+
+def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "ops")
+    assert created.ok is True and created.data is not None
+    root_write = service.write_directory_domain_config(
+        "root",
+        COMMUNICATION_TARGETS_DOMAIN,
+        {
+            "targets": [
+                {
+                    "id": "root-chat",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team/channel",
+                    "policy": {"capabilities": ["write"]},
+                },
+                {
+                    "id": "root-notify",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team/notify",
+                    "policy": {"capabilities": ["notify"]},
+                },
+                {
+                    "id": "mail-write",
+                    "provider": "email",
+                    "kind": "email",
+                    "address": "ops@example.com",
+                    "policy": {"capabilities": ["write"], "auth_profile_ref": "email.ops"},
+                },
+            ]
+        },
+    )
+    child_write = service.write_directory_domain_config(
+        "root/ops",
+        COMMUNICATION_TARGETS_DOMAIN,
+        {
+            "targets": [
+                {"id": "root-chat", "disabled": True},
+                {
+                    "id": "ops-chat",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team/ops",
+                    "policy": {"capabilities": ["reply"]},
+                },
+                {
+                    "id": "ops-discord",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345678",
+                    "policy": {"capabilities": ["write"]},
+                },
+                {
+                    "id": "discord-reply-only",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345679",
+                    "policy": {"capabilities": ["reply"]},
+                },
+            ]
+        },
+    )
+    assert root_write.ok is True
+    assert child_write.ok is True
+    client = TestClient(create_app(service))
+
+    root_response = client.get("/api/workflow-editor/catalog?directory_path=root")
+    ops_response = client.get("/api/workflow-editor/catalog?directory_path=root/ops")
+
+    assert root_response.status_code == 200
+    assert ops_response.status_code == 200
+
+    def send_target_options(payload: dict[str, object]) -> list[dict[str, str]]:
+        nodes = payload["nodes"]
+        assert isinstance(nodes, list)
+        node = next(
+            candidate
+            for candidate in nodes
+            if isinstance(candidate, dict)
+            and candidate["type"] == "effect:communication:send-message"
+        )
+        field = next(
+            candidate
+            for candidate in node["fields"]
+            if candidate["key"] == "communication_target_id"
+        )
+        assert field["kind"] == "enum"
+        return field["options"]
+
+    assert send_target_options(root_response.json()) == [
+        {"value": "root-chat", "label": "root-chat (teams, write)"}
+    ]
+    assert send_target_options(ops_response.json()) == [
+        {"value": "ops-chat", "label": "ops-chat (teams, reply)"},
+        {"value": "ops-discord", "label": "ops-discord (discord, write)"},
     ]
 
 
@@ -2618,6 +2731,40 @@ def test_admin_web_conformance_report_endpoint_returns_invalid_records(
     assert reports["trigger"]["state"] == "invalid"
     assert "not valid JSON" in reports["trigger"]["error"]
     assert reports["effect"]["state"] == "missing"
+
+
+def test_admin_web_run_conformance_report_endpoint_delegates_to_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    client = TestClient(create_app(service))
+    calls: list[str] = []
+
+    def fake_run(kind: str) -> SimpleNamespace:
+        calls.append(kind)
+        return SimpleNamespace(
+            model_dump=lambda mode: {
+                "kind": kind,
+                "exit_code": 0,
+                "started_at": "2026-05-17T09:00:00Z",
+                "completed_at": "2026-05-17T09:00:01Z",
+                "duration_seconds": 1.0,
+                "output": "ok",
+                "reports": {
+                    "generated_at": "2026-05-17T09:00:01Z",
+                    "stale_after_seconds": 604800,
+                    "reports": [],
+                },
+            }
+        )
+
+    monkeypatch.setattr(service, "run_conformance_report", fake_run)
+
+    response = client.post("/api/admin/reports/conformance/trigger/run")
+
+    assert response.status_code == 200
+    assert calls == ["trigger"]
+    assert response.json()["kind"] == "trigger"
 
 
 def test_admin_web_active_issue_filter_excludes_done_issues(tmp_path: Path) -> None:

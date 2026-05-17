@@ -87,9 +87,11 @@ def workflow_routes(service: AdminService) -> list[Route]:
             return json_error(str(exc))
         return JSONResponse(document.model_dump(mode="json"))
 
-    async def get_catalog(_: Request) -> JSONResponse:
+    async def get_catalog(request: Request) -> JSONResponse:
         try:
-            catalog = service.read_workflow_editor_catalog()
+            catalog = service.read_workflow_editor_catalog(
+                directory_path=request.query_params.get("directory_path")
+            )
         except ValueError as exc:
             return json_error(str(exc))
         return JSONResponse(catalog.model_dump(mode="json"))

@@ -16,6 +16,7 @@ from .agent_session import (
     build_container_session_manifest,
     container_backend,
     effective_config_for_directory,
+    normalize_existing_agent_behavior,
     normalize_optional_string,
     runtime_session_repository,
     selected_execution_backend,
@@ -35,6 +36,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "execution_backend": effect.execution_backend,
             "vm_name": effect.vm_name,
             "session_id": effect.session_id,
+            "existing_agent_behavior": effect.existing_agent_behavior,
             "labels": effect.labels,
             "model": effect.model,
             "vm_user": effect.vm_user,
@@ -79,13 +81,23 @@ class AgentCreateEffectProvider(EffectProviderBase):
             directory_path,
         )
         if execution_backend == "libvirt_vm":
-            return self._execute_libvirt(payload, execution_backend=execution_backend)
+            return self._execute_libvirt(
+                payload,
+                config=config,
+                directory_path=directory_path,
+                execution_backend=execution_backend,
+            )
         if execution_backend != "container_worker_vm":
             raise ValueError(f"Unsupported execution_backend: {execution_backend}")
         return self._execute_container(payload, config=config, directory_path=directory_path)
 
     def _execute_libvirt(
-        self, payload: dict[str, Any], *, execution_backend: str
+        self,
+        payload: dict[str, Any],
+        *,
+        config: Any,
+        directory_path: str,
+        execution_backend: str,
     ) -> dict[str, Any]:
         context = self._context()
         if context.vm_creator is None:
@@ -94,6 +106,21 @@ class AgentCreateEffectProvider(EffectProviderBase):
         if not vm_name:
             raise ValueError("effect:agent:create with libvirt_vm requires vm_name")
         session_id = normalize_optional_string(payload.get("session_id"))
+        existing_agent_behavior = normalize_existing_agent_behavior(
+            payload.get("existing_agent_behavior")
+        )
+        if existing_agent_behavior == "noop":
+            existing_session = _existing_session_for_create(
+                runtime_session_repository(context, config),
+                session_id=session_id,
+                vm_name=vm_name,
+            )
+            if existing_session is not None:
+                return _existing_agent_noop_result(
+                    session_id=existing_session.session_id,
+                    execution_backend=execution_backend,
+                    vm_name=existing_session.vm_id or vm_name,
+                )
         codex_skills = managed_codex_skill_names(
             context=context,
             config=context.resolved_config,
@@ -133,8 +160,8 @@ class AgentCreateEffectProvider(EffectProviderBase):
             mssql_init_root=normalize_optional_string(payload.get("mssql_init_root")),
             playwright=bool(payload.get("playwright", False)),
             codex_skills=codex_skills,
-            directory_path=normalize_optional_string(payload.get("directory_path"))
-            or str(context.metadata.get("directory_path") or "root"),
+            directory_path=normalize_optional_string(payload.get("directory_path")) or directory_path,
+            allow_existing_session=existing_agent_behavior == "upsert",
         )
         return {
             "success": bool(result.success),
@@ -142,6 +169,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "session_id": session_id or f"session-{vm_name}",
             "execution_backend": execution_backend,
             "vm_name": result.vm_name or vm_name,
+            "skipped": False,
         }
 
     def _execute_container(
@@ -155,6 +183,19 @@ class AgentCreateEffectProvider(EffectProviderBase):
         session_id = normalize_optional_string(payload.get("session_id"))
         if not session_id:
             raise ValueError("effect:agent:create with container_worker_vm requires session_id")
+        session_repository = runtime_session_repository(context, config)
+        existing_agent_behavior = normalize_existing_agent_behavior(
+            payload.get("existing_agent_behavior")
+        )
+        if (
+            existing_agent_behavior == "noop"
+            and session_repository.get_session(session_id) is not None
+        ):
+            return _existing_agent_noop_result(
+                session_id=session_id,
+                execution_backend="container_worker_vm",
+                vm_name=None,
+            )
         if bool(payload.get("mssql", False)) or normalize_optional_string(
             payload.get("mssql_init_root")
         ):
@@ -218,7 +259,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             ),
             metadata=metadata,
         )
-        runtime_session_repository(context, config).upsert_session(manifest)
+        session_repository.upsert_session(manifest)
         session_record = backend.prepare_session(
             session_id=session_id,
             metadata={
@@ -250,6 +291,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
             "vm_name": None,
             "agent_home": session_record.agent_home_container_path,
             "repo_root": session_record.repo_root_container_path,
+            "skipped": False,
         }
 
     def _effect(self) -> AgentCreateEffectDefinition:
@@ -263,3 +305,40 @@ class AgentCreateEffectProvider(EffectProviderBase):
         if self.runtime_context is None:
             raise RuntimeError("AgentCreateEffectProvider has no runtime context")
         return self.runtime_context
+
+
+def _existing_session_for_create(
+    repository: Any,
+    *,
+    session_id: str | None,
+    vm_name: str | None,
+) -> Any | None:
+    if session_id:
+        existing = repository.get_session(session_id)
+        if existing is not None:
+            return existing
+    if vm_name:
+        matches = repository.list_sessions_for_vm(vm_name)
+        if matches:
+            return matches[-1]
+    return None
+
+
+def _existing_agent_noop_result(
+    *,
+    session_id: str,
+    execution_backend: str,
+    vm_name: str | None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "success": True,
+        "message": f"Agent session already exists: {session_id}; skipped create",
+        "session_id": session_id,
+        "execution_backend": execution_backend,
+        "vm_name": vm_name,
+        "skipped": True,
+    }
+    if execution_backend == "container_worker_vm":
+        result["agent_home"] = "/home/agent"
+        result["repo_root"] = "/home/agent/repos"
+    return result

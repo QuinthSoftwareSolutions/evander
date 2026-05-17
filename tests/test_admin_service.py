@@ -3131,6 +3131,140 @@ def test_conformance_reports_marks_old_valid_artifacts_stale(tmp_path: Path) -> 
     assert reports["effect"].status == "pass"
 
 
+def test_run_conformance_report_executes_fixed_suite_and_refreshes_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = write_config(tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    service = AdminService(config_path)
+    service.project_dir = REPO_ROOT
+    calls: list[dict[str, Any]] = []
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        text: bool,
+        capture_output: bool,
+        timeout: int,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(
+            {
+                "command": command,
+                "cwd": cwd,
+                "env": env,
+                "text": text,
+                "capture_output": capture_output,
+                "timeout": timeout,
+            }
+        )
+        Path(env["AGENT_SANDBOX_TRIGGER_CONFORMANCE_REPORT"]).write_text(
+            json.dumps(
+                {
+                    "generated_at": "2099-01-01T00:00:00Z",
+                    "status": "pass",
+                    "requirements": [
+                        {
+                            "requirement_id": "schema:trigger:cron",
+                            "status": "pass",
+                            "coverage": ["cron"],
+                            "details": "Cron trigger validates.",
+                        }
+                    ],
+                    "traceability_matrix": {"task_trigger_schema": ["schema:trigger:cron"]},
+                    "missing_coverage": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(admin_service.subprocess, "run", fake_run)
+
+    payload = service.run_conformance_report("trigger")
+
+    assert payload.kind == "trigger"
+    assert payload.exit_code == 0
+    assert payload.output == "ok"
+    assert len(calls) == 1
+    assert calls[0]["command"][1:] == ["-m", "pytest", "-q", "tests/test_trigger_conformance_suite.py"]
+    assert calls[0]["cwd"] == REPO_ROOT
+    assert calls[0]["text"] is True
+    assert calls[0]["capture_output"] is True
+    assert calls[0]["timeout"] == admin_service.CONFORMANCE_REPORT_RUN_TIMEOUT_SECONDS
+    assert (
+        calls[0]["env"]["AGENT_SANDBOX_TRIGGER_CONFORMANCE_REPORT"]
+        == str(runtime_dir / "trigger-conformance-report.json")
+    )
+    reports = {report.kind: report for report in payload.reports.reports}
+    assert reports["trigger"].state == "pass"
+    assert reports["trigger"].requirement_count == 1
+    assert reports["effect"].state == "missing"
+
+
+def test_run_conformance_report_rejects_unknown_kind(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    with pytest.raises(ValueError, match="Unknown conformance report"):
+        service.run_conformance_report("workflow")
+
+
+def test_run_conformance_report_returns_payload_for_pytest_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    service.project_dir = REPO_ROOT
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        text: bool,
+        capture_output: bool,
+        timeout: int,
+    ) -> subprocess.CompletedProcess[str]:
+        _ = cwd, env, text, capture_output, timeout
+        Path(env["AGENT_SANDBOX_EFFECT_CONFORMANCE_REPORT"]).write_text(
+            json.dumps(
+                {
+                    "generated_at": "2099-01-01T00:00:00Z",
+                    "status": "fail",
+                    "requirements": [
+                        {
+                            "requirement_id": "binding:resolution-and-chaining",
+                            "status": "fail",
+                            "coverage": ["binding"],
+                            "details": "Binding coverage failed.",
+                        }
+                    ],
+                    "traceability_matrix": {
+                        "task_binding_and_chain": ["binding:resolution-and-chaining"]
+                    },
+                    "missing_coverage": {
+                        "task_queue_idempotency": ["queue:idempotency"],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 1, stdout="failed stdout", stderr="failed stderr")
+
+    monkeypatch.setattr(admin_service.subprocess, "run", fake_run)
+
+    payload = service.run_conformance_report("effect")
+
+    assert payload.exit_code == 1
+    assert payload.output == "failed stdout\nfailed stderr"
+    reports = {report.kind: report for report in payload.reports.reports}
+    assert reports["effect"].state == "fail"
+    assert reports["effect"].missing_coverage_count == 1
+
+
 def test_workflow_editor_rejects_graph_metadata_that_crosses_connected_components(
     tmp_path: Path,
 ) -> None:
