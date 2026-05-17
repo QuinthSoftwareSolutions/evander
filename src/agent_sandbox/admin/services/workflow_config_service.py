@@ -16,8 +16,16 @@ class WorkflowConfigAdminService:
     def read_worker_global_config(self, worker_id: str):
         return self._worker_admin.read_worker_global_config(worker_id)
 
-    def write_worker_global_config(self, worker_id: str, payload: dict[str, object]):
-        return self._worker_admin.write_worker_global_config(worker_id, payload)
+    def write_worker_global_config(
+        self,
+        worker_id: str,
+        payload: dict[str, object],
+        *,
+        expected_revision: str | None = None,
+    ):
+        return self._worker_admin.write_worker_global_config(
+            worker_id, payload, expected_revision=expected_revision
+        )
 
     def read_workflow_editor_document(self):
         return self._worker_admin.read_workflow_editor_document()
@@ -42,9 +50,10 @@ class WorkflowConfigAdminService:
         config: dict[str, object],
         layout: dict[str, object] | None = None,
         graphs: list[dict[str, object]] | None = None,
+        expected_revision: str | None = None,
     ):
         return self._worker_admin.save_workflow_editor_document(
-            config=config, layout=layout, graphs=graphs
+            config=config, layout=layout, graphs=graphs, expected_revision=expected_revision
         )
 
     def read_workflow_run_snapshot(self):

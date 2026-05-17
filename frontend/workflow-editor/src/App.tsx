@@ -45,6 +45,7 @@ import {
   type WorkflowRunSummary,
   type WorkflowValidationDiagnostic,
 } from "./types";
+import { ApiError } from "./features/admin/api";
 import { useAdminUi, type DirectoryTreeNode } from "./features/admin/AdminContext";
 import { Tooltip } from "./features/admin/Tooltip";
 import {
@@ -1354,7 +1355,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const payload = (await response.json()) as T & { error?: string };
   if (!response.ok && typeof payload === "object" && payload && "error" in payload) {
-    throw new Error(String(payload.error));
+    throw new ApiError(String(payload.error), response.status, payload);
   }
   return payload as T;
 }
@@ -2428,6 +2429,7 @@ export default function App() {
     selectedNodeIdsAfterPatch?: string[],
     diagnosticsOverride?: WorkflowValidationDiagnostic[],
     outputSchemasOverride?: WorkflowOutputSchemas,
+    revisionOverride?: string,
   ) {
     if (!document) return;
     const backendOutputSchemas = outputSchemasOverride ?? document.output_schemas ?? {};
@@ -2447,6 +2449,7 @@ export default function App() {
       layout: nextLayout,
       graphs: normalizedGraphs,
       output_schemas: outputSchemas,
+      revision: revisionOverride ?? document.revision,
     };
     const nextDiagnostics = diagnosticsOverride ?? validateWorkflowBindingDiagnostics(normalizedConfig, outputSchemas);
     setDocument(nextDocument);
@@ -3134,6 +3137,7 @@ export default function App() {
             config: document.config,
             layout: document.layout,
             graphs: document.graphs,
+            expected_revision: document.revision,
           }),
         },
       );
@@ -3144,11 +3148,18 @@ export default function App() {
         undefined,
         saved.validation_diagnostics,
         saved.output_schemas,
+        saved.revision,
       );
       setSaveState("saved");
     } catch (reason) {
       setSaveState("idle");
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(
+        reason instanceof ApiError && reason.status === 409
+          ? "This workflow changed on the server. Reload the workflow before saving again; your local edits are still visible."
+          : reason instanceof Error
+            ? reason.message
+            : String(reason),
+      );
     }
   }
 

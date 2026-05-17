@@ -2040,6 +2040,44 @@ def test_admin_service_can_read_and_mutate_trigger_orchestrator_triggers_by_id(
     assert removed.config["triggers"] == []
 
 
+def test_trigger_mutations_do_not_reenter_admin_config_mutation_lock(
+    tmp_path: Path,
+) -> None:
+    class NonReentrantLock:
+        def __init__(self) -> None:
+            self.depth = 0
+            self.enter_count = 0
+
+        def __call__(self):
+            return self
+
+        def __enter__(self):
+            if self.depth:
+                raise AssertionError("admin config mutation lock was re-entered")
+            self.depth += 1
+            self.enter_count += 1
+
+        def __exit__(self, exc_type, exc, traceback):
+            self.depth -= 1
+
+    service = AdminService(write_config(tmp_path))
+    lock = NonReentrantLock()
+    service.admin_config_mutation_lock = lock
+
+    service.upsert_trigger_config(
+        "cron-15m",
+        {
+            "display_name": "Every 15 minutes",
+            "type": "trigger:cron",
+            "expression": "*/15 * * * *",
+        },
+    )
+    service.delete_trigger_config("cron-15m")
+    service.ensure_chat_assistant_workflow()
+
+    assert lock.enter_count == 3
+
+
 def test_admin_service_can_read_and_mutate_trigger_orchestrator_effects_by_id(
     tmp_path: Path,
 ) -> None:
@@ -2339,9 +2377,86 @@ def test_workflow_editor_document_round_trips_config_and_separate_layout(tmp_pat
 
     normalized_config = json.loads(Path(save_result.config_path).read_text(encoding="utf-8"))
     expected_revision = hashlib.sha256(
-        json.dumps(normalized_config, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(
+            {
+                "config": normalized_config,
+                "layout": save_result.layout,
+                "graphs": [graph.model_dump(mode="json") for graph in save_result.graphs],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
     ).hexdigest()
     assert save_result.revision == expected_revision
+
+
+def test_workflow_editor_revision_changes_for_layout_only_edit(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    config = {
+        "runtime_dir": str(tmp_path / "runtime"),
+        "triggers": [
+            {
+                "id": "cron-15m",
+                "display_name": "Every 15 minutes",
+                "type": "trigger:cron",
+                "expression": "*/15 * * * *",
+            }
+        ],
+        "effects": [],
+        "edges": [],
+    }
+
+    first = service.save_workflow_editor_document(
+        config=config,
+        layout={"nodes": {"cron-15m": {"x": 100, "y": 50}}},
+    )
+    second = service.save_workflow_editor_document(
+        config=config,
+        layout={"nodes": {"cron-15m": {"x": 200, "y": 50}}},
+    )
+
+    assert second.revision != first.revision
+
+
+def test_workflow_editor_revision_changes_for_graph_metadata_only_edit(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    config = {
+        "runtime_dir": str(tmp_path / "runtime"),
+        "triggers": [
+            {
+                "id": "cron-15m",
+                "display_name": "Every 15 minutes",
+                "type": "trigger:cron",
+                "expression": "*/15 * * * *",
+            }
+        ],
+        "effects": [],
+        "edges": [],
+    }
+    first = service.save_workflow_editor_document(config=config, layout={"nodes": {}})
+    edited_graphs = [graph.model_dump(mode="json") for graph in first.graphs]
+    edited_graphs[0]["name"] = "Renamed graph"
+
+    second = service.save_workflow_editor_document(
+        config=config,
+        layout={"nodes": {}},
+        graphs=edited_graphs,
+    )
+
+    assert second.revision != first.revision
+
+
+def test_worker_global_config_revision_changes_for_config_edit(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    first = service.read_worker_global_config("trigger-orchestrator")
+    config = dict(first.config)
+    config["poll_interval_seconds"] = int(config.get("poll_interval_seconds") or 5) + 1
+
+    second = service.write_worker_global_config("trigger-orchestrator", config)
+
+    assert second.revision != first.revision
 
 
 def test_workflow_editor_document_uses_runtime_parent_as_project_root(
@@ -4489,9 +4604,10 @@ def test_worker_admin_dependencies_backwards_compatible_without_clear_workflow_r
             normalize_directory_path=lambda directory_path: directory_path or "root",
             direct_owned_entity_ids=lambda directory_path, **kwargs: set(),
             read_worker_global_config=lambda worker_id: {"worker_id": worker_id},
-            write_worker_global_config=lambda worker_id, payload: {
+            write_worker_global_config=lambda worker_id, payload, **kwargs: {
                 "worker_id": worker_id,
                 "payload": payload,
+                **kwargs,
             },
             read_workflow_editor_document=lambda: {"kind": "document"},
             read_workflow_editor_catalog=lambda: {"kind": "catalog"},

@@ -59,6 +59,7 @@ export type WorkflowEditorDocument = {
   graphs: WorkflowGraphMetadata[];
   output_schemas?: WorkflowOutputSchemas;
   validation_diagnostics?: WorkflowValidationDiagnostic[];
+  revision: string;
 };
 
 export type WorkflowEditorValidation = {
@@ -75,6 +76,7 @@ export type WorkflowEditorSave = {
   graphs: WorkflowGraphMetadata[];
   output_schemas?: WorkflowOutputSchemas;
   validation_diagnostics: WorkflowValidationDiagnostic[];
+  revision: string;
 };
 
 export type WorkflowValidationDiagnostic = {
