@@ -341,6 +341,18 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
       }));
       return;
     }
+    if (pathname === "/api/workflow-editor/runs/stream") {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        headers: {
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        },
+        body: ": workflow run stream\n\n",
+      });
+      return;
+    }
     if (pathname === "/api/workflow-editor/run-detail") {
       detailRequests.push(`${pathname}${url.search}`);
       assert.equal(url.searchParams.get("event_id"), "evt-run-1");
@@ -351,14 +363,27 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
     await route.fulfill(jsonResponse({ error: `Unhandled ${pathname}` }, 404));
   });
 
+  await page.route("**/favicon.ico", async (route) => {
+    await route.fulfill({
+      status: 204,
+      body: "",
+    });
+  });
+
   const pageErrors = [];
   const consoleErrors = [];
+  const notFoundResponses = [];
   page.on("pageerror", (error) => {
     pageErrors.push(error);
   });
   page.on("console", (message) => {
     if (message.type() === "error") {
       consoleErrors.push(message.text());
+    }
+  });
+  page.on("response", (response) => {
+    if (response.status() === 404) {
+      notFoundResponses.push(response.url());
     }
   });
 
@@ -370,15 +395,16 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
   await page.locator(".runtime-run-card").getByRole("button", { name: "Inspect" }).click();
 
   await assert.doesNotReject(() => page.getByText("Historical graph snapshot").waitFor({ state: "visible" }));
-  await page.locator(".run-detail-node-card summary").click();
+  await page.locator(".run-detail-node-card > summary").first().click();
   await assert.doesNotReject(() => page.getByText("Approval appr-1").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Boundary root").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Agent session-1").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Artifact comm_1").waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => page.getByText("Binding trace").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.locator(".run-detail-json > summary").getByText("Binding trace", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Missing legacy trace data").waitFor({ state: "visible" }));
 
   assert.deepEqual(detailRequests, ["/api/workflow-editor/run-detail?event_id=evt-run-1"]);
   assert.deepEqual(pageErrors, []);
+  assert.deepEqual(notFoundResponses, []);
   assert.deepEqual(consoleErrors, []);
 });
