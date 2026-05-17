@@ -66,6 +66,12 @@ def _redact_nested_payload(redacted_keys: set[str], value: Any) -> Any:
     return value
 
 
+def _approval_request_is_reusable(request: ApprovalRequest, now: datetime) -> bool:
+    if request.status not in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}:
+        return False
+    return request.expires_at > now
+
+
 class PolicyEngine:
     def __init__(
         self,
@@ -632,6 +638,7 @@ class PolicyEngine:
         human_summary: str,
     ) -> ApprovalRequest:
         request_id = f"apr_{digest_payload({'session_id': session_id, **payload})[:16]}"
+        now = datetime.now(UTC)
         existing = self.approval_store.get(request_id)
         if existing is not None:
             session = self.session_store.get_session(existing.session_id)
@@ -643,7 +650,8 @@ class PolicyEngine:
                 if redacted_payload != existing.payload:
                     existing.payload = redacted_payload
                     self.approval_store.put(existing.request_id, existing)
-            return existing
+            if _approval_request_is_reusable(existing, now):
+                return existing
 
         session = self.get_session(session_id)
         effective_policy = self.effective_policy_for_session(session)
@@ -654,22 +662,43 @@ class PolicyEngine:
             if notification_target_ids
             else ApprovalNotificationStatus.DISABLED
         )
-        now = datetime.now(UTC)
-        request = ApprovalRequest(
-            request_id=request_id,
-            session_id=session_id,
-            action_type=action_type,
-            payload_digest=digest_payload(payload),
-            human_summary=human_summary,
-            payload=redacted_payload,
-            directory_path=session.directory_path,
-            vm_id=session.vm_id,
-            tool_name=action_type,
-            notification_status=notification_status,
-            notification_target_ids=notification_target_ids,
-            notification_attempted_at=now if notification_target_ids else None,
-            expires_at=now + timedelta(seconds=effective_policy.approval_ttl_seconds),
-        )
+        if existing is None:
+            request = ApprovalRequest(
+                request_id=request_id,
+                session_id=session_id,
+                action_type=action_type,
+                payload_digest=digest_payload(payload),
+                human_summary=human_summary,
+                payload=redacted_payload,
+                directory_path=session.directory_path,
+                vm_id=session.vm_id,
+                tool_name=action_type,
+                notification_status=notification_status,
+                notification_target_ids=notification_target_ids,
+                notification_attempted_at=now if notification_target_ids else None,
+                expires_at=now + timedelta(seconds=effective_policy.approval_ttl_seconds),
+            )
+        else:
+            request = existing
+            request.session_id = session_id
+            request.action_type = action_type
+            request.payload_digest = digest_payload(payload)
+            request.human_summary = human_summary
+            request.payload = redacted_payload
+            request.directory_path = session.directory_path
+            request.vm_id = session.vm_id
+            request.tool_name = action_type
+            request.status = ApprovalStatus.PENDING
+            request.notification_status = notification_status
+            request.notification_target_ids = notification_target_ids
+            request.notification_attempted_at = now if notification_target_ids else None
+            request.notification_error = None
+            request.notification_deliveries = []
+            request.created_at = now
+            request.expires_at = now + timedelta(seconds=effective_policy.approval_ttl_seconds)
+            request.approver = None
+            request.decision_at = None
+            request.decision_reason = None
         self.approval_store.put(request.request_id, request)
         if self.approval_notification_dispatcher is not None:
             self.approval_notification_dispatcher.dispatch(request)

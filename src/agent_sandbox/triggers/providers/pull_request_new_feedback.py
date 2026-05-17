@@ -62,10 +62,11 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                         for value in recent_feedback_ids.get(key, [])
                         if isinstance(value, str) and value.strip()
                     }
-                    if (
-                        cursor is not None
-                        and item.created_at <= cursor
-                        and item.feedback_id in recent_ids
+                    if _feedback_is_behind_cursor(
+                        cursor,
+                        created_at=item.created_at,
+                        feedback_id=item.feedback_id,
+                        recent_ids=recent_ids,
                     ):
                         continue
                     discovered.append((stream, item))
@@ -106,10 +107,11 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
                 for value in recent_feedback_ids.get(stream_key, [])
                 if isinstance(value, str) and value.strip()
             }
-            if (
-                previous is not None
-                and feedback.created_at <= previous
-                and feedback.feedback_id in recent_ids
+            if _feedback_is_behind_cursor(
+                previous,
+                created_at=feedback.created_at,
+                feedback_id=feedback.feedback_id,
+                recent_ids=recent_ids,
             ):
                 continue
             occurred_at = feedback.created_at.astimezone(UTC)
@@ -273,6 +275,21 @@ def _parse_dt(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _feedback_is_behind_cursor(
+    cursor: datetime | None,
+    *,
+    created_at: datetime,
+    feedback_id: str,
+    recent_ids: set[str],
+) -> bool:
+    if cursor is None:
+        return False
+    created_at = created_at.astimezone(UTC)
+    if created_at < cursor:
+        return True
+    return created_at == cursor and feedback_id in recent_ids
 
 
 def _acknowledge_feedback(

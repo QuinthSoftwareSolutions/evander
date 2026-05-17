@@ -43,10 +43,11 @@ class EmailNewMessageTriggerProvider(TriggerProviderBase):
 
         events: list[TriggerEvent] = []
         for message in candidates:
-            if (
-                cursor is not None
-                and message.received_at <= cursor
-                and message.message_id in recent_ids
+            if _message_is_behind_cursor(
+                cursor,
+                received_at=message.received_at,
+                message_id=message.message_id,
+                recent_ids=recent_ids,
             ):
                 continue
             occurred_at = message.received_at.astimezone(UTC)
@@ -134,6 +135,21 @@ def _parse_dt(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _message_is_behind_cursor(
+    cursor: datetime | None,
+    *,
+    received_at: datetime,
+    message_id: str,
+    recent_ids: set[str],
+) -> bool:
+    if cursor is None:
+        return False
+    received_at = received_at.astimezone(UTC)
+    if received_at < cursor:
+        return True
+    return received_at == cursor and message_id in recent_ids
 
 
 def _acknowledge_message(
