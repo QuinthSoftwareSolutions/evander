@@ -41,13 +41,6 @@ from agent_sandbox.models import (
     SessionManifest,
     ToolName,
 )
-from agent_sandbox.daemons.pr_feedback_worker import (
-    AzureDevOpsFeedbackAdapter,
-    FeedbackEnvelope,
-    PrFeedbackStore,
-    _stream_key,
-    pr_feedback_item_payload,
-)
 from agent_sandbox.policy_config import EffectivePolicyConfig
 from agent_sandbox.pr_tracking import (
     PrMapStore,
@@ -55,6 +48,11 @@ from agent_sandbox.pr_tracking import (
     completion_event_payload,
     status_snapshot_from_pull_request,
 )
+from agent_sandbox.pr_feedback.providers import (
+    AzureDevOpsFeedbackAdapter,
+    pr_feedback_item_payload,
+)
+from agent_sandbox.pr_feedback.store import FeedbackEnvelope, PrFeedbackStore, _stream_key
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.runtime import build_runtime
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository

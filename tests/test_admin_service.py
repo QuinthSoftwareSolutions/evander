@@ -22,7 +22,6 @@ from agent_sandbox.config import (
     ScheduledWakeWorkerGlobalConfig,
     TeamsIngestWorkerGlobalConfig,
 )
-from agent_sandbox.daemons.pr_feedback_worker import FeedbackEnvelope, PrFeedbackStore
 from agent_sandbox.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
@@ -40,6 +39,7 @@ from agent_sandbox.models import (
     ToolName,
     VmSummary,
 )
+from agent_sandbox.pr_feedback import FeedbackEnvelope, PrFeedbackStore
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
 from agent_sandbox.daemons.effect_orchestrator import (
     GateExecutionRecord,

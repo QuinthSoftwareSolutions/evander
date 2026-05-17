@@ -35,12 +35,6 @@ from agent_sandbox.models import (
 )
 from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
 from agent_sandbox.repositories.cursors import DiscordInboxCursorRepository
-from agent_sandbox.daemons.pr_feedback_worker import (
-    PrFeedbackRepository,
-    PrFeedbackStore,
-    _stream_key,
-    pr_feedback_item_payload,
-)
 from agent_sandbox.inline_media import (
     InlineMediaDownload,
     inline_media_download_from_embedded_payload,
@@ -57,6 +51,8 @@ from agent_sandbox.email.providers import (
 )
 from agent_sandbox.repositories.records import DiscordRecordsRepository, TeamsRecordsRepository
 from agent_sandbox.text_formatting import render_markdownish_text_to_html
+from agent_sandbox.pr_feedback.providers import pr_feedback_item_payload
+from agent_sandbox.pr_feedback.store import PrFeedbackRepository, PrFeedbackStore, _stream_key
 
 _LOGGER = logging.getLogger(__name__)
 _IGNORED_FEEDBACK_RETENTION = timedelta(days=90)

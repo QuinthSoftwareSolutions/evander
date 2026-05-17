@@ -60,10 +60,6 @@ from agent_sandbox.effects.providers.schemas import (
     AgentExecEffectDefinition,
     VmCopyFilesItemDefinition,
 )
-from agent_sandbox.daemons.pr_feedback_worker import (
-    AzureDevOpsFeedbackAdapter,
-    GitHubFeedbackAdapter,
-)
 from agent_sandbox.email.http_utils import ProviderRequestError
 from agent_sandbox.inline_media import (
     download_url_with_limit,
@@ -74,6 +70,10 @@ from agent_sandbox.inline_media import (
 )
 from agent_sandbox.email.providers import EmailDraftAttachment
 from agent_sandbox.issues.service import AzureDevOpsIssueInlineMediaProvider, IssueService
+from agent_sandbox.pr_feedback.providers import (
+    AzureDevOpsFeedbackAdapter,
+    GitHubFeedbackAdapter,
+)
 from agent_sandbox.models import (
     AdoBacklogCreateRequest,
     AdoBacklogCreateResponse,

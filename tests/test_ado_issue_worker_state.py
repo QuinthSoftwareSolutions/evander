@@ -34,7 +34,7 @@ from agent_sandbox.events.provider_models import (
     PullRequestNewFeedbackTriggerDefinition,
 )
 from agent_sandbox.models import GetPullRequestResponse, LocalIssueRecord
-from agent_sandbox.daemons.pr_feedback_worker import FeedbackEnvelope
+from agent_sandbox.pr_feedback import FeedbackEnvelope
 from agent_sandbox.services import PrFeedbackService
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.triggers.queue import TriggerEventQueue
