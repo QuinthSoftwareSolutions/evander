@@ -375,6 +375,9 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "session_id": {"type": "string"},
         "execution_backend": {"type": "string"},
         "vm_name": {"type": "string"},
+        "agent_home": {"type": "string"},
+        "repo_root": {"type": "string"},
+        "skipped": {"type": "boolean"},
     },
     "effect:agent:destroy": {
         "success": {"type": "boolean"},

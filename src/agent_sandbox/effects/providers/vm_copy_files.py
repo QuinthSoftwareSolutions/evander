@@ -431,7 +431,7 @@ class VmCopyFilesEffectProvider(EffectProviderBase):
             return None
         if text not in {"text", "json", "yaml"}:
             raise ValueError(
-                f"effect:vm:copy-files content_format must be one of: text, json, yaml"
+                "effect:vm:copy-files content_format must be one of: text, json, yaml"
             )
         return text
 

@@ -1,5 +1,17 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
+export class ApiError extends Error {
+  status: number;
+  payload: unknown;
+
+  constructor(message: string, status: number, payload: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.payload = payload;
+  }
+}
+
 export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -17,7 +29,7 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
     throw new Error(text.trim() || `${response.status} ${response.statusText}`);
   }
   if (!response.ok && typeof payload === "object" && payload && "error" in payload) {
-    throw new Error(String((payload as { error?: string }).error));
+    throw new ApiError(String((payload as { error?: string }).error), response.status, payload);
   }
   return payload as T;
 }

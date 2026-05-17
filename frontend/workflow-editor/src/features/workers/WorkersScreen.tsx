@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { fetchJson } from "../admin/api";
+import { ApiError, fetchJson } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { Tooltip } from "../admin/Tooltip";
 import { RefreshIcon, SaveIcon, StartIcon, StopIcon } from "../admin/PageActionIcons";
@@ -25,6 +25,7 @@ type WorkerConfigPayload = {
   path: string;
   exists: boolean;
   config: Record<string, unknown>;
+  revision: string;
 };
 
 type WorkerConfigField = {
@@ -203,7 +204,11 @@ export function WorkersScreen() {
       fetchJson<WorkerDetail>(`/api/workers/${encodeURIComponent(workerId)}`),
       fetchJson<WorkerLog>(`/api/workers/${encodeURIComponent(workerId)}/log?lines=${LOG_LINES}`),
     ]);
-    setDetail(workerDetail);
+    setDetail((current) =>
+      options?.preserveDraft && current
+        ? { ...workerDetail, config: current.config }
+        : workerDetail,
+    );
     setLogText(workerLog.text);
     if (!options?.preserveDraft) {
       setDraft(buildDraft(workerDetail));
@@ -318,7 +323,7 @@ export function WorkersScreen() {
   }
 
   async function handleSaveConfig() {
-    if (!selectedWorkerId) return;
+    if (!selectedWorkerId || !detail) return;
     let parsed: Record<string, unknown>;
     try {
       parsed = draftToPayload(detail, draft);
@@ -331,7 +336,7 @@ export function WorkersScreen() {
     try {
       const payload = await fetchJson<WorkerDetail>(`/api/workers/${encodeURIComponent(selectedWorkerId)}/config`, {
         method: "PUT",
-        body: JSON.stringify({ config: parsed }),
+        body: JSON.stringify({ config: parsed, expected_revision: detail?.config.revision }),
       });
       setDetail(payload);
       setDraft(buildDraft(payload));
@@ -340,7 +345,13 @@ export function WorkersScreen() {
       setStatusMessage(`Saved ${payload.summary.name} global settings.`);
       setError(null);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(
+        reason instanceof ApiError && reason.status === 409
+          ? "This worker configuration changed on the server. Reload the worker settings before saving again; your draft is still visible."
+          : reason instanceof Error
+            ? reason.message
+            : String(reason),
+      );
     } finally {
       setSaving(false);
     }

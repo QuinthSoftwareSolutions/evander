@@ -462,6 +462,115 @@ def test_agent_create_provider_passes_chat_allowlist_without_channel_allowlist()
     assert admin_service.create_vm_calls[0]["teams_chat_allowlist"] == ["chat:chat-1"]
 
 
+def test_agent_create_libvirt_noops_existing_session(tmp_path) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path, execution_backend="libvirt_vm")
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="lab-session",
+            vm_id="lab-vm",
+            vm_provider="libvirt",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    class AdminServiceStub:
+        def __init__(self) -> None:
+            self.runtime = SimpleNamespace(
+                session_repository=session_repository,
+                provider_config=_ContainerResolverStub(config),
+            )
+            self.create_vm_calls: list[dict[str, object]] = []
+
+        def create_vm(self, **kwargs):
+            self.create_vm_calls.append(kwargs)
+            return VmActionResult(
+                success=True,
+                vm_name=str(kwargs["vm_name"]),
+                action="create_vm",
+                message="ok",
+            )
+
+    admin_service = AdminServiceStub()
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config), admin_service=admin_service
+    )
+
+    output = factory.build(
+        AgentCreateEffectDefinition(
+            id="effect-agent",
+            display_name="Create agent",
+            type="effect:agent:create",
+            execution_backend="libvirt_vm",
+            vm_name="lab-vm",
+            session_id="lab-session",
+            existing_agent_behavior="noop",
+            allowed_tools=["set_issue_plan"],
+        )
+    ).execute()
+
+    assert output["success"] is True
+    assert output["skipped"] is True
+    assert admin_service.create_vm_calls == []
+    assert session_repository.get_session("lab-session").allowed_tools == [
+        ToolName.GET_AGENT_STATUS
+    ]
+
+
+def test_agent_create_libvirt_upsert_allows_existing_session(tmp_path) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path, execution_backend="libvirt_vm")
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="lab-session",
+            vm_id="lab-vm",
+            vm_provider="libvirt",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    class AdminServiceStub:
+        def __init__(self) -> None:
+            self.runtime = SimpleNamespace(
+                session_repository=session_repository,
+                provider_config=_ContainerResolverStub(config),
+            )
+            self.create_vm_calls: list[dict[str, object]] = []
+
+        def create_vm(self, **kwargs):
+            self.create_vm_calls.append(kwargs)
+            return VmActionResult(
+                success=True,
+                vm_name=str(kwargs["vm_name"]),
+                action="create_vm",
+                message="ok",
+            )
+
+    admin_service = AdminServiceStub()
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config), admin_service=admin_service
+    )
+
+    output = factory.build(
+        AgentCreateEffectDefinition(
+            id="effect-agent",
+            display_name="Create agent",
+            type="effect:agent:create",
+            execution_backend="libvirt_vm",
+            vm_name="lab-vm",
+            session_id="lab-session",
+            existing_agent_behavior="upsert",
+            allowed_tools=["set_issue_plan"],
+        )
+    ).execute()
+
+    assert output["success"] is True
+    assert output["skipped"] is False
+    assert admin_service.create_vm_calls[0]["allow_existing_session"] is True
+
+
 def test_vm_clone_repo_provider_passes_through_repo_outputs() -> None:
     effect = VmCloneRepoEffectDefinition(
         id="effect-clone",
@@ -1337,6 +1446,130 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert backend.started_specs[-1].command is not None
     assert "cd /home/agent" in str(backend.started_specs[-1].command)
     assert "continue" in str(backend.started_specs[-1].command)
+
+
+def test_agent_create_container_noops_when_session_exists(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            model="gpt-5.4",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"existing": "keep"},
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create",
+            display_name="Create",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-1",
+            existing_agent_behavior="noop",
+            model="gpt-5.5",
+            allowed_tools=["set_issue_plan"],
+            dotnet=True,
+        )
+    ).execute()
+
+    assert output["success"] is True
+    assert output["skipped"] is True
+    assert output["agent_home"] == "/home/agent"
+    assert output["repo_root"] == "/home/agent/repos"
+    assert backend.prepared_sessions == []
+    assert backend.written_files == []
+    updated = session_repository.get_session("session-1")
+    assert updated is not None
+    assert updated.model == "gpt-5.4"
+    assert updated.allowed_tools == [ToolName.GET_AGENT_STATUS]
+    assert updated.metadata == {"existing": "keep"}
+
+
+def test_agent_create_container_upserts_when_session_exists(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            model="gpt-5.4",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"existing": "replace"},
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentCreateEffectDefinition(
+            id="agent-create",
+            display_name="Create",
+            type="effect:agent:create",
+            execution_backend="container_worker_vm",
+            session_id="session-1",
+            existing_agent_behavior="upsert",
+            model="gpt-5.5",
+            allowed_tools=["set_issue_plan"],
+        )
+    ).execute()
+
+    assert output["success"] is True
+    assert output["skipped"] is False
+    assert backend.prepared_sessions[0]["session_id"] == "session-1"
+    assert backend.written_files
+    updated = session_repository.get_session("session-1")
+    assert updated is not None
+    assert updated.model == "gpt-5.5"
+    assert updated.allowed_tools == [ToolName.SET_ISSUE_PLAN]
+    assert updated.metadata["execution_backend"] == "container_worker_vm"
+    assert updated.metadata["model"] == "gpt-5.5"
 
 
 def test_agent_clone_container_skips_push_alias_for_unreachable_remotes() -> None:

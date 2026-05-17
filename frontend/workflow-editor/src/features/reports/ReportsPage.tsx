@@ -1,10 +1,13 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
+import { RefreshIcon } from "../admin/PageActionIcons";
 import {
   CONFORMANCE_REPORT_ENDPOINT,
+  conformanceReportRunEndpoint,
   type ConformanceReportKind,
   type ConformanceReportRecord,
+  type ConformanceReportRunPayload,
   type ConformanceReportsPayload,
   stateClassName,
   stateLabel,
@@ -131,6 +134,7 @@ export function ReportsPage() {
     useState<ConformanceReportKind>("trigger");
   const [conformanceLoading, setConformanceLoading] = useState(true);
   const [conformanceError, setConformanceError] = useState<string | null>(null);
+  const [conformanceRunKind, setConformanceRunKind] = useState<ConformanceReportKind | null>(null);
 
   const selectedGraph =
     report?.graphs.find((graph) => graph.graph_id === selectedGraphId) ?? report?.graphs[0] ?? null;
@@ -270,6 +274,31 @@ export function ReportsPage() {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function runSelectedConformanceReport() {
+    if (!selectedConformanceReport) {
+      return;
+    }
+    const kind = selectedConformanceReport.kind;
+    try {
+      setConformanceRunKind(kind);
+      const payload = await fetchJson<ConformanceReportRunPayload>(
+        conformanceReportRunEndpoint(kind),
+        { method: "POST" },
+      );
+      setConformanceReport(payload.reports);
+      setConformanceSelectedKind(kind);
+      setConformanceError(
+        payload.exit_code === 0
+          ? null
+          : `${CONFORMANCE_REPORT_TITLES[kind]} conformance suite finished with exit code ${payload.exit_code}.`,
+      );
+    } catch (reason: unknown) {
+      setConformanceError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setConformanceRunKind(null);
     }
   }
 
@@ -560,8 +589,23 @@ export function ReportsPage() {
 
               <article className="admin-panel detail-panel">
                 <div className="panel-heading">
-                  <div className="eyebrow">Selected report</div>
-                  <h2>{selectedConformanceReport?.label ?? "No report selected"}</h2>
+                  <div>
+                    <div className="eyebrow">Selected report</div>
+                    <h2>{selectedConformanceReport?.label ?? "No report selected"}</h2>
+                  </div>
+                  {selectedConformanceReport ? (
+                    <div className="feature-toolbar-actions report-panel-actions">
+                      <button
+                        type="button"
+                        className="primary"
+                        onClick={() => void runSelectedConformanceReport()}
+                        disabled={conformanceLoading || conformanceRunKind !== null}
+                      >
+                        <RefreshIcon />
+                        {conformanceRunKind === selectedConformanceReport.kind ? "Running..." : "Run report"}
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
                 {selectedConformanceReport ? (
                   <div className="panel-body report-detail">

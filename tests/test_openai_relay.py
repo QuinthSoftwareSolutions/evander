@@ -8,7 +8,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
-import pytest
 from starlette.testclient import TestClient
 
 from agent_sandbox.config import GatewayConfig

@@ -17,12 +17,18 @@ class FakeFacade:
         config: dict[str, object],
         layout: dict[str, object] | None = None,
         graphs: list[dict[str, object]] | None = None,
+        expected_revision: str | None = None,
     ):
         self.calls.append(
             (
                 "save_workflow_editor_document",
                 (),
-                {"config": config, "layout": layout, "graphs": graphs},
+                {
+                    "config": config,
+                    "layout": layout,
+                    "graphs": graphs,
+                    "expected_revision": expected_revision,
+                },
             )
         )
         return {"kind": "save", "config": config, "layout": layout, "graphs": graphs}
@@ -95,6 +101,7 @@ def test_workflow_config_service_delegates_representative_operations() -> None:
                         "node_ids": [],
                     }
                 ],
+                "expected_revision": None,
             },
         ),
         ("upsert_trigger_config", ("trigger-1", {"type": "trigger:manual"}), {}),

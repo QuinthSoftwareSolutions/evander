@@ -45,6 +45,7 @@ import {
   type WorkflowRunSummary,
   type WorkflowValidationDiagnostic,
 } from "./types";
+import { ApiError } from "./features/admin/api";
 import { useAdminUi, type DirectoryTreeNode } from "./features/admin/AdminContext";
 import { Tooltip } from "./features/admin/Tooltip";
 import {
@@ -1354,9 +1355,17 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const payload = (await response.json()) as T & { error?: string };
   if (!response.ok && typeof payload === "object" && payload && "error" in payload) {
-    throw new Error(String(payload.error));
+    throw new ApiError(String(payload.error), response.status, payload);
   }
   return payload as T;
+}
+
+function workflowCatalogPath(directoryPath: string): string {
+  const params = new URLSearchParams();
+  const trimmedDirectoryPath = directoryPath.trim();
+  if (trimmedDirectoryPath) params.set("directory_path", trimmedDirectoryPath);
+  const query = params.toString();
+  return query ? `/api/workflow-editor/catalog?${query}` : "/api/workflow-editor/catalog";
 }
 
 function currentPositionsFromNodes(nodes: Node<GraphNodeData>[]): Record<string, { x: number; y: number }> {
@@ -2147,10 +2156,9 @@ export default function App() {
     let cancelled = false;
     Promise.all([
       fetchJson<WorkflowEditorDocument>("/api/workflow-editor/document"),
-      fetchJson<WorkflowEditorCatalog>("/api/workflow-editor/catalog"),
       fetchJson<WorkflowRunSnapshot>("/api/workflow-editor/runs"),
     ])
-      .then(([payload, catalogPayload, runSnapshotPayload]) => {
+      .then(([payload, runSnapshotPayload]) => {
         if (cancelled) return;
         const backendOutputSchemas = payload.output_schemas ?? {};
         const normalizedConfig = normalizeDerivedNodeFields(
@@ -2171,12 +2179,10 @@ export default function App() {
         };
         const nextDiagnostics = payload.validation_diagnostics
           ?? validateWorkflowBindingDiagnostics(normalizedConfig, outputSchemas);
-        setCatalog(catalogPayload);
         setRunSnapshot(runSnapshotPayload);
         setValidationDiagnostics(nextDiagnostics);
         setDocument(normalizedDocument);
-        setFlowNodes(buildNodes(normalizedConfig, payload.layout, catalogPayload, runSnapshotPayload.node_activity, nextDiagnostics));
-        setFlowEdges(buildEdges(normalizedConfig, catalogPayload));
+        setError(null);
       })
       .catch((reason: unknown) => {
         if (cancelled) return;
@@ -2186,6 +2192,38 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  const documentLoaded = document !== null;
+
+  useEffect(() => {
+    if (!documentLoaded || !document) return;
+    let cancelled = false;
+    fetchJson<WorkflowEditorCatalog>(workflowCatalogPath(selectedDirectoryPath))
+      .then((catalogPayload) => {
+        if (cancelled) return;
+        setCatalog(catalogPayload);
+        setError(null);
+        setFlowNodes((currentNodes) =>
+          buildNodes(
+            document.config,
+            document.layout,
+            catalogPayload,
+            runSnapshot?.node_activity ?? {},
+            validationDiagnostics,
+            currentPositionsFromNodes(currentNodes),
+            currentNodes.filter((node) => node.selected).map((node) => node.id),
+          ),
+        );
+        setFlowEdges(buildEdges(document.config, catalogPayload));
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        setError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [documentLoaded, selectedDirectoryPath]);
 
   useEffect(() => {
     const stream = new EventSource("/api/workflow-editor/runs/stream");
@@ -2428,6 +2466,7 @@ export default function App() {
     selectedNodeIdsAfterPatch?: string[],
     diagnosticsOverride?: WorkflowValidationDiagnostic[],
     outputSchemasOverride?: WorkflowOutputSchemas,
+    revisionOverride?: string,
   ) {
     if (!document) return;
     const backendOutputSchemas = outputSchemasOverride ?? document.output_schemas ?? {};
@@ -2447,6 +2486,7 @@ export default function App() {
       layout: nextLayout,
       graphs: normalizedGraphs,
       output_schemas: outputSchemas,
+      revision: revisionOverride ?? document.revision,
     };
     const nextDiagnostics = diagnosticsOverride ?? validateWorkflowBindingDiagnostics(normalizedConfig, outputSchemas);
     setDocument(nextDocument);
@@ -3134,6 +3174,7 @@ export default function App() {
             config: document.config,
             layout: document.layout,
             graphs: document.graphs,
+            expected_revision: document.revision,
           }),
         },
       );
@@ -3144,11 +3185,18 @@ export default function App() {
         undefined,
         saved.validation_diagnostics,
         saved.output_schemas,
+        saved.revision,
       );
       setSaveState("saved");
     } catch (reason) {
       setSaveState("idle");
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(
+        reason instanceof ApiError && reason.status === 409
+          ? "This workflow changed on the server. Reload the workflow before saving again; your local edits are still visible."
+          : reason instanceof Error
+            ? reason.message
+            : String(reason),
+      );
     }
   }
 
@@ -3898,6 +3946,7 @@ export default function App() {
       subgroups: groupWorkflowNodeCatalogEntries(entries, group.kind),
     };
   });
+  const createEntryCount = createEntriesByKind.reduce((total, group) => total + group.entries.length, 0);
   const appShellStyle = {
     "--workflow-sidebar-width": `${sidebarWidth}px`,
   } as CSSProperties;
@@ -3980,8 +4029,13 @@ export default function App() {
               </div>
             </details>
 
-            <div className="sidebar-section workflow-graphs-section">
-              <div className="section-label">Graphs</div>
+            <details className="sidebar-section workflow-graphs-section collapsible-sidebar-section">
+              <summary className="collapsible-sidebar-summary">
+                <span className="section-label">Graphs</span>
+                <span className="collapsible-sidebar-meta">
+                  {visibleWorkflowGraphs.length} {visibleWorkflowGraphs.length === 1 ? "graph" : "graphs"}
+                </span>
+              </summary>
               <p className="runtime-summary">{graphViewContext}</p>
               <div className="workflow-graph-list">
                 {visibleWorkflowGraphs.length === 0 ? (
@@ -4050,10 +4104,15 @@ export default function App() {
                   </button>
                 </div>
               ) : null}
-            </div>
+            </details>
 
-            <div className="sidebar-section">
-              <div className="section-label">Create</div>
+            <details className="sidebar-section collapsible-sidebar-section">
+              <summary className="collapsible-sidebar-summary">
+                <span className="section-label">Create</span>
+                <span className="collapsible-sidebar-meta">
+                  {createEntryCount} {createEntryCount === 1 ? "node" : "nodes"}
+                </span>
+              </summary>
               {createEntriesByKind.map((group) => (
                 <details key={group.kind} className="create-group" open={group.kind === "trigger"}>
                   <summary className="create-group-summary">
@@ -4092,7 +4151,7 @@ export default function App() {
                   </div>
                 </details>
               ))}
-            </div>
+            </details>
 
             <div className="sidebar-section">
               <div className="section-label">Save</div>

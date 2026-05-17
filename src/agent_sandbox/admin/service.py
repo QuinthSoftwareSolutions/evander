@@ -55,6 +55,7 @@ from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
 from agent_sandbox.host_config import DEFAULT_RUNTIME_DIR
 from agent_sandbox.bootstrap import resolve_runtime_dir
+from agent_sandbox.messaging.targets import COMMUNICATION_TARGETS_DOMAIN
 from agent_sandbox.ownership import DirectoryOwnershipQueries
 from agent_sandbox.policy_config import EffectivePolicyConfig
 from agent_sandbox.daemons.pr_feedback_worker import PrFeedbackStore
@@ -197,6 +198,7 @@ _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "effect-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
     "trigger-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
 }
+_ADMIN_CONFIG_MUTATION_THREAD_LOCK = threading.RLock()
 ISSUE_STATES: tuple[str, ...] = (
     "New",
     "Approved",
@@ -315,12 +317,20 @@ class WorkerGlobalConfigPayload(BaseModel):
     path: str
     exists: bool
     config: dict[str, object]
+    revision: str
 
 
 class WorkerGlobalConfigWritePayload(BaseModel):
     worker_id: str
     path: str
     config: dict[str, object]
+    revision: str
+
+
+class AdminRevisionConflict(ValueError):
+    def __init__(self, message: str, *, details: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.details = details
 
 
 class TriggerConfigMutationPayload(BaseModel):
@@ -504,6 +514,16 @@ class ConformanceReportsPayload(BaseModel):
     generated_at: datetime
     stale_after_seconds: int
     reports: list[ConformanceReportPayload] = Field(default_factory=list)
+
+
+class ConformanceReportRunPayload(BaseModel):
+    kind: str
+    exit_code: int
+    started_at: datetime
+    completed_at: datetime
+    duration_seconds: float
+    output: str | None = None
+    reports: ConformanceReportsPayload
 
 
 class WorkflowRunClearPayload(BaseModel):
@@ -1589,6 +1609,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Optional durable session id. Leave blank to let the runtime allocate one.",
             ),
             _field(
+                "existing_agent_behavior",
+                "Existing agent behavior",
+                "enum",
+                description="What effect:agent:create should do when the target session already exists.",
+                options=[
+                    _field_option("upsert", "Upsert existing agent"),
+                    _field_option("noop", "No-op if existing"),
+                ],
+            ),
+            _field(
                 "labels",
                 "Labels",
                 "string_map",
@@ -2208,7 +2238,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="effect:communication:send-message",
         label="Send message",
         fields=[
-            _field("communication_target_id", "Communication target ID", "string", required=True),
+            _field("communication_target_id", "Communication target", "enum", required=True),
             _field("message", "Message", "string", required=True, bindable=True, multiline=True),
             _field("thread_id", "Thread ID", "string", bindable=True),
         ],
@@ -2461,12 +2491,31 @@ def _read_json_object(path: Path | None) -> dict[str, object]:
 CONFORMANCE_REPORT_STALE_AFTER = timedelta(days=7)
 CONFORMANCE_REPORT_SNIPPET_LIMIT = 10
 CONFORMANCE_REPORT_TEXT_LIMIT = 500
+CONFORMANCE_REPORT_RUN_TIMEOUT_SECONDS = 120
 TRIGGER_CONFORMANCE_GUIDANCE = (
     "PYTHONPATH=src python -m pytest -q tests/test_trigger_conformance_suite.py"
 )
 EFFECT_CONFORMANCE_GUIDANCE = (
     "PYTHONPATH=src python -m pytest -q tests/test_effect_conformance_suite.py"
 )
+CONFORMANCE_REPORT_SPECS = {
+    "trigger": {
+        "kind": "trigger",
+        "label": "Trigger",
+        "artifact_path": "trigger-conformance-report.json",
+        "guidance": TRIGGER_CONFORMANCE_GUIDANCE,
+        "env_var": "AGENT_SANDBOX_TRIGGER_CONFORMANCE_REPORT",
+        "suite_path": "tests/test_trigger_conformance_suite.py",
+    },
+    "effect": {
+        "kind": "effect",
+        "label": "Effect",
+        "artifact_path": "effect-conformance-report.json",
+        "guidance": EFFECT_CONFORMANCE_GUIDANCE,
+        "env_var": "AGENT_SANDBOX_EFFECT_CONFORMANCE_REPORT",
+        "suite_path": "tests/test_effect_conformance_suite.py",
+    },
+}
 
 
 def _trim_conformance_text(
@@ -2478,6 +2527,31 @@ def _trim_conformance_text(
     if len(text) <= limit:
         return text
     return f"{text[: limit - 3].rstrip()}..."
+
+
+def _trim_conformance_process_output(value: object, *, limit: int = 2000) -> str:
+    text = _coerce_optional_string(value)
+    if text is None:
+        return ""
+    normalized = text.strip()
+    if len(normalized) <= limit:
+        return normalized
+    return f"...{normalized[-limit:].lstrip()}"
+
+
+def _coerce_conformance_process_stream(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace").strip()
+    else:
+        text = str(value).strip()
+    return text or None
+
+
+def _join_conformance_process_output(*values: object) -> str:
+    parts = [_coerce_conformance_process_stream(value) for value in values]
+    return "\n".join(part for part in parts if part)
 
 
 def _resolve_path_setting(*, base_dir: Path, value: object | None, fallback: Path) -> Path:
@@ -4201,6 +4275,9 @@ class AdminService:
         )
         self.local_issue_counter_path = self.config.runtime_dir / "local-issue-counter.txt"
         self.local_issue_create_lock_path = self.config.runtime_dir / "local-issue-create.lock"
+        self.admin_config_mutation_lock_path = (
+            self.config.runtime_dir / "admin-config-mutations.lock"
+        )
         self.local_issue_yaml_dir = self.config.runtime_dir / "issues"
         self.local_issue_yaml_dir.mkdir(parents=True, exist_ok=True)
         self.use_privileged_helper = False
@@ -7444,14 +7521,26 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def read_worker_global_config(self, worker_id: str):
         return self.workflow_config_admin.read_worker_global_config(worker_id)
 
-    def write_worker_global_config(self, worker_id: str, payload: dict[str, object]):
-        return self.workflow_config_admin.write_worker_global_config(worker_id, payload)
+    def write_worker_global_config(
+        self,
+        worker_id: str,
+        payload: dict[str, object],
+        *,
+        expected_revision: str | None = None,
+    ):
+        return self.workflow_config_admin.write_worker_global_config(
+            worker_id, payload, expected_revision=expected_revision
+        )
 
     def read_workflow_editor_document(self) -> WorkflowEditorDocumentPayload:
         return self.workflow_config_admin.read_workflow_editor_document()
 
-    def read_workflow_editor_catalog(self) -> WorkflowEditorCatalogPayload:
-        return self.workflow_config_admin.read_workflow_editor_catalog()
+    def read_workflow_editor_catalog(
+        self, directory_path: str | None = None
+    ) -> WorkflowEditorCatalogPayload:
+        return self.workflow_config_admin.read_workflow_editor_catalog(
+            directory_path=directory_path
+        )
 
     def list_skills(self) -> list[SkillLibraryMetadata]:
         return self.skill_library.list_skills()
@@ -7506,9 +7595,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         config: dict[str, object],
         layout: dict[str, object] | None = None,
         graphs: list[dict[str, object]] | None = None,
+        expected_revision: str | None = None,
     ) -> WorkflowEditorSavePayload:
         return self.workflow_config_admin.save_workflow_editor_document(
-            config=config, layout=layout, graphs=graphs
+            config=config, layout=layout, graphs=graphs, expected_revision=expected_revision
         )
 
     def read_workflow_run_snapshot(self) -> WorkflowRunSnapshotPayload:
@@ -7529,6 +7619,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
     def read_conformance_reports(self) -> ConformanceReportsPayload:
         return self._read_conformance_reports()
+
+    def run_conformance_report(self, kind: str) -> ConformanceReportRunPayload:
+        return self._run_conformance_report(kind)
 
     def clear_workflow_run(self, event_id: str) -> WorkflowRunClearPayload:
         return self.workflow_config_admin.clear_workflow_run(event_id)
@@ -7555,13 +7648,32 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def delete_effect_config(self, effect_id: str) -> EffectConfigMutationPayload:
         return self.workflow_config_admin.delete_effect_config(effect_id)
 
+    @contextmanager
+    def admin_config_mutation_lock(self):
+        path = self.admin_config_mutation_lock_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _ADMIN_CONFIG_MUTATION_THREAD_LOCK:
+            with path.open("a+", encoding="utf-8") as handle:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
     def _worker_global_config_path(self, worker_id: str) -> Path | None:
         relative = _WORKER_GLOBAL_CONFIG_PATHS.get(worker_id)
         if relative is None:
             return None
         return self.project_dir / relative
 
-    def _read_worker_global_config(self, worker_id: str) -> WorkerGlobalConfigPayload:
+    def _stable_json_revision(self, payload: object) -> str:
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _worker_global_config_revision(self, config: dict[str, object]) -> str:
+        return self._stable_json_revision(config)
+
+    def _read_worker_global_config_unlocked(self, worker_id: str) -> WorkerGlobalConfigPayload:
         path = self._worker_global_config_path(worker_id)
         if path is None:
             raise ValueError(f"Unknown worker: {worker_id}")
@@ -7578,10 +7690,17 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         model = _WORKER_GLOBAL_CONFIG_MODELS[worker_id]
         config = self._validate_worker_global_config_payload(worker_id, raw)
         return WorkerGlobalConfigPayload(
-            worker_id=worker_id, path=str(path), exists=exists, config=config
+            worker_id=worker_id,
+            path=str(path),
+            exists=exists,
+            config=config,
+            revision=self._worker_global_config_revision(config),
         )
 
-    def _write_worker_global_config(
+    def _read_worker_global_config(self, worker_id: str) -> WorkerGlobalConfigPayload:
+        return self._read_worker_global_config_unlocked(worker_id)
+
+    def _write_worker_global_config_unlocked(
         self, worker_id: str, payload: dict[str, object]
     ) -> WorkerGlobalConfigWritePayload:
         path = self._worker_global_config_path(worker_id)
@@ -7590,7 +7709,32 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         config = self._validate_worker_global_config_payload(worker_id, payload)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(config, indent=2, sort_keys=True), encoding="utf-8")
-        return WorkerGlobalConfigWritePayload(worker_id=worker_id, path=str(path), config=config)
+        return WorkerGlobalConfigWritePayload(
+            worker_id=worker_id,
+            path=str(path),
+            config=config,
+            revision=self._worker_global_config_revision(config),
+        )
+
+    def _write_worker_global_config(
+        self,
+        worker_id: str,
+        payload: dict[str, object],
+        *,
+        expected_revision: str | None = None,
+    ) -> WorkerGlobalConfigWritePayload:
+        with self.admin_config_mutation_lock():
+            if expected_revision is not None:
+                current = self._read_worker_global_config_unlocked(worker_id)
+                if current.revision != expected_revision:
+                    raise AdminRevisionConflict(
+                        "Worker configuration changed before save. Reload the worker settings before saving again.",
+                        details={
+                            "current_revision": current.revision,
+                            "current": current.model_dump(mode="json"),
+                        },
+                    )
+            return self._write_worker_global_config_unlocked(worker_id, payload)
 
     def _read_trigger_document(self) -> TriggerConfigDocument:
         payload = self._read_worker_global_config("trigger-orchestrator")
@@ -7598,6 +7742,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
     def _write_trigger_document(self, config: dict[str, object]) -> TriggerConfigDocument:
         payload = self._write_worker_global_config("trigger-orchestrator", config)
+        return TriggerConfigDocument(path=payload.path, config=payload.config)
+
+    def _write_trigger_document_unlocked(
+        self, config: dict[str, object]
+    ) -> TriggerConfigDocument:
+        payload = self._write_worker_global_config_unlocked("trigger-orchestrator", config)
         return TriggerConfigDocument(path=payload.path, config=payload.config)
 
     def _validate_worker_global_config_payload(
@@ -7634,11 +7784,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         return config
 
     def ensure_chat_assistant_workflow(self) -> TriggerConfigDocument:
-        current = self.trigger_repository.read_document()
-        config, changed = self._with_system_chat_assistant_workflow(current.config)
-        if not changed:
-            return current
-        return self.trigger_repository.write_document(config)
+        with self.admin_config_mutation_lock():
+            current = self.trigger_repository.read_document()
+            config, changed = self._with_system_chat_assistant_workflow(current.config)
+            if not changed:
+                return current
+            return self._write_trigger_document_unlocked(config)
 
     def publish_chat_assistant_message(
         self,
@@ -7701,9 +7852,20 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             return self._workflow_editor_pack_layout_path(workflow_packs[0])
         return self._workflow_editor_default_layout_path()
 
-    def _workflow_editor_revision(self, config: dict[str, object]) -> str:
-        encoded = json.dumps(config, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        return hashlib.sha256(encoded).hexdigest()
+    def _workflow_editor_revision(
+        self,
+        *,
+        config: dict[str, object],
+        layout: dict[str, object],
+        graphs: list[WorkflowEditorGraphMetadata],
+    ) -> str:
+        return self._stable_json_revision(
+            {
+                "config": config,
+                "layout": layout,
+                "graphs": [graph.model_dump(mode="json") for graph in graphs],
+            }
+        )
 
     def _workflow_editor_pack_path(self, pack_reference: object) -> Path:
         text = str(pack_reference).strip()
@@ -8177,7 +8339,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         saved_at = (
             datetime.fromtimestamp(config_path.stat().st_mtime, tz=UTC) if config_exists else None
         )
-        revision = self._workflow_editor_revision(normalized_config) if config_exists else None
+        revision = self._workflow_editor_revision(
+            config=normalized_config,
+            layout=layout,
+            graphs=graphs,
+        )
         return WorkflowEditorDocumentPayload(
             config_path=str(config_path),
             layout_path=str(layout_path),
@@ -8191,9 +8357,58 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             revision=revision,
         )
 
-    def _read_workflow_editor_catalog(self) -> WorkflowEditorCatalogPayload:
+    def _communication_send_target_options(
+        self, directory_path: str | None
+    ) -> list[WorkflowEditorFieldOption]:
+        normalized_directory = self._normalize_directory_reference(directory_path)
+        result = self.directory_admin.compute_effective_config(
+            normalized_directory,
+            domain=COMMUNICATION_TARGETS_DOMAIN,
+        )
+        if not result.ok or result.data is None:
+            messages = [error.message for error in result.errors]
+            raise ValueError(
+                "; ".join(messages)
+                or f"Communication targets could not be resolved for {normalized_directory!r}."
+            )
+        targets = result.data.resolution.effective_config.get("targets")
+        if not isinstance(targets, list):
+            return []
+
+        options: list[WorkflowEditorFieldOption] = []
+        for target in targets:
+            if not isinstance(target, dict):
+                continue
+            target_id = str(target.get("id") or "").strip()
+            provider = str(target.get("provider") or "").strip()
+            policy = target.get("policy")
+            raw_capabilities = policy.get("capabilities") if isinstance(policy, dict) else []
+            capabilities = {
+                str(capability).strip()
+                for capability in raw_capabilities
+                if str(capability).strip()
+            } if isinstance(raw_capabilities, list) else set()
+            send_capabilities = sorted(capabilities.intersection({"write", "reply"}))
+            if not target_id or provider not in {"teams", "discord"}:
+                continue
+            if provider == "discord" and "write" not in capabilities:
+                continue
+            if provider == "teams" and not send_capabilities:
+                continue
+            capability_suffix = f", {', '.join(send_capabilities)}" if send_capabilities else ""
+            options.append(
+                _field_option(target_id, f"{target_id} ({provider}{capability_suffix})")
+            )
+        return options
+
+    def _read_workflow_editor_catalog(
+        self, directory_path: str | None = None
+    ) -> WorkflowEditorCatalogPayload:
         skill_options = [_field_option(skill.name) for skill in self.skill_library.list_skills()]
         tool_options = _tool_field_options()
+        communication_send_target_options = self._communication_send_target_options(
+            directory_path
+        )
         nodes: list[WorkflowEditorNodeCatalogEntry] = []
         for entry in _WORKFLOW_EDITOR_NODE_CATALOG:
             node = entry.model_copy(
@@ -8210,6 +8425,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     if field.key == "codex_skills"
                     else field.model_copy(update={"options": tool_options})
                     if field.key == "allowed_tools"
+                    else field
+                    for field in node.fields
+                ]
+            if node.type == "effect:communication:send-message":
+                node.fields = [
+                    field.model_copy(update={"options": communication_send_target_options})
+                    if field.key == "communication_target_id"
                     else field
                     for field in node.fields
                 ]
@@ -8274,7 +8496,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             ],
         )
 
-    def _save_workflow_editor_document(
+    def _save_workflow_editor_document_unlocked(
         self,
         *,
         config: dict[str, object],
@@ -8337,7 +8559,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             )
         self._write_json_file_atomic(layout_path, validation.layout)
         saved_at = datetime.fromtimestamp(config_path.stat().st_mtime, tz=UTC)
-        revision = self._workflow_editor_revision(validation.config)
+        revision = self._workflow_editor_revision(
+            config=validation.config,
+            layout=validation.layout,
+            graphs=validation.graphs,
+        )
         return WorkflowEditorSavePayload(
             config_path=str(config_path),
             layout_path=str(layout_path),
@@ -8349,6 +8575,31 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             saved_at=saved_at,
             revision=revision,
         )
+
+    def _save_workflow_editor_document(
+        self,
+        *,
+        config: dict[str, object],
+        layout: dict[str, object] | None = None,
+        graphs: list[dict[str, object]] | None = None,
+        expected_revision: str | None = None,
+    ) -> WorkflowEditorSavePayload:
+        with self.admin_config_mutation_lock():
+            if expected_revision is not None:
+                current = self._read_workflow_editor_document()
+                if current.revision != expected_revision:
+                    raise AdminRevisionConflict(
+                        "Workflow editor document changed before save. Reload the workflow before saving again.",
+                        details={
+                            "current_revision": current.revision,
+                            "current": current.model_dump(mode="json"),
+                        },
+                    )
+            return self._save_workflow_editor_document_unlocked(
+                config=config,
+                layout=layout,
+                graphs=graphs,
+            )
 
     def _seed_new_ticket_created_trigger_cursors(
         self, *, previous_config: dict[str, object], next_config: dict[str, object]
@@ -9216,24 +9467,72 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
     def _read_conformance_reports(self) -> ConformanceReportsPayload:
         now = _utc_now()
-        specs = (
-            {
-                "kind": "trigger",
-                "label": "Trigger",
-                "artifact_path": "trigger-conformance-report.json",
-                "guidance": TRIGGER_CONFORMANCE_GUIDANCE,
-            },
-            {
-                "kind": "effect",
-                "label": "Effect",
-                "artifact_path": "effect-conformance-report.json",
-                "guidance": EFFECT_CONFORMANCE_GUIDANCE,
-            },
-        )
+        specs = (CONFORMANCE_REPORT_SPECS["trigger"], CONFORMANCE_REPORT_SPECS["effect"])
         return ConformanceReportsPayload(
             generated_at=now,
             stale_after_seconds=int(CONFORMANCE_REPORT_STALE_AFTER.total_seconds()),
             reports=[self._read_conformance_report(now=now, **spec) for spec in specs],
+        )
+
+    def _run_conformance_report(self, kind: str) -> ConformanceReportRunPayload:
+        normalized_kind = kind.strip().lower()
+        spec = CONFORMANCE_REPORT_SPECS.get(normalized_kind)
+        if spec is None:
+            allowed = ", ".join(sorted(CONFORMANCE_REPORT_SPECS))
+            raise ValueError(f"Unknown conformance report {kind!r}. Expected one of: {allowed}.")
+
+        suite_path = Path(str(spec["suite_path"]))
+        suite_file = self.project_dir / suite_path
+        if not suite_file.exists():
+            raise RuntimeError(f"{spec['label']} conformance suite is missing: {suite_path}")
+
+        artifact_path = (self.config.runtime_dir / str(spec["artifact_path"])).resolve()
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+        env[str(spec["env_var"])] = str(artifact_path)
+        src_path = str((self.project_dir / "src").resolve())
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            src_path if not existing_pythonpath else f"{src_path}{os.pathsep}{existing_pythonpath}"
+        )
+
+        command = [sys.executable, "-m", "pytest", "-q", str(suite_path)]
+        started_at = _utc_now()
+        try:
+            result = subprocess.run(
+                command,
+                cwd=self.project_dir,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=CONFORMANCE_REPORT_RUN_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            output = _trim_conformance_process_output(
+                _join_conformance_process_output(exc.stdout, exc.stderr)
+            )
+            message = (
+                f"{spec['label']} conformance suite timed out after "
+                f"{CONFORMANCE_REPORT_RUN_TIMEOUT_SECONDS} seconds."
+            )
+            if output:
+                message = f"{message}\n{output}"
+            raise RuntimeError(message) from exc
+        except OSError as exc:
+            raise RuntimeError(f"{spec['label']} conformance suite could not be started: {exc}") from exc
+
+        completed_at = _utc_now()
+        output = _trim_conformance_process_output(
+            _join_conformance_process_output(result.stdout, result.stderr)
+        )
+        return ConformanceReportRunPayload(
+            kind=normalized_kind,
+            exit_code=result.returncode,
+            started_at=started_at,
+            completed_at=completed_at,
+            duration_seconds=max(0.0, (completed_at - started_at).total_seconds()),
+            output=output or None,
+            reports=self._read_conformance_reports(),
         )
 
     def _read_conformance_report(
@@ -9243,6 +9542,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         label: str,
         artifact_path: str,
         guidance: str,
+        env_var: str,
+        suite_path: str,
         now: datetime,
     ) -> ConformanceReportPayload:
         path = self.config.runtime_dir / artifact_path
@@ -9740,29 +10041,34 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             raise _safe_validation_error(exc, context="Invalid trigger config") from exc
         normalized_payload = validated_trigger.model_dump(mode="json", exclude_none=True)
 
-        current = self.trigger_repository.read_document()
-        config = dict(current.config)
-        existing_triggers_raw = config.get("triggers", [])
-        if not isinstance(existing_triggers_raw, list):
-            raise ValueError("Invalid trigger-orchestrator config: triggers must be a JSON array.")
-        existing_triggers = [entry for entry in existing_triggers_raw if isinstance(entry, dict)]
-        replacing = False
-        for index, existing in enumerate(existing_triggers):
-            existing_id = str(existing.get("id", "")).strip()
-            if existing_id == normalized_trigger_id:
-                existing_triggers[index] = normalized_payload
-                replacing = True
-                break
-        if not replacing:
-            next_config = dict(config)
-            next_config["triggers"] = existing_triggers + [normalized_payload]
-            self._seed_new_ticket_created_trigger_cursors(
-                previous_config=config,
-                next_config=next_config,
-            )
-            existing_triggers.append(normalized_payload)
-        config["triggers"] = existing_triggers
-        write_result = self.trigger_repository.write_document(config)
+        with self.admin_config_mutation_lock():
+            current = self.trigger_repository.read_document()
+            config = dict(current.config)
+            existing_triggers_raw = config.get("triggers", [])
+            if not isinstance(existing_triggers_raw, list):
+                raise ValueError(
+                    "Invalid trigger-orchestrator config: triggers must be a JSON array."
+                )
+            existing_triggers = [
+                entry for entry in existing_triggers_raw if isinstance(entry, dict)
+            ]
+            replacing = False
+            for index, existing in enumerate(existing_triggers):
+                existing_id = str(existing.get("id", "")).strip()
+                if existing_id == normalized_trigger_id:
+                    existing_triggers[index] = normalized_payload
+                    replacing = True
+                    break
+            if not replacing:
+                next_config = dict(config)
+                next_config["triggers"] = existing_triggers + [normalized_payload]
+                self._seed_new_ticket_created_trigger_cursors(
+                    previous_config=config,
+                    next_config=next_config,
+                )
+                existing_triggers.append(normalized_payload)
+            config["triggers"] = existing_triggers
+            write_result = self._write_trigger_document_unlocked(config)
         return TriggerConfigMutationPayload(
             trigger_id=normalized_trigger_id,
             operation="updated" if replacing else "added",
@@ -9778,25 +10084,28 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             raise ValueError(
                 f"Trigger is system-managed and cannot be mutated: {normalized_trigger_id}"
             )
-        current = self.trigger_repository.read_document()
-        config = dict(current.config)
-        triggers_raw = config.get("triggers", [])
-        if not isinstance(triggers_raw, list):
-            raise ValueError("Invalid trigger-orchestrator config: triggers must be a JSON array.")
-        filtered = []
-        removed = False
-        for entry in triggers_raw:
-            if not isinstance(entry, dict):
-                continue
-            entry_id = str(entry.get("id", "")).strip()
-            if entry_id == normalized_trigger_id:
-                removed = True
-                continue
-            filtered.append(entry)
-        if not removed:
-            raise ValueError(f"Trigger not found: {normalized_trigger_id}")
-        config["triggers"] = filtered
-        write_result = self.trigger_repository.write_document(config)
+        with self.admin_config_mutation_lock():
+            current = self.trigger_repository.read_document()
+            config = dict(current.config)
+            triggers_raw = config.get("triggers", [])
+            if not isinstance(triggers_raw, list):
+                raise ValueError(
+                    "Invalid trigger-orchestrator config: triggers must be a JSON array."
+                )
+            filtered = []
+            removed = False
+            for entry in triggers_raw:
+                if not isinstance(entry, dict):
+                    continue
+                entry_id = str(entry.get("id", "")).strip()
+                if entry_id == normalized_trigger_id:
+                    removed = True
+                    continue
+                filtered.append(entry)
+            if not removed:
+                raise ValueError(f"Trigger not found: {normalized_trigger_id}")
+            config["triggers"] = filtered
+            write_result = self._write_trigger_document_unlocked(config)
         return TriggerConfigMutationPayload(
             trigger_id=normalized_trigger_id,
             operation="deleted",
@@ -9826,39 +10135,46 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             raise _safe_validation_error(exc, context="Invalid effect config") from exc
         normalized_payload = validated_effect.model_dump(mode="json", exclude_none=True)
 
-        current = self._read_worker_global_config("trigger-orchestrator")
-        config = dict(current.config)
-        existing_effects_raw = config.get("effects", [])
-        if not isinstance(existing_effects_raw, list):
-            raise ValueError("Invalid trigger-orchestrator config: effects must be a JSON array.")
-        existing_effects = [entry for entry in existing_effects_raw if isinstance(entry, dict)]
-        existing_edges_raw = config.get("edges", [])
-        if not isinstance(existing_edges_raw, list):
-            existing_edges_raw = []
-        existing_edges = [entry for entry in existing_edges_raw if isinstance(entry, dict)]
-        replacing = False
-        for index, existing in enumerate(existing_effects):
-            existing_id = str(existing.get("id", "")).strip()
-            if existing_id == normalized_effect_id:
-                existing_effects[index] = normalized_payload
-                replacing = True
-                break
-        if not replacing:
-            existing_effects.append(normalized_payload)
+        with self.admin_config_mutation_lock():
+            current = self._read_worker_global_config_unlocked("trigger-orchestrator")
+            config = dict(current.config)
+            existing_effects_raw = config.get("effects", [])
+            if not isinstance(existing_effects_raw, list):
+                raise ValueError(
+                    "Invalid trigger-orchestrator config: effects must be a JSON array."
+                )
+            existing_effects = [
+                entry for entry in existing_effects_raw if isinstance(entry, dict)
+            ]
+            existing_edges_raw = config.get("edges", [])
+            if not isinstance(existing_edges_raw, list):
+                existing_edges_raw = []
+            existing_edges = [entry for entry in existing_edges_raw if isinstance(entry, dict)]
+            replacing = False
+            for index, existing in enumerate(existing_effects):
+                existing_id = str(existing.get("id", "")).strip()
+                if existing_id == normalized_effect_id:
+                    existing_effects[index] = normalized_payload
+                    replacing = True
+                    break
+            if not replacing:
+                existing_effects.append(normalized_payload)
 
-        filtered_edges: list[dict[str, object]] = []
-        for edge in existing_edges:
-            target_id = str(edge.get("target_id", "")).strip()
-            if target_id == normalized_effect_id:
-                continue
-            filtered_edges.append(edge)
-        if normalized_source_id:
-            filtered_edges.append(
-                {"source_id": normalized_source_id, "target_id": normalized_effect_id}
+            filtered_edges: list[dict[str, object]] = []
+            for edge in existing_edges:
+                target_id = str(edge.get("target_id", "")).strip()
+                if target_id == normalized_effect_id:
+                    continue
+                filtered_edges.append(edge)
+            if normalized_source_id:
+                filtered_edges.append(
+                    {"source_id": normalized_source_id, "target_id": normalized_effect_id}
+                )
+            config["effects"] = existing_effects
+            config["edges"] = filtered_edges
+            write_result = self._write_worker_global_config_unlocked(
+                "trigger-orchestrator", config
             )
-        config["effects"] = existing_effects
-        config["edges"] = filtered_edges
-        write_result = self._write_worker_global_config("trigger-orchestrator", config)
         return EffectConfigMutationPayload(
             effect_id=normalized_effect_id,
             operation="updated" if replacing else "added",
@@ -9874,37 +10190,42 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             raise ValueError(
                 f"Effect is system-managed and cannot be mutated: {normalized_effect_id}"
             )
-        current = self._read_worker_global_config("trigger-orchestrator")
-        config = dict(current.config)
-        effects_raw = config.get("effects", [])
-        if not isinstance(effects_raw, list):
-            raise ValueError("Invalid trigger-orchestrator config: effects must be a JSON array.")
-        filtered = []
-        removed = False
-        for entry in effects_raw:
-            if not isinstance(entry, dict):
-                continue
-            entry_id = str(entry.get("id", "")).strip()
-            if entry_id == normalized_effect_id:
-                removed = True
-                continue
-            filtered.append(entry)
-        if not removed:
-            raise ValueError(f"Effect not found: {normalized_effect_id}")
-        edges_raw = config.get("edges", [])
-        filtered_edges = []
-        if isinstance(edges_raw, list):
-            for entry in edges_raw:
+        with self.admin_config_mutation_lock():
+            current = self._read_worker_global_config_unlocked("trigger-orchestrator")
+            config = dict(current.config)
+            effects_raw = config.get("effects", [])
+            if not isinstance(effects_raw, list):
+                raise ValueError(
+                    "Invalid trigger-orchestrator config: effects must be a JSON array."
+                )
+            filtered = []
+            removed = False
+            for entry in effects_raw:
                 if not isinstance(entry, dict):
                     continue
-                source_id = str(entry.get("source_id", "")).strip()
-                target_id = str(entry.get("target_id", "")).strip()
-                if source_id == normalized_effect_id or target_id == normalized_effect_id:
+                entry_id = str(entry.get("id", "")).strip()
+                if entry_id == normalized_effect_id:
+                    removed = True
                     continue
-                filtered_edges.append(entry)
-        config["effects"] = filtered
-        config["edges"] = filtered_edges
-        write_result = self._write_worker_global_config("trigger-orchestrator", config)
+                filtered.append(entry)
+            if not removed:
+                raise ValueError(f"Effect not found: {normalized_effect_id}")
+            edges_raw = config.get("edges", [])
+            filtered_edges = []
+            if isinstance(edges_raw, list):
+                for entry in edges_raw:
+                    if not isinstance(entry, dict):
+                        continue
+                    source_id = str(entry.get("source_id", "")).strip()
+                    target_id = str(entry.get("target_id", "")).strip()
+                    if source_id == normalized_effect_id or target_id == normalized_effect_id:
+                        continue
+                    filtered_edges.append(entry)
+            config["effects"] = filtered
+            config["edges"] = filtered_edges
+            write_result = self._write_worker_global_config_unlocked(
+                "trigger-orchestrator", config
+            )
         return EffectConfigMutationPayload(
             effect_id=normalized_effect_id,
             operation="deleted",
@@ -10302,6 +10623,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         playwright: bool = False,
         codex_skills: list[str] | None = None,
         directory_path: str = "root",
+        allow_existing_session: bool = False,
     ) -> VmActionResult:
         payload: dict[str, Any] = {}
         if provider is not None:
@@ -10341,6 +10663,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             playwright=playwright,
             codex_skills=codex_skills,
             directory_path=directory_path,
+            allow_existing_session=allow_existing_session,
             **payload,
         )
 

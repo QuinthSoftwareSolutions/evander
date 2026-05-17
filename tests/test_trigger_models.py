@@ -12,7 +12,6 @@ from agent_sandbox.events.models import (
     materialize_node_definition,
 )
 from agent_sandbox.events.provider_models import (
-    AgentPromptEffectDefinition,
     AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
     CommunicationSendMessageEffectDefinition,

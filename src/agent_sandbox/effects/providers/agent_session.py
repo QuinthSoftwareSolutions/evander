@@ -53,6 +53,20 @@ def normalize_optional_string(value: Any) -> str | None:
     return text or None
 
 
+def normalize_existing_agent_behavior(value: Any) -> str:
+    text = normalize_optional_string(value)
+    if text is None:
+        return "upsert"
+    normalized = text.lower().replace("_", "-")
+    if normalized == "upsert":
+        return "upsert"
+    if normalized in {"noop", "no-op", "no op"}:
+        return "noop"
+    raise ValueError(
+        "effect:agent:create existing_agent_behavior must be one of: upsert, noop"
+    )
+
+
 def required_string(value: Any, message: str) -> str:
     text = normalize_optional_string(value)
     if text is None:

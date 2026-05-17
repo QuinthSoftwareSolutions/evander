@@ -463,7 +463,7 @@ def test_agent_prompt_tools_redact_response_token_in_audit_logs(tmp_path: Path) 
     )
     server = create_server(context)
 
-    prompt_result = call_tool(
+    call_tool(
         server,
         "prompt_agent",
         {
@@ -573,7 +573,7 @@ def test_respond_to_agent_rejects_expired_token(tmp_path: Path) -> None:
         ),
     )
     server = create_server(context)
-    prompt_result = call_tool(
+    call_tool(
         server,
         "prompt_agent",
         {"session_id": "sender", "target_session_id": "target", "prompt": "hello"},
@@ -622,7 +622,7 @@ def test_respond_to_agent_rejects_wrong_session_binding(tmp_path: Path) -> None:
         ),
     )
     server = create_server(context)
-    prompt_result = call_tool(
+    call_tool(
         server,
         "prompt_agent",
         {"session_id": "sender", "target_session_id": "target", "prompt": "hello"},
