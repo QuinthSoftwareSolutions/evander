@@ -1848,7 +1848,10 @@ The gateway and effect providers emit structured log markers for agent orchestra
 ### Recovery steps
 
 1. **Chat stuck on first message**
-   - Check for `metric_chat_session_mapping_created` followed by subsequent `..._reused` entries.
+   - Opening the Admin Web assistant should create or reuse the assistant
+     session mapping before the first message is sent. Check for
+     `metric_chat_session_mapping_created` followed by subsequent `..._reused`
+     entries.
    - If missing, verify runtime write permissions to `runtime/chat-assistant-session-mappings.json`.
 2. **Unexpected backend path**
    - Filter logs for `metric_agent_create_backend_path` by `session_id`/`vm_name`.
