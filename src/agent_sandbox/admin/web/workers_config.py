@@ -1187,11 +1187,10 @@ def worker_config_routes(service: AdminService, auth: AdminWebAuth) -> list[Base
         if expected_revision is None:
             return _error_response("expected_revision is required", status_code=428)
         try:
-            write_result = service.write_worker_global_config(
+            service.write_worker_global_config(
                 worker_id, config, expected_revision=expected_revision
             )
             detail = _worker_detail(service, worker_id)
-            detail["config"] = _json_payload(write_result)
         except AdminRevisionConflict as exc:
             return _error_response(str(exc), status_code=409, details=exc.details)
         except ValueError as exc:

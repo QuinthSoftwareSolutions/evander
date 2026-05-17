@@ -3211,6 +3211,41 @@ def test_run_conformance_report_rejects_unknown_kind(tmp_path: Path) -> None:
         service.run_conformance_report("workflow")
 
 
+def test_run_conformance_report_timeout_decodes_captured_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.project_dir = REPO_ROOT
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        text: bool,
+        capture_output: bool,
+        timeout: int,
+    ) -> subprocess.CompletedProcess[str]:
+        _ = cwd, env, text, capture_output
+        raise subprocess.TimeoutExpired(
+            command,
+            timeout=timeout,
+            output=b"partial stdout\n",
+            stderr=b"partial stderr\n",
+        )
+
+    monkeypatch.setattr(admin_service.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        service.run_conformance_report("trigger")
+
+    message = str(exc_info.value)
+    assert "Trigger conformance suite timed out after" in message
+    assert "partial stdout" in message
+    assert "partial stderr" in message
+    assert "b'partial" not in message
+
+
 def test_run_conformance_report_returns_payload_for_pytest_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

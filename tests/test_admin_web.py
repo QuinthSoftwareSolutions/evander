@@ -2836,6 +2836,8 @@ def test_admin_web_worker_config_save_requires_matching_revision(tmp_path: Path)
     assert stale.status_code == 409
     assert stale.json()["details"]["current_revision"] == detail["config"]["revision"]
     assert saved.status_code == 200
+    assert detail["config"]["exists"] is False
+    assert saved.json()["config"]["exists"] is True
     assert saved.json()["config"]["revision"] != detail["config"]["revision"]
     assert saved.json()["config"]["config"]["poll_interval_seconds"] == config[
         "poll_interval_seconds"

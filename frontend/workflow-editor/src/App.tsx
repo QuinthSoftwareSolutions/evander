@@ -2156,10 +2156,9 @@ export default function App() {
     let cancelled = false;
     Promise.all([
       fetchJson<WorkflowEditorDocument>("/api/workflow-editor/document"),
-      fetchJson<WorkflowEditorCatalog>(workflowCatalogPath(initialGraphDirectoryPathRef.current)),
       fetchJson<WorkflowRunSnapshot>("/api/workflow-editor/runs"),
     ])
-      .then(([payload, catalogPayload, runSnapshotPayload]) => {
+      .then(([payload, runSnapshotPayload]) => {
         if (cancelled) return;
         const backendOutputSchemas = payload.output_schemas ?? {};
         const normalizedConfig = normalizeDerivedNodeFields(
@@ -2180,12 +2179,10 @@ export default function App() {
         };
         const nextDiagnostics = payload.validation_diagnostics
           ?? validateWorkflowBindingDiagnostics(normalizedConfig, outputSchemas);
-        setCatalog(catalogPayload);
         setRunSnapshot(runSnapshotPayload);
         setValidationDiagnostics(nextDiagnostics);
         setDocument(normalizedDocument);
-        setFlowNodes(buildNodes(normalizedConfig, payload.layout, catalogPayload, runSnapshotPayload.node_activity, nextDiagnostics));
-        setFlowEdges(buildEdges(normalizedConfig, catalogPayload));
+        setError(null);
       })
       .catch((reason: unknown) => {
         if (cancelled) return;
@@ -2196,13 +2193,16 @@ export default function App() {
     };
   }, []);
 
+  const documentLoaded = document !== null;
+
   useEffect(() => {
-    if (!document) return;
+    if (!documentLoaded || !document) return;
     let cancelled = false;
     fetchJson<WorkflowEditorCatalog>(workflowCatalogPath(selectedDirectoryPath))
       .then((catalogPayload) => {
         if (cancelled) return;
         setCatalog(catalogPayload);
+        setError(null);
         setFlowNodes((currentNodes) =>
           buildNodes(
             document.config,
@@ -2223,7 +2223,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedDirectoryPath]);
+  }, [documentLoaded, selectedDirectoryPath]);
 
   useEffect(() => {
     const stream = new EventSource("/api/workflow-editor/runs/stream");

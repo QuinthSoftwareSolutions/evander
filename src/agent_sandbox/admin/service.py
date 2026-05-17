@@ -2539,6 +2539,21 @@ def _trim_conformance_process_output(value: object, *, limit: int = 2000) -> str
     return f"...{normalized[-limit:].lstrip()}"
 
 
+def _coerce_conformance_process_stream(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace").strip()
+    else:
+        text = str(value).strip()
+    return text or None
+
+
+def _join_conformance_process_output(*values: object) -> str:
+    parts = [_coerce_conformance_process_stream(value) for value in values]
+    return "\n".join(part for part in parts if part)
+
+
 def _resolve_path_setting(*, base_dir: Path, value: object | None, fallback: Path) -> Path:
     if value is None:
         candidate = fallback
@@ -9494,7 +9509,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             )
         except subprocess.TimeoutExpired as exc:
             output = _trim_conformance_process_output(
-                "\n".join(part for part in (exc.stdout, exc.stderr) if part)
+                _join_conformance_process_output(exc.stdout, exc.stderr)
             )
             message = (
                 f"{spec['label']} conformance suite timed out after "
@@ -9508,7 +9523,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         completed_at = _utc_now()
         output = _trim_conformance_process_output(
-            "\n".join(part for part in (result.stdout, result.stderr) if part)
+            _join_conformance_process_output(result.stdout, result.stderr)
         )
         return ConformanceReportRunPayload(
             kind=normalized_kind,
