@@ -22,16 +22,48 @@
       }}
     success_msg: "agent-sandbox-worker-daemon.service is enabled and running."
 
+- name: Check worker egress policy service enabled state
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-enabled
+      - agent-sandbox-worker-egress-policy.service
+  register: agent_sandbox_worker_egress_policy_enabled_state
+  changed_when: false
+  failed_when: false
+  when:
+    - agent_sandbox_worker_egress_policy_enabled | bool
+    - (agent_sandbox_worker_docker_network | default('none') | string | trim | lower) not in ['', 'none']
+
+- name: Check worker egress policy service active state
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - agent-sandbox-worker-egress-policy.service
+  register: agent_sandbox_worker_egress_policy_active_state
+  changed_when: false
+  failed_when: false
+  when:
+    - agent_sandbox_worker_egress_policy_enabled | bool
+    - (agent_sandbox_worker_docker_network | default('none') | string | trim | lower) not in ['', 'none']
+
 - name: Verify worker egress policy service is active
   ansible.builtin.assert:
     that:
-      - "ansible_facts.services['agent-sandbox-worker-egress-policy.service'].status == 'enabled'"
-      - "ansible_facts.services['agent-sandbox-worker-egress-policy.service'].state == 'running'"
+      - "agent_sandbox_worker_egress_policy_enabled_state.stdout == 'enabled'"
+      - "agent_sandbox_worker_egress_policy_active_state.stdout == 'active'"
     fail_msg: >-
       agent-sandbox-worker-egress-policy.service should be enabled and active
       whenever a non-none worker Docker network is configured with
-      agent_sandbox_worker_egress_policy_enabled=true. actual={{
+      agent_sandbox_worker_egress_policy_enabled=true. service_facts={{
         ansible_facts.services.get('agent-sandbox-worker-egress-policy.service', {})
+      }} systemctl_enabled={{
+        agent_sandbox_worker_egress_policy_enabled_state.stdout | default('')
+      }} systemctl_active={{
+        agent_sandbox_worker_egress_policy_active_state.stdout | default('')
+      }} systemctl_active_stderr={{
+        agent_sandbox_worker_egress_policy_active_state.stderr | default('')
       }}
     success_msg: "agent-sandbox-worker-egress-policy.service is enabled and active."
   when:

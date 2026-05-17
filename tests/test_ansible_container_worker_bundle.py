@@ -263,6 +263,11 @@ def test_worker_container_egress_policy_role_applies_docker_user_default_deny() 
     assert "ExecStop={{ agent_sandbox_worker_egress_policy_script_path }} clear" in unit
     assert "Before=agent-sandbox-worker-daemon.service" in unit
     assert "Verify worker egress policy service is active" in verification
+    assert "systemctl" in verification
+    assert "is-enabled" in verification
+    assert "is-active" in verification
+    assert "agent_sandbox_worker_egress_policy_active_state.stdout == 'active'" in verification
+    assert "agent-sandbox-worker-egress-policy.service'].state == 'running'" not in verification
 
 
 def _remove_jinja_raw_blocks(text: str) -> str:
