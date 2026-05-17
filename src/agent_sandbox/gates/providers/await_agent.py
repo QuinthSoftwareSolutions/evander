@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -93,7 +92,6 @@ class AwaitAgentGateProvider(GateProviderBase):
         worker = kwargs["worker"]
         queue_record = kwargs["queue_record"]
         gate = kwargs["gate"]
-        graph = kwargs["graph"]
         started_at = kwargs["started_at"]
         config_revision = kwargs["config_revision"]
         upstream_payload = kwargs["upstream_payload"]

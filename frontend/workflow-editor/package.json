@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "test": "node --test --experimental-strip-types test/**/*.test.mjs",
+    "test:smoke": "node --test --experimental-strip-types test/**/*.smoke.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview"
   },

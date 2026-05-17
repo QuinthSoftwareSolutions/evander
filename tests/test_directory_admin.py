@@ -2,7 +2,7 @@ from pathlib import Path
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.admin.directory import DirectoryAdminService
-from agent_sandbox.directories import DirectoryService, DirectoryStore
+from agent_sandbox.directories import DirectoryStore
 
 
 def test_directory_admin_service_supports_tree_list_get_create_update_and_delete(

@@ -15,15 +15,15 @@ from typing_extensions import TypeAliasType
 
 from agent_sandbox.gate_runtime import GateRuntimeError, parse_iso8601_duration
 from agent_sandbox.workflow.contracts import (
-    EdgeDefinition,
-    NODE_OUTPUTS_CONTEXT_KEY,
+    EdgeDefinition as EdgeDefinition,
+    NODE_OUTPUTS_CONTEXT_KEY as NODE_OUTPUTS_CONTEXT_KEY,
     WorkflowNodeDefinition,
     WorkflowNodeEnvelope,
     effective_node_output_schema,
-    normalize_directory_paths,
-    normalize_string_list,
+    normalize_directory_paths as normalize_directory_paths,
+    normalize_string_list as normalize_string_list,
     validate_filter_when_expression,
-    validate_output_mapping_keys,
+    validate_output_mapping_keys as validate_output_mapping_keys,
 )
 
 TriggerType: TypeAlias = str
