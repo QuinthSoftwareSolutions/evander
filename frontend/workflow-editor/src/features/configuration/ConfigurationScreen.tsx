@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { ApiError, fetchJson } from "../admin/api";
+import { ApiError, fetchJson, formatRelativeSeconds, formatTimestamp } from "../admin/api";
 import type { AdminResult } from "../admin/AdminContext";
 import { useAdminUi } from "../admin/AdminContext";
 import { CopyIcon, SaveIcon } from "../admin/PageActionIcons";
@@ -137,6 +137,34 @@ type CommunicationTargetDraftEntry = {
 type CommunicationTargetDraftParseResult = {
   entries: CommunicationTargetDraftEntry[];
   error: string | null;
+};
+
+type TeamsAuthStatusView = {
+  directoryPath: string;
+  backend: string;
+  state: string;
+  identityId: string | null;
+  accountIdentifier: string | null;
+  tenantId: string | null;
+  scopes: string[];
+  message: string | null;
+  issuedAt: string | null;
+  expiresAt: string | null;
+};
+
+type TeamsAuthLoginSessionView = {
+  loginSessionId: string;
+  directoryPath: string;
+  identityId: string | null;
+  tenantId: string | null;
+  scopes: string[];
+  message: string | null;
+  verificationUri: string | null;
+  verificationUriComplete: string | null;
+  userCode: string | null;
+  intervalSeconds: number | null;
+  createdAt: string | null;
+  expiresAt: string | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -602,6 +630,142 @@ function hasDirtyDrafts(dirtyTabs: Record<string, boolean>): boolean {
   return Object.values(dirtyTabs).some(Boolean);
 }
 
+function normalizeDirectoryPath(directoryPath: string | null | undefined): string {
+  const trimmed = directoryPath?.trim() ?? "";
+  return trimmed || "root";
+}
+
+function readRecordString(record: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed) {
+        return trimmed;
+      }
+    } else if (typeof value === "number" && Number.isFinite(value)) {
+      return String(value);
+    }
+  }
+  return null;
+}
+
+function readRecordStringArray(record: Record<string, unknown>, keys: string[]): string[] {
+  for (const key of keys) {
+    const value = record[key];
+    if (Array.isArray(value)) {
+      return value
+        .map((item) => (typeof item === "string" ? item.trim() : String(item ?? "").trim()))
+        .filter(Boolean);
+    }
+  }
+  return [];
+}
+
+function readRecordNumber(record: Record<string, unknown>, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number.parseFloat(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return null;
+}
+
+function readRecordBoolean(record: Record<string, unknown>, keys: string[]): boolean | null {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "boolean") {
+      return value;
+    }
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === "true") return true;
+      if (normalized === "false") return false;
+    }
+  }
+  return null;
+}
+
+function readNestedRecord(record: Record<string, unknown>, keys: string[]): Record<string, unknown> | null {
+  for (const key of keys) {
+    const value = record[key];
+    if (isRecord(value)) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function normalizeTeamsAuthState(state: string | null): string {
+  const normalized = state?.trim().toLowerCase() ?? "";
+  if (!normalized) return "unknown";
+  if (normalized === "reauth" || normalized === "reauthorize") return "reauth_required";
+  if (normalized === "logged-out") return "logged_out";
+  return normalized;
+}
+
+function formatTeamsAuthState(state: string | null): string {
+  const normalized = normalizeTeamsAuthState(state);
+  if (normalized === "reauth_required") return "Reauth required";
+  if (normalized === "logged_out") return "Logged out";
+  if (normalized === "authenticated") return "Authenticated";
+  if (normalized === "pending" || normalized === "polling") return "Pending";
+  if (normalized === "unknown") return "Unknown";
+  return normalized.replace(/_/g, " ");
+}
+
+function isTeamsAuthPendingState(state: string | null): boolean {
+  const normalized = normalizeTeamsAuthState(state);
+  return normalized === "pending" || normalized === "polling" || normalized === "in_progress";
+}
+
+function normalizeTeamsAuthStatus(value: unknown): TeamsAuthStatusView | null {
+  if (!isRecord(value)) return null;
+  const source = readNestedRecord(value, ["status", "data", "payload"]) ?? value;
+  const state = readRecordString(source, ["state", "status", "auth_state", "authentication_state"]);
+  const pending = readRecordBoolean(source, ["pending", "polling", "in_progress"]);
+  return {
+    directoryPath: normalizeDirectoryPath(readRecordString(source, ["directory_path", "directoryPath"])),
+    backend: readRecordString(source, ["backend", "teams_backend", "provider_backend"]) ?? "unknown",
+    state: normalizeTeamsAuthState(state ?? (pending ? "pending" : null)),
+    identityId: readRecordString(source, ["identity_id", "identityId", "account_identity_id"]),
+    accountIdentifier: readRecordString(source, ["account_identifier", "accountIdentifier", "account", "email"]),
+    tenantId: readRecordString(source, ["tenant_id", "tenantId"]),
+    scopes: readRecordStringArray(source, ["scopes", "granted_scopes", "requested_scopes"]),
+    message: readRecordString(source, ["message", "detail", "status_message"]),
+    issuedAt: readRecordString(source, ["issued_at", "issuedAt", "created_at", "createdAt"]),
+    expiresAt: readRecordString(source, ["expires_at", "expiresAt"]),
+  };
+}
+
+function normalizeTeamsAuthLoginSession(value: unknown): TeamsAuthLoginSessionView | null {
+  if (!isRecord(value)) return null;
+  const source = readNestedRecord(value, ["login_session", "session", "data", "payload"]) ?? value;
+  const loginSessionId = readRecordString(source, ["login_session_id", "loginSessionId", "session_id", "sessionId"]);
+  if (!loginSessionId) return null;
+  return {
+    loginSessionId,
+    directoryPath: normalizeDirectoryPath(readRecordString(source, ["directory_path", "directoryPath"])),
+    identityId: readRecordString(source, ["identity_id", "identityId", "account_identity_id"]),
+    tenantId: readRecordString(source, ["tenant_id", "tenantId"]),
+    scopes: readRecordStringArray(source, ["scopes", "granted_scopes", "requested_scopes"]),
+    message: readRecordString(source, ["message", "detail", "status_message"]),
+    verificationUri: readRecordString(source, ["verification_uri", "verificationUri"]),
+    verificationUriComplete: readRecordString(source, ["verification_uri_complete", "verificationUriComplete"]),
+    userCode: readRecordString(source, ["user_code", "userCode"]),
+    intervalSeconds: readRecordNumber(source, ["interval_seconds", "intervalSeconds"]),
+    createdAt: readRecordString(source, ["created_at", "createdAt"]),
+    expiresAt: readRecordString(source, ["expires_at", "expiresAt"]),
+  };
+}
+
 export function ConfigurationScreen() {
   const {
     privilegedUnlocked,
@@ -617,8 +781,18 @@ export function ConfigurationScreen() {
   const [dirtyTabs, setDirtyTabs] = useState<Record<string, boolean>>({});
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [teamsAuthStatus, setTeamsAuthStatus] = useState<TeamsAuthStatusView | null>(null);
+  const [teamsAuthLoginSession, setTeamsAuthLoginSession] = useState<TeamsAuthLoginSessionView | null>(null);
+  const [teamsAuthNotice, setTeamsAuthNotice] = useState<{ kind: "success" | "warning" | "info"; message: string } | null>(null);
+  const [teamsAuthError, setTeamsAuthError] = useState<string | null>(null);
+  const [teamsAuthLoading, setTeamsAuthLoading] = useState(false);
+  const [teamsAuthSigningIn, setTeamsAuthSigningIn] = useState(false);
+  const [teamsAuthCompleting, setTeamsAuthCompleting] = useState(false);
+  const [teamsAuthSigningOut, setTeamsAuthSigningOut] = useState(false);
+  const [teamsAuthPollTimeoutSeconds, setTeamsAuthPollTimeoutSeconds] = useState("5");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const teamsAuthDirectoryPathRef = useRef(normalizeDirectoryPath(selectedDirectoryPath));
 
   async function loadState(directoryPath: string, options?: { preserveDirty?: boolean }) {
     const payload = await fetchJson<ConfigurationState>(
@@ -708,6 +882,8 @@ export function ConfigurationScreen() {
     selectedTabDefinition?.sections.some((section) => section.fields.some(isGlobalField)),
   );
   const saveBlockedByConfigMode = !state?.directory_scoped_config_enabled && !selectedTabHasGlobalFields;
+  const teamsAuthBusy = teamsAuthLoading || teamsAuthSigningIn || teamsAuthCompleting || teamsAuthSigningOut;
+  const teamsAuthDirectoryPath = normalizeDirectoryPath(selectedDirectoryPath);
 
   async function reloadCurrentDirectory(options?: { preserveDirty?: boolean }) {
     try {
@@ -720,6 +896,145 @@ export function ConfigurationScreen() {
       setLoading(false);
     }
   }
+
+  async function handleTeamsAuthLogin() {
+    const directoryPath = normalizeDirectoryPath(selectedDirectoryPath);
+    setTeamsAuthSigningIn(true);
+    setTeamsAuthError(null);
+    setTeamsAuthNotice(null);
+    try {
+      const payload = await fetchJson<Record<string, unknown>>(
+        `/api/teams-auth/login?directory_path=${encodeURIComponent(directoryPath)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({}),
+        },
+      );
+      const nextSession = normalizeTeamsAuthLoginSession(payload);
+      if (!nextSession) {
+        throw new Error("Teams login did not return a device-code session.");
+      }
+      setTeamsAuthLoginSession(nextSession);
+      setTeamsAuthNotice({
+        kind: "info",
+        message: "Device-code login started. Open the verification page and enter the code shown below.",
+      });
+    } catch (reason) {
+      setTeamsAuthError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setTeamsAuthSigningIn(false);
+    }
+  }
+
+  async function handleTeamsAuthComplete() {
+    if (!teamsAuthLoginSession) {
+      setTeamsAuthError("Start a device-code login before checking its status.");
+      return;
+    }
+    const directoryPath = normalizeDirectoryPath(selectedDirectoryPath);
+    const timeoutValue = Number.parseInt(teamsAuthPollTimeoutSeconds, 10);
+    const timeoutSeconds = Number.isFinite(timeoutValue) && timeoutValue > 0 ? Math.min(timeoutValue, 30) : undefined;
+    setTeamsAuthCompleting(true);
+    setTeamsAuthError(null);
+    try {
+      const payload = await fetchJson<Record<string, unknown>>(
+        `/api/teams-auth/complete?directory_path=${encodeURIComponent(directoryPath)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            login_session_id: teamsAuthLoginSession.loginSessionId,
+            ...(timeoutSeconds ? { timeout_seconds: timeoutSeconds } : {}),
+          }),
+        },
+      );
+      const nextStatus = normalizeTeamsAuthStatus(payload);
+      if (nextStatus && isTeamsAuthPendingState(nextStatus.state)) {
+        setTeamsAuthStatus(nextStatus);
+        setTeamsAuthNotice({
+          kind: "warning",
+          message: nextStatus.message ?? "Teams sign-in is still pending. Try again in a few seconds.",
+        });
+        return;
+      }
+      setTeamsAuthStatus(nextStatus);
+      setTeamsAuthLoginSession(null);
+      setTeamsAuthNotice({
+        kind: "success",
+        message: nextStatus?.message ?? "Teams sign-in completed.",
+      });
+      await refreshTeamsAuthStatus(directoryPath);
+    } catch (reason) {
+      setTeamsAuthError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setTeamsAuthCompleting(false);
+    }
+  }
+
+  async function handleTeamsAuthLogout() {
+    const directoryPath = normalizeDirectoryPath(selectedDirectoryPath);
+    setTeamsAuthSigningOut(true);
+    setTeamsAuthError(null);
+    try {
+      const payload = await fetchJson<Record<string, unknown>>(
+        `/api/teams-auth/logout?directory_path=${encodeURIComponent(directoryPath)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({}),
+        },
+      );
+      setTeamsAuthStatus(normalizeTeamsAuthStatus(payload));
+      setTeamsAuthLoginSession(null);
+      setTeamsAuthNotice({
+        kind: "success",
+        message: `Teams auth signed out for ${directoryPath}.`,
+      });
+      await refreshTeamsAuthStatus(directoryPath);
+    } catch (reason) {
+      setTeamsAuthError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setTeamsAuthSigningOut(false);
+    }
+  }
+
+  async function refreshTeamsAuthStatus(directoryPath: string) {
+    const normalizedDirectoryPath = normalizeDirectoryPath(directoryPath);
+    setTeamsAuthLoading(true);
+    try {
+      const payload = await fetchJson<Record<string, unknown>>(
+        `/api/teams-auth/status?directory_path=${encodeURIComponent(normalizedDirectoryPath)}`,
+      );
+      const nextStatus = normalizeTeamsAuthStatus(payload);
+      setTeamsAuthStatus(nextStatus);
+      setTeamsAuthError(null);
+      return nextStatus;
+    } catch (reason) {
+      setTeamsAuthError(reason instanceof Error ? reason.message : String(reason));
+      return null;
+    } finally {
+      setTeamsAuthLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    async function refresh() {
+      if (selectedTab !== "communications") {
+        return;
+      }
+      const directoryPath = normalizeDirectoryPath(selectedDirectoryPath);
+      const previousDirectoryPath = teamsAuthDirectoryPathRef.current;
+      teamsAuthDirectoryPathRef.current = directoryPath;
+      if (previousDirectoryPath !== directoryPath) {
+        setTeamsAuthStatus(null);
+        setTeamsAuthLoginSession(null);
+        setTeamsAuthNotice(null);
+      }
+      setTeamsAuthError(null);
+      await refreshTeamsAuthStatus(directoryPath);
+    }
+
+    void refresh();
+    return () => {};
+  }, [selectedDirectoryPath, selectedTab]);
 
   async function handleSaveTab() {
     if (!selectedTabDefinition || !snapshot) return;
@@ -1634,6 +1949,191 @@ export function ConfigurationScreen() {
         ) : null}
 
         <div className="feature-grid configuration-summary-grid">
+          {selectedTabDefinition?.key === "communications" ? (
+            <article className="panel detail-panel configuration-summary-panel teams-auth-panel">
+              <div className="panel-header">
+                <div>
+                  <h3>Teams delegated auth</h3>
+                  <p className="muted-text">
+                    Inspect the host-side Microsoft Teams auth state, start device-code sign-in, and sign out without exposing credentials.
+                  </p>
+                </div>
+                <span className="panel-meta">{teamsAuthDirectoryPath}</span>
+              </div>
+              {teamsAuthNotice ? (
+                <div
+                  className={`callout ${
+                    teamsAuthNotice.kind === "warning"
+                      ? "warning-callout"
+                      : teamsAuthNotice.kind === "info"
+                        ? "warning-callout"
+                        : "success-callout"
+                  }`}
+                >
+                  {teamsAuthNotice.message}
+                </div>
+              ) : null}
+              {teamsAuthError ? <div className="callout error-callout">{teamsAuthError}</div> : null}
+              {teamsAuthLoading ? <div className="callout warning-callout">Refreshing Teams auth status...</div> : null}
+              <div className="detail-stack compact-detail-stack">
+                <div className="detail-grid teams-auth-summary-grid">
+                  <div>
+                    <span>Directory</span>
+                    <strong>{teamsAuthDirectoryPath}</strong>
+                  </div>
+                  <div>
+                    <span>Backend</span>
+                    <strong>{teamsAuthStatus?.backend ?? "n/a"}</strong>
+                  </div>
+                  <div>
+                    <span>State</span>
+                    <strong>{formatTeamsAuthState(teamsAuthStatus?.state ?? null)}</strong>
+                  </div>
+                  <div>
+                    <span>Identity</span>
+                    <strong>{teamsAuthStatus?.identityId ?? teamsAuthStatus?.accountIdentifier ?? "n/a"}</strong>
+                  </div>
+                  <div>
+                    <span>Tenant</span>
+                    <strong>{teamsAuthStatus?.tenantId ?? "n/a"}</strong>
+                  </div>
+                  <div>
+                    <span>Scopes</span>
+                    <strong>{teamsAuthStatus?.scopes.length ? teamsAuthStatus.scopes.join(", ") : "n/a"}</strong>
+                  </div>
+                  <div>
+                    <span>Issued</span>
+                    <strong>{formatTimestamp(teamsAuthStatus?.issuedAt)}</strong>
+                  </div>
+                  <div>
+                    <span>Expires</span>
+                    <strong>{formatTimestamp(teamsAuthStatus?.expiresAt)}</strong>
+                  </div>
+                </div>
+              </div>
+              <div className="inline-actions compact-actions teams-auth-actions">
+                <button
+                  type="button"
+                  onClick={() => void refreshTeamsAuthStatus(teamsAuthDirectoryPath)}
+                  disabled={loading || saving || teamsAuthLoading || teamsAuthSigningIn || teamsAuthCompleting || teamsAuthSigningOut}
+                >
+                  {teamsAuthLoading ? "Refreshing..." : "Refresh status"}
+                </button>
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() => void handleTeamsAuthLogin()}
+                  disabled={mutationLocked || teamsAuthLoading || teamsAuthSigningIn || teamsAuthCompleting || teamsAuthSigningOut || Boolean(teamsAuthLoginSession)}
+                >
+                  {teamsAuthSigningIn ? "Starting..." : "Start sign-in"}
+                </button>
+                <label className="field-stack teams-auth-timeout-field">
+                  <span>Poll timeout</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="30"
+                    value={teamsAuthPollTimeoutSeconds}
+                    onChange={(event) => setTeamsAuthPollTimeoutSeconds(event.target.value)}
+                    disabled={mutationLocked || teamsAuthLoading || teamsAuthSigningIn || teamsAuthCompleting || teamsAuthSigningOut}
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void handleTeamsAuthComplete()}
+                  disabled={mutationLocked || teamsAuthLoading || teamsAuthCompleting || teamsAuthSigningIn || teamsAuthSigningOut || !teamsAuthLoginSession}
+                >
+                  {teamsAuthCompleting ? "Checking..." : "Check sign-in status"}
+                </button>
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={() => void handleTeamsAuthLogout()}
+                  disabled={mutationLocked || teamsAuthLoading || teamsAuthSigningIn || teamsAuthCompleting || teamsAuthSigningOut || (!teamsAuthStatus && !teamsAuthLoginSession)}
+                >
+                  {teamsAuthSigningOut ? "Signing out..." : "Sign out"}
+                </button>
+              </div>
+              {teamsAuthLoginSession ? (
+                <div className="teams-auth-session-card">
+                  <div className="panel-header">
+                    <div>
+                      <h4>Device-code login</h4>
+                      <p className="muted-text">
+                        Use the Microsoft verification page from another browser or device, then check sign-in status here.
+                      </p>
+                    </div>
+                    <span className="panel-meta">{teamsAuthLoginSession.loginSessionId}</span>
+                  </div>
+                  {teamsAuthLoginSession.message ? <div className="callout warning-callout">{teamsAuthLoginSession.message}</div> : null}
+                  <div className="detail-grid teams-auth-session-grid">
+                    <div>
+                      <span>Directory</span>
+                      <strong>{teamsAuthLoginSession.directoryPath}</strong>
+                    </div>
+                    <div>
+                      <span>Identity</span>
+                      <strong>{teamsAuthLoginSession.identityId ?? "n/a"}</strong>
+                    </div>
+                    <div>
+                      <span>Tenant</span>
+                      <strong>{teamsAuthLoginSession.tenantId ?? "n/a"}</strong>
+                    </div>
+                    <div>
+                      <span>Scopes</span>
+                      <strong>{teamsAuthLoginSession.scopes.length ? teamsAuthLoginSession.scopes.join(", ") : "n/a"}</strong>
+                    </div>
+                    <div>
+                      <span>Created</span>
+                      <strong>{formatTimestamp(teamsAuthLoginSession.createdAt)}</strong>
+                    </div>
+                    <div>
+                      <span>Expires</span>
+                      <strong>{formatTimestamp(teamsAuthLoginSession.expiresAt)}</strong>
+                    </div>
+                    <div>
+                      <span>Poll interval</span>
+                      <strong>{teamsAuthLoginSession.intervalSeconds == null ? "n/a" : formatRelativeSeconds(teamsAuthLoginSession.intervalSeconds)}</strong>
+                    </div>
+                  </div>
+                  <div className="teams-auth-code-line">
+                    <span>User code</span>
+                    <code>{teamsAuthLoginSession.userCode ?? "n/a"}</code>
+                  </div>
+                  <div className="teams-auth-link-list">
+                    {teamsAuthLoginSession.verificationUri ? (
+                      <div>
+                        <span>Verification URI</span>
+                        <a
+                          className="teams-auth-uri"
+                          href={teamsAuthLoginSession.verificationUri}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {teamsAuthLoginSession.verificationUri}
+                        </a>
+                      </div>
+                    ) : null}
+                    {teamsAuthLoginSession.verificationUriComplete ? (
+                      <div>
+                        <span>Verification URI complete</span>
+                        <a
+                          className="teams-auth-uri"
+                          href={teamsAuthLoginSession.verificationUriComplete}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {teamsAuthLoginSession.verificationUriComplete}
+                        </a>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : (
+                <div className="empty-state">No active device-code login is in progress.</div>
+              )}
+            </article>
+          ) : null}
           <article className="panel detail-panel configuration-summary-panel">
             <div className="panel-header">
               <div>
