@@ -194,7 +194,9 @@ def test_worker_egress_policy_defaults_expose_private_control_plane_endpoints() 
     defaults = (ROOT / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
         encoding="utf-8"
     )
-    azure = (ROOT / "ansible" / "group_vars" / "azure.yml").read_text(encoding="utf-8")
+    azure_inventory = (ROOT / "ansible" / "inventory" / "azure.yml").read_text(
+        encoding="utf-8"
+    )
     worker_defaults = (
         ROOT / "ansible" / "group_vars" / "agent_sandbox_worker_hosts.yml"
     ).read_text(encoding="utf-8")
@@ -225,8 +227,8 @@ def test_worker_egress_policy_defaults_expose_private_control_plane_endpoints() 
     assert 'port: "{{ agent_sandbox_apt_cache_port }}"' in defaults
     assert 'host: "{{ agent_sandbox_control_plane_private_ip }}"' in defaults
     assert "<control-plane-private-ip>" not in defaults
-    assert 'agent_sandbox_worker_docker_network: "bridge"' in azure
-    assert "agent_sandbox_worker_egress_policy_enabled: true" in azure
+    assert 'agent_sandbox_worker_docker_network: "bridge"' in azure_inventory
+    assert "agent_sandbox_worker_egress_policy_enabled: true" in azure_inventory
 
 
 def test_worker_container_egress_policy_role_applies_docker_user_default_deny() -> None:

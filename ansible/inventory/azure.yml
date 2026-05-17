@@ -32,5 +32,9 @@ all:
                 -W %h:%p {{ agent_sandbox_control_plane_ssh_user }}@{{ agent_sandbox_control_plane_public_host }}"
               agent_sandbox_worker_mssql_enabled: true
               agent_sandbox_worker_mssql_accept_eula: true
+              # Host vars override the generic agent_sandbox_worker_hosts group
+              # defaults, which intentionally keep non-Azure workers isolated.
+              agent_sandbox_worker_docker_network: "bridge"
+              agent_sandbox_worker_egress_policy_enabled: true
               agent_sandbox_worker_mssql_server_repo: "deb [arch=amd64,arm64 signed-by={{ agent_sandbox_worker_mssql_apt_key_path }}] http://packages.microsoft.com/ubuntu/24.04/mssql-server-2025 noble main"
               agent_sandbox_worker_mssql_tools_repo: "deb [arch=amd64,arm64 signed-by={{ agent_sandbox_worker_mssql_apt_key_path }}] http://packages.microsoft.com/ubuntu/24.04/prod noble main"
