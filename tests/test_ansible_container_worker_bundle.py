@@ -221,8 +221,8 @@ def test_worker_egress_policy_defaults_expose_private_control_plane_endpoints() 
     assert "port: 11434" in defaults
     assert "port: 11666" in defaults
     assert "port: 11777" in defaults
-    assert "port: 8081" in defaults
-    assert "port: 3142" in defaults
+    assert 'port: "{{ agent_sandbox_nexus_port }}"' in defaults
+    assert 'port: "{{ agent_sandbox_apt_cache_port }}"' in defaults
     assert 'host: "{{ agent_sandbox_control_plane_private_ip }}"' in defaults
     assert "<control-plane-private-ip>" not in defaults
     assert 'agent_sandbox_worker_docker_network: "bridge"' in azure

@@ -1634,7 +1634,7 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
         content=b"hello from the run detail fixture\n",
         original_filename="notes.txt",
         created_at=datetime(2026, 5, 16, 10, 4, tzinfo=timezone.utc),
-        expires_at=datetime(2026, 5, 23, 10, 4, tzinfo=timezone.utc),
+        expires_at=datetime(2099, 1, 1, tzinfo=timezone.utc),
         metadata={"source": "fixture"},
     )
     approval_request = ApprovalRequest(
@@ -1839,6 +1839,23 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
                 "vm_name": "vm-legacy",
                 "payload": {},
                 "occurred_at": "2026-05-01T09:00:16Z",
+            }
+        },
+    )
+    (runtime_dir / "providers" / "gates" / "await-agent").mkdir(parents=True, exist_ok=True)
+    _write_json_payload(
+        runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
+        {
+            "gate-await:dispatch-provider": {
+                "gate_id": "gate-await",
+                "dispatch_id": "dispatch-provider",
+                "prompt_event_id": "evt-provider",
+                "prompt_source_node_id": "effect-prompt",
+                "trace_id": "trace-provider",
+                "session_id": "session-provider",
+                "vm_name": "vm-provider",
+                "payload": {},
+                "occurred_at": "2026-05-01T11:00:16Z",
             }
         },
     )

@@ -74,7 +74,7 @@ artifact_metadata = {
     "byte_count": len(artifact_content),
     "sha256": sha256(artifact_content).hexdigest(),
     "created_at": "2026-05-01T10:04:00Z",
-    "expires_at": "2026-05-23T10:04:00Z",
+    "expires_at": "2099-01-01T00:00:00Z",
     "staged_at": "2026-05-01T10:04:00Z",
     "session_id": session_id,
     "metadata": {"storage": "host_artifact_store", "source": "fixture"},

@@ -154,10 +154,10 @@ agent_sandbox_worker_egress_policy_allow_tcp_endpoints:
     port: 11777
   - name: control-plane nexus package cache
     host: "{{ agent_sandbox_control_plane_private_ip }}"
-    port: 8081
+    port: "{{ agent_sandbox_nexus_port }}"
   - name: control-plane apt-cacher-ng
     host: "{{ agent_sandbox_control_plane_private_ip }}"
-    port: 3142
+    port: "{{ agent_sandbox_apt_cache_port }}"
 agent_sandbox_worker_egress_policy_extra_allow_tcp_endpoints: []
 
 # Control-plane package cache. Nexus Repository Community Edition proxies only

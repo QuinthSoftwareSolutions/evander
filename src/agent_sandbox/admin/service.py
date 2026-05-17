@@ -2697,6 +2697,13 @@ def _read_json_object(path: Path | None) -> dict[str, object]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _read_merged_json_objects(*paths: Path | None) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    for path in paths:
+        payload.update(_read_json_object(path))
+    return payload
+
+
 CONFORMANCE_REPORT_STALE_AFTER = timedelta(days=7)
 CONFORMANCE_REPORT_SNIPPET_LIMIT = 10
 CONFORMANCE_REPORT_TEXT_LIMIT = 500
@@ -8742,11 +8749,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 ),
             )
 
-        await_agent_payload = _read_json_object(
-            runtime_dir / "providers" / "gates" / "await-agent" / "pending.json"
+        await_agent_payload = _read_merged_json_objects(
+            runtime_dir / "await-agent-pending.json",
+            runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
         )
-        if not await_agent_payload:
-            await_agent_payload = _read_json_object(runtime_dir / "await-agent-pending.json")
         for record_key, raw_record in await_agent_payload.items():
             if not isinstance(raw_record, dict):
                 continue
@@ -9713,11 +9719,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         queue_records = self._workflow_run_event_records(stores)
         effect_records = effect_store.read_all()
         gate_records = gate_store.read_all()
-        await_agent_payload = _read_json_object(
+        await_agent_payload = _read_merged_json_objects(
+            stores["legacy_await_agent_store_path"],
             stores["await_agent_store_path"],
         )
-        if not await_agent_payload:
-            await_agent_payload = _read_json_object(stores["legacy_await_agent_store_path"])
         approval_requests = self.runtime.approvals.read_all()
         artifact_store = self._communication_artifact_store()
 
