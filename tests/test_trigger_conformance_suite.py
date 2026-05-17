@@ -668,6 +668,111 @@ def test_conformance_email_new_message_acknowledges_after_publish(
     assert final_payload["email-gmail"]["recent_message_ids"] == ["msg-1", "msg-2"]
 
 
+def test_email_new_message_skips_messages_older_than_cursor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    provider = EmailNewMessageTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "email-gmail",
+                "display_name": "Email",
+                "type": "trigger:email:new-message",
+                "provider": "gmail",
+                "account_identifier": "ops@example.com",
+                "mailbox_ids": ["mailbox-1"],
+                "auth_secret_refs": {"access_token": "GMAIL_ACCESS_TOKEN"},
+            }
+        ),
+        _build_runtime_context(runtime_dir, env={"GMAIL_ACCESS_TOKEN": "secret"}),
+    )
+    (runtime_dir / "trigger-cursors-email.json").write_text(
+        json.dumps(
+            {
+                "email-gmail": {
+                    "last_received_at": "2026-04-03T12:00:00Z",
+                    "recent_message_ids": ["equal-seen"],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _FakeGmailProvider:
+        def __init__(self, **_kwargs):
+            pass
+
+        def list_unread(
+            self, *, mailbox_id: str, folder: str, limit: int
+        ) -> list[EmailMessageSummary]:
+            _ = folder, limit
+            cursor_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+            return [
+                EmailMessageSummary(
+                    mailbox_id=mailbox_id,
+                    provider="gmail",
+                    folder="inbox",
+                    message_id="old-unseen",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    received_at=cursor_at - timedelta(minutes=1),
+                    unread=True,
+                    body_snippet="old",
+                    metadata={},
+                ),
+                EmailMessageSummary(
+                    mailbox_id=mailbox_id,
+                    provider="gmail",
+                    folder="inbox",
+                    message_id="equal-seen",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    received_at=cursor_at,
+                    unread=True,
+                    body_snippet="seen",
+                    metadata={},
+                ),
+                EmailMessageSummary(
+                    mailbox_id=mailbox_id,
+                    provider="gmail",
+                    folder="inbox",
+                    message_id="equal-unseen",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    received_at=cursor_at,
+                    unread=True,
+                    body_snippet="same timestamp",
+                    metadata={},
+                ),
+                EmailMessageSummary(
+                    mailbox_id=mailbox_id,
+                    provider="gmail",
+                    folder="inbox",
+                    message_id="newer",
+                    sender="sender@example.com",
+                    recipients=["ops@example.com"],
+                    received_at=cursor_at + timedelta(minutes=1),
+                    unread=True,
+                    body_snippet="new",
+                    metadata={},
+                ),
+            ]
+
+    monkeypatch.setattr(
+        "agent_sandbox.triggers.providers.email_new_message.GmailEmailProvider",
+        _FakeGmailProvider,
+    )
+
+    events = provider.poll()
+
+    assert [event.payload["message"]["message_id"] for event in events] == [
+        "equal-unseen",
+        "newer",
+    ]
+
+
 def test_conformance_pr_feedback_acknowledges_after_publish(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -763,6 +868,90 @@ def test_conformance_pr_feedback_acknowledges_after_publish(
     assert final_payload["pr-github"]["recent_feedback_ids"]["github:org/repo:11"] == [
         "github:issue_comment:1",
         "github:issue_comment:2",
+    ]
+
+
+def test_pr_feedback_skips_feedback_older_than_stream_cursor(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True)
+    provider = PullRequestNewFeedbackTriggerProvider()
+    provider.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "pr-local",
+                "display_name": "PR feedback",
+                "type": "trigger:pull-request:new-feedback",
+                "provider": "local",
+            }
+        ),
+        _build_runtime_context(runtime_dir),
+    )
+    cursor_at = datetime(2026, 4, 3, 12, 0, tzinfo=timezone.utc)
+    items = [
+        PrFeedbackItem(
+            feedback_id="old-unseen",
+            provider="local",
+            repo="org/repo",
+            pr_id="11",
+            author="reviewer",
+            body="old",
+            created_at=cursor_at - timedelta(minutes=1),
+        ),
+        PrFeedbackItem(
+            feedback_id="equal-seen",
+            provider="local",
+            repo="org/repo",
+            pr_id="11",
+            author="reviewer",
+            body="seen",
+            created_at=cursor_at,
+        ),
+        PrFeedbackItem(
+            feedback_id="equal-unseen",
+            provider="local",
+            repo="org/repo",
+            pr_id="11",
+            author="reviewer",
+            body="same timestamp",
+            created_at=cursor_at,
+        ),
+        PrFeedbackItem(
+            feedback_id="newer",
+            provider="local",
+            repo="org/repo",
+            pr_id="11",
+            author="reviewer",
+            body="new",
+            created_at=cursor_at + timedelta(minutes=1),
+        ),
+    ]
+    (runtime_dir / "pr-feedback-store.json").write_text(
+        json.dumps(
+            {
+                "feedback": {
+                    item.feedback_id: item.model_dump(mode="json") for item in items
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runtime_dir / "trigger-cursors-pr-feedback.json").write_text(
+        json.dumps(
+            {
+                "pr-local": {
+                    "stream_cursors": {"local:org/repo:11": "2026-04-03T12:00:00Z"},
+                    "recent_feedback_ids": {"local:org/repo:11": ["equal-seen"]},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    events = provider.poll()
+
+    assert [event.payload["feedback"]["feedback_id"] for event in events] == [
+        "equal-unseen",
+        "newer",
     ]
 
 
