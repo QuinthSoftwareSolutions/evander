@@ -167,6 +167,24 @@ type TeamsAuthLoginSessionView = {
   expiresAt: string | null;
 };
 
+type TeamsChannelLookupResultView = {
+  teamId: string;
+  channelId: string | null;
+  displayName: string;
+  membershipType: string | null;
+  webUrl: string | null;
+  allowlistEntry: string | null;
+};
+
+type TeamsChannelLookupView = {
+  directoryPath: string;
+  backend: string;
+  teamId: string;
+  channelName: string | null;
+  matchCount: number;
+  channels: TeamsChannelLookupResultView[];
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -242,6 +260,28 @@ function reserveGeneratedContactId(name: string, reservedIds: Set<string>): stri
   let suffix = 2;
   while (reservedIds.has(candidate)) {
     candidate = `${base}_${suffix}`;
+    suffix += 1;
+  }
+  reservedIds.add(candidate);
+  return candidate;
+}
+
+function communicationTargetIdSlug(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "channel";
+}
+
+function reserveGeneratedCommunicationTargetId(name: string, reservedIds: Set<string>): string {
+  const base = `teams-${communicationTargetIdSlug(name)}`;
+  let candidate = base;
+  let suffix = 2;
+  while (reservedIds.has(candidate)) {
+    candidate = `${base}-${suffix}`;
     suffix += 1;
   }
   reservedIds.add(candidate);
@@ -766,6 +806,30 @@ function normalizeTeamsAuthLoginSession(value: unknown): TeamsAuthLoginSessionVi
   };
 }
 
+function normalizeTeamsChannelLookupResult(value: unknown): TeamsChannelLookupView | null {
+  if (!isRecord(value)) return null;
+  const source = readNestedRecord(value, ["result", "data", "payload"]) ?? value;
+  const channels = Array.isArray(source.channels) ? source.channels : [];
+  return {
+    directoryPath: normalizeDirectoryPath(readRecordString(source, ["directory_path", "directoryPath"])),
+    backend: readRecordString(source, ["backend", "teams_backend", "provider_backend"]) ?? "unknown",
+    teamId: readRecordString(source, ["team_id", "teamId"]) ?? "",
+    channelName: readRecordString(source, ["channel_name", "channelName"]),
+    matchCount: readRecordNumber(source, ["match_count", "matchCount"]) ?? channels.length,
+    channels: channels.map((item) => {
+      const channel = isRecord(item) ? item : {};
+      return {
+        teamId: readRecordString(channel, ["team_id", "teamId"]) ?? "",
+        channelId: readRecordString(channel, ["channel_id", "channelId"]),
+        displayName: readRecordString(channel, ["display_name", "displayName"]) ?? "",
+        membershipType: readRecordString(channel, ["membership_type", "membershipType"]),
+        webUrl: readRecordString(channel, ["web_url", "webUrl"]),
+        allowlistEntry: readRecordString(channel, ["allowlist_entry", "allowlistEntry"]),
+      };
+    }),
+  };
+}
+
 export function ConfigurationScreen() {
   const {
     privilegedUnlocked,
@@ -790,6 +854,12 @@ export function ConfigurationScreen() {
   const [teamsAuthCompleting, setTeamsAuthCompleting] = useState(false);
   const [teamsAuthSigningOut, setTeamsAuthSigningOut] = useState(false);
   const [teamsAuthPollTimeoutSeconds, setTeamsAuthPollTimeoutSeconds] = useState("5");
+  const [teamsChannelLookupTeamId, setTeamsChannelLookupTeamId] = useState("");
+  const [teamsChannelLookupChannelName, setTeamsChannelLookupChannelName] = useState("");
+  const [teamsChannelLookupIncludeAll, setTeamsChannelLookupIncludeAll] = useState(false);
+  const [teamsChannelLookupResult, setTeamsChannelLookupResult] = useState<TeamsChannelLookupView | null>(null);
+  const [teamsChannelLookupLoading, setTeamsChannelLookupLoading] = useState(false);
+  const [teamsChannelLookupError, setTeamsChannelLookupError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const teamsAuthDirectoryPathRef = useRef(normalizeDirectoryPath(selectedDirectoryPath));
@@ -1015,6 +1085,81 @@ export function ConfigurationScreen() {
     }
   }
 
+  async function handleTeamsChannelLookup() {
+    const directoryPath = normalizeDirectoryPath(selectedDirectoryPath);
+    const teamId = teamsChannelLookupTeamId.trim();
+    const channelName = teamsChannelLookupIncludeAll ? teamsChannelLookupChannelName.trim() || null : teamsChannelLookupChannelName.trim();
+    if (!teamId) {
+      setTeamsChannelLookupError("Team id is required.");
+      setTeamsChannelLookupResult(null);
+      return;
+    }
+    if (!teamsChannelLookupIncludeAll && !channelName) {
+      setTeamsChannelLookupError("Channel name is required unless all channels are requested.");
+      setTeamsChannelLookupResult(null);
+      return;
+    }
+    setTeamsChannelLookupLoading(true);
+    setTeamsChannelLookupError(null);
+    try {
+      const query = new URLSearchParams({
+        directory_path: directoryPath,
+        team_id: teamId,
+        include_all: String(teamsChannelLookupIncludeAll),
+      });
+      if (channelName) {
+        query.set("channel_name", channelName);
+      }
+      const payload = await fetchJson<Record<string, unknown>>(`/api/teams-auth/channels?${query.toString()}`);
+      const nextResult = normalizeTeamsChannelLookupResult(payload);
+      if (!nextResult) {
+        throw new Error("Teams channel lookup returned an unexpected payload.");
+      }
+      setTeamsChannelLookupResult(nextResult);
+    } catch (reason) {
+      setTeamsChannelLookupResult(null);
+      setTeamsChannelLookupError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setTeamsChannelLookupLoading(false);
+    }
+  }
+
+  function insertTeamsChannelLookupResult(
+    field: ConfigurationField,
+    fieldState: DraftFieldState,
+    channel: TeamsChannelLookupResultView,
+  ) {
+    const allowlistEntry = channel.allowlistEntry?.trim();
+    if (!allowlistEntry) {
+      setTeamsChannelLookupError("The selected channel does not include an allowlist entry.");
+      return;
+    }
+    const updated = mutateCommunicationTargetsField(field, fieldState, (current) => {
+      const reservedIds = new Set(current.map((entry) => entry.id.trim().toLowerCase()).filter(Boolean));
+      const channelId = channel.displayName.trim() || channel.channelId?.trim() || "channel";
+      return [
+        ...current,
+        {
+          id: reserveGeneratedCommunicationTargetId(channelId, reservedIds),
+          disabled: false,
+          provider: "teams",
+          kind: "teams",
+          address: allowlistEntry,
+          capabilities: ["notify"],
+          authProfileRef: "",
+        },
+      ];
+    });
+    if (!updated) {
+      return;
+    }
+    setTeamsChannelLookupError(null);
+    setStatusMessage(
+      `Inserted ${channel.displayName.trim() || channel.channelId?.trim() || "Teams channel"} into the Communications draft.`,
+    );
+    setError(null);
+  }
+
   useEffect(() => {
     async function refresh() {
       if (selectedTab !== "communications") {
@@ -1035,6 +1180,11 @@ export function ConfigurationScreen() {
     void refresh();
     return () => {};
   }, [selectedDirectoryPath, selectedTab]);
+
+  useEffect(() => {
+    setTeamsChannelLookupResult(null);
+    setTeamsChannelLookupError(null);
+  }, [selectedDirectoryPath]);
 
   async function handleSaveTab() {
     if (!selectedTabDefinition || !snapshot) return;
@@ -1177,14 +1327,15 @@ export function ConfigurationScreen() {
     field: ConfigurationField,
     fieldState: DraftFieldState,
     mutate: (entries: CommunicationTargetDraftEntry[]) => CommunicationTargetDraftEntry[],
-  ) {
+  ): boolean {
     const parsed = parseCommunicationTargetDraftValue(fieldState.value);
     if (parsed.error) {
       setError(`Unable to edit communication targets: ${parsed.error}`);
-      return;
+      return false;
     }
     updateCommunicationTargetsField(field.field_name, mutate(parsed.entries));
     setError(null);
+    return true;
   }
 
   function updateCommunicationTargetEntry(
@@ -1503,6 +1654,8 @@ export function ConfigurationScreen() {
     const entries = parsed.entries;
     const explicitIds = new Set(entries.map((entry) => entry.id.trim().toLowerCase()).filter(Boolean));
     const availableInheritedTargets = inheritedTargets.filter((target) => !explicitIds.has(target.id.trim().toLowerCase()));
+    const teamsChannelLookupDisabled = loading || saving || teamsChannelLookupLoading || !state?.directory_scoped_config_enabled;
+    const teamsChannelInsertDisabled = disabled || mutationLocked || teamsChannelLookupLoading || Boolean(parsed.error);
     return (
       <div className="communication-targets-editor">
         <div className="contacts-editor-header">
@@ -1524,11 +1677,106 @@ export function ConfigurationScreen() {
                   },
                 ])
               }
-              disabled={disabled}
+              disabled={disabled || mutationLocked}
             >
               Add target
             </button>
           </div>
+        </div>
+        <div className="contact-subsection teams-channel-lookup">
+          <div className="contact-subsection-header">
+            <strong>Teams channel lookup</strong>
+            <div className="inline-actions compact-actions">
+              <button
+                type="button"
+                onClick={() => void handleTeamsChannelLookup()}
+                disabled={teamsChannelLookupDisabled}
+              >
+                {teamsChannelLookupLoading ? "Looking up..." : "Lookup channels"}
+              </button>
+            </div>
+          </div>
+          <div className="teams-channel-lookup-grid">
+            <label className="field-stack">
+              <span>Team id</span>
+              <input
+                value={teamsChannelLookupTeamId}
+                onChange={(event) => setTeamsChannelLookupTeamId(event.target.value)}
+                disabled={teamsChannelLookupDisabled}
+                placeholder="c85e4de5-e0d7-4240-8302-8bc944f2360d"
+              />
+            </label>
+            <label className="field-stack">
+              <span>Channel name</span>
+              <input
+                value={teamsChannelLookupChannelName}
+                onChange={(event) => setTeamsChannelLookupChannelName(event.target.value)}
+                disabled={teamsChannelLookupDisabled}
+                placeholder="General"
+              />
+            </label>
+            <label className="checkbox-row teams-channel-lookup-all-toggle">
+              <input
+                type="checkbox"
+                checked={teamsChannelLookupIncludeAll}
+                onChange={(event) => setTeamsChannelLookupIncludeAll(event.target.checked)}
+                disabled={teamsChannelLookupDisabled}
+              />
+              <span>Include all channels</span>
+            </label>
+          </div>
+          {teamsChannelLookupError ? <div className="callout error-callout">{teamsChannelLookupError}</div> : null}
+          {teamsChannelLookupResult ? (
+            <div className="teams-channel-lookup-results">
+              <div className="panel-meta">
+                Directory {teamsChannelLookupResult.directoryPath} · backend {teamsChannelLookupResult.backend} ·{" "}
+                {teamsChannelLookupResult.matchCount} match{teamsChannelLookupResult.matchCount === 1 ? "" : "es"}
+              </div>
+              {!teamsChannelLookupResult.channels.length ? (
+                <div className="empty-state">
+                  No matching channels were returned for team {teamsChannelLookupResult.teamId}.
+                </div>
+              ) : (
+                teamsChannelLookupResult.channels.map((channel) => (
+                  <div key={`${channel.teamId}-${channel.channelId ?? channel.displayName}`} className="teams-channel-lookup-result">
+                    <div className="teams-channel-lookup-result-header">
+                      <div>
+                        <strong>{channel.displayName || channel.channelId || "Teams channel"}</strong>
+                        <div className="panel-meta">
+                          {channel.membershipType ?? "membership unknown"}
+                          {channel.allowlistEntry ? ` · ${channel.allowlistEntry}` : ""}
+                        </div>
+                      </div>
+                      <div className="inline-actions compact-actions teams-channel-lookup-result-actions">
+                        {channel.webUrl ? (
+                          <a href={channel.webUrl} target="_blank" rel="noreferrer">
+                            Open
+                          </a>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => insertTeamsChannelLookupResult(field, fieldState, channel)}
+                          disabled={teamsChannelInsertDisabled || !channel.allowlistEntry}
+                        >
+                          Insert target
+                        </button>
+                      </div>
+                    </div>
+                    <div className="teams-channel-lookup-result-fields">
+                      <div>
+                        <span>Channel id</span>
+                        <strong>{channel.channelId ?? "n/a"}</strong>
+                      </div>
+                      <div>
+                        <span>Allowlist entry</span>
+                        <strong>{channel.allowlistEntry ?? "n/a"}</strong>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          ) : null}
         </div>
         {parsed.error ? (
           <div className="callout error-callout">Communication target draft could not be read: {parsed.error}</div>

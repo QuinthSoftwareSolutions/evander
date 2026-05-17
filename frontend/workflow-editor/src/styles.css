@@ -3497,6 +3497,84 @@ select {
   word-break: break-word;
 }
 
+.teams-channel-lookup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 1rem;
+  border: 1px solid rgba(93, 75, 48, 0.12);
+  border-radius: 18px;
+  background: rgba(247, 250, 248, 0.72);
+}
+
+.teams-channel-lookup-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.85rem;
+  align-items: end;
+}
+
+.teams-channel-lookup-all-toggle {
+  align-self: end;
+  padding-bottom: 0.25rem;
+}
+
+.teams-channel-lookup-results {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.teams-channel-lookup-result {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.95rem 1rem;
+  border: 1px solid rgba(93, 75, 48, 0.12);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.teams-channel-lookup-result-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.teams-channel-lookup-result-header strong {
+  overflow-wrap: anywhere;
+}
+
+.teams-channel-lookup-result-actions {
+  flex: 0 0 auto;
+}
+
+.teams-channel-lookup-result-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.75rem;
+}
+
+.teams-channel-lookup-result-fields div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.teams-channel-lookup-result-fields span {
+  color: rgba(61, 77, 68, 0.75);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.teams-channel-lookup-result-fields strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .string-list-selector {
   display: flex;
   flex-direction: column;
