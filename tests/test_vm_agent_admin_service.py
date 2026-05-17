@@ -398,6 +398,9 @@ def test_chat_assistant_session_resolution_is_backend_aware(
     assert shared_session.metadata["execution_backend"] == "libvirt_vm"
     assert ToolName.ASSISTANT_POST_CHAT_REPLY in shared_session.allowed_tools
     assert {
+        value["user_message_id"] for value in shared_session.metadata["admin_chat_threads"].values()
+    } == {"msg-a", "msg-b"}
+    assert {
         value["thread_id"] for value in shared_session.metadata["admin_chat_threads"].values()
     } == {"thread-a", "thread-b"}
 
@@ -422,6 +425,12 @@ def test_chat_assistant_session_resolution_is_backend_aware(
 
     assert reused_libvirt["session_id"] == "assistant-shared"
     assert reused_libvirt["agent_thread_id"] == "thread-real-alice-1"
+    updated_shared_session = admin.runtime.session_repository.get_session("assistant-shared")
+    assert updated_shared_session is not None
+    assert {
+        value["user_message_id"]
+        for value in updated_shared_session.metadata["admin_chat_threads"].values()
+    } == {"msg-a2", "msg-b"}
     assert [call["vm_name"] for call in create_vm_calls] == ["assistant-shared"]
     assert create_vm_calls[0]["allow_existing_session"] is True
     assert [call[0] for call in vm_copy_calls] == [
@@ -527,6 +536,9 @@ def test_chat_assistant_session_resolution_is_backend_aware(
         alice_container["session_id"]
     )
     assert alice_session_reused is not None
+    assert {
+        value["user_message_id"] for value in alice_session_reused.metadata["admin_chat_threads"].values()
+    } == {"msg-c", "msg-c2"}
     assert {
         value["thread_id"] for value in alice_session_reused.metadata["admin_chat_threads"].values()
     } == {"thread-c"}
