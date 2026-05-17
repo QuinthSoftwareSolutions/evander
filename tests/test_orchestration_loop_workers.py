@@ -106,6 +106,49 @@ def test_effect_queue_delivery_semantics_are_preserved(tmp_path: Path) -> None:
     assert queue_payload["event-1"]["delivery_state"] == "delivered"
 
 
+def test_effect_worker_wiring_uses_effect_cursor_path_for_processed_checkpoint(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    gate_cursor_path = runtime_dir / "custom-gate-cursors.json"
+    effect_cursor_path = runtime_dir / "custom-effect-cursors.json"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "orchestration_store_backend": "json",
+            "triggers": [],
+            "gates": [],
+            "effects": [],
+            "queries": [],
+            "edges": [],
+            "gate_cursor_store_path": gate_cursor_path,
+            "effect_cursor_store_path": effect_cursor_path,
+        }
+    )
+
+    wiring = build_effect_worker_wiring(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+        include_default_domain_handlers=False,
+    )
+
+    assert wiring.cursor_path == effect_cursor_path
+
+    wiring.effect_cursor_repository.record_processed_event(
+        event_id="event-1",
+        source_node_id="trigger-1",
+    )
+
+    assert effect_cursor_path.exists()
+    effect_cursor_payload = json.loads(effect_cursor_path.read_text(encoding="utf-8"))
+    assert effect_cursor_payload["last_processed_event_id"] == "event-1"
+    assert not gate_cursor_path.exists()
+
+
 def test_core_minimal_profile_smoke_builds_trigger_and_effect_workers_without_builtin_providers(
     tmp_path: Path,
 ) -> None:
