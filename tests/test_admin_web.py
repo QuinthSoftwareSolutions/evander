@@ -1092,6 +1092,16 @@ def test_admin_web_save_seeds_new_ticket_created_trigger_cursor(tmp_path: Path) 
         encoding="utf-8",
     )
     cursor_path = runtime_dir / "trigger-cursors-ticket-created.json"
+    cursor_path.write_text(
+        json.dumps(
+            {
+                "preserve-me": {"last_created_at": "2026-05-01T00:00:00Z"},
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     for issue_number, directory_path, created_at in [
         ("1", "root/team-a", datetime(2026, 5, 2, 8, 0, tzinfo=timezone.utc)),
         ("2", "root/team-a/subteam", datetime(2026, 5, 2, 11, 30, tzinfo=timezone.utc)),
@@ -1132,6 +1142,7 @@ def test_admin_web_save_seeds_new_ticket_created_trigger_cursor(tmp_path: Path) 
 
     assert response.status_code == 200
     cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+    assert cursor_payload["preserve-me"] == {"last_created_at": "2026-05-01T00:00:00Z"}
     assert "ticket-existing" not in cursor_payload
     assert cursor_payload["ticket-copy"]["last_created_at"] == "2026-05-02T11:30:00Z"
 

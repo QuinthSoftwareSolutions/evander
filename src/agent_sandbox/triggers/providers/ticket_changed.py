@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from agent_sandbox.models import LocalIssueRecord
-from agent_sandbox.storage import JsonStore
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import TicketChangedTriggerDefinition
 from agent_sandbox.triggers.providers._cursor_state import (
@@ -11,31 +9,35 @@ from agent_sandbox.triggers.providers._cursor_state import (
     latest_cursor_timestamp_text,
     merge_cursor_ids,
 )
+from agent_sandbox.triggers.providers._local_tickets import (
+    RECENT_ISSUE_IDS_FIELD,
+    TICKET_CHANGED_CURSOR_FIELD,
+    RECENT_ISSUE_LIMIT,
+    local_ticket_candidates,
+    parse_ticket_timestamp,
+    ticket_cursor_path,
+)
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 
 
 class TicketChangedTriggerProvider(TriggerProviderBase):
-    _RECENT_ISSUE_LIMIT = 512
-
     def poll(self) -> list[TriggerEvent]:
         trigger = self._trigger()
         cursor_store = self._cursor_store()
         state = cursor_store.get(trigger.id)
-        cursor = _parse_dt(state.get("last_updated_at"))
+        cursor = parse_ticket_timestamp(state.get(TICKET_CHANGED_CURSOR_FIELD))
         recent_issue_ids = [
             value
-            for value in state.get("recent_issue_ids", [])
+            for value in state.get(RECENT_ISSUE_IDS_FIELD, [])
             if isinstance(value, str) and value.strip()
         ]
         recent_issue_id_set = set(recent_issue_ids)
 
-        issues_store = JsonStore(self._runtime_dir() / "local-issues.json", LocalIssueRecord)
-        candidates = [
-            issue
-            for issue in issues_store.read_all().values()
-            if _within_directories(issue.directory_path, trigger.directories)
-        ]
-        candidates.sort(key=lambda issue: (issue.updated_at, issue.issue_id))
+        candidates = local_ticket_candidates(
+            self._runtime_dir(),
+            trigger.directories,
+            "updated_at",
+        )
 
         events: list[TriggerEvent] = []
         for issue in candidates:
@@ -64,7 +66,7 @@ class TicketChangedTriggerProvider(TriggerProviderBase):
         if not isinstance(payload, dict):
             return
         issue_id = str(payload.get("issue_id") or "").strip()
-        occurred_at = _parse_dt(payload.get("updated_at")) or event.occurred_at
+        occurred_at = parse_ticket_timestamp(payload.get("updated_at")) or event.occurred_at
         if not issue_id or occurred_at is None:
             return
         self._cursor_store().update(
@@ -85,29 +87,7 @@ class TicketChangedTriggerProvider(TriggerProviderBase):
         return self.runtime_context.resolved_config.runtime_dir
 
     def _cursor_store(self) -> TriggerCursorStore:
-        return TriggerCursorStore(self._runtime_dir() / "trigger-cursors-ticket-changed.json")
-
-
-def _within_directories(candidate: str, directories: list[str]) -> bool:
-    if not directories:
-        return True
-    for directory in directories:
-        normalized = directory.strip().strip("/")
-        if candidate == normalized or candidate.startswith(f"{normalized}/"):
-            return True
-    return False
-
-
-def _parse_dt(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    normalized = value.strip()
-    if normalized.endswith("Z"):
-        normalized = normalized[:-1] + "+00:00"
-    parsed = datetime.fromisoformat(normalized)
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+        return TriggerCursorStore(ticket_cursor_path(self._runtime_dir(), "changed"))
 
 
 def _acknowledge_issue(
@@ -115,13 +95,13 @@ def _acknowledge_issue(
     issue_id: str,
     occurred_at: datetime,
 ) -> dict[str, object]:
-    state["last_updated_at"] = latest_cursor_timestamp_text(
-        state.get("last_updated_at"),
+    state[TICKET_CHANGED_CURSOR_FIELD] = latest_cursor_timestamp_text(
+        state.get(TICKET_CHANGED_CURSOR_FIELD),
         occurred_at,
     )
-    state["recent_issue_ids"] = merge_cursor_ids(
-        state.get("recent_issue_ids"),
+    state[RECENT_ISSUE_IDS_FIELD] = merge_cursor_ids(
+        state.get(RECENT_ISSUE_IDS_FIELD),
         [issue_id],
-        limit=TicketChangedTriggerProvider._RECENT_ISSUE_LIMIT,
+        limit=RECENT_ISSUE_LIMIT,
     )
     return state
