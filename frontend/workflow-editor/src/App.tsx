@@ -4294,7 +4294,7 @@ export default function App() {
                       <div className="run-detail-edges">
                         {runDetailGraphEdges.map((edge) => (
                           <span key={`${edge.source_id}-${edge.source_port ?? "default"}-${edge.target_id}`}>
-                            {edge.source_id}{edge.source_port ? `:${edge.source_port}` : ""} -> {edge.target_id}
+                            {edge.source_id}{edge.source_port ? `:${edge.source_port}` : ""}{" -> "}{edge.target_id}
                           </span>
                         ))}
                       </div>
