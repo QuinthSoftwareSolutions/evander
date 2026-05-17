@@ -3287,8 +3287,12 @@ select {
 
 .communication-target-grid {
   display: grid;
-  grid-template-columns: minmax(10rem, 0.8fr) minmax(9rem, 0.6fr) minmax(9rem, 0.6fr) minmax(14rem, 1.2fr) minmax(12rem, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
   gap: 0.85rem;
+}
+
+.communication-target-address-field {
+  grid-column: span 2;
 }
 
 .communication-target-capabilities {
@@ -4613,6 +4617,10 @@ select {
   .contact-row,
   .contact-phone-row {
     grid-template-columns: 1fr;
+  }
+
+  .communication-target-address-field {
+    grid-column: auto;
   }
 
   .communication-target-inherited-row {
