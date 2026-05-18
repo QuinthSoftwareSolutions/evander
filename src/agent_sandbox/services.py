@@ -2987,8 +2987,7 @@ class PrQueryProvider(Protocol):
         query_time_range_type: str | None = None,
         include_links: bool | None = None,
         max_comment_length: int | None = None,
-        tags_any: list[str] | None = None,
-        tags_all: list[str] | None = None,
+        tags: str | None = None,
         top: int | None = None,
         skip: int | None = None,
         cursor: str | None = None,
@@ -3148,16 +3147,14 @@ class AzureDevOpsPrQueryProvider:
         query_time_range_type: str | None = None,
         include_links: bool | None = None,
         max_comment_length: int | None = None,
-        tags_any: list[str] | None = None,
-        tags_all: list[str] | None = None,
+        tags: str | None = None,
         top: int | None = None,
         skip: int | None = None,
         cursor: str | None = None,
     ) -> ListPullRequestsResponse:
         repo_identifier = _normalize_azure_devops_repo_identifier(repo)
         project_name = _normalize_optional_text(project) or self.project
-        required_any = _normalize_string_list(tags_any)
-        required_all = _normalize_string_list(tags_all)
+        tag_filter = _parse_pull_request_tag_expression(tags)
         params: dict[str, Any] = {"api-version": "7.1"}
         for param_name, value in (
             ("searchCriteria.status", status.strip().lower() if status else None),
@@ -3203,7 +3200,7 @@ class AzureDevOpsPrQueryProvider:
                 for item in pr_items
                 if isinstance(item, dict)
             ]
-            if required_any or required_all:
+            if tag_filter is not None:
                 for item in normalized_items:
                     item.tags = self._list_pr_labels(
                         client=client,
@@ -3215,7 +3212,7 @@ class AzureDevOpsPrQueryProvider:
         filtered_items = [
             item
             for item in normalized_items
-            if _pull_request_tags_match(item.tags, tags_any=required_any, tags_all=required_all)
+            if tag_filter is None or _pull_request_tags_match(item.tags, tag_filter=tag_filter)
         ]
 
         raw_count = payload.get("count")
@@ -3235,7 +3232,7 @@ class AzureDevOpsPrQueryProvider:
             "candidate_count": candidate_count,
             "returned_count": len(filtered_items),
             "server_count": raw_count if isinstance(raw_count, int) else None,
-            "tag_filter_client_side": bool(required_any or required_all),
+            "tag_filter_client_side": tag_filter is not None,
             "has_more": bool(next_cursor or next_skip is not None),
         }
         return ListPullRequestsResponse(
@@ -3611,18 +3608,186 @@ def _normalize_string_list(value: Any) -> list[str]:
     return [str(item).strip() for item in raw_items if str(item).strip()]
 
 
+@dataclass(frozen=True)
+class _PullRequestTagExpression:
+    kind: Literal["tag", "and", "or", "not"]
+    value: str | None = None
+    children: tuple["_PullRequestTagExpression", ...] = ()
+
+
+@dataclass(frozen=True)
+class _PullRequestTagToken:
+    kind: Literal["tag", "operator", "left_paren", "right_paren"]
+    value: str
+
+
+class _PullRequestTagExpressionParser:
+    def __init__(self, expression: str) -> None:
+        self._tokens = _tokenize_pull_request_tag_expression(expression)
+        self._index = 0
+
+    def parse(self) -> _PullRequestTagExpression:
+        if not self._tokens:
+            raise ValueError("pull request tag expression must not be empty")
+        expression = self._parse_or()
+        trailing = self._peek()
+        if trailing is not None:
+            raise ValueError(
+                f"unexpected token {trailing.value!r} in pull request tag expression"
+            )
+        return expression
+
+    def _parse_or(self) -> _PullRequestTagExpression:
+        expression = self._parse_and()
+        while self._match_operator("or"):
+            expression = _PullRequestTagExpression(
+                kind="or",
+                children=(expression, self._parse_and()),
+            )
+        return expression
+
+    def _parse_and(self) -> _PullRequestTagExpression:
+        expression = self._parse_not()
+        while self._match_operator("and"):
+            expression = _PullRequestTagExpression(
+                kind="and",
+                children=(expression, self._parse_not()),
+            )
+        return expression
+
+    def _parse_not(self) -> _PullRequestTagExpression:
+        if self._match_operator("not"):
+            return _PullRequestTagExpression(kind="not", children=(self._parse_not(),))
+        return self._parse_primary()
+
+    def _parse_primary(self) -> _PullRequestTagExpression:
+        token = self._peek()
+        if token is None:
+            raise ValueError("expected tag or '(' in pull request tag expression")
+        if token.kind == "tag":
+            self._index += 1
+            return _PullRequestTagExpression(kind="tag", value=token.value)
+        if token.kind == "left_paren":
+            self._index += 1
+            expression = self._parse_or()
+            closing = self._peek()
+            if closing is None or closing.kind != "right_paren":
+                raise ValueError("missing ')' in pull request tag expression")
+            self._index += 1
+            return expression
+        raise ValueError(f"expected tag or '(' before {token.value!r}")
+
+    def _match_operator(self, operator: str) -> bool:
+        token = self._peek()
+        if token is None or token.kind != "operator" or token.value != operator:
+            return False
+        self._index += 1
+        return True
+
+    def _peek(self) -> _PullRequestTagToken | None:
+        if self._index >= len(self._tokens):
+            return None
+        return self._tokens[self._index]
+
+
+def _parse_pull_request_tag_expression(
+    expression: str | None,
+) -> _PullRequestTagExpression | None:
+    if expression is None:
+        return None
+    if not isinstance(expression, str):
+        raise ValueError("pull request tags must be a string")
+    text = expression.strip()
+    if not text:
+        return None
+    return _PullRequestTagExpressionParser(text).parse()
+
+
+def _tokenize_pull_request_tag_expression(expression: str) -> list[_PullRequestTagToken]:
+    tokens: list[_PullRequestTagToken] = []
+    index = 0
+    while index < len(expression):
+        char = expression[index]
+        if char.isspace():
+            index += 1
+            continue
+        if char == "(":
+            tokens.append(_PullRequestTagToken("left_paren", char))
+            index += 1
+            continue
+        if char == ")":
+            tokens.append(_PullRequestTagToken("right_paren", char))
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            value, index = _read_quoted_pull_request_tag(expression, index)
+            tokens.append(_PullRequestTagToken("tag", value))
+            continue
+
+        start = index
+        while index < len(expression) and not expression[index].isspace():
+            if expression[index] in {"(", ")"}:
+                break
+            index += 1
+        raw_value = expression[start:index].strip()
+        if not raw_value:
+            continue
+        normalized = raw_value.casefold()
+        if normalized in {"and", "or", "not"}:
+            tokens.append(_PullRequestTagToken("operator", normalized))
+        else:
+            tokens.append(_PullRequestTagToken("tag", raw_value))
+    return tokens
+
+
+def _read_quoted_pull_request_tag(expression: str, start: int) -> tuple[str, int]:
+    quote_char = expression[start]
+    index = start + 1
+    value_chars: list[str] = []
+    while index < len(expression):
+        char = expression[index]
+        if char == "\\" and index + 1 < len(expression):
+            value_chars.append(expression[index + 1])
+            index += 2
+            continue
+        if char == quote_char:
+            value = "".join(value_chars).strip()
+            if not value:
+                raise ValueError("pull request tag expression contains an empty quoted tag")
+            return value, index + 1
+        value_chars.append(char)
+        index += 1
+    raise ValueError("unterminated quoted tag in pull request tag expression")
+
+
 def _pull_request_tags_match(
     tags: list[str],
     *,
-    tags_any: list[str],
-    tags_all: list[str],
+    tag_filter: _PullRequestTagExpression,
 ) -> bool:
     present = {tag.casefold() for tag in tags}
-    if tags_any and not any(tag.casefold() in present for tag in tags_any):
-        return False
-    if tags_all and not all(tag.casefold() in present for tag in tags_all):
-        return False
-    return True
+    return _evaluate_pull_request_tag_expression(tag_filter, present)
+
+
+def _evaluate_pull_request_tag_expression(
+    expression: _PullRequestTagExpression,
+    present_tags: set[str],
+) -> bool:
+    if expression.kind == "tag":
+        return bool(expression.value and expression.value.casefold() in present_tags)
+    if expression.kind == "and":
+        return all(
+            _evaluate_pull_request_tag_expression(child, present_tags)
+            for child in expression.children
+        )
+    if expression.kind == "or":
+        return any(
+            _evaluate_pull_request_tag_expression(child, present_tags)
+            for child in expression.children
+        )
+    if expression.kind == "not":
+        return not _evaluate_pull_request_tag_expression(expression.children[0], present_tags)
+    raise ValueError(f"unknown pull request tag expression node: {expression.kind}")
 
 
 def _azure_pr_web_url(payload: dict[str, Any]) -> str | None:
@@ -3669,8 +3834,7 @@ class PrQueryService:
         query_time_range_type: str | None = None,
         include_links: bool | None = None,
         max_comment_length: int | None = None,
-        tags_any: list[str] | None = None,
-        tags_all: list[str] | None = None,
+        tags: str | None = None,
         top: int | None = None,
         skip: int | None = None,
         cursor: str | None = None,
@@ -3695,8 +3859,7 @@ class PrQueryService:
             query_time_range_type=query_time_range_type,
             include_links=include_links,
             max_comment_length=max_comment_length,
-            tags_any=tags_any,
-            tags_all=tags_all,
+            tags=tags,
             top=top,
             skip=skip,
             cursor=cursor,

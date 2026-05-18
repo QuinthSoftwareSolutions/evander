@@ -337,7 +337,7 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:ado:work-items` | _none beyond envelope_ | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top`, `skip`, `outputs` |
 | `query:git:pr-note` | `host_repo_path`, `local_branch` | `remote_name`, `notes_ref`, `outputs` |
 | `query:issue:get` | `issue_id` | `outputs` |
-| `query:pull-request:list` | `provider`, `repo` | `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags_any`, `tags_all`, `top`, `skip`, `cursor`, `outputs` |
+| `query:pull-request:list` | `provider`, `repo` | `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `outputs` |
 | `query:semantic:store-status` | _none beyond envelope_ | `collection_name`, `directory_path`, `outputs` |
 | `query:semantic:search` | `collection_name`, `query_text` | `filter`, `limit`, `score_threshold`, `directory_path`, `outputs` |
 | `query:semantic:get` | `collection_name`, `point_ids` | `directory_path`, `outputs` |
@@ -349,8 +349,11 @@ artifacts folder. The `path` value must be relative and stay inside that folder.
 
 `query:pull-request:list` and `effect:pull-request:update` accept `provider` as
 `azure_devops`, `azure-devops`, or `ado`. Azure DevOps PR tag filters are applied
-client-side after the PR list call, so cron polling workflows should bound the
-candidate set with `status`, branch/time filters, `top`, `skip`, or `cursor`.
+client-side after the PR list call. The `tags` filter accepts tag names with
+case-insensitive `and`, `or`, `not`, and parentheses, for example
+`(TagA or TagB) and not TagC`. Quote tag names that contain spaces or collide
+with an operator. Cron polling workflows should bound the candidate set with
+`status`, branch/time filters, `top`, `skip`, or `cursor`.
 
 `effect:communication:send-message` sends a plain message through a declared
 directory-scoped communication target managed from Admin Web Configuration ->

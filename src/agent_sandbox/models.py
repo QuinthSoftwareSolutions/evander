@@ -1183,21 +1183,19 @@ class ListPullRequestsRequest(BaseModel):
     query_time_range_type: str | None = None
     include_links: bool | None = None
     max_comment_length: int | None = Field(default=None, ge=0)
-    tags_any: list[str] = Field(default_factory=list)
-    tags_all: list[str] = Field(default_factory=list)
+    tags: str | None = None
     top: int | None = Field(default=None, ge=1)
     skip: int | None = Field(default=None, ge=0)
     cursor: str | None = None
 
-    @field_validator("tags_any", "tags_all", mode="before")
+    @field_validator("tags", mode="before")
     @classmethod
-    def normalize_tag_list(cls, value: object) -> list[str]:
+    def normalize_tag_expression(cls, value: object) -> str | None:
         if value is None:
-            return []
-        raw_items = [value] if isinstance(value, str) else value
-        if not isinstance(raw_items, list):
-            raise ValueError("tags must be a string or list of strings")
-        return [str(item).strip() for item in raw_items if str(item).strip()]
+            return None
+        if not isinstance(value, str):
+            raise ValueError("tags must be a string")
+        return value.strip() or None
 
 
 class ListPullRequestsResponse(BaseModel):

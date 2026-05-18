@@ -1119,10 +1119,12 @@ metadata. For Azure DevOps, set `provider` to `azure_devops` or `ado`; the node
 uses the directory-scoped ADO organization, project, and PAT unless
 `organization_url` or `project` is supplied on the node.
 
-Azure DevOps exposes PR labels through separate endpoints, so `tags_any` and
-`tags_all` are applied after listing candidate PRs. Keep polling bounded with
-`status`, `source_ref_name`, `target_ref_name`, `min_time`/`max_time`, `top`,
-`skip`, or `cursor`.
+Azure DevOps exposes PR labels through separate endpoints, so the `tags`
+expression is applied after listing candidate PRs. The expression supports tag
+names with case-insensitive `and`, `or`, `not`, and parentheses, for example
+`(TagA or TagB) and not TagC`. Quote tag names that contain spaces or collide
+with an operator. Keep polling bounded with `status`, `source_ref_name`,
+`target_ref_name`, `min_time`/`max_time`, `top`, `skip`, or `cursor`.
 
 ### Wake workers
 
