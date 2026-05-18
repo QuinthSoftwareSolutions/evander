@@ -67,7 +67,10 @@ import {
   workflowRouteClass,
   type WorkflowConnectionRouteOption,
 } from "./workflowRoutes";
-import { sameGraphNodeIdsForRunAnchors } from "./workflowRunInspect";
+import {
+  sameGraphNodeIdsForRunAnchors,
+  workflowRunDetailActivityCounts,
+} from "./workflowRunInspect";
 import {
   compareWorkflowNodeCatalogEntries,
   groupWorkflowNodeCatalogEntries,
@@ -1581,22 +1584,6 @@ function workflowRunDetailDisplayNodeIds(detail: WorkflowRunDetail): Set<string>
   const visitedNodeIds = workflowRunDetailVisitedNodeIds(detail);
   const displayedNodeIds = new Set([...sameGraphNodeIds].filter((nodeId) => visitedNodeIds.has(nodeId)));
   return displayedNodeIds.size > 0 ? displayedNodeIds : sameGraphNodeIds;
-}
-
-function workflowRunDetailActivityCounts(detail: WorkflowRunDetail): Record<string, WorkflowNodeActivityCounts> {
-  const counts: Record<string, WorkflowNodeActivityCounts> = {};
-  const increment = (nodeId: string | null | undefined, status: string | null | undefined, count = 1) => {
-    if (!nodeId || !status) return;
-    counts[nodeId] ??= {};
-    counts[nodeId][status] = (counts[nodeId][status] ?? 0) + count;
-  };
-  detail.nodes.forEach((node) => increment(node.node_id, node.status ?? node.delivery_state ?? "completed"));
-  detail.active_nodes.forEach((activity) => increment(activity.node_id, activity.status, activity.count));
-  const triggerNodeId = detail.source_node_id ?? detail.trigger_event?.trigger_id ?? null;
-  if (triggerNodeId && !counts[triggerNodeId]) {
-    increment(triggerNodeId, "completed");
-  }
-  return counts;
 }
 
 function stripWorkflowRunGraphNodeKind(node: WorkflowNodeConfig & { kind: WorkflowNodeKind }): WorkflowNodeConfig {

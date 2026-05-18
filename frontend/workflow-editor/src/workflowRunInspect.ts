@@ -1,3 +1,5 @@
+import type { WorkflowNodeActivityCounts, WorkflowRunDetail } from "./types";
+
 type WorkflowEdgeLike = {
   source_id: string;
   target_id: string;
@@ -51,4 +53,33 @@ export function sameGraphNodeIdsForRunAnchors(
     return connectedNodeIdsForRunAnchors(allNodeIds, edges, anchorNodeIds);
   }
   return new Set(matchedGraph.node_ids.filter((nodeId) => allNodeIds.has(nodeId)));
+}
+
+export function workflowRunDetailActivityCounts(
+  detail: WorkflowRunDetail,
+): Record<string, WorkflowNodeActivityCounts> {
+  const counts: Record<string, WorkflowNodeActivityCounts> = {};
+  const detailedNodeIds = new Set<string>();
+  const increment = (
+    nodeId: string | null | undefined,
+    status: string | null | undefined,
+    count = 1,
+  ) => {
+    if (!nodeId || !status) return;
+    counts[nodeId] ??= {};
+    counts[nodeId][status] = (counts[nodeId][status] ?? 0) + count;
+  };
+  detail.nodes.forEach((node) => {
+    if (node.node_id) detailedNodeIds.add(node.node_id);
+    increment(node.node_id, node.status ?? node.delivery_state ?? "completed");
+  });
+  detail.active_nodes.forEach((activity) => {
+    if (activity.node_id && detailedNodeIds.has(activity.node_id)) return;
+    increment(activity.node_id, activity.status, activity.count);
+  });
+  const triggerNodeId = detail.source_node_id ?? detail.trigger_event?.trigger_id ?? null;
+  if (triggerNodeId && !counts[triggerNodeId]) {
+    increment(triggerNodeId, "completed");
+  }
+  return counts;
 }

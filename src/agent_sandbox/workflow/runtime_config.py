@@ -210,18 +210,25 @@ def _compose_configured_workflow_ir(
     composition = compose_workflow_ir(
         project_dir=project_dir,
         workflow_packs=configured_packs if has_configured_packs else [],
-        built_in_workflow_packs=BUILTIN_HIDDEN_WORKFLOW_PACKS,
         inline_ir=inline_ir if has_inline_ir else None,
     )
-    merged = dict(payload)
-    for collection_name in _WORKFLOW_NODE_COLLECTIONS:
-        merged[collection_name] = getattr(composition, collection_name)
-    merged["edges"] = composition.edges
-    return migrate_agent_prompt_lifecycle_ports(merged)
+    return _append_builtin_hidden_workflows(
+        project_dir=project_dir,
+        payload=payload,
+        editable_collections={
+            collection_name: getattr(composition, collection_name)
+            for collection_name in _WORKFLOW_NODE_COLLECTIONS
+        },
+        editable_edges=composition.edges,
+    )
 
 
 def _append_builtin_hidden_workflows(
-    *, project_dir: Path, payload: dict[str, Any]
+    *,
+    project_dir: Path,
+    payload: dict[str, Any],
+    editable_collections: dict[str, list[dict[str, Any]]] | None = None,
+    editable_edges: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     payload = migrate_agent_prompt_lifecycle_ports(payload)
     composition = compose_workflow_ir(
@@ -232,7 +239,11 @@ def _append_builtin_hidden_workflows(
     merged = dict(payload)
     hidden_node_ids: set[str] = set()
     for collection_name in _WORKFLOW_NODE_COLLECTIONS:
-        configured_entries = merged.get(collection_name)
+        configured_entries = (
+            editable_collections.get(collection_name)
+            if editable_collections is not None
+            else merged.get(collection_name)
+        )
         editable_entries = (
             [
                 dict(entry)
@@ -248,7 +259,7 @@ def _append_builtin_hidden_workflows(
         editable_entries.extend(hidden_entries)
         merged[collection_name] = editable_entries
 
-    configured_edges = merged.get("edges")
+    configured_edges = editable_edges if editable_edges is not None else merged.get("edges")
     editable_edges = (
         [
             dict(edge)

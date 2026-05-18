@@ -549,6 +549,160 @@ def test_load_config_composes_configured_pack_with_hidden_system_pack(
     ]
 
 
+def test_load_config_strips_legacy_system_nodes_from_configured_pack(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    packs_dir = project_dir / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    (packs_dir / "legacy-system-nodes.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "legacy-system-nodes",
+                "pack_version": "v1",
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-cron-synthetic",
+                            "display_name": "Synthetic tick",
+                            "type": "trigger:cron",
+                            "expression": "* * * * *",
+                        },
+                        {
+                            "id": "effect-log-synthetic",
+                            "display_name": "Synthetic script",
+                            "type": "effect:bash:script",
+                            "script_path": "/bin/echo",
+                            "args": ["synthetic-workflow"],
+                        },
+                        {
+                            "id": "system.chat_assistant",
+                            "display_name": "Stale pack chat assistant",
+                            "type": "trigger:system:chat-assistant",
+                        },
+                        {
+                            "id": "system.chat_assistant.enqueue_prompt",
+                            "display_name": "Stale pack enqueue",
+                            "type": "effect:agent:enqueue-prompt",
+                            "target": "stale",
+                            "prompt": "stale",
+                        },
+                    ],
+                    "edges": [
+                        {
+                            "source_id": "trigger-cron-synthetic",
+                            "target_id": "effect-log-synthetic",
+                        },
+                        {
+                            "source_id": "system.chat_assistant",
+                            "target_id": "system.chat_assistant.enqueue_prompt",
+                        },
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    path.write_text(
+        json.dumps({"workflow_packs": ["legacy-system-nodes.v1.json"]}),
+        encoding="utf-8",
+    )
+
+    config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+    )
+
+    trigger = next(trigger for trigger in config.triggers if trigger.id == "system.chat_assistant")
+    enqueue = next(
+        effect for effect in config.effects if effect.id == "system.chat_assistant.enqueue_prompt"
+    )
+    assert _node_ids(config.triggers) == [
+        "trigger-cron-synthetic",
+        "system.chat_assistant",
+    ]
+    assert _node_ids(config.effects) == [
+        "effect-log-synthetic",
+        "system.chat_assistant.ensure_session",
+        "system.chat_assistant.enqueue_prompt",
+    ]
+    assert trigger.display_name == "System Chat Assistant"
+    assert enqueue.display_name == "Enqueue chat assistant prompt"
+    assert [(edge.source_id, edge.target_id) for edge in config.edges] == [
+        ("trigger-cron-synthetic", "effect-log-synthetic"),
+        ("system.chat_assistant", "system.chat_assistant.ensure_session"),
+        (
+            "system.chat_assistant.ensure_session",
+            "system.chat_assistant.enqueue_prompt",
+        ),
+    ]
+
+
+def test_load_config_strips_legacy_system_nodes_from_inline_workflow_ir(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "workflow_ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-cron-inline",
+                            "display_name": "Inline tick",
+                            "type": "trigger:cron",
+                            "expression": "* * * * *",
+                        },
+                        {
+                            "id": "effect-log-inline",
+                            "display_name": "Inline script",
+                            "type": "effect:bash:script",
+                            "script_path": "/bin/echo",
+                            "args": ["inline-workflow"],
+                        },
+                        {
+                            "id": "system.chat_assistant",
+                            "display_name": "Stale inline chat assistant",
+                            "type": "trigger:system:chat-assistant",
+                        },
+                    ],
+                    "edges": [
+                        {"source_id": "trigger-cron-inline", "target_id": "effect-log-inline"},
+                        {"source_id": "system.chat_assistant", "target_id": "effect-log-inline"},
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+    )
+
+    trigger = next(trigger for trigger in config.triggers if trigger.id == "system.chat_assistant")
+    assert _node_ids(config.triggers) == [
+        "trigger-cron-inline",
+        "system.chat_assistant",
+    ]
+    assert trigger.display_name == "System Chat Assistant"
+    assert [(edge.source_id, edge.target_id) for edge in config.edges] == [
+        ("trigger-cron-inline", "effect-log-inline"),
+        ("system.chat_assistant", "system.chat_assistant.ensure_session"),
+        (
+            "system.chat_assistant.ensure_session",
+            "system.chat_assistant.enqueue_prompt",
+        ),
+    ]
+
+
 def test_load_config_uses_hidden_system_pack_instead_of_legacy_top_level_system_nodes(
     tmp_path: Path,
 ) -> None:
