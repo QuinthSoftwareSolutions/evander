@@ -4463,6 +4463,42 @@ select {
   grid-template-columns: minmax(0, 1.2fr) minmax(340px, 0.8fr);
 }
 
+.tool-calls-grid {
+  grid-template-columns: minmax(0, 1.4fr) minmax(360px, 0.8fr);
+}
+
+.tool-calls-page .tool-calls-table {
+  min-width: 1280px;
+}
+
+.tool-calls-page .tool-call-detail-stack {
+  display: grid;
+  gap: 1rem;
+}
+
+.tool-calls-page .tool-call-json-grid {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.tool-calls-page .tool-call-json-field textarea {
+  min-height: 13rem;
+}
+
+.tool-calls-page .tool-call-relations {
+  padding: 0;
+}
+
+.tool-calls-page .tool-call-relations button {
+  white-space: nowrap;
+}
+
+@media (min-width: 1120px) {
+  .tool-calls-page .tool-call-json-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 .report-activity-table {
   min-width: 820px;
 }

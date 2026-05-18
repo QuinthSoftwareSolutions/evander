@@ -5,6 +5,7 @@ export type AdminView =
   | "vms"
   | "issues"
   | "sessions"
+  | "tool-calls"
   | "configuration"
   | "users"
   | "workers";
