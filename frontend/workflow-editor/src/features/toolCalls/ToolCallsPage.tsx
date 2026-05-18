@@ -107,6 +107,27 @@ function stringField(item: ToolCallItem | null | undefined, ...keys: string[]): 
   return null;
 }
 
+function toolCallRowKey(item: ToolCallItem | null | undefined, index = 0): string {
+  const explicitId = stringField(item, "event_id", "call_id", "request_id");
+  if (explicitId) {
+    return explicitId;
+  }
+  if (!item) {
+    return "";
+  }
+  return [
+    "tool-call",
+    stringField(item, "tool_name") ?? "unknown-tool",
+    stringField(item, "created_at") ?? "unknown-time",
+    stringField(item, "session_id") ?? "",
+    stringField(item, "correlation_id") ?? "",
+    stringField(item, "approval_request_id") ?? "",
+    stringField(item, "workflow_run_id", "trace_id") ?? "",
+    stringField(item, "directory_path") ?? "",
+    String(index),
+  ].join("|");
+}
+
 function jsonValue(item: ToolCallItem | null | undefined, ...keys: string[]): unknown {
   if (!item) {
     return undefined;
@@ -388,16 +409,18 @@ export function ToolCallsPage() {
     limit: String(DEFAULT_LIMIT),
   });
   const [response, setResponse] = useState<ToolCallsResponse | null>(null);
-  const [selectedCallId, setSelectedCallId] = useState<string>("");
+  const [selectedCallKey, setSelectedCallKey] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const query = useMemo(() => buildQuery(filters, selectedDirectoryPath), [filters, selectedDirectoryPath]);
   const items = response?.items ?? [];
-  const selectedCall = useMemo(
-    () => items.find((item) => stringField(item, "event_id", "call_id", "request_id") === selectedCallId) ?? items[0] ?? null,
-    [items, selectedCallId],
-  );
+  const selectedCall = useMemo(() => {
+    if (!selectedCallKey) {
+      return items[0] ?? null;
+    }
+    return items.find((item, index) => toolCallRowKey(item, index) === selectedCallKey) ?? null;
+  }, [items, selectedCallKey]);
   const relations = useMemo(() => (selectedCall ? relationLinks(selectedCall) : []), [selectedCall]);
   const counts = response?.counts;
   const statusCounts = counts?.status_counts ?? {};
@@ -409,11 +432,11 @@ export function ToolCallsPage() {
   async function loadToolCalls() {
     const payload = await fetchJson<ToolCallsResponse>(`/api/admin/tool-calls${query}`);
     setResponse(payload);
-    setSelectedCallId((current) => {
-      if (current && payload.items.some((item) => stringField(item, "event_id", "call_id", "request_id") === current)) {
+    setSelectedCallKey((current) => {
+      if (current && payload.items.some((item, index) => toolCallRowKey(item, index) === current)) {
         return current;
       }
-      return stringField(payload.items[0] ?? null, "event_id", "call_id", "request_id") ?? "";
+      return toolCallRowKey(payload.items[0] ?? null, 0);
     });
   }
 
@@ -449,14 +472,15 @@ export function ToolCallsPage() {
   }, [query]);
 
   useEffect(() => {
-    if (!selectedCallId) {
-      setSelectedCallId(stringField(items[0] ?? null, "event_id", "call_id", "request_id") ?? "");
+    const firstCallKey = toolCallRowKey(items[0] ?? null, 0);
+    if (!selectedCallKey) {
+      setSelectedCallKey(firstCallKey);
       return;
     }
-    if (!items.some((item) => stringField(item, "event_id", "call_id", "request_id") === selectedCallId)) {
-      setSelectedCallId(stringField(items[0] ?? null, "event_id", "call_id", "request_id") ?? "");
+    if (!items.some((item, index) => toolCallRowKey(item, index) === selectedCallKey)) {
+      setSelectedCallKey(firstCallKey);
     }
-  }, [items, selectedCallId]);
+  }, [items, selectedCallKey]);
 
   function navigateToTab(tab: AdminSectionTab) {
     window.location.hash = tab;
@@ -598,14 +622,14 @@ export function ToolCallsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {items.map((item) => {
-                    const itemId = stringField(item, "event_id", "call_id", "request_id") ?? `${item.tool_name}-${item.created_at}`;
+                  {items.map((item, index) => {
+                    const itemKey = toolCallRowKey(item, index);
                     const itemStatus = normalizeStatus(item);
                     return (
                       <tr
-                        key={itemId}
-                        className={itemId === selectedCallId ? "selected" : ""}
-                        onClick={() => setSelectedCallId(itemId)}
+                        key={itemKey}
+                        className={itemKey === selectedCallKey ? "selected" : ""}
+                        onClick={() => setSelectedCallKey(itemKey)}
                       >
                         <td>{formatTimestamp(item.created_at)}</td>
                         <td>

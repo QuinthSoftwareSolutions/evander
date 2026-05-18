@@ -78,7 +78,6 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
         ],
       },
       {
-        event_id: "tool-call-2",
         tool_name: "make_phone_call",
         created_at: "2026-05-18T10:01:00Z",
         status: "error",
@@ -88,7 +87,6 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
         duration_ms: 1050,
         role: "automation",
         actor_user_id: "user-2",
-        request_id: "request-2",
         correlation_id: "correlation-2",
         approval_request_id: "approval-2",
         workflow_run_id: "run-2",
@@ -98,7 +96,6 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
         error_summary: "blocked by policy",
         redacted_args: {
           session_id: "session-2",
-          request_id: "request-2",
           secret: "<redacted>",
         },
         redacted_result: {
