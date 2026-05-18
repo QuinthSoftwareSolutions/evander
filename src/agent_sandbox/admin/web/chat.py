@@ -306,6 +306,13 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
             return "full-access"
         return "read-only"
 
+    def effective_assistant_settings(request: Request) -> dict[str, Any]:
+        settings = dict(service.read_assistant_settings())
+        if capability_mode(request) != "full-access":
+            settings["read_only"] = True
+            settings["default_profile"] = "read-only"
+        return settings
+
     async def start_or_get_session(request: Request) -> JSONResponse:
         auth.require(request)
         settings = service.read_assistant_settings()
@@ -313,6 +320,15 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
             return json_error("Assistant is disabled by admin settings.", status_code=403)
         user_id = user_id_for_request(request)
         thread_id = store.get_or_create_thread(user_id)
+        backend = str(getattr(service.config, "execution_backend", "libvirt_vm") or "libvirt_vm")
+        service.vm_agent_admin.resolve_chat_assistant_session(
+            user_id=user_id,
+            backend=backend,
+            assistant_scope="admin_chat",
+            settings=effective_assistant_settings(request),
+            thread_id=thread_id,
+            user_message_id=None,
+        )
         return JSONResponse(
             {
                 "user_id": user_id,
@@ -330,16 +346,23 @@ def chat_routes(service: AdminService, auth: AdminWebAuth) -> list[Route]:
             return json_error("Assistant is disabled by admin settings.", status_code=403)
         user_id = user_id_for_request(request)
         thread_id = store.start_new_thread(user_id)
+        backend = str(getattr(service.config, "execution_backend", "libvirt_vm") or "libvirt_vm")
         reset_context = getattr(service.vm_agent_admin, "reset_chat_assistant_thread_context", None)
         if callable(reset_context):
             reset_context(
                 user_id=user_id,
-                backend=str(
-                    getattr(service.config, "execution_backend", "libvirt_vm") or "libvirt_vm"
-                ),
+                backend=backend,
                 assistant_scope="admin_chat",
                 thread_id=thread_id,
             )
+        service.vm_agent_admin.resolve_chat_assistant_session(
+            user_id=user_id,
+            backend=backend,
+            assistant_scope="admin_chat",
+            settings=effective_assistant_settings(request),
+            thread_id=thread_id,
+            user_message_id=None,
+        )
         return JSONResponse(
             {
                 "user_id": user_id,

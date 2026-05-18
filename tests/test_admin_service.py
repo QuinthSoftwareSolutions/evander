@@ -2259,13 +2259,20 @@ def test_admin_service_chat_post_publishes_hidden_trigger_event(tmp_path: Path) 
     )
     _merged, changed = service._with_system_chat_assistant_workflow(persisted)
     assert changed is False
-    queued = SqliteTriggerEventQueue(tmp_path / "runtime" / "orchestration.db").read_all()[
-        "chat:msg-1"
-    ].model_dump(mode="json")
+    queued_events = SqliteTriggerEventQueue(
+        tmp_path / "runtime" / "orchestration.db"
+    ).read_all()
+    assert len(queued_events) == 1
+    queued = queued_events["chat:msg-1"].model_dump(mode="json")
     assert queued["trigger_id"] == "system.chat_assistant"
-    assert queued["payload"]["content"] == "hello"
-    assert queued["payload"]["backend"] == "container_worker_vm"
-    assert queued["payload"]["assistant_capability_mode"] == "read-only"
+    assert queued["payload"] == {
+        "user_id": "alice",
+        "thread_id": "thread-1",
+        "user_message_id": "msg-1",
+        "content": "hello",
+        "backend": "container_worker_vm",
+        "assistant_capability_mode": "read-only",
+    }
     assert not (tmp_path / "runtime" / "queued-agent-prompts.json").exists()
 
 
