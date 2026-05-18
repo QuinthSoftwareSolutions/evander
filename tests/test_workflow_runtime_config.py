@@ -20,9 +20,80 @@ def _config_path(project_dir: Path) -> Path:
     return project_dir / "config" / "trigger-orchestrator" / "config.json"
 
 
+def _node_ids(nodes: object) -> list[str]:
+    return [str(getattr(node, "id")) for node in nodes]
+
+
 def _write_communication_targets(runtime_dir: Path, targets: list[dict[str, object]]) -> None:
     repository = SqliteCommunicationTargetsRepository(communication_targets_db_path(runtime_dir))
     repository.write_overlay("root", {"targets": targets})
+
+
+def _write_system_pack(packs_dir: Path, *, enqueue_display_name: str) -> None:
+    (packs_dir / "system.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "system",
+                "pack_version": "v1",
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "system.chat_assistant",
+                            "display_name": "System Chat Assistant",
+                            "type": "trigger:system:chat-assistant",
+                        },
+                        {
+                            "id": "system.chat_assistant.ensure_session",
+                            "display_name": "Resolve chat assistant session",
+                            "type": "effect:chat-assistant:ensure-session",
+                            "user_id": "${{system.chat_assistant.user_id}}",
+                            "thread_id": "${{system.chat_assistant.thread_id}}",
+                            "user_message_id": "${{system.chat_assistant.user_message_id}}",
+                            "content": "${{system.chat_assistant.content}}",
+                            "backend": "${{system.chat_assistant.backend}}",
+                            "assistant_capability_mode": (
+                                "${{system.chat_assistant.assistant_capability_mode}}"
+                            ),
+                            "assistant_scope": "admin_chat",
+                        },
+                        {
+                            "id": "system.chat_assistant.enqueue_prompt",
+                            "display_name": enqueue_display_name,
+                            "type": "effect:agent:enqueue-prompt",
+                            "target": "${{system.chat_assistant.ensure_session.session_id}}",
+                            "session_id": "${{system.chat_assistant.ensure_session.session_id}}",
+                            "vm_name": "${{system.chat_assistant.ensure_session.vm_name}}",
+                            "prompt": "${{system.chat_assistant.ensure_session.prompt}}",
+                            "model": "${{system.chat_assistant.ensure_session.model}}",
+                            "vm_user": "agent",
+                            "resume_thread_id": (
+                                "${{system.chat_assistant.ensure_session.agent_thread_id}}"
+                            ),
+                            "queue_key": (
+                                "chat:${{system.chat_assistant.ensure_session.thread_id}}:"
+                                "${{system.chat_assistant.ensure_session.user_message_id}}"
+                            ),
+                            "execution_backend": (
+                                "${{system.chat_assistant.ensure_session.execution_backend}}"
+                            ),
+                        },
+                    ],
+                    "edges": [
+                        {
+                            "source_id": "system.chat_assistant",
+                            "target_id": "system.chat_assistant.ensure_session",
+                        },
+                        {
+                            "source_id": "system.chat_assistant.ensure_session",
+                            "target_id": "system.chat_assistant.enqueue_prompt",
+                        },
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_loaded_worker_config_defaults_to_sqlite_orchestration_store(tmp_path: Path) -> None:
@@ -191,8 +262,42 @@ def test_get_latest_detects_referenced_workflow_pack_change(tmp_path: Path) -> N
     latest, changed = reloader.get_latest()
 
     assert changed is True
-    assert [trigger.id for trigger in latest.triggers] == ["trigger-new"]
-    assert [effect.id for effect in latest.effects] == ["effect-new"]
+    assert _node_ids(latest.triggers) == ["trigger-new", "system.chat_assistant"]
+    assert _node_ids(latest.effects) == [
+        "effect-new",
+        "system.chat_assistant.ensure_session",
+        "system.chat_assistant.enqueue_prompt",
+    ]
+
+
+def test_get_latest_detects_hidden_system_workflow_pack_change(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    packs_dir = project_dir / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    _write_system_pack(packs_dir, enqueue_display_name="Enqueue chat assistant prompt")
+    path.write_text(json.dumps({"runtime_dir": str(runtime_dir)}), encoding="utf-8")
+    base_config = GatewayConfig(runtime_dir=runtime_dir)
+    initial_config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=base_config
+    )
+    reloader = TriggerOrchestratorWorkerGlobalConfigReloader(
+        project_dir=project_dir,
+        initial_config=initial_config,
+        base_config=base_config,
+    )
+
+    _write_system_pack(packs_dir, enqueue_display_name="Enqueue updated chat assistant prompt")
+
+    latest, changed = reloader.get_latest()
+
+    enqueue_effect = next(
+        effect for effect in latest.effects if effect.id == "system.chat_assistant.enqueue_prompt"
+    )
+    assert changed is True
+    assert enqueue_effect.display_name == "Enqueue updated chat assistant prompt"
 
 
 def test_load_config_compiles_await_agent_templates_to_explicit_triggers(tmp_path: Path) -> None:
@@ -291,9 +396,50 @@ def test_load_config_composes_workflow_pack_ir(tmp_path: Path) -> None:
         project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
     )
 
-    assert [trigger.id for trigger in config.triggers] == ["trigger-cron-synthetic"]
-    assert [effect.id for effect in config.effects] == ["effect-log-synthetic"]
-    assert len(config.edges) == 1
+    assert _node_ids(config.triggers) == [
+        "trigger-cron-synthetic",
+        "system.chat_assistant",
+    ]
+    assert _node_ids(config.effects) == [
+        "effect-log-synthetic",
+        "system.chat_assistant.ensure_session",
+        "system.chat_assistant.enqueue_prompt",
+    ]
+    assert [(edge.source_id, edge.target_id) for edge in config.edges] == [
+        ("trigger-cron-synthetic", "effect-log-synthetic"),
+        ("system.chat_assistant", "system.chat_assistant.ensure_session"),
+        (
+            "system.chat_assistant.ensure_session",
+            "system.chat_assistant.enqueue_prompt",
+        ),
+    ]
+
+
+def test_load_config_composes_hidden_system_pack_without_operator_packs(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"runtime_dir": str(runtime_dir)}), encoding="utf-8")
+
+    config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+    )
+
+    assert _node_ids(config.triggers) == ["system.chat_assistant"]
+    assert _node_ids(config.effects) == [
+        "system.chat_assistant.ensure_session",
+        "system.chat_assistant.enqueue_prompt",
+    ]
+    assert [(edge.source_id, edge.target_id) for edge in config.edges] == [
+        ("system.chat_assistant", "system.chat_assistant.ensure_session"),
+        (
+            "system.chat_assistant.ensure_session",
+            "system.chat_assistant.enqueue_prompt",
+        ),
+    ]
 
 
 def test_load_config_ignores_editor_workflow_graph_metadata(tmp_path: Path) -> None:
@@ -333,10 +479,10 @@ def test_load_config_ignores_editor_workflow_graph_metadata(tmp_path: Path) -> N
         project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
     )
 
-    assert [trigger.id for trigger in config.triggers] == ["trigger-cron"]
+    assert _node_ids(config.triggers) == ["trigger-cron", "system.chat_assistant"]
 
 
-def test_load_config_merges_system_nodes_into_composed_workflow_pack_ir(
+def test_load_config_composes_configured_pack_with_hidden_system_pack(
     tmp_path: Path,
 ) -> None:
     runtime_dir = tmp_path / "runtime"
@@ -345,10 +491,10 @@ def test_load_config_merges_system_nodes_into_composed_workflow_pack_ir(
     path.parent.mkdir(parents=True, exist_ok=True)
     packs_dir = project_dir / "config" / "workflow-packs"
     packs_dir.mkdir(parents=True, exist_ok=True)
-    (packs_dir / "synthetic-trivial.v1.json").write_text(
+    (packs_dir / "agent-container-worker.v1.json").write_text(
         json.dumps(
             {
-                "pack_id": "synthetic-trivial",
+                "pack_id": "agent-container-worker",
                 "pack_version": "v1",
                 "ir": {
                     "version": "v1",
@@ -376,72 +522,7 @@ def test_load_config_merges_system_nodes_into_composed_workflow_pack_ir(
         encoding="utf-8",
     )
     path.write_text(
-        json.dumps(
-            {
-                "workflow_packs": ["synthetic-trivial.v1.json"],
-                "triggers": [
-                    {
-                        "id": "legacy-top-level",
-                        "display_name": "Legacy top-level",
-                        "type": "trigger:cron",
-                        "expression": "*/10 * * * *",
-                    },
-                    {
-                        "id": "system.chat_assistant",
-                        "display_name": "System Chat Assistant",
-                        "type": "trigger:system:chat-assistant",
-                    },
-                ],
-                "effects": [
-                    {
-                        "id": "legacy-top-level-effect",
-                        "display_name": "Legacy top-level effect",
-                        "type": "effect:bash:script",
-                        "script_path": "/bin/echo",
-                        "args": ["legacy"],
-                    },
-                    {
-                        "id": "system.chat_assistant.ensure_session",
-                        "display_name": "Resolve chat assistant session",
-                        "type": "effect:chat-assistant:ensure-session",
-                        "user_id": "${{system.chat_assistant.user_id}}",
-                        "thread_id": "${{system.chat_assistant.thread_id}}",
-                        "user_message_id": "${{system.chat_assistant.user_message_id}}",
-                        "content": "${{system.chat_assistant.content}}",
-                        "backend": "${{system.chat_assistant.backend}}",
-                        "assistant_scope": "admin_chat",
-                    },
-                    {
-                        "id": "system.chat_assistant.enqueue_prompt",
-                        "display_name": "Enqueue chat assistant prompt",
-                        "type": "effect:agent:enqueue-prompt",
-                        "target": "${{system.chat_assistant.ensure_session.session_id}}",
-                        "session_id": "${{system.chat_assistant.ensure_session.session_id}}",
-                        "vm_name": "${{system.chat_assistant.ensure_session.vm_name}}",
-                        "prompt": "${{system.chat_assistant.ensure_session.prompt}}",
-                        "model": "${{system.chat_assistant.ensure_session.model}}",
-                        "vm_user": "agent",
-                        "resume_thread_id": (
-                            "${{system.chat_assistant.ensure_session.agent_thread_id}}"
-                        ),
-                    },
-                ],
-                "edges": [
-                    {
-                        "source_id": "legacy-top-level",
-                        "target_id": "legacy-top-level-effect",
-                    },
-                    {
-                        "source_id": "system.chat_assistant",
-                        "target_id": "system.chat_assistant.ensure_session",
-                    },
-                    {
-                        "source_id": "system.chat_assistant.ensure_session",
-                        "target_id": "system.chat_assistant.enqueue_prompt",
-                    },
-                ],
-            }
-        ),
+        json.dumps({"workflow_packs": ["agent-container-worker.v1.json"]}),
         encoding="utf-8",
     )
 
@@ -449,11 +530,11 @@ def test_load_config_merges_system_nodes_into_composed_workflow_pack_ir(
         project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
     )
 
-    assert [trigger.id for trigger in config.triggers] == [
+    assert _node_ids(config.triggers) == [
         "trigger-cron-synthetic",
         "system.chat_assistant",
     ]
-    assert [effect.id for effect in config.effects] == [
+    assert _node_ids(config.effects) == [
         "effect-log-synthetic",
         "system.chat_assistant.ensure_session",
         "system.chat_assistant.enqueue_prompt",
@@ -466,6 +547,60 @@ def test_load_config_merges_system_nodes_into_composed_workflow_pack_ir(
             "system.chat_assistant.enqueue_prompt",
         ),
     ]
+
+
+def test_load_config_uses_hidden_system_pack_instead_of_legacy_top_level_system_nodes(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(runtime_dir),
+                "triggers": [
+                    {
+                        "id": "system.chat_assistant",
+                        "display_name": "Stale Chat Assistant",
+                        "type": "trigger:system:chat-assistant",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "system.chat_assistant.enqueue_prompt",
+                        "display_name": "Stale enqueue",
+                        "type": "effect:agent:enqueue-prompt",
+                        "target": "stale",
+                        "prompt": "stale",
+                    }
+                ],
+                "edges": [
+                    {
+                        "source_id": "system.chat_assistant",
+                        "target_id": "system.chat_assistant.enqueue_prompt",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+    )
+
+    trigger = next(trigger for trigger in config.triggers if trigger.id == "system.chat_assistant")
+    enqueue = next(
+        effect for effect in config.effects if effect.id == "system.chat_assistant.enqueue_prompt"
+    )
+    assert trigger.display_name == "System Chat Assistant"
+    assert enqueue.display_name == "Enqueue chat assistant prompt"
+    assert enqueue.config["queue_key"] == (
+        "chat:${{system.chat_assistant.ensure_session.thread_id}}:"
+        "${{system.chat_assistant.ensure_session.user_message_id}}"
+    )
 
 
 def test_load_config_rejects_unknown_communication_target_ref(tmp_path: Path) -> None:
@@ -557,7 +692,7 @@ def test_load_config_accepts_notification_effect_communication_target_ref(
         project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
     )
 
-    assert [effect.type for effect in config.effects] == ["effect:notification:send"]
+    assert config.effects[0].type == "effect:notification:send"
 
 
 def test_load_config_accepts_communication_send_message_target_ref(
@@ -609,4 +744,4 @@ def test_load_config_accepts_communication_send_message_target_ref(
         project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
     )
 
-    assert [effect.type for effect in config.effects] == ["effect:communication:send-message"]
+    assert config.effects[0].type == "effect:communication:send-message"

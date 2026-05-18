@@ -106,6 +106,25 @@ class JsonChatAssistantSessionRepository:
                 self._atomic_write(payload)
         return updated
 
+    def delete_mappings_for_sessions(self, session_ids: set[str]) -> int:
+        normalized_session_ids = {str(session_id or "").strip() for session_id in session_ids}
+        normalized_session_ids.discard("")
+        if not normalized_session_ids:
+            return 0
+        with self._lock:
+            payload = self._read_raw()
+            keys_to_delete = [
+                key
+                for key, value in payload.items()
+                if isinstance(value, dict)
+                and str(value.get("session_id") or "").strip() in normalized_session_ids
+            ]
+            for key in keys_to_delete:
+                payload.pop(key, None)
+            if keys_to_delete:
+                self._atomic_write(payload)
+        return len(keys_to_delete)
+
     def _read_raw(self) -> dict[str, object]:
         payload = json.loads(self.path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
