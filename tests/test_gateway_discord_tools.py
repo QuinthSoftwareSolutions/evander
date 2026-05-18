@@ -135,7 +135,11 @@ def call_tool_with_context(
 
 
 def make_request_context(
-    *, session_id: str | None = None, transport_session_id: str | None = None
+    *,
+    session_id: str | None = None,
+    transport_session_id: str | None = None,
+    request_id: str | None = None,
+    correlation_id: str | None = None,
 ):
     query_params: dict[str, str] = {}
     if session_id is not None:
@@ -143,6 +147,10 @@ def make_request_context(
     headers: dict[str, str] = {}
     if transport_session_id is not None:
         headers["mcp-session-id"] = transport_session_id
+    if request_id is not None:
+        headers["x-request-id"] = request_id
+    if correlation_id is not None:
+        headers["x-correlation-id"] = correlation_id
     return SimpleNamespace(
         request_context=SimpleNamespace(
             request=SimpleNamespace(query_params=query_params, headers=headers)
@@ -2323,8 +2331,15 @@ def test_audit_success_recursively_redacts_nested_payload_fields(tmp_path: Path)
     context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
+            directory_path="root/team-a",
             allowed_tools=[ToolName.APPROVAL_SUBMIT],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "automation_role": "review-bot",
+                "user_id": "user-42",
+                "workflow_run_id": "workflow-17",
+                "trace_id": "trace-17",
+            },
         ),
     )
     server = create_server(context)
@@ -2347,20 +2362,34 @@ def test_audit_success_recursively_redacts_nested_payload_fields(tmp_path: Path)
         ],
     }
 
-    asyncio.run(
-        server.call_tool(
-            "approval_submit",
-            {
-                "session_id": "session-1",
-                "action_type": "email_send",
-                "payload": payload,
-                "human_summary": "send summary",
-            },
-        )
+    result = call_tool_with_context(
+        server,
+        "approval_submit",
+        {
+            "session_id": "session-1",
+            "action_type": "email_send",
+            "payload": payload,
+            "human_summary": "send summary",
+        },
+        make_request_context(
+            session_id="session-1",
+            transport_session_id="transport-1",
+            request_id="request-1",
+            correlation_id="correlation-1",
+        ),
     )
 
     event = read_audit_events(context.config.audit_log_path)[-1]
     assert event["decision"] == "allowed"
+    assert event["directory_path"] == "root/team-a"
+    assert event["agent_role"] == "review-bot"
+    assert event["actor_user_id"] == "user-42"
+    assert event["request_id"] == "request-1"
+    assert event["correlation_id"] == "correlation-1"
+    assert event["approval_request_id"] == result["request_id"]
+    assert event["workflow_run_id"] == "workflow-17"
+    assert event["trace_id"] == "trace-17"
+    assert event["duration_ms"] is not None
     assert event["args"]["payload"]["mailbox_id"] == "primary"
     assert event["args"]["payload"]["body"] == "<redacted>"
     assert event["args"]["payload"]["authorization"] == "<redacted>"
@@ -2379,34 +2408,54 @@ def test_audit_failure_recursively_redacts_nested_payload_fields(tmp_path: Path)
     context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
+            directory_path="root/team-a",
             allowed_tools=[],
             expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "automation_role": "review-bot",
+                "user_id": "user-42",
+                "workflow_run_id": "workflow-17",
+                "trace_id": "trace-17",
+            },
         ),
     )
     server = create_server(context)
 
     with pytest.raises(ToolError, match="is not allowed"):
-        asyncio.run(
-            server.call_tool(
-                "approval_submit",
-                {
-                    "session_id": "session-1",
-                    "action_type": "email_send",
-                    "payload": {
-                        "body": "Denied secret body",
-                        "authorization": "Bearer denied-secret",
-                        "nested": {"token": "denied-token", "safe": "visible"},
-                        "recipients": [
-                            {"email": "still-visible@example.com", "token": "recipient-token"}
-                        ],
-                    },
-                    "human_summary": "should fail",
+        call_tool_with_context(
+            server,
+            "approval_submit",
+            {
+                "session_id": "session-1",
+                "action_type": "email_send",
+                "payload": {
+                    "body": "Denied secret body",
+                    "authorization": "Bearer denied-secret",
+                    "nested": {"token": "denied-token", "safe": "visible"},
+                    "recipients": [
+                        {"email": "still-visible@example.com", "token": "recipient-token"}
+                    ],
                 },
-            )
+                "human_summary": "should fail",
+            },
+            make_request_context(
+                session_id="session-1",
+                transport_session_id="transport-1",
+                request_id="request-denied",
+                correlation_id="correlation-denied",
+            ),
         )
 
     event = read_audit_events(context.config.audit_log_path)[-1]
     assert event["decision"] == "denied"
+    assert event["directory_path"] == "root/team-a"
+    assert event["agent_role"] == "review-bot"
+    assert event["actor_user_id"] == "user-42"
+    assert event["request_id"] == "request-denied"
+    assert event["correlation_id"] == "correlation-denied"
+    assert event["workflow_run_id"] == "workflow-17"
+    assert event["trace_id"] == "trace-17"
+    assert event["duration_ms"] is not None
     assert event["args"]["payload"]["body"] == "<redacted>"
     assert event["args"]["payload"]["authorization"] == "<redacted>"
     assert event["args"]["payload"]["nested"]["token"] == "<redacted>"
@@ -2542,6 +2591,10 @@ def test_schedule_resume_persists_request_and_audits_success(tmp_path: Path) -> 
     event = read_audit_events(context.config.audit_log_path)[-1]
     assert event["tool_name"] == ToolName.SCHEDULE_RESUME.value
     assert event["decision"] == "allowed"
+    assert event["directory_path"] == "root"
+    assert event["request_id"] == "wake-123"
+    assert event["approval_request_id"] is None
+    assert event["duration_ms"] is not None
     assert event["args"]["prompt"] == "<redacted>"
     assert event["result"] == {
         "session_id": "session-1",

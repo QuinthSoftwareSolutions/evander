@@ -23,6 +23,7 @@ from agent_sandbox.admin.web.shared import (
     request_has_privileged_operations,
 )
 from agent_sandbox.admin.web.reports import report_routes
+from agent_sandbox.admin.web.tool_calls import tool_call_routes
 from agent_sandbox.admin.web.teams_auth import teams_auth_routes
 from agent_sandbox.admin.web.skills import skill_routes
 from agent_sandbox.admin.web.user_store import AdminWebUserStore
@@ -305,6 +306,7 @@ def create_app(service: AdminService) -> Starlette:
     routes.extend(skill_routes(service, auth))
     routes.extend(vm_issue_routes(service, auth))
     routes.extend(session_approval_routes(service, auth))
+    routes.extend(tool_call_routes(service))
     routes.extend(worker_config_routes(service, auth))
     routes.extend(admin_user_routes(admin_user_store, auth, service))
     routes.extend(report_routes(service))
