@@ -276,8 +276,10 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:session:renew-if-expired": "Extend an expired session from the host.",
   "effect:git:promote-agent-branch": "Promote an agent branch into a trusted host checkout.",
   "effect:pr:create": "Create a pull request from the host side.",
+  "effect:pull-request:update": "Update pull request metadata or tags.",
   "query:vm:run-state": "Read the current run state for a VM.",
   "query:git:pr-note": "Read pull-request note context from a host checkout.",
+  "query:pull-request:list": "List provider pull requests.",
   "query:session-context": "Read session context and metadata.",
   "query:agent:artifact-text": "Read a UTF-8 text file from an agent session artifacts folder.",
   "query:issue:get": "Read a local issue record by id.",
@@ -1239,6 +1241,17 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   if (kind === "effect" && type === "effect:pr:create") {
     return { id, display_name: "New PR effect", type, host_repo_path: "/path/to/repo" };
   }
+  if (kind === "effect" && type === "effect:pull-request:update") {
+    return {
+      id,
+      display_name: "Update pull request",
+      type,
+      provider: "azure_devops",
+      repo: "repo-name",
+      pr_id: "123",
+      expected_statuses: ["active"],
+    };
+  }
   if (kind === "query" && type === "query:vm:run-state") {
     return { id, display_name: "VM run state", type };
   }
@@ -1279,6 +1292,18 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       id,
       display_name: "ADO work items",
       type,
+      top: 50,
+      skip: 0,
+    };
+  }
+  if (kind === "query" && type === "query:pull-request:list") {
+    return {
+      id,
+      display_name: "Pull request list",
+      type,
+      provider: "azure_devops",
+      repo: "repo-name",
+      status: "active",
       top: 50,
       skip: 0,
     };

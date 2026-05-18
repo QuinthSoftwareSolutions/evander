@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-18 - Pull Request Workflow Nodes
+
+Touched areas: workflow providers, PR service layer, Admin Web catalog, docs,
+tests.
+
+- Added `query:pull-request:list` and `effect:pull-request:update` for
+  provider-shaped pull request automation, with Azure DevOps support for list
+  criteria, client-side PR tag filters, tag add/remove, metadata updates, and
+  status guards.
+
 ## 2026-05-18 - Workflow Run Inspect Mode
 
 Touched areas: `frontend/workflow-editor/`.

@@ -122,7 +122,7 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       key: "git-pr",
       label: "Git & PRs",
       description: "Promote branches or create pull requests.",
-      prefixes: ["effect:git:", "effect:pr:"],
+      prefixes: ["effect:git:", "effect:pr:", "effect:pull-request:"],
     },
     {
       key: "communications",
@@ -155,7 +155,7 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       key: "git-pr",
       label: "Git & PRs",
       description: "Read Git or pull request metadata.",
-      prefixes: ["query:git:"],
+      prefixes: ["query:git:", "query:pull-request:"],
     },
     {
       key: "semantic",
@@ -179,6 +179,7 @@ const NAMESPACE_LABELS: Record<string, string> = {
   issue: "Issue",
   notification: "Notification",
   pr: "PR",
+  pull: "Pull",
   semantic: "Semantic",
   session: "Session",
   teams: "Teams",

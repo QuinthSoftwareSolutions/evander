@@ -407,6 +407,40 @@ class AdoUpdateWorkItemEffectDefinition(EffectDefinition):
         return value
 
 
+class PullRequestUpdateEffectDefinition(EffectDefinition):
+    type: Literal["effect:pull-request:update"]
+    provider: ConfigValue
+    repo: ConfigValue
+    pr_id: ConfigValue
+    directory_path: ConfigValue | None = None
+    organization_url: ConfigValue | None = None
+    project: ConfigValue | None = None
+    title: ConfigValue | None = None
+    description: ConfigValue | None = None
+    status: ConfigValue | None = None
+    add_tags: ConfigValue | None = None
+    remove_tags: ConfigValue | None = None
+    expected_statuses: ConfigValue | None = None
+
+    @field_validator("provider")
+    @classmethod
+    def normalize_static_provider(cls, value: ConfigValue) -> ConfigValue:
+        if isinstance(value, str) and "${{" not in value:
+            normalized = value.strip()
+            if normalized in {"ado", "azure-devops", "azure_devops"}:
+                return "azure_devops"
+        return value
+
+    @field_validator("add_tags", "remove_tags", "expected_statuses")
+    @classmethod
+    def validate_string_list_fields(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (str, list)):
+            return value
+        raise ValueError(
+            "effect:pull-request:update tag/status guards must be a string or list"
+        )
+
+
 class CommunicationSendMessageEffectDefinition(EffectDefinition):
     type: Literal["effect:communication:send-message"]
     communication_target_id: str

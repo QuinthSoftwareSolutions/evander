@@ -39,13 +39,14 @@ from agent_sandbox.events.provider_models import (
     AgentExecEffectDefinition,
     AgentPromptEffectDefinition,
     ChatAssistantEnsureSessionEffectDefinition,
+    PullRequestUpdateEffectDefinition,
     VmBootstrapFrontendEffectDefinition,
     VmBootstrapPythonEffectDefinition,
     VmCloneRepoEffectDefinition,
     VmCreateEffectDefinition,
 )
 from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
-from agent_sandbox.models import SessionManifest, ToolName, VmActionResult
+from agent_sandbox.models import SessionManifest, ToolName, UpdatePullRequestResponse, VmActionResult
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from agent_sandbox.repositories.skills_library import SkillLibraryRepository
 
@@ -288,6 +289,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:session:renew-if-expired",
         "effect:git:promote-agent-branch",
         "effect:pr:create",
+        "effect:pull-request:update",
     }
 
 
@@ -322,6 +324,83 @@ def test_factory_initializes_provider_with_runtime_context() -> None:
     assert provider.runtime_context is not None
     assert provider.runtime_context.resolve_secret("API_TOKEN") == "top-secret"
     assert provider.runtime_context.metadata["directory_path"] == "root/team-a"
+
+
+def test_pull_request_update_effect_provider_resolves_ado_config_and_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    effect = PullRequestUpdateEffectDefinition(
+        id="effect-pr-update",
+        display_name="Update PR",
+        type="effect:pull-request:update",
+        provider="ado",
+        repo="repo-1",
+        pr_id="17",
+        title="New title",
+        add_tags="reviewed",
+        remove_tags=["needs-review"],
+        expected_statuses="active",
+    )
+    assert effect.provider == "azure_devops"
+    captured: dict[str, object] = {}
+
+    class StubPrProvider:
+        def __init__(self, **kwargs: object) -> None:
+            captured["init"] = kwargs
+
+        def update_pull_request(self, **kwargs: object) -> UpdatePullRequestResponse:
+            captured["request"] = kwargs
+            return UpdatePullRequestResponse(
+                success=True,
+                updated=True,
+                skipped=False,
+                provider="azure_devops",
+                repo="repo-1",
+                pr_id="17",
+                status="active",
+                title="New title",
+                url="https://example.test/pr/17",
+                tags=["reviewed"],
+                added_tags=["reviewed"],
+                removed_tags=["needs-review"],
+            )
+
+    monkeypatch.setattr(
+        "agent_sandbox.pull_request_automation.AzureDevOpsPrQueryProvider", StubPrProvider
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(),
+        admin_service=_AdminServiceStub(
+            create_vm_calls=[],
+            clone_repo_into_vm_calls=[],
+            bootstrap_python_in_vm_calls=[],
+            bootstrap_frontend_in_vm_calls=[],
+            resume_calls=[],
+        ),
+        env={"AZURE_DEVOPS_PR_PAT": "secret"},
+    )
+    provider = factory.build(effect, directory_path="root/team-a")
+    output = provider.execute()
+
+    assert captured["init"] == {
+        "organization_url": "https://dev.azure.com",
+        "project": "default",
+        "pat": "secret",
+        "timeout_seconds": 30.0,
+    }
+    assert captured["request"] == {
+        "repo": "repo-1",
+        "pr_id": "17",
+        "project": "default",
+        "title": "New title",
+        "description": None,
+        "status": None,
+        "add_tags": ["reviewed"],
+        "remove_tags": ["needs-review"],
+        "expected_statuses": ["active"],
+    }
+    assert output["updated"] is True
+    assert output["added_tags"] == ["reviewed"]
 
 
 def test_vm_create_provider_returns_required_outputs() -> None:
