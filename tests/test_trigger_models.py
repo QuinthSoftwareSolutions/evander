@@ -25,6 +25,7 @@ from agent_sandbox.events.provider_models import (
     ReviewNewRequestTriggerDefinition,
     ScriptRunRequestTriggerDefinition,
     SessionContextQueryDefinition,
+    SessionRenewIfExpiredEffectDefinition,
     SessionUpdateMetadataEffectDefinition,
 )
 
@@ -635,6 +636,30 @@ def test_session_update_metadata_effect_and_session_context_query_validate() -> 
     assert state_effect.state == "In Progress"
     assert effect.metadata == {"issue_number": "14084"}
     assert query.session_id == "session-1"
+
+
+def test_session_renew_if_expired_effect_validates_target_selector() -> None:
+    effect = SessionRenewIfExpiredEffectDefinition.model_validate(
+        {
+            "id": "effect-session-renew",
+            "display_name": "Renew expired session",
+            "type": "effect:session:renew-if-expired",
+            "session_id": "session-1",
+            "extend_by": "8h",
+        }
+    )
+
+    assert effect.session_id == "session-1"
+    assert effect.extend_by == "8h"
+
+    with pytest.raises(ValueError, match="target, session_id, or vm_name"):
+        SessionRenewIfExpiredEffectDefinition.model_validate(
+            {
+                "id": "effect-session-renew",
+                "display_name": "Renew expired session",
+                "type": "effect:session:renew-if-expired",
+            }
+        )
 
 
 def test_session_update_metadata_effect_allows_templated_metadata_reference() -> None:

@@ -1132,6 +1132,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     ),
     "effect:notification:send": "Send a notification through a configured communication target.",
     "effect:session:update-metadata": "Patch metadata on a host-side session record.",
+    "effect:session:renew-if-expired": (
+        "Extend a host-side session only when its expiry has already passed."
+    ),
     "effect:git:promote-agent-branch": (
         "Promote an agent branch into a trusted host checkout."
     ),
@@ -2451,6 +2454,24 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("session_id", "Session ID", "string", bindable=True),
             _field("vm_name", "VM name", "string", bindable=True),
             _field("metadata", "Metadata", "json", required=True, bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:session:renew-if-expired",
+        label="Session renew if expired",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field(
+                "extend_by",
+                "Extend by",
+                "string",
+                bindable=True,
+                description="Duration from now for renewed expired sessions, such as 8h, 2d, or PT8H.",
+            ),
+            _field("directory_path", "Directory path", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -6796,6 +6817,116 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             return "\n\n".join(chunks).rstrip() + "\n"
         raise ValueError(f"Unknown agent backend: {selected_backend}")
 
+    def _container_execution_log_chunk(
+        self,
+        worker_backend: Any,
+        execution: Any,
+        *,
+        lines: int,
+        mode: str,
+    ) -> str:
+        header_parts = [
+            f"execution={execution.execution_id}",
+            f"status={self._container_agent_status(execution.last_status)}",
+            f"worker_job={execution.worker_job_id}",
+            f"log={mode}",
+        ]
+        if execution.started_at is not None:
+            header_parts.append(f"started={execution.started_at.isoformat()}")
+        if execution.finished_at is not None:
+            header_parts.append(f"finished={execution.finished_at.isoformat()}")
+        try:
+            text = worker_backend.get_log_snapshot(
+                execution.execution_id,
+                lines=lines,
+                mode=mode,
+            ).rstrip()
+        except Exception as exc:
+            text = f"[log unavailable: {exc}]"
+        header = "=== " + " ".join(header_parts) + " ==="
+        return header if not text else header + "\n" + text
+
+    @staticmethod
+    def _join_container_log_chunks(chunks: list[str]) -> str:
+        return "\n\n".join(chunk for chunk in chunks if chunk).rstrip() + "\n"
+
+    def _container_session_log_page(
+        self,
+        *,
+        session_id: str,
+        execution_records: list[Any],
+        worker_backend: Any,
+        limit: int,
+        offset: int,
+        query: str | None,
+    ) -> dict[str, object]:
+        if not execution_records:
+            return _log_page_from_end(
+                f"No container executions have run for session {session_id}.\n",
+                limit=limit,
+                offset=offset,
+                query=query,
+            )
+
+        normalized_query = str(query or "").strip()
+        sorted_records = sorted(execution_records, key=self._container_execution_sort_key)
+        if not normalized_query and offset == 0:
+            page = _log_page_from_end(
+                self._container_execution_log_chunk(
+                    worker_backend,
+                    sorted_records[-1],
+                    lines=0,
+                    mode="augmented",
+                ),
+                limit=limit,
+                offset=0,
+            )
+            if len(sorted_records) > 1:
+                page["has_more_before"] = True
+                page["total_lines"] = None
+                page["start_line"] = None
+                page["end_line"] = None
+            return page
+
+        chunks: list[str] = []
+        truncated_before = False
+        target_lines = max(1, limit) + max(0, offset) + 1
+        line_count = 0
+        records_to_read = (
+            list(enumerate(sorted_records))
+            if normalized_query
+            else list(reversed(list(enumerate(sorted_records))))
+        )
+        for original_index, execution in records_to_read:
+            mode = "augmented" if original_index == len(sorted_records) - 1 else "raw"
+            chunk = self._container_execution_log_chunk(
+                worker_backend,
+                execution,
+                lines=0,
+                mode=mode,
+            )
+            if normalized_query:
+                chunks.append(chunk)
+                continue
+            chunks.insert(0, chunk)
+            line_count += len(chunk.splitlines()) + (1 if len(chunks) > 1 else 0)
+            if line_count >= target_lines:
+                truncated_before = original_index > 0
+                break
+
+        page = _log_page_from_end(
+            self._join_container_log_chunks(chunks),
+            limit=limit,
+            offset=offset,
+            query=normalized_query or None,
+        )
+        if truncated_before:
+            page["has_more_before"] = True
+            page["total_lines"] = None
+            page["start_line"] = None
+            page["end_line"] = None
+        return page
+
     def get_admin_agent_log_page(
         self,
         agent_id: str,
@@ -6857,14 +6988,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             )
             target = agent_id
             if session is not None and record is None:
-                if not execution_records:
-                    return _log_page_from_end(
-                        f"No container executions have run for session {session_id}.\n",
-                        limit=normalized_limit,
-                        offset=normalized_offset,
-                        query=normalized_query or None,
-                    )
-                target = execution_records[-1].execution_id
+                return self._container_session_log_page(
+                    session_id=session_id,
+                    execution_records=execution_records,
+                    worker_backend=worker_backend,
+                    limit=normalized_limit,
+                    offset=normalized_offset,
+                    query=normalized_query or None,
+                )
             page_reader = getattr(worker_backend, "get_log_page", None)
             if callable(page_reader):
                 return page_reader(

@@ -36,6 +36,9 @@ from agent_sandbox.effects.providers.semantic_upsert import SemanticUpsertEffect
 from agent_sandbox.effects.providers.session_update_metadata import (
     SessionUpdateMetadataEffectProvider,
 )
+from agent_sandbox.effects.providers.session_renew_if_expired import (
+    SessionRenewIfExpiredEffectProvider,
+)
 from agent_sandbox.effects.providers.vm_bootstrap_frontend import VmBootstrapFrontendEffectProvider
 from agent_sandbox.effects.providers.vm_bootstrap_python import VmBootstrapPythonEffectProvider
 from agent_sandbox.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
@@ -146,6 +149,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:communication:send-message": CommunicationSendMessageEffectProvider,
             "effect:notification:send": NotificationSendEffectProvider,
             "effect:session:update-metadata": SessionUpdateMetadataEffectProvider,
+            "effect:session:renew-if-expired": SessionRenewIfExpiredEffectProvider,
             "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectProvider,
             "effect:pr:create": PrCreateEffectProvider,
             "effect:semantic:ensure-collection": SemanticEnsureCollectionEffectProvider,

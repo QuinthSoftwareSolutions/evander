@@ -326,6 +326,9 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         ),
         "effect:notification:send": provider_models.NotificationSendEffectDefinition,
         "effect:session:update-metadata": provider_models.SessionUpdateMetadataEffectDefinition,
+        "effect:session:renew-if-expired": (
+            provider_models.SessionRenewIfExpiredEffectDefinition
+        ),
         "effect:git:promote-agent-branch": provider_models.GitPromoteAgentBranchEffectDefinition,
         "effect:pr:create": provider_models.PrCreateEffectDefinition,
         "query:vm:run-state": provider_models.VmRunStateQueryDefinition,

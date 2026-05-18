@@ -463,6 +463,24 @@ class SessionUpdateMetadataEffectDefinition(EffectDefinition):
         return self
 
 
+class SessionRenewIfExpiredEffectDefinition(EffectDefinition):
+    type: Literal["effect:session:renew-if-expired"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    extend_by: ConfigValue = "1d"
+    directory_path: ConfigValue | None = None
+
+    @model_validator(mode="after")
+    def validate_target_selector(self) -> "SessionRenewIfExpiredEffectDefinition":
+        selectors = [self.target, self.session_id, self.vm_name]
+        if not any(value is not None for value in selectors):
+            raise ValueError(
+                "effect:session:renew-if-expired requires target, session_id, or vm_name"
+            )
+        return self
+
+
 class GitPromoteAgentBranchEffectDefinition(EffectDefinition):
     type: Literal["effect:git:promote-agent-branch"]
     host_repo_path: ConfigValue

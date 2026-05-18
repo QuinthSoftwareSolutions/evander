@@ -306,6 +306,7 @@ Type-specific keys:
 | `effect:issue:update-state` | `issue_id`, `state` | `sync_proxy_cache`, `outputs` |
 | `effect:communication:send-message` | `communication_target_id`, `message` | `thread_id`, `outputs` |
 | `effect:notification:send` | `communication_target_id`, `message` | `severity`, `subject`, `thread_id`, `outputs` |
+| `effect:session:renew-if-expired` | one of `target`, `session_id`, `vm_name` | `extend_by`, `directory_path`, `outputs` |
 | `effect:pr:create` | `host_repo_path` | `local_branch`, `origin_branch`, `canonical_origin_url`, `provider`, `base_branch`, `session_id`, `work_item_id`, `title`, `body`, `body_file`, `body_artifact_ids`, `draft`, `fill`, `outputs` |
 
 `effect:pr:create` preflights the destination branch before pushing. If the
@@ -317,6 +318,11 @@ should be prompted to fetch and merge the destination branch.
 `effect:agent:prompt` and `effect:agent:enqueue-prompt` have two named outgoing
 ports: `started` emits after the prompt is dispatched, and `completed` emits
 after the agent run completes.
+
+`effect:session:renew-if-expired` resolves a host-side session by `target`,
+`session_id`, or `vm_name`. If the session has already expired, it sets
+`expires_at` to now plus `extend_by` (for example `8h`, `2d`, or `PT8H`);
+active sessions are left unchanged.
 
 ### Query definition schema keys
 

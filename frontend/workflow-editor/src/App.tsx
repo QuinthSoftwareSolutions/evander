@@ -270,6 +270,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:issue:update-metadata": "Patch metadata on a tracked issue.",
   "effect:ado:update-work-item": "Update an Azure DevOps work item with an optional state guard.",
   "effect:session:update-metadata": "Patch session metadata on the host.",
+  "effect:session:renew-if-expired": "Extend an expired session from the host.",
   "effect:git:promote-agent-branch": "Promote an agent branch into a trusted host checkout.",
   "effect:pr:create": "Create a pull request from the host side.",
   "query:vm:run-state": "Read the current run state for a VM.",
@@ -1211,6 +1212,15 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       display_name: "Update session metadata",
       type,
       metadata: {},
+    };
+  }
+  if (kind === "effect" && type === "effect:session:renew-if-expired") {
+    return {
+      id,
+      display_name: "Renew expired session",
+      type,
+      session_id: "session-id",
+      extend_by: "1d",
     };
   }
   if (kind === "effect" && type === "effect:git:promote-agent-branch") {
@@ -2349,6 +2359,7 @@ export default function App() {
     selectedNode?.type === "effect:agent:exec" ||
     selectedNode?.type === "effect:agent:destroy" ||
     selectedNode?.type === "effect:session:update-metadata" ||
+    selectedNode?.type === "effect:session:renew-if-expired" ||
     selectedNode?.type === "query:session-context";
   const effectTargetKey = activeEffectTargetKey(inspectorKnownValues);
   const inspectorFields = (() => {

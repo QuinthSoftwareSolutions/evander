@@ -1576,6 +1576,106 @@ def test_get_admin_agent_log_page_pages_libvirt_tail(tmp_path: Path, monkeypatch
     assert page["has_more_before"] is True
 
 
+def test_get_admin_agent_log_page_container_session_pages_across_runs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-1",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-1",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-old",
+            session_id="session-1",
+            worker_job_id="job-old",
+            worker_url="http://worker.test",
+            target_name="target-1",
+            started_at=datetime(2026, 5, 18, 7, 0, tzinfo=UTC),
+            last_status="removed",
+            directory_path="root",
+        )
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-new",
+            session_id="session-1",
+            worker_job_id="job-new",
+            worker_url="http://worker.test",
+            target_name="target-1",
+            started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC),
+            last_status="removed",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.calls.append((target, lines, mode))
+            if target == "exec-new":
+                return "new line 1\nnew line 2\n"
+            return "old line 1\nold line 2\n"
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    latest_page = service.get_admin_agent_log_page(
+        "session-1",
+        backend="container_worker_vm",
+        limit=50,
+    )
+
+    assert "execution=exec-new" in latest_page["text"]
+    assert "new line 2" in latest_page["text"]
+    assert "exec-old" not in latest_page["text"]
+    assert latest_page["has_more_before"] is True
+    assert latest_page["total_lines"] is None
+    assert fake_backend.calls == [("exec-new", 0, "augmented")]
+
+    older_page = service.get_admin_agent_log_page(
+        "session-1",
+        backend="container_worker_vm",
+        limit=10,
+        offset=int(latest_page["returned_lines"]),
+    )
+
+    assert "execution=exec-old" in older_page["text"]
+    assert "old line 2" in older_page["text"]
+    assert "exec-new" not in older_page["text"]
+    assert older_page["has_more_before"] is False
+    assert fake_backend.calls[-2:] == [
+        ("exec-new", 0, "augmented"),
+        ("exec-old", 0, "raw"),
+    ]
+
+
 def test_list_sessions_filters_active_and_expired(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
