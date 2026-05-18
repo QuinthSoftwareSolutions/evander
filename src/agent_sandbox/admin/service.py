@@ -12341,23 +12341,29 @@ def _tool_call_normalize_status(status: Any) -> str | None:
         return None
     if normalized in {"allowed", "approved", "success", "ok"}:
         return "success"
+    if normalized in {"pending_approval"}:
+        return "pending_approval"
     if normalized in {"denied", "blocked", "rejected"}:
         return "denied"
     if normalized in {"error", "failed", "failure"}:
         return "error"
-    raise ValueError("status must be one of: success, denied, or error")
+    raise ValueError("status must be one of: success, pending_approval, denied, or error")
 
 
 def _tool_call_failure_status(event: dict[str, Any]) -> str:
     decision = str(event.get("decision") or event.get("status") or "").strip().casefold()
     result = event.get("result") if isinstance(event.get("result"), dict) else {}
     result_status = str(result.get("status") or "").strip().casefold()
+    if decision == "pending_approval":
+        return "pending_approval"
     if decision in {"denied", "blocked", "rejected"}:
         return "denied"
     if decision in {"error", "failed", "failure"}:
         return "error"
     if decision in {"allowed", "approved", "success", "ok"}:
         return "success"
+    if result_status == "pending_approval":
+        return "pending_approval"
     if result_status in {"denied", "blocked", "rejected"}:
         return "denied"
     if result_status in {"error", "failed", "failure"}:
@@ -12386,6 +12392,8 @@ def _tool_call_error_summary(entry: dict[str, Any], status: str, result: dict[st
         return "Denied"
     if status == "error":
         return "Tool call failed."
+    if status == "pending_approval":
+        return "Approval required."
     return None
 
 

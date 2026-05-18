@@ -4236,28 +4236,61 @@ select {
 }
 
 .session-tool-row {
-  display: grid;
-  grid-template-columns: 1.1rem minmax(0, 1fr);
-  align-items: start;
-  gap: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
   padding: 0.7rem 0.8rem;
   border-top: 1px solid rgba(93, 75, 48, 0.08);
-  cursor: pointer;
 }
 
 .session-tool-row:first-child {
   border-top: 0;
 }
 
-.session-tool-row input {
+.session-tool-row-main {
+  display: grid;
+  grid-template-columns: 1.1rem minmax(0, 1fr);
+  align-items: start;
+  gap: 0.75rem;
+  min-width: 0;
+  flex: 1 1 auto;
+  cursor: pointer;
+}
+
+.session-tool-row-main input {
   margin: 0.12rem 0 0;
 }
 
-.session-tool-row span {
+.session-tool-row-main span {
   min-width: 0;
   line-height: 1.28;
   color: inherit;
   overflow-wrap: anywhere;
+}
+
+.session-tool-row-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.session-tool-approval-row {
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.session-tool-approval-row input {
+  width: auto;
+  margin: 0;
+}
+
+.session-tool-badge {
+  margin: 0;
 }
 
 .session-tool-copy {
@@ -4286,6 +4319,10 @@ select {
 
 :root[data-theme="dark"] .session-tool-row {
   border-top-color: rgba(125, 170, 190, 0.1);
+}
+
+:root[data-theme="dark"] .session-tool-approval-row {
+  color: #d7e3ea;
 }
 
 :root[data-theme="dark"] .session-schedule-type-toggle button.primary {

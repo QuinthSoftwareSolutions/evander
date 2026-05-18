@@ -11,6 +11,7 @@ type SessionRecord = {
   model: string | null;
   directory_path: string;
   allowed_tools: string[];
+  approval_required_tools?: string[];
   allowed_script_names: string[];
   discord_channel_allowlist: string[];
   teams_channel_allowlist: string[];
@@ -76,6 +77,7 @@ type ToolOption = SessionCatalogResponse["tool_options"][number];
 type TabKey = "active" | "expired";
 type SessionPolicyDraft = {
   allowedScriptNames: string;
+  approvalRequiredTools: string[];
   discordChannelAllowlist: string;
   teamsChannelAllowlist: string;
   communicationFileReceiveEnabled: boolean;
@@ -191,6 +193,7 @@ function formatList(value: unknown): string {
 function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
   return {
     allowedScriptNames: formatList(session.allowed_script_names),
+    approvalRequiredTools: sortTools(session.approval_required_tools ?? []),
     discordChannelAllowlist: formatList(session.discord_channel_allowlist),
     teamsChannelAllowlist: formatList(session.teams_channel_allowlist),
     communicationFileReceiveEnabled: Boolean(session.communication_file_receive_enabled),
@@ -473,6 +476,7 @@ export function SessionsScreen() {
   const [toolsBoundSessionId, setToolsBoundSessionId] = useState("");
   const [policyDraft, setPolicyDraft] = useState<SessionPolicyDraft>({
     allowedScriptNames: "",
+    approvalRequiredTools: [],
     discordChannelAllowlist: "",
     teamsChannelAllowlist: "",
     communicationFileReceiveEnabled: false,
@@ -760,16 +764,46 @@ export function SessionsScreen() {
   }
 
   function toggleTool(toolValue: string) {
+    const wasEnabled = toolsDraft.includes(toolValue);
     setToolsDirty(true);
     setToolsStatus(null);
     setToolsDraft((current) => {
       const next = current.includes(toolValue) ? current.filter((value) => value !== toolValue) : [...current, toolValue];
       return sortTools(next);
     });
+    if (wasEnabled) {
+      const hadGate = policyDraft.approvalRequiredTools.includes(toolValue);
+      if (hadGate) {
+        setPolicyDraft((current) => ({
+          ...current,
+          approvalRequiredTools: current.approvalRequiredTools.filter((value) => value !== toolValue),
+        }));
+        setPolicyDirty(true);
+        setPolicyStatus(null);
+      }
+    }
   }
 
   function updatePolicyDraft(update: Partial<SessionPolicyDraft>) {
     setPolicyDraft((current) => ({ ...current, ...update }));
+    setPolicyDirty(true);
+    setPolicyStatus(null);
+  }
+
+  function toggleApprovalRequirement(toolValue: string) {
+    if (!toolsDraft.includes(toolValue)) {
+      return;
+    }
+    setPolicyDraft((current) => {
+      const isEnabled = current.approvalRequiredTools.includes(toolValue);
+      const nextTools = isEnabled
+        ? current.approvalRequiredTools.filter((value) => value !== toolValue)
+        : [...current.approvalRequiredTools, toolValue];
+      return {
+        ...current,
+        approvalRequiredTools: sortTools(nextTools),
+      };
+    });
     setPolicyDirty(true);
     setPolicyStatus(null);
   }
@@ -856,6 +890,7 @@ export function SessionsScreen() {
               communication_file_allowed_extensions: parseList(policyDraft.communicationFileAllowedExtensions),
               communication_file_blocked_extensions: parseList(policyDraft.communicationFileBlockedExtensions),
               communication_file_require_approval_for_send: policyDraft.communicationFileRequireApprovalForSend,
+              approval_required_tools: sortTools(policyDraft.approvalRequiredTools),
               metadata: parseJsonObject(policyDraft.metadataJson, "Metadata"),
             }),
           },
@@ -1113,32 +1148,57 @@ export function SessionsScreen() {
                     <div className="session-tool-groups">
                       {groupedToolOptions.map((group) => {
                         const enabledCount = group.items.filter((tool) => toolsDraft.includes(tool.value)).length;
+                        const approvalRequiredCount = group.items.filter(
+                          (tool) => toolsDraft.includes(tool.value) && policyDraft.approvalRequiredTools.includes(tool.value),
+                        ).length;
                         return (
                           <details key={group.name} className="compact-disclosure session-tool-group">
                             <summary className="compact-disclosure-summary session-tool-group-summary">
                               <span>{group.name}</span>
-                              <span className="panel-meta">{enabledCount} of {group.items.length} enabled</span>
+                              <span className="panel-meta">
+                                {enabledCount} of {group.items.length} enabled
+                                {approvalRequiredCount > 0 ? ` • ${approvalRequiredCount} approval required` : ""}
+                              </span>
                             </summary>
                             <div className="feature-list compact-list session-tool-list">
                               {group.items.map((tool) => {
                                 const toolDescription = describeTool(tool);
+                                const isEnabled = toolsDraft.includes(tool.value);
+                                const isApprovalRequired = policyDraft.approvalRequiredTools.includes(tool.value);
                                 return (
-                                  <label key={tool.value} className="session-tool-row">
-                                    <input
-                                      type="checkbox"
-                                      checked={toolsDraft.includes(tool.value)}
-                                      onChange={() => toggleTool(tool.value)}
-                                      disabled={mutationLocked}
-                                    />
-                                    <Tooltip
-                                      content={toolDescription}
-                                      className="session-tool-copy"
-                                      focusable
-                                      ariaLabel={`${tool.label}: ${toolDescription}`}
-                                    >
-                                      <span>{tool.label}</span>
-                                    </Tooltip>
-                                  </label>
+                                  <div key={tool.value} className="session-tool-row">
+                                    <label className="session-tool-row-main">
+                                      <input
+                                        type="checkbox"
+                                        checked={isEnabled}
+                                        onChange={() => toggleTool(tool.value)}
+                                        disabled={mutationLocked}
+                                      />
+                                      <Tooltip
+                                        content={toolDescription}
+                                        className="session-tool-copy"
+                                        focusable
+                                        ariaLabel={`${tool.label}: ${toolDescription}`}
+                                      >
+                                        <span>{tool.label}</span>
+                                      </Tooltip>
+                                    </label>
+                                    <div className="session-tool-row-meta">
+                                      {isApprovalRequired ? (
+                                        <span className="status-pill state-idle session-tool-badge">Approval required</span>
+                                      ) : null}
+                                      <label className="checkbox-row session-tool-approval-row">
+                                        <input
+                                          type="checkbox"
+                                          checked={isApprovalRequired}
+                                          onChange={() => toggleApprovalRequirement(tool.value)}
+                                          disabled={mutationLocked || !isEnabled}
+                                          aria-label={`Require approval for ${tool.label}`}
+                                        />
+                                        <span>Require approval</span>
+                                      </label>
+                                    </div>
+                                  </div>
                                 );
                               })}
                             </div>

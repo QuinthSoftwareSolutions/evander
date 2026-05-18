@@ -13,6 +13,7 @@ type ApprovalItem = {
   tool_name: string;
   payload_digest: string;
   human_summary: string;
+  intended_effect?: string | null;
   directory_path: string;
   vm_id?: string | null;
   status: ApprovalStatus;
@@ -342,6 +343,14 @@ export function ApprovalsScreen() {
                 </div>
                 <div className="panel-body">
                 <p>{detail.request.human_summary}</p>
+                {detail.request.intended_effect ? (
+                  <p className="muted-copy">
+                    Intended effect:{" "}
+                    <Tooltip content={detail.request.intended_effect}>
+                      <span>{detail.request.intended_effect}</span>
+                    </Tooltip>
+                  </p>
+                ) : null}
                 <p className="muted-copy">Directory: <Tooltip content={`Directory scope for this approval request: ${detail.request.directory_path}`}><span>{detail.request.directory_path}</span></Tooltip></p>
                 <p className="muted-copy">Payload digest: <Tooltip content={`Payload digest: ${detail.request.payload_digest}`}><span>{detail.request.payload_digest}</span></Tooltip></p>
                 </div>

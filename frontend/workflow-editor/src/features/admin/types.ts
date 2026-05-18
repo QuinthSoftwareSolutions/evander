@@ -115,6 +115,7 @@ export type AgentPolicyUpdateRequest = {
   ttl_hours?: number | null;
   labels?: Record<string, string>;
   allowed_tools?: string[];
+  approval_required_tools?: string[];
   allowed_script_names?: string[];
   discord_channels?: string[];
   discord_channel_allowlist?: string[];
@@ -129,6 +130,7 @@ export type AgentSessionPolicy = {
   model: string | null;
   expires_at: string | null;
   allowed_tools: string[];
+  approval_required_tools?: string[];
   allowed_script_names: string[];
   discord_channels: string[];
   discord_channel_allowlist: string[];

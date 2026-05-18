@@ -17,7 +17,7 @@ type AdminSectionTab =
   | "workers"
   | "workflow";
 
-type ToolCallStatus = "success" | "denied" | "error";
+type ToolCallStatus = "success" | "denied" | "error" | "pending_approval";
 
 type ToolCallItem = {
   tool_name: string;
@@ -195,11 +195,19 @@ function toIsoTimestamp(value: string): string | null {
 
 function normalizeStatus(item: ToolCallItem): ToolCallStatus {
   const explicitStatus = (stringField(item, "status") ?? "").toLowerCase();
-  if (explicitStatus === "success" || explicitStatus === "denied" || explicitStatus === "error") {
+  if (
+    explicitStatus === "success" ||
+    explicitStatus === "denied" ||
+    explicitStatus === "error" ||
+    explicitStatus === "pending_approval"
+  ) {
     return explicitStatus;
   }
 
   const decision = (stringField(item, "decision") ?? "").toLowerCase();
+  if (decision === "pending_approval") {
+    return "pending_approval";
+  }
   if (decision === "denied" || decision === "rejected" || decision === "forbidden") {
     return "denied";
   }
@@ -225,6 +233,8 @@ function statusLabel(status: ToolCallStatus): string {
       return "Denied";
     case "error":
       return "Error";
+    case "pending_approval":
+      return "Pending approval";
   }
 }
 
@@ -236,13 +246,18 @@ function statusClass(status: ToolCallStatus): string {
       return "state-fail";
     case "error":
       return "state-fail";
+    case "pending_approval":
+      return "state-idle";
   }
 }
 
 function statusSummary(item: ToolCallItem): string {
   const status = normalizeStatus(item);
-  const decision = stringField(item, "decision");
-  return decision ? `${statusLabel(status)} (${decision})` : statusLabel(status);
+  const decision = stringField(item, "decision")?.trim();
+  if (!decision || decision.toLowerCase() === status) {
+    return statusLabel(status);
+  }
+  return `${statusLabel(status)} (${decision})`;
 }
 
 function normalizeActor(item: ToolCallItem): string {
@@ -425,6 +440,7 @@ export function ToolCallsPage() {
   const counts = response?.counts;
   const statusCounts = counts?.status_counts ?? {};
   const successCount = counts?.success ?? statusCounts.success ?? 0;
+  const pendingApprovalCount = counts?.status_counts?.pending_approval ?? 0;
   const deniedCount = counts?.denied ?? statusCounts.denied ?? 0;
   const errorCount = counts?.error ?? statusCounts.error ?? 0;
   const visibleTotal = counts?.matched ?? counts?.total ?? response?.total ?? items.length;
@@ -529,15 +545,16 @@ export function ToolCallsPage() {
             placeholder="prompt_agent"
           />
         </label>
-        <label className="field-stack">
-          <span>Status</span>
-          <select value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value as ToolCallFilters["status"] }))}>
-            <option value="all">All</option>
-            <option value="success">Success</option>
-            <option value="denied">Denied</option>
-            <option value="error">Error</option>
-          </select>
-        </label>
+          <label className="field-stack">
+            <span>Status</span>
+            <select value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value as ToolCallFilters["status"] }))}>
+              <option value="all">All</option>
+              <option value="success">Success</option>
+              <option value="pending_approval">Pending approval</option>
+              <option value="denied">Denied</option>
+              <option value="error">Error</option>
+            </select>
+          </label>
         <label className="checkbox-row">
           <input
             type="checkbox"
@@ -603,7 +620,7 @@ export function ToolCallsPage() {
                 </p>
               </div>
               <span className="panel-meta">
-                {successCount} success / {deniedCount} denied / {errorCount} error
+                {successCount} success / {pendingApprovalCount} pending approval / {deniedCount} denied / {errorCount} error
               </span>
             </div>
             <div className="table-wrap">
