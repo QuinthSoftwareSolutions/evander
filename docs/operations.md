@@ -69,6 +69,7 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
 - `gate-orchestrator-executions.json`: gate execution log with idempotency key, gate type, state,
   resolved config, outputs, and merge errors.
 - `gate-orchestrator-cursors.json`: gate-worker cursor/checkpoint data.
+- `effect-orchestrator-cursors.json`: effect-worker cursor/checkpoint data.
 - `trigger-orchestrator.lock` / `gate-orchestrator.lock`: single-instance lock files.
 - `trigger-conformance-report.json` and `effect-conformance-report.json`: conformance snapshots
   written by the trigger and effect suites under the configured `runtime_dir`.
