@@ -83,8 +83,7 @@ class PullRequestListQueryDefinition(QueryDefinition):
     query_time_range_type: ConfigValue | None = None
     include_links: ConfigValue | None = None
     max_comment_length: ConfigValue | None = None
-    tags_any: ConfigValue | None = None
-    tags_all: ConfigValue | None = None
+    tags: ConfigValue | None = None
     top: ConfigValue | None = None
     skip: ConfigValue | None = None
     cursor: ConfigValue | None = None
@@ -98,12 +97,12 @@ class PullRequestListQueryDefinition(QueryDefinition):
                 return "azure_devops"
         return value
 
-    @field_validator("tags_any", "tags_all")
+    @field_validator("tags")
     @classmethod
-    def validate_tag_filters(cls, value: ConfigValue | None) -> ConfigValue | None:
-        if value is None or isinstance(value, (str, list)):
+    def validate_tag_filter(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, str):
             return value
-        raise ValueError("query:pull-request:list tag filters must be a string or list")
+        raise ValueError("query:pull-request:list tags must be a string")
 
 
 class SemanticStoreStatusQueryDefinition(QueryDefinition):

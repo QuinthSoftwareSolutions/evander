@@ -176,7 +176,7 @@ def test_pr_query_service_accepts_ado_provider_alias(
     assert result.provider == "azure_devops"
 
 
-def test_azure_query_provider_filters_tags_after_label_fetch(
+def test_azure_query_provider_filters_tag_expression_after_label_fetch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     label_paths: list[str] = []
@@ -191,6 +191,7 @@ def test_azure_query_provider_filters_tags_after_label_fetch(
                     "value": [
                         {"pullRequestId": 17, "title": "One", "status": "active"},
                         {"pullRequestId": 18, "title": "Two", "status": "active"},
+                        {"pullRequestId": 19, "title": "Three", "status": "active"},
                     ],
                 },
             )
@@ -198,11 +199,17 @@ def test_azure_query_provider_filters_tags_after_label_fetch(
             label_paths.append(request.url.path)
             return httpx.Response(
                 200,
-                json={"value": [{"name": "needs-review"}, {"name": "agent"}]},
+                json={"value": [{"name": "TagA"}, {"name": "agent"}]},
             )
         if request.url.path.endswith("/pullRequests/18/labels"):
             label_paths.append(request.url.path)
-            return httpx.Response(200, json={"value": [{"name": "needs-review"}]})
+            return httpx.Response(
+                200,
+                json={"value": [{"name": "TagB"}, {"name": "TagC"}]},
+            )
+        if request.url.path.endswith("/pullRequests/19/labels"):
+            label_paths.append(request.url.path)
+            return httpx.Response(200, json={"value": [{"name": "TagD"}]})
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
 
     patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
@@ -215,16 +222,26 @@ def test_azure_query_provider_filters_tags_after_label_fetch(
     response = provider.list_pull_requests(
         repo="repo-1",
         status="active",
-        tags_any=["needs-review"],
-        tags_all=["agent"],
+        tags="(TagA or tagb) and (not TAGC)",
         top=50,
     )
 
-    assert len(label_paths) == 2
+    assert len(label_paths) == 3
     assert response.count == 1
     assert response.pull_requests[0].pr_id == "17"
-    assert response.pull_requests[0].tags == ["needs-review", "agent"]
+    assert response.pull_requests[0].tags == ["TagA", "agent"]
     assert response.paging["tag_filter_client_side"] is True
+
+
+def test_azure_query_provider_rejects_invalid_tag_expression() -> None:
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url="https://dev.azure.com/org",
+        project="proj",
+        pat="secret",
+    )
+
+    with pytest.raises(ValueError, match="missing"):
+        provider.list_pull_requests(repo="repo-1", tags="(TagA or TagB")
 
 
 def test_azure_query_provider_get_pull_request_maps_fields_and_uses_pat_auth(

@@ -55,8 +55,7 @@ class PullRequestListQueryProvider(QueryProviderBase):
             max_comment_length=self._coerce_optional_int(
                 payload.get("max_comment_length"), field_name="max_comment_length"
             ),
-            tags_any=self._coerce_string_list(payload.get("tags_any")),
-            tags_all=self._coerce_string_list(payload.get("tags_all")),
+            tags=self._coerce_optional_tag_expression(payload.get("tags")),
             top=self._coerce_optional_int(payload.get("top"), field_name="top"),
             skip=self._coerce_optional_int(payload.get("skip"), field_name="skip"),
             cursor=self._normalize_optional_string(payload.get("cursor")),
@@ -84,8 +83,7 @@ class PullRequestListQueryProvider(QueryProviderBase):
             "query_time_range_type",
             "include_links",
             "max_comment_length",
-            "tags_any",
-            "tags_all",
+            "tags",
             "top",
             "skip",
             "cursor",
@@ -118,13 +116,12 @@ class PullRequestListQueryProvider(QueryProviderBase):
         return text or None
 
     @staticmethod
-    def _coerce_string_list(value: Any) -> list[str]:
+    def _coerce_optional_tag_expression(value: Any) -> str | None:
         if value is None:
-            return []
-        raw_items = [value] if isinstance(value, str) else value
-        if not isinstance(raw_items, (list, tuple, set)):
-            raise ValueError("query:pull-request:list tags must resolve to a string or list")
-        return [str(item).strip() for item in raw_items if str(item).strip()]
+            return None
+        if not isinstance(value, str):
+            raise ValueError("query:pull-request:list tags must resolve to a string")
+        return value.strip() or None
 
     @staticmethod
     def _coerce_optional_bool(value: Any) -> bool | None:
