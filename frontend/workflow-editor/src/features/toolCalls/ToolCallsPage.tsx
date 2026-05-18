@@ -53,9 +53,17 @@ type ToolCallsResponse = {
   items: ToolCallItem[];
   counts?: {
     total?: number | null;
+    matched?: number | null;
+    returned?: number | null;
     success?: number | null;
     denied?: number | null;
     error?: number | null;
+    status_counts?: {
+      success?: number | null;
+      denied?: number | null;
+      error?: number | null;
+      [key: string]: number | null | undefined;
+    };
   };
   limit?: number | null;
   total?: number | null;
@@ -326,7 +334,20 @@ function relationLinks(item: ToolCallItem): ToolCallRelation[] {
         continue;
       }
       const tabValue = typeof rawLink.tab === "string" ? rawLink.tab : typeof rawLink.target === "string" ? rawLink.target : "";
-      const tab = tabValue === "tool-calls" || tabValue === "toolCalls" ? "tool-calls" : (tabValue as AdminSectionTab);
+      const kindValue = typeof rawLink.kind === "string" ? rawLink.kind : "";
+      const tab = tabValue === "tool-calls" || tabValue === "toolCalls"
+        ? "tool-calls"
+        : tabValue
+          ? (tabValue as AdminSectionTab)
+          : kindValue === "approval_request"
+            ? "approvals"
+            : kindValue === "workflow_run" || kindValue === "workflow_trace"
+              ? "workflow"
+              : kindValue === "session"
+                ? "sessions"
+                : kindValue === "vm"
+                  ? "vms"
+                  : (kindValue as AdminSectionTab);
       if (!["agents", "approvals", "configuration", "issues", "reports", "sessions", "tool-calls", "users", "vms", "workers", "workflow"].includes(tab)) {
         continue;
       }
@@ -379,7 +400,11 @@ export function ToolCallsPage() {
   );
   const relations = useMemo(() => (selectedCall ? relationLinks(selectedCall) : []), [selectedCall]);
   const counts = response?.counts;
-  const visibleTotal = counts?.total ?? response?.total ?? items.length;
+  const statusCounts = counts?.status_counts ?? {};
+  const successCount = counts?.success ?? statusCounts.success ?? 0;
+  const deniedCount = counts?.denied ?? statusCounts.denied ?? 0;
+  const errorCount = counts?.error ?? statusCounts.error ?? 0;
+  const visibleTotal = counts?.matched ?? counts?.total ?? response?.total ?? items.length;
 
   async function loadToolCalls() {
     const payload = await fetchJson<ToolCallsResponse>(`/api/admin/tool-calls${query}`);
@@ -554,7 +579,7 @@ export function ToolCallsPage() {
                 </p>
               </div>
               <span className="panel-meta">
-                {counts?.success ?? 0} success / {counts?.denied ?? 0} denied / {counts?.error ?? 0} error
+                {successCount} success / {deniedCount} denied / {errorCount} error
               </span>
             </div>
             <div className="table-wrap">

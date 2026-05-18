@@ -112,13 +112,19 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
       },
     ],
     counts: {
-      total: 2,
-      success: 1,
-      denied: 0,
-      error: 1,
+      scanned: 2,
+      matched: 2,
+      returned: 2,
+      skipped_malformed: 0,
+      skipped_non_tool_call: 0,
+      status_counts: {
+        success: 1,
+        denied: 0,
+        error: 1,
+      },
     },
     limit: 100,
-    total: 2,
+    has_more: false,
   };
   const sessionResponse = {
     auth_mode: "none",
