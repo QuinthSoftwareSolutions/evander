@@ -5,6 +5,15 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-18 - Workflow Run Inspect Mode
+
+Touched areas: `frontend/workflow-editor/`.
+
+- Changed workflow run inspection into a read-only canvas mode that renders the
+  selected run's visited graph path, shows failed-run unvisited nodes as
+  transparent ghosts, and opens node-level run inputs/outputs instead of the
+  workflow node editor.
+
 ## 2026-05-15 - Workflow Editor Alignment Snapping
 
 Touched areas: `frontend/workflow-editor/`.
