@@ -69,6 +69,7 @@ The workflow orchestrators share runtime state under `runtime/` (or your configu
 - `gate-orchestrator-executions.json`: gate execution log with idempotency key, gate type, state,
   resolved config, outputs, and merge errors.
 - `gate-orchestrator-cursors.json`: gate-worker cursor/checkpoint data.
+- `effect-orchestrator-cursors.json`: effect-worker cursor/checkpoint data.
 - `trigger-orchestrator.lock` / `gate-orchestrator.lock`: single-instance lock files.
 - `trigger-conformance-report.json` and `effect-conformance-report.json`: conformance snapshots
   written by the trigger and effect suites under the configured `runtime_dir`.
@@ -157,6 +158,9 @@ and surfaces:
 - local issue creation plus issue-VM startup
 - persistent selected-directory context with `root` fallback
 - direct-owned VM/session/issue listings for the selected directory
+- a Tool Calls tab for read-only inspection of the configured `audit_log_path`
+  (`runtime/audit.jsonl` by default), with filtering by session, tool, status,
+  directory/scope, and time range
 - an Approvals tab for reviewing queued approval requests with redacted context and
   selected-directory filtering
 - a configuration tab that inspects inherited per-domain directory config
@@ -304,8 +308,10 @@ Storage layout for directory config:
 
 ### Microsoft Teams delegated auth
 
-- Teams access is host-side and delegated. Use the host CLI device code flow to sign in, and keep
-  the resulting credential on the host only.
+- Teams access is host-side and delegated. The preferred operator flow is Admin Web ->
+  Configuration -> Communications: verify the directory-scoped Teams provider settings, inspect
+  delegated auth status, and start the device code flow sign-in or sign-out from the browser while
+  keeping the resulting credential on the host only.
 - Bind each directory to the intended Teams identity through per-directory Teams identity binding
   in directory-scoped provider config. Subdirectories inherit the binding, so different directory
   trees can point at different Teams accounts without guest-side secrets.
@@ -319,7 +325,13 @@ Storage layout for directory config:
 - The Entra app behind `teams_delegated_client_id` must be configured for public client /
   device-code auth. `AADSTS7000218` means the app is being treated as a confidential client and
   the host-side delegated flow in this repo cannot complete until that registration is fixed.
-- Use the host CLI for delegated auth lifecycle:
+- In Admin Web -> Configuration -> Communications, use the Teams auth panel to:
+  - inspect the current delegated auth state for the selected directory
+  - start device-code sign-in and complete the login polling flow
+  - sign out when you need to revoke the stored host-side credential
+- Use the channel lookup helper in the same Communications area to resolve `team-id/channel-id`
+  entries and copy them into communication targets.
+- Use the host CLI for delegated auth lifecycle when you need a headless fallback:
   - `agent-sandbox-cli teams-auth login --directory <directory-path>`
   - `agent-sandbox-cli teams-auth status --directory <directory-path>`
   - `agent-sandbox-cli teams-auth logout --directory <directory-path>`
@@ -989,7 +1001,8 @@ Outbound sends must use staged artifact IDs. Do not send arbitrary guest paths.
 
 ### 5. Review audit logs
 
-Use the audit log as the source of truth for file-transfer activity:
+Use Admin Web -> Tool Calls for operator review, or read the audit log directly when scripting
+against raw JSONL:
 
 ```bash
 tail -n 100 runtime/audit.jsonl | jq 'select(.tool_name | test("communication_|discord_post_file|teams_post_file|email_.*attachments"))'
@@ -1130,7 +1143,7 @@ without exposing provider credentials in the VM.
 ### Audit and log file locations
 
 - Host feedback state: `runtime/pr-feedback-store.json` (ingested comments + cursors), `runtime/pr-reply-idempotency.json` (reply dedupe keys/results), `runtime/host-agent-control-state.json` (durable enabled/disabled state by VM).
-- Host audit trail: `runtime/audit.jsonl` (tool calls and denials/errors).
+- Host audit trail: `runtime/audit.jsonl` (backing store for Admin Web Tool Calls, plus denials/errors).
 
 ### Security boundary reminder
 
@@ -1816,7 +1829,9 @@ decision-complete runbook covering:
 - Rotate Discord and email credentials independently from VM lifecycle.
 - Keep Discord bot tokens only in host environment files or shell context; do not write them into
   guest images, cloud-init, or session manifests.
-- Review `runtime/audit.jsonl` as the source of truth for privileged activity.
+- Review Admin Web -> Tool Calls for privileged activity; it reads the configured
+  `audit_log_path` (`runtime/audit.jsonl` by default) and shows redacted payloads
+  plus related session, approval, and workflow links when present.
 - Keep VM disks and seed ISOs out of home directories when using `qemu:///system`; the default scripts now place them under `/var/lib/libvirt/images/agent-sandbox`.
 
 
@@ -1840,7 +1855,10 @@ The gateway and effect providers emit structured log markers for agent orchestra
 ### Recovery steps
 
 1. **Chat stuck on first message**
-   - Check for `metric_chat_session_mapping_created` followed by subsequent `..._reused` entries.
+   - Opening the Admin Web assistant should create or reuse the assistant
+     session mapping before the first message is sent. Check for
+     `metric_chat_session_mapping_created` followed by subsequent `..._reused`
+     entries.
    - If missing, verify runtime write permissions to `runtime/chat-assistant-session-mappings.json`.
 2. **Unexpected backend path**
    - Filter logs for `metric_agent_create_backend_path` by `session_id`/`vm_name`.

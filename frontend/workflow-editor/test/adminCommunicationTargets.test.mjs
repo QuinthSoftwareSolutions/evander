@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-test("communication target editor hides inapplicable fields and preserves capability drafts", () => {
-  const configuration = readFileSync(
-    new URL("../src/features/configuration/ConfigurationScreen.tsx", import.meta.url),
-    "utf8",
-  );
+const configuration = readFileSync(
+  new URL("../src/features/configuration/ConfigurationScreen.tsx", import.meta.url),
+  "utf8",
+);
 
+test("communication target editor preserves capability drafts and inserts Teams channels into the draft", () => {
   assert.match(configuration, /COMMUNICATION_TARGET_KINDS_BY_PROVIDER/);
   assert.match(configuration, /showKindSelector = kindOptions\.length > 1/);
   assert.match(configuration, /showAuthProfile = target\.provider === "email"/);
@@ -17,4 +17,26 @@ test("communication target editor hides inapplicable fields and preserves capabi
     configuration,
     /capabilities: draftCapabilities\.length \? draftCapabilities : policyCapabilities/,
   );
+  assert.match(configuration, /new URLSearchParams\(\{\s*directory_path: directoryPath,/);
+  assert.match(configuration, /team_id: teamId/);
+  assert.match(configuration, /include_all: String\(teamsChannelLookupIncludeAll\)/);
+  assert.match(configuration, /query\.set\("channel_name", channelName\)/);
+  assert.match(configuration, /teamsChannelLookupTeamId/);
+  assert.match(configuration, /teamsChannelLookupChannelName/);
+  assert.match(configuration, /teamsChannelLookupIncludeAll/);
+  assert.match(configuration, /handleTeamsChannelLookup/);
+  assert.match(configuration, /insertTeamsChannelLookupResult/);
+  assert.match(configuration, /reserveGeneratedCommunicationTargetId/);
+  assert.match(configuration, /provider: "teams"/);
+  assert.match(configuration, /kind: "teams"/);
+  assert.match(configuration, /address: allowlistEntry/);
+  assert.match(configuration, /capabilities: \["notify"\]/);
+  assert.match(configuration, /Insert target/);
+});
+
+test("configuration screen does not render raw secret-bearing Teams auth fields", () => {
+  assert.doesNotMatch(configuration, /device_code/i);
+  assert.doesNotMatch(configuration, /store_path/i);
+  assert.doesNotMatch(configuration, /access_token/i);
+  assert.doesNotMatch(configuration, /refresh_token/i);
 });

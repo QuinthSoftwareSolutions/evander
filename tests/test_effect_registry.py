@@ -44,6 +44,7 @@ from agent_sandbox.events.provider_models import (
     VmCloneRepoEffectDefinition,
     VmCreateEffectDefinition,
 )
+from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
 from agent_sandbox.models import SessionManifest, ToolName, VmActionResult
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from agent_sandbox.repositories.skills_library import SkillLibraryRepository
@@ -1090,6 +1091,107 @@ def test_chat_assistant_ensure_session_uses_event_capability_mode(tmp_path) -> N
     assert vm_agent_admin.calls[0]["settings"]["default_profile"] == "read-only"
     assert output["assistant_capability_mode"] == "read-only"
     assert output["capability_profile"] == "read-only"
+
+
+def test_chat_assistant_ensure_session_resume_thread_id_flows_into_enqueue_prompt(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path, execution_backend="container_worker_vm")
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="assistant-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="assistant-session",
+            directory_path="root",
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "assistant-session",
+            },
+        )
+    )
+
+    class FakeVmAgentAdmin:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def resolve_chat_assistant_session(self, **kwargs):
+            self.calls.append(kwargs)
+            return {
+                "session_id": "assistant-session",
+                "agent_thread_id": "assistant-thread",
+                "vm_name": "assistant-session",
+                "execution_backend": kwargs["backend"],
+                "capability_profile": "read-only",
+            }
+
+    backend = _FakeContainerBackend()
+    backend.start_error = RuntimeError("worker unavailable")
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        lambda context, config: backend,
+    )
+    admin_service = SimpleNamespace(
+        config=config,
+        vm_agent_admin=FakeVmAgentAdmin(),
+        read_assistant_settings=lambda: {
+            "enabled": True,
+            "read_only": False,
+            "default_model": "gpt-test",
+            "default_profile": "full-admin",
+        },
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        list_vms=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("container enqueue must not list libvirt VMs")
+        ),
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    ensure_output = factory.build(
+        ChatAssistantEnsureSessionEffectDefinition(
+            id="chat-session",
+            display_name="Resolve chat assistant",
+            type="effect:chat-assistant:ensure-session",
+            user_id="alice",
+            thread_id="thread-1",
+            user_message_id="msg-1",
+            content="hello",
+            backend="container_worker_vm",
+            assistant_capability_mode="read-only",
+        )
+    ).execute()
+
+    with pytest.raises(RuntimeError, match="queued prompt for retry"):
+        factory.build(
+            AgentEnqueuePromptEffectDefinition(
+                id="agent-enqueue",
+                display_name="Enqueue",
+                type="effect:agent:enqueue-prompt",
+                target="assistant-session",
+                session_id="assistant-session",
+                prompt="check teams",
+                vm_name="assistant-session",
+                resume_thread_id=ensure_output["agent_thread_id"],
+                queue_key=f"chat:{ensure_output['thread_id']}:{ensure_output['user_message_id']}",
+            )
+        ).execute()
+
+    queued = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").get(
+        f"chat:{ensure_output['thread_id']}:{ensure_output['user_message_id']}"
+    )
+    assert queued is not None
+    assert queued.resume_thread_id == "assistant-thread"
+    assert queued.queue_key == "chat:thread-1:msg-1"
+    assert queued.target == "assistant-session"
 
 
 def test_agent_enqueue_prompt_provider_queues_when_container_dispatch_fails(

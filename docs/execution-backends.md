@@ -93,7 +93,15 @@ while container-backed sessions delete the worker session, worker-side files, ho
 manifest, and execution mappings.
 
 
-Chat Assistant session resolution is backend-aware and durable. For `libvirt_vm`, assistant initialization reuses one shared assistant VM/session globally while issuing distinct per-user `agent_thread_id` values. For `container_worker_vm`, assistant initialization reuses a distinct assistant session per user. The mapping is persisted in `runtime/chat-assistant-session-mappings.json` and initialized idempotently so concurrent first-message requests converge on the same mapping.
+Chat Assistant session resolution is backend-aware and durable. Admin Web prewarms
+this resolution when a user opens or starts a chat session, then the hidden
+`system.chat_assistant` workflow refreshes the same mapping when the first
+message is posted. For `libvirt_vm`, assistant initialization reuses one shared
+assistant VM/session globally while issuing distinct per-user `agent_thread_id`
+values. For `container_worker_vm`, assistant initialization reuses a distinct
+assistant session per user. The mapping is persisted in
+`runtime/chat-assistant-session-mappings.json` and initialized idempotently so
+concurrent session-start or first-message requests converge on the same mapping.
 
 Container sessions are bootstrapped through mounted `/home/agent`, not image rebuilds. The host writes
 Codex config, shell profile setup, and optional NuGet/.NET/Playwright environment into the durable

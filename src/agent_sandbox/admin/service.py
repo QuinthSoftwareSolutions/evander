@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import fcntl
+from collections import deque
 from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -686,6 +687,53 @@ class WorkflowRunDetailPayload(BaseModel):
     data_availability: WorkflowRunDataAvailabilityPayload = Field(
         default_factory=WorkflowRunDataAvailabilityPayload
     )
+
+
+class ToolCallAuditRelatedLinkPayload(BaseModel):
+    kind: str
+    label: str
+    value: str
+    href: str | None = None
+
+
+class ToolCallAuditEntryPayload(BaseModel):
+    event_type: str = "tool_call"
+    created_at: datetime
+    session_id: str | None = None
+    vm_id: str | None = None
+    directory_path: str | None = None
+    agent_role: str | None = None
+    actor_user_id: str | None = None
+    tool_name: str | None = None
+    request_id: str | None = None
+    correlation_id: str | None = None
+    approval_request_id: str | None = None
+    workflow_run_id: str | None = None
+    trace_id: str | None = None
+    duration_ms: int | None = None
+    decision: str | None = None
+    status: str | None = None
+    error_summary: str | None = None
+    args: dict[str, Any] = Field(default_factory=dict)
+    result: dict[str, Any] = Field(default_factory=dict)
+    related_links: list[ToolCallAuditRelatedLinkPayload] = Field(default_factory=list)
+
+
+class ToolCallAuditCountsPayload(BaseModel):
+    scanned: int = 0
+    matched: int = 0
+    returned: int = 0
+    skipped_malformed: int = 0
+    skipped_non_tool_call: int = 0
+    status_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class ToolCallAuditListPayload(BaseModel):
+    items: list[ToolCallAuditEntryPayload] = Field(default_factory=list)
+    counts: ToolCallAuditCountsPayload = Field(default_factory=ToolCallAuditCountsPayload)
+    limit: int = 100
+    has_more: bool = False
+    next_cursor: str | None = None
 
 
 class WorkflowGraphActivityNodePayload(BaseModel):
@@ -7789,6 +7837,89 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         matches.reverse()
         return matches
 
+    def list_tool_call_audit_entries(
+        self,
+        *,
+        session_id: str | None = None,
+        tool_name: str | None = None,
+        status: str | None = None,
+        directory_path: str | None = None,
+        direct_only: bool = False,
+        created_after: datetime | None = None,
+        created_before: datetime | None = None,
+        q: str | None = None,
+        limit: int | None = None,
+    ) -> ToolCallAuditListPayload:
+        normalized_limit = 100 if limit is None else max(1, min(int(limit), 500))
+        normalized_status = _tool_call_normalize_status(status)
+        normalized_directory_path = (
+            self._agent_record_directory_path(directory_path)
+            if directory_path is not None
+            else None
+        )
+        entries: deque[ToolCallAuditEntryPayload] = deque(maxlen=normalized_limit)
+        counts = ToolCallAuditCountsPayload()
+        if not self.config.audit_log_path.exists():
+            return ToolCallAuditListPayload(limit=normalized_limit)
+        try:
+            with self.config.audit_log_path.open(encoding="utf-8") as handle:
+                for raw_line in handle:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    counts.scanned += 1
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        counts.skipped_malformed += 1
+                        continue
+                    if not isinstance(payload, dict):
+                        counts.skipped_malformed += 1
+                        continue
+                    event_type = str(payload.get("event_type") or "").strip().casefold()
+                    if event_type != "tool_call":
+                        counts.skipped_non_tool_call += 1
+                        continue
+                    entry = _tool_call_audit_entry_from_payload(payload)
+                    if entry is None:
+                        counts.skipped_malformed += 1
+                        continue
+                    if not _tool_call_audit_entry_matches_filters(
+                        entry,
+                        session_id=session_id,
+                        tool_name=tool_name,
+                        status=normalized_status,
+                        directory_path=normalized_directory_path,
+                        direct_only=direct_only,
+                        created_after=created_after,
+                        created_before=created_before,
+                        q=q,
+                    ):
+                        continue
+                    counts.matched += 1
+                    counts.status_counts[entry.status or "success"] = (
+                        counts.status_counts.get(entry.status or "success", 0) + 1
+                    )
+                    entries.append(entry)
+        except Exception:
+            return ToolCallAuditListPayload(limit=normalized_limit)
+        items = list(entries)
+        items.reverse()
+        counts.returned = len(items)
+        return ToolCallAuditListPayload(
+            items=items,
+            counts=ToolCallAuditCountsPayload(
+                scanned=counts.scanned,
+                matched=counts.matched,
+                returned=counts.returned,
+                skipped_malformed=counts.skipped_malformed,
+                skipped_non_tool_call=counts.skipped_non_tool_call,
+                status_counts=dict(sorted(counts.status_counts.items())),
+            ),
+            limit=normalized_limit,
+            has_more=counts.matched > len(items),
+        )
+
     def get_approval_review(self, request_id: str) -> dict[str, Any]:
         return self.issue_git_admin.get_approval_review(request_id)
 
@@ -12081,3 +12212,351 @@ def _log_page_from_end(
         "has_more_before": start_index > 0,
         "query": normalized_query or None,
     }
+
+
+def _parse_tool_call_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _tool_call_directory_matches(
+    record_directory_path: str | None,
+    selected_directory_path: str | None,
+    *,
+    direct_only: bool,
+) -> bool:
+    if selected_directory_path is None:
+        return True
+    record_path = AdminService._agent_record_directory_path(record_directory_path)
+    selected_path = AdminService._agent_record_directory_path(selected_directory_path)
+    if direct_only:
+        return record_path == selected_path
+    return record_path == selected_path or record_path.startswith(f"{selected_path}/")
+
+
+def _tool_call_normalize_status(status: Any) -> str | None:
+    normalized = str(status or "").strip().casefold()
+    if not normalized:
+        return None
+    if normalized in {"allowed", "approved", "success", "ok"}:
+        return "success"
+    if normalized in {"denied", "blocked", "rejected"}:
+        return "denied"
+    if normalized in {"error", "failed", "failure"}:
+        return "error"
+    raise ValueError("status must be one of: success, denied, or error")
+
+
+def _tool_call_failure_status(event: dict[str, Any]) -> str:
+    decision = str(event.get("decision") or event.get("status") or "").strip().casefold()
+    result = event.get("result") if isinstance(event.get("result"), dict) else {}
+    result_status = str(result.get("status") or "").strip().casefold()
+    if decision in {"denied", "blocked", "rejected"}:
+        return "denied"
+    if decision in {"error", "failed", "failure"}:
+        return "error"
+    if decision in {"allowed", "approved", "success", "ok"}:
+        return "success"
+    if result_status in {"denied", "blocked", "rejected"}:
+        return "denied"
+    if result_status in {"error", "failed", "failure"}:
+        return "error"
+    if result_status in {"allowed", "approved", "success", "ok"}:
+        return "success"
+    if isinstance(result, dict) and any(
+        key in result for key in ("error", "error_class", "exception", "traceback")
+    ):
+        return "error"
+    return "success"
+
+
+def _tool_call_error_summary(entry: dict[str, Any], status: str, result: dict[str, Any]) -> str | None:
+    for candidate in (
+        entry.get("reason"),
+        result.get("error"),
+        result.get("message"),
+        result.get("details"),
+        result.get("summary"),
+    ):
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    if status == "denied":
+        return "Denied"
+    if status == "error":
+        return "Tool call failed."
+    return None
+
+
+def _tool_call_safe_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return str(value)
+
+
+def _tool_call_related_links(entry: ToolCallAuditEntryPayload) -> list[ToolCallAuditRelatedLinkPayload]:
+    links: list[ToolCallAuditRelatedLinkPayload] = []
+    if entry.session_id:
+        links.append(
+            ToolCallAuditRelatedLinkPayload(
+                kind="session",
+                label="Session",
+                value=entry.session_id,
+                href=f"/api/admin/sessions/{quote(entry.session_id, safe='')}",
+            )
+        )
+    if entry.vm_id:
+        links.append(
+            ToolCallAuditRelatedLinkPayload(
+                kind="vm",
+                label="VM",
+                value=entry.vm_id,
+                href=f"/api/admin/vms/{quote(entry.vm_id, safe='')}",
+            )
+        )
+    if entry.approval_request_id:
+        links.append(
+            ToolCallAuditRelatedLinkPayload(
+                kind="approval_request",
+                label="Approval request",
+                value=entry.approval_request_id,
+                href=f"/api/admin/approvals/{quote(entry.approval_request_id, safe='')}",
+            )
+        )
+    if entry.workflow_run_id:
+        links.append(
+            ToolCallAuditRelatedLinkPayload(
+                kind="workflow_run",
+                label="Workflow run",
+                value=entry.workflow_run_id,
+                href=(
+                    "/api/workflow-editor/run-detail?run_id="
+                    f"{quote(entry.workflow_run_id, safe='')}"
+                ),
+            )
+        )
+    if entry.trace_id:
+        links.append(
+            ToolCallAuditRelatedLinkPayload(
+                kind="workflow_trace",
+                label="Workflow trace",
+                value=entry.trace_id,
+                href=(
+                    "/api/workflow-editor/run-detail?trace_id="
+                    f"{quote(entry.trace_id, safe='')}"
+                ),
+            )
+        )
+    return links
+
+
+def _tool_call_audit_entry_from_payload(payload: dict[str, Any]) -> ToolCallAuditEntryPayload | None:
+    created_at = _parse_tool_call_datetime(
+        payload.get("created_at") or payload.get("timestamp") or payload.get("occurred_at")
+    )
+    if created_at is None:
+        return None
+    raw_args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
+    raw_result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    redacted_args = _redact_sensitive_payload(raw_args)
+    redacted_result = _redact_sensitive_payload(raw_result)
+    status = _tool_call_failure_status(payload)
+    decision = str(payload.get("decision") or payload.get("status") or "").strip() or None
+    request_id = None
+    for candidate in (
+        payload.get("request_id"),
+        raw_args.get("request_id"),
+        raw_result.get("request_id"),
+    ):
+        text = str(candidate or "").strip()
+        if text:
+            request_id = text
+            break
+    correlation_id = None
+    for candidate in (
+        payload.get("correlation_id"),
+        raw_args.get("correlation_id"),
+        raw_result.get("correlation_id"),
+    ):
+        text = str(candidate or "").strip()
+        if text:
+            correlation_id = text
+            break
+    approval_request_id = None
+    for candidate in (
+        payload.get("approval_request_id"),
+        raw_args.get("approval_request_id"),
+        raw_result.get("approval_request_id"),
+    ):
+        text = str(candidate or "").strip()
+        if text:
+            approval_request_id = text
+            break
+    tool_name = None
+    for candidate in (payload.get("tool_name"), payload.get("tool"), raw_args.get("tool_name")):
+        text = str(candidate or "").strip()
+        if text:
+            tool_name = text
+            break
+    session_id = None
+    for candidate in (
+        payload.get("session_id"),
+        raw_args.get("session_id"),
+        raw_result.get("session_id"),
+        payload.get("target_session_id"),
+    ):
+        text = str(candidate or "").strip()
+        if text:
+            session_id = text
+            break
+    vm_id = None
+    for candidate in (
+        payload.get("vm_id"),
+        payload.get("vm_name"),
+        raw_args.get("vm_id"),
+        raw_args.get("vm_name"),
+        raw_result.get("vm_id"),
+        raw_result.get("vm_name"),
+    ):
+        text = str(candidate or "").strip()
+        if text:
+            vm_id = text
+            break
+    directory_path = AdminService._agent_record_directory_path(payload.get("directory_path"))
+    agent_role = None
+    for candidate in (payload.get("agent_role"), payload.get("role")):
+        text = str(candidate or "").strip()
+        if text:
+            agent_role = text
+            break
+    actor_user_id = None
+    for candidate in (payload.get("actor_user_id"), payload.get("user_id")):
+        text = str(candidate or "").strip()
+        if text:
+            actor_user_id = text
+            break
+    workflow_run_id = None
+    for candidate in (
+        payload.get("workflow_run_id"),
+        raw_args.get("workflow_run_id"),
+        raw_result.get("workflow_run_id"),
+    ):
+        text = str(candidate or "").strip()
+        if text:
+            workflow_run_id = text
+            break
+    trace_id = None
+    for candidate in (
+        payload.get("trace_id"),
+        payload.get("workflow_trace_id"),
+        raw_args.get("trace_id"),
+        raw_args.get("workflow_trace_id"),
+        raw_result.get("trace_id"),
+        raw_result.get("workflow_trace_id"),
+    ):
+        text = str(candidate or "").strip()
+        if text:
+            trace_id = text
+            break
+    duration_ms = payload.get("duration_ms")
+    try:
+        normalized_duration_ms = int(duration_ms) if duration_ms is not None else None
+    except (TypeError, ValueError):
+        normalized_duration_ms = None
+    entry = ToolCallAuditEntryPayload(
+        created_at=created_at,
+        session_id=session_id,
+        vm_id=vm_id,
+        directory_path=directory_path,
+        agent_role=agent_role,
+        actor_user_id=actor_user_id,
+        tool_name=tool_name,
+        request_id=request_id,
+        correlation_id=correlation_id,
+        approval_request_id=approval_request_id,
+        workflow_run_id=workflow_run_id,
+        trace_id=trace_id,
+        duration_ms=normalized_duration_ms,
+        decision=decision,
+        status=status,
+        error_summary=_tool_call_error_summary(payload, status, raw_result),
+        args=redacted_args,
+        result=redacted_result,
+    )
+    entry.related_links = _tool_call_related_links(entry)
+    return entry
+
+
+def _tool_call_audit_entry_matches_filters(
+    entry: ToolCallAuditEntryPayload,
+    *,
+    session_id: str | None,
+    tool_name: str | None,
+    status: str | None,
+    directory_path: str | None,
+    direct_only: bool,
+    created_after: datetime | None,
+    created_before: datetime | None,
+    q: str | None,
+) -> bool:
+    if session_id is not None and entry.session_id != str(session_id).strip():
+        return False
+    if tool_name is not None and entry.tool_name != str(tool_name).strip():
+        return False
+    if status is not None and entry.status != str(status).strip().casefold():
+        return False
+    if not _tool_call_directory_matches(
+        entry.directory_path,
+        directory_path,
+        direct_only=direct_only,
+    ):
+        return False
+    if created_after is not None and entry.created_at < created_after:
+        return False
+    if created_before is not None and entry.created_at > created_before:
+        return False
+    normalized_query = str(q or "").strip().casefold()
+    if normalized_query:
+        search_haystack = " ".join(
+            part
+            for part in (
+                _tool_call_safe_text(entry.session_id),
+                _tool_call_safe_text(entry.vm_id),
+                _tool_call_safe_text(entry.directory_path),
+                _tool_call_safe_text(entry.agent_role),
+                _tool_call_safe_text(entry.actor_user_id),
+                _tool_call_safe_text(entry.tool_name),
+                _tool_call_safe_text(entry.request_id),
+                _tool_call_safe_text(entry.correlation_id),
+                _tool_call_safe_text(entry.approval_request_id),
+                _tool_call_safe_text(entry.workflow_run_id),
+                _tool_call_safe_text(entry.trace_id),
+                _tool_call_safe_text(entry.decision),
+                _tool_call_safe_text(entry.status),
+                _tool_call_safe_text(entry.error_summary),
+                _tool_call_safe_text(entry.args),
+                _tool_call_safe_text(entry.result),
+            )
+            if part
+        ).casefold()
+        if normalized_query not in search_haystack:
+            return False
+    return True

@@ -2387,9 +2387,14 @@ def test_admin_service_chat_post_publishes_hidden_trigger_event(tmp_path: Path) 
         "chat:msg-1"
     ].model_dump(mode="json")
     assert queued["trigger_id"] == "system.chat_assistant"
-    assert queued["payload"]["content"] == "hello"
-    assert queued["payload"]["backend"] == "container_worker_vm"
-    assert queued["payload"]["assistant_capability_mode"] == "read-only"
+    assert queued["payload"] == {
+        "user_id": "alice",
+        "thread_id": "thread-1",
+        "user_message_id": "msg-1",
+        "content": "hello",
+        "backend": "container_worker_vm",
+        "assistant_capability_mode": "read-only",
+    }
     assert not (tmp_path / "runtime" / "queued-agent-prompts.json").exists()
 
 

@@ -12,6 +12,7 @@ import { IssuesPage } from "./features/issues/IssuesPage";
 import { ApprovalsScreen } from "./features/approvals/ApprovalsScreen";
 import { ReportsPage } from "./features/reports/ReportsPage";
 import { SessionsScreen } from "./features/sessions/SessionsScreen";
+import { ToolCallsPage } from "./features/toolCalls/ToolCallsPage";
 import { SkillsPage } from "./features/skills/SkillsPage";
 import { UsersPage } from "./features/users/UsersPage";
 import { VmsPage } from "./features/vms/VmsPage";
@@ -83,6 +84,7 @@ type AdminTab =
   | "vms"
   | "issues"
   | "sessions"
+  | "tool-calls"
   | "configuration"
   | "reports"
   | "users"
@@ -109,6 +111,7 @@ const TABS: ReadonlyArray<AdminTabDefinition> = [
   { key: "vms", label: "VMs", shortLabel: "VMs", description: "VM host lifecycle and machine details." },
   { key: "issues", label: "Issues", shortLabel: "Issues", description: "Local issue intake and VM creation." },
   { key: "sessions", label: "Sessions", shortLabel: "Sessions", description: "Session state, tools, and wake schedules." },
+  { key: "tool-calls", label: "Tool Calls", shortLabel: "Calls", description: "Search MCP tool invocation audit entries." },
   { key: "configuration", label: "Configuration", shortLabel: "Config", description: "Directory-scoped config and policy." },
   { key: "reports", label: "Reports", shortLabel: "Reports", description: "Workflow activity and operational reporting." },
   { key: "users", label: "Users", shortLabel: "Users", description: "Azure SSO users and roles." },
@@ -120,6 +123,12 @@ function tabsForExecutionBackend(
   executionBackend: AdminExecutionBackend | null,
 ): ReadonlyArray<AdminTabDefinition> {
   return TABS.filter((tab) => tab.key !== "vms" || executionBackend === "libvirt_vm");
+}
+
+function tabFromHash(hash: string): AdminTab | null {
+  const raw = hash.replace(/^#/, "").trim();
+  const tabName = raw.split("?")[0]?.trim() ?? "";
+  return TABS.some((tab) => tab.key === tabName) ? (tabName as AdminTab) : null;
 }
 
 const LOGIN_BACKGROUND_NODES = [
@@ -158,9 +167,9 @@ const LOGIN_BACKGROUND_EDGES = [
 ] as const;
 
 function currentTab(): AdminTab {
-  const raw = window.location.hash.replace(/^#/, "").trim();
-  if (TABS.some((tab) => tab.key === raw)) {
-    return raw as AdminTab;
+  const tab = tabFromHash(window.location.hash);
+  if (tab) {
+    return tab;
   }
   return "workflow";
 }
@@ -1619,6 +1628,8 @@ export default function AdminRoot() {
               <SessionsScreen />
             ) : renderedTab === "approvals" ? (
               <ApprovalsScreen />
+            ) : renderedTab === "tool-calls" ? (
+              <ToolCallsPage />
             ) : (
               <PlaceholderView title={activeTab.label} description={activeTab.description} />
             )}

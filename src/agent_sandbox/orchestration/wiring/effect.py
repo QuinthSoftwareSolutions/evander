@@ -184,7 +184,7 @@ def build_effect_worker_wiring(
     )
     cursor_path = _resolve_worker_path(
         worker_config,
-        "gate_cursor_store_path",
+        "effect_cursor_store_path",
         fallback=worker_config.effect_cursor_store_path
         or (worker_config.runtime_dir / "effect-orchestrator-cursors.json"),
     )

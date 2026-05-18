@@ -3125,6 +3125,7 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(
         "issues": client.get("/api/admin/issues"),
         "approvals": client.get("/api/admin/approvals"),
         "sessions": client.get("/api/admin/sessions"),
+        "tool_calls": client.get("/api/admin/tool-calls"),
         "users": client.get("/api/admin/users"),
         "workers": client.get("/api/workers"),
         "configuration": client.get("/api/configuration/state"),
@@ -3142,6 +3143,8 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(
     assert isinstance(responses["approvals"].json()["items"], list)
     assert responses["sessions"].status_code == 200
     assert isinstance(responses["sessions"].json()["items"], list)
+    assert responses["tool_calls"].status_code == 200
+    assert isinstance(responses["tool_calls"].json()["items"], list)
     assert responses["users"].status_code == 200
     assert isinstance(responses["users"].json()["users"], list)
     assert responses["workers"].status_code == 200

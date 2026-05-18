@@ -3,9 +3,12 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+from contextvars import ContextVar
 import json
 import logging
 import os
+import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from inspect import Parameter, signature
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -160,6 +163,10 @@ logger = logging.getLogger(__name__)
 
 _WORKSPACE_FILE_PAYLOAD_BEGIN = "__AGENT_SANDBOX_WORKSPACE_FILE_JSON_BEGIN__"
 _WORKSPACE_FILE_PAYLOAD_END = "__AGENT_SANDBOX_WORKSPACE_FILE_JSON_END__"
+_TOOL_CALL_AUDIT_CONTEXT: ContextVar["_ToolCallAuditContext | None"] = ContextVar(
+    "agent_sandbox_tool_call_audit_context",
+    default=None,
+)
 SemanticPointIdArgument = Annotated[
     int | str,
     PydanticField(description="unsigned 64-bit integer or UUID string point ID."),
@@ -220,6 +227,213 @@ except Exception as exc:
     print(f"communication_stage_workspace_file: {exc}", file=sys.stderr)
     raise SystemExit(2)
 """.strip()
+
+
+@dataclass(slots=True)
+class _ToolCallAuditContext:
+    tool_name: str
+    started_at: float
+    raw_args: dict[str, Any]
+    session_id: str | None = None
+    request_id: str | None = None
+    correlation_id: str | None = None
+    transport_session_id: str | None = None
+    audit_emitted: bool = False
+
+
+_TOOL_CALL_APPROVAL_NAMES = {
+    ToolName.APPROVAL_SUBMIT.value,
+    ToolName.APPROVAL_CHECK.value,
+    ToolName.EMAIL_SEND_APPROVED.value,
+    ToolName.EMAIL_SEND_APPROVED_WITH_ATTACHMENTS.value,
+    ToolName.DISCORD_POST_FILE.value,
+    ToolName.TEAMS_POST_FILE.value,
+}
+
+
+def _tool_call_context() -> _ToolCallAuditContext | None:
+    return _TOOL_CALL_AUDIT_CONTEXT.get()
+
+
+def _mark_tool_call_audited() -> None:
+    current = _tool_call_context()
+    if current is not None:
+        current.audit_emitted = True
+
+
+def _string_from_headers(headers: Any, *names: str) -> str | None:
+    if headers is None:
+        return None
+    for name in names:
+        try:
+            candidate = headers.get(name)
+        except AttributeError:
+            candidate = None
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _first_string_in_payload(value: Any, keys: tuple[str, ...]) -> str | None:
+    if isinstance(value, dict):
+        for key in keys:
+            candidate = value.get(key)
+            text = str(candidate or "").strip()
+            if text:
+                return text
+        for nested in value.values():
+            found = _first_string_in_payload(nested, keys)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _first_string_in_payload(item, keys)
+            if found:
+                return found
+    return None
+
+
+def _session_actor_role(session: Any) -> str | None:
+    metadata = session.metadata if isinstance(getattr(session, "metadata", None), dict) else {}
+    for key in ("automation_role", "agent_role", "role"):
+        candidate = str(metadata.get(key) or "").strip()
+        if candidate:
+            return candidate
+    return None
+
+
+def _session_actor_user_id(session: Any) -> str | None:
+    metadata = session.metadata if isinstance(getattr(session, "metadata", None), dict) else {}
+    for key in ("user_id", "actor_user_id"):
+        candidate = str(metadata.get(key) or "").strip()
+        if candidate:
+            return candidate
+    return None
+
+
+def _tool_call_context_from_request(
+    tool_name: str,
+    args: dict[str, Any],
+    ctx: Any | None,
+    transport_session_map: dict[str, str] | None,
+) -> _ToolCallAuditContext:
+    request_context = None
+    if ctx is not None:
+        try:
+            request_context = ctx.request_context
+        except ValueError:
+            request_context = getattr(ctx, "_request_context", None)
+        except AttributeError:
+            request_context = getattr(ctx, "request_context", None)
+    request = getattr(request_context, "request", None) if request_context is not None else None
+    headers = getattr(request, "headers", None)
+    query_params = getattr(request, "query_params", None)
+    transport_session_id = _string_from_headers(headers, "mcp-session-id")
+    session_id = str(args.get("session_id") or "").strip() or None
+    if session_id is None:
+        if query_params is not None:
+            candidate = str(query_params.get("session_id") or "").strip()
+            if candidate:
+                session_id = candidate
+        if session_id is None:
+            candidate = _string_from_headers(headers, "x-agent-sandbox-session-id")
+            if candidate:
+                session_id = candidate
+        if session_id is None and transport_session_id and transport_session_map is not None:
+            candidate = str(transport_session_map.get(transport_session_id) or "").strip()
+            if candidate:
+                session_id = candidate
+    if session_id is None and isinstance(args.get("target_session_id"), str):
+        candidate = str(args.get("target_session_id") or "").strip()
+        session_id = candidate or None
+    request_id = _string_from_headers(headers, "x-request-id", "request-id")
+    correlation_id = _string_from_headers(headers, "x-correlation-id", "correlation-id")
+    if request_id is None:
+        request_id = _first_string_in_payload(args, ("request_id",))
+    if correlation_id is None:
+        correlation_id = _first_string_in_payload(args, ("correlation_id",))
+    return _ToolCallAuditContext(
+        tool_name=tool_name,
+        started_at=time.perf_counter(),
+        raw_args=dict(args),
+        session_id=session_id,
+        request_id=request_id,
+        correlation_id=correlation_id,
+        transport_session_id=transport_session_id,
+    )
+
+
+def _tool_call_arguments_dict(arguments: Any) -> dict[str, Any]:
+    if arguments is None:
+        return {}
+    if isinstance(arguments, dict):
+        return dict(arguments)
+    if hasattr(arguments, "model_dump"):
+        dumped = arguments.model_dump(mode="json")
+        return dict(dumped) if isinstance(dumped, dict) else {}
+    try:
+        return dict(arguments)
+    except Exception:
+        return {"value": arguments}
+
+
+def _tool_call_duration_ms(current: _ToolCallAuditContext | None) -> int | None:
+    if current is None:
+        return None
+    elapsed_ms = int((time.perf_counter() - current.started_at) * 1000)
+    return max(elapsed_ms, 0)
+
+
+def _tool_call_audit_fields(
+    *,
+    session: Any | None,
+    tool_name: ToolName | None,
+    args: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    current = _tool_call_context()
+    metadata = session.metadata if isinstance(getattr(session, "metadata", None), dict) else {}
+    approval_request_id = _first_string_in_payload(args, ("approval_request_id",))
+    if approval_request_id is None:
+        approval_request_id = _first_string_in_payload(result, ("approval_request_id",))
+    tool_name_value = tool_name.value if isinstance(tool_name, ToolName) else str(tool_name or "").strip()
+    if approval_request_id is None and tool_name_value in _TOOL_CALL_APPROVAL_NAMES:
+        approval_request_id = _first_string_in_payload(args, ("request_id",))
+        if approval_request_id is None:
+            approval_request_id = _first_string_in_payload(result, ("request_id",))
+    request_id = (
+        current.request_id
+        if current is not None and current.request_id
+        else _first_string_in_payload(args, ("request_id",))
+    )
+    if request_id is None:
+        request_id = _first_string_in_payload(result, ("request_id",))
+    correlation_id = (
+        current.correlation_id
+        if current is not None and current.correlation_id
+        else _first_string_in_payload(args, ("correlation_id",))
+    )
+    if correlation_id is None:
+        correlation_id = _first_string_in_payload(result, ("correlation_id",))
+    workflow_run_id = _first_string_in_payload(args, ("workflow_run_id",))
+    if workflow_run_id is None:
+        workflow_run_id = _first_string_in_payload(result, ("workflow_run_id",))
+    if workflow_run_id is None:
+        workflow_run_id = str(metadata.get("workflow_run_id") or "").strip() or None
+    trace_id = _first_string_in_payload(args, ("workflow_trace_id", "trace_id"))
+    if trace_id is None:
+        trace_id = _first_string_in_payload(result, ("workflow_trace_id", "trace_id"))
+    if trace_id is None:
+        trace_id = str(metadata.get("workflow_trace_id") or metadata.get("trace_id") or "").strip() or None
+    return {
+        "request_id": request_id,
+        "correlation_id": correlation_id,
+        "approval_request_id": approval_request_id,
+        "workflow_run_id": workflow_run_id,
+        "trace_id": trace_id,
+        "duration_ms": _tool_call_duration_ms(current),
+    }
 
 
 def _normalize_issue_status_filters(statuses: list[str] | None) -> set[str]:
@@ -416,7 +630,7 @@ _ASSISTANT_MUTATION_TOOLS = frozenset(
 
 
 def _assistant_mutation_audit_result(
-    tool_name: ToolName,
+    tool_name: ToolName | None,
     args: dict[str, Any],
     result: dict[str, Any],
     redacted_keys: set[str],
@@ -424,7 +638,7 @@ def _assistant_mutation_audit_result(
     default_status: str,
 ) -> dict[str, Any]:
     audit_result = _redact_nested_value(redacted_keys, dict(result))
-    if tool_name not in _ASSISTANT_MUTATION_TOOLS:
+    if tool_name is None or tool_name not in _ASSISTANT_MUTATION_TOOLS:
         return audit_result
 
     audit_result.setdefault("status", default_status)
@@ -693,12 +907,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
         args: dict[str, Any],
         result: dict[str, Any],
     ) -> None:
-        session = context.policy.get_session(session_id)
-        actor_user_id = str(
-            session.metadata.get("user_id") or session.metadata.get("actor_user_id") or ""
-        ).strip()
-        if not actor_user_id:
-            actor_user_id = None
+        session = context.session_repository.get_session(session_id)
+        actor_user_id = _session_actor_user_id(session) if session is not None else None
         redacted_keys = redacted_keys_for_session_id(session_id)
         redacted_args = _redact_args(redacted_keys, args)
         audit_result = _assistant_mutation_audit_result(
@@ -712,14 +922,23 @@ def create_server(context: RuntimeContext) -> FastMCP:
             AuditEvent(
                 event_type="tool_call",
                 session_id=session_id,
-                vm_id=session.vm_id,
+                vm_id=None if session is None else session.vm_id,
+                directory_path=None if session is None else session.directory_path,
+                agent_role=_session_actor_role(session),
                 tool_name=tool_name.value,
                 actor_user_id=actor_user_id,
+                **_tool_call_audit_fields(
+                    session=session,
+                    tool_name=tool_name,
+                    args=args,
+                    result=audit_result,
+                ),
                 decision="allowed",
                 args=redacted_args,
                 result=audit_result,
             )
         )
+        _mark_tool_call_audited()
         logger.info(
             "metric_mcp_tool_decision outcome=allowed tool=%s session_id=%s",
             tool_name.value,
@@ -735,16 +954,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         decision: str = "denied",
         error_class: str = "policy_error",
     ) -> None:
-        vm_id = None
-        actor_user_id = None
-        if session_id:
-            session = context.session_repository.get_session(session_id)
-            vm_id = None if session is None else session.vm_id
-            if session is not None:
-                candidate = str(
-                    session.metadata.get("user_id") or session.metadata.get("actor_user_id") or ""
-                ).strip()
-                actor_user_id = candidate or None
+        session = context.session_repository.get_session(session_id) if session_id else None
+        vm_id = None if session is None else session.vm_id
+        actor_user_id = _session_actor_user_id(session) if session is not None else None
         redacted_keys = redacted_keys_for_session_id(session_id)
         redacted_args = _redact_args(redacted_keys, args)
         failure_result = _assistant_mutation_audit_result(
@@ -759,13 +971,22 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 event_type="tool_call",
                 session_id=session_id,
                 vm_id=vm_id,
+                directory_path=None if session is None else session.directory_path,
+                agent_role=_session_actor_role(session),
                 tool_name=tool_name.value,
                 actor_user_id=actor_user_id,
+                **_tool_call_audit_fields(
+                    session=session,
+                    tool_name=tool_name,
+                    args=args,
+                    result=failure_result,
+                ),
                 decision=decision,
                 args=redacted_args,
                 result=failure_result,
             )
         )
+        _mark_tool_call_audited()
         logger.info(
             "metric_mcp_tool_decision outcome=%s tool=%s session_id=%s reason=%s error_class=%s",
             decision,
@@ -2051,6 +2272,8 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 event_type=event_type,
                 session_id=session_id,
                 vm_id=session.vm_id,
+                directory_path=session.directory_path,
+                agent_role=_session_actor_role(session),
                 provider=source_fields.get("provider"),
                 repo=source_fields.get("repo"),
                 pr_id=source_fields.get("pr_id"),
@@ -2059,7 +2282,18 @@ def create_server(context: RuntimeContext) -> FastMCP:
                     if event_type == "inline_media_list"
                     else ToolName.DOWNLOAD_INLINE_MEDIA.value
                 ),
+                actor_user_id=_session_actor_user_id(session),
                 decision=decision,
+                **_tool_call_audit_fields(
+                    session=session,
+                    tool_name=(
+                        ToolName.LIST_INLINE_MEDIA
+                        if event_type == "inline_media_list"
+                        else ToolName.DOWNLOAD_INLINE_MEDIA
+                    ),
+                    args={**request.model_dump(mode="json"), **source_fields},
+                    result={**result, "media": [_inline_media_ref_audit_payload(item) for item in media]},
+                ),
                 args={**request.model_dump(mode="json"), **source_fields},
                 result={
                     **result,
@@ -2067,6 +2301,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 },
             )
         )
+        _mark_tool_call_audited()
 
     def _admin_service() -> AdminService:
         return AdminService(context.config.runtime_dir)
@@ -7902,6 +8137,82 @@ def create_server(context: RuntimeContext) -> FastMCP:
         except PolicyError as exc:
             audit_failure(session_id, ToolName.EMAIL_SEND_APPROVED, args, str(exc))
             raise
+
+    original_call_tool = server._tool_manager.call_tool
+
+    async def audited_call_tool(*call_args: Any, **call_kwargs: Any) -> Any:
+        raw_tool_name = ""
+        if call_args:
+            raw_tool_name = str(call_args[0] or "").strip()
+        else:
+            raw_tool_name = str(
+                call_kwargs.get("name") or call_kwargs.get("tool_name") or ""
+            ).strip()
+        raw_arguments = _tool_call_arguments_dict(
+            call_args[1] if len(call_args) > 1 else call_kwargs.get("arguments")
+        )
+        request_context = (
+            call_kwargs.get("context")
+            or call_kwargs.get("ctx")
+            or (call_args[2] if len(call_args) > 2 else None)
+        )
+        call_context = _tool_call_context_from_request(
+            raw_tool_name,
+            raw_arguments,
+            request_context,
+            transport_session_map,
+        )
+        token = _TOOL_CALL_AUDIT_CONTEXT.set(call_context)
+        try:
+            return await original_call_tool(*call_args, **call_kwargs)
+        except Exception as exc:
+            if not call_context.audit_emitted:
+                tool_enum = ToolName._value2member_map_.get(raw_tool_name)
+                session = (
+                    context.session_repository.get_session(call_context.session_id)
+                    if call_context.session_id
+                    else None
+                )
+                redacted_keys = redacted_keys_for_session_id(call_context.session_id)
+                redacted_args = _redact_args(redacted_keys, raw_arguments)
+                error_result = _assistant_mutation_audit_result(
+                    tool_enum,
+                    raw_arguments,
+                    {
+                        "status": "error",
+                        "error": str(exc),
+                        "error_class": "tool_dispatch_error",
+                    },
+                    redacted_keys,
+                    default_status="error",
+                )
+                context.audit.log(
+                    AuditEvent(
+                        event_type="tool_call",
+                        session_id=call_context.session_id,
+                        vm_id=None if session is None else session.vm_id,
+                        directory_path=None if session is None else session.directory_path,
+                        agent_role=_session_actor_role(session),
+                        tool_name=raw_tool_name or None,
+                        actor_user_id=_session_actor_user_id(session),
+                        **_tool_call_audit_fields(
+                            session=session,
+                            tool_name=tool_enum,
+                            args=raw_arguments,
+                            result=error_result,
+                        ),
+                        decision="error",
+                        reason=str(exc),
+                        args=redacted_args,
+                        result=error_result,
+                    )
+                )
+                _mark_tool_call_audited()
+            raise
+        finally:
+            _TOOL_CALL_AUDIT_CONTEXT.reset(token)
+
+    server._tool_manager.call_tool = audited_call_tool
 
     return server
 
