@@ -250,6 +250,20 @@ _TOOL_CALL_APPROVAL_NAMES = {
     ToolName.TEAMS_POST_FILE.value,
 }
 
+_APPROVAL_REQUEST_ID_PARAMETER_SCHEMA = {
+    "anyOf": [{"type": "string"}, {"type": "null"}],
+    "default": None,
+    "description": (
+        "Optional approval request id for retrying an approval-gated tool invocation."
+    ),
+    "title": "Approval Request Id",
+}
+
+_APPROVAL_REQUEST_ID_SCHEMA_EXCLUDED_TOOLS = {
+    ToolName.APPROVAL_SUBMIT.value,
+    ToolName.APPROVAL_CHECK.value,
+}
+
 
 def _tool_call_context() -> _ToolCallAuditContext | None:
     return _TOOL_CALL_AUDIT_CONTEXT.get()
@@ -8138,6 +8152,21 @@ def create_server(context: RuntimeContext) -> FastMCP:
             audit_failure(session_id, ToolName.EMAIL_SEND_APPROVED, args, str(exc))
             raise
 
+    def _inject_approval_request_id_schema() -> None:
+        for tool in server._tool_manager.list_tools():
+            if tool.name in _APPROVAL_REQUEST_ID_SCHEMA_EXCLUDED_TOOLS:
+                continue
+            parameters = getattr(tool, "parameters", None)
+            if not isinstance(parameters, dict):
+                continue
+            properties = parameters.get("properties")
+            if not isinstance(properties, dict):
+                continue
+            if "approval_request_id" not in properties:
+                properties["approval_request_id"] = dict(_APPROVAL_REQUEST_ID_PARAMETER_SCHEMA)
+
+    _inject_approval_request_id_schema()
+
     original_call_tool = server._tool_manager.call_tool
 
     async def audited_call_tool(*call_args: Any, **call_kwargs: Any) -> Any:
@@ -8162,9 +8191,18 @@ def create_server(context: RuntimeContext) -> FastMCP:
             request_context,
             transport_session_map,
         )
+        sanitized_arguments = dict(raw_arguments)
+        sanitized_arguments.pop("approval_request_id", None)
+        dispatch_call_args = list(call_args)
+        dispatch_call_kwargs = dict(call_kwargs)
+        if len(dispatch_call_args) > 1:
+            dispatch_call_args[1] = sanitized_arguments
+            dispatch_call_kwargs.pop("arguments", None)
+        else:
+            dispatch_call_kwargs["arguments"] = sanitized_arguments
         token = _TOOL_CALL_AUDIT_CONTEXT.set(call_context)
         try:
-            return await original_call_tool(*call_args, **call_kwargs)
+            return await original_call_tool(*dispatch_call_args, **dispatch_call_kwargs)
         except Exception as exc:
             if not call_context.audit_emitted:
                 tool_enum = ToolName._value2member_map_.get(raw_tool_name)

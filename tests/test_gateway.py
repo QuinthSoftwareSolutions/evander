@@ -306,6 +306,43 @@ def test_create_server_registers_schedule_resume_tool(tmp_path) -> None:
     assert "to_number" not in list_contacts_fields
 
 
+def test_create_server_injects_approval_request_id_and_strips_before_dispatch(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(
+        tmp_path,
+        allowed_tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+    )
+    server = create_server(context)
+    tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
+
+    approval_schema = tools["get_workflow_snapshot"].parameters["properties"][
+        "approval_request_id"
+    ]
+    assert approval_schema["anyOf"] == [{"type": "string"}, {"type": "null"}]
+    assert approval_schema["default"] is None
+    assert approval_schema["title"] == "Approval Request Id"
+    assert "approval_request_id" not in tools["approval_submit"].parameters["properties"]
+    assert "approval_request_id" not in tools["approval_check"].parameters["properties"]
+
+    result = _call_tool(
+        server,
+        "get_workflow_snapshot",
+        {"session_id": "session-1", "approval_request_id": "approval-123"},
+    )
+
+    assert result["worker_id"] == "trigger-orchestrator"
+
+    audit_events = read_audit_events(context.config.audit_log_path)
+    tool_events = [
+        event
+        for event in audit_events
+        if event.get("tool_name") == ToolName.GET_WORKFLOW_SNAPSHOT.value
+    ]
+    assert len(tool_events) == 1
+    assert "approval_request_id" not in tool_events[0]["args"]
+
+
 def test_get_workflow_snapshot_returns_current_config_and_optional_runs(tmp_path: Path) -> None:
     context = _build_runtime_with_workflow_config(
         tmp_path,
