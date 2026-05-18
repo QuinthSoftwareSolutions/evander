@@ -7909,14 +7909,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 payload = json.loads(raw_line)
             except json.JSONDecodeError:
                 continue
-            args_payload = payload.get("args") if isinstance(payload.get("args"), dict) else {}
-            result_payload = (
-                payload.get("result") if isinstance(payload.get("result"), dict) else {}
-            )
-            if (
-                payload.get("session_id") == request.session_id
-                or args_payload.get("request_id") == request.request_id
-                or result_payload.get("request_id") == request.request_id
+            if isinstance(payload, dict) and _approval_audit_payload_matches_request(
+                payload, request
             ):
                 matches.append(payload)
             if len(matches) >= limit:
@@ -12375,6 +12369,31 @@ def _tool_call_failure_status(event: dict[str, Any]) -> str:
     ):
         return "error"
     return "success"
+
+
+def _approval_audit_payload_matches_request(
+    payload: dict[str, Any], request: ApprovalRequest
+) -> bool:
+    args_payload = payload.get("args") if isinstance(payload.get("args"), dict) else {}
+    result_payload = (
+        payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    )
+    for candidate in (
+        payload.get("approval_request_id"),
+        args_payload.get("approval_request_id"),
+        result_payload.get("approval_request_id"),
+        args_payload.get("request_id"),
+        result_payload.get("request_id"),
+        payload.get("payload_digest"),
+        args_payload.get("payload_digest"),
+        result_payload.get("payload_digest"),
+    ):
+        text = str(candidate or "").strip()
+        if not text:
+            continue
+        if text == request.request_id or text == request.payload_digest:
+            return True
+    return payload.get("session_id") == request.session_id
 
 
 def _tool_call_error_summary(entry: dict[str, Any], status: str, result: dict[str, Any]) -> str | None:

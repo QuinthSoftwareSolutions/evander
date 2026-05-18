@@ -1918,8 +1918,123 @@ def test_decide_approval_request_records_reason_history_and_audit(tmp_path: Path
     assert decided.decision_reason == "unsafe"
     assert decided.decision_history[0].reason == "unsafe"
     assert audit_payload["event_type"] == "approval_decision"
+    assert audit_payload["approval_request_id"] == "approval-1"
     assert audit_payload["args"]["request_id"] == "approval-1"
     assert audit_payload["reason"] == "unsafe"
+    assert audit_payload["result"]["status"] == "denied"
+    assert audit_payload["result"]["tool_name"] == "email_send_approved"
+    assert audit_payload["result"]["payload_digest"] == "abc"
+    assert audit_payload["result"]["request_id"] == "approval-1"
+
+
+def test_get_approval_review_includes_lifecycle_audit_entries_by_request_id_and_digest(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-1",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    service.runtime.approvals.put(
+        "approval-1",
+        ApprovalRequest(
+            request_id="approval-1",
+            session_id="session-1",
+            action_type="email_send_approved",
+            tool_name="email_send_approved",
+            payload_digest="digest-1",
+            human_summary="send email",
+            payload={"body": "hello"},
+            vm_id="vm-1",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    service.config.audit_log_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event_type": "tool_call",
+                        "session_id": "session-1",
+                        "vm_id": "vm-1",
+                        "tool_name": "email_send_approved",
+                        "approval_request_id": "approval-1",
+                        "decision": "pending_approval",
+                        "args": {"session_id": "session-1", "request_id": "approval-1"},
+                        "result": {
+                            "status": "pending_approval",
+                            "request_id": "approval-1",
+                        },
+                        "created_at": "2026-05-18T10:00:00+00:00",
+                    },
+                    sort_keys=True,
+                ),
+                json.dumps(
+                    {
+                        "event_type": "approval_decision",
+                        "session_id": "session-1",
+                        "vm_id": "vm-1",
+                        "approval_request_id": "approval-1",
+                        "decision": "denied",
+                        "reason": "unsafe",
+                        "args": {
+                            "request_id": "approval-1",
+                            "tool_name": "email_send_approved",
+                            "approver": "alice",
+                            "payload_digest": "digest-1",
+                        },
+                        "result": {
+                            "status": "denied",
+                            "tool_name": "email_send_approved",
+                            "payload_digest": "digest-1",
+                            "request_id": "approval-1",
+                        },
+                        "created_at": "2026-05-18T10:01:00+00:00",
+                    },
+                    sort_keys=True,
+                ),
+                json.dumps(
+                    {
+                        "event_type": "tool_call",
+                        "session_id": "session-1",
+                        "vm_id": "vm-1",
+                        "tool_name": "email_send_approved",
+                        "approval_request_id": "approval-1",
+                        "decision": "allowed",
+                        "args": {"session_id": "session-1", "request_id": "approval-1"},
+                        "result": {
+                            "status": "success",
+                            "request_id": "approval-1",
+                        },
+                        "created_at": "2026-05-18T10:02:00+00:00",
+                    },
+                    sort_keys=True,
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    review = service.get_approval_review("approval-1")
+
+    assert [entry["event_type"] for entry in review["audit_context"]] == [
+        "tool_call",
+        "approval_decision",
+        "tool_call",
+    ]
+    assert {entry["approval_request_id"] for entry in review["audit_context"]} == {
+        "approval-1"
+    }
+    decision_entry = review["audit_context"][1]
+    assert decision_entry["args"]["request_id"] == "approval-1"
+    assert decision_entry["result"]["status"] == "denied"
+    assert decision_entry["result"]["tool_name"] == "email_send_approved"
+    assert decision_entry["result"]["payload_digest"] == "digest-1"
 
 
 def test_admin_service_exposes_directory_config_for_selected_directory(tmp_path: Path) -> None:
