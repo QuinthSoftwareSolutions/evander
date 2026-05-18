@@ -277,7 +277,9 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
   await assert.doesNotReject(() => page.getByRole("button", { name: "Workflow run: run-2" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("button", { name: "Agent: agent-2" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("button", { name: "VM: vm-2" }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => page.getByText("Pending approval").waitFor({ state: "visible" }));
+  const detailStatus = page.locator(".tool-call-detail-panel .status-pill");
+  await assert.doesNotReject(() => detailStatus.waitFor({ state: "visible" }));
+  assert.match(await detailStatus.innerText(), /pending approval/i);
 
   const argumentsValue = await page.getByLabel("Arguments").inputValue();
   const resultValue = await page.getByLabel("Result").inputValue();

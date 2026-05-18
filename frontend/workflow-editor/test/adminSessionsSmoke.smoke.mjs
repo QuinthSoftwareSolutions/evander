@@ -101,7 +101,7 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
     available_login_methods: [],
     azure_sso_login_url: null,
     privileged_operations: {
-      unlocked: false,
+      unlocked: true,
     },
   };
   const adminStateResponse = {
@@ -111,7 +111,7 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
     role: "admin",
     can_manage_users: true,
     privileged_operations: {
-      unlocked: false,
+      unlocked: true,
     },
     assistant: {
       enabled: false,
@@ -257,10 +257,13 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   await page.getByRole("button", { name: "Expand sections" }).click();
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Sessions" }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => page.getByLabel("Prompt agent").waitFor({ state: "visible" }));
+  await page.locator(".session-tool-group-summary").filter({ hasText: "Agent control" }).click();
+  const promptAgentGroup = page.locator("details.session-tool-group[open]").filter({ hasText: "Agent control" });
+  const promptAgentRow = promptAgentGroup.locator(".session-tool-row").filter({ hasText: "Prompt agent" });
+  await assert.doesNotReject(() => promptAgentRow.waitFor({ state: "visible" }));
 
-  const allowedTool = page.getByLabel("Prompt agent");
-  const approvalGate = page.getByLabel("Require approval for Prompt agent");
+  const allowedTool = promptAgentRow.locator(".session-tool-row-main input[type='checkbox']").first();
+  const approvalGate = promptAgentRow.locator(".session-tool-approval-row input[type='checkbox']").first();
   const saveButton = page.getByRole("button", { name: "Save changes" });
 
   assert.equal(await allowedTool.isChecked(), true);
@@ -268,12 +271,21 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   assert.equal(await approvalGate.isDisabled(), false);
 
   await allowedTool.uncheck();
-  await assert.doesNotReject(() => approvalGate.waitFor({ state: "visible" }));
+  await page.waitForFunction(() => {
+    const allowed = document.querySelector("details.session-tool-group[open] .session-tool-row-main input[type='checkbox']");
+    const approval = document.querySelector("details.session-tool-group[open] .session-tool-approval-row input[type='checkbox']");
+    return (
+      allowed instanceof HTMLInputElement &&
+      approval instanceof HTMLInputElement &&
+      allowed.checked === false &&
+      approval.checked === false
+    );
+  });
   assert.equal(await approvalGate.isChecked(), false);
   assert.equal(await approvalGate.isDisabled(), true);
 
   await saveButton.click();
-  await assert.doesNotReject(() => page.getByText("Saved.").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.locator(".session-tools-panel .success-box").first().waitFor({ state: "visible" }));
 
   assert.equal(await page.evaluate(() => window.location.hash), "#sessions");
   assert.equal(await navEntry.count(), 1);
