@@ -79,7 +79,10 @@ def test_directory_admin_service_reads_writes_and_resolves_directory_config(tmp_
     parent_write = admin.write_domain_config(
         parent.id,
         domain="policy",
-        payload={"default_session_ttl_seconds": 120},
+        payload={
+            "default_session_ttl_seconds": 120,
+            "approval_required_tools": ["approval_submit", "approval_submit"],
+        },
     )
     assert parent_write.ok is True
     child_write = admin.write_domain_config(
@@ -92,11 +95,17 @@ def test_directory_admin_service_reads_writes_and_resolves_directory_config(tmp_
     read_parent = admin.read_domain_config(parent.path, domain="policy")
     assert read_parent.ok is True
     assert read_parent.data.exists is True
-    assert read_parent.data.config == {"default_session_ttl_seconds": 120}
+    assert read_parent.data.config == {
+        "default_session_ttl_seconds": 120,
+        "approval_required_tools": ["approval_submit"],
+    }
 
     resolved = admin.compute_effective_config(child.id, domain="policy")
     assert resolved.ok is True
     assert resolved.data.resolution.effective_config["default_session_ttl_seconds"] == 120
+    assert resolved.data.resolution.effective_config["approval_required_tools"] == [
+        "approval_submit"
+    ]
     assert resolved.data.resolution.effective_config["email_send_enabled"] is True
     assert resolved.validation_diagnostics == []
 

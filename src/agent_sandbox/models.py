@@ -109,6 +109,27 @@ class ToolName(str, Enum):
     COPILOT_HOST_AUTH = "copilot_host_auth"
 
 
+def normalize_tool_names(value: object, *, field_name: str) -> list[ToolName]:
+    if value is None:
+        return []
+    if isinstance(value, (str, ToolName)):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{field_name} must be a JSON array of tool names")
+    normalized: list[ToolName] = []
+    seen: set[ToolName] = set()
+    for item in value:
+        candidate = item.value if isinstance(item, ToolName) else str(item).strip()
+        if not candidate:
+            continue
+        tool = ToolName(candidate)
+        if tool in seen:
+            continue
+        seen.add(tool)
+        normalized.append(tool)
+    return normalized
+
+
 class AdoBacklogItemType(str, Enum):
     EPIC = "Epic"
     FEATURE = "Feature"
@@ -171,6 +192,7 @@ class SessionManifest(BaseModel):
     model: str | None = None
     directory_path: str = "root"
     allowed_tools: list[ToolName]
+    approval_required_tools: list[ToolName] = Field(default_factory=list)
     allowed_script_names: list[str] = Field(default_factory=list)
     discord_channel_allowlist: list[str] = Field(default_factory=list)
     teams_channel_allowlist: list[str] = Field(default_factory=list)
@@ -217,6 +239,11 @@ class SessionManifest(BaseModel):
             seen.add(candidate)
             normalized.append(candidate)
         return normalized
+
+    @field_validator("approval_required_tools", mode="before")
+    @classmethod
+    def normalize_approval_required_tools(cls, value: object) -> list[ToolName]:
+        return normalize_tool_names(value, field_name="approval_required_tools")
 
     def http_targets_metadata(self) -> "SessionHttpTargetsMetadata":
         raw_metadata = self.metadata.get("http_targets")
@@ -680,6 +707,7 @@ class ApprovalRequest(BaseModel):
     directory_path: str = "root"
     vm_id: str | None = None
     tool_name: str | None = None
+    intended_effect: str | None = None
     status: ApprovalStatus = ApprovalStatus.PENDING
     notification_status: ApprovalNotificationStatus = ApprovalNotificationStatus.DISABLED
     notification_target_ids: list[str] = Field(default_factory=list)
@@ -718,6 +746,14 @@ class ApprovalRequest(BaseModel):
             seen.add(target_id)
             normalized.append(target_id)
         return normalized
+
+    @field_validator("intended_effect", mode="before")
+    @classmethod
+    def normalize_intended_effect(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
 
 class ApprovalQueueHealth(BaseModel):

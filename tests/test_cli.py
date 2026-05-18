@@ -1748,7 +1748,7 @@ def test_create_session_uses_root_directory_policy_overlay(tmp_path: Path) -> No
             "--domain",
             "policy",
             "root",
-            '{"default_session_ttl_seconds": 120, "email_send_enabled": true}',
+            '{"default_session_ttl_seconds": 120, "email_send_enabled": true, "approval_required_tools": ["approval_submit"]}',
         ],
     )
     assert set_result.exit_code == 0
@@ -1763,6 +1763,7 @@ def test_create_session_uses_root_directory_policy_overlay(tmp_path: Path) -> No
     expires_at = datetime.fromisoformat(manifest["expires_at"])
     assert before + timedelta(seconds=120) <= expires_at <= after + timedelta(seconds=120)
     assert manifest["email_send_enabled"] is True
+    assert manifest["approval_required_tools"] == ["approval_submit"]
     assert "email_send_approved" in manifest["allowed_tools"]
 
 

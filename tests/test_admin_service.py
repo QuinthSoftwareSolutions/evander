@@ -1818,6 +1818,7 @@ def test_list_approval_requests_filters_health_and_redacts_payload(tmp_path: Pat
             tool_name="email_send_approved",
             payload_digest="abc",
             human_summary="send email",
+            intended_effect="Send the approved email payload to the recipient.",
             payload={"token": "secret", "body": "ok"},
             directory_path=team_path,
             vm_id="vm-42",
@@ -1871,6 +1872,7 @@ def test_list_approval_requests_filters_health_and_redacts_payload(tmp_path: Pat
     assert health.total == 2
     assert health.pending == 1
     assert health.denied == 1
+    assert review["request"]["intended_effect"] == "Send the approved email payload to the recipient."
     assert review["redacted_payload"]["token"] == "<redacted>"
     assert review["request"]["payload"]["token"] == "<redacted>"
     assert review["request"]["notification_status"] == "partial"
@@ -4784,6 +4786,7 @@ def test_update_session_policy_updates_allowlists_and_metadata(
             vm_id="vm-13302",
             allowed_tools=[ToolName.CLAIM_NEXT_ISSUE],
             allowed_script_names=["old-script"],
+            approval_required_tools=[ToolName.COMPLETE_ISSUE],
             discord_channel_allowlist=["old-discord"],
             teams_channel_allowlist=["team-a/channel-1"],
             teams_chat_allowlist=["chat:chat-old"],
@@ -4795,6 +4798,7 @@ def test_update_session_policy_updates_allowlists_and_metadata(
     result = service.update_session_policy(
         "13302",
         {
+            "approval_required_tools": [" complete_issue ", "approval_submit"],
             "allowed_script_names": [" deploy-review ", "deploy-review", "collect-logs"],
             "discord_channel_allowlist": [" chan-a ", "chan-a", "chan-b"],
             "teams_channel_allowlist": [" team-b/channel-2 ", "chat:chat-1"],
@@ -4814,6 +4818,10 @@ def test_update_session_policy_updates_allowlists_and_metadata(
     assert result.success is True
     assert result.session_id == "issue-13302-session"
     assert updated is not None
+    assert updated.approval_required_tools == [
+        ToolName.COMPLETE_ISSUE,
+        ToolName.APPROVAL_SUBMIT,
+    ]
     assert updated.allowed_script_names == ["deploy-review", "collect-logs"]
     assert updated.discord_channel_allowlist == ["chan-a", "chan-b"]
     assert updated.teams_channel_allowlist == ["team-b/channel-2", "chat:chat-1"]

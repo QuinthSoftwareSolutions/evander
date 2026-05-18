@@ -19,7 +19,7 @@ from pydantic import (
     model_validator,
 )
 
-from agent_sandbox.models import DirectoryPath
+from agent_sandbox.models import DirectoryPath, ToolName, normalize_tool_names
 from agent_sandbox.provider_profiles import DEFAULT_PROVIDER_PROFILE_NAME, resolve_provider_profile
 from agent_sandbox.events.models import (
     EdgeDefinition,
@@ -213,6 +213,7 @@ class GatewayConfig(BaseModel):
     communication_file_blocked_extensions: list[str] = Field(default_factory=list)
     communication_file_require_approval_for_send: bool = False
     pr_reply_require_approval: bool = False
+    approval_required_tools: list[ToolName] = Field(default_factory=list)
     github_token_env: str = "GITHUB_TOKEN"
     agent_prompt_token_secret_env: str = "AGENT_PROMPT_TOKEN_SECRET"
     agent_prompt_token_ttl_seconds: int = Field(default=3600, ge=1)
@@ -322,6 +323,11 @@ class GatewayConfig(BaseModel):
         if not normalized:
             raise ValueError(f"{info.field_name} cannot be empty")
         return normalized
+
+    @field_validator("approval_required_tools", mode="before")
+    @classmethod
+    def normalize_approval_required_tools(cls, value: object) -> list[ToolName]:
+        return normalize_tool_names(value, field_name="approval_required_tools")
 
     @field_validator(
         "gateway_url",

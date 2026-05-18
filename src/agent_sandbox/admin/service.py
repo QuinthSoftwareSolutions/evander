@@ -4021,6 +4021,7 @@ def _build_issue_session_manifest(
         vm_id=vm_id,
         directory_path=directory_path,
         allowed_tools=list(dict.fromkeys(resolved_allowed_tools)),
+        approval_required_tools=list(policy.approval_required_tools),
         allowed_script_names=_normalize_allowed_script_names(allowed_script_names or []),
         discord_channel_allowlist=discord_channels,
         teams_channel_allowlist=_normalize_teams_channel_allowlist(
@@ -4215,6 +4216,7 @@ def _session_policy_update_from_payload(
     session: SessionManifest, payload: Mapping[str, Any]
 ) -> dict[str, Any]:
     allowed_fields = {
+        "approval_required_tools",
         "allowed_script_names",
         "discord_channel_allowlist",
         "discord_channels",
@@ -4234,6 +4236,13 @@ def _session_policy_update_from_payload(
         update["allowed_script_names"] = _normalize_allowed_script_names(
             _normalize_plain_string_list(
                 payload.get("allowed_script_names"), field_name="allowed_script_names"
+            )
+        )
+    if "approval_required_tools" in payload:
+        update["approval_required_tools"] = _normalize_allowed_tools(
+            _normalize_plain_string_list(
+                payload.get("approval_required_tools"),
+                field_name="approval_required_tools",
             )
         )
 
@@ -5666,6 +5675,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 tool.value if isinstance(tool, ToolName) else str(tool)
                 for tool in session.allowed_tools
             ],
+            "approval_required_tools": [
+                tool.value if isinstance(tool, ToolName) else str(tool)
+                for tool in session.approval_required_tools
+            ],
             "allowed_script_names": list(session.allowed_script_names),
             "discord_channels": list(session.discord_channel_allowlist),
             "discord_channel_allowlist": list(session.discord_channel_allowlist),
@@ -6577,6 +6590,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "model",
             "ttl_hours",
             "allowed_tools",
+            "approval_required_tools",
             "allowed_script_names",
             "discord_channels",
             "discord_channel_allowlist",
@@ -6617,6 +6631,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         session_policy_fields = {
             key: body[key]
             for key in (
+                "approval_required_tools",
                 "allowed_script_names",
                 "discord_channels",
                 "discord_channel_allowlist",

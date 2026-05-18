@@ -13,7 +13,7 @@ from agent_sandbox.directory_config import (
     validate_effective_domain_payload,
 )
 from agent_sandbox.directories import DirectoryService, DirectoryStore
-from agent_sandbox.models import SessionManifest, ToolName
+from agent_sandbox.models import SessionManifest, ToolName, normalize_tool_names
 from agent_sandbox.repositories.session_manifests import (
     JsonSessionManifestRepository,
     SessionManifestRepository,
@@ -42,6 +42,7 @@ class EffectivePolicyConfig(BaseModel):
     communication_file_blocked_extensions: list[str] = Field(default_factory=list)
     communication_file_require_approval_for_send: bool = False
     pr_reply_require_approval: bool = False
+    approval_required_tools: list[ToolName] = Field(default_factory=list)
     redacted_keys: set[str] = Field(
         default_factory=lambda: {
             "body",
@@ -73,6 +74,11 @@ class EffectivePolicyConfig(BaseModel):
             seen.add(target_id)
             normalized.append(target_id)
         return normalized
+
+    @field_validator("approval_required_tools", mode="before")
+    @classmethod
+    def normalize_approval_required_tools(cls, value: object) -> list[ToolName]:
+        return normalize_tool_names(value, field_name="approval_required_tools")
 
 
 class PolicyConfigResolver:
