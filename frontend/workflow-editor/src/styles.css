@@ -1290,17 +1290,19 @@ select {
 
   .admin-shell-layout,
   .app-shell {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
+  .admin-shell.workflow-sidebar-collapsed .admin-shell-layout,
   .admin-shell.workflow-focus .admin-shell-layout,
   .admin-shell.workflow-focus.workflow-sidebar-collapsed .admin-shell-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .admin-shell-layout,
   .admin-shell-main,
   .admin-shell-nav {
+    min-width: 0;
     overflow: visible;
   }
 
@@ -1309,24 +1311,29 @@ select {
   }
 
   .admin-shell-header {
+    flex-direction: column;
     align-items: start;
   }
 
   .admin-shell.workflow-focus .admin-shell-header {
     align-items: stretch;
-    flex-direction: column;
   }
 
+  .admin-shell-brand,
   .admin-shell.workflow-focus .admin-shell-brand {
     flex: 0 1 auto;
+    min-width: 0;
     max-width: 100%;
     width: 100%;
   }
 
+  .admin-shell-info-group,
   .admin-shell.workflow-focus .admin-shell-info-group {
     padding-inline: 0;
   }
 
+  .admin-shell-info-group::before,
+  .admin-shell-info-group::after,
   .admin-shell.workflow-focus .admin-shell-info-group::before,
   .admin-shell.workflow-focus .admin-shell-info-group::after {
     display: none;
@@ -2104,6 +2111,19 @@ select {
   background: rgba(246, 249, 244, 0.82);
 }
 
+.inspected-run-panel,
+.inspect-node-panel,
+.inspect-resolved-inputs,
+.inspect-resolved-field-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.read-only-inspector-field input,
+.read-only-inspector-field textarea {
+  background: rgba(255, 252, 246, 0.62);
+}
+
 .run-detail-header,
 .run-detail-graph-header {
   display: flex;
@@ -2442,6 +2462,10 @@ select {
   stroke-width: 1;
 }
 
+.react-flow__edge.workflow-edge-ghost {
+  opacity: 0.24;
+}
+
 .snap-guide {
   position: absolute;
   z-index: 6;
@@ -2490,6 +2514,20 @@ select {
 
 .node-card.selected {
   outline: 2px solid #1c7f74;
+}
+
+.node-card.inspect-ghost {
+  opacity: 0.28;
+  filter: grayscale(0.45);
+  box-shadow: none;
+}
+
+.node-card.inspect-ghost.selected {
+  opacity: 0.62;
+}
+
+.workflow-editor-shell.is-inspect-mode .node-drag-surface {
+  cursor: default;
 }
 
 .node-card.invalid {
@@ -2591,6 +2629,20 @@ select {
 }
 
 .state-active {
+  background: #ece7df;
+  color: #5c4d3b;
+}
+
+.status-completed,
+.state-completed,
+.status-succeeded,
+.state-succeeded {
+  background: #dff5e7;
+  color: #1f6a3f;
+}
+
+.status-skipped,
+.state-skipped {
   background: #ece7df;
   color: #5c4d3b;
 }
@@ -3134,6 +3186,40 @@ select {
 
 .issues-filter-grid {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.approvals-page .feature-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+.approvals-page .feature-sidebar-header,
+.approvals-page .section-panel,
+.approvals-page .feature-sidebar .field-stack,
+.approvals-page .feature-sidebar .checkbox-row,
+.approvals-page .feature-list {
+  margin: 0;
+}
+
+.approvals-page .feature-sidebar .field-stack,
+.approvals-page .feature-sidebar .field-stack input,
+.approvals-page .feature-sidebar .field-stack select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.approvals-page .feature-sidebar .field-stack > span,
+.approvals-page .feature-sidebar .checkbox-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.approvals-page .feature-sidebar .checkbox-row {
+  align-items: flex-start;
+  line-height: 1.25;
 }
 
 .feature-list-item.selected {
@@ -5694,6 +5780,14 @@ select {
   outline-color: #68b1c6;
 }
 
+:root[data-theme="dark"] .node-card.inspect-ghost {
+  opacity: 0.32;
+}
+
+:root[data-theme="dark"] .node-card.inspect-ghost.selected {
+  opacity: 0.68;
+}
+
 :root[data-theme="dark"] .node-card.invalid {
   border-color: rgba(239, 109, 74, 0.78);
   box-shadow: 0 0 0 3px rgba(239, 109, 74, 0.22), 0 14px 36px rgba(0, 0, 0, 0.28);
@@ -5754,6 +5848,20 @@ select {
 :root[data-theme="dark"] .state-active {
   background: #24313a;
   color: #b8c8d2;
+}
+
+:root[data-theme="dark"] .status-completed,
+:root[data-theme="dark"] .state-completed,
+:root[data-theme="dark"] .status-succeeded,
+:root[data-theme="dark"] .state-succeeded {
+  background: #173021;
+  color: #9fe3b3;
+}
+
+:root[data-theme="dark"] .status-skipped,
+:root[data-theme="dark"] .state-skipped {
+  background: #2b2822;
+  color: #d6c6aa;
 }
 
 :root[data-theme="dark"] .state-pass {

@@ -20,6 +20,7 @@ config/trigger-orchestrator/config.json
 config/trigger-orchestrator/layout.json
 /config/workflow-packs/*.json
 !/config/workflow-packs/*-example.json
+!/config/workflow-packs/system.v1.json
 /.tmp-trigger-tests/
 /config/trigger-orchestrator/.tmp-trigger-tests/
 node_modules

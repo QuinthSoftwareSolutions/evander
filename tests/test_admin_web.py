@@ -616,6 +616,18 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "execution_backend",
         "directory_path",
     ]
+    session_renew = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "effect:session:renew-if-expired"
+    )
+    assert [field["key"] for field in session_renew["fields"]] == [
+        "target",
+        "session_id",
+        "vm_name",
+        "extend_by",
+        "directory_path",
+    ]
     agent_clone_repo = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:clone-repo"
     )
@@ -4278,6 +4290,8 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
             self.logged.append((target, lines, mode))
             if mode == "session":
                 return "session transcript\n" if target == "exec-1" else ""
+            if mode == "augmented":
+                return "repo line for exec-1\n" if target == "exec-1" else "line 2\n"
             return "line 2\n"
 
         def get_log_page(
@@ -4339,7 +4353,7 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
 
     log_response = client.get("/api/admin/agents/session-1/log?backend=container_worker_vm&lines=4")
     paged_response = client.get(
-        "/api/admin/agents/session-1/log?backend=container_worker_vm&limit=3&offset=3&query=repo"
+        "/api/admin/agents/session-1/log?backend=container_worker_vm&limit=3&offset=0&query=repo"
     )
     stop_response = client.post(
         "/api/admin/agents/session-1/actions/stop?backend=container_worker_vm", json={}
@@ -4355,9 +4369,9 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     assert "execution=exec-1" in log_response.json()["text"]
     assert "log=raw" in log_response.json()["text"]
     assert paged_response.status_code == 200
-    assert paged_response.json()["text"] == "paged line\n"
-    assert paged_response.json()["has_more_before"] is True
-    assert paged_response.json()["total_lines"] == 8
+    assert paged_response.json()["text"] == "repo line for exec-1\n"
+    assert paged_response.json()["has_more_before"] is False
+    assert paged_response.json()["total_lines"] == 1
     assert stop_response.status_code == 200
     assert stop_response.json()["status"] == "stopped"
     assert destroy_response.status_code == 200
@@ -4367,8 +4381,10 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
         ("exec-1", 4, "session"),
         ("exec-2", 2, "raw"),
         ("exec-1", 2, "raw"),
+        ("exec-2", 0, "raw"),
+        ("exec-1", 0, "augmented"),
     ]
-    assert fake_backend.paged == [("exec-1", 3, 3, "repo")]
+    assert fake_backend.paged == []
     assert fake_backend.stopped == ["exec-1"]
     assert fake_backend.destroyed == ["exec-1"]
 

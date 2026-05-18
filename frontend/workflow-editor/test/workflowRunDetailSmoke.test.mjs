@@ -57,6 +57,11 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         display_name: "Incoming command",
         type: "trigger:manual",
       },
+      {
+        id: "trigger-2",
+        display_name: "Unrelated command",
+        type: "trigger:manual",
+      },
     ],
     gates: [],
     effects: [
@@ -65,9 +70,23 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         display_name: "Dispatch agent",
         type: "effect:agent",
       },
+      {
+        id: "notify-1",
+        display_name: "Notify operator",
+        type: "effect:notify",
+      },
+      {
+        id: "unrelated-1",
+        display_name: "Unrelated effect",
+        type: "effect:notify",
+      },
     ],
     queries: [],
-    edges: [{ source_id: "trigger-1", target_id: "agent-1", source_port: "completed" }],
+    edges: [
+      { source_id: "trigger-1", target_id: "agent-1", source_port: "completed" },
+      { source_id: "agent-1", target_id: "notify-1", source_port: "completed" },
+      { source_id: "trigger-2", target_id: "unrelated-1", source_port: "completed" },
+    ],
   };
   const graph = {
     id: "graph-1",
@@ -75,7 +94,7 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
     description: null,
     directory_paths: ["root"],
     user_ids: [],
-    node_ids: ["trigger-1", "agent-1"],
+    node_ids: ["trigger-1", "agent-1", "notify-1"],
   };
   const workflowDocument = {
     config_path: "workflow.json",
@@ -87,6 +106,9 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
       nodes: {
         "trigger-1": { x: 80, y: 80 },
         "agent-1": { x: 360, y: 80 },
+        "notify-1": { x: 640, y: 80 },
+        "trigger-2": { x: 80, y: 320 },
+        "unrelated-1": { x: 360, y: 320 },
       },
     },
     graphs: [graph],
@@ -109,6 +131,14 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         type: "effect:agent",
         label: "Agent",
         fields: [{ ...fieldDefaults, key: "prompt", label: "Prompt", kind: "string" }],
+        input_ports: [],
+        output_ports: [],
+      },
+      {
+        kind: "effect",
+        type: "effect:notify",
+        label: "Notify",
+        fields: [],
         input_ports: [],
         output_ports: [],
       },
@@ -164,8 +194,8 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         captured_at: "2026-05-16T12:00:00Z",
         snapshot_type: "run_start",
         source: "runtime",
-        node_count: 2,
-        edge_count: 1,
+        node_count: 3,
+        edge_count: 2,
         triggers: config.triggers,
         gates: [],
         effects: config.effects,
@@ -394,14 +424,29 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
   await page.getByText("Current runs").click();
   await page.locator(".runtime-run-card").getByRole("button", { name: "Inspect" }).click();
 
+  await assert.doesNotReject(() => page.getByText("Inspected run").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Historical graph snapshot").waitFor({ state: "visible" }));
-  await page.locator(".run-detail-node-card > summary").first().click();
+  await assert.doesNotReject(() => page.getByRole("button", { name: "Exit inspect mode" }).waitFor({ state: "visible" }));
+  assert.equal(await page.getByText("Current runs").count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Save workflow" }).count(), 0);
+  assert.equal(await page.getByText("Create").count(), 0);
+  await assert.doesNotReject(() => page.locator(".node-card.inspect-ghost", { hasText: "Notify operator" }).waitFor({ state: "visible" }));
+  assert.equal(await page.locator(".react-flow__node", { hasText: "Unrelated command" }).count(), 0);
+  assert.equal(await page.locator(".react-flow__node", { hasText: "Unrelated effect" }).count(), 0);
+
+  await page.locator(".react-flow__node", { hasText: "Dispatch agent" }).click();
+  assert.equal(
+    await page.locator(".inspect-node-panel .read-only-inspector-field", { hasText: "Prompt" }).locator("input").inputValue(),
+    "Handle ticket",
+  );
   await assert.doesNotReject(() => page.getByText("Approval appr-1").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Boundary root").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Agent session-1").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Artifact comm_1").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".run-detail-json > summary").getByText("Binding trace", { exact: true }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => page.getByText("Missing legacy trace data").waitFor({ state: "visible" }));
+
+  await page.locator(".react-flow__node", { hasText: "Notify operator" }).click();
+  await assert.doesNotReject(() => page.getByText("Not visited in this run").waitFor({ state: "visible" }));
 
   assert.deepEqual(detailRequests, ["/api/workflow-editor/run-detail?event_id=evt-run-1"]);
   assert.deepEqual(pageErrors, []);

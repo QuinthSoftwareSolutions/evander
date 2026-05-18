@@ -19,7 +19,11 @@ from agent_sandbox.workflow.compiler import (
 )
 from agent_sandbox.workflow.migrations import migrate_agent_prompt_lifecycle_ports
 from agent_sandbox.workflow.transforms import resolve_workflow_transforms
-from agent_sandbox.workflow.packs import _pack_path, compose_workflow_ir
+from agent_sandbox.workflow.packs import (
+    BUILTIN_HIDDEN_WORKFLOW_PACKS,
+    _pack_path,
+    compose_workflow_ir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +59,9 @@ def load_trigger_orchestrator_worker_global_config(
     base_payload = _base_worker_global_payload(base_config)
     path = _worker_global_config_path(project_dir)
     if not path.exists():
+        base_payload = _compose_configured_workflow_ir(
+            project_dir=project_dir, payload=dict(base_payload)
+        )
         return _compile_worker_global_config(
             TriggerOrchestratorWorkerGlobalConfig.model_validate(base_payload)
         )
@@ -112,7 +119,7 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
     def _compute_fingerprint(self) -> tuple[tuple[int, int, int, str], ...] | None:
         base_fingerprint = _file_fingerprint(self._path)
         if base_fingerprint is None:
-            return None
+            base_fingerprint = (0, 0, 0, f"missing:{self._path}")
 
         fingerprints = [base_fingerprint]
         runtime_dir = Path(self._base_payload.get("runtime_dir") or "runtime")
@@ -129,14 +136,17 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
 
     def _load_from_path(self) -> TriggerOrchestratorWorkerGlobalConfig:
         if not self._path.exists():
+            payload = _compose_configured_workflow_ir(
+                project_dir=self._project_dir,
+                payload=dict(self._base_payload),
+            )
             return _compile_worker_global_config(
-                TriggerOrchestratorWorkerGlobalConfig.model_validate(self._base_payload)
+                TriggerOrchestratorWorkerGlobalConfig.model_validate(payload)
             )
         raw = json.loads(self._path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError(f"worker config file {self._path} must contain a JSON object")
-        project_dir = self._path.parents[2]
-        raw = _compose_configured_workflow_ir(project_dir=project_dir, payload=raw)
+        raw = _compose_configured_workflow_ir(project_dir=self._project_dir, payload=raw)
         runtime_dir = Path(self._base_payload.get("runtime_dir") or "runtime")
         _validate_communication_targets(
             base_config=GatewayConfig(runtime_dir=runtime_dir),
@@ -150,17 +160,20 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
         except Exception:
-            return []
+            raw = {}
         if not isinstance(raw, dict):
-            return []
+            raw = {}
         configured_packs = raw.get("workflow_packs")
-        if not isinstance(configured_packs, list):
-            return []
-
         paths: list[Path] = []
-        for pack_reference in configured_packs:
+        if isinstance(configured_packs, list):
+            for pack_reference in configured_packs:
+                try:
+                    paths.append(_pack_path(self._project_dir, str(pack_reference)))
+                except Exception:
+                    continue
+        for pack_reference in BUILTIN_HIDDEN_WORKFLOW_PACKS:
             try:
-                paths.append(_pack_path(self._project_dir, str(pack_reference)))
+                paths.append(_pack_path(self._project_dir, pack_reference))
             except Exception:
                 continue
         return paths
@@ -192,92 +205,75 @@ def _compose_configured_workflow_ir(
     has_configured_packs = isinstance(configured_packs, list) and bool(configured_packs)
     has_inline_ir = isinstance(inline_ir, dict)
     if not has_configured_packs and not has_inline_ir:
-        return payload
+        return _append_builtin_hidden_workflows(project_dir=project_dir, payload=payload)
 
     composition = compose_workflow_ir(
         project_dir=project_dir,
         workflow_packs=configured_packs if has_configured_packs else [],
         inline_ir=inline_ir if has_inline_ir else None,
     )
-    merged = dict(payload)
-    for collection_name in _WORKFLOW_NODE_COLLECTIONS:
-        merged[collection_name] = _merge_system_managed_workflow_nodes(
-            composed_entries=getattr(composition, collection_name),
-            configured_entries=payload.get(collection_name),
-        )
-    merged["edges"] = _merge_system_managed_workflow_edges(
-        composed_edges=composition.edges,
-        configured_edges=payload.get("edges"),
-        node_ids=_collect_workflow_node_ids(merged),
+    return _append_builtin_hidden_workflows(
+        project_dir=project_dir,
+        payload=payload,
+        editable_collections={
+            collection_name: getattr(composition, collection_name)
+            for collection_name in _WORKFLOW_NODE_COLLECTIONS
+        },
+        editable_edges=composition.edges,
     )
-    return migrate_agent_prompt_lifecycle_ports(merged)
 
 
-def _merge_system_managed_workflow_nodes(
-    *, composed_entries: list[dict[str, Any]], configured_entries: object
-) -> list[dict[str, Any]]:
-    system_entries: list[dict[str, Any]] = []
-    if isinstance(configured_entries, list):
-        system_entries = [
-            dict(entry)
-            for entry in configured_entries
-            if isinstance(entry, dict)
-            and _is_system_managed_workflow_node_id(entry.get("id"))
-        ]
-    if not system_entries:
-        return composed_entries
+def _append_builtin_hidden_workflows(
+    *,
+    project_dir: Path,
+    payload: dict[str, Any],
+    editable_collections: dict[str, list[dict[str, Any]]] | None = None,
+    editable_edges: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    payload = migrate_agent_prompt_lifecycle_ports(payload)
+    composition = compose_workflow_ir(
+        project_dir=project_dir,
+        workflow_packs=[],
+        built_in_workflow_packs=BUILTIN_HIDDEN_WORKFLOW_PACKS,
+    )
+    merged = dict(payload)
+    hidden_node_ids: set[str] = set()
+    for collection_name in _WORKFLOW_NODE_COLLECTIONS:
+        configured_entries = (
+            editable_collections.get(collection_name)
+            if editable_collections is not None
+            else merged.get(collection_name)
+        )
+        editable_entries = (
+            [
+                dict(entry)
+                for entry in configured_entries
+                if isinstance(entry, dict)
+                and not _is_system_managed_workflow_node_id(entry.get("id"))
+            ]
+            if isinstance(configured_entries, list)
+            else []
+        )
+        hidden_entries = getattr(composition, collection_name)
+        hidden_node_ids.update(_workflow_node_id(entry) for entry in hidden_entries)
+        editable_entries.extend(hidden_entries)
+        merged[collection_name] = editable_entries
 
-    system_ids = {_workflow_node_id(entry) for entry in system_entries}
-    merged = [entry for entry in composed_entries if _workflow_node_id(entry) not in system_ids]
-    merged.extend(system_entries)
-    return merged
-
-
-def _merge_system_managed_workflow_edges(
-    *, composed_edges: list[dict[str, Any]], configured_edges: object, node_ids: set[str]
-) -> list[dict[str, Any]]:
-    system_edges: list[dict[str, Any]] = []
-    if isinstance(configured_edges, list):
-        system_edges = [
+    configured_edges = editable_edges if editable_edges is not None else merged.get("edges")
+    editable_edges = (
+        [
             dict(edge)
             for edge in configured_edges
             if isinstance(edge, dict)
-            and (
-                _is_system_managed_workflow_node_id(edge.get("source_id"))
-                or _is_system_managed_workflow_node_id(edge.get("target_id"))
-            )
-            and _workflow_edge_source_id(edge) in node_ids
-            and _workflow_edge_target_id(edge) in node_ids
+            and _workflow_edge_source_id(edge) not in hidden_node_ids
+            and _workflow_edge_target_id(edge) not in hidden_node_ids
         ]
-    if not system_edges:
-        return composed_edges
-
-    merged = [
-        edge
-        for edge in composed_edges
-        if not (
-            _is_system_managed_workflow_node_id(edge.get("source_id"))
-            or _is_system_managed_workflow_node_id(edge.get("target_id"))
-        )
-    ]
-    merged.extend(system_edges)
-    return merged
-
-
-def _collect_workflow_node_ids(payload: dict[str, Any]) -> set[str]:
-    node_ids: set[str] = set()
-    for collection_name in _WORKFLOW_NODE_COLLECTIONS:
-        entries = payload.get(collection_name)
-        if not isinstance(entries, list):
-            continue
-        node_ids.update(
-            node_id
-            for entry in entries
-            if isinstance(entry, dict)
-            for node_id in [_workflow_node_id(entry)]
-            if node_id
-        )
-    return node_ids
+        if isinstance(configured_edges, list)
+        else []
+    )
+    editable_edges.extend(composition.edges)
+    merged["edges"] = editable_edges
+    return migrate_agent_prompt_lifecycle_ports(merged)
 
 
 def _workflow_node_id(entry: dict[str, Any]) -> str:

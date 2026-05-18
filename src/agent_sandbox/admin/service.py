@@ -60,6 +60,7 @@ from agent_sandbox.messaging.targets import COMMUNICATION_TARGETS_DOMAIN
 from agent_sandbox.ownership import DirectoryOwnershipQueries
 from agent_sandbox.policy_config import EffectivePolicyConfig
 from agent_sandbox.provider_config import ProviderConfigResolver
+from agent_sandbox.repositories.chat_assistant_sessions import JsonChatAssistantSessionRepository
 from agent_sandbox.repositories.session_manifests import as_session_manifest_repository
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
 from agent_sandbox.session_artifacts import (
@@ -107,6 +108,7 @@ from agent_sandbox.workflow.migrations import (
     migrate_agent_prompt_lifecycle_ports,
 )
 from agent_sandbox.workflow.runtime_config import (
+    _append_builtin_hidden_workflows,
     _compose_configured_workflow_ir,
     compile_worker_global_config_with_diagnostics,
 )
@@ -1061,70 +1063,6 @@ def _is_system_managed_workflow_node_id(node_id: str) -> bool:
     return str(node_id or "").strip() in _SYSTEM_MANAGED_WORKFLOW_NODE_IDS
 
 
-def _system_chat_assistant_workflow_fragment() -> dict[str, list[dict[str, object]]]:
-    return {
-        "triggers": [
-            {
-                "id": _SYSTEM_CHAT_ASSISTANT_TRIGGER_ID,
-                "display_name": "System Chat Assistant",
-                "type": "trigger:system:chat-assistant",
-                "config": {},
-            }
-        ],
-        "effects": [
-            {
-                "id": _SYSTEM_CHAT_ASSISTANT_ENSURE_SESSION_ID,
-                "display_name": "Resolve chat assistant session",
-                "type": "effect:chat-assistant:ensure-session",
-                "config": {
-                    "user_id": "${{system.chat_assistant.user_id}}",
-                    "thread_id": "${{system.chat_assistant.thread_id}}",
-                    "user_message_id": "${{system.chat_assistant.user_message_id}}",
-                    "content": "${{system.chat_assistant.content}}",
-                    "backend": "${{system.chat_assistant.backend}}",
-                    "assistant_capability_mode": (
-                        "${{system.chat_assistant.assistant_capability_mode}}"
-                    ),
-                    "assistant_scope": "admin_chat",
-                },
-            },
-            {
-                "id": _SYSTEM_CHAT_ASSISTANT_ENQUEUE_PROMPT_ID,
-                "display_name": "Enqueue chat assistant prompt",
-                "type": "effect:agent:enqueue-prompt",
-                "config": {
-                    "target": "${{system.chat_assistant.ensure_session.session_id}}",
-                    "session_id": "${{system.chat_assistant.ensure_session.session_id}}",
-                    "vm_name": "${{system.chat_assistant.ensure_session.vm_name}}",
-                    "prompt": "${{system.chat_assistant.ensure_session.prompt}}",
-                    "model": "${{system.chat_assistant.ensure_session.model}}",
-                    "vm_user": "agent",
-                    "resume_thread_id": (
-                        "${{system.chat_assistant.ensure_session.agent_thread_id}}"
-                    ),
-                    "queue_key": (
-                        "chat:${{system.chat_assistant.ensure_session.thread_id}}:"
-                        "${{system.chat_assistant.ensure_session.user_message_id}}"
-                    ),
-                    "execution_backend": (
-                        "${{system.chat_assistant.ensure_session.execution_backend}}"
-                    ),
-                },
-            },
-        ],
-        "edges": [
-            {
-                "source_id": _SYSTEM_CHAT_ASSISTANT_TRIGGER_ID,
-                "target_id": _SYSTEM_CHAT_ASSISTANT_ENSURE_SESSION_ID,
-            },
-            {
-                "source_id": _SYSTEM_CHAT_ASSISTANT_ENSURE_SESSION_ID,
-                "target_id": _SYSTEM_CHAT_ASSISTANT_ENQUEUE_PROMPT_ID,
-            },
-        ],
-    }
-
-
 def _field_option(value: str, label: str | None = None) -> WorkflowEditorFieldOption:
     return WorkflowEditorFieldOption(value=value, label=label or value)
 
@@ -1242,6 +1180,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     ),
     "effect:notification:send": "Send a notification through a configured communication target.",
     "effect:session:update-metadata": "Patch metadata on a host-side session record.",
+    "effect:session:renew-if-expired": (
+        "Extend a host-side session only when its expiry has already passed."
+    ),
     "effect:git:promote-agent-branch": (
         "Promote an agent branch into a trusted host checkout."
     ),
@@ -2561,6 +2502,24 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("session_id", "Session ID", "string", bindable=True),
             _field("vm_name", "VM name", "string", bindable=True),
             _field("metadata", "Metadata", "json", required=True, bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:session:renew-if-expired",
+        label="Session renew if expired",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field(
+                "extend_by",
+                "Extend by",
+                "string",
+                bindable=True,
+                description="Duration from now for renewed expired sessions, such as 8h, 2d, or PT8H.",
+            ),
+            _field("directory_path", "Directory path", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -5434,6 +5393,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
         result = self.operations_admin.delete_session(session_id)
         removed_approvals = _prune_approvals_for_sessions(self.runtime, session_ids={session_id})
+        removed_assistant_mappings = self._delete_chat_assistant_session_mappings({session_id})
         cleanup_parts: list[str] = []
         if worker_session_deleted:
             cleanup_parts.append("worker_session_deleted=1")
@@ -5441,6 +5401,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             cleanup_parts.append(f"removed_mappings={removed_mappings}")
         if removed_approvals:
             cleanup_parts.append(f"removed_approvals={removed_approvals}")
+        if removed_assistant_mappings:
+            cleanup_parts.append(f"removed_assistant_mappings={removed_assistant_mappings}")
         if cleanup_parts:
             result.message = f"{result.message}; " + " ".join(cleanup_parts)
         return result
@@ -5784,6 +5746,49 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             },
         )
 
+    def _agent_record_from_stale_vm_session(
+        self,
+        session: SessionManifest,
+        *,
+        inventory_error: str | None = None,
+    ) -> AgentRecord:
+        vm_name = str(session.vm_id or session.vm_provider_id or session.session_id).strip()
+        directory_path = self._agent_record_directory_path(session.directory_path)
+        metadata = dict(session.metadata) if isinstance(session.metadata, dict) else {}
+        labels = _normalize_session_labels(metadata.get("labels"))
+        host: dict[str, Any] = {
+            "kind": "vm_session",
+            "vm_name": vm_name,
+            "provider": str(session.vm_provider or "libvirt").strip() or "libvirt",
+            "session_ids": [session.session_id],
+            "labels": labels,
+            "directory_paths": [directory_path],
+            "inventory_status": "missing",
+            "session_policy": self._agent_session_policy_payload(session),
+        }
+        if inventory_error:
+            host["inventory_error"] = inventory_error
+        return AgentRecord(
+            agent_id=vm_name,
+            backend="libvirt_vm",
+            target_name=vm_name,
+            session_id=session.session_id,
+            directory_path=directory_path,
+            status="stale",
+            updated_at=session.created_at,
+            host=host,
+            capabilities={
+                "start": False,
+                "shutdown": False,
+                "resume": False,
+                "enable_disable": False,
+                "kill": False,
+                "logs": False,
+                "stop": False,
+                "destroy": True,
+            },
+        )
+
     def _reconcile_container_execution_records(self, records: list[Any]) -> list[Any]:
         reconciled: list[Any] = []
         for record in records:
@@ -5977,6 +5982,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         normalized_directory = self._normalize_directory_path(directory_path)
         selected_backend = self._normalize_agent_backend_filter(backend)
         records: list[AgentRecord] = []
+        vm_inventory_error: str | None = None
+        inventoried_vm_names: set[str] = set()
+        inventoried_session_ids: set[str] = set()
         if selected_backend in {"all", "libvirt_vm"}:
             try:
                 vm_summaries = self.list_vms(
@@ -5984,14 +5992,41 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     directory_path=None if all_directories else normalized_directory,
                     direct_only=False if all_directories else direct_only,
                 )
-            except Exception:
-                if selected_backend == "libvirt_vm":
-                    raise
+            except Exception as exc:
+                vm_inventory_error = str(exc)
                 vm_summaries = []
             for summary in vm_summaries:
+                inventoried_vm_names.add(str(summary.vm_name or "").strip())
+                inventoried_session_ids.update(
+                    str(session_id or "").strip() for session_id in summary.session_ids
+                )
                 record = self._agent_record_from_vm(summary)
                 if include_inactive or self._agent_status_is_active(record.status):
                     records.append(record)
+            for session in sorted(
+                self.runtime.session_repository.list_sessions(),
+                key=lambda item: (item.created_at, item.session_id),
+                reverse=True,
+            ):
+                vm_name = str(session.vm_id or "").strip()
+                if not vm_name or self._is_container_session(session):
+                    continue
+                if vm_name in inventoried_vm_names or session.session_id in inventoried_session_ids:
+                    continue
+                if not all_directories and not self._agent_record_matches_directory(
+                    session.directory_path,
+                    normalized_directory,
+                    direct_only=direct_only,
+                ):
+                    continue
+                record = self._agent_record_from_stale_vm_session(
+                    session,
+                    inventory_error=vm_inventory_error,
+                )
+                if include_inactive or self._agent_status_is_active(record.status):
+                    records.append(record)
+            if selected_backend == "libvirt_vm" and vm_inventory_error and not records:
+                raise RuntimeError(vm_inventory_error)
 
         if selected_backend == "libvirt_vm":
             return records
@@ -6316,6 +6351,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if vm_name:
             return f"VM agent {vm_name!r}"
         return None
+
+    def _delete_chat_assistant_session_mappings(self, session_ids: set[str]) -> int:
+        repository = JsonChatAssistantSessionRepository(
+            self.config.runtime_dir / "chat-assistant-session-mappings.json"
+        )
+        return repository.delete_mappings_for_sessions(session_ids)
 
     def _delete_detached_worker_session_state(self, session_id: str) -> tuple[bool, int]:
         execution_records = self._container_execution_records_for_session(session_id)
@@ -6647,14 +6688,23 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     f"Refusing to delete VM {vm_name!r}: multiple linked sessions "
                     f"({session_ids}). Delete is only allowed when the VM-to-session link is unambiguous."
                 )
+            session_ids_to_delete = {session.session_id for session in matches}
             result = self.destroy_vm(vm_name)
+            removed_assistant_mappings = (
+                self._delete_chat_assistant_session_mappings(session_ids_to_delete)
+                if result.success
+                else 0
+            )
+            message = result.message
+            if removed_assistant_mappings:
+                message = f"{message} removed_assistant_mappings={removed_assistant_mappings}"
             return {
                 "success": result.success,
                 "agent_id": vm_name,
                 "backend": "libvirt_vm",
                 "target_name": vm_name,
                 "action": "delete",
-                "message": result.message,
+                "message": message,
                 "status": "deleted" if result.success else "failed",
                 "session_id": matches[0].session_id if len(matches) == 1 else None,
             }
@@ -6696,6 +6746,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 container_repository.delete(execution_id)
                 removed_mappings += 1
         removed_session = self.runtime.session_repository.delete_session(session_id)
+        removed_assistant_mappings = self._delete_chat_assistant_session_mappings({session_id})
         removed_approvals = _prune_approvals_for_sessions(self.runtime, session_ids={session_id})
         removed_pr_map_entries, removed_streams = _prune_pr_map(
             self.config.pr_map_path,
@@ -6715,6 +6766,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 f"Deleted container worker session {session_id}; "
                 f"removed_mappings={removed_mappings} "
                 f"removed_session={int(removed_session)} "
+                f"removed_assistant_mappings={removed_assistant_mappings} "
                 f"removed_approvals={removed_approvals} "
                 f"removed_pr_map_entries={removed_pr_map_entries} "
                 f"removed_feedback_cursors={removed_cursors} "
@@ -6813,6 +6865,116 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             return "\n\n".join(chunks).rstrip() + "\n"
         raise ValueError(f"Unknown agent backend: {selected_backend}")
 
+    def _container_execution_log_chunk(
+        self,
+        worker_backend: Any,
+        execution: Any,
+        *,
+        lines: int,
+        mode: str,
+    ) -> str:
+        header_parts = [
+            f"execution={execution.execution_id}",
+            f"status={self._container_agent_status(execution.last_status)}",
+            f"worker_job={execution.worker_job_id}",
+            f"log={mode}",
+        ]
+        if execution.started_at is not None:
+            header_parts.append(f"started={execution.started_at.isoformat()}")
+        if execution.finished_at is not None:
+            header_parts.append(f"finished={execution.finished_at.isoformat()}")
+        try:
+            text = worker_backend.get_log_snapshot(
+                execution.execution_id,
+                lines=lines,
+                mode=mode,
+            ).rstrip()
+        except Exception as exc:
+            text = f"[log unavailable: {exc}]"
+        header = "=== " + " ".join(header_parts) + " ==="
+        return header if not text else header + "\n" + text
+
+    @staticmethod
+    def _join_container_log_chunks(chunks: list[str]) -> str:
+        return "\n\n".join(chunk for chunk in chunks if chunk).rstrip() + "\n"
+
+    def _container_session_log_page(
+        self,
+        *,
+        session_id: str,
+        execution_records: list[Any],
+        worker_backend: Any,
+        limit: int,
+        offset: int,
+        query: str | None,
+    ) -> dict[str, object]:
+        if not execution_records:
+            return _log_page_from_end(
+                f"No container executions have run for session {session_id}.\n",
+                limit=limit,
+                offset=offset,
+                query=query,
+            )
+
+        normalized_query = str(query or "").strip()
+        sorted_records = sorted(execution_records, key=self._container_execution_sort_key)
+        if not normalized_query and offset == 0:
+            page = _log_page_from_end(
+                self._container_execution_log_chunk(
+                    worker_backend,
+                    sorted_records[-1],
+                    lines=0,
+                    mode="augmented",
+                ),
+                limit=limit,
+                offset=0,
+            )
+            if len(sorted_records) > 1:
+                page["has_more_before"] = True
+                page["total_lines"] = None
+                page["start_line"] = None
+                page["end_line"] = None
+            return page
+
+        chunks: list[str] = []
+        truncated_before = False
+        target_lines = max(1, limit) + max(0, offset) + 1
+        line_count = 0
+        records_to_read = (
+            list(enumerate(sorted_records))
+            if normalized_query
+            else list(reversed(list(enumerate(sorted_records))))
+        )
+        for original_index, execution in records_to_read:
+            mode = "augmented" if original_index == len(sorted_records) - 1 else "raw"
+            chunk = self._container_execution_log_chunk(
+                worker_backend,
+                execution,
+                lines=0,
+                mode=mode,
+            )
+            if normalized_query:
+                chunks.append(chunk)
+                continue
+            chunks.insert(0, chunk)
+            line_count += len(chunk.splitlines()) + (1 if len(chunks) > 1 else 0)
+            if line_count >= target_lines:
+                truncated_before = original_index > 0
+                break
+
+        page = _log_page_from_end(
+            self._join_container_log_chunks(chunks),
+            limit=limit,
+            offset=offset,
+            query=normalized_query or None,
+        )
+        if truncated_before:
+            page["has_more_before"] = True
+            page["total_lines"] = None
+            page["start_line"] = None
+            page["end_line"] = None
+        return page
+
     def get_admin_agent_log_page(
         self,
         agent_id: str,
@@ -6874,14 +7036,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             )
             target = agent_id
             if session is not None and record is None:
-                if not execution_records:
-                    return _log_page_from_end(
-                        f"No container executions have run for session {session_id}.\n",
-                        limit=normalized_limit,
-                        offset=normalized_offset,
-                        query=normalized_query or None,
-                    )
-                target = execution_records[-1].execution_id
+                return self._container_session_log_page(
+                    session_id=session_id,
+                    execution_records=execution_records,
+                    worker_backend=worker_backend,
+                    limit=normalized_limit,
+                    offset=normalized_offset,
+                    query=normalized_query or None,
+                )
             page_reader = getattr(worker_backend, "get_log_page", None)
             if callable(page_reader):
                 return page_reader(
@@ -8115,12 +8277,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         return config
 
     def ensure_chat_assistant_workflow(self) -> TriggerConfigDocument:
-        with self.admin_config_mutation_lock():
-            current = self.trigger_repository.read_document()
-            config, changed = self._with_system_chat_assistant_workflow(current.config)
-            if not changed:
-                return current
-            return self._write_trigger_document_unlocked(config)
+        return self.trigger_repository.read_document()
 
     def publish_chat_assistant_message(
         self,
@@ -8781,7 +8938,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             editable_config=config,
             base_config=base_config,
         )
-        normalized_candidate = self._normalize_workflow_editor_config(merged_config)
+        runtime_validation_config = _append_builtin_hidden_workflows(
+            project_dir=self.project_dir,
+            payload=merged_config,
+        )
+        normalized_candidate = self._normalize_workflow_editor_config(runtime_validation_config)
         normalized_config = self._validate_worker_global_config_payload(
             "trigger-orchestrator", normalized_candidate
         )
@@ -10639,7 +10800,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         ) -> WorkflowRunNodeActivityPayload:
             started_at = _coerce_optional_datetime(record.get("started_at"))
             finished_at = _coerce_optional_datetime(record.get("finished_at"))
-            occurred_at = _coerce_optional_datetime(record.get("occurred_at"))
             status = _coerce_optional_string(record.get("status"))
             if status is None:
                 status = _coerce_optional_string(record.get("delivery_state"))
@@ -11307,106 +11467,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             ]
         return candidate
 
-    def _with_system_chat_assistant_workflow(
-        self, config: dict[str, object]
-    ) -> tuple[dict[str, object], bool]:
-        merged = json.loads(json.dumps(config))
-        if not isinstance(merged, dict):
-            merged = {}
-        fragment = _system_chat_assistant_workflow_fragment()
-        changed = False
-        for collection_name in ("triggers", "effects"):
-            current_entries = merged.get(collection_name)
-            entries = (
-                [entry for entry in current_entries if isinstance(entry, dict)]
-                if isinstance(current_entries, list)
-                else []
-            )
-            by_id = {str(entry.get("id") or "").strip(): entry for entry in entries}
-            for system_entry in fragment[collection_name]:
-                system_id = str(system_entry.get("id") or "").strip()
-                if by_id.get(system_id) != system_entry:
-                    by_id[system_id] = dict(system_entry)
-                    changed = True
-            editable_entries = [
-                entry
-                for entry in entries
-                if not _is_system_managed_workflow_node_id(str(entry.get("id") or "").strip())
-            ]
-            editable_entries.extend(dict(entry) for entry in fragment[collection_name])
-            merged[collection_name] = editable_entries
-
-        edge_entries = (
-            [entry for entry in merged.get("edges", []) if isinstance(entry, dict)]
-            if isinstance(merged.get("edges"), list)
-            else []
-        )
-        non_system_edges = [
-            edge
-            for edge in edge_entries
-            if not (
-                _is_system_managed_workflow_node_id(str(edge.get("source_id") or "").strip())
-                or _is_system_managed_workflow_node_id(str(edge.get("target_id") or "").strip())
-            )
-        ]
-        desired_edges = non_system_edges + [dict(edge) for edge in fragment["edges"]]
-        if edge_entries != desired_edges:
-            changed = True
-        merged["edges"] = desired_edges
-        return merged, changed
-
     def _merge_system_managed_workflows(
         self, *, editable_config: dict[str, object], base_config: dict[str, object] | None
     ) -> dict[str, object]:
-        merged = json.loads(json.dumps(editable_config))
-        if not isinstance(merged, dict) or not isinstance(base_config, dict):
-            return merged
-        system_nodes: dict[str, list[dict[str, object]]] = {}
-        system_ids: set[str] = set()
-        for collection_name in ("triggers", "gates", "effects", "queries"):
-            entries = base_config.get(collection_name)
-            if not isinstance(entries, list):
-                continue
-            nodes = [
-                dict(entry)
-                for entry in entries
-                if isinstance(entry, dict)
-                and _is_system_managed_workflow_node_id(str(entry.get("id") or "").strip())
-            ]
-            if nodes:
-                system_nodes[collection_name] = nodes
-                system_ids.update(str(entry.get("id") or "").strip() for entry in nodes)
-        for collection_name in ("triggers", "gates", "effects", "queries"):
-            current_entries = merged.get(collection_name)
-            editable_entries = (
-                [entry for entry in current_entries if isinstance(entry, dict)]
-                if isinstance(current_entries, list)
-                else []
-            )
-            editable_entries = [
-                entry
-                for entry in editable_entries
-                if not _is_system_managed_workflow_node_id(str(entry.get("id") or "").strip())
-            ]
-            editable_entries.extend(system_nodes.get(collection_name, []))
-            merged[collection_name] = editable_entries
-        if isinstance(base_config.get("edges"), list) and system_ids:
-            editable_edges = (
-                [edge for edge in merged.get("edges", []) if isinstance(edge, dict)]
-                if isinstance(merged.get("edges"), list)
-                else []
-            )
-            editable_edges.extend(
-                dict(edge)
-                for edge in base_config["edges"]
-                if isinstance(edge, dict)
-                and (
-                    str(edge.get("source_id") or "").strip() in system_ids
-                    or str(edge.get("target_id") or "").strip() in system_ids
-                )
-            )
-            merged["edges"] = editable_edges
-        return merged
+        del base_config
+        return self._strip_system_managed_workflows(editable_config)
 
     def _upsert_trigger_config(
         self, trigger_id: str, payload: dict[str, object]

@@ -264,6 +264,15 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "message": "Done",
         }
     )
+    session_renew = adapter.validate_python(
+        {
+            "id": "effect-session-renew",
+            "display_name": "Renew expired session",
+            "type": "effect:session:renew-if-expired",
+            "session_id": "session-1",
+            "extend_by": "8h",
+        }
+    )
 
     assert vm.type == "effect:vm:create"
     assert vm.labels == {"workflow": "issue-worker"}
@@ -293,6 +302,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert issue_state.type == "effect:issue:update-state"
     assert communication.type == "effect:communication:send-message"
     assert notification.type == "effect:notification:send"
+    assert session_renew.type == "effect:session:renew-if-expired"
     assert promote.type == "effect:git:promote-agent-branch"
     assert pr_create.type == "effect:pr:create"
     assert prompt.prompt == "Continue ${{effect_1.session_id}}"

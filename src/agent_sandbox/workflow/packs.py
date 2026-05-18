@@ -9,6 +9,9 @@ from pydantic import BaseModel, Field, field_validator
 from agent_sandbox.events.models import EdgeDefinition, WorkflowNodeEnvelope
 from agent_sandbox.workflow.migrations import migrate_agent_prompt_lifecycle_ports
 
+SYSTEM_WORKFLOW_PACK_REFERENCE = "system.v1.json"
+BUILTIN_HIDDEN_WORKFLOW_PACKS: tuple[str, ...] = (SYSTEM_WORKFLOW_PACK_REFERENCE,)
+
 
 class WorkflowNodeRetryPolicy(BaseModel):
     max_attempts: int = Field(default=1, ge=1)
@@ -82,9 +85,25 @@ def _normalize_pack_reference(pack: str) -> str:
     return f"{text}.json"
 
 
+def _module_project_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _packaged_builtin_pack_path(pack_reference: str) -> Path:
+    return Path(__file__).resolve().parent / "builtin_packs" / pack_reference
+
+
 def _pack_path(project_dir: Path, pack_reference: str) -> Path:
     normalized = _normalize_pack_reference(pack_reference)
-    return project_dir / "config" / "workflow-packs" / normalized
+    path = project_dir / "config" / "workflow-packs" / normalized
+    if normalized in BUILTIN_HIDDEN_WORKFLOW_PACKS and not path.exists():
+        fallback_path = _module_project_root() / "config" / "workflow-packs" / normalized
+        if fallback_path.exists():
+            return fallback_path
+        packaged_path = _packaged_builtin_pack_path(normalized)
+        if packaged_path.exists():
+            return packaged_path
+    return path
 
 
 def load_workflow_pack(project_dir: Path, pack_reference: str) -> WorkflowPack:
@@ -115,12 +134,18 @@ def compose_workflow_ir(
     *,
     project_dir: Path,
     workflow_packs: list[str] | None,
+    built_in_workflow_packs: list[str] | tuple[str, ...] | None = None,
     inline_ir: dict[str, Any] | None = None,
 ) -> WorkflowIRCompositionResult:
     nodes: list[WorkflowIRNode] = []
     edges: list[EdgeDefinition] = []
 
     for pack_reference in workflow_packs or []:
+        pack = load_workflow_pack(project_dir, pack_reference)
+        nodes.extend(pack.ir.nodes)
+        edges.extend(pack.ir.edges)
+
+    for pack_reference in built_in_workflow_packs or []:
         pack = load_workflow_pack(project_dir, pack_reference)
         nodes.extend(pack.ir.nodes)
         edges.extend(pack.ir.edges)

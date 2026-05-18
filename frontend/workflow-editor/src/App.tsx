@@ -68,6 +68,10 @@ import {
   type WorkflowConnectionRouteOption,
 } from "./workflowRoutes";
 import {
+  sameGraphNodeIdsForRunAnchors,
+  workflowRunDetailActivityCounts,
+} from "./workflowRunInspect";
+import {
   compareWorkflowNodeCatalogEntries,
   groupWorkflowNodeCatalogEntries,
 } from "./workflowCatalogGroups";
@@ -91,6 +95,7 @@ type GraphNodeData = {
   statusBadges: ReadonlyArray<GraphNodeStatusBadge>;
   diagnosticCount: number;
   hasDiagnostics: boolean;
+  isInspectGhost?: boolean;
   pendingConnectionRole?: PendingConnectionRole | null;
 };
 
@@ -268,6 +273,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:issue:update-metadata": "Patch metadata on a tracked issue.",
   "effect:ado:update-work-item": "Update an Azure DevOps work item with an optional state guard.",
   "effect:session:update-metadata": "Patch session metadata on the host.",
+  "effect:session:renew-if-expired": "Extend an expired session from the host.",
   "effect:git:promote-agent-branch": "Promote an agent branch into a trusted host checkout.",
   "effect:pr:create": "Create a pull request from the host side.",
   "query:vm:run-state": "Read the current run state for a VM.",
@@ -282,7 +288,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
 };
 
 const RUNTIME_POLL_INTERVAL_MS = 5000;
-const NODE_STATUS_ORDER = ["failed", "running", "waiting", "inflight", "pending"] as const;
+const NODE_STATUS_ORDER = ["failed", "running", "waiting", "inflight", "pending", "completed", "succeeded", "skipped"] as const;
 const WORKFLOW_SIDEBAR_WIDTH_STORAGE_KEY = "workflow-editor:sidebar-width";
 const WORKFLOW_SIDEBAR_DEFAULT_WIDTH = 320;
 const WORKFLOW_SIDEBAR_MIN_WIDTH = 320;
@@ -335,7 +341,7 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
         nodeData.dominantStatus ? ` runtime-${nodeData.dominantStatus}` : ""
       }${nodeData.hasDiagnostics ? " invalid" : ""}${
         nodeData.pendingConnectionRole ? ` connection-${nodeData.pendingConnectionRole}` : ""
-      }`}
+      }${nodeData.isInspectGhost ? " inspect-ghost" : ""}`}
     >
       <Handle type="target" position={Position.Left} className="workflow-handle workflow-technical-handle" />
       {nodeData.inputPorts.map((port) => (
@@ -631,6 +637,7 @@ function buildNodes(
   diagnostics: WorkflowValidationDiagnostic[] = [],
   currentPositions: Record<string, { x: number; y: number }> = {},
   selectedNodeIds: string[] = [],
+  ghostNodeIds: ReadonlySet<string> = new Set<string>(),
 ): Node<GraphNodeData>[] {
   const collections = nodeCollections(config);
   const ordered = [
@@ -664,6 +671,7 @@ function buildNodes(
         statusBadges: nodeStatusBadges(activity),
         diagnosticCount,
         hasDiagnostics: diagnosticCount > 0,
+        isInspectGhost: ghostNodeIds.has(node.id),
       },
     };
   });
@@ -1209,6 +1217,15 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       metadata: {},
     };
   }
+  if (kind === "effect" && type === "effect:session:renew-if-expired") {
+    return {
+      id,
+      display_name: "Renew expired session",
+      type,
+      session_id: "session-id",
+      extend_by: "1d",
+    };
+  }
   if (kind === "effect" && type === "effect:git:promote-agent-branch") {
     return {
       id,
@@ -1493,6 +1510,127 @@ function workflowRunDetailNodeById(detail: WorkflowRunDetail): Map<string, Workf
   return new Map(detail.nodes.map((node) => [node.node_id, node]));
 }
 
+function workflowRunDetailVisitedNodeIds(detail: WorkflowRunDetail): Set<string> {
+  const nodeIds = new Set<string>();
+  detail.nodes.forEach((node) => {
+    if (node.node_id) nodeIds.add(node.node_id);
+  });
+  detail.active_nodes.forEach((activity) => {
+    if (activity.node_id) nodeIds.add(activity.node_id);
+  });
+  if (detail.source_node_id) nodeIds.add(detail.source_node_id);
+  if (detail.trigger_event?.trigger_id) nodeIds.add(detail.trigger_event.trigger_id);
+  if (detail.failed_node_id) nodeIds.add(detail.failed_node_id);
+  return nodeIds;
+}
+
+function workflowRunDetailIsFailed(detail: WorkflowRunDetail): boolean {
+  return Boolean(
+    detail.run_state === "errored" ||
+      detail.delivery_state === "failed" ||
+      detail.failed_node_id ||
+      detail.failed_node_status ||
+      detail.error,
+  );
+}
+
+function coerceWorkflowGraphMetadataList(value: unknown): WorkflowGraphMetadata[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!isRecord(entry)) return [];
+    const id = typeof entry.id === "string" ? entry.id.trim() : "";
+    const name = typeof entry.name === "string" ? entry.name.trim() : "";
+    const nodeIds = Array.isArray(entry.node_ids)
+      ? entry.node_ids.filter((nodeId): nodeId is string => typeof nodeId === "string" && Boolean(nodeId.trim()))
+      : [];
+    if (!id || !name || nodeIds.length === 0) return [];
+    return [{
+      id,
+      name,
+      description: typeof entry.description === "string" ? entry.description : null,
+      directory_paths: Array.isArray(entry.directory_paths)
+        ? entry.directory_paths.filter((directoryPath): directoryPath is string => typeof directoryPath === "string" && Boolean(directoryPath.trim()))
+        : [],
+      user_ids: Array.isArray(entry.user_ids)
+        ? entry.user_ids.filter((userId): userId is string => typeof userId === "string" && Boolean(userId.trim()))
+        : [],
+      node_ids: nodeIds,
+    }];
+  });
+}
+
+function workflowRunDetailGraphMetadata(detail: WorkflowRunDetail): WorkflowGraphMetadata[] {
+  return [
+    ...coerceWorkflowGraphMetadataList(detail.graph.snapshot?.workflow_graphs),
+    ...coerceWorkflowGraphMetadataList(detail.graph.config.workflow_graphs),
+    ...coerceWorkflowGraphMetadataList(detail.graph.config.graphs),
+  ];
+}
+
+function workflowRunDetailSameGraphNodeIds(detail: WorkflowRunDetail): Set<string> {
+  const allNodeIds = new Set(workflowRunDetailGraphNodes(detail).map((node) => node.id));
+  const anchorNodeIds = workflowRunDetailVisitedNodeIds(detail);
+  return sameGraphNodeIdsForRunAnchors(
+    allNodeIds,
+    workflowRunDetailGraphEdges(detail),
+    workflowRunDetailGraphMetadata(detail),
+    anchorNodeIds,
+  );
+}
+
+function workflowRunDetailDisplayNodeIds(detail: WorkflowRunDetail): Set<string> {
+  const sameGraphNodeIds = workflowRunDetailSameGraphNodeIds(detail);
+  if (workflowRunDetailIsFailed(detail)) return sameGraphNodeIds;
+  const visitedNodeIds = workflowRunDetailVisitedNodeIds(detail);
+  const displayedNodeIds = new Set([...sameGraphNodeIds].filter((nodeId) => visitedNodeIds.has(nodeId)));
+  return displayedNodeIds.size > 0 ? displayedNodeIds : sameGraphNodeIds;
+}
+
+function stripWorkflowRunGraphNodeKind(node: WorkflowNodeConfig & { kind: WorkflowNodeKind }): WorkflowNodeConfig {
+  const { kind: _kind, ...nodeConfig } = node;
+  return nodeConfig;
+}
+
+function workflowRunDetailConfig(detail: WorkflowRunDetail, displayNodeIds: ReadonlySet<string>): WorkflowConfig {
+  const nodes = workflowRunDetailGraphNodes(detail).filter((node) => displayNodeIds.has(node.id));
+  return {
+    triggers: nodes.filter((node) => node.kind === "trigger").map(stripWorkflowRunGraphNodeKind),
+    gates: nodes.filter((node) => node.kind === "gate").map(stripWorkflowRunGraphNodeKind),
+    effects: nodes.filter((node) => node.kind === "effect").map(stripWorkflowRunGraphNodeKind),
+    queries: nodes.filter((node) => node.kind === "query").map(stripWorkflowRunGraphNodeKind),
+    edges: workflowRunDetailGraphEdges(detail).filter(
+      (edge) => displayNodeIds.has(edge.source_id) && displayNodeIds.has(edge.target_id),
+    ),
+  };
+}
+
+function workflowRunDetailLayout(
+  config: WorkflowConfig,
+  baseLayout: WorkflowLayout | undefined,
+  currentPositions: Record<string, { x: number; y: number }>,
+): WorkflowLayout {
+  return {
+    nodes: Object.fromEntries(
+      workflowNodes(config).map((node, index) => [
+        node.id,
+        currentPositions[node.id] ?? baseLayout?.nodes[node.id] ?? fallbackPosition(index),
+      ]),
+    ),
+  };
+}
+
+function preferredWorkflowRunDetailNodeId(detail: WorkflowRunDetail): string | null {
+  const displayNodeIds = workflowRunDetailDisplayNodeIds(detail);
+  const candidates = [
+    detail.failed_node_id,
+    [...detail.nodes].reverse()[0]?.node_id,
+    detail.active_nodes[0]?.node_id,
+    detail.source_node_id,
+    detail.trigger_event?.trigger_id,
+  ];
+  return candidates.find((nodeId): nodeId is string => Boolean(nodeId && displayNodeIds.has(nodeId))) ?? null;
+}
+
 function objectHasData(value: Record<string, unknown> | null | undefined): boolean {
   return Boolean(value && Object.keys(value).length > 0);
 }
@@ -1501,10 +1639,6 @@ function durationLabel(durationMs: number | null | undefined): string {
   if (durationMs === null || durationMs === undefined) return "Unknown duration";
   if (durationMs < 1000) return `${durationMs} ms`;
   return `${(durationMs / 1000).toFixed(2)} s`;
-}
-
-function isMissingRunDetailValue(value: string | undefined): boolean {
-  return value === undefined || value.startsWith("missing");
 }
 
 function objectListJsonDraftKey(fieldKey: string, index: number, itemFieldKey: string): string {
@@ -2085,6 +2219,8 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => readStoredWorkflowSidebarWidth());
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const editLocked = !privilegedUnlocked;
+  const isInspectMode = runDetail !== null;
+  const workflowEditLocked = editLocked || isInspectMode;
   const config = document?.config ?? emptyConfig();
   const workflowGraphs = document?.graphs ?? [];
   const visibleWorkflowGraphs = workflowGraphs.filter((graph) =>
@@ -2096,12 +2232,40 @@ export default function App() {
     run.active_nodes.some((activity) => visibleGraphNodeIds.has(activity.node_id)),
   );
   const runDetailGraphNodes = runDetail ? workflowRunDetailGraphNodes(runDetail) : [];
-  const runDetailGraphEdges = runDetail ? workflowRunDetailGraphEdges(runDetail) : [];
   const runDetailNodesById = runDetail ? workflowRunDetailNodeById(runDetail) : new Map<string, WorkflowRunNodeDetail>();
-  const runDetailResumeEventId = runDetail?.recovery.resume.event_id ?? null;
-  const runDetailClearEventId = runDetail?.recovery.clear.event_id ?? null;
+  const inspectVisitedNodeIds = runDetail ? workflowRunDetailVisitedNodeIds(runDetail) : new Set<string>();
+  const inspectDisplayNodeIds = runDetail ? workflowRunDetailDisplayNodeIds(runDetail) : new Set<string>();
+  const inspectGhostNodeIds = runDetail && workflowRunDetailIsFailed(runDetail)
+    ? new Set([...inspectDisplayNodeIds].filter((nodeId) => !inspectVisitedNodeIds.has(nodeId)))
+    : new Set<string>();
+  const inspectConfig = runDetail ? workflowRunDetailConfig(runDetail, inspectDisplayNodeIds) : null;
+  const inspectLayout = inspectConfig
+    ? workflowRunDetailLayout(inspectConfig, document?.layout, currentPositionsFromNodes(flowNodes))
+    : { nodes: {} };
+  const inspectFlowNodes = inspectConfig
+    ? buildNodes(
+        inspectConfig,
+        inspectLayout,
+        catalog,
+        runDetail ? workflowRunDetailActivityCounts(runDetail) : {},
+        [],
+        {},
+        selectedNodeId ? [selectedNodeId] : [],
+        inspectGhostNodeIds,
+      )
+    : [];
+  const inspectFlowEdges = inspectConfig
+    ? buildEdges(inspectConfig, catalog).map((edge) => {
+        const isGhost = inspectGhostNodeIds.has(edge.source) || inspectGhostNodeIds.has(edge.target);
+        return {
+          ...edge,
+          selectable: false,
+          className: `${edge.className ?? ""}${isGhost ? " workflow-edge-ghost" : ""}`,
+        };
+      })
+    : [];
   const baseDisplayedFlowNodes = flowNodes.filter((node) => visibleGraphNodeIds.has(node.id));
-  const displayedFlowNodes = pendingConnection && document
+  const normalDisplayedFlowNodes = pendingConnection && document
     ? baseDisplayedFlowNodes.map((node) => {
         let pendingConnectionRole: PendingConnectionRole;
         if (node.id === pendingConnection.sourceId) {
@@ -2126,10 +2290,21 @@ export default function App() {
         };
       })
     : baseDisplayedFlowNodes;
-  const displayedFlowEdges = flowEdges.filter(
+  const normalDisplayedFlowEdges = flowEdges.filter(
     (edge) => visibleGraphNodeIds.has(edge.source) && visibleGraphNodeIds.has(edge.target),
   );
-  const selectedNode = selectedNodeIds.length === 1 && selectedNodeId ? nodeById(config, selectedNodeId) : undefined;
+  const displayedFlowNodes = isInspectMode ? inspectFlowNodes : normalDisplayedFlowNodes;
+  const displayedFlowEdges = isInspectMode ? inspectFlowEdges : normalDisplayedFlowEdges;
+  const selectedInspectGraphNode = isInspectMode && selectedNodeId
+    ? runDetailGraphNodes.find((node) => node.id === selectedNodeId)
+    : undefined;
+  const selectedInspectNodeDetail = isInspectMode && selectedNodeId
+    ? runDetailNodesById.get(selectedNodeId)
+    : undefined;
+  const selectedInspectCatalogEntry = selectedInspectGraphNode
+    ? getCatalogEntry(catalog, selectedInspectGraphNode.type)
+    : undefined;
+  const selectedNode = !isInspectMode && selectedNodeIds.length === 1 && selectedNodeId ? nodeById(config, selectedNodeId) : undefined;
   const selectedCatalogEntry = selectedNode ? getCatalogEntry(catalog, selectedNode.type) : undefined;
   const selectedNodeDiagnostics = selectedNode
     ? validationDiagnostics.filter((diagnostic) => diagnostic.node_id === selectedNode.id)
@@ -2153,7 +2328,7 @@ export default function App() {
   const selectedGraph = selectedGraphId
     ? visibleWorkflowGraphs.find((graph) => graph.id === selectedGraphId)
     : undefined;
-  const graphLabels = workflowGraphLabels(visibleWorkflowGraphs, displayedFlowNodes, canvasViewport);
+  const graphLabels = isInspectMode ? [] : workflowGraphLabels(visibleWorkflowGraphs, displayedFlowNodes, canvasViewport);
   const graphViewContext = `Directory: ${selectedDirectoryPath}`;
   const directoryPathOptions = useMemo(() => {
     const treeOptions = directoryTree?.ok && directoryTree.data
@@ -2171,6 +2346,7 @@ export default function App() {
     selectedNode?.type === "effect:agent:exec" ||
     selectedNode?.type === "effect:agent:destroy" ||
     selectedNode?.type === "effect:session:update-metadata" ||
+    selectedNode?.type === "effect:session:renew-if-expired" ||
     selectedNode?.type === "query:session-context";
   const effectTargetKey = activeEffectTargetKey(inspectorKnownValues);
   const inspectorFields = (() => {
@@ -2353,7 +2529,7 @@ export default function App() {
         };
       });
       if (runDetail?.event_id === normalizedEventId) {
-        setRunDetail(null);
+        exitInspectMode();
       }
       setError(null);
     } catch (reason: unknown) {
@@ -2397,8 +2573,16 @@ export default function App() {
     setRunDetailError(null);
     try {
       const detail = await fetchJson<WorkflowRunDetail>(`/api/workflow-editor/run-detail?${queryText}`);
+      const preferredNodeId = preferredWorkflowRunDetailNodeId(detail);
       setRunDetail(detail);
       setRunDetailLookup(lookupText ?? detail.event_id);
+      setSelectedNodeIds(preferredNodeId ? [preferredNodeId] : []);
+      setSelectedNodeId(preferredNodeId);
+      setSelectedEdgeId(null);
+      setSelectedGraphId(null);
+      setSnapGuides([]);
+      closeConnectionUi();
+      hasAutoFitRef.current = false;
     } catch (reason: unknown) {
       setRunDetailError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -2417,6 +2601,16 @@ export default function App() {
     const normalizedLookup = runDetailLookup.trim();
     if (!normalizedLookup) return;
     void loadWorkflowRunDetail(workflowRunDetailLookupQuery(normalizedLookup, runDetailLookupKind), normalizedLookup);
+  }
+
+  function exitInspectMode() {
+    setRunDetail(null);
+    setSelectedNodeIds([]);
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    setSnapGuides([]);
+    closeConnectionUi();
+    hasAutoFitRef.current = false;
   }
 
   function startSidebarResize(event: ReactPointerEvent<HTMLDivElement>) {
@@ -2472,7 +2666,7 @@ export default function App() {
 
   useEffect(() => {
     hasAutoFitRef.current = false;
-  }, [selectedDirectoryPath]);
+  }, [selectedDirectoryPath, runDetail?.event_id]);
 
   useEffect(() => {
     if (!flowInstance || displayedFlowNodes.length === 0 || hasAutoFitRef.current) return;
@@ -2573,6 +2767,7 @@ export default function App() {
   }, [selectedEdgeId]);
 
   useEffect(() => {
+    if (isInspectMode) return;
     const nextSelectedNodeIds = flowNodes
       .filter((node) => node.selected && visibleGraphNodeIds.has(node.id))
       .map((node) => node.id);
@@ -2582,7 +2777,7 @@ export default function App() {
       if (currentSelectedNodeId && nextSelectedNodeIds.includes(currentSelectedNodeId)) return currentSelectedNodeId;
       return nextSelectedNodeIds[nextSelectedNodeIds.length - 1] ?? null;
     });
-  }, [flowNodes, visibleGraphNodeIdKey]);
+  }, [flowNodes, visibleGraphNodeIdKey, isInspectMode]);
 
   function patchDocument(
     nextConfig: WorkflowConfig,
@@ -2742,7 +2937,7 @@ export default function App() {
   }
 
   function startPendingConnection(route: WorkflowConnectionRouteOption) {
-    if (!nodeConnectionMenu || editLocked) return;
+    if (!nodeConnectionMenu || workflowEditLocked) return;
     setPendingConnection({
       sourceId: nodeConnectionMenu.nodeId,
       sourcePort: route.sourcePort,
@@ -2764,7 +2959,7 @@ export default function App() {
   }
 
   function addWorkflowEdge(sourceId: string, targetId: string, sourcePort?: string | null): boolean {
-    if (!document || editLocked) return false;
+    if (!document || workflowEditLocked) return false;
     const normalizedSourcePort = normalizeWorkflowSourcePort(sourcePort);
     const validationError = validateConnection(
       document.config,
@@ -2804,7 +2999,7 @@ export default function App() {
     event: ReactDragEvent<HTMLButtonElement>,
     entry: WorkflowEditorNodeCatalogEntry,
   ) {
-    if (editLocked) {
+    if (workflowEditLocked) {
       event.preventDefault();
       return;
     }
@@ -2817,13 +3012,13 @@ export default function App() {
   }
 
   function handleNodeTypeDragOver(event: ReactDragEvent<HTMLElement>) {
-    if (editLocked || !Array.from(event.dataTransfer.types).includes(NODE_TYPE_DRAG_DATA_MIME)) return;
+    if (workflowEditLocked || !Array.from(event.dataTransfer.types).includes(NODE_TYPE_DRAG_DATA_MIME)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
   }
 
   function handleNodeTypeDrop(event: ReactDragEvent<HTMLElement>) {
-    if (editLocked) return;
+    if (workflowEditLocked) return;
     const payload = parseNodeTypeDragPayload(event.dataTransfer);
     if (!payload) return;
     event.preventDefault();
@@ -2834,7 +3029,7 @@ export default function App() {
   function handleNodeContextMenu(event: React.MouseEvent, node: Node<GraphNodeData>) {
     event.preventDefault();
     event.stopPropagation();
-    if (editLocked) return;
+    if (workflowEditLocked) return;
     const position = canvasPointFromScreenPoint(event.clientX, event.clientY);
     if (!position) return;
     setProgrammaticSelection([node.id], node.id);
@@ -2851,6 +3046,17 @@ export default function App() {
   }
 
   function handleWorkflowNodeClick(event: React.MouseEvent, node: Node<GraphNodeData>) {
+    if (isInspectMode) {
+      event.stopPropagation();
+      setNodeConnectionMenu(null);
+      setPendingConnection(null);
+      setSelectedNodeIds([node.id]);
+      setSelectedNodeId(node.id);
+      setSelectedEdgeId(null);
+      setSnapGuides([]);
+      appShellRef.current?.focus();
+      return;
+    }
     if (pendingConnection) {
       event.stopPropagation();
       if (addWorkflowEdge(pendingConnection.sourceId, node.id, pendingConnection.sourcePort)) {
@@ -2874,6 +3080,10 @@ export default function App() {
     if (pendingConnection || nodeConnectionMenu) {
       closeConnectionUi();
     }
+    if (isInspectMode) {
+      setSelectedNodeIds([]);
+      setSelectedNodeId(null);
+    }
     setSelectedEdgeId(null);
     setSnapGuides([]);
   }
@@ -2885,7 +3095,7 @@ export default function App() {
   }
 
   function deleteSelectedEdge() {
-    if (!document || !selectedEdgeId || editLocked) return;
+    if (!document || !selectedEdgeId || workflowEditLocked) return;
     const nextConfig = cloneConfig(document.config);
     nextConfig.edges = nextConfig.edges.filter(
       (edge) => edgeId(edge) !== selectedEdgeId,
@@ -2896,7 +3106,7 @@ export default function App() {
   }
 
   function deleteNodes(nodeIds: string[]) {
-    if (!document || nodeIds.length === 0 || editLocked) return;
+    if (!document || nodeIds.length === 0 || workflowEditLocked) return;
     const deletedNodeIds = new Set(nodeIds);
     const nextConfig = cloneConfig(document.config);
     nextConfig.triggers = (nextConfig.triggers ?? []).filter((node) => !deletedNodeIds.has(node.id));
@@ -2948,7 +3158,7 @@ export default function App() {
 
   function pasteCopiedSelection() {
     const copiedSelection = copiedSelectionRef.current;
-    if (!document || !copiedSelection || copiedSelection.nodes.length === 0 || editLocked) return false;
+    if (!document || !copiedSelection || copiedSelection.nodes.length === 0 || workflowEditLocked) return false;
     const nextConfig = cloneConfig(document.config);
     nextConfig.triggers ??= [];
     nextConfig.gates ??= [];
@@ -3009,6 +3219,13 @@ export default function App() {
 
   function handleAppShellKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
     if (isEditableEventTarget(event.target)) return;
+    if (isInspectMode) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        exitInspectMode();
+      }
+      return;
+    }
     if (event.key === "Escape" && (pendingConnection || nodeConnectionMenu)) {
       event.preventDefault();
       closeConnectionUi();
@@ -3031,7 +3248,7 @@ export default function App() {
   }
 
   function persistNodePositions(activeNode: Node<GraphNodeData>, draggedNodes: Node<GraphNodeData>[]) {
-    if (!document || editLocked) return;
+    if (!document || workflowEditLocked) return;
     setSnapGuides([]);
     const currentNodes = flowInstance?.getNodes() as Node<GraphNodeData>[] | undefined;
     const { snappedNodes } = snapVisibleDraggedNodes(
@@ -3053,7 +3270,7 @@ export default function App() {
   }
 
   function addNode(kind: WorkflowNodeKind, type: string, requestedPosition?: { x: number; y: number } | null) {
-    if (!document || editLocked) return;
+    if (!document || workflowEditLocked) return;
     const nextConfig = cloneConfig(document.config);
     nextConfig.triggers ??= [];
     nextConfig.gates ??= [];
@@ -3106,7 +3323,7 @@ export default function App() {
   }
 
   function applyWorkflowGraphChanges() {
-    if (!document || !selectedGraph || editLocked) return;
+    if (!document || !selectedGraph || workflowEditLocked) return;
     const nextName = graphNameDraft.trim();
     if (!nextName) {
       setError("Graph name is required.");
@@ -3148,7 +3365,7 @@ export default function App() {
   }
 
   function applyInspectorChanges() {
-    if (!document || !selectedNode || editLocked) return;
+    if (!document || !selectedNode || workflowEditLocked) return;
     try {
       const rawId = inspectorNodeId.trim();
       const rawName = inspectorDisplayName.trim();
@@ -3243,12 +3460,12 @@ export default function App() {
   }
 
   function onConnect(connection: Connection) {
-    if (!document || !connection.source || !connection.target || editLocked) return;
+    if (!document || !connection.source || !connection.target || workflowEditLocked) return;
     addWorkflowEdge(connection.source, connection.target, connection.sourceHandle);
   }
 
   function onEdgesDelete(deletedEdges: Edge[]) {
-    if (!document || editLocked) return;
+    if (!document || workflowEditLocked) return;
     const deleted = new Set(deletedEdges.map((edge) => edge.id));
     const nextConfig = cloneConfig(document.config);
     nextConfig.edges = nextConfig.edges.filter(
@@ -3259,7 +3476,7 @@ export default function App() {
   }
 
   function onNodesDelete(deletedNodes: Node[]) {
-    if (editLocked) return;
+    if (workflowEditLocked) return;
     deleteNodes(deletedNodes.map((node) => node.id));
   }
 
@@ -3287,7 +3504,7 @@ export default function App() {
   }
 
   async function saveDocument() {
-    if (!document || editLocked) return;
+    if (!document || workflowEditLocked) return;
     setSaveState("saving");
     setError(null);
     try {
@@ -3384,7 +3601,7 @@ export default function App() {
     if (!hasCollapsedTargetUi || !effectTargetField) return null;
     const value = inspectorKnownValues[effectTargetKey];
     const mode = inspectorFieldModes[effectTargetKey] ?? fieldValueMode(effectTargetField, value);
-    const isDisabled = effectTargetField.read_only || editLocked;
+    const isDisabled = effectTargetField.read_only || workflowEditLocked;
     const targetTypeLabel = selectedNode?.type === "effect:agent:prompt" ? "Prompt target type" : "Target type";
     const targetPlaceholder =
       effectTargetKey === "session_id"
@@ -3510,7 +3727,7 @@ export default function App() {
   }
 
   function addStringMapRow(key: string) {
-    if (editLocked) return;
+    if (workflowEditLocked) return;
     setInspectorStringMapDrafts((current) => ({
       ...current,
       [key]: [...(current[key] ?? []), createStringMapDraftRow()],
@@ -3532,7 +3749,7 @@ export default function App() {
   }
 
   function removeStringMapRow(fieldKey: string, rowId: string) {
-    if (editLocked) return;
+    if (workflowEditLocked) return;
     setInspectorStringMapDrafts((current) => ({
       ...current,
       [fieldKey]: (current[fieldKey] ?? []).filter((row) => row.id !== rowId),
@@ -3653,7 +3870,7 @@ export default function App() {
   }
 
   function addObjectListItem(key: string, field: WorkflowEditorFieldDefinition) {
-    if (editLocked) return;
+    if (workflowEditLocked) return;
     setInspectorKnownValues((current) => {
       const currentItems = Array.isArray(current[key]) ? [...current[key]] : [];
       const nextItem = Object.fromEntries(
@@ -3667,7 +3884,7 @@ export default function App() {
   }
 
   function removeObjectListItem(key: string, index: number) {
-    if (editLocked) return;
+    if (workflowEditLocked) return;
     setInspectorKnownValues((current) => {
       const currentItems = Array.isArray(current[key]) ? [...current[key]] : [];
       currentItems.splice(index, 1);
@@ -3678,7 +3895,7 @@ export default function App() {
   function renderField(field: WorkflowEditorFieldDefinition) {
     const value = inspectorKnownValues[field.key];
     const mode = inspectorFieldModes[field.key] ?? fieldValueMode(field, value);
-    const isDisabled = field.read_only || editLocked;
+    const isDisabled = field.read_only || workflowEditLocked;
 
     if (field.kind === "string") {
       return (
@@ -4086,74 +4303,211 @@ export default function App() {
     );
   }
 
-  function renderRunDetailNode(node: WorkflowRunNodeDetail) {
-    const nodeTitle = node.display_name || node.node_id;
+  function renderReadOnlyResolvedField(field: WorkflowEditorFieldDefinition, value: unknown) {
+    const textValue = value === undefined || value === null
+      ? ""
+      : typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+        ? String(value)
+        : formatJson(value, "null");
+    if (field.kind === "json" || field.kind === "object_list" || field.kind === "string_map") {
+      return (
+        <label key={field.key} className="inspector-label read-only-inspector-field">
+          <span>{field.label}</span>
+          <textarea value={value === undefined ? "" : formatJson(value, "null")} rows={5} readOnly />
+        </label>
+      );
+    }
+    if (field.kind === "string_list") {
+      const listValue = Array.isArray(value) ? value.map((item) => String(item)).join("\n") : textValue;
+      return (
+        <label key={field.key} className="inspector-label read-only-inspector-field">
+          <span>{field.label}</span>
+          <textarea value={listValue} rows={4} readOnly />
+        </label>
+      );
+    }
     return (
-      <details key={`${node.node_id}-${node.execution_id ?? node.event_id ?? "node"}`} className="run-detail-node-card">
-        <summary>
-          <span className="run-detail-node-title">{nodeTitle}</span>
-          <span className={`runtime-run-state state-${node.status ?? "unknown"}`}>{node.status ?? "not recorded"}</span>
-        </summary>
-        <div className="run-detail-node-meta">
-          <span>{node.node_id}</span>
-          <span>{node.node_type ?? "unknown type"}</span>
-          <span>{durationLabel(node.duration_ms)}</span>
-          <span>{node.started_at ? `Started ${formatRuntimeTimestamp(node.started_at)}` : "Start missing"}</span>
-          <span>{node.finished_at ? `Finished ${formatRuntimeTimestamp(node.finished_at)}` : "Finish missing"}</span>
-        </div>
-        {node.error ? <div className="runtime-run-error">{node.error}</div> : null}
-        {node.binding_error ? <div className="runtime-run-error">Binding error: {node.binding_error}</div> : null}
-        {node.missing_fields.length > 0 ? (
-          <div className="run-detail-missing-fields">
-            Missing: {node.missing_fields.join(", ")}
+      <label key={field.key} className="inspector-label read-only-inspector-field">
+        <span>{field.label}</span>
+        <input value={textValue} readOnly />
+      </label>
+    );
+  }
+
+  function renderResolvedInputEditor(
+    node: WorkflowRunNodeDetail,
+    catalogEntry: WorkflowEditorNodeCatalogEntry | undefined,
+  ) {
+    const fields = catalogEntry?.fields ?? [];
+    const knownFieldKeys = new Set(fields.map((field) => field.key));
+    const extraResolvedInputs = Object.fromEntries(
+      Object.entries(node.resolved_config).filter(([key]) => !knownFieldKeys.has(key)),
+    );
+    return (
+      <div className="inspect-resolved-inputs">
+        <div className="section-label">Resolved inputs</div>
+        {fields.length > 0 ? (
+          <div className="inspect-resolved-field-list">
+            {fields.map((field) => renderReadOnlyResolvedField(field, node.resolved_config[field.key]))}
           </div>
         ) : null}
-        <div className="run-detail-node-status-line">
-          <span>{node.retry_resume_eligible ? "Retry/resume eligible" : "Retry/resume unavailable"}</span>
-          {node.retry_resume_reason ? <span>{node.retry_resume_reason}</span> : null}
+        {fields.length === 0 || objectHasData(extraResolvedInputs)
+          ? renderRunDetailJson(
+              fields.length === 0 ? "Resolved inputs" : "Additional resolved inputs",
+              fields.length === 0 ? node.resolved_config : extraResolvedInputs,
+              node.missing_fields.includes("resolved_config"),
+            )
+          : null}
+      </div>
+    );
+  }
+
+  function renderInspectedRunPanel() {
+    if (!runDetail) return null;
+    return (
+      <div className="sidebar-section inspected-run-panel">
+        <div className="run-detail-header">
+          <div>
+            <div className="section-label">Inspected run</div>
+            <div className="runtime-run-event">{runDetail.event_id}</div>
+          </div>
+          <span className={`runtime-run-state state-${runDetail.run_state === "errored" ? "failed" : runDetail.delivery_state ?? "active"}`}>
+            {runDetail.run_state === "errored" ? "errored" : runDetail.delivery_state ?? "active"}
+          </span>
         </div>
-        <div className="run-detail-node-links">
-          {node.approval_links.map((approval) => (
-            <div className="run-detail-link-item" key={approval.request_id}>
-              <strong>Approval {approval.request_id}</strong>
-              <span>{approval.action_type}{approval.tool_name ? ` / ${approval.tool_name}` : ""}</span>
-              <span>Boundary {approval.directory_path}</span>
-              <span>{approval.status}</span>
-              <span>Payload {approval.payload_digest}</span>
-              {approval.human_summary ? <span>{approval.human_summary}</span> : null}
-              {approval.approver ? <span>Approver {approval.approver}</span> : null}
-              {approval.decision_at ? <span>Decision {formatRuntimeTimestamp(approval.decision_at)}</span> : null}
-            </div>
-          ))}
-          {node.agent_links.map((agent, index) => (
-            <div className="run-detail-link-item" key={`${agent.session_id ?? "agent"}-${agent.execution_id ?? index}`}>
-              <strong>Agent {agent.session_id ?? "session missing"}</strong>
-              <span>{agent.status ?? (agent.waiting ? "waiting" : agent.completed ? "completed" : "status missing")}</span>
-              {agent.thread_id ? <span>Thread {agent.thread_id}</span> : null}
-              {agent.execution_id ? <span>Execution {agent.execution_id}</span> : null}
-              <span>{agent.waiting ? "Waiting" : agent.completed ? "Completed" : "Completion state missing"}</span>
-              {agent.prompt ? <span>{agent.prompt}</span> : null}
-              {agent.artifact_ids.length > 0 ? <span>Artifacts {agent.artifact_ids.join(", ")}</span> : null}
-              {agent.log_reference ? <span>Logs recorded</span> : null}
-            </div>
-          ))}
-          {node.communication_artifact_links.map((artifact) => (
-            <div className="run-detail-link-item" key={artifact.artifact_id}>
-              <strong>Artifact {artifact.artifact_id}</strong>
-              <span>{artifact.filename ?? artifact.original_filename ?? "filename missing"}</span>
-              <span>{artifact.provider ?? "provider missing"}</span>
-              {artifact.sha256 ? <span>SHA-256 {artifact.sha256}</span> : null}
-              {artifact.status ? <span>{artifact.status}</span> : null}
-            </div>
-          ))}
+        <div className="run-detail-meta-grid">
+          <span>Worker {runDetail.worker_id}</span>
+          <span>Trace {runDetail.trace_id ?? "missing"}</span>
+          <span>Started {formatRuntimeTimestamp(runDetail.occurred_at)}</span>
+          <span>Latest {formatRuntimeTimestamp(runDetail.latest_activity_at ?? runDetail.occurred_at)}</span>
+          <span>{runDetail.graph.snapshot ? "Historical graph snapshot" : "Current graph fallback"}</span>
+          <span>
+            {inspectVisitedNodeIds.size} visited / {inspectDisplayNodeIds.size} shown
+          </span>
         </div>
-        {renderRunDetailJson("Resolved bindings", node.resolved_config, node.missing_fields.includes("resolved_config"))}
-        {renderRunDetailJson("Binding trace", node.binding_trace, node.missing_fields.includes("binding_trace"))}
-        {renderRunDetailJson("Input payload", node.input_payload, node.missing_fields.includes("payload"))}
-        {renderRunDetailJson("Outputs", node.outputs, node.missing_fields.includes("outputs"))}
-        {renderRunDetailJson("Inputs by source", node.inputs_by_source, false)}
-        {renderRunDetailJson("Raw records", node.records, node.records.length === 0)}
-      </details>
+        {runDetail.error ? <div className="runtime-run-error">{runDetail.error}</div> : null}
+        <button type="button" className="primary" onClick={exitInspectMode}>
+          Exit inspect mode
+        </button>
+      </div>
+    );
+  }
+
+  function renderInspectedNodePanel() {
+    if (!runDetail) return null;
+    const nodeId = selectedNodeId;
+    if (!nodeId || !selectedInspectGraphNode) {
+      return (
+        <div className="sidebar-section inspect-node-panel">
+          <div className="section-label">Node run</div>
+          <div className="inspector-summary">
+            <div>No node selected</div>
+          </div>
+        </div>
+      );
+    }
+    const nodeTitle = selectedInspectGraphNode.display_name || selectedInspectGraphNode.id;
+    if (!selectedInspectNodeDetail) {
+      return (
+        <div className="sidebar-section inspect-node-panel">
+          <div className="section-label">Node run</div>
+          <div className="inspector-summary">
+            <div>{nodeTitle}</div>
+            <div>{selectedInspectGraphNode.type}</div>
+            <div>{selectedInspectGraphNode.id}</div>
+          </div>
+          <div className="run-detail-data-block run-detail-missing">
+            <span>Status</span>
+            <strong>Not visited in this run</strong>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="sidebar-section inspect-node-panel">
+        <div className="section-label">Node run</div>
+        <div className="run-detail-header">
+          <div>
+            <div className="run-detail-node-title">{nodeTitle}</div>
+            <div className="runtime-run-event">{selectedInspectNodeDetail.node_id}</div>
+          </div>
+          <span className={`runtime-run-state state-${selectedInspectNodeDetail.status ?? "unknown"}`}>
+            {selectedInspectNodeDetail.status ?? "not recorded"}
+          </span>
+        </div>
+        <div className="run-detail-node-meta">
+          <span>{selectedInspectNodeDetail.node_type ?? selectedInspectGraphNode.type}</span>
+          <span>{durationLabel(selectedInspectNodeDetail.duration_ms)}</span>
+          <span>
+            {selectedInspectNodeDetail.started_at
+              ? `Started ${formatRuntimeTimestamp(selectedInspectNodeDetail.started_at)}`
+              : "Start missing"}
+          </span>
+          <span>
+            {selectedInspectNodeDetail.finished_at
+              ? `Finished ${formatRuntimeTimestamp(selectedInspectNodeDetail.finished_at)}`
+              : "Finish missing"}
+          </span>
+        </div>
+        {selectedInspectNodeDetail.error ? <div className="runtime-run-error">{selectedInspectNodeDetail.error}</div> : null}
+        {selectedInspectNodeDetail.binding_error ? (
+          <div className="runtime-run-error">Binding error: {selectedInspectNodeDetail.binding_error}</div>
+        ) : null}
+        {renderRunDetailNodeLinks(selectedInspectNodeDetail)}
+        {renderResolvedInputEditor(selectedInspectNodeDetail, selectedInspectCatalogEntry)}
+        {renderRunDetailJson("Outputs", selectedInspectNodeDetail.outputs, selectedInspectNodeDetail.missing_fields.includes("outputs"))}
+        {renderRunDetailJson("Input payload", selectedInspectNodeDetail.input_payload, selectedInspectNodeDetail.missing_fields.includes("payload"))}
+        {renderRunDetailJson("Inputs by source", selectedInspectNodeDetail.inputs_by_source, false)}
+        {renderRunDetailJson("Binding trace", selectedInspectNodeDetail.binding_trace, selectedInspectNodeDetail.missing_fields.includes("binding_trace"))}
+        {renderRunDetailJson("Raw records", selectedInspectNodeDetail.records, selectedInspectNodeDetail.records.length === 0)}
+      </div>
+    );
+  }
+
+  function renderRunDetailNodeLinks(node: WorkflowRunNodeDetail) {
+    if (
+      node.approval_links.length === 0 &&
+      node.agent_links.length === 0 &&
+      node.communication_artifact_links.length === 0
+    ) {
+      return null;
+    }
+    return (
+      <div className="run-detail-node-links">
+        {node.approval_links.map((approval) => (
+          <div className="run-detail-link-item" key={approval.request_id}>
+            <strong>Approval {approval.request_id}</strong>
+            <span>{approval.action_type}{approval.tool_name ? ` / ${approval.tool_name}` : ""}</span>
+            <span>Boundary {approval.directory_path}</span>
+            <span>{approval.status}</span>
+            <span>Payload {approval.payload_digest}</span>
+            {approval.human_summary ? <span>{approval.human_summary}</span> : null}
+            {approval.approver ? <span>Approver {approval.approver}</span> : null}
+            {approval.decision_at ? <span>Decision {formatRuntimeTimestamp(approval.decision_at)}</span> : null}
+          </div>
+        ))}
+        {node.agent_links.map((agent, index) => (
+          <div className="run-detail-link-item" key={`${agent.session_id ?? "agent"}-${agent.execution_id ?? index}`}>
+            <strong>Agent {agent.session_id ?? "session missing"}</strong>
+            <span>{agent.status ?? (agent.waiting ? "waiting" : agent.completed ? "completed" : "status missing")}</span>
+            {agent.thread_id ? <span>Thread {agent.thread_id}</span> : null}
+            {agent.execution_id ? <span>Execution {agent.execution_id}</span> : null}
+            <span>{agent.waiting ? "Waiting" : agent.completed ? "Completed" : "Completion state missing"}</span>
+            {agent.prompt ? <span>{agent.prompt}</span> : null}
+            {agent.artifact_ids.length > 0 ? <span>Artifacts {agent.artifact_ids.join(", ")}</span> : null}
+            {agent.log_reference ? <span>Logs recorded</span> : null}
+          </div>
+        ))}
+        {node.communication_artifact_links.map((artifact) => (
+          <div className="run-detail-link-item" key={artifact.artifact_id}>
+            <strong>Artifact {artifact.artifact_id}</strong>
+            <span>{artifact.filename ?? artifact.original_filename ?? "filename missing"}</span>
+            <span>{artifact.provider ?? "provider missing"}</span>
+            {artifact.sha256 ? <span>SHA-256 {artifact.sha256}</span> : null}
+            {artifact.status ? <span>{artifact.status}</span> : null}
+          </div>
+        ))}
+      </div>
     );
   }
 
@@ -4175,14 +4529,23 @@ export default function App() {
   return (
     <div className="admin-page workflow-embedded-page">
       <div
-        className={`app-shell workflow-editor-shell${isResizingSidebar ? " is-resizing-sidebar" : ""}`}
+        className={`app-shell workflow-editor-shell${isResizingSidebar ? " is-resizing-sidebar" : ""}${isInspectMode ? " is-inspect-mode" : ""}`}
         ref={appShellRef}
         style={appShellStyle}
         tabIndex={-1}
         onKeyDown={handleAppShellKeyDown}
       >
-          <aside className="sidebar">
-            {editLocked ? <div className="callout warning-callout workflow-lock-callout">Unlock privileged operations to modify workflow state or clear runtime runs.</div> : null}
+        <aside className="sidebar">
+          {isInspectMode ? (
+            <>
+              {renderInspectedRunPanel()}
+              {renderInspectedNodePanel()}
+              {runDetailError ? <div className="runtime-run-error">{runDetailError}</div> : null}
+              {error ? <div className="error-box">{error}</div> : null}
+            </>
+          ) : (
+            <>
+              {editLocked ? <div className="callout warning-callout workflow-lock-callout">Unlock privileged operations to modify workflow state or clear runtime runs.</div> : null}
 
             <details className="sidebar-section current-runs-section">
               <summary className="current-runs-summary">
@@ -4281,127 +4644,6 @@ export default function App() {
                   </div>
                 ))}
               </div>
-              {runDetail ? (
-                <div className="run-detail-panel">
-                  <div className="run-detail-header">
-                    <div>
-                      <div className="section-label">Run detail</div>
-                      <div className="runtime-run-event">{runDetail.event_id}</div>
-                    </div>
-                    <span className={`runtime-run-state state-${runDetail.run_state === "errored" ? "failed" : runDetail.delivery_state ?? "active"}`}>
-                      {runDetail.run_state === "errored" ? "errored" : runDetail.delivery_state ?? "active"}
-                    </span>
-                  </div>
-                  <div className="run-detail-meta-grid">
-                    <span>Worker {runDetail.worker_id}</span>
-                    <span>Generated {formatRuntimeTimestamp(runDetail.generated_at)}</span>
-                    <span>Trace {runDetail.trace_id ?? "missing"}</span>
-                    <span>Matched by {runDetail.matched_by.length > 0 ? runDetail.matched_by.join(", ") : "event_id"}</span>
-                  </div>
-                  <div className="run-detail-availability">
-                    {Object.entries(runDetail.data_availability).map(([key, value]) => (
-                      <span key={key} className={isMissingRunDetailValue(value) ? "missing" : ""}>
-                        {key.replace(/_/g, " ")}: {value}
-                      </span>
-                    ))}
-                  </div>
-                  {runDetail.trigger_event ? (
-                    <div className="run-detail-trigger">
-                      <strong>Trigger {runDetail.trigger_event.trigger_id}</strong>
-                      <span>{runDetail.trigger_event.trigger_type}</span>
-                      <span>{runDetail.trigger_event.trace_id}</span>
-                      {renderRunDetailJson("Trigger payload", runDetail.trigger_event.payload, false)}
-                    </div>
-                  ) : (
-                    <div className="run-detail-data-block run-detail-missing">
-                      <span>Trigger event</span>
-                      <strong>Missing legacy trace data</strong>
-                    </div>
-                  )}
-                  <div className="run-detail-graph">
-                    <div className="run-detail-graph-header">
-                      <strong>
-                        {runDetail.graph.snapshot ? "Historical graph snapshot" : "Current graph fallback"}
-                      </strong>
-                      <span>
-                        {runDetailGraphNodes.length} nodes / {runDetailGraphEdges.length} edges
-                      </span>
-                    </div>
-                    <div className="run-detail-graph-nodes">
-                      {runDetailGraphNodes.map((node) => {
-                        const detail = runDetailNodesById.get(node.id);
-                        return (
-                          <div key={node.id} className={`run-detail-graph-node node-${node.kind}`}>
-                            <span>{node.display_name || node.id}</span>
-                            <small>{node.type}</small>
-                            <strong>{detail?.status ?? "not recorded"}</strong>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    {runDetailGraphEdges.length > 0 ? (
-                      <div className="run-detail-edges">
-                        {runDetailGraphEdges.map((edge) => (
-                          <span key={`${edge.source_id}-${edge.source_port ?? "default"}-${edge.target_id}`}>
-                            {edge.source_id}{edge.source_port ? `:${edge.source_port}` : ""}{" -> "}{edge.target_id}
-                          </span>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                  <div className="run-detail-recovery">
-                    <span>{runDetail.recovery.resume.eligible ? "Resume eligible" : runDetail.recovery.resume.reason ?? "Resume unavailable"}</span>
-                    <span>{runDetail.recovery.clear.eligible ? "Clear eligible" : runDetail.recovery.clear.reason ?? "Clear unavailable"}</span>
-                    <div className="runtime-run-actions">
-                      {runDetail.recovery.resume.eligible && runDetailResumeEventId ? (
-                        <button
-                          type="button"
-                          className="subtle-button"
-                          onClick={() => void resumeWorkflowRun(runDetailResumeEventId)}
-                          disabled={Boolean(resumingRunIds[runDetailResumeEventId]) || editLocked}
-                        >
-                          Resume
-                        </button>
-                      ) : null}
-                      {runDetail.recovery.clear.eligible && runDetailClearEventId ? (
-                        <button
-                          type="button"
-                          className="subtle-button"
-                          onClick={() => void clearWorkflowRun(runDetailClearEventId, runDetail.run_state)}
-                          disabled={Boolean(clearingRunIds[runDetailClearEventId]) || editLocked}
-                        >
-                          Clear
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
-                  {runDetail.lookup_candidates.length > 1 ? (
-                    <div className="run-detail-candidates">
-                      <strong>Other matches</strong>
-                      {runDetail.lookup_candidates.slice(1).map((candidate) => (
-                        <button
-                          type="button"
-                          className="subtle-button"
-                          key={candidate.event_id}
-                          onClick={() => inspectWorkflowRun(candidate.event_id)}
-                        >
-                          {candidate.event_id}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                  <div className="run-detail-node-list">
-                    {runDetail.nodes.length > 0
-                      ? runDetail.nodes.map((node) => renderRunDetailNode(node))
-                      : (
-                        <div className="run-detail-data-block run-detail-missing">
-                          <span>Node records</span>
-                          <strong>Missing legacy trace data</strong>
-                        </div>
-                      )}
-                  </div>
-                </div>
-              ) : null}
             </details>
 
             <details className="sidebar-section workflow-graphs-section collapsible-sidebar-section">
@@ -4438,7 +4680,7 @@ export default function App() {
                     <input
                       value={graphNameDraft}
                       onChange={(event) => setGraphNameDraft(event.target.value)}
-                      disabled={editLocked}
+                      disabled={workflowEditLocked}
                     />
                   </label>
                   <label className="inspector-label">
@@ -4447,7 +4689,7 @@ export default function App() {
                       value={graphDescriptionDraft}
                       rows={3}
                       onChange={(event) => setGraphDescriptionDraft(event.target.value)}
-                      disabled={editLocked}
+                      disabled={workflowEditLocked}
                     />
                   </label>
                   <label className="inspector-label">
@@ -4457,7 +4699,7 @@ export default function App() {
                       rows={3}
                       placeholder={selectedDirectoryPath}
                       onChange={(event) => setGraphDirectoriesDraft(event.target.value)}
-                      disabled={editLocked}
+                      disabled={workflowEditLocked}
                     />
                   </label>
                   <label className="inspector-label">
@@ -4466,14 +4708,14 @@ export default function App() {
                       value={graphUsersDraft}
                       rows={3}
                       onChange={(event) => setGraphUsersDraft(event.target.value)}
-                      disabled={editLocked}
+                      disabled={workflowEditLocked}
                     />
                   </label>
                   <button
                     type="button"
                     className="primary"
                     onClick={applyWorkflowGraphChanges}
-                    disabled={editLocked}
+                    disabled={workflowEditLocked}
                   >
                     Apply graph details
                   </button>
@@ -4511,10 +4753,10 @@ export default function App() {
                             <Tooltip key={entry.type} content={nodeTypeDescription(entry)} inline={false}>
                               <button
                                 type="button"
-                                draggable={!editLocked}
+                                draggable={!workflowEditLocked}
                                 onDragStart={(event) => startNodeTypeDrag(event, entry)}
                                 onClick={() => addNode(entry.kind, entry.type)}
-                                disabled={editLocked}
+                                disabled={workflowEditLocked}
                               >
                                 {entry.label}
                               </button>
@@ -4531,7 +4773,7 @@ export default function App() {
             <div className="sidebar-section">
               <div className="section-label">Save</div>
               <button onClick={() => void validateDocument()}>Validate</button>
-              <button className="primary" onClick={() => void saveDocument()} disabled={editLocked}>
+              <button className="primary" onClick={() => void saveDocument()} disabled={workflowEditLocked}>
                 {saveState === "saving" ? "Saving..." : "Save workflow"}
               </button>
               {error ? <div className="error-box save-error-box">{error}</div> : null}
@@ -4553,7 +4795,7 @@ export default function App() {
                 <button onClick={selectDownstreamBranch} disabled={!selectedNodeId}>
                   Select downstream branch
                 </button>
-                <button className="danger" onClick={deleteSelectedNode} disabled={editLocked}>
+                <button className="danger" onClick={deleteSelectedNode} disabled={workflowEditLocked}>
                   Delete selected nodes
                 </button>
               </div>
@@ -4609,10 +4851,10 @@ export default function App() {
                   </details>
                 ) : null}
 
-                <button className="primary" onClick={applyInspectorChanges} disabled={editLocked}>
+                <button className="primary" onClick={applyInspectorChanges} disabled={workflowEditLocked}>
                   Apply node changes
                 </button>
-                <button className="danger" onClick={deleteSelectedNode} disabled={editLocked}>
+                <button className="danger" onClick={deleteSelectedNode} disabled={workflowEditLocked}>
                   Delete node
                 </button>
               </div>
@@ -4627,14 +4869,16 @@ export default function App() {
                   <div>{selectedEdge.target_id}</div>
                   {selectedEdge.allow_cycle ? <div>Cycle return</div> : null}
                 </div>
-                <button className="danger" onClick={deleteSelectedEdge} disabled={editLocked}>
+                <button className="danger" onClick={deleteSelectedEdge} disabled={workflowEditLocked}>
                   Delete edge
                 </button>
               </div>
             ) : null}
 
             {error ? <div className="error-box">{error}</div> : null}
-          </aside>
+            </>
+          )}
+        </aside>
 
           <div
             className="workflow-sidebar-resize-handle"
@@ -4662,28 +4906,37 @@ export default function App() {
               nodeTypes={nodeTypes}
               onInit={handleFlowInit}
               onMove={(_, viewport) => setCanvasViewport(viewport)}
-              onNodesChange={updateNodePositions}
-              onEdgesChange={updateEdgeChanges}
+              onNodesChange={(changes) => {
+                if (!isInspectMode) updateNodePositions(changes);
+              }}
+              onEdgesChange={(changes) => {
+                if (!isInspectMode) updateEdgeChanges(changes);
+              }}
               onNodeClick={handleWorkflowNodeClick}
               onNodeContextMenu={handleNodeContextMenu}
               onEdgeClick={(_, edge) => {
+                if (isInspectMode) return;
                 setNodeConnectionMenu(null);
                 setPendingConnection(null);
                 setProgrammaticSelection([]);
                 setSelectedEdgeId(edge.id);
               }}
-              onNodeDrag={(_, node, nodes) => updateDraggedNodePositions(node, nodes.length > 0 ? nodes : [node])}
-              onNodeDragStop={(_, node, nodes) => persistNodePositions(node, nodes.length > 0 ? nodes : [node])}
+              onNodeDrag={(_, node, nodes) => {
+                if (!isInspectMode) updateDraggedNodePositions(node, nodes.length > 0 ? nodes : [node]);
+              }}
+              onNodeDragStop={(_, node, nodes) => {
+                if (!isInspectMode) persistNodePositions(node, nodes.length > 0 ? nodes : [node]);
+              }}
               onPaneClick={handlePaneClick}
               onPaneContextMenu={handlePaneContextMenu}
               onConnect={onConnect}
               onEdgesDelete={onEdgesDelete}
               onNodesDelete={onNodesDelete}
-              nodesDraggable={!editLocked}
-              nodesConnectable={!editLocked}
+              nodesDraggable={!workflowEditLocked}
+              nodesConnectable={!workflowEditLocked}
               elementsSelectable
               fitView
-              deleteKeyCode={["Backspace", "Delete"]}
+              deleteKeyCode={isInspectMode ? null : ["Backspace", "Delete"]}
               multiSelectionKeyCode={["Control", "Meta"]}
             >
               <Background gap={20} size={1} />

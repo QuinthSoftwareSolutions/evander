@@ -47,6 +47,7 @@ from agent_sandbox.daemons.effect_orchestrator import (
     SqliteExecutionStore,
     SqliteGateExecutionStore,
 )
+from agent_sandbox.repositories.chat_assistant_sessions import JsonChatAssistantSessionRepository
 from agent_sandbox.repositories.orchestration import SqliteWorkflowConfigSnapshotRepository
 from agent_sandbox.worker.models import (
     WorkerFileWriteRecord,
@@ -344,6 +345,48 @@ def test_list_agents_still_returns_container_sessions_when_vm_inventory_fails(
             reconcile_containers=False,
             backend="libvirt_vm",
         )
+
+
+def test_list_agents_surfaces_stale_vm_session_when_inventory_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="assistant-shared",
+            vm_id="assistant-shared",
+            vm_provider="libvirt",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"labels": {"system": "chat_assistant"}},
+        )
+    )
+
+    def fail_list_vms(self: AdminService, **_kwargs: object) -> list[object]:
+        raise RuntimeError("virsh: command not found")
+
+    monkeypatch.setattr(service, "list_vms", MethodType(fail_list_vms, service))
+
+    agents = service.list_agents(
+        directory_path="root",
+        direct_only=True,
+        include_inactive=True,
+        reconcile_containers=False,
+        backend="libvirt_vm",
+    )
+
+    assert len(agents) == 1
+    assert agents[0].agent_id == "assistant-shared"
+    assert agents[0].target_name == "assistant-shared"
+    assert agents[0].session_id == "assistant-shared"
+    assert agents[0].backend == "libvirt_vm"
+    assert agents[0].status == "stale"
+    assert agents[0].capabilities["destroy"] is True
+    assert agents[0].capabilities["start"] is False
+    assert agents[0].host["inventory_status"] == "missing"
+    assert agents[0].host["inventory_error"] == "virsh: command not found"
+    assert agents[0].host["session_policy"]["session_id"] == "assistant-shared"
 
 
 def test_list_agents_all_directories_includes_vm_and_container_targets(
@@ -1533,6 +1576,106 @@ def test_get_admin_agent_log_page_pages_libvirt_tail(tmp_path: Path, monkeypatch
     assert page["has_more_before"] is True
 
 
+def test_get_admin_agent_log_page_container_session_pages_across_runs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-1",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-1",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-old",
+            session_id="session-1",
+            worker_job_id="job-old",
+            worker_url="http://worker.test",
+            target_name="target-1",
+            started_at=datetime(2026, 5, 18, 7, 0, tzinfo=UTC),
+            last_status="removed",
+            directory_path="root",
+        )
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-new",
+            session_id="session-1",
+            worker_job_id="job-new",
+            worker_url="http://worker.test",
+            target_name="target-1",
+            started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC),
+            last_status="removed",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.calls.append((target, lines, mode))
+            if target == "exec-new":
+                return "new line 1\nnew line 2\n"
+            return "old line 1\nold line 2\n"
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    latest_page = service.get_admin_agent_log_page(
+        "session-1",
+        backend="container_worker_vm",
+        limit=50,
+    )
+
+    assert "execution=exec-new" in latest_page["text"]
+    assert "new line 2" in latest_page["text"]
+    assert "exec-old" not in latest_page["text"]
+    assert latest_page["has_more_before"] is True
+    assert latest_page["total_lines"] is None
+    assert fake_backend.calls == [("exec-new", 0, "augmented")]
+
+    older_page = service.get_admin_agent_log_page(
+        "session-1",
+        backend="container_worker_vm",
+        limit=10,
+        offset=int(latest_page["returned_lines"]),
+    )
+
+    assert "execution=exec-old" in older_page["text"]
+    assert "old line 2" in older_page["text"]
+    assert "exec-new" not in older_page["text"]
+    assert older_page["has_more_before"] is False
+    assert fake_backend.calls[-2:] == [
+        ("exec-new", 0, "augmented"),
+        ("exec-old", 0, "raw"),
+    ]
+
+
 def test_list_sessions_filters_active_and_expired(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
@@ -2092,7 +2235,7 @@ def test_trigger_mutations_do_not_reenter_admin_config_mutation_lock(
     service.delete_trigger_config("cron-15m")
     service.ensure_chat_assistant_workflow()
 
-    assert lock.enter_count == 3
+    assert lock.enter_count == 2
 
 
 def test_admin_service_can_read_and_mutate_trigger_orchestrator_effects_by_id(
@@ -2227,6 +2370,8 @@ def test_admin_service_rejects_system_managed_trigger_mutations(tmp_path: Path) 
 
 def test_admin_service_chat_post_publishes_hidden_trigger_event(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
+    config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
+    assert not config_path.exists()
 
     record = service.publish_chat_assistant_message(
         user_id="alice",
@@ -2237,33 +2382,10 @@ def test_admin_service_chat_post_publishes_hidden_trigger_event(tmp_path: Path) 
     )
 
     assert record["event_id"] == "chat:msg-1"
-    config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
-    persisted = json.loads(config_path.read_text(encoding="utf-8"))
-    assert {node["id"] for node in persisted["triggers"]} >= {"system.chat_assistant"}
-    assert {node["id"] for node in persisted["effects"]} >= {
-        "system.chat_assistant.ensure_session",
-        "system.chat_assistant.enqueue_prompt",
-    }
-    enqueue_node = next(
-        node
-        for node in persisted["effects"]
-        if node["id"] == "system.chat_assistant.enqueue_prompt"
-    )
-    assert (
-        enqueue_node["config"]["execution_backend"]
-        == "${{system.chat_assistant.ensure_session.execution_backend}}"
-    )
-    assert enqueue_node["config"]["queue_key"] == (
-        "chat:${{system.chat_assistant.ensure_session.thread_id}}:"
-        "${{system.chat_assistant.ensure_session.user_message_id}}"
-    )
-    _merged, changed = service._with_system_chat_assistant_workflow(persisted)
-    assert changed is False
-    queued_events = SqliteTriggerEventQueue(
-        tmp_path / "runtime" / "orchestration.db"
-    ).read_all()
-    assert len(queued_events) == 1
-    queued = queued_events["chat:msg-1"].model_dump(mode="json")
+    assert not config_path.exists()
+    queued = SqliteTriggerEventQueue(tmp_path / "runtime" / "orchestration.db").read_all()[
+        "chat:msg-1"
+    ].model_dump(mode="json")
     assert queued["trigger_id"] == "system.chat_assistant"
     assert queued["payload"] == {
         "user_id": "alice",
@@ -2276,7 +2398,33 @@ def test_admin_service_chat_post_publishes_hidden_trigger_event(tmp_path: Path) 
     assert not (tmp_path / "runtime" / "queued-agent-prompts.json").exists()
 
 
-def test_workflow_editor_hides_and_preserves_system_managed_workflow_nodes(tmp_path: Path) -> None:
+def test_admin_service_chat_post_does_not_mutate_existing_trigger_config(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    original_config = {
+        "runtime_dir": str(tmp_path / "runtime"),
+        "poll_interval_seconds": 7,
+        "workflow_packs": ["agent-container-worker.v1.json"],
+    }
+    config_path.write_text(json.dumps(original_config, indent=2), encoding="utf-8")
+
+    service.publish_chat_assistant_message(
+        user_id="alice",
+        thread_id="thread-1",
+        user_message_id="msg-1",
+        content="hello",
+        backend="container_worker_vm",
+    )
+
+    assert json.loads(config_path.read_text(encoding="utf-8")) == original_config
+
+
+def test_workflow_editor_hides_and_does_not_save_system_managed_workflow_nodes(
+    tmp_path: Path,
+) -> None:
     service = AdminService(write_config(tmp_path))
     config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2338,15 +2486,12 @@ def test_workflow_editor_hides_and_preserves_system_managed_workflow_nodes(tmp_p
     assert [trigger["id"] for trigger in save_result.config["triggers"]] == ["cron-15m"]
 
     persisted = json.loads(config_path.read_text(encoding="utf-8"))
-    assert any(node.get("id") == "system.chat_assistant" for node in persisted["triggers"])
-    assert {
-        node.get("id")
+    assert all(node.get("id") != "system.chat_assistant" for node in persisted["triggers"])
+    assert all(
+        not str(node.get("id") or "").startswith("system.chat_assistant")
         for node in persisted["effects"]
-        if str(node.get("id") or "").startswith("system.chat_assistant")
-    } == {
-        "system.chat_assistant.ensure_session",
-        "system.chat_assistant.enqueue_prompt",
-    }
+    )
+    assert persisted["edges"] == []
 
 
 def test_workflow_editor_document_round_trips_config_and_separate_layout(tmp_path: Path) -> None:
@@ -2659,6 +2804,10 @@ def test_workflow_editor_save_updates_single_workflow_pack_without_flattening_wr
 
     pack_payload = json.loads(pack_path.read_text(encoding="utf-8"))
     assert pack_payload["description"] == "Demo workflow"
+    assert all(
+        not str(node.get("id") or "").startswith("system.chat_assistant")
+        for node in pack_payload["ir"]["nodes"]
+    )
     saved_effect = next(
         node for node in pack_payload["ir"]["nodes"] if node["id"] == "prompt-agent"
     )
@@ -4434,6 +4583,52 @@ def test_delete_session_cleans_detached_worker_state(
     assert repository.read_all() == {}
     assert "worker_session_deleted=1" in result.message
     assert "removed_mappings=1" in result.message
+
+
+def test_delete_admin_vm_agent_removes_chat_assistant_mapping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="assistant-shared",
+            vm_id="assistant-shared",
+            vm_provider="libvirt",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    mappings = JsonChatAssistantSessionRepository(
+        service.config.runtime_dir / "chat-assistant-session-mappings.json"
+    )
+    mappings.upsert_mapping(
+        user_id="operator@example.com",
+        backend="libvirt_vm",
+        assistant_scope="admin_chat",
+        session_id="assistant-shared",
+        agent_thread_id="",
+        thread_id="thread-1",
+    )
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="destroyed", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+
+    result = service.delete_admin_agent("assistant-shared", backend="libvirt_vm")
+
+    assert result["success"] is True
+    assert result["status"] == "deleted"
+    assert service.runtime.session_repository.get_session("assistant-shared") is None
+    assert (
+        mappings.get_mapping(
+            user_id="operator@example.com",
+            backend="libvirt_vm",
+            assistant_scope="admin_chat",
+        )
+        is None
+    )
+    assert "removed_assistant_mappings=1" in result["message"]
 
 
 def test_delete_admin_agent_prunes_container_pr_state(

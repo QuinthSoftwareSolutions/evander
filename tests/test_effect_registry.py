@@ -285,6 +285,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:communication:send-message",
         "effect:notification:send",
         "effect:session:update-metadata",
+        "effect:session:renew-if-expired",
         "effect:git:promote-agent-branch",
         "effect:pr:create",
     }

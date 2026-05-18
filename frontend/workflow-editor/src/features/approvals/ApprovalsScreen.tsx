@@ -206,7 +206,7 @@ export function ApprovalsScreen() {
   const mutationLocked = !privilegedUnlocked;
 
   return (
-    <div className="feature-page">
+    <div className="feature-page approvals-page">
       <section className="feature-sidebar">
         <div className="feature-sidebar-header">
           <div>
@@ -218,7 +218,7 @@ export function ApprovalsScreen() {
           </button>
         </div>
         {mutationLocked ? <div className="callout warning-callout">Unlock privileged operations to approve or deny queued requests.</div> : null}
-        <label>
+        <label className="field-stack">
           <span>Status</span>
           <select value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}>
             <option value="">All</option>
@@ -243,19 +243,19 @@ export function ApprovalsScreen() {
           />
           <span>Direct directory only</span>
         </label>
-        <label>
+        <label className="field-stack">
           <span>Session</span>
           <input value={filters.sessionId} onChange={(event) => setFilters((current) => ({ ...current, sessionId: event.target.value }))} placeholder="issue-14084-session" />
         </label>
-        <label>
+        <label className="field-stack">
           <span>VM</span>
           <input value={filters.vmId} onChange={(event) => setFilters((current) => ({ ...current, vmId: event.target.value }))} placeholder="vm-14084" />
         </label>
-        <label>
+        <label className="field-stack">
           <span>Tool</span>
           <input value={filters.toolName} onChange={(event) => setFilters((current) => ({ ...current, toolName: event.target.value }))} placeholder="email_send_approved" />
         </label>
-        <label>
+        <label className="field-stack">
           <span>Min age minutes</span>
           <input value={filters.minAgeMinutes} onChange={(event) => setFilters((current) => ({ ...current, minAgeMinutes: event.target.value }))} placeholder="5" />
         </label>

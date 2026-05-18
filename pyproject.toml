@@ -53,7 +53,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-agent_sandbox = ["templates/*.md"]
+agent_sandbox = ["templates/*.md", "workflow/builtin_packs/*.json"]
 
 [tool.ruff]
 line-length = 100

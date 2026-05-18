@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 from agent_sandbox.config import OrchestrationCoreConfig
-from agent_sandbox.workflow.packs import compose_workflow_ir, load_workflow_pack
+from agent_sandbox.workflow import packs as workflow_packs
+from agent_sandbox.workflow.packs import (
+    BUILTIN_HIDDEN_WORKFLOW_PACKS,
+    compose_workflow_ir,
+    load_workflow_pack,
+)
 
 
 def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
@@ -92,6 +98,76 @@ def test_compose_workflow_ir_accepts_inline_overlay_with_ir_metadata(tmp_path: P
     )
 
     assert [trigger["id"] for trigger in composed.triggers] == ["trigger-inline"]
+
+
+def test_hidden_system_workflow_pack_contains_chat_assistant_graph() -> None:
+    project_dir = Path(__file__).resolve().parents[1]
+
+    composed = compose_workflow_ir(
+        project_dir=project_dir,
+        workflow_packs=[],
+        built_in_workflow_packs=BUILTIN_HIDDEN_WORKFLOW_PACKS,
+    )
+
+    assert [trigger["id"] for trigger in composed.triggers] == ["system.chat_assistant"]
+    assert [effect["id"] for effect in composed.effects] == [
+        "system.chat_assistant.ensure_session",
+        "system.chat_assistant.enqueue_prompt",
+    ]
+    assert composed.edges == [
+        {
+            "source_id": "system.chat_assistant",
+            "target_id": "system.chat_assistant.ensure_session",
+            "source_port": None,
+            "allow_cycle": False,
+        },
+        {
+            "source_id": "system.chat_assistant.ensure_session",
+            "target_id": "system.chat_assistant.enqueue_prompt",
+            "source_port": None,
+            "allow_cycle": False,
+        },
+    ]
+
+
+def test_hidden_system_workflow_pack_loads_from_package_data_when_project_config_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    missing_repo_root = tmp_path / "missing-repo-root"
+    monkeypatch.setattr(workflow_packs, "_module_project_root", lambda: missing_repo_root)
+
+    composed = workflow_packs.compose_workflow_ir(
+        project_dir=tmp_path,
+        workflow_packs=[],
+        built_in_workflow_packs=workflow_packs.BUILTIN_HIDDEN_WORKFLOW_PACKS,
+    )
+
+    assert [trigger["id"] for trigger in composed.triggers] == ["system.chat_assistant"]
+    assert [effect["id"] for effect in composed.effects] == [
+        "system.chat_assistant.ensure_session",
+        "system.chat_assistant.enqueue_prompt",
+    ]
+
+
+def test_hidden_system_workflow_pack_is_declared_as_package_data() -> None:
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    payload = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+
+    package_data = payload["tool"]["setuptools"]["package-data"]["agent_sandbox"]
+    assert "workflow/builtin_packs/*.json" in package_data
+
+
+def test_packaged_hidden_system_workflow_pack_matches_repo_config() -> None:
+    project_dir = Path(__file__).resolve().parents[1]
+    repo_pack = project_dir / "config" / "workflow-packs" / "system.v1.json"
+    packaged_pack = (
+        project_dir / "src" / "agent_sandbox" / "workflow" / "builtin_packs" / "system.v1.json"
+    )
+
+    assert json.loads(packaged_pack.read_text(encoding="utf-8")) == json.loads(
+        repo_pack.read_text(encoding="utf-8")
+    )
 
 
 def test_workflow_pack_can_store_multiple_named_graphs(tmp_path: Path) -> None:

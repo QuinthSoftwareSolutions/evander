@@ -26,6 +26,7 @@ from agent_sandbox.effects.providers.schemas import (
     SemanticDeleteEffectDefinition,
     SemanticEnsureCollectionEffectDefinition,
     SemanticUpsertEffectDefinition,
+    SessionRenewIfExpiredEffectDefinition,
     SessionUpdateMetadataEffectDefinition,
     VmBootstrapFrontendEffectDefinition,
     VmBootstrapPythonEffectDefinition,
@@ -70,6 +71,7 @@ _EFFECT_MODEL_BY_TYPE = {
     "effect:communication:send-message": CommunicationSendMessageEffectDefinition,
     "effect:notification:send": NotificationSendEffectDefinition,
     "effect:session:update-metadata": SessionUpdateMetadataEffectDefinition,
+    "effect:session:renew-if-expired": SessionRenewIfExpiredEffectDefinition,
     "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectDefinition,
     "effect:pr:create": PrCreateEffectDefinition,
 }
