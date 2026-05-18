@@ -1,0 +1,62 @@
+{
+  "pack_id": "system",
+  "pack_version": "v1",
+  "description": "Built-in hidden workflows required by the control plane.",
+  "ir": {
+    "version": "v1",
+    "nodes": [
+      {
+        "node": {
+          "id": "system.chat_assistant",
+          "display_name": "System Chat Assistant",
+          "type": "trigger:system:chat-assistant",
+          "config": {}
+        }
+      },
+      {
+        "node": {
+          "id": "system.chat_assistant.ensure_session",
+          "display_name": "Resolve chat assistant session",
+          "type": "effect:chat-assistant:ensure-session",
+          "config": {
+            "assistant_capability_mode": "${{system.chat_assistant.assistant_capability_mode}}",
+            "assistant_scope": "admin_chat",
+            "backend": "${{system.chat_assistant.backend}}",
+            "content": "${{system.chat_assistant.content}}",
+            "thread_id": "${{system.chat_assistant.thread_id}}",
+            "user_id": "${{system.chat_assistant.user_id}}",
+            "user_message_id": "${{system.chat_assistant.user_message_id}}"
+          }
+        }
+      },
+      {
+        "node": {
+          "id": "system.chat_assistant.enqueue_prompt",
+          "display_name": "Enqueue chat assistant prompt",
+          "type": "effect:agent:enqueue-prompt",
+          "config": {
+            "execution_backend": "${{system.chat_assistant.ensure_session.execution_backend}}",
+            "model": "${{system.chat_assistant.ensure_session.model}}",
+            "prompt": "${{system.chat_assistant.ensure_session.prompt}}",
+            "queue_key": "chat:${{system.chat_assistant.ensure_session.thread_id}}:${{system.chat_assistant.ensure_session.user_message_id}}",
+            "resume_thread_id": "${{system.chat_assistant.ensure_session.agent_thread_id}}",
+            "session_id": "${{system.chat_assistant.ensure_session.session_id}}",
+            "target": "${{system.chat_assistant.ensure_session.session_id}}",
+            "vm_name": "${{system.chat_assistant.ensure_session.vm_name}}",
+            "vm_user": "agent"
+          }
+        }
+      }
+    ],
+    "edges": [
+      {
+        "source_id": "system.chat_assistant",
+        "target_id": "system.chat_assistant.ensure_session"
+      },
+      {
+        "source_id": "system.chat_assistant.ensure_session",
+        "target_id": "system.chat_assistant.enqueue_prompt"
+      }
+    ]
+  }
+}

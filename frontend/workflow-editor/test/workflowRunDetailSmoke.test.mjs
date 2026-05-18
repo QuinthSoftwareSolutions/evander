@@ -57,6 +57,11 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         display_name: "Incoming command",
         type: "trigger:manual",
       },
+      {
+        id: "trigger-2",
+        display_name: "Unrelated command",
+        type: "trigger:manual",
+      },
     ],
     gates: [],
     effects: [
@@ -70,11 +75,17 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         display_name: "Notify operator",
         type: "effect:notify",
       },
+      {
+        id: "unrelated-1",
+        display_name: "Unrelated effect",
+        type: "effect:notify",
+      },
     ],
     queries: [],
     edges: [
       { source_id: "trigger-1", target_id: "agent-1", source_port: "completed" },
       { source_id: "agent-1", target_id: "notify-1", source_port: "completed" },
+      { source_id: "trigger-2", target_id: "unrelated-1", source_port: "completed" },
     ],
   };
   const graph = {
@@ -96,6 +107,8 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         "trigger-1": { x: 80, y: 80 },
         "agent-1": { x: 360, y: 80 },
         "notify-1": { x: 640, y: 80 },
+        "trigger-2": { x: 80, y: 320 },
+        "unrelated-1": { x: 360, y: 320 },
       },
     },
     graphs: [graph],
@@ -188,7 +201,6 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         effects: config.effects,
         queries: [],
         edges: config.edges,
-        workflow_graphs: [graph],
       },
       data_availability: {
         graph_snapshot: "available",
@@ -419,6 +431,8 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
   assert.equal(await page.getByRole("button", { name: "Save workflow" }).count(), 0);
   assert.equal(await page.getByText("Create").count(), 0);
   await assert.doesNotReject(() => page.locator(".node-card.inspect-ghost", { hasText: "Notify operator" }).waitFor({ state: "visible" }));
+  assert.equal(await page.locator(".react-flow__node", { hasText: "Unrelated command" }).count(), 0);
+  assert.equal(await page.locator(".react-flow__node", { hasText: "Unrelated effect" }).count(), 0);
 
   await page.locator(".react-flow__node", { hasText: "Dispatch agent" }).click();
   assert.equal(

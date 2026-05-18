@@ -67,6 +67,7 @@ import {
   workflowRouteClass,
   type WorkflowConnectionRouteOption,
 } from "./workflowRoutes";
+import { sameGraphNodeIdsForRunAnchors } from "./workflowRunInspect";
 import {
   compareWorkflowNodeCatalogEntries,
   groupWorkflowNodeCatalogEntries,
@@ -1556,14 +1557,12 @@ function workflowRunDetailGraphMetadata(detail: WorkflowRunDetail): WorkflowGrap
 function workflowRunDetailSameGraphNodeIds(detail: WorkflowRunDetail): Set<string> {
   const allNodeIds = new Set(workflowRunDetailGraphNodes(detail).map((node) => node.id));
   const anchorNodeIds = workflowRunDetailVisitedNodeIds(detail);
-  const graphs = workflowRunDetailGraphMetadata(detail).filter((graph) =>
-    graph.node_ids.some((nodeId) => allNodeIds.has(nodeId)),
+  return sameGraphNodeIdsForRunAnchors(
+    allNodeIds,
+    workflowRunDetailGraphEdges(detail),
+    workflowRunDetailGraphMetadata(detail),
+    anchorNodeIds,
   );
-  const matchedGraph = graphs.find((graph) =>
-    graph.node_ids.some((nodeId) => anchorNodeIds.has(nodeId)),
-  );
-  if (!matchedGraph) return allNodeIds;
-  return new Set(matchedGraph.node_ids.filter((nodeId) => allNodeIds.has(nodeId)));
 }
 
 function workflowRunDetailDisplayNodeIds(detail: WorkflowRunDetail): Set<string> {

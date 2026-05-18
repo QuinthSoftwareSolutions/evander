@@ -89,6 +89,10 @@ def _module_project_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def _packaged_builtin_pack_path(pack_reference: str) -> Path:
+    return Path(__file__).resolve().parent / "builtin_packs" / pack_reference
+
+
 def _pack_path(project_dir: Path, pack_reference: str) -> Path:
     normalized = _normalize_pack_reference(pack_reference)
     path = project_dir / "config" / "workflow-packs" / normalized
@@ -96,6 +100,9 @@ def _pack_path(project_dir: Path, pack_reference: str) -> Path:
         fallback_path = _module_project_root() / "config" / "workflow-packs" / normalized
         if fallback_path.exists():
             return fallback_path
+        packaged_path = _packaged_builtin_pack_path(normalized)
+        if packaged_path.exists():
+            return packaged_path
     return path
 
 
