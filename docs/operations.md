@@ -163,6 +163,8 @@ and surfaces:
   directory/scope, and time range
 - an Approvals tab for reviewing queued approval requests with redacted context and
   selected-directory filtering
+- Sessions policy controls for `approval_required_tools`, which lets operators require human
+  approval before selected allowed tools execute
 - a configuration tab that inspects inherited per-domain directory config
 
 For machine-readable scripting that matches the GUI data model, use:
@@ -913,6 +915,25 @@ email send allowlists for the host to notify an operator target.
 
 Delivery failure logs `metric_approval_notification` with the target id, request id, review command,
 and error. It never auto-approves, denies, or blocks the pending approval record.
+
+## Approval-Gated MCP Tool Invocations
+
+Directory policy overlays and per-session policy can set `approval_required_tools` to require human
+approval before selected MCP tools execute. This is an additional gate on top of `allowed_tools`: the
+tool must still be allowed for the session, and `approval_submit` / `approval_check` are excluded so
+agents can create and inspect approvals.
+
+When a gated tool is called without `approval_request_id`, the gateway does not run the tool. It
+creates a pending approval with action type `mcp_tool_invocation`, records the tool name, intended
+effect, canonical payload digest, and an audited `pending_approval` tool-call event, then returns an
+MCP tool error instructing the agent to retry the exact same payload with the generated
+`approval_request_id` after an operator approves it.
+
+After approval, the agent retries the same tool call and includes `approval_request_id`. The gateway
+executes only if the request is approved, belongs to the same session, targets the same tool, has not
+expired, and matches the original payload digest. Denied, expired, wrong-tool, wrong-session, or
+changed-payload retries are blocked and audited with the approval request id for review in Admin Web
+-> Tool Calls.
 
 ## Communication File Transfer Runbook
 

@@ -140,6 +140,7 @@ from agent_sandbox.models import (
     WakeScheduleDefinition,
     TeamsMessageEnvelope,
     ToolName,
+    digest_payload,
 )
 from agent_sandbox.policy import PolicyError
 from agent_sandbox.retell_phone import (
@@ -263,6 +264,36 @@ _APPROVAL_REQUEST_ID_SCHEMA_EXCLUDED_TOOLS = {
     ToolName.APPROVAL_SUBMIT.value,
     ToolName.APPROVAL_CHECK.value,
 }
+
+
+def _approval_gate_arguments(args: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(args)
+    sanitized.pop("approval_request_id", None)
+    return sanitized
+
+
+def _approval_gate_payload(
+    *,
+    tool_name: str,
+    session_id: str,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "tool_name": tool_name,
+        "session_id": session_id,
+        "arguments": arguments,
+    }
+
+
+def _approval_gate_human_summary(tool_name: str, session_id: str) -> str:
+    return f"Approve MCP tool {tool_name} for session {session_id}"
+
+
+def _approval_gate_intended_effect(tool_name: str, session_id: str) -> str:
+    return (
+        f"Execute the exact approved MCP tool invocation {tool_name!r} "
+        f"for session {session_id!r}."
+    )
 
 
 def _tool_call_context() -> _ToolCallAuditContext | None:
@@ -411,6 +442,11 @@ def _tool_call_audit_fields(
     approval_request_id = _first_string_in_payload(args, ("approval_request_id",))
     if approval_request_id is None:
         approval_request_id = _first_string_in_payload(result, ("approval_request_id",))
+    if approval_request_id is None and current is not None:
+        approval_request_id = _first_string_in_payload(
+            current.raw_args,
+            ("approval_request_id",),
+        )
     tool_name_value = tool_name.value if isinstance(tool_name, ToolName) else str(tool_name or "").strip()
     if approval_request_id is None and tool_name_value in _TOOL_CALL_APPROVAL_NAMES:
         approval_request_id = _first_string_in_payload(args, ("request_id",))
@@ -8167,6 +8203,127 @@ def create_server(context: RuntimeContext) -> FastMCP:
 
     _inject_approval_request_id_schema()
 
+    def audit_approval_gate(
+        *,
+        session_id: str,
+        session: Any,
+        tool_name: ToolName,
+        raw_args: dict[str, Any],
+        result: dict[str, Any],
+        decision: str,
+        reason: str | None = None,
+    ) -> None:
+        redacted_keys = redacted_keys_for_session_id(session_id)
+        context.audit.log(
+            AuditEvent(
+                event_type="tool_call",
+                session_id=session_id,
+                vm_id=None if session is None else session.vm_id,
+                directory_path=None if session is None else session.directory_path,
+                agent_role=_session_actor_role(session),
+                tool_name=tool_name.value,
+                actor_user_id=_session_actor_user_id(session),
+                **_tool_call_audit_fields(
+                    session=session,
+                    tool_name=tool_name,
+                    args=raw_args,
+                    result=result,
+                ),
+                decision=decision,
+                reason=reason,
+                args=_redact_args(redacted_keys, raw_args),
+                result=_redact_nested_value(redacted_keys, result),
+            )
+        )
+        _mark_tool_call_audited()
+
+    def maybe_require_invocation_approval(
+        *,
+        raw_tool_name: str,
+        raw_arguments: dict[str, Any],
+        sanitized_arguments: dict[str, Any],
+        call_context: _ToolCallAuditContext,
+    ) -> None:
+        tool_enum = ToolName._value2member_map_.get(raw_tool_name)
+        if tool_enum is None or raw_tool_name in _APPROVAL_REQUEST_ID_SCHEMA_EXCLUDED_TOOLS:
+            return
+        session_id = call_context.session_id
+        if not session_id:
+            return
+        try:
+            session = context.policy.require_tool(session_id, tool_enum)
+        except PolicyError:
+            return
+        if not context.policy.approval_required_for_tool(session, tool_enum):
+            return
+
+        approval_payload = _approval_gate_payload(
+            tool_name=tool_enum.value,
+            session_id=session_id,
+            arguments=sanitized_arguments,
+        )
+        payload_digest = digest_payload(approval_payload)
+        supplied_request_id = str(raw_arguments.get("approval_request_id") or "").strip()
+        if not supplied_request_id:
+            approval = context.policy.create_approval(
+                session_id,
+                "mcp_tool_invocation",
+                approval_payload,
+                _approval_gate_human_summary(tool_enum.value, session_id),
+                tool_name=tool_enum.value,
+                intended_effect=_approval_gate_intended_effect(tool_enum.value, session_id),
+            )
+            result = {
+                "status": "pending_approval",
+                "approval_request_id": approval.request_id,
+                "payload_digest": payload_digest,
+                "message": (
+                    f"Tool {tool_enum.value} requires approval before execution. "
+                    f"Retry the exact same payload with approval_request_id={approval.request_id} "
+                    "after a human approves it."
+                ),
+            }
+            audit_approval_gate(
+                session_id=session_id,
+                session=session,
+                tool_name=tool_enum,
+                raw_args=raw_arguments,
+                result=result,
+                decision="pending_approval",
+            )
+            raise ToolError(result["message"])
+
+        try:
+            approval = context.policy.require_approved(supplied_request_id, approval_payload)
+            if approval.session_id != session_id:
+                raise PolicyError(
+                    f"Approval request {supplied_request_id} does not belong to session "
+                    f"{session_id}"
+                )
+            if str(approval.tool_name or approval.action_type).strip() != tool_enum.value:
+                raise PolicyError(
+                    f"Approval request {supplied_request_id} is not for tool "
+                    f"{tool_enum.value}"
+                )
+        except PolicyError as exc:
+            result = {
+                "status": "blocked",
+                "approval_request_id": supplied_request_id,
+                "payload_digest": payload_digest,
+                "error": str(exc),
+                "error_class": "approval_blocked",
+            }
+            audit_approval_gate(
+                session_id=session_id,
+                session=session,
+                tool_name=tool_enum,
+                raw_args=raw_arguments,
+                result=result,
+                decision="blocked",
+                reason=str(exc),
+            )
+            raise ToolError(f"approval_blocked: {exc}") from exc
+
     original_call_tool = server._tool_manager.call_tool
 
     async def audited_call_tool(*call_args: Any, **call_kwargs: Any) -> Any:
@@ -8191,8 +8348,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             request_context,
             transport_session_map,
         )
-        sanitized_arguments = dict(raw_arguments)
-        sanitized_arguments.pop("approval_request_id", None)
+        sanitized_arguments = _approval_gate_arguments(raw_arguments)
         dispatch_call_args = list(call_args)
         dispatch_call_kwargs = dict(call_kwargs)
         if len(dispatch_call_args) > 1:
@@ -8202,6 +8358,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
             dispatch_call_kwargs["arguments"] = sanitized_arguments
         token = _TOOL_CALL_AUDIT_CONTEXT.set(call_context)
         try:
+            maybe_require_invocation_approval(
+                raw_tool_name=raw_tool_name,
+                raw_arguments=raw_arguments,
+                sanitized_arguments=sanitized_arguments,
+                call_context=call_context,
+            )
             return await original_call_tool(*dispatch_call_args, **dispatch_call_kwargs)
         except Exception as exc:
             if not call_context.audit_emitted:

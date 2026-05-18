@@ -22,6 +22,7 @@ from agent_sandbox.gateway import (
 )
 from agent_sandbox.admin.web.chat import ChatStore
 from agent_sandbox.models import (
+    ApprovalStatus,
     DiscordCommandEnvelope,
     ListPullRequestsResponse,
     PullRequestItem,
@@ -364,6 +365,136 @@ def test_create_server_injects_approval_request_id_into_public_tool_schemas(
             {"type": "null"},
         ]
         assert properties["approval_request_id"]["default"] is None
+
+
+def test_approval_required_tool_creates_pending_request_without_execution(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(
+        tmp_path,
+        allowed_tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+    )
+    DirectoryConfigStore(context.directories, runtime_dir=context.config.runtime_dir).write(
+        "root",
+        domain="policy",
+        payload={"approval_required_tools": [ToolName.GET_WORKFLOW_SNAPSHOT.value]},
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="requires approval"):
+        _call_tool(server, "get_workflow_snapshot", {"session_id": "session-1"})
+
+    approvals = context.approvals.read_all()
+    assert len(approvals) == 1
+    approval = next(iter(approvals.values()))
+    assert approval.status == ApprovalStatus.PENDING
+    assert approval.action_type == "mcp_tool_invocation"
+    assert approval.tool_name == ToolName.GET_WORKFLOW_SNAPSHOT.value
+    assert approval.intended_effect
+    assert approval.payload["tool_name"] == ToolName.GET_WORKFLOW_SNAPSHOT.value
+    assert approval.payload["arguments"] == {"session_id": "session-1"}
+
+    tool_events = [
+        event
+        for event in read_audit_events(context.config.audit_log_path)
+        if event.get("tool_name") == ToolName.GET_WORKFLOW_SNAPSHOT.value
+    ]
+    assert len(tool_events) == 1
+    assert tool_events[0]["decision"] == "pending_approval"
+    assert tool_events[0]["approval_request_id"] == approval.request_id
+    assert tool_events[0]["result"]["status"] == "pending_approval"
+
+
+def test_approval_required_tool_approved_exact_retry_executes_and_links_audit(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(
+        tmp_path,
+        allowed_tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+    )
+    manifest = context.session_repository.get_session("session-1")
+    assert manifest is not None
+    manifest.approval_required_tools = [ToolName.GET_WORKFLOW_SNAPSHOT]
+    context.session_repository.upsert_session(manifest)
+    server = create_server(context)
+
+    with pytest.raises(ToolError):
+        _call_tool(server, "get_workflow_snapshot", {"session_id": "session-1"})
+    approval = next(iter(context.approvals.read_all().values()))
+    approval.status = ApprovalStatus.APPROVED
+    approval.approver = "operator"
+    approval.decision_at = datetime.now(UTC)
+    approval.decision_reason = "verified"
+    context.approvals.put(approval.request_id, approval)
+
+    result = _call_tool(
+        server,
+        "get_workflow_snapshot",
+        {"session_id": "session-1", "approval_request_id": approval.request_id},
+    )
+
+    assert result["worker_id"] == "trigger-orchestrator"
+    tool_events = [
+        event
+        for event in read_audit_events(context.config.audit_log_path)
+        if event.get("tool_name") == ToolName.GET_WORKFLOW_SNAPSHOT.value
+    ]
+    assert [event["decision"] for event in tool_events] == ["pending_approval", "allowed"]
+    assert tool_events[1]["approval_request_id"] == approval.request_id
+
+
+def test_approval_required_tool_blocks_mismatched_denied_and_disallowed_retries(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(
+        tmp_path,
+        allowed_tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+    )
+    manifest = context.session_repository.get_session("session-1")
+    assert manifest is not None
+    manifest.approval_required_tools = [ToolName.GET_WORKFLOW_SNAPSHOT]
+    context.session_repository.upsert_session(manifest)
+    server = create_server(context)
+
+    with pytest.raises(ToolError):
+        _call_tool(server, "get_workflow_snapshot", {"session_id": "session-1"})
+    approval = next(iter(context.approvals.read_all().values()))
+    approval.status = ApprovalStatus.APPROVED
+    approval.approver = "operator"
+    approval.decision_at = datetime.now(UTC)
+    approval.decision_reason = "verified"
+    context.approvals.put(approval.request_id, approval)
+
+    with pytest.raises(ToolError, match="approval_blocked"):
+        _call_tool(
+            server,
+            "get_workflow_snapshot",
+            {
+                "session_id": "session-1",
+                "include_runs": True,
+                "approval_request_id": approval.request_id,
+            },
+        )
+
+    approval.status = ApprovalStatus.DENIED
+    context.approvals.put(approval.request_id, approval)
+    with pytest.raises(ToolError, match="approval_blocked"):
+        _call_tool(
+            server,
+            "get_workflow_snapshot",
+            {"session_id": "session-1", "approval_request_id": approval.request_id},
+        )
+
+    context.approvals.write_all({})
+    denied_context = _build_runtime_with_workflow_config(tmp_path / "denied", allowed_tools=[])
+    denied_manifest = denied_context.session_repository.get_session("session-1")
+    assert denied_manifest is not None
+    denied_manifest.approval_required_tools = [ToolName.GET_WORKFLOW_SNAPSHOT]
+    denied_context.session_repository.upsert_session(denied_manifest)
+    denied_server = create_server(denied_context)
+    with pytest.raises(ToolError, match="Tool get_workflow_snapshot is not allowed"):
+        _call_tool(denied_server, "get_workflow_snapshot", {"session_id": "session-1"})
+    assert denied_context.approvals.read_all() == {}
 
 
 def test_get_workflow_snapshot_returns_current_config_and_optional_runs(tmp_path: Path) -> None:

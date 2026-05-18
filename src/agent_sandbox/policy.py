@@ -130,6 +130,13 @@ class PolicyEngine:
             self.require_pr_feedback_streams(session)
         return session
 
+    def approval_required_for_tool(self, session: SessionManifest, tool_name: ToolName) -> bool:
+        if tool_name in {ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK}:
+            return False
+        required_tools = set(session.approval_required_tools or [])
+        required_tools.update(self.effective_policy_for_session(session).approval_required_tools)
+        return tool_name in required_tools
+
     def _require_assistant_mutation_guardrails(
         self, session: SessionManifest, tool_name: ToolName
     ) -> None:
@@ -636,6 +643,9 @@ class PolicyEngine:
         action_type: str,
         payload: dict[str, Any],
         human_summary: str,
+        *,
+        tool_name: str | None = None,
+        intended_effect: str | None = None,
     ) -> ApprovalRequest:
         request_id = f"apr_{digest_payload({'session_id': session_id, **payload})[:16]}"
         now = datetime.now(UTC)
@@ -672,7 +682,8 @@ class PolicyEngine:
                 payload=redacted_payload,
                 directory_path=session.directory_path,
                 vm_id=session.vm_id,
-                tool_name=action_type,
+                tool_name=tool_name or action_type,
+                intended_effect=intended_effect,
                 notification_status=notification_status,
                 notification_target_ids=notification_target_ids,
                 notification_attempted_at=now if notification_target_ids else None,
@@ -687,7 +698,8 @@ class PolicyEngine:
             request.payload = redacted_payload
             request.directory_path = session.directory_path
             request.vm_id = session.vm_id
-            request.tool_name = action_type
+            request.tool_name = tool_name or action_type
+            request.intended_effect = intended_effect
             request.status = ApprovalStatus.PENDING
             request.notification_status = notification_status
             request.notification_target_ids = notification_target_ids
