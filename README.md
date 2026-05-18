@@ -901,6 +901,10 @@ Use this when you want the guest to wake only for new review feedback and post t
    Use `get_pull_request(session_id, provider, repo, pr_id, include_reviewers?, include_commits?)`
    to fetch one PR with normalized fields plus a provider-complete `raw` payload.
    For full thread history (including already-consumed items), call `list_all_feedback`.
+   Workflow graphs can also use `query:pull-request:list` and `effect:pull-request:update`
+   for cron-driven PR polling and ADO tag/metadata updates. Azure DevOps PR tag filters are
+   client-side after the provider list call, so bound polling with status, branch/time filters,
+   `top`, `skip`, or `cursor`.
 
 Example `get_pull_request` result shape (Azure DevOps):
 

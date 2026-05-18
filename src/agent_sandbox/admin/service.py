@@ -1174,6 +1174,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:ado:update-work-item": (
         "Update an Azure DevOps work item with an optional expected-state guard."
     ),
+    "effect:pull-request:update": (
+        "Update pull request metadata or tags with an optional status guard."
+    ),
     "effect:event:emit": "Emit an internal workflow event for other graphs.",
     "effect:communication:send-message": (
         "Send a message through a configured communication target."
@@ -1189,6 +1192,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:pr:create": "Create a pull request from a host-side checkout.",
     "query:vm:run-state": "Read the current run state for a VM-backed agent target.",
     "query:git:pr-note": "Read pull-request note context from a host checkout.",
+    "query:pull-request:list": "List provider pull requests with optional status, branch, time, or tag filters.",
     "query:session-context": "Read session context and metadata.",
     "query:agent:artifact-text": "Read a UTF-8 text file from an agent session artifacts folder.",
     "query:issue:get": "Read a local issue record by id.",
@@ -2558,6 +2562,35 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:pull-request:update",
+        label="Pull request update",
+        fields=[
+            _field(
+                "provider",
+                "Provider",
+                "enum",
+                required=True,
+                bindable=True,
+                options=[
+                    _field_option("azure_devops", "Azure DevOps"),
+                    _field_option("ado", "ADO alias"),
+                ],
+            ),
+            _field("repo", "Repo", "string", required=True, bindable=True),
+            _field("pr_id", "PR ID", "string", required=True, bindable=True),
+            _field("directory_path", "Directory path", "string", bindable=True),
+            _field("organization_url", "Organization URL", "string", bindable=True),
+            _field("project", "Project", "string", bindable=True),
+            _field("title", "Title", "string", bindable=True),
+            _field("description", "Description", "string", bindable=True, multiline=True),
+            _field("status", "Status", "string", bindable=True),
+            _field("add_tags", "Add tags", "string_list", bindable=True),
+            _field("remove_tags", "Remove tags", "string_list", bindable=True),
+            _field("expected_statuses", "Expected statuses", "string_list", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
         kind="query",
         type="query:vm:run-state",
         label="VM run state",
@@ -2611,6 +2644,45 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         label="Issue get",
         fields=[
             _field("issue_id", "Issue ID", "string", required=True, bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:pull-request:list",
+        label="Pull request list",
+        fields=[
+            _field(
+                "provider",
+                "Provider",
+                "enum",
+                required=True,
+                bindable=True,
+                options=[
+                    _field_option("azure_devops", "Azure DevOps"),
+                    _field_option("ado", "ADO alias"),
+                ],
+            ),
+            _field("repo", "Repo", "string", required=True, bindable=True),
+            _field("directory_path", "Directory path", "string", bindable=True),
+            _field("organization_url", "Organization URL", "string", bindable=True),
+            _field("project", "Project", "string", bindable=True),
+            _field("status", "Status", "string", bindable=True),
+            _field("creator_id", "Creator ID", "string", bindable=True),
+            _field("reviewer_id", "Reviewer ID", "string", bindable=True),
+            _field("source_ref_name", "Source ref", "string", bindable=True),
+            _field("target_ref_name", "Target ref", "string", bindable=True),
+            _field("source_repository_id", "Source repository ID", "string", bindable=True),
+            _field("repository_id", "Repository ID", "string", bindable=True),
+            _field("min_time", "Min time", "string", bindable=True),
+            _field("max_time", "Max time", "string", bindable=True),
+            _field("query_time_range_type", "Time range type", "string", bindable=True),
+            _field("include_links", "Include links", "boolean", bindable=True),
+            _field("max_comment_length", "Max comment length", "number", bindable=True),
+            _field("tags_any", "Tags any", "string_list", bindable=True),
+            _field("tags_all", "Tags all", "string_list", bindable=True),
+            _field("top", "Top", "number", bindable=True),
+            _field("skip", "Skip", "number", bindable=True),
+            _field("cursor", "Cursor", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

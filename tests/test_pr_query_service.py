@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -23,7 +25,17 @@ def test_azure_query_provider_constructs_request_with_filters(
         assert request.url.params["searchCriteria.status"] == "active"
         assert request.url.params["searchCriteria.creatorId"] == "user-a"
         assert request.url.params["searchCriteria.reviewerId"] == "user-b"
+        assert request.url.params["searchCriteria.sourceRefName"] == "refs/heads/feature"
+        assert request.url.params["searchCriteria.targetRefName"] == "refs/heads/main"
+        assert request.url.params["searchCriteria.sourceRepositoryId"] == "source-repo-id"
+        assert request.url.params["searchCriteria.repositoryId"] == "target-repo-id"
+        assert request.url.params["searchCriteria.minTime"] == "2026-04-01T00:00:00Z"
+        assert request.url.params["searchCriteria.maxTime"] == "2026-04-30T00:00:00Z"
+        assert request.url.params["searchCriteria.queryTimeRangeType"] == "created"
+        assert request.url.params["searchCriteria.includeLinks"] == "true"
+        assert request.url.params["maxCommentLength"] == "250"
         assert request.url.params["$top"] == "25"
+        assert request.url.params["$skip"] == "50"
         assert request.url.params["continuationToken"] == "cursor-1"
         assert request.headers["authorization"].startswith("Basic ")
         return httpx.Response(
@@ -55,11 +67,22 @@ def test_azure_query_provider_constructs_request_with_filters(
         status="active",
         creator_id="user-a",
         reviewer_id="user-b",
+        source_ref_name="refs/heads/feature",
+        target_ref_name="refs/heads/main",
+        source_repository_id="source-repo-id",
+        repository_id="target-repo-id",
+        min_time="2026-04-01T00:00:00Z",
+        max_time="2026-04-30T00:00:00Z",
+        query_time_range_type="created",
+        include_links=True,
+        max_comment_length=250,
         top=25,
+        skip=50,
         cursor="cursor-1",
     )
 
     assert response.next_cursor == "cursor-2"
+    assert response.paging["skip"] == 50
     assert len(response.pull_requests) == 1
     assert response.pull_requests[0].pr_id == "17"
     assert response.pull_requests[0].status == "active"
@@ -128,6 +151,80 @@ def test_pr_query_service_normalizes_provider_and_returns_payload(
 
     assert result.pull_requests == []
     assert result.next_cursor is None
+
+
+def test_pr_query_service_accepts_ado_provider_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["searchCriteria.status"] == "active"
+        return httpx.Response(200, json={"value": []})
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = PrQueryService(
+        providers={
+            "azure_devops": AzureDevOpsPrQueryProvider(
+                organization_url="https://dev.azure.com/org",
+                project="proj",
+                pat="secret",
+            )
+        }
+    )
+
+    result = service.list_pull_requests(provider="ado", repo="repo-1", status="active")
+
+    assert result.provider == "azure_devops"
+
+
+def test_azure_query_provider_filters_tags_after_label_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    label_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pullrequests"):
+            assert "labels" not in request.url.path
+            return httpx.Response(
+                200,
+                json={
+                    "count": 2,
+                    "value": [
+                        {"pullRequestId": 17, "title": "One", "status": "active"},
+                        {"pullRequestId": 18, "title": "Two", "status": "active"},
+                    ],
+                },
+            )
+        if request.url.path.endswith("/pullRequests/17/labels"):
+            label_paths.append(request.url.path)
+            return httpx.Response(
+                200,
+                json={"value": [{"name": "needs-review"}, {"name": "agent"}]},
+            )
+        if request.url.path.endswith("/pullRequests/18/labels"):
+            label_paths.append(request.url.path)
+            return httpx.Response(200, json={"value": [{"name": "needs-review"}]})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url="https://dev.azure.com/org",
+        project="proj",
+        pat="secret",
+    )
+
+    response = provider.list_pull_requests(
+        repo="repo-1",
+        status="active",
+        tags_any=["needs-review"],
+        tags_all=["agent"],
+        top=50,
+    )
+
+    assert len(label_paths) == 2
+    assert response.count == 1
+    assert response.pull_requests[0].pr_id == "17"
+    assert response.pull_requests[0].tags == ["needs-review", "agent"]
+    assert response.paging["tag_filter_client_side"] is True
 
 
 def test_azure_query_provider_get_pull_request_maps_fields_and_uses_pat_auth(
@@ -217,3 +314,131 @@ def test_azure_query_provider_get_pull_request_keeps_raw_commits(
 
     assert result.commits[0].commit_id == "abc123"
     assert isinstance(result.raw.get("commits"), list)
+
+
+def test_azure_query_provider_update_pull_request_updates_metadata_and_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path.endswith("/pullRequests/17"):
+            return httpx.Response(
+                200,
+                json={
+                    "pullRequestId": 17,
+                    "title": "Old title",
+                    "status": "active",
+                    "_links": {
+                        "web": {
+                            "href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"
+                        }
+                    },
+                },
+            )
+        if request.method == "GET" and request.url.path.endswith("/pullRequests/17/labels"):
+            label_get_count = sum(
+                1
+                for method, path in requests
+                if method == "GET" and path.endswith("/pullRequests/17/labels")
+            )
+            if label_get_count == 1:
+                return httpx.Response(
+                    200,
+                    json={"value": [{"name": "ready"}, {"name": "stale"}]},
+                )
+            return httpx.Response(
+                200,
+                json={"value": [{"name": "ready"}, {"name": "reviewed"}]},
+            )
+        if request.method == "PATCH" and request.url.path.endswith("/pullrequests/17"):
+            assert request.url.params["api-version"] == "7.1"
+            assert json.loads(request.content.decode("utf-8")) == {
+                "title": "New title",
+                "description": "New description",
+                "status": "abandoned",
+            }
+            return httpx.Response(
+                200,
+                json={
+                    "pullRequestId": 17,
+                    "title": "New title",
+                    "status": "abandoned",
+                    "_links": {
+                        "web": {
+                            "href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"
+                        }
+                    },
+                },
+            )
+        if request.method == "POST" and request.url.path.endswith("/pullRequests/17/labels"):
+            assert json.loads(request.content.decode("utf-8")) == {"name": "reviewed"}
+            return httpx.Response(200, json={"name": "reviewed"})
+        if request.method == "DELETE" and request.url.path.endswith("/pullRequests/17/labels/stale"):
+            return httpx.Response(200, json={})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url="https://dev.azure.com/org",
+        project="proj",
+        pat="secret",
+    )
+
+    result = provider.update_pull_request(
+        repo="repo-1",
+        pr_id="17",
+        title="New title",
+        description="New description",
+        status="abandoned",
+        add_tags=["ready", "reviewed"],
+        remove_tags=["stale"],
+        expected_statuses=["active"],
+    )
+
+    assert result.updated is True
+    assert result.skipped is False
+    assert result.status == "abandoned"
+    assert result.title == "New title"
+    assert result.added_tags == ["reviewed"]
+    assert result.removed_tags == ["stale"]
+    assert result.tags == ["ready", "reviewed"]
+
+
+def test_azure_query_provider_update_pull_request_skips_unexpected_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        if request.method == "GET" and request.url.path.endswith("/pullRequests/17"):
+            return httpx.Response(
+                200,
+                json={"pullRequestId": 17, "title": "Done", "status": "completed"},
+            )
+        if request.method == "GET" and request.url.path.endswith("/pullRequests/17/labels"):
+            return httpx.Response(200, json={"value": [{"name": "ready"}]})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url="https://dev.azure.com/org",
+        project="proj",
+        pat="secret",
+    )
+
+    result = provider.update_pull_request(
+        repo="repo-1",
+        pr_id="17",
+        title="Should not apply",
+        add_tags=["reviewed"],
+        expected_statuses=["active"],
+    )
+
+    assert result.updated is False
+    assert result.skipped is True
+    assert result.skipped_reason == "unexpected_status"
+    assert result.status == "completed"
+    assert methods == ["GET", "GET"]

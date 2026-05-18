@@ -321,6 +321,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:issue:update-state": provider_models.IssueUpdateStateEffectDefinition,
         "effect:issue:update-metadata": provider_models.IssueUpdateMetadataEffectDefinition,
         "effect:ado:update-work-item": provider_models.AdoUpdateWorkItemEffectDefinition,
+        "effect:pull-request:update": provider_models.PullRequestUpdateEffectDefinition,
         "effect:communication:send-message": (
             provider_models.CommunicationSendMessageEffectDefinition
         ),
@@ -337,6 +338,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "query:agent:artifact-text": provider_models.AgentArtifactTextQueryDefinition,
         "query:issue:get": provider_models.IssueGetQueryDefinition,
         "query:ado:work-items": provider_models.AdoWorkItemsQueryDefinition,
+        "query:pull-request:list": provider_models.PullRequestListQueryDefinition,
         "query:semantic:store-status": provider_models.SemanticStoreStatusQueryDefinition,
         "query:semantic:search": provider_models.SemanticSearchQueryDefinition,
         "query:semantic:get": provider_models.SemanticGetQueryDefinition,

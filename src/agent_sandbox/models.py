@@ -1153,10 +1153,15 @@ class PullRequestItem(BaseModel):
     pr_id: str
     title: str | None = None
     status: str | None = None
+    description: str | None = None
+    source_branch: str | None = None
+    target_branch: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    closed_at: datetime | None = None
     created_by: str | None = None
     url: str | None = None
+    tags: list[str] = Field(default_factory=list)
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -1164,16 +1169,62 @@ class ListPullRequestsRequest(BaseModel):
     session_id: str = Field(min_length=1)
     provider: str = Field(min_length=1)
     repo: str = Field(min_length=1)
+    organization_url: str | None = None
+    project: str | None = None
     status: str | None = None
     creator_id: str | None = None
     reviewer_id: str | None = None
+    source_ref_name: str | None = None
+    target_ref_name: str | None = None
+    source_repository_id: str | None = None
+    repository_id: str | None = None
+    min_time: str | None = None
+    max_time: str | None = None
+    query_time_range_type: str | None = None
+    include_links: bool | None = None
+    max_comment_length: int | None = Field(default=None, ge=0)
+    tags_any: list[str] = Field(default_factory=list)
+    tags_all: list[str] = Field(default_factory=list)
     top: int | None = Field(default=None, ge=1)
+    skip: int | None = Field(default=None, ge=0)
     cursor: str | None = None
+
+    @field_validator("tags_any", "tags_all", mode="before")
+    @classmethod
+    def normalize_tag_list(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        raw_items = [value] if isinstance(value, str) else value
+        if not isinstance(raw_items, list):
+            raise ValueError("tags must be a string or list of strings")
+        return [str(item).strip() for item in raw_items if str(item).strip()]
 
 
 class ListPullRequestsResponse(BaseModel):
+    provider: str | None = None
+    repo: str | None = None
+    project: str | None = None
     pull_requests: list[PullRequestItem] = Field(default_factory=list)
+    count: int | None = None
+    paging: dict[str, Any] = Field(default_factory=dict)
     next_cursor: str | None = None
+
+
+class UpdatePullRequestResponse(BaseModel):
+    success: bool = True
+    updated: bool = False
+    skipped: bool = False
+    skipped_reason: str | None = None
+    provider: str
+    repo: str
+    pr_id: str
+    status: str | None = None
+    title: str | None = None
+    url: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    added_tags: list[str] = Field(default_factory=list)
+    removed_tags: list[str] = Field(default_factory=list)
+    raw: dict[str, Any] = Field(default_factory=dict)
 
 
 class PullRequestReviewer(BaseModel):

@@ -1089,6 +1089,20 @@ without exposing provider credentials in the VM.
 - Advance cursor only after the fetched items are durably handled.
 - Keep handlers idempotent by feedback ID to tolerate retries/replays.
 
+### Cron-driven pull request polling
+
+Use `trigger:cron` with `query:pull-request:list` when a workflow needs to find
+open pull requests by provider state, branch, time window, or review labels, then
+use `effect:pull-request:update` to claim or release work by changing PR tags or
+metadata. For Azure DevOps, set `provider` to `azure_devops` or `ado`; the node
+uses the directory-scoped ADO organization, project, and PAT unless
+`organization_url` or `project` is supplied on the node.
+
+Azure DevOps exposes PR labels through separate endpoints, so `tags_any` and
+`tags_all` are applied after listing candidate PRs. Keep polling bounded with
+`status`, `source_ref_name`, `target_ref_name`, `min_time`/`max_time`, `top`,
+`skip`, or `cursor`.
+
 ### Wake workers
 
 - `agent-sandbox-cli discord-wake` owns Discord inbox wakeups and resumes.

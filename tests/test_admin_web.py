@@ -315,6 +315,25 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "expected_states",
         "sync_proxy_cache",
     ]
+    pr_update = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "effect:pull-request:update"
+    )
+    assert [field["key"] for field in pr_update["fields"]] == [
+        "provider",
+        "repo",
+        "pr_id",
+        "directory_path",
+        "organization_url",
+        "project",
+        "title",
+        "description",
+        "status",
+        "add_tags",
+        "remove_tags",
+        "expected_statuses",
+    ]
     event_emit = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:event:emit"
     )
@@ -545,6 +564,33 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "text_search",
         "top",
         "skip",
+    ]
+    pr_list = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "query:pull-request:list"
+    )
+    assert [field["key"] for field in pr_list["fields"]] == [
+        "provider",
+        "repo",
+        "directory_path",
+        "organization_url",
+        "project",
+        "status",
+        "creator_id",
+        "reviewer_id",
+        "source_ref_name",
+        "target_ref_name",
+        "source_repository_id",
+        "repository_id",
+        "min_time",
+        "max_time",
+        "query_time_range_type",
+        "include_links",
+        "max_comment_length",
+        "tags_any",
+        "tags_all",
+        "top",
+        "skip",
+        "cursor",
     ]
     vm_create = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:create"
