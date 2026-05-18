@@ -28,6 +28,7 @@ from agent_sandbox.effects.providers.issue_update_metadata import IssueUpdateMet
 from agent_sandbox.effects.providers.issue_update_state import IssueUpdateStateEffectProvider
 from agent_sandbox.effects.providers.notification_send import NotificationSendEffectProvider
 from agent_sandbox.effects.providers.pr_create import PrCreateEffectProvider
+from agent_sandbox.effects.providers.pull_request_update import PullRequestUpdateEffectProvider
 from agent_sandbox.effects.providers.semantic_delete import SemanticDeleteEffectProvider
 from agent_sandbox.effects.providers.semantic_ensure_collection import (
     SemanticEnsureCollectionEffectProvider,
@@ -61,6 +62,7 @@ from agent_sandbox.queries.providers.agent_artifact_text import AgentArtifactTex
 from agent_sandbox.queries.providers.ado_work_items import AdoWorkItemsQueryProvider
 from agent_sandbox.queries.providers.git_pr_note import GitPrNoteQueryProvider
 from agent_sandbox.queries.providers.issue_get import IssueGetQueryProvider
+from agent_sandbox.queries.providers.pull_request_list import PullRequestListQueryProvider
 from agent_sandbox.queries.providers.semantic_get import SemanticGetQueryProvider
 from agent_sandbox.queries.providers.semantic_search import SemanticSearchQueryProvider
 from agent_sandbox.queries.providers.semantic_store_status import SemanticStoreStatusQueryProvider
@@ -152,6 +154,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:session:renew-if-expired": SessionRenewIfExpiredEffectProvider,
             "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectProvider,
             "effect:pr:create": PrCreateEffectProvider,
+            "effect:pull-request:update": PullRequestUpdateEffectProvider,
             "effect:semantic:ensure-collection": SemanticEnsureCollectionEffectProvider,
             "effect:semantic:upsert": SemanticUpsertEffectProvider,
             "effect:semantic:delete": SemanticDeleteEffectProvider,
@@ -163,6 +166,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:agent:artifact-text": AgentArtifactTextQueryProvider,
             "query:issue:get": IssueGetQueryProvider,
             "query:ado:work-items": AdoWorkItemsQueryProvider,
+            "query:pull-request:list": PullRequestListQueryProvider,
             "query:semantic:store-status": SemanticStoreStatusQueryProvider,
             "query:semantic:search": SemanticSearchQueryProvider,
             "query:semantic:get": SemanticGetQueryProvider,

@@ -486,3 +486,47 @@ def test_output_schema_derivation_exposes_static_serialize_outputs() -> None:
         "format": {"type": "string"},
     }
     assert diagnostics == []
+
+
+def test_pull_request_list_next_cursor_is_bindable() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-cron-1",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "*/5 * * * *",
+            }
+        ],
+        "queries": [
+            {
+                "id": "query-prs-1",
+                "display_name": "List PRs",
+                "type": "query:pull-request:list",
+                "provider": "ado",
+                "repo": "repo-1",
+                "status": "active",
+                "top": 50,
+            },
+            {
+                "id": "query-prs-next",
+                "display_name": "List next PRs",
+                "type": "query:pull-request:list",
+                "provider": "ado",
+                "repo": "repo-1",
+                "status": "active",
+                "cursor": "${{query-prs-1.next_cursor}}",
+                "top": 50,
+            },
+        ],
+        "edges": [
+            {"source_id": "trigger-cron-1", "target_id": "query-prs-1"},
+            {"source_id": "query-prs-1", "target_id": "query-prs-next"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["query-prs-1"]["next_cursor"] == {"type": ["string", "null"]}
+    assert diagnostics == []

@@ -6,6 +6,7 @@ from typing import Any
 __all__ = [
     "AdoWorkItemsQueryProvider",
     "IssueGetQueryProvider",
+    "PullRequestListQueryProvider",
     "QueryProviderBase",
     "QueryRuntimeContext",
     "SemanticGetQueryProvider",
@@ -17,6 +18,7 @@ __all__ = [
 _EXPORT_MODULES = {
     "AdoWorkItemsQueryProvider": ".ado_work_items",
     "IssueGetQueryProvider": ".issue_get",
+    "PullRequestListQueryProvider": ".pull_request_list",
     "QueryProviderBase": ".base",
     "QueryRuntimeContext": ".base",
     "SemanticGetQueryProvider": ".semantic_get",

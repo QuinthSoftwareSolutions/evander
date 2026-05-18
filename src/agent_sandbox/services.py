@@ -32,6 +32,7 @@ from agent_sandbox.models import (
     PrFeedbackItem,
     SessionManifest,
     TeamsMessageEnvelope,
+    UpdatePullRequestResponse,
 )
 from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
 from agent_sandbox.repositories.cursors import DiscordInboxCursorRepository
@@ -2973,10 +2974,23 @@ class PrQueryProvider(Protocol):
         self,
         *,
         repo: str,
+        project: str | None = None,
         status: str | None = None,
         creator_id: str | None = None,
         reviewer_id: str | None = None,
+        source_ref_name: str | None = None,
+        target_ref_name: str | None = None,
+        source_repository_id: str | None = None,
+        repository_id: str | None = None,
+        min_time: str | None = None,
+        max_time: str | None = None,
+        query_time_range_type: str | None = None,
+        include_links: bool | None = None,
+        max_comment_length: int | None = None,
+        tags_any: list[str] | None = None,
+        tags_all: list[str] | None = None,
         top: int | None = None,
+        skip: int | None = None,
         cursor: str | None = None,
     ) -> ListPullRequestsResponse: ...
 
@@ -3121,29 +3135,60 @@ class AzureDevOpsPrQueryProvider:
         self,
         *,
         repo: str,
+        project: str | None = None,
         status: str | None = None,
         creator_id: str | None = None,
         reviewer_id: str | None = None,
+        source_ref_name: str | None = None,
+        target_ref_name: str | None = None,
+        source_repository_id: str | None = None,
+        repository_id: str | None = None,
+        min_time: str | None = None,
+        max_time: str | None = None,
+        query_time_range_type: str | None = None,
+        include_links: bool | None = None,
+        max_comment_length: int | None = None,
+        tags_any: list[str] | None = None,
+        tags_all: list[str] | None = None,
         top: int | None = None,
+        skip: int | None = None,
         cursor: str | None = None,
     ) -> ListPullRequestsResponse:
         repo_identifier = _normalize_azure_devops_repo_identifier(repo)
+        project_name = _normalize_optional_text(project) or self.project
+        required_any = _normalize_string_list(tags_any)
+        required_all = _normalize_string_list(tags_all)
         params: dict[str, Any] = {"api-version": "7.1"}
-        if status and status.strip():
-            params["searchCriteria.status"] = status.strip().lower()
-        if creator_id and creator_id.strip():
-            params["searchCriteria.creatorId"] = creator_id.strip()
-        if reviewer_id and reviewer_id.strip():
-            params["searchCriteria.reviewerId"] = reviewer_id.strip()
+        for param_name, value in (
+            ("searchCriteria.status", status.strip().lower() if status else None),
+            ("searchCriteria.creatorId", creator_id),
+            ("searchCriteria.reviewerId", reviewer_id),
+            ("searchCriteria.sourceRefName", source_ref_name),
+            ("searchCriteria.targetRefName", target_ref_name),
+            ("searchCriteria.sourceRepositoryId", source_repository_id),
+            ("searchCriteria.repositoryId", repository_id),
+            ("searchCriteria.minTime", min_time),
+            ("searchCriteria.maxTime", max_time),
+            ("searchCriteria.queryTimeRangeType", query_time_range_type),
+        ):
+            text = _normalize_optional_text(value)
+            if text:
+                params[param_name] = text
+        if include_links is not None:
+            params["searchCriteria.includeLinks"] = include_links
+        if max_comment_length is not None:
+            params["maxCommentLength"] = max_comment_length
         if top is not None:
             params["$top"] = top
+        if skip is not None:
+            params["$skip"] = skip
         if cursor and cursor.strip():
             params["continuationToken"] = cursor.strip()
 
         with httpx.Client(timeout=self.timeout_seconds) as client:
             response = client.get(
                 (
-                    f"{self.organization_url}/{self.project}/_apis/git/repositories/{repo_identifier}/"
+                    f"{self.organization_url}/{project_name}/_apis/git/repositories/{repo_identifier}/"
                     "pullrequests"
                 ),
                 params=params,
@@ -3151,46 +3196,292 @@ class AzureDevOpsPrQueryProvider:
             )
             response.raise_for_status()
             payload = response.json()
+            raw_items = payload.get("value")
+            pr_items = raw_items if isinstance(raw_items, list) else []
+            normalized_items = [
+                self._normalize_pull_request_item(item, repo=repo)
+                for item in pr_items
+                if isinstance(item, dict)
+            ]
+            if required_any or required_all:
+                for item in normalized_items:
+                    item.tags = self._list_pr_labels(
+                        client=client,
+                        repo_identifier=repo_identifier,
+                        pr_id=item.pr_id,
+                        project=project_name,
+                    )
 
-        raw_items = payload.get("value")
-        pr_items = raw_items if isinstance(raw_items, list) else []
-        normalized_items: list[PullRequestItem] = []
-        for item in pr_items:
-            if not isinstance(item, dict):
-                continue
-            created_by = item.get("createdBy") if isinstance(item.get("createdBy"), dict) else {}
-            normalized_items.append(
-                PullRequestItem(
-                    provider="azure_devops",
-                    repo=repo,
-                    pr_id=str(item.get("pullRequestId", "")).strip(),
-                    title=(str(item.get("title", "")).strip() or None),
-                    status=(str(item.get("status", "")).strip() or None),
-                    created_at=_parse_dt(item["creationDate"])
-                    if item.get("creationDate")
-                    else None,
-                    updated_at=_parse_dt(item["creationDate"])
-                    if item.get("creationDate")
-                    else None,
-                    created_by=(
-                        str(
-                            created_by.get("displayName") or created_by.get("uniqueName") or ""
-                        ).strip()
-                        or None
-                    ),
-                    url=(
-                        str(item.get("_links", {}).get("web", {}).get("href") or "").strip()
-                        or str(item.get("remoteUrl") or item.get("url") or "").strip()
-                    ),
-                    raw=item,
-                )
-            )
+        filtered_items = [
+            item
+            for item in normalized_items
+            if _pull_request_tags_match(item.tags, tags_any=required_any, tags_all=required_all)
+        ]
+
+        raw_count = payload.get("count")
+        candidate_count = len(normalized_items)
         next_cursor_header = response.headers.get("x-ms-continuationtoken")
         next_cursor_payload = payload.get("continuationToken")
         next_cursor = str(next_cursor_header or next_cursor_payload or "").strip() or None
+        next_skip = None
+        if top is not None and candidate_count >= top:
+            next_skip = (skip or 0) + candidate_count
+        paging = {
+            "cursor": cursor,
+            "next_cursor": next_cursor,
+            "skip": skip,
+            "top": top,
+            "next_skip": next_skip,
+            "candidate_count": candidate_count,
+            "returned_count": len(filtered_items),
+            "server_count": raw_count if isinstance(raw_count, int) else None,
+            "tag_filter_client_side": bool(required_any or required_all),
+            "has_more": bool(next_cursor or next_skip is not None),
+        }
         return ListPullRequestsResponse(
-            pull_requests=normalized_items,
+            provider="azure_devops",
+            repo=repo,
+            project=project_name,
+            pull_requests=filtered_items,
+            count=len(filtered_items),
+            paging=paging,
             next_cursor=next_cursor,
+        )
+
+    def _normalize_pull_request_item(self, item: dict[str, Any], *, repo: str) -> PullRequestItem:
+        created_by = item.get("createdBy") if isinstance(item.get("createdBy"), dict) else {}
+        creation_date = _parse_dt(item["creationDate"]) if item.get("creationDate") else None
+        closed_date = _parse_dt(item["closedDate"]) if item.get("closedDate") else None
+        return PullRequestItem(
+            provider="azure_devops",
+            repo=repo,
+            pr_id=str(item.get("pullRequestId", "")).strip(),
+            title=(str(item.get("title", "")).strip() or None),
+            description=(str(item.get("description", "")).strip() or None),
+            status=(str(item.get("status", "")).strip() or None),
+            source_branch=str(item.get("sourceRefName", "")).strip() or None,
+            target_branch=str(item.get("targetRefName", "")).strip() or None,
+            created_at=creation_date,
+            updated_at=closed_date or creation_date,
+            closed_at=closed_date,
+            created_by=(
+                str(created_by.get("displayName") or created_by.get("uniqueName") or "").strip()
+                or None
+            ),
+            url=_azure_pr_web_url(item),
+            raw=item,
+        )
+
+    def _list_pr_labels(
+        self,
+        *,
+        client: httpx.Client,
+        repo_identifier: str,
+        pr_id: str,
+        project: str | None = None,
+    ) -> list[str]:
+        if not pr_id:
+            return []
+        project_name = _normalize_optional_text(project) or self.project
+        response = client.get(
+            (
+                f"{self.organization_url}/{project_name}/_apis/git/repositories/{repo_identifier}/"
+                f"pullRequests/{pr_id}/labels"
+            ),
+            params={"api-version": "7.1"},
+            auth=("", self.pat),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        raw_items = payload.get("value")
+        label_items = raw_items if isinstance(raw_items, list) else []
+        return [
+            name
+            for name in (
+                str(item.get("name", "")).strip()
+                for item in label_items
+                if isinstance(item, dict)
+            )
+            if name
+        ]
+
+    def _add_pr_label(
+        self,
+        *,
+        client: httpx.Client,
+        repo_identifier: str,
+        pr_id: str,
+        tag: str,
+        project: str | None = None,
+    ) -> None:
+        project_name = _normalize_optional_text(project) or self.project
+        response = client.post(
+            (
+                f"{self.organization_url}/{project_name}/_apis/git/repositories/{repo_identifier}/"
+                f"pullRequests/{pr_id}/labels"
+            ),
+            params={"api-version": "7.1"},
+            auth=("", self.pat),
+            json={"name": tag},
+        )
+        response.raise_for_status()
+
+    def _remove_pr_label(
+        self,
+        *,
+        client: httpx.Client,
+        repo_identifier: str,
+        pr_id: str,
+        tag: str,
+        project: str | None = None,
+    ) -> None:
+        project_name = _normalize_optional_text(project) or self.project
+        response = client.delete(
+            (
+                f"{self.organization_url}/{project_name}/_apis/git/repositories/{repo_identifier}/"
+                f"pullRequests/{pr_id}/labels/{quote(tag, safe='')}"
+            ),
+            params={"api-version": "7.1"},
+            auth=("", self.pat),
+        )
+        response.raise_for_status()
+
+    def update_pull_request(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+        project: str | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        status: str | None = None,
+        add_tags: list[str] | None = None,
+        remove_tags: list[str] | None = None,
+        expected_statuses: list[str] | None = None,
+    ) -> UpdatePullRequestResponse:
+        repo_identifier = _normalize_azure_devops_repo_identifier(repo)
+        project_name = _normalize_optional_text(project) or self.project
+        expected = _normalize_string_list(expected_statuses)
+        tags_to_add = _normalize_string_list(add_tags)
+        tags_to_remove = _normalize_string_list(remove_tags)
+
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            current_response = client.get(
+                (
+                    f"{self.organization_url}/{project_name}/_apis/git/repositories/{repo_identifier}/"
+                    f"pullRequests/{pr_id}"
+                ),
+                params={"api-version": "7.1"},
+                auth=("", self.pat),
+            )
+            current_response.raise_for_status()
+            current_payload = current_response.json()
+            current_status = str(current_payload.get("status", "")).strip() or None
+            current_tags = self._list_pr_labels(
+                client=client,
+                repo_identifier=repo_identifier,
+                pr_id=pr_id,
+                project=project_name,
+            )
+            if expected and (current_status or "").casefold() not in {
+                item.casefold() for item in expected
+            }:
+                return UpdatePullRequestResponse(
+                    success=True,
+                    updated=False,
+                    skipped=True,
+                    skipped_reason="unexpected_status",
+                    provider="azure_devops",
+                    repo=repo,
+                    pr_id=pr_id,
+                    status=current_status,
+                    title=str(current_payload.get("title", "")).strip() or None,
+                    url=_azure_pr_web_url(current_payload),
+                    tags=current_tags,
+                    raw=current_payload,
+                )
+
+            patch_payload: dict[str, Any] = {}
+            if title is not None:
+                patch_payload["title"] = _normalize_optional_text(title) or ""
+            if description is not None:
+                patch_payload["description"] = _normalize_optional_text(description) or ""
+            normalized_status = _normalize_optional_text(status)
+            if normalized_status:
+                patch_payload["status"] = normalized_status.lower()
+
+            latest_payload = current_payload
+            if patch_payload:
+                patch_response = client.patch(
+                    (
+                        f"{self.organization_url}/{project_name}/_apis/git/repositories/{repo_identifier}/"
+                        f"pullrequests/{pr_id}"
+                    ),
+                    params={"api-version": "7.1"},
+                    auth=("", self.pat),
+                    json=patch_payload,
+                )
+                patch_response.raise_for_status()
+                latest_payload = patch_response.json()
+
+            existing_by_key = {tag.casefold(): tag for tag in current_tags}
+            added_tags: list[str] = []
+            for tag in tags_to_add:
+                if tag.casefold() in existing_by_key:
+                    continue
+                self._add_pr_label(
+                    client=client,
+                    repo_identifier=repo_identifier,
+                    pr_id=pr_id,
+                    tag=tag,
+                    project=project_name,
+                )
+                existing_by_key[tag.casefold()] = tag
+                added_tags.append(tag)
+
+            removed_tags: list[str] = []
+            for tag in tags_to_remove:
+                existing_tag = existing_by_key.get(tag.casefold())
+                if not existing_tag:
+                    continue
+                self._remove_pr_label(
+                    client=client,
+                    repo_identifier=repo_identifier,
+                    pr_id=pr_id,
+                    tag=existing_tag,
+                    project=project_name,
+                )
+                existing_by_key.pop(tag.casefold(), None)
+                removed_tags.append(existing_tag)
+
+            latest_tags = (
+                self._list_pr_labels(
+                    client=client,
+                    repo_identifier=repo_identifier,
+                    pr_id=pr_id,
+                    project=project_name,
+                )
+                if added_tags or removed_tags
+                else current_tags
+            )
+
+        return UpdatePullRequestResponse(
+            success=True,
+            updated=bool(patch_payload or added_tags or removed_tags),
+            skipped=False,
+            skipped_reason=None,
+            provider="azure_devops",
+            repo=repo,
+            pr_id=pr_id,
+            status=str(latest_payload.get("status", "")).strip() or current_status,
+            title=str(latest_payload.get("title", "")).strip()
+            or str(current_payload.get("title", "")).strip()
+            or None,
+            url=_azure_pr_web_url(latest_payload) or _azure_pr_web_url(current_payload),
+            tags=latest_tags,
+            added_tags=added_tags,
+            removed_tags=removed_tags,
+            raw=latest_payload if isinstance(latest_payload, dict) else {},
         )
 
     def get_pull_request(
@@ -3304,6 +3595,51 @@ def _normalize_azure_devops_repo_identifier(repo: str) -> str:
     return normalized
 
 
+def _normalize_optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _normalize_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    raw_items = [value] if isinstance(value, str) else value
+    if not isinstance(raw_items, (list, tuple, set)):
+        raise ValueError("pull request tag/status filters must be a string or list of strings")
+    return [str(item).strip() for item in raw_items if str(item).strip()]
+
+
+def _pull_request_tags_match(
+    tags: list[str],
+    *,
+    tags_any: list[str],
+    tags_all: list[str],
+) -> bool:
+    present = {tag.casefold() for tag in tags}
+    if tags_any and not any(tag.casefold() in present for tag in tags_any):
+        return False
+    if tags_all and not all(tag.casefold() in present for tag in tags_all):
+        return False
+    return True
+
+
+def _azure_pr_web_url(payload: dict[str, Any]) -> str | None:
+    return (
+        str(payload.get("_links", {}).get("web", {}).get("href") or "").strip()
+        or str(payload.get("remoteUrl") or payload.get("url") or "").strip()
+        or None
+    )
+
+
+def normalize_pr_automation_provider(provider: str) -> str:
+    normalized = provider.strip()
+    if normalized in {"ado", "azure_devops", "azure-devops"}:
+        return "azure_devops"
+    return normalized
+
+
 def normalize_pr_feedback_provider(provider: str) -> str:
     normalized = provider.strip()
     if normalized in {"azure_devops", "azure-devops"}:
@@ -3320,24 +3656,84 @@ class PrQueryService:
         *,
         provider: str,
         repo: str,
+        project: str | None = None,
         status: str | None = None,
         creator_id: str | None = None,
         reviewer_id: str | None = None,
+        source_ref_name: str | None = None,
+        target_ref_name: str | None = None,
+        source_repository_id: str | None = None,
+        repository_id: str | None = None,
+        min_time: str | None = None,
+        max_time: str | None = None,
+        query_time_range_type: str | None = None,
+        include_links: bool | None = None,
+        max_comment_length: int | None = None,
+        tags_any: list[str] | None = None,
+        tags_all: list[str] | None = None,
         top: int | None = None,
+        skip: int | None = None,
         cursor: str | None = None,
     ) -> ListPullRequestsResponse:
-        provider_name = normalize_pr_feedback_provider(provider)
+        provider_name = normalize_pr_automation_provider(provider)
         if provider_name not in self.providers:
             raise ValueError(
                 f"PR query provider {provider_name!r} is not configured for this gateway instance"
             )
         return self.providers[provider_name].list_pull_requests(
             repo=repo,
+            project=project,
             status=status,
             creator_id=creator_id,
             reviewer_id=reviewer_id,
+            source_ref_name=source_ref_name,
+            target_ref_name=target_ref_name,
+            source_repository_id=source_repository_id,
+            repository_id=repository_id,
+            min_time=min_time,
+            max_time=max_time,
+            query_time_range_type=query_time_range_type,
+            include_links=include_links,
+            max_comment_length=max_comment_length,
+            tags_any=tags_any,
+            tags_all=tags_all,
             top=top,
+            skip=skip,
             cursor=cursor,
+        )
+
+    def update_pull_request(
+        self,
+        *,
+        provider: str,
+        repo: str,
+        pr_id: str,
+        project: str | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        status: str | None = None,
+        add_tags: list[str] | None = None,
+        remove_tags: list[str] | None = None,
+        expected_statuses: list[str] | None = None,
+    ) -> UpdatePullRequestResponse:
+        provider_name = normalize_pr_automation_provider(provider)
+        if provider_name not in self.providers:
+            raise ValueError(
+                f"PR query provider {provider_name!r} is not configured for this gateway instance"
+            )
+        update_pull_request = getattr(self.providers[provider_name], "update_pull_request", None)
+        if not callable(update_pull_request):
+            raise ValueError(f"PR update provider {provider_name!r} does not support updates")
+        return update_pull_request(
+            repo=repo,
+            pr_id=pr_id,
+            project=project,
+            title=title,
+            description=description,
+            status=status,
+            add_tags=add_tags,
+            remove_tags=remove_tags,
+            expected_statuses=expected_statuses,
         )
 
     def get_pull_request(
@@ -3349,7 +3745,7 @@ class PrQueryService:
         include_reviewers: bool | None = None,
         include_commits: bool | None = None,
     ) -> GetPullRequestResponse:
-        provider_name = normalize_pr_feedback_provider(provider)
+        provider_name = normalize_pr_automation_provider(provider)
         if provider_name not in self.providers:
             raise ValueError(
                 f"PR query provider {provider_name!r} is not configured for this gateway instance"

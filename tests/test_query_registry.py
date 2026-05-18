@@ -11,10 +11,11 @@ from agent_sandbox.events.provider_models import (
     AgentArtifactTextQueryDefinition,
     GitPrNoteQueryDefinition,
     IssueGetQueryDefinition,
+    PullRequestListQueryDefinition,
     SessionContextQueryDefinition,
     VmRunStateQueryDefinition,
 )
-from agent_sandbox.models import VmSummary
+from agent_sandbox.models import ListPullRequestsResponse, PullRequestItem, VmSummary
 from agent_sandbox.queries.providers.base import QueryProviderBase
 from agent_sandbox.queries.registry import (
     DEFAULT_QUERY_PROVIDER_REGISTRY,
@@ -76,6 +77,7 @@ def test_default_registry_includes_known_query_types() -> None:
         "query:agent:artifact-text",
         "query:issue:get",
         "query:ado:work-items",
+        "query:pull-request:list",
         "query:semantic:store-status",
         "query:semantic:search",
         "query:semantic:get",
@@ -393,3 +395,90 @@ def test_ado_work_items_query_provider_can_query_current_iteration(
         "skip": 0,
     }
     assert output["iteration_path"] == "Project\\Sprint 12"
+
+
+def test_pull_request_list_query_provider_resolves_ado_config_and_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    query = PullRequestListQueryDefinition(
+        id="query-prs",
+        display_name="PR list",
+        type="query:pull-request:list",
+        provider="ado",
+        repo="repo-1",
+        directory_path="root/team-a",
+        status="active",
+        source_ref_name="refs/heads/feature",
+        target_ref_name="refs/heads/main",
+        include_links="true",
+        tags_any="needs-review",
+        tags_all=["agent"],
+        top="25",
+        skip="5",
+    )
+    assert query.provider == "azure_devops"
+    captured: dict[str, object] = {}
+
+    class StubPrProvider:
+        def __init__(self, **kwargs: object) -> None:
+            captured["init"] = kwargs
+
+        def list_pull_requests(self, **kwargs: object) -> ListPullRequestsResponse:
+            captured["request"] = kwargs
+            return ListPullRequestsResponse(
+                provider="azure_devops",
+                repo="repo-1",
+                project="default",
+                pull_requests=[
+                    PullRequestItem(
+                        provider="azure_devops",
+                        repo="repo-1",
+                        pr_id="17",
+                        title="Fix race",
+                        status="active",
+                        tags=["needs-review", "agent"],
+                    )
+                ],
+                count=1,
+                paging={"returned_count": 1},
+            )
+
+    monkeypatch.setattr(
+        "agent_sandbox.pull_request_automation.AzureDevOpsPrQueryProvider", StubPrProvider
+    )
+    factory = QueryProviderFactory(
+        provider_config_resolver=_ResolverStub(),
+        admin_service=_AdminServiceStub(vms=[]),
+        env={"AZURE_DEVOPS_PR_PAT": "secret"},
+    )
+    provider = factory.build(query)
+    output = provider.execute(resolved_config={"cursor": "cursor-1"})
+
+    assert captured["init"] == {
+        "organization_url": "https://dev.azure.com",
+        "project": "default",
+        "pat": "secret",
+        "timeout_seconds": 30.0,
+    }
+    assert captured["request"] == {
+        "repo": "repo-1",
+        "project": "default",
+        "status": "active",
+        "creator_id": None,
+        "reviewer_id": None,
+        "source_ref_name": "refs/heads/feature",
+        "target_ref_name": "refs/heads/main",
+        "source_repository_id": None,
+        "repository_id": None,
+        "min_time": None,
+        "max_time": None,
+        "query_time_range_type": None,
+        "include_links": True,
+        "max_comment_length": None,
+        "tags_any": ["needs-review"],
+        "tags_all": ["agent"],
+        "top": 25,
+        "skip": 5,
+        "cursor": "cursor-1",
+    }
+    assert output["pull_requests"][0]["tags"] == ["needs-review", "agent"]

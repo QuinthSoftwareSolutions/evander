@@ -23,6 +23,7 @@ test("groups effect node types by related functionality", () => {
     catalogNode("effect", "effect:vm:start", "VM start"),
     catalogNode("effect", "effect:agent:exec", "Agent exec"),
     catalogNode("effect", "effect:pr:create", "PR create"),
+    catalogNode("effect", "effect:pull-request:update", "Pull request update"),
     catalogNode("effect", "effect:issue:update-metadata", "Issue update metadata"),
     catalogNode("effect", "effect:ado:update-work-item", "ADO update work item"),
     catalogNode("effect", "effect:bash:script", "Bash script"),
@@ -58,7 +59,7 @@ test("groups effect node types by related functionality", () => {
       },
       {
         label: "Git & PRs",
-        types: ["effect:pr:create"],
+        types: ["effect:pr:create", "effect:pull-request:update"],
       },
       {
         label: "Communications",
@@ -88,6 +89,31 @@ test("groups trigger node types into domain families", () => {
     "Communications",
     "Git",
   ]);
+});
+
+test("groups pull request query nodes with git metadata", () => {
+  const groups = groupWorkflowNodeCatalogEntries([
+    catalogNode("query", "query:pull-request:list", "Pull request list"),
+    catalogNode("query", "query:git:pr-note", "Git PR note"),
+    catalogNode("query", "query:issue:get", "Issue get"),
+  ], "query");
+
+  assert.deepEqual(
+    groups.map((group) => ({
+      label: group.label,
+      types: group.entries.map((entry) => entry.type),
+    })),
+    [
+      {
+        label: "Work tracking",
+        types: ["query:issue:get"],
+      },
+      {
+        label: "Git & PRs",
+        types: ["query:git:pr-note", "query:pull-request:list"],
+      },
+    ],
+  );
 });
 
 test("falls back to namespace groups for unknown node types", () => {

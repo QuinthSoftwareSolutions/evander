@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 
 from agent_sandbox.events.models import ConfigValue, QueryDefinition
 
@@ -62,6 +62,48 @@ class AdoWorkItemsQueryDefinition(QueryDefinition):
     text_search: ConfigValue | None = None
     top: ConfigValue | None = None
     skip: ConfigValue | None = None
+
+
+class PullRequestListQueryDefinition(QueryDefinition):
+    type: Literal["query:pull-request:list"]
+    provider: ConfigValue
+    repo: ConfigValue
+    directory_path: ConfigValue | None = None
+    organization_url: ConfigValue | None = None
+    project: ConfigValue | None = None
+    status: ConfigValue | None = None
+    creator_id: ConfigValue | None = None
+    reviewer_id: ConfigValue | None = None
+    source_ref_name: ConfigValue | None = None
+    target_ref_name: ConfigValue | None = None
+    source_repository_id: ConfigValue | None = None
+    repository_id: ConfigValue | None = None
+    min_time: ConfigValue | None = None
+    max_time: ConfigValue | None = None
+    query_time_range_type: ConfigValue | None = None
+    include_links: ConfigValue | None = None
+    max_comment_length: ConfigValue | None = None
+    tags_any: ConfigValue | None = None
+    tags_all: ConfigValue | None = None
+    top: ConfigValue | None = None
+    skip: ConfigValue | None = None
+    cursor: ConfigValue | None = None
+
+    @field_validator("provider")
+    @classmethod
+    def normalize_static_provider(cls, value: ConfigValue) -> ConfigValue:
+        if isinstance(value, str) and "${{" not in value:
+            normalized = value.strip()
+            if normalized in {"ado", "azure-devops", "azure_devops"}:
+                return "azure_devops"
+        return value
+
+    @field_validator("tags_any", "tags_all")
+    @classmethod
+    def validate_tag_filters(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (str, list)):
+            return value
+        raise ValueError("query:pull-request:list tag filters must be a string or list")
 
 
 class SemanticStoreStatusQueryDefinition(QueryDefinition):
