@@ -158,6 +158,9 @@ and surfaces:
 - local issue creation plus issue-VM startup
 - persistent selected-directory context with `root` fallback
 - direct-owned VM/session/issue listings for the selected directory
+- a Tool Calls tab for read-only inspection of the configured `audit_log_path`
+  (`runtime/audit.jsonl` by default), with filtering by session, tool, status,
+  directory/scope, and time range
 - an Approvals tab for reviewing queued approval requests with redacted context and
   selected-directory filtering
 - a configuration tab that inspects inherited per-domain directory config
@@ -998,7 +1001,8 @@ Outbound sends must use staged artifact IDs. Do not send arbitrary guest paths.
 
 ### 5. Review audit logs
 
-Use the audit log as the source of truth for file-transfer activity:
+Use Admin Web -> Tool Calls for operator review, or read the audit log directly when scripting
+against raw JSONL:
 
 ```bash
 tail -n 100 runtime/audit.jsonl | jq 'select(.tool_name | test("communication_|discord_post_file|teams_post_file|email_.*attachments"))'
@@ -1139,7 +1143,7 @@ without exposing provider credentials in the VM.
 ### Audit and log file locations
 
 - Host feedback state: `runtime/pr-feedback-store.json` (ingested comments + cursors), `runtime/pr-reply-idempotency.json` (reply dedupe keys/results), `runtime/host-agent-control-state.json` (durable enabled/disabled state by VM).
-- Host audit trail: `runtime/audit.jsonl` (tool calls and denials/errors).
+- Host audit trail: `runtime/audit.jsonl` (backing store for Admin Web Tool Calls, plus denials/errors).
 
 ### Security boundary reminder
 
@@ -1825,7 +1829,9 @@ decision-complete runbook covering:
 - Rotate Discord and email credentials independently from VM lifecycle.
 - Keep Discord bot tokens only in host environment files or shell context; do not write them into
   guest images, cloud-init, or session manifests.
-- Review `runtime/audit.jsonl` as the source of truth for privileged activity.
+- Review Admin Web -> Tool Calls for privileged activity; it reads the configured
+  `audit_log_path` (`runtime/audit.jsonl` by default) and shows redacted payloads
+  plus related session, approval, and workflow links when present.
 - Keep VM disks and seed ISOs out of home directories when using `qemu:///system`; the default scripts now place them under `/var/lib/libvirt/images/agent-sandbox`.
 
 
@@ -1849,7 +1855,10 @@ The gateway and effect providers emit structured log markers for agent orchestra
 ### Recovery steps
 
 1. **Chat stuck on first message**
-   - Check for `metric_chat_session_mapping_created` followed by subsequent `..._reused` entries.
+   - Opening the Admin Web assistant should create or reuse the assistant
+     session mapping before the first message is sent. Check for
+     `metric_chat_session_mapping_created` followed by subsequent `..._reused`
+     entries.
    - If missing, verify runtime write permissions to `runtime/chat-assistant-session-mappings.json`.
 2. **Unexpected backend path**
    - Filter logs for `metric_agent_create_backend_path` by `session_id`/`vm_name`.

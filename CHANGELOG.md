@@ -5,6 +5,18 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-17 - Admin Chat Assistant Session Prewarm
+
+Touched areas: Admin Web chat routes, assistant workflow tests, docs.
+
+- Prewarmed durable assistant session resolution when users open or reset the
+  Admin Web assistant chat, so first-time users get the same backend-aware
+  assistant target setup that existing users already reuse before their first
+  message is posted.
+- Added regressions for read-only/full-access capability handling, hidden chat
+  workflow publication, resume-thread propagation, and chat-thread metadata
+  updates.
+
 ## 2026-05-15 - Workflow Editor Alignment Snapping
 
 Touched areas: `frontend/workflow-editor/`.
