@@ -343,6 +343,29 @@ def test_create_server_injects_approval_request_id_and_strips_before_dispatch(
     assert "approval_request_id" not in tool_events[0]["args"]
 
 
+def test_create_server_injects_approval_request_id_into_public_tool_schemas(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(
+        tmp_path,
+        allowed_tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+    )
+    server = create_server(context)
+    tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
+
+    for tool_name, tool in tools.items():
+        properties = tool.parameters.get("properties", {})
+        if tool_name in {"approval_submit", "approval_check"}:
+            assert "approval_request_id" not in properties
+            continue
+        assert "approval_request_id" in properties, tool_name
+        assert properties["approval_request_id"]["anyOf"] == [
+            {"type": "string"},
+            {"type": "null"},
+        ]
+        assert properties["approval_request_id"]["default"] is None
+
+
 def test_get_workflow_snapshot_returns_current_config_and_optional_runs(tmp_path: Path) -> None:
     context = _build_runtime_with_workflow_config(
         tmp_path,
