@@ -210,4 +210,7 @@ def test_admin_web_tool_calls_route_returns_empty_payload_when_audit_log_is_miss
     assert payload["limit"] == 100
     assert payload["has_more"] is False
     assert invalid_status_response.status_code == 400
-    assert invalid_status_response.json()["error"] == "status must be one of: success, denied, or error"
+    assert (
+        invalid_status_response.json()["error"]
+        == "status must be one of: success, pending_approval, denied, or error"
+    )

@@ -106,7 +106,10 @@ def collect_domain_validation_diagnostics(
             continue
         diagnostics.extend(
             provider.validate_graph_node(
-                node=gate, nodes_by_id=nodes_by_id, inbound_edges=inbound_edges
+                node=gate,
+                nodes_by_id=nodes_by_id,
+                inbound_edges=inbound_edges,
+                edges=worker_config.edges,
             )
         )
     for effect in worker_config.effects:
@@ -115,7 +118,10 @@ def collect_domain_validation_diagnostics(
             continue
         diagnostics.extend(
             provider.validate_graph_node(
-                node=effect, nodes_by_id=nodes_by_id, inbound_edges=inbound_edges
+                node=effect,
+                nodes_by_id=nodes_by_id,
+                inbound_edges=inbound_edges,
+                edges=worker_config.edges,
             )
         )
     for query in worker_config.queries:
@@ -124,7 +130,10 @@ def collect_domain_validation_diagnostics(
             continue
         diagnostics.extend(
             provider.validate_graph_node(
-                node=query, nodes_by_id=nodes_by_id, inbound_edges=inbound_edges
+                node=query,
+                nodes_by_id=nodes_by_id,
+                inbound_edges=inbound_edges,
+                edges=worker_config.edges,
             )
         )
     return diagnostics

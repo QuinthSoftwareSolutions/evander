@@ -1404,6 +1404,73 @@ def test_admin_web_validate_reports_missing_binding_output(tmp_path: Path) -> No
     } in response.json()["validation_diagnostics"]
 
 
+def test_admin_web_validate_preserves_domain_diagnostics_for_for_gate(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = {
+        "config": {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "trigger-cron-1",
+                    "display_name": "Cron",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "queries": [
+                {
+                    "id": "query-pull-request-list-1",
+                    "display_name": "Pull request list",
+                    "type": "query:pull-request:list",
+                    "provider": "azure_devops",
+                    "repo": "repo-name",
+                    "status": "active",
+                    "top": 50,
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-for-1",
+                    "display_name": "For each item",
+                    "type": "gate:for",
+                    "items": "${{query-pull-request-list-1.pull_requests}}",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-invalid-1",
+                    "display_name": "Invalid edge target",
+                    "type": "effect:event:emit",
+                    "event_type": "for_gate_invalid_edge",
+                    "payload": {},
+                }
+            ],
+            "edges": [
+                {"source_id": "trigger-cron-1", "target_id": "query-pull-request-list-1"},
+                {"source_id": "query-pull-request-list-1", "target_id": "gate-for-1"},
+                {
+                    "source_id": "gate-for-1",
+                    "source_port": "other",
+                    "target_id": "effect-invalid-1",
+                },
+            ],
+        },
+        "layout": {"nodes": {}},
+        "graphs": [],
+    }
+
+    response = client.post("/api/workflow-editor/validate", json=payload)
+
+    assert response.status_code == 200
+    diagnostics = response.json()["validation_diagnostics"]
+    assert {
+        "code": "node_capability",
+        "message": "gate:for gate-for-1 uses invalid source_port value(s): other",
+    } in diagnostics
+
+
 def test_admin_web_validate_exposes_backend_output_schemas_for_agent_effects(
     tmp_path: Path,
 ) -> None:

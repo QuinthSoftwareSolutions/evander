@@ -13,7 +13,7 @@ from agent_sandbox.workflow.binding import (
     binding_trace_to_payload,
     resolve_workflow_bindings,
 )
-from agent_sandbox.workflow.validation import NodeCapability
+from agent_sandbox.workflow.validation import NodeCapability, WorkflowValidationDiagnostic
 
 
 class ForGateStateRecord(BaseModel):
@@ -45,7 +45,6 @@ class ForGateProvider(GateProviderBase):
         min_inbound=1,
         non_cyclic_inbound_exact=1,
         allowed_source_ports=frozenset({"body", "done"}),
-        required_source_ports=frozenset({"body", "done"}),
         completion_semantics="loop",
     )
 
@@ -76,6 +75,40 @@ class ForGateProvider(GateProviderBase):
     def cleanup(self, **kwargs: Any) -> None:
         del kwargs
         self._adapter = None
+
+    @classmethod
+    def validate_graph_node(
+        cls,
+        *,
+        node: Any,
+        edges: list[Any] | None = None,
+        **_: Any,
+    ) -> list[WorkflowValidationDiagnostic]:
+        gate_id = _node_id(node)
+        if not gate_id or not edges:
+            return []
+        body_targets = [
+            target_id
+            for edge in edges
+            if _edge_source_id(edge) == gate_id and _edge_source_port(edge) == "body"
+            for target_id in (_edge_target_id(edge),)
+            if target_id
+        ]
+        if not body_targets or _has_reachable_loopback(
+            edges=edges, gate_id=gate_id, start_node_ids=body_targets
+        ):
+            return []
+        return [
+            WorkflowValidationDiagnostic(
+                code="node_capability",
+                message=(
+                    f"gate:for {gate_id} body branch must have an allow_cycle path back "
+                    f"to {gate_id}"
+                ),
+                node_id=gate_id,
+                node_type="gate:for",
+            )
+        ]
 
     def execute(self, **kwargs: Any) -> bool:
         worker = kwargs["worker"]
@@ -108,6 +141,9 @@ class ForGateProvider(GateProviderBase):
         if not isinstance(items, list):
             raise GateRuntimeError("gate:for items must resolve to an array")
 
+        outbound_ports = _for_gate_outbound_ports(graph=graph, gate_id=gate.id)
+        has_body_edge = "body" in outbound_ports
+        has_done_edge = "done" in outbound_ports
         for_execution_id = _resolve_for_gate_execution_id(
             queue_record=queue_record, gate=gate, graph=graph
         )
@@ -115,6 +151,28 @@ class ForGateProvider(GateProviderBase):
             gate_id=gate.id, trace_id=queue_record.trace_id, for_execution_id=for_execution_id
         )
         adapter = self.load_state()
+
+        if not has_body_edge:
+            outputs = _terminal_outputs(item_count=len(items))
+            adapter.delete(state_key)
+            worker._write_gate_record(
+                queue_record=queue_record,
+                gate=gate,
+                status="succeeded",
+                started_at=started_at,
+                resolved_config={"items": items, "for_execution_id": for_execution_id},
+                outputs=outputs,
+                inputs_by_source=inputs_by_source,
+                input_event_ids_by_source=input_event_ids_by_source,
+                input_occurred_at_by_source=input_occurred_at_by_source,
+                config_revision=config_revision,
+                binding_trace=binding_trace_to_payload(resolved.trace),
+                publish_completion_event=has_done_edge,
+                branch_port="done" if has_done_edge else None,
+                for_execution_ids={gate.id: for_execution_id},
+            )
+            return True
+
         state = adapter.get(state_key)
         if state is None:
             state = ForGateStateRecord(
@@ -130,12 +188,7 @@ class ForGateProvider(GateProviderBase):
         is_done = state.next_index >= state.item_count
         branch_port = "done" if is_done else "body"
         if is_done:
-            outputs = {
-                "current_index": state.item_count,
-                "current_element": None,
-                "item_count": state.item_count,
-                "is_done": True,
-            }
+            outputs = _terminal_outputs(item_count=state.item_count)
             adapter.delete(state_key)
         else:
             current_index = state.next_index
@@ -161,11 +214,105 @@ class ForGateProvider(GateProviderBase):
             input_occurred_at_by_source=input_occurred_at_by_source,
             config_revision=config_revision,
             binding_trace=binding_trace_to_payload(resolved.trace),
-            publish_completion_event=True,
-            branch_port=branch_port,
+            publish_completion_event=not is_done or has_done_edge,
+            branch_port=branch_port if not is_done or has_done_edge else None,
             for_execution_ids={gate.id: for_execution_id},
         )
         return True
+
+
+def _terminal_outputs(*, item_count: int) -> dict[str, Any]:
+    return {
+        "current_index": item_count,
+        "current_element": None,
+        "item_count": item_count,
+        "is_done": True,
+    }
+
+
+def _for_gate_outbound_ports(*, graph: Any, gate_id: str) -> set[str]:
+    outbound_index = getattr(graph, "outbound_index", {})
+    if not isinstance(outbound_index, dict):
+        return set()
+    ports: set[str] = set()
+    for edge in outbound_index.get(gate_id, ()):
+        port = _edge_source_port(edge)
+        if port in {"body", "done"}:
+            ports.add(port)
+    return ports
+
+
+def _node_id(node: Any) -> str:
+    if isinstance(node, dict):
+        value = node.get("id")
+    else:
+        value = getattr(node, "id", None)
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _edge_source_id(edge: Any) -> str:
+    if isinstance(edge, dict):
+        value = edge.get("source_id")
+    else:
+        value = getattr(edge, "source_id", None)
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _edge_target_id(edge: Any) -> str:
+    if isinstance(edge, dict):
+        value = edge.get("target_id")
+    else:
+        value = getattr(edge, "target_id", None)
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _edge_allows_cycle(edge: Any) -> bool:
+    if isinstance(edge, dict):
+        return bool(edge.get("allow_cycle", False))
+    return bool(getattr(edge, "allow_cycle", False))
+
+
+def _edge_source_port(edge: Any) -> str | None:
+    if isinstance(edge, dict):
+        value = edge.get("source_port")
+    else:
+        value = getattr(edge, "source_port", None)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _has_reachable_loopback(
+    *, edges: list[Any], gate_id: str, start_node_ids: list[str]
+) -> bool:
+    outbound_edges_by_source: dict[str, list[Any]] = {}
+    for edge in edges:
+        source_id = _edge_source_id(edge)
+        target_id = _edge_target_id(edge)
+        if source_id and target_id:
+            outbound_edges_by_source.setdefault(source_id, []).append(edge)
+
+    queue = list(start_node_ids)
+    visited: set[str] = set()
+    while queue:
+        current = queue.pop(0)
+        if current in visited:
+            continue
+        visited.add(current)
+        for edge in outbound_edges_by_source.get(current, ()):
+            target_id = _edge_target_id(edge)
+            if target_id == gate_id and _edge_allows_cycle(edge):
+                return True
+            if target_id and target_id != gate_id and target_id not in visited:
+                queue.append(target_id)
+    return False
 
 
 def _resolve_for_gate_execution_id(*, queue_record: Any, gate: Any, graph: Any) -> str:

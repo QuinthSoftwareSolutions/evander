@@ -242,7 +242,51 @@ def test_compile_trigger_orchestrator_config_with_diagnostics_reports_await_agen
     assert collect_domain_validation_diagnostics(worker_config)
 
 
-def test_collect_domain_validation_diagnostics_reports_capability_errors(tmp_path: Path) -> None:
+def test_collect_domain_validation_diagnostics_reports_invalid_for_gate_port(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {"id": "for-1", "display_name": "Iterate", "type": "gate:for", "items": ["a", "b"]}
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Exec",
+                    "type": "effect:vm:exec",
+                    "target": "vm-1",
+                    "command": "echo hi",
+                }
+            ],
+            "edges": [
+                {"source_id": "cron-1", "target_id": "for-1"},
+                {"source_id": "for-1", "source_port": "other", "target_id": "effect-1"},
+            ],
+        }
+    )
+
+    diagnostics = collect_domain_validation_diagnostics(worker_config)
+
+    assert any(item.code == "node_capability" for item in diagnostics)
+    assert any(
+        "uses invalid source_port value(s): other" in item.message for item in diagnostics
+    )
+
+
+def test_collect_domain_validation_diagnostics_reports_body_for_gate_without_loopback(
+    tmp_path: Path,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
         {
@@ -276,7 +320,49 @@ def test_collect_domain_validation_diagnostics_reports_capability_errors(tmp_pat
 
     diagnostics = collect_domain_validation_diagnostics(worker_config)
 
-    assert any(item.code == "node_capability" for item in diagnostics)
     assert any(
-        "must have an outbound edge with source_port=done" in item.message for item in diagnostics
+        item.code == "node_capability"
+        and item.node_id == "for-1"
+        and "body branch must have an allow_cycle path back to for-1" in item.message
+        for item in diagnostics
     )
+
+
+def test_collect_domain_validation_diagnostics_allows_body_for_gate_with_loopback(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {"id": "for-1", "display_name": "Iterate", "type": "gate:for", "items": ["a", "b"]}
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Exec",
+                    "type": "effect:vm:exec",
+                    "target": "vm-1",
+                    "command": "echo hi",
+                }
+            ],
+            "edges": [
+                {"source_id": "cron-1", "target_id": "for-1"},
+                {"source_id": "for-1", "source_port": "body", "target_id": "effect-1"},
+                {"source_id": "effect-1", "target_id": "for-1", "allow_cycle": True},
+            ],
+        }
+    )
+
+    diagnostics = collect_domain_validation_diagnostics(worker_config)
+
+    assert not any(item.code == "node_capability" for item in diagnostics)

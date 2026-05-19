@@ -9234,10 +9234,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             graphs=normalized_graphs,
             output_schemas=output_schemas,
             validation_diagnostics=[
-                {
-                    **diagnostic.model_dump(mode="json", exclude_none=True),
-                    "code": "domain_validation",
-                }
+                diagnostic.model_dump(mode="json", exclude_none=True)
                 for diagnostic in diagnostics
             ]
             + [
