@@ -19,6 +19,7 @@ from agent_sandbox.workflow.compiler import (
 )
 from agent_sandbox.workflow.migrations import migrate_agent_prompt_lifecycle_ports
 from agent_sandbox.workflow.transforms import resolve_workflow_transforms
+from agent_sandbox.workflow.validation import WorkflowValidationDiagnostic
 from agent_sandbox.workflow.packs import (
     BUILTIN_HIDDEN_WORKFLOW_PACKS,
     _pack_path,
@@ -188,12 +189,12 @@ def _compile_worker_global_config(
 
 def compile_worker_global_config_with_diagnostics(
     worker_config: TriggerOrchestratorWorkerGlobalConfig,
-) -> tuple[TriggerOrchestratorWorkerGlobalConfig, list[str]]:
+) -> tuple[TriggerOrchestratorWorkerGlobalConfig, list[WorkflowValidationDiagnostic]]:
     transforms = resolve_workflow_transforms(worker_config.workflow_transforms)
     compiled, diagnostics = compile_trigger_orchestrator_config_with_diagnostics(
         worker_config, transforms=transforms
     )
-    return compiled, [item.message for item in diagnostics]
+    return compiled, diagnostics
 
 
 def _compose_configured_workflow_ir(

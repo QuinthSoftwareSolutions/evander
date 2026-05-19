@@ -989,6 +989,232 @@ def test_for_gate_iterates_body_then_routes_to_done(tmp_path: Path) -> None:
     assert sum(1 for item in for_records if item["outputs"].get("is_done") is True) == 1
 
 
+def test_for_gate_without_body_edge_routes_immediately_to_done(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"steps": {"type": "array"}},
+                }
+            ],
+            "gates": [
+                {
+                    "id": "for-1",
+                    "display_name": "Iterate steps",
+                    "type": "gate:for",
+                    "items": "${{trigger-1.steps}}",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-done",
+                    "display_name": "Done",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "done ${{for-1.item_count}}",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "for-1"),
+                {"source_id": "for-1", "source_port": "done", "target_id": "effect-done"},
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory({"effect-done": {"success": True, "message": "done"}})
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-for-done-only-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"steps": ["alpha", "beta", "gamma"]},
+            trace_id="trace-for-done-only-1",
+        )
+    )
+
+    for _ in range(8):
+        worker.run_once()
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    done_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-done"]
+    assert len(done_records) == 1
+    assert done_records[0]["resolved_config"]["command"] == "done 3"
+
+    gate_payload = json.loads(
+        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    for_records = [item for item in gate_payload.values() if item["gate_id"] == "for-1"]
+    assert len(for_records) == 1
+    assert for_records[0]["outputs"] == {
+        "current_index": 3,
+        "current_element": None,
+        "item_count": 3,
+        "is_done": True,
+    }
+
+
+def test_for_gate_without_done_edge_terminates_after_body_iterations(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"steps": {"type": "array"}},
+                }
+            ],
+            "gates": [
+                {
+                    "id": "for-1",
+                    "display_name": "Iterate steps",
+                    "type": "gate:for",
+                    "items": "${{trigger-1.steps}}",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-body",
+                    "display_name": "Body",
+                    "type": "effect:vm:exec",
+                    "target": "session-1",
+                    "command": "work ${{for-1.current_index}}:${{for-1.current_element}}",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "for-1"),
+                {"source_id": "for-1", "source_port": "body", "target_id": "effect-body"},
+                {"source_id": "effect-body", "target_id": "for-1", "allow_cycle": True},
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory({"effect-body": {"success": True, "message": "body"}})
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-for-body-only-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"steps": ["alpha", "beta"]},
+            trace_id="trace-for-body-only-1",
+        )
+    )
+
+    for _ in range(12):
+        worker.run_once()
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    body_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-body"]
+    assert len(body_records) == 2
+    assert sorted(item["resolved_config"]["command"] for item in body_records) == [
+        "work 0:alpha",
+        "work 1:beta",
+    ]
+
+    gate_payload = json.loads(
+        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    for_records = [item for item in gate_payload.values() if item["gate_id"] == "for-1"]
+    assert len(for_records) == 3
+    assert sum(1 for item in for_records if item["outputs"].get("is_done") is False) == 2
+    assert sum(1 for item in for_records if item["outputs"].get("is_done") is True) == 1
+    assert not any(
+        item.get("published_event_id")
+        for item in for_records
+        if item["outputs"].get("is_done") is True
+    )
+
+
+def test_for_gate_without_outgoing_edges_terminates_immediately(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"steps": {"type": "array"}},
+                }
+            ],
+            "gates": [
+                {
+                    "id": "for-1",
+                    "display_name": "Iterate steps",
+                    "type": "gate:for",
+                    "items": "${{trigger-1.steps}}",
+                }
+            ],
+            "edges": [_edge("trigger-1", "for-1")],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory({})
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-for-no-outgoing-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"steps": ["alpha", "beta"]},
+            trace_id="trace-for-no-outgoing-1",
+        )
+    )
+
+    for _ in range(5):
+        worker.run_once()
+
+    effect_path = runtime_dir / "effect-orchestrator-executions.json"
+    effect_payload = (
+        json.loads(effect_path.read_text(encoding="utf-8")) if effect_path.exists() else {}
+    )
+    assert effect_payload == {}
+
+    gate_payload = json.loads(
+        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    for_records = [item for item in gate_payload.values() if item["gate_id"] == "for-1"]
+    assert len(for_records) == 1
+    assert for_records[0]["outputs"] == {
+        "current_index": 2,
+        "current_element": None,
+        "item_count": 2,
+        "is_done": True,
+    }
+    assert for_records[0].get("published_event_id") is None
+
+
 def test_for_gate_restarts_iteration_for_each_fresh_invocation_in_same_trace(
     tmp_path: Path,
 ) -> None:
