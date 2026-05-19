@@ -338,6 +338,10 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
                 "starts_with": "agents/",
             },
             {
+                "left": '${{trigger-git-push-1.ref_name ?? ""}}',
+                "starts_with": "refs/heads/agents/",
+            },
+            {
                 "is_not_null": True,
                 "left": "${{trigger-git-push-1.session_id ?? null}}",
             },
