@@ -165,6 +165,43 @@ export type WorkflowRunSnapshot = {
   node_activity: Record<string, WorkflowNodeActivityCounts>;
 };
 
+export type WorkflowRunSearchFilter = {
+  node_id?: string | null;
+  graph_id?: string | null;
+  graph_name?: string | null;
+  without_session: boolean;
+  include_completed: boolean;
+};
+
+export type WorkflowRunSearchItem = {
+  event_id: string;
+  trace_id?: string | null;
+  run_state: string;
+  source_node_id?: string | null;
+  source_trigger_type?: string | null;
+  delivery_state?: string | null;
+  occurred_at?: string | null;
+  latest_activity_at?: string | null;
+  node_ids: string[];
+  matched_node_ids: string[];
+  session_ids: string[];
+  has_agent_session: boolean;
+  status_counts: Record<string, number>;
+  nodes: WorkflowRunNodeActivity[];
+  error?: string | null;
+};
+
+export type WorkflowRunSearch = {
+  worker_id: string;
+  generated_at: string;
+  filters: WorkflowRunSearchFilter;
+  runs: WorkflowRunSearchItem[];
+  matched: number;
+  returned: number;
+  limit: number;
+  has_more: boolean;
+};
+
 export type WorkflowRunDataAvailability = {
   graph_snapshot: string;
   binding_trace: string;

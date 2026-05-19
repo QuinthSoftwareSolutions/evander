@@ -31,6 +31,29 @@ def expected_revision_from_payload(payload: dict[str, Any]) -> str:
     return expected_revision.strip()
 
 
+def optional_bool_from_query(value: str | None, *, default: bool) -> bool:
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError("Boolean query parameters must be true or false.")
+
+
+def optional_limit_from_query(value: str | None, *, default: int = 25) -> int:
+    if value is None or not value.strip():
+        return default
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError("limit must be an integer.") from exc
+    if parsed < 1 or parsed > 100:
+        raise ValueError("limit must be between 1 and 100.")
+    return parsed
+
+
 async def workflow_run_events(service: AdminService, request: Request) -> AsyncIterator[str]:
     last_state_key: str | None = None
     journal = service.workflow_event_journal()
@@ -102,6 +125,27 @@ def workflow_routes(service: AdminService) -> list[Route]:
         except ValueError as exc:
             return json_error(str(exc))
         return JSONResponse(snapshot.model_dump(mode="json"))
+
+    async def get_run_search(request: Request) -> JSONResponse:
+        query = request.query_params
+        try:
+            payload = service.read_workflow_run_search(
+                node_id=query.get("node_id"),
+                graph_id=query.get("graph_id"),
+                without_session=optional_bool_from_query(
+                    query.get("without_session"),
+                    default=False,
+                ),
+                include_completed=optional_bool_from_query(
+                    query.get("include_completed"),
+                    default=True,
+                ),
+                limit=optional_limit_from_query(query.get("limit")),
+            )
+        except ValueError as exc:
+            status_code = 404 if "not found" in str(exc) else 400
+            return json_error(str(exc), status_code=status_code)
+        return JSONResponse(payload.model_dump(mode="json"))
 
     async def get_run_detail(request: Request) -> JSONResponse:
         query = request.query_params
@@ -178,6 +222,7 @@ def workflow_routes(service: AdminService) -> list[Route]:
         Route("/api/workflow-editor/document", get_document, methods=["GET"]),
         Route("/api/workflow-editor/catalog", get_catalog, methods=["GET"]),
         Route("/api/workflow-editor/runs", get_runs, methods=["GET"]),
+        Route("/api/workflow-editor/run-search", get_run_search, methods=["GET"]),
         Route("/api/workflow-editor/run-detail", get_run_detail, methods=["GET"]),
         Route("/api/workflow-editor/runs/{event_id:path}", clear_run, methods=["DELETE"]),
         Route("/api/workflow-editor/runs/{event_id:path}/resume", resume_run, methods=["POST"]),

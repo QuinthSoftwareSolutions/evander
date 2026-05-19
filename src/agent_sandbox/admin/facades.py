@@ -17,6 +17,7 @@ from agent_sandbox.admin.service import (
     WorkflowEditorSavePayload,
     WorkflowEditorValidationPayload,
     WorkflowRunDetailPayload,
+    WorkflowRunSearchPayload,
     WorkflowRunSnapshotPayload,
     WorkerActionResult,
     WorkerSummary,
@@ -75,6 +76,7 @@ class WorkerAdminDependencies:
     upsert_effect_config: Any
     delete_effect_config: Any
     read_workflow_run_detail: Any | None = None
+    read_workflow_run_search: Any | None = None
     clear_workflow_run: Any | None = None
     resume_workflow_run: Any | None = None
 
@@ -976,6 +978,27 @@ class WorkerAdminFacade:
             trace_id=trace_id,
             session_id=session_id,
             artifact_id=artifact_id,
+        )
+
+    def read_workflow_run_search(
+        self,
+        *,
+        node_id: str | None = None,
+        graph_id: str | None = None,
+        without_session: bool = False,
+        include_completed: bool = True,
+        limit: int | None = None,
+    ) -> WorkflowRunSearchPayload:
+        if self._deps.read_workflow_run_search is None:
+            raise NotImplementedError(
+                "read_workflow_run_search is not configured for this worker admin facade."
+            )
+        return self._deps.read_workflow_run_search(
+            node_id=node_id,
+            graph_id=graph_id,
+            without_session=without_session,
+            include_completed=include_completed,
+            limit=limit,
         )
 
     def clear_workflow_run(self, event_id: str):
