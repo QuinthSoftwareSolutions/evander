@@ -8,6 +8,7 @@ import {
   type FormEvent as ReactFormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
+  type TouchEvent as ReactTouchEvent,
 } from "react";
 import {
   applyEdgeChanges,
@@ -343,6 +344,11 @@ function maxWorkflowSidebarWidth(containerWidth: number): number {
 function clampWorkflowSidebarWidth(width: number, containerWidth: number): number {
   const maxWidth = maxWorkflowSidebarWidth(containerWidth);
   return Math.min(Math.max(width, WORKFLOW_SIDEBAR_MIN_WIDTH), maxWidth);
+}
+
+function isCompactCanvasTouchViewport(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.innerWidth <= WORKFLOW_COMPACT_BREAKPOINT;
 }
 
 function WorkflowNodeCard({ data, selected }: NodeProps) {
@@ -2253,6 +2259,7 @@ export default function App() {
   const canvasShellRef = useRef<HTMLElement | null>(null);
   const hasAutoFitRef = useRef(false);
   const initialGraphDirectoryPathRef = useRef(selectedDirectoryPath);
+  const compactCanvasTouchSequenceHasMultiTouchRef = useRef(false);
   const copiedSelectionRef = useRef<CopiedWorkflowSelection | null>(null);
   const sidebarResizeRef = useRef<SidebarResizeState | null>(null);
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
@@ -2269,6 +2276,7 @@ export default function App() {
   const [runSearchResult, setRunSearchResult] = useState<WorkflowRunSearch | null>(null);
   const [runSearchLoading, setRunSearchLoading] = useState(false);
   const [runSearchError, setRunSearchError] = useState<string | null>(null);
+  const [isCompactCanvasTouchMode, setIsCompactCanvasTouchMode] = useState(isCompactCanvasTouchViewport);
   const [validationDiagnostics, setValidationDiagnostics] = useState<WorkflowValidationDiagnostic[]>([]);
   const [flowNodes, setFlowNodes] = useState<Node<GraphNodeData>[]>([]);
   const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
@@ -2477,6 +2485,7 @@ export default function App() {
     if (typeof window === "undefined") return;
 
     const handleResize = () => {
+      setIsCompactCanvasTouchMode(isCompactCanvasTouchViewport());
       if (window.innerWidth <= WORKFLOW_COMPACT_BREAKPOINT) return;
       const containerWidth = appShellRef.current?.getBoundingClientRect().width ?? window.innerWidth;
       setSidebarWidth((current) => clampWorkflowSidebarWidth(current, containerWidth));
@@ -2486,6 +2495,11 @@ export default function App() {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
+
+  useEffect(() => {
+    if (isCompactCanvasTouchMode) return;
+    compactCanvasTouchSequenceHasMultiTouchRef.current = false;
+  }, [isCompactCanvasTouchMode]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -3215,6 +3229,56 @@ export default function App() {
   function handleCanvasPointerMove(event: ReactPointerEvent<HTMLElement>) {
     if (!pendingConnection) return;
     updatePendingConnectionCursor(event.clientX, event.clientY);
+  }
+
+  function handleCanvasTouchStartCapture(event: ReactTouchEvent<HTMLElement>) {
+    if (!isCompactCanvasTouchMode) return;
+    if (event.touches.length >= 2) {
+      compactCanvasTouchSequenceHasMultiTouchRef.current = true;
+      return;
+    }
+    if (!compactCanvasTouchSequenceHasMultiTouchRef.current) {
+      event.stopPropagation();
+    }
+  }
+
+  function handleCanvasTouchMoveCapture(event: ReactTouchEvent<HTMLElement>) {
+    if (!isCompactCanvasTouchMode) return;
+    if (event.touches.length >= 2) {
+      compactCanvasTouchSequenceHasMultiTouchRef.current = true;
+      return;
+    }
+    if (!compactCanvasTouchSequenceHasMultiTouchRef.current) {
+      event.stopPropagation();
+    }
+  }
+
+  function handleCanvasTouchEndCapture(event: ReactTouchEvent<HTMLElement>) {
+    if (!isCompactCanvasTouchMode) return;
+    if (compactCanvasTouchSequenceHasMultiTouchRef.current) {
+      if (event.touches.length === 0) {
+        compactCanvasTouchSequenceHasMultiTouchRef.current = false;
+      }
+      return;
+    }
+    if (event.touches.length === 0) {
+      compactCanvasTouchSequenceHasMultiTouchRef.current = false;
+    }
+    event.stopPropagation();
+  }
+
+  function handleCanvasTouchCancelCapture(event: ReactTouchEvent<HTMLElement>) {
+    if (!isCompactCanvasTouchMode) return;
+    if (compactCanvasTouchSequenceHasMultiTouchRef.current) {
+      if (event.touches.length === 0) {
+        compactCanvasTouchSequenceHasMultiTouchRef.current = false;
+      }
+      return;
+    }
+    if (event.touches.length === 0) {
+      compactCanvasTouchSequenceHasMultiTouchRef.current = false;
+    }
+    event.stopPropagation();
   }
 
   function handlePaneClick() {
@@ -5158,11 +5222,18 @@ export default function App() {
             onDragOver={handleNodeTypeDragOver}
             onDrop={handleNodeTypeDrop}
             onPointerMove={handleCanvasPointerMove}
+            onTouchStartCapture={handleCanvasTouchStartCapture}
+            onTouchMoveCapture={handleCanvasTouchMoveCapture}
+            onTouchEndCapture={handleCanvasTouchEndCapture}
+            onTouchCancelCapture={handleCanvasTouchCancelCapture}
           >
             <ReactFlow
               nodes={displayedFlowNodes}
               edges={displayedFlowEdges}
               nodeTypes={nodeTypes}
+              preventScrolling={!isCompactCanvasTouchMode}
+              panOnDrag
+              zoomOnPinch
               onInit={handleFlowInit}
               onMove={(_, viewport) => setCanvasViewport(viewport)}
               onNodesChange={(changes) => {
