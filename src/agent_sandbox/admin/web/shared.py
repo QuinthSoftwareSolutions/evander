@@ -16,6 +16,7 @@ import jwt
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from agent_sandbox.events.internal import EXTERNAL_WORKFLOW_EVENT_PREFIX
 from agent_sandbox.admin.web.user_store import (
     AdminWebUserRecord,
     AdminWebUserStore,
@@ -28,6 +29,9 @@ AZURE_SSO_START_PATH = "/api/auth/azure-sso/start"
 AZURE_SSO_CALLBACK_PATH = "/api/auth/azure-sso/callback"
 AZURE_SSO_COOKIE_NAME = "agent_sandbox_admin_oidc"
 AZURE_SSO_SCOPES = ("openid", "profile", "email")
+WORKFLOW_EVENT_API_TOKEN_KIND = "workflow_event_api"
+WORKFLOW_EVENT_API_ALLOWED_PREFIX = EXTERNAL_WORKFLOW_EVENT_PREFIX
+WORKFLOW_EVENT_API_TOKEN_TTL_SECONDS = 3600
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -234,6 +238,45 @@ class AdminWebAuth:
                 "unlocked": bool(session_id and session_id == self._privileged_session_id),
             },
         }
+
+    def issue_workflow_event_api_token(
+        self,
+        request: Request,
+        *,
+        ttl_seconds: int = WORKFLOW_EVENT_API_TOKEN_TTL_SECONDS,
+    ) -> dict[str, Any]:
+        session = self.require(request)
+        issued_at = int(time.time())
+        normalized_ttl = max(1, int(ttl_seconds))
+        expires_at = issued_at + normalized_ttl
+        payload = {
+            "kind": WORKFLOW_EVENT_API_TOKEN_KIND,
+            "sub": str(session.get("sub") or ""),
+            "login": str(session.get("login") or ""),
+            "name": str(session.get("name") or ""),
+            "sid": str(session.get("sid") or ""),
+            "role": str(session.get("role") or ""),
+            "allowed_event_prefix": WORKFLOW_EVENT_API_ALLOWED_PREFIX,
+            "iat": issued_at,
+            "exp": expires_at,
+        }
+        return {
+            "access_token": self._encode_signed_payload(payload),
+            "token_type": "Bearer",
+            "expires_in_seconds": normalized_ttl,
+            "expires_at_epoch": expires_at,
+            "allowed_event_prefix": WORKFLOW_EVENT_API_ALLOWED_PREFIX,
+        }
+
+    def verify_workflow_event_api_token(self, token: str) -> dict[str, Any] | None:
+        payload = self._decode_signed_payload(str(token or "").strip())
+        if payload is None:
+            return None
+        if payload.get("kind") != WORKFLOW_EVENT_API_TOKEN_KIND:
+            return None
+        if payload.get("allowed_event_prefix") != WORKFLOW_EVENT_API_ALLOWED_PREFIX:
+            return None
+        return payload
 
     def login(self, username: str, password: str) -> str:
         if self.config.auth_mode == "none":

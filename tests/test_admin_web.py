@@ -15,6 +15,8 @@ from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.app import _workflow_run_events, create_app
 from agent_sandbox.admin.web.shared import AdminWebConfig
 from agent_sandbox.admin.web.user_store import AdminWebUserStore
+from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from agent_sandbox.daemons.trigger_orchestrator import TriggerOrchestratorWorker
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
 from agent_sandbox.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
@@ -40,6 +42,7 @@ from agent_sandbox.models import (
     VmActionResult,
     VmSummary,
 )
+from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
 from agent_sandbox.worker.models import WorkerSessionRecord
 
 
@@ -2576,6 +2579,174 @@ def test_admin_web_requires_login_when_password_configured(tmp_path: Path, monke
     assert login.json()["role"] == "admin"
     assert login.json()["can_manage_users"] is True
     assert authorized.status_code == 200
+
+
+def test_workflow_event_api_mints_token_and_publishes_external_event(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "operator")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    service = AdminService(write_config(tmp_path))
+    client = TestClient(create_app(service))
+
+    unauthorized_mint = client.post("/api/workflow-events/token")
+    login = client.post("/api/auth/login", json={"username": "operator", "password": "swordfish"})
+    minted = client.post("/api/workflow-events/token")
+    token = minted.json()["access_token"]
+    published = client.post(
+        "/api/workflow-events",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "event_type": "deploy_requested",
+            "payload": {"target": "demo"},
+            "correlation_key": "deploy:demo",
+            "idempotency_key": "request-1",
+        },
+    )
+    repeated = client.post(
+        "/api/workflow-events",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "event_type": "deploy_requested",
+            "payload": {"target": "demo"},
+            "correlation_key": "deploy:demo",
+            "idempotency_key": "request-1",
+        },
+    )
+
+    assert unauthorized_mint.status_code == 401
+    assert login.status_code == 200
+    assert minted.status_code == 200
+    assert minted.json()["token_type"] == "Bearer"
+    assert minted.json()["expires_in_seconds"] == 3600
+    assert minted.json()["allowed_event_prefix"] == "external."
+    assert published.status_code == 202
+    assert repeated.status_code == 202
+    assert published.json()["event_id"] == repeated.json()["event_id"]
+    assert published.json()["event_type"] == "external.deploy_requested"
+    assert published.json()["payload"] == {"target": "demo"}
+    assert published.json()["correlation_key"] == "deploy:demo"
+    assert published.json()["source"]["source_type"] == "workflow_event_api"
+    assert published.json()["source"]["user_login"] == "operator"
+
+
+def test_workflow_event_api_rejects_invalid_bearer_payload_and_event_type(
+    tmp_path: Path,
+) -> None:
+    app = create_app(AdminService(write_config(tmp_path)))
+    client = TestClient(app)
+    minted = client.post("/api/workflow-events/token")
+    token = minted.json()["access_token"]
+    expired_token = app.state.auth._encode_signed_payload(
+        {
+            "kind": "workflow_event_api",
+            "allowed_event_prefix": "external.",
+            "iat": 1,
+            "exp": 1,
+        }
+    )
+
+    missing_token = client.post(
+        "/api/workflow-events",
+        json={"event_type": "deploy_requested", "payload": {}},
+    )
+    expired = client.post(
+        "/api/workflow-events",
+        headers={"Authorization": f"Bearer {expired_token}"},
+        json={"event_type": "deploy_requested", "payload": {}},
+    )
+    scalar_payload = client.post(
+        "/api/workflow-events",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"event_type": "deploy_requested", "payload": "not-an-object"},
+    )
+    reserved_event = client.post(
+        "/api/workflow-events",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"event_type": "external.deploy_requested", "payload": {}},
+    )
+
+    assert missing_token.status_code == 401
+    assert expired.status_code == 401
+    assert scalar_payload.status_code == 400
+    assert scalar_payload.json()["error"] == "payload must be a JSON object"
+    assert reserved_event.status_code == 400
+    assert reserved_event.json()["error"] == (
+        "event_type must not include the reserved 'external.' prefix"
+    )
+
+
+def test_workflow_event_api_token_from_azure_session_publishes_user_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _set_azure_sso_env(monkeypatch)
+    app = create_app(AdminService(write_config(tmp_path)))
+    client = TestClient(app)
+
+    callback = _complete_azure_login(app, client)
+    minted = client.post("/api/workflow-events/token")
+    token = minted.json()["access_token"]
+    published = client.post(
+        "/api/workflow-events",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"event_type": "question_answered", "payload": {"answer": "yes"}},
+    )
+
+    assert callback.status_code == 303
+    assert minted.status_code == 200
+    assert published.status_code == 202
+    assert published.json()["event_type"] == "external.question_answered"
+    assert published.json()["source"]["user_id"] == "subject-1"
+    assert published.json()["source"]["user_login"] == "operator@example.com"
+
+
+def test_workflow_event_api_published_event_is_consumed_by_event_trigger(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    service = AdminService(write_config(tmp_path))
+    client = TestClient(create_app(service))
+    token = client.post("/api/workflow-events/token").json()["access_token"]
+    publish_response = client.post(
+        "/api/workflow-events",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"event_type": "deploy_requested", "payload": {"target": "demo"}},
+    )
+
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "orchestration_store_backend": "sqlite",
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "external-deploy",
+                    "display_name": "External deploy",
+                    "type": "trigger:event",
+                    "event_type": "external.deploy_requested",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(
+        config=GatewayConfig(runtime_dir=runtime_dir),
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+    result = worker.run_once()
+    pending = SqliteTriggerEventQueue(runtime_dir / "orchestration.db").list_pending(
+        trigger_id="external-deploy"
+    )
+
+    assert publish_response.status_code == 202
+    assert result.events_published == 1
+    assert len(pending) == 1
+    assert pending[0].trigger_type == "trigger:event"
+    assert pending[0].payload["event_id"] == publish_response.json()["event_id"]
+    assert pending[0].payload["event_type"] == "external.deploy_requested"
+    assert pending[0].payload["payload"] == {"target": "demo"}
 
 
 def test_admin_web_config_defaults_to_none_without_password(monkeypatch) -> None:

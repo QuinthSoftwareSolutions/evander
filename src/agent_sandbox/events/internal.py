@@ -15,6 +15,7 @@ from agent_sandbox.storage import JsonStore
 from agent_sandbox.workflow.events import WorkflowEventJournal, workflow_event_journal_path
 
 _EVENT_TYPE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
+EXTERNAL_WORKFLOW_EVENT_PREFIX = "external."
 
 
 class InternalEventValidationError(ValueError):
@@ -22,6 +23,9 @@ class InternalEventValidationError(ValueError):
 
 
 class InternalEventSource(BaseModel):
+    source_type: str | None = None
+    user_id: str | None = None
+    user_login: str | None = None
     workflow_run_id: str | None = None
     workflow_event_id: str | None = None
     workflow_trace_id: str | None = None
