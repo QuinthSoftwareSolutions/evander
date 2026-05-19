@@ -28,6 +28,7 @@ from agent_sandbox.execution.container_worker_repository import (
 )
 from agent_sandbox.execution.container_worker_client import ContainerWorkerClient
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
+from agent_sandbox.events.internal import InternalEventBus
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.models import (
     ApprovalNotificationDeliveryRecord,
@@ -2420,6 +2421,54 @@ def test_admin_service_chat_post_does_not_mutate_existing_trigger_config(
     )
 
     assert json.loads(config_path.read_text(encoding="utf-8")) == original_config
+
+
+def test_admin_service_publish_external_workflow_event_preserves_payload_and_idempotency(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
+
+    first = service.publish_external_workflow_event(
+        event_type="deploy_requested",
+        payload={"target": "demo", "options": {"dry_run": True}},
+        correlation_key="deploy:demo",
+        idempotency_key="request-1",
+        source={
+            "source_type": "workflow_event_api",
+            "user_id": "subject-1",
+            "user_login": "operator@example.com",
+        },
+    )
+    second = service.publish_external_workflow_event(
+        event_type="deploy_requested",
+        payload={"target": "demo", "options": {"dry_run": True}},
+        correlation_key="deploy:demo",
+        idempotency_key="request-1",
+    )
+
+    events = InternalEventBus(tmp_path / "runtime" / "internal-events.json").list_events()
+    assert first["event_id"] == second["event_id"]
+    assert [event.event_id for event in events] == [first["event_id"]]
+    assert events[0].event_type == "external.deploy_requested"
+    assert events[0].payload == {"target": "demo", "options": {"dry_run": True}}
+    assert events[0].correlation_key == "deploy:demo"
+    assert events[0].source is not None
+    assert events[0].source.source_type == "workflow_event_api"
+    assert events[0].source.user_login == "operator@example.com"
+    assert not config_path.exists()
+
+
+def test_admin_service_publish_external_workflow_event_rejects_reserved_prefix(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    with pytest.raises(ValueError, match="reserved 'external\\.' prefix"):
+        service.publish_external_workflow_event(
+            event_type="external.deploy_requested",
+            payload={},
+        )
 
 
 def test_workflow_editor_hides_and_does_not_save_system_managed_workflow_nodes(

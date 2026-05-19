@@ -404,6 +404,33 @@ agent-sandbox-cli directories list --parent root
 agent-sandbox-cli directories show root
 ```
 
+### Workflow event ingress
+
+Admin Web exposes a machine-oriented ingress for workflows that start from
+`trigger:event`. A signed-in Admin Web user first mints a short-lived bearer token, then posts an
+event envelope. The submitted event type is always namespaced with `external.` before it is
+stored, so a request for `deploy_requested` is consumed by a trigger configured for
+`external.deploy_requested`.
+
+```bash
+TOKEN="$(curl -s -X POST -b cookies.txt http://127.0.0.1:8100/api/workflow-events/token \
+  | jq -r .access_token)"
+
+curl -X POST http://127.0.0.1:8100/api/workflow-events \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_type": "deploy_requested",
+    "payload": {"target": "demo"},
+    "correlation_key": "deploy:demo",
+    "idempotency_key": "request-1"
+  }'
+```
+
+Workflow-specific payloads are intentionally not schema-validated by the HTTP API beyond
+requiring a JSON object. Downstream nodes read custom fields from the trigger output payload, for
+example `${{trigger-external-deploy.payload.target}}`.
+
 ## Local Git Remotes
 
 Issue VM creation is now separate from repo setup. Create the VM first:

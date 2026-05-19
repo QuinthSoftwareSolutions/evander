@@ -130,6 +130,12 @@ from agent_sandbox.messaging.teams_auth import (
     TeamsAuthCredentials,
     TeamsDeviceCodeTokenProvider,
 )
+from agent_sandbox.events.internal import (
+    EXTERNAL_WORKFLOW_EVENT_PREFIX,
+    InternalEventBus,
+    InternalEventSource,
+    validate_internal_event_type,
+)
 from agent_sandbox.events.models import (
     EdgeDefinition,
     EffectDefinitionDiscriminated,
@@ -8400,6 +8406,43 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
         record = queue.publish(event, idempotency_key=event_id)
         return record.model_dump(mode="json")
+
+    def publish_external_workflow_event(
+        self,
+        *,
+        event_type: object,
+        payload: dict[str, Any],
+        correlation_key: object | None = None,
+        idempotency_key: str | None = None,
+        source: InternalEventSource | dict[str, Any] | None = None,
+    ) -> dict[str, object]:
+        event_name = str(event_type or "").strip()
+        if not event_name:
+            raise ValueError("event_type is required")
+        if event_name.startswith(EXTERNAL_WORKFLOW_EVENT_PREFIX):
+            raise ValueError(
+                f"event_type must not include the reserved {EXTERNAL_WORKFLOW_EVENT_PREFIX!r} prefix"
+            )
+        validate_internal_event_type(event_name)
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be a JSON object")
+
+        worker_config_payload = self._read_worker_global_config("trigger-orchestrator")
+        worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            worker_config_payload.config
+        )
+        bus = InternalEventBus(
+            worker_config.internal_event_store_path,
+            journal_path=worker_config.workflow_event_journal_path,
+        )
+        event = bus.publish(
+            event_type=f"{EXTERNAL_WORKFLOW_EVENT_PREFIX}{event_name}",
+            payload=payload,
+            correlation_key=correlation_key,
+            source=source,
+            idempotency_key=idempotency_key,
+        )
+        return event.model_dump(mode="json")
 
     def _workflow_editor_default_layout_path(self) -> Path:
         return self.project_dir / "config" / "trigger-orchestrator" / "layout.json"

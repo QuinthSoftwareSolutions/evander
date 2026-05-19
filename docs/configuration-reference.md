@@ -146,6 +146,7 @@ Type-specific keys:
 
 | `type` | Required keys | Optional keys |
 |---|---|---|
+| `trigger:event` | `event_type` | `correlation_key` |
 | `trigger:cron` | `expression` | — |
 | `trigger:ticket:created` | `directories` | — |
 | `trigger:ticket:changed` | `directories` | — |
@@ -169,6 +170,12 @@ trigger to a higher frequency still does not replay historical runs.
 normalized `pr` object when the tracked PR reaches a terminal state such as merged, completed,
 closed, or abandoned. Wire `session_id` into `effect:agent:destroy.session_id` when a workflow
 should delete the agent after the tracked PR is terminal.
+
+`trigger:event` consumes durable internal workflow events. The Admin Web HTTP ingress publishes
+caller-supplied event names under the reserved `external.` prefix, so a POST with
+`event_type=deploy_requested` should be matched with `event_type=external.deploy_requested`.
+The HTTP ingress requires a bearer token minted by a signed-in Admin Web user and accepts
+arbitrary JSON-object payloads for workflow-specific data.
 
 The current trigger set also includes `trigger:teams:new-message`, `trigger:review:new-request`,
 and `trigger:script-run-request`. Teams is fed by a host-side ingest worker that reads the same

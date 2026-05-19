@@ -30,6 +30,7 @@ from agent_sandbox.admin.web.user_store import AdminWebUserStore
 from agent_sandbox.admin.web.users import admin_user_routes
 from agent_sandbox.admin.web.vms_issues import vm_issue_routes
 from agent_sandbox.admin.web.workflow import workflow_routes, workflow_run_events
+from agent_sandbox.admin.web.workflow_events import workflow_event_routes
 from agent_sandbox.admin.web.workers_config import worker_config_routes
 
 
@@ -91,6 +92,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             path == "/healthz"
             or path == "/api/admin/deployment-status"
             or path.startswith("/api/auth/")
+            or (path == "/api/workflow-events" and request.method == "POST")
         ):
             return await call_next(request)
         if path.startswith("/api/"):
@@ -312,6 +314,7 @@ def create_app(service: AdminService) -> Starlette:
     routes.extend(report_routes(service))
     routes.extend(teams_auth_routes(service, auth))
     routes.extend(chat_routes(service, auth))
+    routes.extend(workflow_event_routes(service, auth))
     if dist_dir.exists():
         routes.append(Mount("/", app=StaticFiles(directory=dist_dir, html=True)))
     else:
