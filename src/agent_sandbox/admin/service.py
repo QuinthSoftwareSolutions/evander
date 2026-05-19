@@ -4105,6 +4105,7 @@ def _build_issue_session_manifest(
         vm_id=vm_id,
         directory_path=directory_path,
         allowed_tools=list(dict.fromkeys(resolved_allowed_tools)),
+        approval_required_tools=list(policy.approval_required_tools),
         allowed_script_names=_normalize_allowed_script_names(allowed_script_names or []),
         discord_channel_allowlist=discord_channels,
         teams_channel_allowlist=_normalize_teams_channel_allowlist(
@@ -4299,6 +4300,7 @@ def _session_policy_update_from_payload(
     session: SessionManifest, payload: Mapping[str, Any]
 ) -> dict[str, Any]:
     allowed_fields = {
+        "approval_required_tools",
         "allowed_script_names",
         "discord_channel_allowlist",
         "discord_channels",
@@ -4318,6 +4320,13 @@ def _session_policy_update_from_payload(
         update["allowed_script_names"] = _normalize_allowed_script_names(
             _normalize_plain_string_list(
                 payload.get("allowed_script_names"), field_name="allowed_script_names"
+            )
+        )
+    if "approval_required_tools" in payload:
+        update["approval_required_tools"] = _normalize_allowed_tools(
+            _normalize_plain_string_list(
+                payload.get("approval_required_tools"),
+                field_name="approval_required_tools",
             )
         )
 
@@ -5750,6 +5759,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 tool.value if isinstance(tool, ToolName) else str(tool)
                 for tool in session.allowed_tools
             ],
+            "approval_required_tools": [
+                tool.value if isinstance(tool, ToolName) else str(tool)
+                for tool in session.approval_required_tools
+            ],
             "allowed_script_names": list(session.allowed_script_names),
             "discord_channels": list(session.discord_channel_allowlist),
             "discord_channel_allowlist": list(session.discord_channel_allowlist),
@@ -6661,6 +6674,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "model",
             "ttl_hours",
             "allowed_tools",
+            "approval_required_tools",
             "allowed_script_names",
             "discord_channels",
             "discord_channel_allowlist",
@@ -6701,6 +6715,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         session_policy_fields = {
             key: body[key]
             for key in (
+                "approval_required_tools",
                 "allowed_script_names",
                 "discord_channels",
                 "discord_channel_allowlist",
@@ -7906,14 +7921,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 payload = json.loads(raw_line)
             except json.JSONDecodeError:
                 continue
-            args_payload = payload.get("args") if isinstance(payload.get("args"), dict) else {}
-            result_payload = (
-                payload.get("result") if isinstance(payload.get("result"), dict) else {}
-            )
-            if (
-                payload.get("session_id") == request.session_id
-                or args_payload.get("request_id") == request.request_id
-                or result_payload.get("request_id") == request.request_id
+            if isinstance(payload, dict) and _approval_audit_payload_matches_request(
+                payload, request
             ):
                 matches.append(payload)
             if len(matches) >= limit:
@@ -12375,23 +12384,29 @@ def _tool_call_normalize_status(status: Any) -> str | None:
         return None
     if normalized in {"allowed", "approved", "success", "ok"}:
         return "success"
+    if normalized in {"pending_approval"}:
+        return "pending_approval"
     if normalized in {"denied", "blocked", "rejected"}:
         return "denied"
     if normalized in {"error", "failed", "failure"}:
         return "error"
-    raise ValueError("status must be one of: success, denied, or error")
+    raise ValueError("status must be one of: success, pending_approval, denied, or error")
 
 
 def _tool_call_failure_status(event: dict[str, Any]) -> str:
     decision = str(event.get("decision") or event.get("status") or "").strip().casefold()
     result = event.get("result") if isinstance(event.get("result"), dict) else {}
     result_status = str(result.get("status") or "").strip().casefold()
+    if decision == "pending_approval":
+        return "pending_approval"
     if decision in {"denied", "blocked", "rejected"}:
         return "denied"
     if decision in {"error", "failed", "failure"}:
         return "error"
     if decision in {"allowed", "approved", "success", "ok"}:
         return "success"
+    if result_status == "pending_approval":
+        return "pending_approval"
     if result_status in {"denied", "blocked", "rejected"}:
         return "denied"
     if result_status in {"error", "failed", "failure"}:
@@ -12403,6 +12418,31 @@ def _tool_call_failure_status(event: dict[str, Any]) -> str:
     ):
         return "error"
     return "success"
+
+
+def _approval_audit_payload_matches_request(
+    payload: dict[str, Any], request: ApprovalRequest
+) -> bool:
+    args_payload = payload.get("args") if isinstance(payload.get("args"), dict) else {}
+    result_payload = (
+        payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    )
+    for candidate in (
+        payload.get("approval_request_id"),
+        args_payload.get("approval_request_id"),
+        result_payload.get("approval_request_id"),
+        args_payload.get("request_id"),
+        result_payload.get("request_id"),
+        payload.get("payload_digest"),
+        args_payload.get("payload_digest"),
+        result_payload.get("payload_digest"),
+    ):
+        text = str(candidate or "").strip()
+        if not text:
+            continue
+        if text == request.request_id or text == request.payload_digest:
+            return True
+    return payload.get("session_id") == request.session_id
 
 
 def _tool_call_error_summary(entry: dict[str, Any], status: str, result: dict[str, Any]) -> str | None:
@@ -12420,6 +12460,8 @@ def _tool_call_error_summary(entry: dict[str, Any], status: str, result: dict[st
         return "Denied"
     if status == "error":
         return "Tool call failed."
+    if status == "pending_approval":
+        return "Approval required."
     return None
 
 

@@ -811,6 +811,18 @@ Approval notification policy:
   permission. The host sends notifications for newly created approval records, and operators still
   decide through Admin Web, the admin service, or `agent-sandbox-cli approve`.
 
+Approval-required tool policy:
+
+- `approval_required_tools` is a list of MCP tool names that require approval before execution.
+  Values can come from inherited directory `policy.json` overlays or from the session manifest.
+- This list does not grant access. A tool must also be present in `allowed_tools`, and normal policy
+  checks run before approval gating.
+- The gateway creates `mcp_tool_invocation` approval requests for gated calls made without
+  `approval_request_id`; approved retries must use the exact same payload and the generated request
+  id.
+- `approval_submit` and `approval_check` are excluded from generic invocation gating so agents can
+  request and inspect approvals.
+
 Teams delegated auth follows the same host-side model. The preferred operator flow is to sign in on
 the host with device code flow and keep the credential host-only. Directory-scoped `providers.json`
 overlays can bind a subtree to that host-managed Teams identity, while the legacy static env-token

@@ -904,14 +904,8 @@ class IssueGitAdminService:
                 payload = json.loads(raw_line)
             except json.JSONDecodeError:
                 continue
-            args_payload = payload.get("args") if isinstance(payload.get("args"), dict) else {}
-            result_payload = (
-                payload.get("result") if isinstance(payload.get("result"), dict) else {}
-            )
-            if (
-                payload.get("session_id") == request.session_id
-                or args_payload.get("request_id") == request.request_id
-                or result_payload.get("request_id") == request.request_id
+            if isinstance(payload, dict) and _admin_service._approval_audit_payload_matches_request(
+                payload, request
             ):
                 matches.append(payload)
             if len(matches) >= limit:
@@ -970,6 +964,7 @@ class IssueGitAdminService:
             event_type="approval_decision",
             session_id=request.session_id,
             vm_id=request.vm_id,
+            approval_request_id=request.request_id,
             decision=request.status.value,
             reason=normalized_reason,
             args={
@@ -978,7 +973,12 @@ class IssueGitAdminService:
                 "approver": normalized_approver,
                 "payload_digest": request.payload_digest,
             },
-            result={"status": request.status.value},
+            result={
+                "status": request.status.value,
+                "tool_name": request.tool_name or request.action_type,
+                "payload_digest": request.payload_digest,
+                "request_id": request.request_id,
+            },
         )
         return request
 

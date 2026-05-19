@@ -80,8 +80,8 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
       {
         tool_name: "make_phone_call",
         created_at: "2026-05-18T10:01:00Z",
-        status: "error",
-        decision: "error",
+        status: "pending_approval",
+        decision: "pending_approval",
         session_id: "session-2",
         directory_path: "root/team/sub",
         duration_ms: 1050,
@@ -93,14 +93,14 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
         trace_id: "trace-2",
         agent_id: "agent-2",
         vm_id: "vm-2",
-        error_summary: "blocked by policy",
+        error_summary: "Approval required",
         redacted_args: {
           session_id: "session-2",
           secret: "<redacted>",
         },
         redacted_result: {
-          status: "error",
-          error: "blocked by policy",
+          status: "pending_approval",
+          message: "Approval required",
         },
         metadata: {
           correlation_id: "correlation-2",
@@ -116,8 +116,9 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
       skipped_non_tool_call: 0,
       status_counts: {
         success: 1,
+        pending_approval: 1,
         denied: 0,
-        error: 1,
+        error: 0,
       },
     },
     limit: 100,
@@ -266,8 +267,8 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Audit entries" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => rows.nth(0).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => rows.nth(1).waitFor({ state: "visible" }));
-  assert.match(await rows.nth(0).innerText(), /SUCCESS/);
-  assert.match(await rows.nth(1).innerText(), /ERROR/);
+  assert.match(await rows.nth(0).innerText(), /Success/i);
+  assert.match(await rows.nth(1).innerText(), /Pending approval/i);
 
   await rows.nth(1).click();
   await assert.doesNotReject(() => page.getByRole("heading", { name: "make_phone_call" }).waitFor({ state: "visible" }));
@@ -276,6 +277,9 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
   await assert.doesNotReject(() => page.getByRole("button", { name: "Workflow run: run-2" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("button", { name: "Agent: agent-2" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("button", { name: "VM: vm-2" }).waitFor({ state: "visible" }));
+  const detailStatus = page.locator(".tool-call-detail-panel .status-pill");
+  await assert.doesNotReject(() => detailStatus.waitFor({ state: "visible" }));
+  assert.match(await detailStatus.innerText(), /pending approval/i);
 
   const argumentsValue = await page.getByLabel("Arguments").inputValue();
   const resultValue = await page.getByLabel("Result").inputValue();
@@ -289,8 +293,9 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
     requestedEndpoints.some((endpoint) => endpoint.startsWith("/api/admin/tool-calls?")),
     "expected tool calls index request",
   );
+  assert.ok(await page.getByRole("button", { name: "Approval: approval-2" }).isVisible());
   assert.match(argumentsValue, /<redacted>/);
-  assert.match(resultValue, /blocked by policy/);
+  assert.match(resultValue, /pending_approval/);
   assert.doesNotMatch(argumentsValue, /secret-token/i);
   assert.doesNotMatch(resultValue, /secret-token/i);
   assert.doesNotMatch(bodyText, /secret-token/i);

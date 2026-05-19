@@ -413,6 +413,7 @@ def build_container_session_manifest(
         model=model,
         directory_path=directory_path,
         allowed_tools=resolved_tools,
+        approval_required_tools=list(config.approval_required_tools),
         allowed_script_names=normalize_allowed_script_names(allowed_script_names),
         discord_channel_allowlist=discord_channels or [],
         teams_channel_allowlist=resolved_teams_channel_allowlist,
