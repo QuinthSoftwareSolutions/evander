@@ -42,6 +42,8 @@ import {
   type WorkflowNodeKind,
   type WorkflowOutputSchemas,
   type WorkflowRunDetail,
+  type WorkflowRunSearch,
+  type WorkflowRunSearchItem,
   type WorkflowRunNodeDetail,
   type WorkflowRunNodeActivity,
   type WorkflowRunSnapshot,
@@ -75,6 +77,10 @@ import {
   compareWorkflowNodeCatalogEntries,
   groupWorkflowNodeCatalogEntries,
 } from "./workflowCatalogGroups";
+import {
+  workflowJsonFieldDraftFallback,
+  workflowJsonFieldFallbackValue,
+} from "./workflowFieldDefaults";
 import {
   FALLBACK_NODE_HEIGHT,
   FALLBACK_NODE_WIDTH,
@@ -117,6 +123,13 @@ type WorkflowRunDetailLookupKind =
   | "trace_id"
   | "session_id"
   | "artifact_id";
+
+type WorkflowRunSearchScopeOption = {
+  value: string;
+  kind: "graph" | "node";
+  id: string;
+  label: string;
+};
 
 type BindingOption = {
   value: string;
@@ -1097,6 +1110,9 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   if (kind === "gate" && type === "gate:await-agent") {
     return { id, display_name: "Await agent", type, session_id: "session-id", outputs: {} };
   }
+  if (kind === "gate" && type === "gate:for") {
+    return { id, display_name: "For each item", type, items: [] };
+  }
   if (kind === "effect" && type === "effect:agent:prompt") {
     return { id, display_name: "New prompt", type, prompt: "Describe the next action." };
   }
@@ -1496,6 +1512,41 @@ function workflowRunDetailLookupQuery(value: string, kind: WorkflowRunDetailLook
     query.set("event_id", normalized);
   }
   return query;
+}
+
+function parseWorkflowRunSearchScope(value: string): { kind: "graph" | "node"; id: string } | null {
+  const separatorIndex = value.indexOf(":");
+  if (separatorIndex < 0) return null;
+  const kind = value.slice(0, separatorIndex);
+  const id = value.slice(separatorIndex + 1).trim();
+  if (!id || (kind !== "graph" && kind !== "node")) return null;
+  return { kind, id };
+}
+
+function workflowRunSearchQuery(
+  scopeValue: string,
+  options: {
+    withoutSession: boolean;
+    includeCompleted: boolean;
+    limit: number;
+  },
+): URLSearchParams | null {
+  const { withoutSession, includeCompleted, limit } = options;
+  const scope = parseWorkflowRunSearchScope(scopeValue);
+  if (!scope) return null;
+  const query = new URLSearchParams({
+    without_session: withoutSession ? "true" : "false",
+    include_completed: includeCompleted ? "true" : "false",
+    limit: String(limit),
+  });
+  query.set(scope.kind === "graph" ? "graph_id" : "node_id", scope.id);
+  return query;
+}
+
+function summarizeRunSearchStatuses(counts: Record<string, number>): string {
+  const entries = Object.entries(counts).filter(([, count]) => count > 0);
+  if (entries.length === 0) return "No recorded node status";
+  return entries.map(([status, count]) => `${status} ${count}`).join(", ");
 }
 
 function workflowRunDetailGraphNodes(detail: WorkflowRunDetail): Array<WorkflowNodeConfig & { kind: WorkflowNodeKind }> {
@@ -2212,6 +2263,12 @@ export default function App() {
   const [runDetailLookupKind, setRunDetailLookupKind] = useState<WorkflowRunDetailLookupKind>("auto");
   const [runDetailLoading, setRunDetailLoading] = useState(false);
   const [runDetailError, setRunDetailError] = useState<string | null>(null);
+  const [runSearchScope, setRunSearchScope] = useState("");
+  const [runSearchWithoutSession, setRunSearchWithoutSession] = useState(true);
+  const [runSearchIncludeCompleted, setRunSearchIncludeCompleted] = useState(true);
+  const [runSearchResult, setRunSearchResult] = useState<WorkflowRunSearch | null>(null);
+  const [runSearchLoading, setRunSearchLoading] = useState(false);
+  const [runSearchError, setRunSearchError] = useState<string | null>(null);
   const [validationDiagnostics, setValidationDiagnostics] = useState<WorkflowValidationDiagnostic[]>([]);
   const [flowNodes, setFlowNodes] = useState<Node<GraphNodeData>[]>([]);
   const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
@@ -2353,6 +2410,23 @@ export default function App() {
   const selectedGraph = selectedGraphId
     ? visibleWorkflowGraphs.find((graph) => graph.id === selectedGraphId)
     : undefined;
+  const visibleWorkflowNodes = workflowNodes(config).filter((node) => visibleGraphNodeIds.has(node.id));
+  const runSearchScopeOptions: WorkflowRunSearchScopeOption[] = [
+    ...visibleWorkflowGraphs.map((graph) => ({
+      value: `graph:${graph.id}`,
+      kind: "graph" as const,
+      id: graph.id,
+      label: graph.name || graph.id,
+    })),
+    ...visibleWorkflowNodes.map((node) => ({
+      value: `node:${node.id}`,
+      kind: "node" as const,
+      id: node.id,
+      label: node.display_name?.trim() ? `${node.display_name} (${node.id})` : node.id,
+    })),
+  ];
+  const runSearchScopeOptionValues = runSearchScopeOptions.map((option) => option.value).join("\u0000");
+  const selectedRunSearchScope = runSearchScopeOptions.find((option) => option.value === runSearchScope);
   const graphLabels = isInspectMode ? [] : workflowGraphLabels(visibleWorkflowGraphs, displayedFlowNodes, canvasViewport);
   const graphViewContext = `Directory: ${selectedDirectoryPath}`;
   const directoryPathOptions = useMemo(() => {
@@ -2381,6 +2455,18 @@ export default function App() {
   })();
   const effectTargetField = selectedCatalogEntry?.fields.find((field) => field.key === effectTargetKey)
     ?? selectedCatalogEntry?.fields.find((field) => field.key === "target");
+
+  useEffect(() => {
+    setRunSearchScope((current) => {
+      if (current && runSearchScopeOptions.some((option) => option.value === current)) return current;
+      return runSearchScopeOptions[0]?.value ?? "";
+    });
+  }, [runSearchScopeOptionValues]);
+
+  useEffect(() => {
+    setRunSearchResult(null);
+    setRunSearchError(null);
+  }, [runSearchScope, runSearchWithoutSession, runSearchIncludeCompleted]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -2615,6 +2701,21 @@ export default function App() {
     }
   }
 
+  async function loadWorkflowRunSearch(query: URLSearchParams) {
+    const queryText = query.toString();
+    if (!queryText || runSearchLoading) return;
+    setRunSearchLoading(true);
+    setRunSearchError(null);
+    try {
+      const payload = await fetchJson<WorkflowRunSearch>(`/api/workflow-editor/run-search?${queryText}`);
+      setRunSearchResult(payload);
+    } catch (reason: unknown) {
+      setRunSearchError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setRunSearchLoading(false);
+    }
+  }
+
   function inspectWorkflowRun(eventId: string) {
     const normalizedEventId = eventId.trim();
     if (!normalizedEventId) return;
@@ -2626,6 +2727,17 @@ export default function App() {
     const normalizedLookup = runDetailLookup.trim();
     if (!normalizedLookup) return;
     void loadWorkflowRunDetail(workflowRunDetailLookupQuery(normalizedLookup, runDetailLookupKind), normalizedLookup);
+  }
+
+  function submitWorkflowRunSearch(event: ReactFormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const query = workflowRunSearchQuery(runSearchScope, {
+      withoutSession: runSearchWithoutSession,
+      includeCompleted: runSearchIncludeCompleted,
+      limit: 25,
+    });
+    if (!query) return;
+    void loadWorkflowRunSearch(query);
   }
 
   function exitInspectMode() {
@@ -2746,9 +2858,11 @@ export default function App() {
     for (const field of selectedCatalogEntry?.fields ?? []) {
       nextFieldModes[field.key] = fieldValueMode(field, nextKnownValues[field.key]);
       if (field.kind !== "json") continue;
+      const fallbackValue = field.required || field.key === "outputs" ? {} : undefined;
+      const fallbackDraft = workflowJsonFieldDraftFallback(field, fallbackValue);
       nextJsonDrafts[field.key] = nextKnownValues[field.key] === undefined
-        ? (field.required || field.key === "outputs" ? "{}" : "")
-        : formatJson(nextKnownValues[field.key], field.required || field.key === "outputs" ? "{}" : "");
+        ? fallbackDraft
+        : formatJson(nextKnownValues[field.key], fallbackDraft);
     }
     for (const field of selectedCatalogEntry?.fields ?? []) {
       if (field.kind !== "object_list") continue;
@@ -2759,9 +2873,11 @@ export default function App() {
           if (itemField.kind !== "json") return;
           const draftKey = objectListJsonDraftKey(field.key, index, itemField.key);
           const nestedValue = itemValue[itemField.key];
+          const fallbackValue = itemField.required ? {} : undefined;
+          const fallbackDraft = workflowJsonFieldDraftFallback(itemField, fallbackValue);
           nextJsonDrafts[draftKey] = nestedValue === undefined
-            ? (itemField.required ? "{}" : "")
-            : formatJson(nestedValue, itemField.required ? "{}" : "");
+            ? fallbackDraft
+            : formatJson(nestedValue, fallbackDraft);
         });
       });
     }
@@ -3412,7 +3528,7 @@ export default function App() {
         if (field.kind !== "json") continue;
         if (isExactBindingValue(nextKnownValues[field.key])) continue;
         if (field.read_only) continue;
-        const fallbackValue = field.required ? {} : undefined;
+        const fallbackValue = workflowJsonFieldFallbackValue(field, field.required ? {} : undefined);
         nextKnownValues[field.key] = parseJsonDraft(inspectorJsonDrafts[field.key] ?? "", fallbackValue);
       }
       for (const field of selectedCatalogEntry?.fields ?? []) {
@@ -3442,7 +3558,7 @@ export default function App() {
             const draftKey = objectListJsonDraftKey(field.key, index, itemField.key);
             const currentValue = item[itemField.key];
             if (isExactBindingValue(currentValue)) return;
-            const fallbackValue = itemField.required ? {} : undefined;
+            const fallbackValue = workflowJsonFieldFallbackValue(itemField, itemField.required ? {} : undefined);
             const parsedValue = parseJsonDraft(inspectorJsonDrafts[draftKey] ?? "", fallbackValue);
             if (parsedValue === undefined) {
               delete item[itemField.key];
@@ -4536,6 +4652,52 @@ export default function App() {
     );
   }
 
+  function renderRunSearchResult(run: WorkflowRunSearchItem) {
+    const stateClass = run.run_state === "errored" ? "failed" : run.run_state || "active";
+    const sessionLabel = run.has_agent_session
+      ? `Session ${run.session_ids.slice(0, 2).join(", ")}${run.session_ids.length > 2 ? ` +${run.session_ids.length - 2}` : ""}`
+      : "No agent session";
+    return (
+      <div key={run.event_id} className="runtime-run-card run-search-card">
+        <div className="runtime-run-header">
+          <div className="runtime-run-event">{run.event_id}</div>
+          <div className={`runtime-run-state state-${stateClass}`}>{run.run_state}</div>
+        </div>
+        <div className="runtime-run-meta">
+          Latest {formatRuntimeTimestamp(run.latest_activity_at ?? run.occurred_at)}
+        </div>
+        <div className="runtime-run-meta">
+          {sessionLabel}
+          {run.trace_id ? ` - Trace ${run.trace_id}` : ""}
+        </div>
+        <div className="runtime-run-meta">
+          Matched {run.matched_node_ids.join(", ") || "None"} - {summarizeRunSearchStatuses(run.status_counts)}
+        </div>
+        {run.error ? <div className="runtime-run-error">{run.error}</div> : null}
+        <div className="runtime-run-nodes">
+          {run.nodes.slice(0, 6).map((activity, index) => (
+            <div key={`${run.event_id}-${activity.node_id}-${activity.status}-${index}`} className="runtime-run-node">
+              {summarizeRunNode(activity)}
+            </div>
+          ))}
+          {run.nodes.length > 6 ? (
+            <div className="runtime-run-node">+{run.nodes.length - 6} more</div>
+          ) : null}
+        </div>
+        <div className="runtime-run-actions">
+          <button
+            type="button"
+            className="subtle-button"
+            onClick={() => inspectWorkflowRun(run.event_id)}
+            disabled={runDetailLoading}
+          >
+            Inspect
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const createEntriesByKind = NODE_GROUPS.map((group) => {
     const entries = catalog.nodes
       .filter((entry) => entry.kind === group.kind)
@@ -4572,104 +4734,176 @@ export default function App() {
             <>
               {editLocked ? <div className="callout warning-callout workflow-lock-callout">Unlock privileged operations to modify workflow state or clear runtime runs.</div> : null}
 
-            <details className="sidebar-section current-runs-section">
-              <summary className="current-runs-summary">
-                <span className="section-label current-runs-label">Current runs</span>
-                <span className="current-runs-count">{visibleRuns.length}</span>
-              </summary>
-              <p className="runtime-summary">
-                {visibleRuns.length === 0
-                  ? "No active or errored workflow runs."
-                  : `${visibleRuns.length} ${visibleRuns.length === 1 ? "run" : "runs"} visible on the graph.`}
-              </p>
-              <form className="run-detail-lookup" onSubmit={submitWorkflowRunDetailLookup}>
-                <select
-                  value={runDetailLookupKind}
-                  onChange={(event) => setRunDetailLookupKind(event.target.value as WorkflowRunDetailLookupKind)}
-                  aria-label="Run lookup key"
-                >
-                  <option value="auto">Auto</option>
-                  <option value="run_id">Run ID</option>
-                  <option value="event_id">Event ID</option>
-                  <option value="trigger_event_id">Trigger event</option>
-                  <option value="trace_id">Trace ID</option>
-                  <option value="session_id">Session ID</option>
-                  <option value="artifact_id">Artifact ID</option>
-                </select>
-                <input
-                  value={runDetailLookup}
-                  onChange={(event) => setRunDetailLookup(event.target.value)}
-                  placeholder="Lookup id"
-                  aria-label="Workflow run lookup id"
-                />
-                <button type="submit" className="subtle-button" disabled={runDetailLoading || !runDetailLookup.trim()}>
-                  {runDetailLoading ? "Loading..." : "Inspect"}
-                </button>
-              </form>
-              {runDetailError ? <div className="runtime-run-error">{runDetailError}</div> : null}
-              <div className="runtime-runs">
-                {visibleRuns.map((run: WorkflowRunSummary) => (
-                  <div key={run.event_id} className="runtime-run-card">
-                    <div className="runtime-run-header">
-                      <div className="runtime-run-event">{run.event_id}</div>
-                      <div className={`runtime-run-state state-${run.run_state === "errored" ? "failed" : run.delivery_state ?? "active"}`}>
-                        {run.run_state === "errored" ? "errored" : run.delivery_state ?? "active"}
-                      </div>
-                    </div>
-                    <div className="runtime-run-meta">
-                      Last activity {formatRuntimeTimestamp(run.latest_activity_at ?? run.occurred_at)}
-                    </div>
-                    {run.run_state === "errored" ? (
-                      <div className="runtime-run-error">
-                        Failed at <strong>{run.failed_node_id ?? "unknown node"}</strong>
-                        {run.error ? `: ${run.error}` : ""}
-                      </div>
+              <details className="sidebar-section current-runs-section">
+                <summary className="current-runs-summary">
+                  <span className="section-label current-runs-label">Current runs</span>
+                  <span className="current-runs-count">{visibleRuns.length}</span>
+                </summary>
+                <p className="runtime-summary">
+                  {visibleRuns.length === 0
+                    ? "No active or errored workflow runs."
+                    : `${visibleRuns.length} ${visibleRuns.length === 1 ? "run" : "runs"} visible on the graph.`}
+                </p>
+                <form className="run-detail-lookup" onSubmit={submitWorkflowRunDetailLookup}>
+                  <select
+                    value={runDetailLookupKind}
+                    onChange={(event) => setRunDetailLookupKind(event.target.value as WorkflowRunDetailLookupKind)}
+                    aria-label="Run lookup key"
+                  >
+                    <option value="auto">Auto</option>
+                    <option value="run_id">Run ID</option>
+                    <option value="event_id">Event ID</option>
+                    <option value="trigger_event_id">Trigger event</option>
+                    <option value="trace_id">Trace ID</option>
+                    <option value="session_id">Session ID</option>
+                    <option value="artifact_id">Artifact ID</option>
+                  </select>
+                  <input
+                    value={runDetailLookup}
+                    onChange={(event) => setRunDetailLookup(event.target.value)}
+                    placeholder="Lookup id"
+                    aria-label="Workflow run lookup id"
+                  />
+                  <button type="submit" className="subtle-button" disabled={runDetailLoading || !runDetailLookup.trim()}>
+                    {runDetailLoading ? "Loading..." : "Inspect"}
+                  </button>
+                </form>
+                {runDetailError ? <div className="runtime-run-error">{runDetailError}</div> : null}
+                <div className="run-search-panel">
+                  <div className="run-search-header">
+                    <span className="section-label">Latest runs</span>
+                    {runSearchResult ? (
+                      <span className="current-runs-count">{runSearchResult.returned}</span>
                     ) : null}
-                    <div className="runtime-run-nodes">
-                      {run.active_nodes.map((activity, index) => (
-                        <div key={`${run.event_id}-${activity.node_id}-${activity.status}-${index}`} className="runtime-run-node">
-                          {summarizeRunNode(activity)}
-                        </div>
-                      ))}
+                  </div>
+                  <form className="run-search-form" onSubmit={submitWorkflowRunSearch}>
+                    <select
+                      value={runSearchScope}
+                      onChange={(event) => setRunSearchScope(event.target.value)}
+                      aria-label="Run search scope"
+                    >
+                      <optgroup label="Graphs">
+                        {runSearchScopeOptions
+                          .filter((option) => option.kind === "graph")
+                          .map((option) => (
+                            <option value={option.value} key={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                      </optgroup>
+                      <optgroup label="Nodes">
+                        {runSearchScopeOptions
+                          .filter((option) => option.kind === "node")
+                          .map((option) => (
+                            <option value={option.value} key={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                      </optgroup>
+                    </select>
+                    <label className="checkbox-row run-search-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={runSearchWithoutSession}
+                        onChange={(event) => setRunSearchWithoutSession(event.target.checked)}
+                      />
+                      <span>No agent session</span>
+                    </label>
+                    <label className="checkbox-row run-search-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={runSearchIncludeCompleted}
+                        onChange={(event) => setRunSearchIncludeCompleted(event.target.checked)}
+                      />
+                      <span>Completed</span>
+                    </label>
+                    <button
+                      type="submit"
+                      className="subtle-button"
+                      disabled={runSearchLoading || !selectedRunSearchScope}
+                    >
+                      {runSearchLoading ? "Loading..." : "Find"}
+                    </button>
+                  </form>
+                  {runSearchError ? <div className="runtime-run-error">{runSearchError}</div> : null}
+                  {runSearchResult ? (
+                    <div className="runtime-run-meta">
+                      {runSearchResult.matched} matched {runSearchResult.filters.graph_name ?? selectedRunSearchScope?.label ?? ""}
+                      {runSearchResult.has_more ? `; showing ${runSearchResult.returned}` : ""}
                     </div>
-                    <div className="runtime-run-actions">
-                      <button
-                        type="button"
-                        className="subtle-button"
-                        onClick={() => inspectWorkflowRun(run.event_id)}
-                        disabled={runDetailLoading}
-                      >
-                        Inspect
-                      </button>
-                      {run.run_state === "errored" && run.resumable ? (
+                  ) : null}
+                  {runSearchResult && runSearchResult.runs.length === 0 ? (
+                    <div className="runtime-run-meta">No matching runs.</div>
+                  ) : null}
+                  {runSearchResult && runSearchResult.runs.length > 0 ? (
+                    <div className="runtime-runs run-search-results">
+                      {runSearchResult.runs.map((run) => renderRunSearchResult(run))}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="runtime-runs">
+                  {visibleRuns.map((run: WorkflowRunSummary) => (
+                    <div key={run.event_id} className="runtime-run-card">
+                      <div className="runtime-run-header">
+                        <div className="runtime-run-event">{run.event_id}</div>
+                        <div className={`runtime-run-state state-${run.run_state === "errored" ? "failed" : run.delivery_state ?? "active"}`}>
+                          {run.run_state === "errored" ? "errored" : run.delivery_state ?? "active"}
+                        </div>
+                      </div>
+                      <div className="runtime-run-meta">
+                        Last activity {formatRuntimeTimestamp(run.latest_activity_at ?? run.occurred_at)}
+                      </div>
+                      {run.run_state === "errored" ? (
+                        <div className="runtime-run-error">
+                          Failed at <strong>{run.failed_node_id ?? "unknown node"}</strong>
+                          {run.error ? `: ${run.error}` : ""}
+                        </div>
+                      ) : null}
+                      <div className="runtime-run-nodes">
+                        {run.active_nodes.map((activity, index) => (
+                          <div key={`${run.event_id}-${activity.node_id}-${activity.status}-${index}`} className="runtime-run-node">
+                            {summarizeRunNode(activity)}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="runtime-run-actions">
                         <button
                           type="button"
                           className="subtle-button"
-                          onClick={() => void resumeWorkflowRun(run.event_id)}
-                          disabled={Boolean(resumingRunIds[run.event_id]) || editLocked}
+                          onClick={() => inspectWorkflowRun(run.event_id)}
+                          disabled={runDetailLoading}
                         >
-                          {resumingRunIds[run.event_id] ? "Resuming..." : "Resume from failure"}
+                          Inspect
                         </button>
-                      ) : null}
-                      <button
-                        type="button"
-                        className="subtle-button runtime-run-clear"
-                        onClick={() => void clearWorkflowRun(run.event_id, run.run_state)}
-                        disabled={Boolean(clearingRunIds[run.event_id]) || editLocked}
-                      >
-                        {clearingRunIds[run.event_id]
-                          ? run.run_state === "errored"
-                            ? "Dismissing..."
-                            : "Clearing..."
-                          : run.run_state === "errored"
-                            ? "Dismiss run"
-                            : "Clear run"}
-                      </button>
+                        {run.run_state === "errored" && run.resumable ? (
+                          <button
+                            type="button"
+                            className="subtle-button"
+                            onClick={() => void resumeWorkflowRun(run.event_id)}
+                            disabled={Boolean(resumingRunIds[run.event_id]) || editLocked}
+                          >
+                            {resumingRunIds[run.event_id] ? "Resuming..." : "Resume from failure"}
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="subtle-button runtime-run-clear"
+                          onClick={() => void clearWorkflowRun(run.event_id, run.run_state)}
+                          disabled={Boolean(clearingRunIds[run.event_id]) || editLocked}
+                        >
+                          {clearingRunIds[run.event_id]
+                            ? run.run_state === "errored"
+                              ? "Dismissing..."
+                              : "Clearing..."
+                            : run.run_state === "errored"
+                              ? "Dismiss run"
+                              : "Clear run"}
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            </details>
+                  ))}
+                </div>
+              </details>
 
             <details className="sidebar-section workflow-graphs-section collapsible-sidebar-section">
               <summary className="collapsible-sidebar-summary">

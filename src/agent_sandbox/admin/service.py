@@ -464,6 +464,43 @@ class WorkflowRunSnapshotPayload(BaseModel):
     node_activity: dict[str, dict[str, int]] = Field(default_factory=dict)
 
 
+class WorkflowRunSearchFilterPayload(BaseModel):
+    node_id: str | None = None
+    graph_id: str | None = None
+    graph_name: str | None = None
+    without_session: bool = False
+    include_completed: bool = True
+
+
+class WorkflowRunSearchItemPayload(BaseModel):
+    event_id: str
+    trace_id: str | None = None
+    run_state: str = "active"
+    source_node_id: str | None = None
+    source_trigger_type: str | None = None
+    delivery_state: str | None = None
+    occurred_at: datetime | None = None
+    latest_activity_at: datetime | None = None
+    node_ids: list[str] = Field(default_factory=list)
+    matched_node_ids: list[str] = Field(default_factory=list)
+    session_ids: list[str] = Field(default_factory=list)
+    has_agent_session: bool = False
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    nodes: list[WorkflowRunNodeActivityPayload] = Field(default_factory=list)
+    error: str | None = None
+
+
+class WorkflowRunSearchPayload(BaseModel):
+    worker_id: str = "trigger-orchestrator"
+    generated_at: datetime
+    filters: WorkflowRunSearchFilterPayload
+    runs: list[WorkflowRunSearchItemPayload] = Field(default_factory=list)
+    matched: int = 0
+    returned: int = 0
+    limit: int = 25
+    has_more: bool = False
+
+
 class WorkflowRunLookupPayload(BaseModel):
     run_id: str | None = None
     event_id: str | None = None
@@ -865,6 +902,8 @@ class WorkflowEditorFieldDefinition(BaseModel):
     multiline: bool = False
     description: str | None = None
     placeholder: str | None = None
+    json_value_type: str | None = None
+    default_value: Any = None
     options: list[WorkflowEditorFieldOption] = Field(default_factory=list)
     item_fields: list["WorkflowEditorFieldDefinition"] = Field(default_factory=list)
 
@@ -1097,6 +1136,8 @@ def _field(
     multiline: bool = False,
     description: str | None = None,
     placeholder: str | None = None,
+    json_value_type: str | None = None,
+    default_value: Any = None,
     options: list[WorkflowEditorFieldOption] | None = None,
     item_fields: list[WorkflowEditorFieldDefinition] | None = None,
 ) -> WorkflowEditorFieldDefinition:
@@ -1110,6 +1151,8 @@ def _field(
         multiline=multiline,
         description=description,
         placeholder=placeholder,
+        json_value_type=json_value_type,
+        default_value=default_value,
         options=options or [],
         item_fields=item_fields or [],
     )
@@ -1700,6 +1743,8 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 required=True,
                 bindable=True,
                 description="Array expression to iterate. The body branch receives current_element/current_index outputs.",
+                json_value_type="array",
+                default_value=[],
             ),
             _field(
                 "outputs",
@@ -2823,6 +2868,71 @@ def _read_merged_json_objects(*paths: Path | None) -> dict[str, object]:
     for path in paths:
         payload.update(_read_json_object(path))
     return payload
+
+
+def _collect_workflow_keyed_values(payload: Any, *, key_suffix: str | None = None) -> list[str]:
+    values: list[str] = []
+
+    def walk(value: Any, key: str | None = None) -> None:
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                walk(child_value, str(child_key))
+            return
+        if isinstance(value, list):
+            for child_value in value:
+                walk(child_value, key)
+            return
+        if isinstance(value, str):
+            normalized = value.strip()
+            if not normalized:
+                return
+            if key_suffix is not None and (key is None or not key.lower().endswith(key_suffix)):
+                return
+            values.append(normalized)
+
+    walk(payload)
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
+
+
+def _collect_workflow_artifact_ids(payload: Any) -> list[str]:
+    values: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for child_value in value.values():
+                walk(child_value)
+            return
+        if isinstance(value, list):
+            for child_value in value:
+                walk(child_value)
+            return
+        if isinstance(value, str):
+            normalized = value.strip()
+            if not normalized:
+                return
+            try:
+                from agent_sandbox.communication_artifacts import validate_artifact_id
+
+                values.append(validate_artifact_id(normalized))
+            except ValueError:
+                pass
+
+    walk(payload)
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
 
 
 CONFORMANCE_REPORT_STALE_AFTER = timedelta(days=7)
@@ -4616,6 +4726,7 @@ class AdminService:
                 save_workflow_editor_document=self._save_workflow_editor_document,
                 read_workflow_run_snapshot=self._read_workflow_run_snapshot,
                 read_workflow_run_detail=self._read_workflow_run_detail,
+                read_workflow_run_search=self._read_workflow_run_search,
                 clear_workflow_run=self._clear_workflow_run,
                 resume_workflow_run=self._resume_workflow_run,
                 workflow_event_journal=self._workflow_event_journal,
@@ -8190,6 +8301,23 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             artifact_id=artifact_id,
         )
 
+    def read_workflow_run_search(
+        self,
+        *,
+        node_id: str | None = None,
+        graph_id: str | None = None,
+        without_session: bool = False,
+        include_completed: bool = True,
+        limit: int | None = None,
+    ) -> WorkflowRunSearchPayload:
+        return self.workflow_config_admin.read_workflow_run_search(
+            node_id=node_id,
+            graph_id=graph_id,
+            without_session=without_session,
+            include_completed=include_completed,
+            limit=limit,
+        )
+
     def read_workflow_graph_activity_report(
         self,
         *,
@@ -9474,6 +9602,382 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 node_id: dict(sorted(counts.items()))
                 for node_id, counts in sorted(node_activity.items())
             },
+        )
+
+    def _read_workflow_run_search(
+        self,
+        *,
+        node_id: str | None = None,
+        graph_id: str | None = None,
+        without_session: bool = False,
+        include_completed: bool = True,
+        limit: int | None = None,
+    ) -> WorkflowRunSearchPayload:
+        normalized_node_id = _coerce_optional_string(node_id)
+        normalized_graph_id = _coerce_optional_string(graph_id)
+        normalized_limit = max(1, min(100, int(limit or 25)))
+        document = self._read_workflow_editor_document()
+
+        target_node_ids: set[str] = set()
+        graph_name: str | None = None
+        if normalized_graph_id is not None:
+            graph = next(
+                (candidate for candidate in document.graphs if candidate.id == normalized_graph_id),
+                None,
+            )
+            if graph is None:
+                raise ValueError(f"Workflow graph not found: {normalized_graph_id}")
+            target_node_ids.update(graph.node_ids)
+            graph_name = graph.name
+        if normalized_node_id is not None:
+            target_node_ids.add(normalized_node_id)
+        if not target_node_ids:
+            raise ValueError("Workflow run search requires node_id or graph_id.")
+
+        stores = self._workflow_run_store_paths()
+        _, effect_store, gate_store = self._workflow_run_store_bundle(stores)
+        queue_records = self._workflow_run_event_records(stores)
+        effect_records = effect_store.read_all()
+        gate_records = gate_store.read_all()
+        await_agent_payload = _read_merged_json_objects(
+            stores["legacy_await_agent_store_path"],
+            stores["await_agent_store_path"],
+        )
+        approval_requests = self.runtime.approvals.read_all()
+        artifact_store = self._communication_artifact_store()
+
+        def normalize_record_payload(record: object) -> dict[str, Any]:
+            if isinstance(record, BaseModel):
+                return record.model_dump(mode="json")
+            if isinstance(record, dict):
+                return dict(record)
+            return {}
+
+        def latest_of(*values: object) -> datetime | None:
+            parsed = [
+                parsed_value
+                for parsed_value in (_coerce_optional_datetime(value) for value in values)
+                if parsed_value is not None
+            ]
+            return max(parsed) if parsed else None
+
+        def ensure_group(groups: dict[str, dict[str, Any]], event_key: str) -> dict[str, Any]:
+            group = groups.get(event_key)
+            if group is None:
+                group = {
+                    "event_id": event_key,
+                    "trace_ids": set(),
+                    "session_ids": set(),
+                    "artifact_ids": set(),
+                    "request_ids": set(),
+                    "node_ids": set(),
+                    "activities": [],
+                    "status_counts": {},
+                    "occurred_at": None,
+                    "latest_activity_at": None,
+                    "source_node_id": None,
+                    "source_trigger_type": None,
+                    "delivery_state": None,
+                    "error": None,
+                }
+                groups[event_key] = group
+            return group
+
+        def update_group_metadata(
+            group: dict[str, Any],
+            *,
+            trace_id_value: str | None = None,
+            session_ids: list[str] | None = None,
+            artifact_ids: list[str] | None = None,
+            request_ids: list[str] | None = None,
+            occurred_at_value: datetime | None = None,
+            latest_activity_at_value: datetime | None = None,
+            source_node_id: str | None = None,
+            source_trigger_type: str | None = None,
+            delivery_state: str | None = None,
+            error: str | None = None,
+        ) -> None:
+            if trace_id_value:
+                group["trace_ids"].add(trace_id_value)
+            for value in session_ids or []:
+                group["session_ids"].add(value)
+            for value in artifact_ids or []:
+                group["artifact_ids"].add(value)
+            for value in request_ids or []:
+                group["request_ids"].add(value)
+            if occurred_at_value is not None and group.get("occurred_at") is None:
+                group["occurred_at"] = occurred_at_value
+            previous_latest = group.get("latest_activity_at")
+            if latest_activity_at_value is not None and (
+                not isinstance(previous_latest, datetime) or latest_activity_at_value > previous_latest
+            ):
+                group["latest_activity_at"] = latest_activity_at_value
+            if source_node_id and not group.get("source_node_id"):
+                group["source_node_id"] = source_node_id
+            if source_trigger_type and not group.get("source_trigger_type"):
+                group["source_trigger_type"] = source_trigger_type
+            if delivery_state and not group.get("delivery_state"):
+                group["delivery_state"] = delivery_state
+            if error and not group.get("error"):
+                group["error"] = error
+
+        def register_activity(
+            groups: dict[str, dict[str, Any]],
+            *,
+            event_key: str,
+            node_id_value: str | None,
+            status: str | None,
+            source: str,
+            trace_id_value: str | None = None,
+            session_payloads: list[Any] | None = None,
+            artifact_payloads: list[Any] | None = None,
+            request_payloads: list[Any] | None = None,
+            occurred_at_value: datetime | None = None,
+            started_at_value: datetime | None = None,
+            finished_at_value: datetime | None = None,
+            latest_activity_at_value: datetime | None = None,
+            source_node_id: str | None = None,
+            source_trigger_type: str | None = None,
+            delivery_state: str | None = None,
+            dispatch_id: str | None = None,
+            error: str | None = None,
+        ) -> None:
+            normalized_activity_node_id = _coerce_optional_string(node_id_value)
+            if normalized_activity_node_id is None:
+                return
+            normalized_status = (status or "unknown").strip() or "unknown"
+            group = ensure_group(groups, event_key)
+            group["node_ids"].add(normalized_activity_node_id)
+            status_counts = group["status_counts"]
+            status_counts[normalized_status] = status_counts.get(normalized_status, 0) + 1
+            group["activities"].append(
+                WorkflowRunNodeActivityPayload(
+                    node_id=normalized_activity_node_id,
+                    status=normalized_status,
+                    source=source,
+                    started_at=started_at_value,
+                    finished_at=finished_at_value,
+                    dispatch_id=dispatch_id,
+                    error=error,
+                )
+            )
+            update_group_metadata(
+                group,
+                trace_id_value=trace_id_value,
+                session_ids=[
+                    value
+                    for payload in session_payloads or []
+                    for value in _collect_workflow_keyed_values(payload, key_suffix="session_id")
+                ],
+                artifact_ids=[
+                    value
+                    for payload in artifact_payloads or []
+                    for value in _collect_workflow_artifact_ids(payload)
+                ],
+                request_ids=[
+                    value
+                    for payload in request_payloads or []
+                    for value in _collect_workflow_keyed_values(payload, key_suffix="request_id")
+                ],
+                occurred_at_value=occurred_at_value,
+                latest_activity_at_value=latest_activity_at_value
+                or latest_of(finished_at_value, started_at_value, occurred_at_value),
+                source_node_id=source_node_id,
+                source_trigger_type=source_trigger_type,
+                delivery_state=delivery_state,
+                error=error,
+            )
+
+        groups: dict[str, dict[str, Any]] = {}
+        for record_key, record in queue_records.items():
+            raw_record = normalize_record_payload(record)
+            if not raw_record:
+                continue
+            event_id = _coerce_optional_string(raw_record.get("event_id")) or str(record_key)
+            occurred_at = _coerce_optional_datetime(raw_record.get("occurred_at"))
+            register_activity(
+                groups,
+                event_key=event_id,
+                node_id_value=_coerce_optional_string(raw_record.get("trigger_id")),
+                status=_coerce_optional_string(raw_record.get("delivery_state")) or "pending",
+                source="trigger_event",
+                trace_id_value=_coerce_optional_string(raw_record.get("trace_id")),
+                session_payloads=[raw_record],
+                artifact_payloads=[raw_record.get("payload")],
+                request_payloads=[raw_record],
+                occurred_at_value=occurred_at,
+                started_at_value=_coerce_optional_datetime(raw_record.get("inflight_at")),
+                finished_at_value=_coerce_optional_datetime(raw_record.get("delivered_at")),
+                latest_activity_at_value=latest_of(
+                    raw_record.get("delivered_at"),
+                    raw_record.get("inflight_at"),
+                    raw_record.get("occurred_at"),
+                ),
+                source_node_id=_coerce_optional_string(raw_record.get("trigger_id")),
+                source_trigger_type=_coerce_optional_string(raw_record.get("trigger_type")),
+                delivery_state=_coerce_optional_string(raw_record.get("delivery_state")),
+                error=_coerce_optional_string(raw_record.get("error")),
+            )
+
+        for execution_id, record in effect_records.items():
+            raw_record = normalize_record_payload(record)
+            if not raw_record:
+                continue
+            event_id = _coerce_optional_string(raw_record.get("event_id")) or str(execution_id)
+            payload_sources = [
+                raw_record.get("resolved_config"),
+                raw_record.get("input_payload"),
+                raw_record.get("outputs"),
+            ]
+            register_activity(
+                groups,
+                event_key=event_id,
+                node_id_value=_coerce_optional_string(raw_record.get("effect_id")),
+                status=_coerce_optional_string(raw_record.get("status")),
+                source="effect_execution",
+                trace_id_value=_coerce_optional_string(raw_record.get("trace_id")),
+                session_payloads=payload_sources,
+                artifact_payloads=payload_sources,
+                request_payloads=payload_sources,
+                started_at_value=_coerce_optional_datetime(raw_record.get("started_at")),
+                finished_at_value=_coerce_optional_datetime(raw_record.get("finished_at")),
+                source_node_id=_coerce_optional_string(raw_record.get("source_node_id")),
+                source_trigger_type=_coerce_optional_string(raw_record.get("source_trigger_type")),
+                error=_coerce_optional_string(raw_record.get("error")),
+            )
+
+        for execution_id, record in gate_records.items():
+            raw_record = normalize_record_payload(record)
+            if not raw_record:
+                continue
+            event_id = _coerce_optional_string(raw_record.get("event_id")) or str(execution_id)
+            payload_sources = [
+                raw_record.get("resolved_config"),
+                raw_record.get("input_payload"),
+                raw_record.get("outputs"),
+                raw_record.get("inputs_by_source"),
+            ]
+            register_activity(
+                groups,
+                event_key=event_id,
+                node_id_value=_coerce_optional_string(raw_record.get("gate_id")),
+                status=_coerce_optional_string(raw_record.get("status")),
+                source="gate_execution",
+                trace_id_value=_coerce_optional_string(raw_record.get("trace_id")),
+                session_payloads=payload_sources,
+                artifact_payloads=payload_sources,
+                request_payloads=payload_sources,
+                started_at_value=_coerce_optional_datetime(raw_record.get("started_at")),
+                finished_at_value=_coerce_optional_datetime(raw_record.get("finished_at")),
+                source_node_id=_coerce_optional_string(raw_record.get("source_node_id")),
+                source_trigger_type=_coerce_optional_string(raw_record.get("source_trigger_type")),
+                error=_coerce_optional_string(raw_record.get("error")),
+            )
+
+        for record_key, raw_record in await_agent_payload.items():
+            if not isinstance(raw_record, dict):
+                continue
+            event_id = _coerce_optional_string(raw_record.get("prompt_event_id")) or str(record_key)
+            register_activity(
+                groups,
+                event_key=event_id,
+                node_id_value=_coerce_optional_string(raw_record.get("gate_id")),
+                status="waiting",
+                source="await_agent",
+                trace_id_value=_coerce_optional_string(raw_record.get("trace_id")),
+                session_payloads=[raw_record],
+                artifact_payloads=[raw_record],
+                request_payloads=[raw_record],
+                occurred_at_value=_coerce_optional_datetime(raw_record.get("occurred_at")),
+                started_at_value=_coerce_optional_datetime(raw_record.get("occurred_at")),
+                source_node_id=_coerce_optional_string(raw_record.get("prompt_source_node_id")),
+                source_trigger_type="trigger:agent:run:completed",
+                dispatch_id=_coerce_optional_string(raw_record.get("dispatch_id")),
+            )
+
+        for group in groups.values():
+            for request_id in list(group["request_ids"]):
+                request = approval_requests.get(request_id)
+                if request is not None:
+                    group["session_ids"].add(request.session_id)
+            for artifact_id in list(group["artifact_ids"]):
+                try:
+                    artifact_payload = artifact_store.payload(artifact_id)
+                except FileNotFoundError:
+                    continue
+                artifact_session_id = _coerce_optional_string(artifact_payload.get("session_id"))
+                if artifact_session_id:
+                    group["session_ids"].add(artifact_session_id)
+
+        session_ids_by_trace: dict[str, set[str]] = {}
+        for group in groups.values():
+            for trace_id_value in group["trace_ids"]:
+                if trace_id_value:
+                    session_ids_by_trace.setdefault(trace_id_value, set()).update(group["session_ids"])
+
+        matched_runs: list[WorkflowRunSearchItemPayload] = []
+        active_statuses = {"pending", "inflight", "running", "waiting"}
+        for group in groups.values():
+            matched_node_ids = sorted(group["node_ids"] & target_node_ids)
+            if not matched_node_ids:
+                continue
+            effective_session_ids = set(group["session_ids"])
+            for trace_id_value in group["trace_ids"]:
+                effective_session_ids.update(session_ids_by_trace.get(trace_id_value, set()))
+            if without_session and effective_session_ids:
+                continue
+            status_counts = dict(sorted(group["status_counts"].items()))
+            if status_counts.get("failed", 0) > 0:
+                run_state = "errored"
+            elif any(status_counts.get(status, 0) > 0 for status in active_statuses):
+                run_state = "active"
+            else:
+                run_state = "completed"
+            if not include_completed and run_state == "completed":
+                continue
+            matched_runs.append(
+                WorkflowRunSearchItemPayload(
+                    event_id=str(group["event_id"]),
+                    trace_id=next((value for value in sorted(group["trace_ids"]) if value), None),
+                    run_state=run_state,
+                    source_node_id=_coerce_optional_string(group.get("source_node_id")),
+                    source_trigger_type=_coerce_optional_string(group.get("source_trigger_type")),
+                    delivery_state=_coerce_optional_string(group.get("delivery_state")),
+                    occurred_at=group.get("occurred_at"),
+                    latest_activity_at=group.get("latest_activity_at"),
+                    node_ids=sorted(group["node_ids"]),
+                    matched_node_ids=matched_node_ids,
+                    session_ids=sorted(effective_session_ids),
+                    has_agent_session=bool(effective_session_ids),
+                    status_counts=status_counts,
+                    nodes=_merge_run_node_activity(group["activities"]),
+                    error=_coerce_optional_string(group.get("error")),
+                )
+            )
+
+        matched_runs.sort(
+            key=lambda run: (
+                run.latest_activity_at or run.occurred_at or datetime.min.replace(tzinfo=UTC),
+                run.occurred_at or datetime.min.replace(tzinfo=UTC),
+                run.event_id,
+            ),
+            reverse=True,
+        )
+        limited_runs = matched_runs[:normalized_limit]
+        return WorkflowRunSearchPayload(
+            generated_at=_utc_now(),
+            filters=WorkflowRunSearchFilterPayload(
+                node_id=normalized_node_id,
+                graph_id=normalized_graph_id,
+                graph_name=graph_name,
+                without_session=without_session,
+                include_completed=include_completed,
+            ),
+            runs=limited_runs,
+            matched=len(matched_runs),
+            returned=len(limited_runs),
+            limit=normalized_limit,
+            has_more=len(matched_runs) > normalized_limit,
         )
 
     def _clear_workflow_run(self, event_id: str) -> WorkflowRunClearPayload:

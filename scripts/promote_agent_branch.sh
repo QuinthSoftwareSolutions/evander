@@ -114,6 +114,10 @@ if [[ -z "${REVIEW_BRANCH}" ]]; then
   REVIEW_BRANCH="$(derive_review_branch "${AGENT_BRANCH}")"
 fi
 
+LOCK_PATH="${HOST_REPO_PATH}/.git/agent-sandbox-promote.lock"
+exec 9>"${LOCK_PATH}"
+flock 9
+
 EXPECTED_URL="${BARE_REPO_PATH}"
 if git -C "${HOST_REPO_PATH}" remote get-url "${REMOTE_NAME}" >/dev/null 2>&1; then
   CURRENT_URL="$(git -C "${HOST_REPO_PATH}" remote get-url "${REMOTE_NAME}")"

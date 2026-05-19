@@ -80,6 +80,23 @@ class WorkflowConfigAdminService:
             artifact_id=artifact_id,
         )
 
+    def read_workflow_run_search(
+        self,
+        *,
+        node_id: str | None = None,
+        graph_id: str | None = None,
+        without_session: bool = False,
+        include_completed: bool = True,
+        limit: int | None = None,
+    ):
+        return self._worker_admin.read_workflow_run_search(
+            node_id=node_id,
+            graph_id=graph_id,
+            without_session=without_session,
+            include_completed=include_completed,
+            limit=limit,
+        )
+
     def clear_workflow_run(self, event_id: str):
         return self._worker_admin.clear_workflow_run(event_id)
 

@@ -2101,6 +2101,48 @@ select {
   font-size: 0.82rem;
 }
 
+.run-search-panel {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 0.95rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid rgba(91, 67, 37, 0.14);
+}
+
+.run-search-header,
+.run-search-form {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.run-search-header {
+  justify-content: space-between;
+}
+
+.run-search-form select {
+  min-width: min(100%, 14rem);
+  height: 2.1rem;
+  border: 1px solid rgba(91, 67, 37, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 252, 246, 0.78);
+  color: #3d3224;
+  font-size: 0.82rem;
+}
+
+.run-search-checkbox {
+  margin: 0;
+}
+
+.run-search-results {
+  margin-top: 0.1rem;
+}
+
+.run-search-card {
+  background: rgba(246, 249, 244, 0.76);
+}
+
 .run-detail-panel {
   display: grid;
   gap: 0.75rem;

@@ -506,6 +506,12 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert [field["key"] for field in await_agent["fields"]] == ["session_id", "vm_name", "outputs"]
     assert all(field["bindable"] for field in await_agent["fields"][:2])
     for_gate = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:for")
+    for_gate_fields = {field["key"]: field for field in for_gate["fields"]}
+    assert for_gate_fields["items"]["kind"] == "json"
+    assert for_gate_fields["items"]["required"]
+    assert for_gate_fields["items"]["bindable"]
+    assert for_gate_fields["items"]["json_value_type"] == "array"
+    assert for_gate_fields["items"]["default_value"] == []
     assert for_gate["output_ports"] == [
         {"key": "body", "label": "Body", "description": "Loop body path while items remain."},
         {"key": "done", "label": "Done", "description": "Exit path after the final item."},
@@ -2262,6 +2268,181 @@ def test_admin_web_run_detail_marks_missing_legacy_data(tmp_path: Path) -> None:
     assert legacy_node["records"][0]["resolved_config"] == {}
     assert legacy_node["approval_links"] == []
     assert legacy_node["agent_links"] == []
+
+
+def test_admin_web_run_search_finds_latest_graph_and_node_runs_without_sessions(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    _write_json_payload(
+        config_root / "config.json",
+        {
+            "runtime_dir": str(runtime_dir),
+            "triggers": [
+                {
+                    "id": "trigger-ticket",
+                    "display_name": "Ticket Created",
+                    "type": "trigger:ticket:created",
+                    "directories": ["root"],
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-notify",
+                    "display_name": "Notify",
+                    "type": "effect:event:emit",
+                    "event_type": "operator.notice",
+                    "payload": {},
+                }
+            ],
+            "edges": [{"source_id": "trigger-ticket", "target_id": "effect-notify"}],
+            "workflow_graphs": [
+                {
+                    "id": "graph-ticket",
+                    "name": "Ticket Graph",
+                    "directory_paths": ["root"],
+                    "user_ids": [],
+                    "node_ids": ["trigger-ticket", "effect-notify"],
+                }
+            ],
+        },
+    )
+    _write_json_payload(
+        runtime_dir / "trigger-orchestrator-events.json",
+        {
+            "evt-no-session-old": {
+                "event_id": "evt-no-session-old",
+                "trigger_id": "trigger-ticket",
+                "trigger_type": "trigger:ticket:created",
+                "trace_id": "trace-no-session-old",
+                "occurred_at": "2026-05-01T10:00:00Z",
+                "payload": {"issue_number": "10"},
+                "delivery_state": "delivered",
+                "inflight_at": "2026-05-01T10:00:02Z",
+                "delivered_at": "2026-05-01T10:00:03Z",
+                "idempotency_key": None,
+            },
+            "evt-no-session-new": {
+                "event_id": "evt-no-session-new",
+                "trigger_id": "trigger-ticket",
+                "trigger_type": "trigger:ticket:created",
+                "trace_id": "trace-no-session-new",
+                "occurred_at": "2026-05-01T12:00:00Z",
+                "payload": {"issue_number": "12"},
+                "delivery_state": "delivered",
+                "inflight_at": "2026-05-01T12:00:02Z",
+                "delivered_at": "2026-05-01T12:00:03Z",
+                "idempotency_key": None,
+            },
+            "evt-with-session": {
+                "event_id": "evt-with-session",
+                "trigger_id": "trigger-ticket",
+                "trigger_type": "trigger:ticket:created",
+                "trace_id": "trace-with-session",
+                "occurred_at": "2026-05-01T13:00:00Z",
+                "payload": {"issue_number": "13"},
+                "delivery_state": "delivered",
+                "inflight_at": "2026-05-01T13:00:02Z",
+                "delivered_at": "2026-05-01T13:00:03Z",
+                "idempotency_key": None,
+            },
+        },
+    )
+    _write_json_payload(
+        runtime_dir / "effect-orchestrator-executions.json",
+        {
+            "exec-no-session-old": {
+                "execution_id": "exec-no-session-old",
+                "idempotency_key": "evt-no-session-old::effect-notify",
+                "event_id": "evt-no-session-old",
+                "trace_id": "trace-no-session-old",
+                "source_node_id": "trigger-ticket",
+                "source_trigger_type": "trigger:ticket:created",
+                "effect_id": "effect-notify",
+                "effect_type": "effect:event:emit",
+                "status": "succeeded",
+                "started_at": "2026-05-01T10:01:00Z",
+                "finished_at": "2026-05-01T10:01:01Z",
+                "resolved_config_hash": "hash-old",
+                "resolved_config": {},
+                "input_payload": {"issue_number": "10"},
+                "outputs": {"published": True},
+            },
+            "exec-no-session-new": {
+                "execution_id": "exec-no-session-new",
+                "idempotency_key": "evt-no-session-new::effect-notify",
+                "event_id": "evt-no-session-new",
+                "trace_id": "trace-no-session-new",
+                "source_node_id": "trigger-ticket",
+                "source_trigger_type": "trigger:ticket:created",
+                "effect_id": "effect-notify",
+                "effect_type": "effect:event:emit",
+                "status": "succeeded",
+                "started_at": "2026-05-01T12:01:00Z",
+                "finished_at": "2026-05-01T12:01:01Z",
+                "resolved_config_hash": "hash-new",
+                "resolved_config": {},
+                "input_payload": {"issue_number": "12"},
+                "outputs": {"published": True},
+            },
+            "exec-with-session": {
+                "execution_id": "exec-with-session",
+                "idempotency_key": "evt-with-session::effect-notify",
+                "event_id": "evt-with-session",
+                "trace_id": "trace-with-session",
+                "source_node_id": "trigger-ticket",
+                "source_trigger_type": "trigger:ticket:created",
+                "effect_id": "effect-notify",
+                "effect_type": "effect:event:emit",
+                "status": "succeeded",
+                "started_at": "2026-05-01T13:01:00Z",
+                "finished_at": "2026-05-01T13:01:01Z",
+                "resolved_config_hash": "hash-session",
+                "resolved_config": {"session_id": "session-agent"},
+                "input_payload": {"issue_number": "13"},
+                "outputs": {"published": True},
+            },
+        },
+    )
+
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    node_response = client.get(
+        "/api/workflow-editor/run-search",
+        params={"node_id": "effect-notify", "without_session": "true"},
+    )
+    graph_response = client.get(
+        "/api/workflow-editor/run-search",
+        params={"graph_id": "graph-ticket", "without_session": "false", "limit": "2"},
+    )
+
+    assert node_response.status_code == 200
+    node_payload = node_response.json()
+    assert [run["event_id"] for run in node_payload["runs"]] == [
+        "evt-no-session-new",
+        "evt-no-session-old",
+    ]
+    assert node_payload["matched"] == 2
+    assert node_payload["filters"]["node_id"] == "effect-notify"
+    assert node_payload["runs"][0]["run_state"] == "completed"
+    assert node_payload["runs"][0]["has_agent_session"] is False
+    assert node_payload["runs"][0]["matched_node_ids"] == ["effect-notify"]
+
+    assert graph_response.status_code == 200
+    graph_payload = graph_response.json()
+    assert graph_payload["matched"] == 3
+    assert graph_payload["returned"] == 2
+    assert graph_payload["has_more"] is True
+    assert graph_payload["filters"]["graph_name"] == "Ticket Graph"
+    assert [run["event_id"] for run in graph_payload["runs"]] == [
+        "evt-with-session",
+        "evt-no-session-new",
+    ]
+    assert graph_payload["runs"][0]["has_agent_session"] is True
+    assert graph_payload["runs"][0]["session_ids"] == ["session-agent"]
 
 
 def test_admin_web_workflow_runs_resolve_relative_paths_independent_of_cwd(

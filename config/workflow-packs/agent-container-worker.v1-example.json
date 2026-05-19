@@ -1045,6 +1045,10 @@
                 "starts_with": "agents/"
               },
               {
+                "left": "${{trigger-git-push-1.ref_name ?? \"\"}}",
+                "starts_with": "refs/heads/agents/"
+              },
+              {
                 "is_not_null": true,
                 "left": "${{trigger-git-push-1.session_id ?? null}}"
               },
