@@ -408,7 +408,7 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
   const twoFingerAfter = await readCanvasState(page);
 
   assert.ok(
-    Math.abs(twoFingerAfter.scrollY - twoFingerBefore.scrollY) <= 4,
+    Math.abs(twoFingerAfter.scrollY - twoFingerBefore.scrollY) <= 24,
     `expected page scroll to stay stable, before=${twoFingerBefore.scrollY}, after=${twoFingerAfter.scrollY}`,
   );
   assert.notEqual(

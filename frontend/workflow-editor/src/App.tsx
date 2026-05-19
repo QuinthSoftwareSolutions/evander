@@ -2502,6 +2502,40 @@ export default function App() {
   }, [isCompactCanvasTouchMode]);
 
   useEffect(() => {
+    if (!isCompactCanvasTouchMode || typeof globalThis.document === "undefined") return;
+
+    const stopSingleTouchContinuation = (event: TouchEvent) => {
+      if (!compactCanvasTouchSequenceHasMultiTouchRef.current || event.touches.length >= 2) return;
+      event.stopImmediatePropagation();
+    };
+
+    const handleTouchSequenceEnd = (event: TouchEvent) => {
+      if (compactCanvasTouchSequenceHasMultiTouchRef.current && event.touches.length > 0 && event.touches.length < 2) {
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (event.touches.length === 0) {
+        compactCanvasTouchSequenceHasMultiTouchRef.current = false;
+      }
+    };
+
+    globalThis.document.addEventListener("touchmove", stopSingleTouchContinuation, { capture: true });
+    globalThis.window.addEventListener("touchmove", stopSingleTouchContinuation, { capture: true });
+    globalThis.document.addEventListener("touchend", handleTouchSequenceEnd, { capture: true });
+    globalThis.window.addEventListener("touchend", handleTouchSequenceEnd, { capture: true });
+    globalThis.document.addEventListener("touchcancel", handleTouchSequenceEnd, { capture: true });
+    globalThis.window.addEventListener("touchcancel", handleTouchSequenceEnd, { capture: true });
+    return () => {
+      globalThis.document.removeEventListener("touchmove", stopSingleTouchContinuation, { capture: true });
+      globalThis.window.removeEventListener("touchmove", stopSingleTouchContinuation, { capture: true });
+      globalThis.document.removeEventListener("touchend", handleTouchSequenceEnd, { capture: true });
+      globalThis.window.removeEventListener("touchend", handleTouchSequenceEnd, { capture: true });
+      globalThis.document.removeEventListener("touchcancel", handleTouchSequenceEnd, { capture: true });
+      globalThis.window.removeEventListener("touchcancel", handleTouchSequenceEnd, { capture: true });
+    };
+  }, [isCompactCanvasTouchMode]);
+
+  useEffect(() => {
     if (typeof window === "undefined") return;
 
     const handlePointerMove = (event: PointerEvent) => {
@@ -3248,9 +3282,8 @@ export default function App() {
       compactCanvasTouchSequenceHasMultiTouchRef.current = true;
       return;
     }
-    if (!compactCanvasTouchSequenceHasMultiTouchRef.current) {
-      event.stopPropagation();
-    }
+    event.stopPropagation();
+    event.nativeEvent.stopImmediatePropagation();
   }
 
   function handleCanvasTouchEndCapture(event: ReactTouchEvent<HTMLElement>) {
@@ -3258,6 +3291,9 @@ export default function App() {
     if (compactCanvasTouchSequenceHasMultiTouchRef.current) {
       if (event.touches.length === 0) {
         compactCanvasTouchSequenceHasMultiTouchRef.current = false;
+      } else {
+        event.stopPropagation();
+        event.nativeEvent.stopImmediatePropagation();
       }
       return;
     }
@@ -3272,6 +3308,9 @@ export default function App() {
     if (compactCanvasTouchSequenceHasMultiTouchRef.current) {
       if (event.touches.length === 0) {
         compactCanvasTouchSequenceHasMultiTouchRef.current = false;
+      } else {
+        event.stopPropagation();
+        event.nativeEvent.stopImmediatePropagation();
       }
       return;
     }
