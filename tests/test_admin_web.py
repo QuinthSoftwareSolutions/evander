@@ -506,6 +506,12 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert [field["key"] for field in await_agent["fields"]] == ["session_id", "vm_name", "outputs"]
     assert all(field["bindable"] for field in await_agent["fields"][:2])
     for_gate = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:for")
+    for_gate_fields = {field["key"]: field for field in for_gate["fields"]}
+    assert for_gate_fields["items"]["kind"] == "json"
+    assert for_gate_fields["items"]["required"]
+    assert for_gate_fields["items"]["bindable"]
+    assert for_gate_fields["items"]["json_value_type"] == "array"
+    assert for_gate_fields["items"]["default_value"] == []
     assert for_gate["output_ports"] == [
         {"key": "body", "label": "Body", "description": "Loop body path while items remain."},
         {"key": "done", "label": "Done", "description": "Exit path after the final item."},

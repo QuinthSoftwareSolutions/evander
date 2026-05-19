@@ -103,6 +103,8 @@ export type WorkflowEditorFieldDefinition = {
   multiline: boolean;
   description?: string | null;
   placeholder?: string | null;
+  json_value_type?: "object" | "array" | "string" | "number" | "boolean" | "null" | "any" | string | null;
+  default_value?: unknown | null;
   options: WorkflowEditorFieldOption[];
   item_fields: WorkflowEditorFieldDefinition[];
 };

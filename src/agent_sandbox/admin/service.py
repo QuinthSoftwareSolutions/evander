@@ -902,6 +902,8 @@ class WorkflowEditorFieldDefinition(BaseModel):
     multiline: bool = False
     description: str | None = None
     placeholder: str | None = None
+    json_value_type: str | None = None
+    default_value: Any = None
     options: list[WorkflowEditorFieldOption] = Field(default_factory=list)
     item_fields: list["WorkflowEditorFieldDefinition"] = Field(default_factory=list)
 
@@ -1134,6 +1136,8 @@ def _field(
     multiline: bool = False,
     description: str | None = None,
     placeholder: str | None = None,
+    json_value_type: str | None = None,
+    default_value: Any = None,
     options: list[WorkflowEditorFieldOption] | None = None,
     item_fields: list[WorkflowEditorFieldDefinition] | None = None,
 ) -> WorkflowEditorFieldDefinition:
@@ -1147,6 +1151,8 @@ def _field(
         multiline=multiline,
         description=description,
         placeholder=placeholder,
+        json_value_type=json_value_type,
+        default_value=default_value,
         options=options or [],
         item_fields=item_fields or [],
     )
@@ -1737,6 +1743,8 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 required=True,
                 bindable=True,
                 description="Array expression to iterate. The body branch receives current_element/current_index outputs.",
+                json_value_type="array",
+                default_value=[],
             ),
             _field(
                 "outputs",

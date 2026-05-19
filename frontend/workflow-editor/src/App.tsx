@@ -78,6 +78,10 @@ import {
   groupWorkflowNodeCatalogEntries,
 } from "./workflowCatalogGroups";
 import {
+  workflowJsonFieldDraftFallback,
+  workflowJsonFieldFallbackValue,
+} from "./workflowFieldDefaults";
+import {
   FALLBACK_NODE_HEIGHT,
   FALLBACK_NODE_WIDTH,
   snapDraggedNodes,
@@ -1105,6 +1109,9 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   }
   if (kind === "gate" && type === "gate:await-agent") {
     return { id, display_name: "Await agent", type, session_id: "session-id", outputs: {} };
+  }
+  if (kind === "gate" && type === "gate:for") {
+    return { id, display_name: "For each item", type, items: [] };
   }
   if (kind === "effect" && type === "effect:agent:prompt") {
     return { id, display_name: "New prompt", type, prompt: "Describe the next action." };
@@ -2851,9 +2858,11 @@ export default function App() {
     for (const field of selectedCatalogEntry?.fields ?? []) {
       nextFieldModes[field.key] = fieldValueMode(field, nextKnownValues[field.key]);
       if (field.kind !== "json") continue;
+      const fallbackValue = field.required || field.key === "outputs" ? {} : undefined;
+      const fallbackDraft = workflowJsonFieldDraftFallback(field, fallbackValue);
       nextJsonDrafts[field.key] = nextKnownValues[field.key] === undefined
-        ? (field.required || field.key === "outputs" ? "{}" : "")
-        : formatJson(nextKnownValues[field.key], field.required || field.key === "outputs" ? "{}" : "");
+        ? fallbackDraft
+        : formatJson(nextKnownValues[field.key], fallbackDraft);
     }
     for (const field of selectedCatalogEntry?.fields ?? []) {
       if (field.kind !== "object_list") continue;
@@ -2864,9 +2873,11 @@ export default function App() {
           if (itemField.kind !== "json") return;
           const draftKey = objectListJsonDraftKey(field.key, index, itemField.key);
           const nestedValue = itemValue[itemField.key];
+          const fallbackValue = itemField.required ? {} : undefined;
+          const fallbackDraft = workflowJsonFieldDraftFallback(itemField, fallbackValue);
           nextJsonDrafts[draftKey] = nestedValue === undefined
-            ? (itemField.required ? "{}" : "")
-            : formatJson(nestedValue, itemField.required ? "{}" : "");
+            ? fallbackDraft
+            : formatJson(nestedValue, fallbackDraft);
         });
       });
     }
@@ -3517,7 +3528,7 @@ export default function App() {
         if (field.kind !== "json") continue;
         if (isExactBindingValue(nextKnownValues[field.key])) continue;
         if (field.read_only) continue;
-        const fallbackValue = field.required ? {} : undefined;
+        const fallbackValue = workflowJsonFieldFallbackValue(field, field.required ? {} : undefined);
         nextKnownValues[field.key] = parseJsonDraft(inspectorJsonDrafts[field.key] ?? "", fallbackValue);
       }
       for (const field of selectedCatalogEntry?.fields ?? []) {
@@ -3547,7 +3558,7 @@ export default function App() {
             const draftKey = objectListJsonDraftKey(field.key, index, itemField.key);
             const currentValue = item[itemField.key];
             if (isExactBindingValue(currentValue)) return;
-            const fallbackValue = itemField.required ? {} : undefined;
+            const fallbackValue = workflowJsonFieldFallbackValue(itemField, itemField.required ? {} : undefined);
             const parsedValue = parseJsonDraft(inspectorJsonDrafts[draftKey] ?? "", fallbackValue);
             if (parsedValue === undefined) {
               delete item[itemField.key];
