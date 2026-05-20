@@ -351,6 +351,16 @@ function isCompactCanvasTouchViewport(): boolean {
   return window.innerWidth <= WORKFLOW_COMPACT_BREAKPOINT;
 }
 
+type CompactCanvasTouchMode = "idle" | "pane-scroll" | "node-drag" | "multi-touch-pan";
+
+function eventTargetInsideWorkflowNodeDragSurface(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  const dragSurface = target.closest(".node-drag-surface");
+  if (!dragSurface) return false;
+  const node = dragSurface.closest(".react-flow__node");
+  return Boolean(node && node.contains(dragSurface));
+}
+
 function WorkflowNodeCard({ data, selected }: NodeProps) {
   const nodeData = data as GraphNodeData;
   const kindDescription = NODE_KIND_DESCRIPTIONS[nodeData.kind];
@@ -2259,7 +2269,6 @@ export default function App() {
   const canvasShellRef = useRef<HTMLElement | null>(null);
   const hasAutoFitRef = useRef(false);
   const initialGraphDirectoryPathRef = useRef(selectedDirectoryPath);
-  const compactCanvasTouchSequenceHasMultiTouchRef = useRef(false);
   const copiedSelectionRef = useRef<CopiedWorkflowSelection | null>(null);
   const sidebarResizeRef = useRef<SidebarResizeState | null>(null);
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
@@ -2277,6 +2286,7 @@ export default function App() {
   const [runSearchLoading, setRunSearchLoading] = useState(false);
   const [runSearchError, setRunSearchError] = useState<string | null>(null);
   const [isCompactCanvasTouchMode, setIsCompactCanvasTouchMode] = useState(isCompactCanvasTouchViewport);
+  const compactCanvasTouchModeRef = useRef<CompactCanvasTouchMode>("idle");
   const [validationDiagnostics, setValidationDiagnostics] = useState<WorkflowValidationDiagnostic[]>([]);
   const [flowNodes, setFlowNodes] = useState<Node<GraphNodeData>[]>([]);
   const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
@@ -2498,24 +2508,24 @@ export default function App() {
 
   useEffect(() => {
     if (isCompactCanvasTouchMode) return;
-    compactCanvasTouchSequenceHasMultiTouchRef.current = false;
+    compactCanvasTouchModeRef.current = "idle";
   }, [isCompactCanvasTouchMode]);
 
   useEffect(() => {
     if (!isCompactCanvasTouchMode || typeof globalThis.document === "undefined") return;
 
     const stopSingleTouchContinuation = (event: TouchEvent) => {
-      if (!compactCanvasTouchSequenceHasMultiTouchRef.current || event.touches.length >= 2) return;
+      if (compactCanvasTouchModeRef.current !== "multi-touch-pan" || event.touches.length >= 2) return;
       event.stopImmediatePropagation();
     };
 
     const handleTouchSequenceEnd = (event: TouchEvent) => {
-      if (compactCanvasTouchSequenceHasMultiTouchRef.current && event.touches.length > 0 && event.touches.length < 2) {
+      if (compactCanvasTouchModeRef.current === "multi-touch-pan" && event.touches.length > 0 && event.touches.length < 2) {
         event.stopImmediatePropagation();
         return;
       }
       if (event.touches.length === 0) {
-        compactCanvasTouchSequenceHasMultiTouchRef.current = false;
+        compactCanvasTouchModeRef.current = "idle";
       }
     };
 
@@ -3268,54 +3278,60 @@ export default function App() {
   function handleCanvasTouchStartCapture(event: ReactTouchEvent<HTMLElement>) {
     if (!isCompactCanvasTouchMode) return;
     if (event.touches.length >= 2) {
-      compactCanvasTouchSequenceHasMultiTouchRef.current = true;
+      compactCanvasTouchModeRef.current = "multi-touch-pan";
       return;
     }
-    if (!compactCanvasTouchSequenceHasMultiTouchRef.current) {
-      event.stopPropagation();
+    if (!workflowEditLocked && eventTargetInsideWorkflowNodeDragSurface(event.target)) {
+      compactCanvasTouchModeRef.current = "node-drag";
+      return;
     }
+    compactCanvasTouchModeRef.current = "pane-scroll";
+    event.stopPropagation();
   }
 
   function handleCanvasTouchMoveCapture(event: ReactTouchEvent<HTMLElement>) {
     if (!isCompactCanvasTouchMode) return;
     if (event.touches.length >= 2) {
-      compactCanvasTouchSequenceHasMultiTouchRef.current = true;
+      compactCanvasTouchModeRef.current = "multi-touch-pan";
       return;
     }
+    if (compactCanvasTouchModeRef.current === "node-drag") return;
+    if (compactCanvasTouchModeRef.current === "multi-touch-pan") {
+      event.stopPropagation();
+      event.nativeEvent.stopImmediatePropagation();
+      return;
+    }
+    compactCanvasTouchModeRef.current = "pane-scroll";
     event.stopPropagation();
     event.nativeEvent.stopImmediatePropagation();
   }
 
   function handleCanvasTouchEndCapture(event: ReactTouchEvent<HTMLElement>) {
     if (!isCompactCanvasTouchMode) return;
-    if (compactCanvasTouchSequenceHasMultiTouchRef.current) {
-      if (event.touches.length === 0) {
-        compactCanvasTouchSequenceHasMultiTouchRef.current = false;
-      } else {
-        event.stopPropagation();
-        event.nativeEvent.stopImmediatePropagation();
-      }
+    if (event.touches.length === 0) {
+      compactCanvasTouchModeRef.current = "idle";
       return;
     }
-    if (event.touches.length === 0) {
-      compactCanvasTouchSequenceHasMultiTouchRef.current = false;
+    if (compactCanvasTouchModeRef.current === "node-drag") return;
+    if (compactCanvasTouchModeRef.current === "multi-touch-pan") {
+      event.stopPropagation();
+      event.nativeEvent.stopImmediatePropagation();
+      return;
     }
     event.stopPropagation();
   }
 
   function handleCanvasTouchCancelCapture(event: ReactTouchEvent<HTMLElement>) {
     if (!isCompactCanvasTouchMode) return;
-    if (compactCanvasTouchSequenceHasMultiTouchRef.current) {
-      if (event.touches.length === 0) {
-        compactCanvasTouchSequenceHasMultiTouchRef.current = false;
-      } else {
-        event.stopPropagation();
-        event.nativeEvent.stopImmediatePropagation();
-      }
+    if (event.touches.length === 0) {
+      compactCanvasTouchModeRef.current = "idle";
       return;
     }
-    if (event.touches.length === 0) {
-      compactCanvasTouchSequenceHasMultiTouchRef.current = false;
+    if (compactCanvasTouchModeRef.current === "node-drag") return;
+    if (compactCanvasTouchModeRef.current === "multi-touch-pan") {
+      event.stopPropagation();
+      event.nativeEvent.stopImmediatePropagation();
+      return;
     }
     event.stopPropagation();
   }

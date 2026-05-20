@@ -436,6 +436,10 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
     "two-finger touch should change the ReactFlow viewport transform",
   );
 
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await assert.doesNotReject(() => page.locator(".canvas-shell .react-flow__pane").waitFor({ state: "visible" }));
+  await positionCanvasForTouch(page);
+
   const workflowNode = page.locator(".react-flow__node", { hasText: "Incoming command" });
   await assert.doesNotReject(() => workflowNode.waitFor({ state: "visible" }));
   const nodeBefore = await workflowNode.boundingBox();
