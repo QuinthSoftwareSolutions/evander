@@ -190,6 +190,15 @@ type CopiedWorkflowSelection = {
   primaryNodeId: string | null;
 };
 
+type WorkflowDocumentSurface = Pick<WorkflowEditorDocument, "config" | "layout" | "graphs">;
+
+type WorkflowDocumentLike = {
+  config: WorkflowConfig;
+  layout: WorkflowLayout;
+  graphs: WorkflowGraphMetadata[];
+  output_schemas?: WorkflowOutputSchemas;
+};
+
 const SYSTEM_BINDING_OPTIONS: ReadonlyArray<BindingOption> = [
   { value: "${{system.now.utc_timestamp}}", label: "[System] now.utc_timestamp" },
   { value: "${{system.now.utc_timestamp_compact}}", label: "[System] now.utc_timestamp_compact" },
@@ -971,6 +980,84 @@ function cloneLayout(layout: WorkflowLayout): WorkflowLayout {
 
 function cloneNodeConfig(node: WorkflowNodeConfig): WorkflowNodeConfig {
   return JSON.parse(JSON.stringify(node)) as WorkflowNodeConfig;
+}
+
+function workflowComparableValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => workflowComparableValue(entry));
+  }
+  if (isRecord(value)) {
+    const result: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) {
+      const nextValue = workflowComparableValue(value[key]);
+      if (nextValue !== undefined) {
+        result[key] = nextValue;
+      }
+    }
+    return result;
+  }
+  return value;
+}
+
+function workflowValuesEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(workflowComparableValue(left)) === JSON.stringify(workflowComparableValue(right));
+}
+
+function normalizeWorkflowEditorDocument<T extends WorkflowDocumentLike>(
+  document: T,
+  defaultDirectoryPath: string,
+): T {
+  const backendOutputSchemas = document.output_schemas ?? {};
+  const normalizedConfig = normalizeDerivedNodeFields(
+    normalizeWorkflowConfigShape(document.config),
+    backendOutputSchemas,
+  );
+  const outputSchemas = deriveWorkflowOutputSchemas(normalizedConfig, backendOutputSchemas);
+  const normalizedGraphs = normalizeWorkflowGraphs(
+    normalizedConfig,
+    document.graphs ?? [],
+    defaultDirectoryPath,
+  );
+  return {
+    ...document,
+    config: normalizedConfig,
+    graphs: normalizedGraphs,
+    output_schemas: outputSchemas,
+  } as T;
+}
+
+function workflowEditableDocumentsEqual(left: WorkflowDocumentSurface, right: WorkflowDocumentSurface): boolean {
+  return workflowValuesEqual(left, right);
+}
+
+function dirtyWorkflowNodeIds(
+  current: WorkflowEditorDocument | null,
+  baseline: WorkflowEditorDocument | null,
+  nodeEditOrigins: Record<string, string>,
+): string[] {
+  if (!current || !baseline) return [];
+  const baselineNodesById = new Map(workflowNodes(baseline.config).map((node) => [node.id, node]));
+  const dirtyNodeIds: string[] = [];
+  for (const node of workflowNodes(current.config)) {
+    const originId = nodeEditOrigins[node.id] ?? node.id;
+    const baselineNode = baselineNodesById.get(originId);
+    if (!baselineNode) {
+      dirtyNodeIds.push(node.id);
+      continue;
+    }
+    if (originId !== node.id) {
+      dirtyNodeIds.push(node.id);
+      continue;
+    }
+    if (!workflowValuesEqual(node, baselineNode)) {
+      dirtyNodeIds.push(node.id);
+      continue;
+    }
+    if (!workflowValuesEqual(current.layout.nodes[node.id], baseline.layout.nodes[originId])) {
+      dirtyNodeIds.push(node.id);
+    }
+  }
+  return dirtyNodeIds;
 }
 
 function flattenWorkflowNodeConfig(node: WorkflowNodeConfig): WorkflowNodeConfig {
@@ -2263,6 +2350,7 @@ export default function App() {
   const copiedSelectionRef = useRef<CopiedWorkflowSelection | null>(null);
   const sidebarResizeRef = useRef<SidebarResizeState | null>(null);
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
+  const [savedDocument, setSavedDocument] = useState<WorkflowEditorDocument | null>(null);
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
   const [runDetail, setRunDetail] = useState<WorkflowRunDetail | null>(null);
@@ -2288,6 +2376,7 @@ export default function App() {
   const [selectedGraphId, setSelectedGraphId] = useState<string | null>(null);
   const [nodeConnectionMenu, setNodeConnectionMenu] = useState<NodeConnectionMenuState | null>(null);
   const [pendingConnection, setPendingConnection] = useState<PendingConnectionState | null>(null);
+  const [nodeEditOrigins, setNodeEditOrigins] = useState<Record<string, string>>({});
   const [graphNameDraft, setGraphNameDraft] = useState("");
   const [graphDescriptionDraft, setGraphDescriptionDraft] = useState("");
   const [graphDirectoriesDraft, setGraphDirectoriesDraft] = useState("");
@@ -2418,6 +2507,29 @@ export default function App() {
   const selectedGraph = selectedGraphId
     ? visibleWorkflowGraphs.find((graph) => graph.id === selectedGraphId)
     : undefined;
+  const hasUnsavedWorkflowChanges = useMemo(
+    () => (
+      document !== null &&
+      savedDocument !== null &&
+      !workflowEditableDocumentsEqual(
+        {
+          config: document.config,
+          layout: document.layout,
+          graphs: document.graphs,
+        },
+        {
+          config: savedDocument.config,
+          layout: savedDocument.layout,
+          graphs: savedDocument.graphs,
+        },
+      )
+    ),
+    [document, savedDocument],
+  );
+  const dirtyNodeIds = useMemo(
+    () => dirtyWorkflowNodeIds(document, savedDocument, nodeEditOrigins),
+    [document, savedDocument, nodeEditOrigins],
+  );
   const visibleWorkflowNodes = workflowNodes(config).filter((node) => visibleGraphNodeIds.has(node.id));
   const runSearchScopeOptions: WorkflowRunSearchScopeOption[] = [
     ...visibleWorkflowGraphs.map((graph) => ({
@@ -2602,11 +2714,16 @@ export default function App() {
           graphs: normalizedGraphs,
           output_schemas: outputSchemas,
         };
+        const savedNormalizedDocument = normalizeWorkflowEditorDocument(
+          normalizedDocument,
+          initialGraphDirectoryPathRef.current,
+        );
         const nextDiagnostics = payload.validation_diagnostics
           ?? validateWorkflowBindingDiagnostics(normalizedConfig, outputSchemas);
         setRunSnapshot(runSnapshotPayload);
         setValidationDiagnostics(nextDiagnostics);
-        setDocument(normalizedDocument);
+        setDocument(savedNormalizedDocument);
+        setSavedDocument(savedNormalizedDocument);
         setError(null);
       })
       .catch((reason: unknown) => {
@@ -2978,31 +3095,26 @@ export default function App() {
     revisionOverride?: string,
   ) {
     if (!document) return;
-    const backendOutputSchemas = outputSchemasOverride ?? document.output_schemas ?? {};
-    const normalizedConfig = normalizeDerivedNodeFields(
-      normalizeWorkflowConfigShape(nextConfig),
-      backendOutputSchemas,
-    );
-    const outputSchemas = deriveWorkflowOutputSchemas(normalizedConfig, backendOutputSchemas);
-    const normalizedGraphs = normalizeWorkflowGraphs(
-      normalizedConfig,
-      nextGraphs ?? document.graphs ?? [],
+    const nextDocument = normalizeWorkflowEditorDocument(
+      {
+        ...document,
+        config: nextConfig,
+        layout: nextLayout,
+        graphs: nextGraphs ?? document.graphs ?? [],
+        output_schemas: outputSchemasOverride ?? document.output_schemas ?? {},
+        revision: revisionOverride ?? document.revision,
+      },
       selectedDirectoryPath,
     );
-    const nextDocument = {
-      ...document,
-      config: normalizedConfig,
-      layout: nextLayout,
-      graphs: normalizedGraphs,
-      output_schemas: outputSchemas,
-      revision: revisionOverride ?? document.revision,
-    };
-    const nextDiagnostics = diagnosticsOverride ?? validateWorkflowBindingDiagnostics(normalizedConfig, outputSchemas);
+    const nextDiagnostics = diagnosticsOverride ?? validateWorkflowBindingDiagnostics(
+      nextDocument.config,
+      nextDocument.output_schemas,
+    );
     setDocument(nextDocument);
     setValidationDiagnostics(nextDiagnostics);
     setFlowNodes((currentNodes) =>
       buildNodes(
-        normalizedConfig,
+        nextDocument.config,
         nextLayout,
         catalog,
         runSnapshot?.node_activity ?? {},
@@ -3011,7 +3123,7 @@ export default function App() {
         selectedNodeIdsAfterPatch ?? currentNodes.filter((node) => node.selected).map((node) => node.id),
       ),
     );
-    setFlowEdges(buildEdges(normalizedConfig, catalog));
+    setFlowEdges(buildEdges(nextDocument.config, catalog));
     setSaveState("idle");
   }
 
@@ -3367,6 +3479,13 @@ export default function App() {
     patchDocument(nextConfig, nextLayout);
     setProgrammaticSelection([]);
     setSelectedEdgeId(null);
+    setNodeEditOrigins((current) => {
+      const next = { ...current };
+      for (const nodeId of deletedNodeIds) {
+        delete next[nodeId];
+      }
+      return next;
+    });
     setError(null);
   }
 
@@ -3764,6 +3883,14 @@ export default function App() {
           }),
         },
       );
+      const normalizedSavedDocument = normalizeWorkflowEditorDocument(
+        {
+          ...document,
+          ...saved,
+          output_schemas: saved.output_schemas,
+        },
+        selectedDirectoryPath,
+      );
       patchDocument(
         saved.config,
         saved.layout,
@@ -3773,6 +3900,7 @@ export default function App() {
         saved.output_schemas,
         saved.revision,
       );
+      setSavedDocument(normalizedSavedDocument);
       setSaveState("saved");
     } catch (reason) {
       setSaveState("idle");
