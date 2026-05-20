@@ -129,6 +129,11 @@ Troubleshooting checklist:
   graph selection and labels. `user_ids` are owner/audit metadata only; workflow graphs are visible
   to control-plane operators. Saving from a filtered view keeps unchanged graph metadata entries
   intact, so graphs outside the selected directory are not rewritten by the presentation filter.
+- In the Workflow editor, node inspector edits are staged into the local workflow document as soon
+  as fields change. They are still not persisted to disk until **Save workflow** succeeds. Dirty
+  nodes show an **Unsaved changes** badge, selected dirty nodes can be reverted with **Reset
+  changes**, and leaving the workflow view or switching directories prompts for confirmation while
+  any workflow changes remain unsaved.
 - Admin Web exposes workflow reporting under **Reports**. The workflow graph activity report ranks
   graph metadata by trigger events plus gate/effect execution records over the selected period.
 - Admin Web also exposes read-only conformance snapshots under the same **Reports** section. See
