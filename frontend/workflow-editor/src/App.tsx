@@ -102,6 +102,7 @@ type GraphNodeData = {
   statusBadges: ReadonlyArray<GraphNodeStatusBadge>;
   diagnosticCount: number;
   hasDiagnostics: boolean;
+  hasUnsavedChanges: boolean;
   isInspectGhost?: boolean;
   pendingConnectionRole?: PendingConnectionRole | null;
 };
@@ -404,6 +405,13 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
                 <div className="node-diagnostic-badge">{nodeData.diagnosticCount}</div>
               </Tooltip>
             ) : null}
+            {nodeData.hasUnsavedChanges ? (
+              <Tooltip content="Unsaved changes">
+                <div className="node-unsaved-badge" aria-label="Unsaved changes">
+                  Unsaved changes
+                </div>
+              </Tooltip>
+            ) : null}
             {nodeData.statusBadges.map((badge) => (
               <Tooltip key={badge.status} content={badge.title}>
                 <div
@@ -677,6 +685,7 @@ function buildNodes(
   diagnostics: WorkflowValidationDiagnostic[] = [],
   currentPositions: Record<string, { x: number; y: number }> = {},
   selectedNodeIds: string[] = [],
+  dirtyNodeIds: ReadonlySet<string> = new Set<string>(),
   ghostNodeIds: ReadonlySet<string> = new Set<string>(),
 ): Node<GraphNodeData>[] {
   const collections = nodeCollections(config);
@@ -711,6 +720,7 @@ function buildNodes(
         statusBadges: nodeStatusBadges(activity),
         diagnosticCount,
         hasDiagnostics: diagnosticCount > 0,
+        hasUnsavedChanges: dirtyNodeIds.has(node.id),
         isInspectGhost: ghostNodeIds.has(node.id),
       },
     };
@@ -2440,6 +2450,7 @@ export default function App() {
         [],
         {},
         selectedNodeId ? [selectedNodeId] : [],
+        new Set<string>(),
         inspectGhostNodeIds,
       )
     : [];
@@ -2540,6 +2551,8 @@ export default function App() {
     () => dirtyWorkflowNodeIds(document, savedDocument, nodeEditOrigins),
     [document, savedDocument, nodeEditOrigins],
   );
+  const dirtyNodeIdSet = useMemo(() => new Set(dirtyNodeIds), [dirtyNodeIds]);
+  const selectedNodeHasUnsavedChanges = Boolean(selectedNodeId && dirtyNodeIdSet.has(selectedNodeId));
   const visibleWorkflowNodes = workflowNodes(config).filter((node) => visibleGraphNodeIds.has(node.id));
   const runSearchScopeOptions: WorkflowRunSearchScopeOption[] = [
     ...visibleWorkflowGraphs.map((graph) => ({
@@ -2764,6 +2777,7 @@ export default function App() {
             validationDiagnostics,
             currentPositionsFromNodes(currentNodes),
             currentNodes.filter((node) => node.selected).map((node) => node.id),
+            dirtyNodeIdSet,
           ),
         );
         setFlowEdges(buildEdges(document.config, catalogPayload));
@@ -2971,10 +2985,11 @@ export default function App() {
         validationDiagnostics,
         currentPositionsFromNodes(currentNodes),
         currentNodes.filter((node) => node.selected).map((node) => node.id),
+        dirtyNodeIdSet,
       );
     });
     setFlowEdges(buildEdges(document.config, catalog));
-  }, [catalog, document, runSnapshot, validationDiagnostics]);
+  }, [catalog, document, dirtyNodeIds, runSnapshot, validationDiagnostics]);
 
   useEffect(() => {
     hasAutoFitRef.current = false;
@@ -3120,6 +3135,7 @@ export default function App() {
       nextDocument.config,
       nextDocument.output_schemas,
     );
+    const nextDirtyNodeIds = dirtyWorkflowNodeIds(nextDocument, savedDocument, nodeEditOrigins);
     setDocument(nextDocument);
     setValidationDiagnostics(nextDiagnostics);
     setFlowNodes((currentNodes) =>
@@ -3131,6 +3147,7 @@ export default function App() {
         nextDiagnostics,
         currentPositionsFromNodes(currentNodes),
         selectedNodeIdsAfterPatch ?? currentNodes.filter((node) => node.selected).map((node) => node.id),
+        new Set(nextDirtyNodeIds),
       ),
     );
     setFlowEdges(buildEdges(nextDocument.config, catalog));
@@ -3843,6 +3860,65 @@ export default function App() {
     setError(null);
   }
 
+  function resetSelectedNodeChanges() {
+    if (!document || !selectedNode || workflowEditLocked) return;
+    const originalNodeId = nodeEditOrigins[selectedNode.id] ?? selectedNode.id;
+    const savedWorkflowDocument = savedDocument;
+    if (!savedWorkflowDocument) {
+      deleteNodes([selectedNode.id]);
+      return;
+    }
+    const savedNode = nodeById(savedWorkflowDocument.config, originalNodeId);
+    if (!savedNode) {
+      deleteNodes([selectedNode.id]);
+      return;
+    }
+
+    const nextConfig = cloneConfig(document.config);
+    const currentCollectionName = kindCollectionKey(nodeKindFromType(selectedNode.type));
+    const savedCollectionName = kindCollectionKey(nodeKindFromType(savedNode.type));
+    if (currentCollectionName === savedCollectionName) {
+      nextConfig[currentCollectionName] = nextConfig[currentCollectionName].map((node) =>
+        node.id === selectedNode.id ? cloneNodeConfig(savedNode) : node,
+      );
+    } else {
+      nextConfig.triggers = (nextConfig.triggers ?? []).filter((node) => node.id !== selectedNode.id);
+      nextConfig.gates = (nextConfig.gates ?? []).filter((node) => node.id !== selectedNode.id);
+      nextConfig.effects = (nextConfig.effects ?? []).filter((node) => node.id !== selectedNode.id);
+      nextConfig.queries = (nextConfig.queries ?? []).filter((node) => node.id !== selectedNode.id);
+      nextConfig[savedCollectionName] = [
+        ...(nextConfig[savedCollectionName] ?? []).filter((node) => node.id !== originalNodeId),
+        cloneNodeConfig(savedNode),
+      ];
+    }
+    if (selectedNode.id !== originalNodeId) {
+      nextConfig.edges = nextConfig.edges.map((edge) => ({
+        ...edge,
+        source_id: edge.source_id === selectedNode.id ? originalNodeId : edge.source_id,
+        target_id: edge.target_id === selectedNode.id ? originalNodeId : edge.target_id,
+      }));
+    }
+    const nextLayout = cloneLayout(document.layout);
+    const savedPosition = savedWorkflowDocument.layout.nodes[originalNodeId];
+    nextLayout.nodes[originalNodeId] = savedPosition ? { ...savedPosition } : fallbackPosition(0);
+    if (selectedNode.id !== originalNodeId) {
+      delete nextLayout.nodes[selectedNode.id];
+    }
+    patchDocument(nextConfig, nextLayout, undefined, [originalNodeId]);
+    setProgrammaticSelection([originalNodeId], originalNodeId);
+    setSelectedEdgeId(null);
+    setNodeEditOrigins((current) => {
+      const next = { ...current };
+      for (const [nodeId, originId] of Object.entries(current)) {
+        if (nodeId === selectedNode.id || originId === originalNodeId) {
+          delete next[nodeId];
+        }
+      }
+      return next;
+    });
+    setError(null);
+  }
+
   function stageInspectorDraft(nextDraft: Partial<InspectorDraftSnapshot> = {}) {
     if (!document || !selectedNode || workflowEditLocked) return;
     try {
@@ -3940,6 +4016,7 @@ export default function App() {
         saved.revision,
       );
       setSavedDocument(normalizedSavedDocument);
+      setNodeEditOrigins({});
       setSaveState("saved");
     } catch (reason) {
       setSaveState("idle");
@@ -5391,6 +5468,12 @@ export default function App() {
                     <p className="field-description">These keys are preserved because they are not in the current catalog.</p>
                     <textarea value={rawJsonDraft} rows={8} readOnly />
                   </details>
+                ) : null}
+
+                {selectedNodeHasUnsavedChanges ? (
+                  <button className="primary" onClick={resetSelectedNodeChanges} disabled={workflowEditLocked}>
+                    Reset changes
+                  </button>
                 ) : null}
 
                 <button className="danger" onClick={deleteSelectedNode} disabled={workflowEditLocked}>
