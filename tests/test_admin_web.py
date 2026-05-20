@@ -2395,6 +2395,11 @@ def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> 
     assert tool_call_link["session_id"] == fixture["session_id"]
     assert tool_call_link["args"]["token"] == "<redacted>"
     assert tool_call_link["result"]["secret"] == "<redacted>"
+    assert tool_call_link["redacted_args"]["token"] == "<redacted>"
+    assert tool_call_link["redacted_result"]["secret"] == "<redacted>"
+    assert tool_call_link["args_summary"] is not None
+    assert tool_call_link["result_summary"] is not None
+    assert tool_call_link["result_status"] == "available"
     approval_link = rich_node["approval_links"][0]
     assert approval_link["request_id"] == "approval-rich"
     assert approval_link["payload_digest"] == "digest-rich"
@@ -2411,7 +2416,12 @@ def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> 
     assert agent_link["execution_id"] == "execution-detail"
     assert agent_link["artifact_ids"] == [fixture["artifact_id"]]
     assert agent_link["session_status"] == "available"
+    assert agent_link["session_available"] is True
+    assert agent_link["agent_available"] is True
     assert agent_link["log_status"] == "log_unavailable"
+    assert agent_link["log_available"] is False
+    assert agent_link["result_status"] == "available"
+    assert agent_link["result_summary"] is not None
     assert agent_link["log_reference"]["source_kind"] == "effect_execution"
     assert agent_link["log_reference"]["vm_name"] == "vm-detail"
     assert agent_link["log_reference"]["session_id"] == fixture["session_id"]

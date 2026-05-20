@@ -4668,16 +4668,18 @@ export default function App() {
       link.session_id,
     );
     const toolCallHash = toolCallTarget ? detailHashTarget("tool-calls", { q: toolCallTarget }) : null;
+    const redactedArgs = link.redacted_args ?? link.args;
+    const redactedResult = link.redacted_result ?? link.result;
     const argsSummary = firstNonEmptyString(
       link.args_summary,
-      structuredValueSummary(link.redacted_args, "Args payload missing", "Empty args"),
+      structuredValueSummary(redactedArgs, "Args payload missing", "Empty args"),
       link.args_missing_reason,
     ) ?? "Args payload missing";
     const resultSummary = link.result_empty || normalizeAvailabilityState(link.result_status) === "empty"
       ? "Empty result"
       : firstNonEmptyString(
           link.result_summary,
-          structuredValueSummary(link.redacted_result, "Result payload missing", "Empty result"),
+          structuredValueSummary(redactedResult, "Result payload missing", "Empty result"),
           link.result_missing_reason,
         ) ?? "Result payload missing";
 
@@ -4706,19 +4708,25 @@ export default function App() {
   }
 
   function renderRunDetailAgentLink(agent: WorkflowRunAgentLink, index: number) {
-    const sessionAvailable = availabilityFlag(agent.session_available, Boolean(agent.session_id));
-    const agentAvailable = availabilityFlag(agent.agent_available, Boolean(firstNonEmptyString(agent.agent_id, agent.execution_id, agent.vm_name)));
-    const logAvailable = availabilityFlag(agent.log_available, Boolean(agent.log_reference || agent.log_href));
+    const sessionAvailable = availabilityFlag(agent.session_available ?? agent.session_status, Boolean(agent.session_id));
+    const agentAvailable = availabilityFlag(
+      agent.agent_available ?? agent.agent_status,
+      Boolean(firstNonEmptyString(agent.agent_id, agent.execution_id, agent.target_name, agent.vm_name)),
+    );
+    const logAvailable = availabilityFlag(
+      agent.log_available ?? agent.log_status,
+      Boolean(agent.log_href || agent.log_reference_href),
+    );
     const sessionHash = sessionAvailable && agent.session_id ? detailHashTarget("sessions", { session_id: agent.session_id }) : null;
     const agentTarget = agentAvailable
       ? detailHashTarget("agents", {
-          agent_id: firstNonEmptyString(agent.agent_id, agent.execution_id),
+          agent_id: firstNonEmptyString(agent.agent_id, agent.execution_id, agent.target_name),
           session_id: agent.session_id,
         })
       : null;
     const logTarget = logAvailable
       ? detailHashTarget("agents", {
-          agent_id: firstNonEmptyString(agent.agent_id, agent.execution_id),
+          agent_id: firstNonEmptyString(agent.agent_id, agent.execution_id, agent.target_name),
           session_id: agent.session_id,
         })
       : null;

@@ -591,9 +591,16 @@ class WorkflowRunAgentLinkPayload(BaseModel):
     session_id: str | None = None
     agent_id: str | None = None
     backend: str | None = None
+    agent_backend: str | None = None
+    agent_available: bool = False
+    agent_status: str | None = None
+    agent_missing_reason: str | None = None
     target_name: str | None = None
     vm_name: str | None = None
     prompt: str | None = None
+    prompt_summary: str | None = None
+    prompt_status: str | None = None
+    prompt_missing_reason: str | None = None
     dispatch_id: str | None = None
     thread_id: str | None = None
     execution_id: str | None = None
@@ -602,10 +609,19 @@ class WorkflowRunAgentLinkPayload(BaseModel):
     waiting: bool | None = None
     completed: bool | None = None
     session_status: str = "session_missing"
+    session_available: bool = False
+    session_missing_reason: str | None = None
+    session_href: str | None = None
     log_status: str = "log_unavailable"
+    log_available: bool = False
+    log_href: str | None = None
     log_reference_href: str | None = None
     log_missing_reason: str | None = None
     log_reference: dict[str, Any] | None = None
+    result_summary: str | None = None
+    result_status: str | None = None
+    result_missing_reason: str | None = None
+    result_empty: bool | None = None
 
 
 class WorkflowRunCommunicationArtifactLinkPayload(BaseModel):
@@ -643,8 +659,17 @@ class WorkflowRunToolCallLinkPayload(BaseModel):
     status: str | None = None
     error_summary: str | None = None
     href: str | None = None
+    filter: dict[str, Any] | None = None
+    args_summary: str | None = None
+    result_summary: str | None = None
+    args_missing_reason: str | None = None
+    result_status: str | None = None
+    result_missing_reason: str | None = None
+    result_empty: bool = False
     args: dict[str, Any] = Field(default_factory=dict)
     result: dict[str, Any] = Field(default_factory=dict)
+    redacted_args: dict[str, Any] = Field(default_factory=dict)
+    redacted_result: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowRunNodeRecordPayload(BaseModel):
@@ -11695,6 +11720,23 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     return f"#tool-calls?q={quote(text, safe='')}"
             return None
 
+        def compact_payload_summary(value: Any, *, max_length: int = 180) -> str | None:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                text = value.strip()
+            elif isinstance(value, (dict, list)):
+                if not value:
+                    return None
+                text = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+            else:
+                text = str(value).strip()
+            if not text:
+                return None
+            if len(text) <= max_length:
+                return text
+            return f"{text[: max_length - 1].rstrip()}..."
+
         def build_tool_call_link(
             entry: ToolCallAuditEntryPayload,
             *,
@@ -11703,6 +11745,28 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             payload = entry.model_dump(mode="python", exclude={"related_links"})
             payload["node_id"] = node_id
             payload["href"] = build_tool_call_href(entry)
+            filter_payload: dict[str, Any] = {}
+            if entry.request_id:
+                filter_payload["q"] = entry.request_id
+            elif entry.correlation_id:
+                filter_payload["q"] = entry.correlation_id
+            elif entry.approval_request_id:
+                filter_payload["q"] = entry.approval_request_id
+            elif entry.trace_id:
+                filter_payload["q"] = entry.trace_id
+            elif entry.session_id:
+                filter_payload["q"] = entry.session_id
+            payload["filter"] = filter_payload or None
+            payload["redacted_args"] = dict(entry.args)
+            payload["redacted_result"] = dict(entry.result)
+            payload["args_summary"] = compact_payload_summary(entry.args)
+            payload["args_missing_reason"] = None if entry.args else "Args payload missing."
+            payload["result_summary"] = compact_payload_summary(entry.result)
+            payload["result_empty"] = not bool(entry.result)
+            payload["result_status"] = "available" if entry.result else "recorded_empty"
+            payload["result_missing_reason"] = (
+                None if entry.result else "Tool call recorded an empty result."
+            )
             return WorkflowRunToolCallLinkPayload.model_validate(payload)
 
         def build_agent_link(
@@ -11784,13 +11848,25 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 or vm_name
             )
             session_status = "available" if session is not None else "session_missing"
+            session_missing_reason = None if session is not None else "Session record missing."
+            agent_available = selected_agent_record is not None
+            agent_status = (
+                _coerce_optional_string(selected_agent_record.status)
+                if selected_agent_record is not None
+                else "missing"
+            )
+            agent_missing_reason = (
+                None
+                if selected_agent_record is not None
+                else "No agent record matched the session."
+            )
             log_status = "log_unavailable"
             log_reference_href = None
             log_missing_reason = None
             if session is None:
-                log_missing_reason = "Session record missing."
+                log_missing_reason = session_missing_reason
             elif selected_agent_record is None:
-                log_missing_reason = "No agent record matched the session."
+                log_missing_reason = agent_missing_reason
             elif selected_agent_record.capabilities.get("logs"):
                 log_status = "log_available"
                 log_reference_href = (
@@ -11799,15 +11875,39 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 )
             else:
                 log_missing_reason = "Agent record does not advertise log support."
+            if "outputs" not in record:
+                result_status = "missing"
+                result_summary = None
+                result_missing_reason = "Result payload missing."
+                result_empty = None
+            elif outputs:
+                result_status = "available"
+                result_summary = compact_payload_summary(outputs)
+                result_missing_reason = None
+                result_empty = False
+            else:
+                result_status = "recorded_empty"
+                result_summary = "Empty result"
+                result_missing_reason = None
+                result_empty = True
+            prompt_summary = prompt
+            prompt_missing_reason = None if prompt_summary else "Prompt summary missing."
             return WorkflowRunAgentLinkPayload(
                 node_id=node_id,
                 node_type=node_type,
                 session_id=session_id,
                 agent_id=agent_id,
                 backend=backend,
+                agent_backend=backend,
+                agent_available=agent_available,
+                agent_status=agent_status,
+                agent_missing_reason=agent_missing_reason,
                 target_name=target_name,
                 vm_name=vm_name,
                 prompt=prompt,
+                prompt_summary=prompt_summary,
+                prompt_status="available" if prompt_summary else "missing",
+                prompt_missing_reason=prompt_missing_reason,
                 dispatch_id=dispatch_id,
                 thread_id=thread_id,
                 execution_id=execution_id,
@@ -11816,7 +11916,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 waiting=waiting,
                 completed=completed,
                 session_status=session_status,
+                session_available=session is not None,
+                session_missing_reason=session_missing_reason,
+                session_href=f"#sessions?session_id={quote(session_id, safe='')}"
+                if session_id
+                else None,
                 log_status=log_status,
+                log_available=log_status == "log_available",
+                log_href=log_reference_href,
                 log_reference_href=log_reference_href,
                 log_missing_reason=log_missing_reason,
                 log_reference={
@@ -11828,6 +11935,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     "execution_id": execution_id,
                     "dispatch_id": dispatch_id,
                 },
+                result_summary=result_summary,
+                result_status=result_status,
+                result_missing_reason=result_missing_reason,
+                result_empty=result_empty,
             )
 
         if graph_snapshot is not None:

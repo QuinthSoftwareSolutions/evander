@@ -270,6 +270,8 @@ export type WorkflowRunToolCallLink = {
   result_status?: string | null;
   result_missing_reason?: string | null;
   result_empty?: boolean | null;
+  args?: Record<string, unknown>;
+  result?: Record<string, unknown>;
   redacted_args?: unknown;
   redacted_result?: unknown;
   href?: string | null;
@@ -282,7 +284,9 @@ export type WorkflowRunAgentLink = {
   session_id?: string | null;
   vm_name?: string | null;
   agent_id?: string | null;
+  backend?: string | null;
   agent_backend?: string | null;
+  target_name?: string | null;
   agent_available?: boolean | null;
   agent_status?: string | null;
   agent_missing_reason?: string | null;
@@ -294,6 +298,7 @@ export type WorkflowRunAgentLink = {
   log_status?: string | null;
   log_missing_reason?: string | null;
   log_href?: string | null;
+  log_reference_href?: string | null;
   prompt?: string | null;
   prompt_summary?: string | null;
   prompt_status?: string | null;

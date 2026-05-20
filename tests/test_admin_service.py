@@ -3618,6 +3618,11 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
     assert tool_call_link.href == "#tool-calls?q=request-sqlite-node"
     assert tool_call_link.args["token"] == "<redacted>"
     assert tool_call_link.result["secret"] == "<redacted>"
+    assert tool_call_link.redacted_args["token"] == "<redacted>"
+    assert tool_call_link.redacted_result["secret"] == "<redacted>"
+    assert tool_call_link.args_summary is not None
+    assert tool_call_link.result_summary is not None
+    assert tool_call_link.result_status == "available"
     approval_link = effect_node.approval_links[0]
     assert approval_link.request_id == "approval-sqlite"
     assert approval_link.status == "approved"
@@ -3632,7 +3637,13 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
     assert agent_link.execution_id == "execution-sqlite"
     assert agent_link.artifact_ids == [artifact.artifact_id]
     assert agent_link.session_status == "available"
+    assert agent_link.session_available is True
+    assert agent_link.agent_available is True
     assert agent_link.log_status == "log_available"
+    assert agent_link.log_available is True
+    assert agent_link.log_href is not None
+    assert agent_link.result_status == "available"
+    assert agent_link.result_summary is not None
     assert agent_link.log_reference == {
         "source_kind": "effect_execution",
         "node_id": "effect-prompt",
