@@ -175,7 +175,9 @@ should delete the agent after the tracked PR is terminal.
 caller-supplied event names under the reserved `external.` prefix, so a POST with
 `event_type=deploy_requested` should be matched with `event_type=external.deploy_requested`.
 The HTTP ingress requires either a bearer token minted by a signed-in Admin Web user or a
-configured machine token from `AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS`; it accepts arbitrary
+configured machine token from `AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS`. Machine tokens are
+configured as comma-separated `source-name:token` entries; the matching source name is recorded on
+the published event. Token values must not contain commas or colons. The ingress accepts arbitrary
 JSON-object payloads for workflow-specific data.
 
 The current trigger set also includes `trigger:teams:new-message`, `trigger:review:new-request`,
