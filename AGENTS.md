@@ -223,3 +223,7 @@ Do not assume the suite is currently green; run it and inspect failures in the c
   - systemd template
   - env example
   - firewall impact
+
+## Guidance for working on the remotes over SSH
+
+- Remember, when making changes to workflow packs, that other users may simultaneously be editing those workflow packs. Use existing API and locks to prevent version mismatches and unintended configuration overwriting.
