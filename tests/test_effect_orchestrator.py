@@ -4,6 +4,7 @@ import json
 import logging
 import sys
 import time
+from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event
@@ -74,6 +75,16 @@ class _Factory:
             self.outputs_by_effect_id.get(effect.id, {}),
             wait_on=self.wait_on_by_effect_id.get(effect.id),
         )
+
+
+class _ImmediateExecutor:
+    def submit(self, fn, *args, **kwargs):
+        future: Future[object] = Future()
+        try:
+            future.set_result(fn(*args, **kwargs))
+        except BaseException as exc:  # noqa: BLE001
+            future.set_exception(exc)
+        return future
 
 
 class _FailingFactory:
@@ -535,6 +546,86 @@ def test_effect_orchestrator_executes_gate_and_effect_chain(tmp_path: Path) -> N
     assert any(item["trigger_id"] == "effect-1" for item in queue_payload.values())
     assert any(item["trigger_id"] == "effect-2" for item in queue_payload.values())
     assert {item["trace_id"] for item in queue_payload.values()} == {"trace-1"}
+
+
+def test_effect_orchestrator_hot_drains_fast_completion_chain(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"ticket_id": {"type": "integer"}},
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-1",
+                    "display_name": "Transform",
+                    "type": "gate:map",
+                    "template": {"vm_name": "vm-${{trigger-1.ticket_id}}"},
+                    "outputs": {"vm_name": {"type": "string"}},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Provision",
+                    "type": "effect:vm:create",
+                    "vm_name": "${{gate-1.vm_name}}",
+                    "outputs": {"session_id": {"type": "string"}},
+                },
+                {
+                    "id": "effect-2",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "session_id": "${{effect-1.session_id}}",
+                    "prompt": "Continue ${{effect-1.session_id}}",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "gate-1"),
+                _edge("gate-1", "effect-1"),
+                _edge("effect-1", "effect-2"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker._executor = _ImmediateExecutor()  # type: ignore[assignment]
+    worker.provider_factory = _Factory(
+        {
+            "effect-1": {"session_id": "session-123"},
+            "effect-2": {"thread_id": "thread-1", "success": True},
+        }
+    )
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-hot-drain-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"ticket_id": 123},
+        )
+    )
+
+    active_results = [worker.run_once(), worker.run_once(), worker.run_once()]
+    idle_result = worker.run_once()
+
+    assert [result.next_sleep_seconds for result in active_results] == [0.0, 0.0, 0.0]
+    assert idle_result.next_sleep_seconds == 1
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    by_effect = {item["effect_id"]: item for item in effect_payload.values()}
+    assert by_effect["effect-1"]["status"] == "succeeded"
+    assert by_effect["effect-2"]["status"] == "succeeded"
 
 
 def test_effect_orchestrator_executes_query_nodes(tmp_path: Path) -> None:
@@ -1619,10 +1710,11 @@ def test_effect_orchestrator_dispatches_without_waiting_for_long_effect(tmp_path
     )
 
     start = time.monotonic()
-    worker.run_once()
+    first_result = worker.run_once()
     elapsed = time.monotonic() - start
 
     assert elapsed < 0.5
+    assert first_result.next_sleep_seconds == 0.0
     execution_payload = json.loads(
         (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
     )
@@ -1630,6 +1722,11 @@ def test_effect_orchestrator_dispatches_without_waiting_for_long_effect(tmp_path
     assert only["status"] == "running"
     queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
     assert queue_payload["event-long-1"]["delivery_state"] == "inflight"
+
+    idle_result = worker.run_once()
+    assert idle_result.events_processed == 0
+    assert idle_result.completion_events_published == 0
+    assert idle_result.next_sleep_seconds == 1
 
     block_event.set()
     only = None

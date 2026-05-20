@@ -487,7 +487,9 @@ class EffectOrchestratorWorker:
         _completed_count, published_count = self._reap_completed_futures()
         completion_events_published += published_count
 
-        next_sleep_seconds = _compute_next_sleep_seconds(
+        next_sleep_seconds = _compute_effect_cycle_sleep_seconds(
+            events_processed=events_processed,
+            completion_events_published=completion_events_published,
             poll_interval_seconds=self.worker_config.poll_interval_seconds,
             jitter_seconds=self.worker_config.jitter_seconds,
         )
@@ -2147,6 +2149,21 @@ def _compute_next_sleep_seconds(*, poll_interval_seconds: float, jitter_seconds:
     if jitter_seconds > 0:
         delay += random.uniform(0.0, jitter_seconds)
     return max(0.0, delay)
+
+
+def _compute_effect_cycle_sleep_seconds(
+    *,
+    events_processed: int,
+    completion_events_published: int,
+    poll_interval_seconds: float,
+    jitter_seconds: float,
+) -> float:
+    if events_processed > 0 or completion_events_published > 0:
+        return 0.0
+    return _compute_next_sleep_seconds(
+        poll_interval_seconds=poll_interval_seconds,
+        jitter_seconds=jitter_seconds,
+    )
 
 
 def _compute_backoff_sleep_seconds(*, poll_interval_seconds: float, jitter_seconds: float) -> float:
