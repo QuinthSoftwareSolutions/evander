@@ -2361,7 +2361,7 @@ function parseNodeTypeDragPayload(dataTransfer: DataTransfer): NodeTypeDragPaylo
 }
 
 export default function App() {
-  const { privilegedUnlocked, selectedDirectoryPath, directoryTree } = useAdminUi();
+  const { privilegedUnlocked, selectedDirectoryPath, directoryTree, setWorkflowHasUnsavedChanges } = useAdminUi();
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const canvasShellRef = useRef<HTMLElement | null>(null);
   const hasAutoFitRef = useRef(false);
@@ -2598,6 +2598,27 @@ export default function App() {
   })();
   const effectTargetField = selectedCatalogEntry?.fields.find((field) => field.key === effectTargetKey)
     ?? selectedCatalogEntry?.fields.find((field) => field.key === "target");
+
+  useEffect(() => {
+    setWorkflowHasUnsavedChanges(hasUnsavedWorkflowChanges);
+  }, [hasUnsavedWorkflowChanges, setWorkflowHasUnsavedChanges]);
+
+  useEffect(
+    () => () => {
+      setWorkflowHasUnsavedChanges(false);
+    },
+    [setWorkflowHasUnsavedChanges],
+  );
+
+  useEffect(() => {
+    if (!hasUnsavedWorkflowChanges) return;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedWorkflowChanges]);
 
   useEffect(() => {
     setRunSearchScope((current) => {
