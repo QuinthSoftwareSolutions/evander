@@ -145,6 +145,16 @@ type StringMapDraftRow = {
   value: string;
 };
 
+type InspectorDraftSnapshot = {
+  nodeId: string;
+  displayName: string;
+  knownValues: Record<string, unknown>;
+  unknownValues: Record<string, unknown>;
+  jsonDrafts: Record<string, string>;
+  stringListDrafts: Record<string, string>;
+  stringMapDrafts: Record<string, StringMapDraftRow[]>;
+};
+
 type DirectorySelectOption = {
   value: string;
   label: string;
@@ -3065,7 +3075,7 @@ export default function App() {
     setInspectorStringMapDrafts(nextStringMapDrafts);
     setInspectorFieldModes(nextFieldModes);
     setRawJsonDraft(JSON.stringify(extras, null, 2));
-  }, [selectedNode, selectedCatalogEntry]);
+  }, [selectedNode?.id, selectedCatalogEntry]);
 
   useEffect(() => {
     if (!selectedEdgeId) return;
@@ -3727,96 +3737,125 @@ export default function App() {
     setError(null);
   }
 
-  function applyInspectorChanges() {
-    if (!document || !selectedNode || workflowEditLocked) return;
-    try {
-      const rawId = inspectorNodeId.trim();
-      const rawName = inspectorDisplayName.trim();
-      if (!rawId) throw new Error("Node id is required.");
-      if (!rawName) throw new Error("Display name is required.");
-      if (rawId !== selectedNode.id && nodeById(document.config, rawId)) {
-        throw new Error(`Node ${rawId} already exists.`);
-      }
-    const nextKnownValues = { ...inspectorKnownValues };
-      if (hasCollapsedTargetUi) {
-        const activeTargetKey = activeEffectTargetKey(nextKnownValues);
-        for (const key of EFFECT_TARGET_KEYS) {
-          if (key !== activeTargetKey) {
-            delete nextKnownValues[key];
-          }
+  function materializeInspectorNodeFromDraft(draft: InspectorDraftSnapshot): WorkflowNodeConfig {
+    if (!selectedNode) throw new Error("No node is selected.");
+    const rawId = draft.nodeId.trim();
+    const rawName = draft.displayName.trim();
+    if (!rawId) throw new Error("Node id is required.");
+    if (!rawName) throw new Error("Display name is required.");
+    if (rawId !== selectedNode.id && nodeById(document?.config ?? emptyConfig(), rawId)) {
+      throw new Error(`Node ${rawId} already exists.`);
+    }
+
+    const nextKnownValues = { ...draft.knownValues };
+    if (hasCollapsedTargetUi) {
+      const activeTargetKey = activeEffectTargetKey(nextKnownValues);
+      for (const key of EFFECT_TARGET_KEYS) {
+        if (key !== activeTargetKey) {
+          delete nextKnownValues[key];
         }
       }
-      for (const field of selectedCatalogEntry?.fields ?? []) {
-        if (field.kind !== "json") continue;
-        if (isExactBindingValue(nextKnownValues[field.key])) continue;
-        if (field.read_only) continue;
-        const fallbackValue = workflowJsonFieldFallbackValue(field, field.required ? {} : undefined);
-        nextKnownValues[field.key] = parseJsonDraft(inspectorJsonDrafts[field.key] ?? "", fallbackValue);
-      }
-      for (const field of selectedCatalogEntry?.fields ?? []) {
-        if (field.kind !== "string_list") continue;
-        nextKnownValues[field.key] = (inspectorStringListDrafts[field.key] ?? "")
-          .split("\n")
-          .map((item) => item.trim())
-          .filter(Boolean);
-      }
-      for (const field of selectedCatalogEntry?.fields ?? []) {
-        if (field.kind !== "string_map") continue;
-        if (isExactBindingValue(nextKnownValues[field.key])) continue;
-        if (field.read_only) continue;
-        nextKnownValues[field.key] = parseStringMapDraftRows(
-          inspectorStringMapDrafts[field.key] ?? [],
-          field.label,
-          field.required,
-        );
-      }
-      for (const field of selectedCatalogEntry?.fields ?? []) {
-        if (field.kind !== "object_list") continue;
-        const currentItems = Array.isArray(nextKnownValues[field.key]) ? [...(nextKnownValues[field.key] as unknown[])] : [];
-        field.item_fields.forEach((itemField) => {
-          if (itemField.kind !== "json") return;
-          currentItems.forEach((item, index) => {
-            if (!isRecord(item)) return;
-            const draftKey = objectListJsonDraftKey(field.key, index, itemField.key);
-            const currentValue = item[itemField.key];
-            if (isExactBindingValue(currentValue)) return;
-            const fallbackValue = workflowJsonFieldFallbackValue(itemField, itemField.required ? {} : undefined);
-            const parsedValue = parseJsonDraft(inspectorJsonDrafts[draftKey] ?? "", fallbackValue);
-            if (parsedValue === undefined) {
-              delete item[itemField.key];
-            } else {
-              item[itemField.key] = parsedValue;
-            }
-          });
-        });
-        nextKnownValues[field.key] = currentItems;
-      }
-      const nextNode = removeUndefinedValues({
-        id: rawId,
-        display_name: rawName,
-        type: selectedNode.type,
-        ...inspectorUnknownValues,
-        ...nextKnownValues,
-      }) as WorkflowNodeConfig;
-      const nextConfig = cloneConfig(document.config);
-      const collectionName = kindCollectionKey(nodeKindFromType(selectedNode.type));
-      nextConfig[collectionName] = nextConfig[collectionName].map((node) =>
-        node.id === selectedNode.id ? nextNode : node,
+    }
+    for (const field of selectedCatalogEntry?.fields ?? []) {
+      if (field.kind !== "json") continue;
+      if (isExactBindingValue(nextKnownValues[field.key])) continue;
+      if (field.read_only) continue;
+      const fallbackValue = workflowJsonFieldFallbackValue(field, field.required ? {} : undefined);
+      nextKnownValues[field.key] = parseJsonDraft(draft.jsonDrafts[field.key] ?? "", fallbackValue);
+    }
+    for (const field of selectedCatalogEntry?.fields ?? []) {
+      if (field.kind !== "string_list") continue;
+      nextKnownValues[field.key] = (draft.stringListDrafts[field.key] ?? "")
+        .split("\n")
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+    for (const field of selectedCatalogEntry?.fields ?? []) {
+      if (field.kind !== "string_map") continue;
+      if (isExactBindingValue(nextKnownValues[field.key])) continue;
+      if (field.read_only) continue;
+      nextKnownValues[field.key] = parseStringMapDraftRows(
+        draft.stringMapDrafts[field.key] ?? [],
+        field.label,
+        field.required,
       );
-      nextConfig.edges = nextConfig.edges.map((edge) => ({
-        ...edge,
-        source_id: edge.source_id === selectedNode.id ? rawId : edge.source_id,
-        target_id: edge.target_id === selectedNode.id ? rawId : edge.target_id,
-      }));
-      const nextLayout = cloneLayout(document.layout);
-      if (rawId !== selectedNode.id) {
-        nextLayout.nodes[rawId] = nextLayout.nodes[selectedNode.id] ?? fallbackPosition(0);
-        delete nextLayout.nodes[selectedNode.id];
+    }
+    for (const field of selectedCatalogEntry?.fields ?? []) {
+      if (field.kind !== "object_list") continue;
+      const currentItems = Array.isArray(nextKnownValues[field.key]) ? [...(nextKnownValues[field.key] as unknown[])] : [];
+      field.item_fields.forEach((itemField) => {
+        if (itemField.kind !== "json") return;
+        currentItems.forEach((item, index) => {
+          if (!isRecord(item)) return;
+          const draftKey = objectListJsonDraftKey(field.key, index, itemField.key);
+          const currentValue = item[itemField.key];
+          if (isExactBindingValue(currentValue)) return;
+          const fallbackValue = workflowJsonFieldFallbackValue(itemField, itemField.required ? {} : undefined);
+          const parsedValue = parseJsonDraft(draft.jsonDrafts[draftKey] ?? "", fallbackValue);
+          if (parsedValue === undefined) {
+            delete item[itemField.key];
+          } else {
+            item[itemField.key] = parsedValue;
+          }
+        });
+      });
+      nextKnownValues[field.key] = currentItems;
+    }
+
+    return removeUndefinedValues({
+      id: rawId,
+      display_name: rawName,
+      type: selectedNode.type,
+      ...draft.unknownValues,
+      ...nextKnownValues,
+    }) as WorkflowNodeConfig;
+  }
+
+  function replaceSelectedNode(nextNode: WorkflowNodeConfig, originalNodeId: string) {
+    if (!document || !selectedNode || workflowEditLocked) return;
+    const nextConfig = cloneConfig(document.config);
+    const collectionName = kindCollectionKey(nodeKindFromType(selectedNode.type));
+    nextConfig[collectionName] = nextConfig[collectionName].map((node) =>
+      node.id === originalNodeId ? nextNode : node,
+    );
+    nextConfig.edges = nextConfig.edges.map((edge) => ({
+      ...edge,
+      source_id: edge.source_id === originalNodeId ? nextNode.id : edge.source_id,
+      target_id: edge.target_id === originalNodeId ? nextNode.id : edge.target_id,
+    }));
+    const nextLayout = cloneLayout(document.layout);
+    if (nextNode.id !== originalNodeId) {
+      nextLayout.nodes[nextNode.id] = nextLayout.nodes[originalNodeId] ?? fallbackPosition(0);
+      delete nextLayout.nodes[originalNodeId];
+    }
+    patchDocument(nextConfig, nextLayout, undefined, [nextNode.id]);
+    setProgrammaticSelection([nextNode.id], nextNode.id);
+    setSelectedEdgeId(null);
+    setNodeEditOrigins((current) => {
+      const next = { ...current };
+      const originId = current[originalNodeId] ?? (savedDocument && nodeById(savedDocument.config, originalNodeId) ? originalNodeId : null);
+      delete next[originalNodeId];
+      if (originId && originId !== nextNode.id) {
+        next[nextNode.id] = originId;
       }
-      patchDocument(nextConfig, nextLayout, undefined, [rawId]);
-      setProgrammaticSelection([rawId], rawId);
-      setSelectedEdgeId(null);
-      setError(null);
+      return next;
+    });
+    setError(null);
+  }
+
+  function stageInspectorDraft(nextDraft: Partial<InspectorDraftSnapshot> = {}) {
+    if (!document || !selectedNode || workflowEditLocked) return;
+    try {
+      const nextNode = materializeInspectorNodeFromDraft({
+        nodeId: nextDraft.nodeId ?? inspectorNodeId,
+        displayName: nextDraft.displayName ?? inspectorDisplayName,
+        knownValues: nextDraft.knownValues ?? inspectorKnownValues,
+        unknownValues: nextDraft.unknownValues ?? inspectorUnknownValues,
+        jsonDrafts: nextDraft.jsonDrafts ?? inspectorJsonDrafts,
+        stringListDrafts: nextDraft.stringListDrafts ?? inspectorStringListDrafts,
+        stringMapDrafts: nextDraft.stringMapDrafts ?? inspectorStringMapDrafts,
+      });
+      replaceSelectedNode(nextNode, selectedNode.id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -3915,29 +3954,23 @@ export default function App() {
   }
 
   function updateKnownField(key: string, value: unknown) {
-    setInspectorKnownValues((current) => {
-      const next = { ...current, [key]: value };
-      if (selectedNode?.type === "gate:filter") {
-        if (key === "match" && value !== undefined && value !== null && value !== "") {
-          delete next.when;
-        }
-        if (key === "when" && value !== undefined && value !== null && value !== "") {
-          delete next.match;
-        }
-      }
-      return next;
-    });
+    const next = { ...inspectorKnownValues, [key]: value };
+    let nextJsonDrafts = inspectorJsonDrafts;
     if (selectedNode?.type === "gate:filter") {
-      setInspectorJsonDrafts((current) => {
-        if (key === "match" && value !== undefined && value !== null && value !== "") {
-          return { ...current, when: "" };
-        }
-        if (key === "when" && value !== undefined && value !== null && value !== "") {
-          return { ...current, match: "" };
-        }
-        return current;
-      });
+      if (key === "match" && value !== undefined && value !== null && value !== "") {
+        delete next.when;
+        nextJsonDrafts = { ...inspectorJsonDrafts, when: "" };
+      }
+      if (key === "when" && value !== undefined && value !== null && value !== "") {
+        delete next.match;
+        nextJsonDrafts = { ...inspectorJsonDrafts, match: "" };
+      }
     }
+    setInspectorKnownValues(next);
+    if (nextJsonDrafts !== inspectorJsonDrafts) {
+      setInspectorJsonDrafts(nextJsonDrafts);
+    }
+    stageInspectorDraft({ knownValues: next, jsonDrafts: nextJsonDrafts });
   }
 
   function updateFieldMode(key: string, mode: "literal" | "bind" | "template") {
@@ -3949,24 +3982,21 @@ export default function App() {
     const currentValue = inspectorKnownValues[currentKey];
     const currentMode = inspectorFieldModes[currentKey]
       ?? (effectTargetField ? fieldValueMode(effectTargetField, currentValue) : "literal");
-    setInspectorKnownValues((current) => {
-      const next = { ...current };
-      for (const key of EFFECT_TARGET_KEYS) {
-        delete next[key];
-      }
-      if (currentValue !== undefined && currentValue !== "") {
-        next[nextKey] = currentValue;
-      }
-      return next;
-    });
-    setInspectorFieldModes((current) => {
-      const next = { ...current };
-      for (const key of EFFECT_TARGET_KEYS) {
-        delete next[key];
-      }
-      next[nextKey] = currentMode;
-      return next;
-    });
+    const next = { ...inspectorKnownValues };
+    for (const key of EFFECT_TARGET_KEYS) {
+      delete next[key];
+    }
+    if (currentValue !== undefined && currentValue !== "") {
+      next[nextKey] = currentValue;
+    }
+    const nextModes = { ...inspectorFieldModes };
+    for (const key of EFFECT_TARGET_KEYS) {
+      delete nextModes[key];
+    }
+    nextModes[nextKey] = currentMode;
+    setInspectorKnownValues(next);
+    setInspectorFieldModes(nextModes);
+    stageInspectorDraft({ knownValues: next });
   }
 
   function renderEffectTargetField() {
@@ -4095,15 +4125,19 @@ export default function App() {
   }
 
   function updateStringListField(key: string, value: string) {
-    setInspectorStringListDrafts((current) => ({ ...current, [key]: value }));
+    const next = { ...inspectorStringListDrafts, [key]: value };
+    setInspectorStringListDrafts(next);
+    stageInspectorDraft({ stringListDrafts: next });
   }
 
   function addStringMapRow(key: string) {
     if (workflowEditLocked) return;
-    setInspectorStringMapDrafts((current) => ({
-      ...current,
-      [key]: [...(current[key] ?? []), createStringMapDraftRow()],
-    }));
+    const next = {
+      ...inspectorStringMapDrafts,
+      [key]: [...(inspectorStringMapDrafts[key] ?? []), createStringMapDraftRow()],
+    };
+    setInspectorStringMapDrafts(next);
+    stageInspectorDraft({ stringMapDrafts: next });
   }
 
   function updateStringMapRow(
@@ -4112,20 +4146,24 @@ export default function App() {
     key: "key" | "value",
     value: string,
   ) {
-    setInspectorStringMapDrafts((current) => ({
-      ...current,
-      [fieldKey]: (current[fieldKey] ?? []).map((row) =>
+    const next = {
+      ...inspectorStringMapDrafts,
+      [fieldKey]: (inspectorStringMapDrafts[fieldKey] ?? []).map((row) =>
         row.id === rowId ? { ...row, [key]: value } : row,
       ),
-    }));
+    };
+    setInspectorStringMapDrafts(next);
+    stageInspectorDraft({ stringMapDrafts: next });
   }
 
   function removeStringMapRow(fieldKey: string, rowId: string) {
     if (workflowEditLocked) return;
-    setInspectorStringMapDrafts((current) => ({
-      ...current,
-      [fieldKey]: (current[fieldKey] ?? []).filter((row) => row.id !== rowId),
-    }));
+    const next = {
+      ...inspectorStringMapDrafts,
+      [fieldKey]: (inspectorStringMapDrafts[fieldKey] ?? []).filter((row) => row.id !== rowId),
+    };
+    setInspectorStringMapDrafts(next);
+    stageInspectorDraft({ stringMapDrafts: next });
   }
 
   function renderDirectoryPathSelect(
@@ -4228,40 +4266,40 @@ export default function App() {
   }
 
   function updateObjectListItem(fieldKey: string, index: number, key: string, value: unknown) {
-    setInspectorKnownValues((current) => {
-      const currentItems = Array.isArray(current[fieldKey]) ? [...(current[fieldKey] as unknown[])] : [];
-      const currentItem = isRecord(currentItems[index]) ? { ...currentItems[index] } : {};
-      if (value === undefined || value === "") {
-        delete currentItem[key];
-      } else {
-        currentItem[key] = value;
-      }
-      currentItems[index] = currentItem;
-      return { ...current, [fieldKey]: currentItems };
-    });
+    const currentItems = Array.isArray(inspectorKnownValues[fieldKey]) ? [...(inspectorKnownValues[fieldKey] as unknown[])] : [];
+    const currentItem = isRecord(currentItems[index]) ? { ...currentItems[index] } : {};
+    if (value === undefined || value === "") {
+      delete currentItem[key];
+    } else {
+      currentItem[key] = value;
+    }
+    currentItems[index] = currentItem;
+    const next = { ...inspectorKnownValues, [fieldKey]: currentItems };
+    setInspectorKnownValues(next);
+    stageInspectorDraft({ knownValues: next });
   }
 
   function addObjectListItem(key: string, field: WorkflowEditorFieldDefinition) {
     if (workflowEditLocked) return;
-    setInspectorKnownValues((current) => {
-      const currentItems = Array.isArray(current[key]) ? [...current[key]] : [];
-      const nextItem = Object.fromEntries(
-        field.item_fields
-          .filter((itemField) => itemField.required)
-          .map((itemField) => [itemField.key, itemField.kind === "boolean" ? false : ""]),
-      );
-      currentItems.push(nextItem);
-      return { ...current, [key]: currentItems };
-    });
+    const currentItems = Array.isArray(inspectorKnownValues[key]) ? [...(inspectorKnownValues[key] as unknown[])] : [];
+    const nextItem = Object.fromEntries(
+      field.item_fields
+        .filter((itemField) => itemField.required)
+        .map((itemField) => [itemField.key, itemField.kind === "boolean" ? false : ""]),
+    );
+    currentItems.push(nextItem);
+    const next = { ...inspectorKnownValues, [key]: currentItems };
+    setInspectorKnownValues(next);
+    stageInspectorDraft({ knownValues: next });
   }
 
   function removeObjectListItem(key: string, index: number) {
     if (workflowEditLocked) return;
-    setInspectorKnownValues((current) => {
-      const currentItems = Array.isArray(current[key]) ? [...current[key]] : [];
-      currentItems.splice(index, 1);
-      return { ...current, [key]: currentItems };
-    });
+    const currentItems = Array.isArray(inspectorKnownValues[key]) ? [...(inspectorKnownValues[key] as unknown[])] : [];
+    currentItems.splice(index, 1);
+    const next = { ...inspectorKnownValues, [key]: currentItems };
+    setInspectorKnownValues(next);
+    stageInspectorDraft({ knownValues: next });
   }
 
   function renderField(field: WorkflowEditorFieldDefinition) {
@@ -4528,9 +4566,12 @@ export default function App() {
               <textarea
                 value={inspectorJsonDrafts[field.key] ?? ""}
                 rows={field.key === "outputs" ? 5 : 8}
-                onChange={(event) =>
-                  setInspectorJsonDrafts((current) => ({ ...current, [field.key]: event.target.value }))
-                }
+                onChange={(event) => {
+                  const nextText = event.target.value;
+                  const next = { ...inspectorJsonDrafts, [field.key]: nextText };
+                  setInspectorJsonDrafts(next);
+                  stageInspectorDraft({ jsonDrafts: next });
+                }}
                 disabled={isDisabled}
               />
             )}
@@ -4592,12 +4633,12 @@ export default function App() {
                             <textarea
                               value={inspectorJsonDrafts[nestedJsonKey] ?? ""}
                               rows={6}
-                              onChange={(event) =>
-                                setInspectorJsonDrafts((current) => ({
-                                  ...current,
-                                  [nestedJsonKey]: event.target.value,
-                                }))
-                              }
+                              onChange={(event) => {
+                                const nextText = event.target.value;
+                                const next = { ...inspectorJsonDrafts, [nestedJsonKey]: nextText };
+                                setInspectorJsonDrafts(next);
+                                stageInspectorDraft({ jsonDrafts: next });
+                              }}
                             />
                           )
                         : itemField.kind === "enum"
@@ -5320,13 +5361,24 @@ export default function App() {
                 <button onClick={selectDownstreamBranch}>Select downstream branch</button>
                 <label className="inspector-label">
                   <span>Node id</span>
-                  <input value={inspectorNodeId} onChange={(event) => setInspectorNodeId(event.target.value)} />
+                  <input
+                    value={inspectorNodeId}
+                    onChange={(event) => {
+                      const nextValue = event.target.value;
+                      setInspectorNodeId(nextValue);
+                      stageInspectorDraft({ nodeId: nextValue });
+                    }}
+                  />
                 </label>
                 <label className="inspector-label">
                   <span>Display name</span>
                   <input
                     value={inspectorDisplayName}
-                    onChange={(event) => setInspectorDisplayName(event.target.value)}
+                    onChange={(event) => {
+                      const nextValue = event.target.value;
+                      setInspectorDisplayName(nextValue);
+                      stageInspectorDraft({ displayName: nextValue });
+                    }}
                   />
                 </label>
 
@@ -5341,9 +5393,6 @@ export default function App() {
                   </details>
                 ) : null}
 
-                <button className="primary" onClick={applyInspectorChanges} disabled={workflowEditLocked}>
-                  Apply node changes
-                </button>
                 <button className="danger" onClick={deleteSelectedNode} disabled={workflowEditLocked}>
                   Delete node
                 </button>
