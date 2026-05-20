@@ -88,6 +88,8 @@ class AdminWebConfig:
     session_ttl_seconds: int
     cookie_name: str
     cookie_secure: bool
+    workflow_event_machine_tokens: tuple[str, ...]
+    workflow_event_machine_source_name: str
     azure_sso: AzureSsoConfig | None
 
     @property
@@ -127,6 +129,14 @@ class AdminWebConfig:
             ),
             cookie_name="agent_sandbox_admin_session",
             cookie_secure=_env_flag("AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE", default=False),
+            workflow_event_machine_tokens=_env_csv(
+                "AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS"
+            ),
+            workflow_event_machine_source_name=os.environ.get(
+                "AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_SOURCE_NAME",
+                "workflow-event-machine",
+            ).strip()
+            or "workflow-event-machine",
             azure_sso=azure_sso,
         )
 
@@ -277,6 +287,21 @@ class AdminWebAuth:
         if payload.get("allowed_event_prefix") != WORKFLOW_EVENT_API_ALLOWED_PREFIX:
             return None
         return payload
+
+    def verify_workflow_event_machine_token(self, token: str) -> dict[str, Any] | None:
+        normalized_token = str(token or "").strip()
+        if not normalized_token:
+            return None
+
+        for configured_token in self.config.workflow_event_machine_tokens:
+            if hmac.compare_digest(normalized_token, configured_token):
+                return {
+                    "kind": "workflow_event_api_machine",
+                    "source_name": self.config.workflow_event_machine_source_name,
+                    "allowed_event_prefix": WORKFLOW_EVENT_API_ALLOWED_PREFIX,
+                }
+
+        return None
 
     def login(self, username: str, password: str) -> str:
         if self.config.auth_mode == "none":

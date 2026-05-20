@@ -2925,6 +2925,51 @@ def test_workflow_event_api_rejects_invalid_bearer_payload_and_event_type(
     )
 
 
+def test_workflow_event_api_accepts_configured_machine_token(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS", "machine-secret")
+    monkeypatch.setenv(
+        "AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_SOURCE_NAME",
+        "azure-devops-demo-environment-pipeline",
+    )
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    invalid = client.post(
+        "/api/workflow-events",
+        headers={"Authorization": "Bearer wrong-secret"},
+        json={"event_type": "app-demo-requested", "payload": {}},
+    )
+    published = client.post(
+        "/api/workflow-events",
+        headers={"Authorization": "Bearer machine-secret"},
+        json={
+            "event_type": "app-demo-requested",
+            "payload": {"resourceBaseName": "customer-1"},
+            "correlation_key": "app-demo:customer-1",
+            "idempotency_key": "app-demo-ai:customer-1:123",
+        },
+    )
+
+    assert invalid.status_code == 401
+    assert published.status_code == 202
+    assert published.json()["event_type"] == "external.app-demo-requested"
+    assert published.json()["payload"] == {"resourceBaseName": "customer-1"}
+    assert published.json()["correlation_key"] == "app-demo:customer-1"
+    assert published.json()["source"] == {
+        "source_type": "workflow_event_api_machine",
+        "source_name": "azure-devops-demo-environment-pipeline",
+        "user_id": None,
+        "user_login": None,
+        "workflow_run_id": None,
+        "workflow_event_id": None,
+        "workflow_trace_id": None,
+        "node_id": None,
+        "node_type": None,
+    }
+    assert "machine-secret" not in json.dumps(published.json())
+
+
 def test_workflow_event_api_token_from_azure_session_publishes_user_metadata(
     tmp_path: Path, monkeypatch
 ) -> None:

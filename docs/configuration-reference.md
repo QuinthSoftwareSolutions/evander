@@ -174,8 +174,9 @@ should delete the agent after the tracked PR is terminal.
 `trigger:event` consumes durable internal workflow events. The Admin Web HTTP ingress publishes
 caller-supplied event names under the reserved `external.` prefix, so a POST with
 `event_type=deploy_requested` should be matched with `event_type=external.deploy_requested`.
-The HTTP ingress requires a bearer token minted by a signed-in Admin Web user and accepts
-arbitrary JSON-object payloads for workflow-specific data.
+The HTTP ingress requires either a bearer token minted by a signed-in Admin Web user or a
+configured machine token from `AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS`; it accepts arbitrary
+JSON-object payloads for workflow-specific data.
 
 The current trigger set also includes `trigger:teams:new-message`, `trigger:review:new-request`,
 and `trigger:script-run-request`. Teams is fed by a host-side ingest worker that reads the same

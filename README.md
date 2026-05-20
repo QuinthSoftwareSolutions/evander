@@ -407,10 +407,10 @@ agent-sandbox-cli directories show root
 ### Workflow event ingress
 
 Admin Web exposes a machine-oriented ingress for workflows that start from
-`trigger:event`. A signed-in Admin Web user first mints a short-lived bearer token, then posts an
-event envelope. The submitted event type is always namespaced with `external.` before it is
-stored, so a request for `deploy_requested` is consumed by a trigger configured for
-`external.deploy_requested`.
+`trigger:event`. A signed-in Admin Web user can mint a short-lived bearer token, and trusted
+server-side publishers can use a configured machine token. The submitted event type is always
+namespaced with `external.` before it is stored, so a request for `deploy_requested` is consumed
+by a trigger configured for `external.deploy_requested`.
 
 ```bash
 TOKEN="$(curl -s -X POST -b cookies.txt http://127.0.0.1:8100/api/workflow-events/token \
@@ -426,6 +426,11 @@ curl -X POST http://127.0.0.1:8100/api/workflow-events \
     "idempotency_key": "request-1"
   }'
 ```
+
+For server-to-server publishers, set `AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS` on Admin Web
+to one or more comma-separated bearer tokens and use one of those token values in the same
+`Authorization: Bearer ...` header. `AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_SOURCE_NAME` optionally
+sets the source name recorded on machine-authenticated events.
 
 Workflow-specific payloads are intentionally not schema-validated by the HTTP API beyond
 requiring a JSON object. Downstream nodes read custom fields from the trigger output payload, for
