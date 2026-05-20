@@ -24,7 +24,10 @@ def workflow_event_routes(service: AdminService, auth: AdminWebAuth) -> list[Rou
         if scheme.lower() != "bearer" or not credentials.strip():
             return json_error("Workflow event bearer token is required", status_code=401)
         claims = auth.verify_workflow_event_api_token(credentials)
+        machine_claims = None
         if claims is None:
+            machine_claims = auth.verify_workflow_event_machine_token(credentials)
+        if claims is None and machine_claims is None:
             return json_error("Workflow event bearer token is invalid or expired", status_code=401)
 
         try:
@@ -44,11 +47,7 @@ def workflow_event_routes(service: AdminService, auth: AdminWebAuth) -> list[Rou
                 payload=payload,
                 correlation_key=body.get("correlation_key"),
                 idempotency_key=_optional_string(body.get("idempotency_key")),
-                source={
-                    "source_type": "workflow_event_api",
-                    "user_id": _optional_string(claims.get("sub")),
-                    "user_login": _optional_string(claims.get("login")),
-                },
+                source=_event_source(claims=claims, machine_claims=machine_claims),
             )
         except ValueError as exc:
             return json_error(str(exc))
@@ -65,3 +64,21 @@ def _optional_string(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _event_source(
+    *,
+    claims: dict[str, Any] | None,
+    machine_claims: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if machine_claims is not None:
+        return {
+            "source_type": "workflow_event_api_machine",
+            "source_name": _optional_string(machine_claims.get("source_name")),
+        }
+
+    return {
+        "source_type": "workflow_event_api",
+        "user_id": _optional_string((claims or {}).get("sub")),
+        "user_login": _optional_string((claims or {}).get("login")),
+    }

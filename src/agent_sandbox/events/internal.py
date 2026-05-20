@@ -24,6 +24,7 @@ class InternalEventValidationError(ValueError):
 
 class InternalEventSource(BaseModel):
     source_type: str | None = None
+    source_name: str | None = None
     user_id: str | None = None
     user_login: str | None = None
     workflow_run_id: str | None = None
