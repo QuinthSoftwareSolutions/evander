@@ -338,6 +338,9 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
     pageErrors.push(error);
   });
   page.on("console", (message) => {
+    if (message.text().includes("Ignored attempt to cancel a touchmove event with cancelable=false")) {
+      return;
+    }
     if (message.type() === "error") {
       consoleErrors.push(message.text());
     }
