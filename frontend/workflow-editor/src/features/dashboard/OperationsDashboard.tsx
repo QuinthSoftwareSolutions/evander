@@ -473,6 +473,63 @@ function detailValue(value: string | number | boolean | null | undefined): strin
   return String(value);
 }
 
+function sessionWakeCue(session: SessionRecord): string | null {
+  const metadata = session.metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return null;
+  }
+
+  const readString = (...keys: string[]): string | null => {
+    for (const key of keys) {
+      const value = metadata[key];
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+    return null;
+  };
+
+  const readSchedule = (value: unknown): string | null => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return null;
+    }
+    const schedule = value as Record<string, unknown>;
+    const cron = typeof schedule.cron === "string" && schedule.cron.trim() ? schedule.cron.trim() : null;
+    const resumeAt =
+      typeof schedule.resume_at === "string" && schedule.resume_at.trim() ? schedule.resume_at.trim() : null;
+    if (cron) {
+      return `Recurring ${cron}`;
+    }
+    if (resumeAt) {
+      return `Resume at ${formatTimestamp(resumeAt)}`;
+    }
+    return null;
+  };
+
+  const directCue =
+    readString("next_wake_at", "wake_at", "resume_at") ?? readSchedule(metadata.schedule) ?? readSchedule(metadata.wake_schedule);
+  if (directCue) {
+    return directCue.startsWith("Recurring") ? directCue : `Wake cue: ${directCue}`;
+  }
+
+  const wakeSchedules = metadata.wake_schedules;
+  if (Array.isArray(wakeSchedules) && wakeSchedules.length > 0) {
+    const first = wakeSchedules[0];
+    const cue = readSchedule(first);
+    if (cue) {
+      return `${cue} (${wakeSchedules.length} configured)`;
+    }
+    return `${wakeSchedules.length} wake schedule${wakeSchedules.length === 1 ? "" : "s"} configured`;
+  }
+
+  const wakeScheduleCount = metadata.wake_schedule_count;
+  if (typeof wakeScheduleCount === "number" && Number.isFinite(wakeScheduleCount) && wakeScheduleCount > 0) {
+    return `${wakeScheduleCount} wake schedule${wakeScheduleCount === 1 ? "" : "s"} configured`;
+  }
+
+  return null;
+}
+
 function remoteMessage(state: RemoteState<unknown>, missingFallback: string, summary: string | null | undefined): string {
   if (state.error) return state.error;
   if (state.missing) return state.missing;
@@ -522,6 +579,35 @@ function TabButton({ tab, label }: { tab: AdminTab; label: string }) {
     <button type="button" className="admin-shell-button admin-shell-button-muted" onClick={() => openTab(tab)}>
       {label}
     </button>
+  );
+}
+
+type DashboardLink = {
+  tab: AdminTab;
+  label: string;
+  value: string;
+};
+
+function DashboardLinkRow({ links }: { links: DashboardLink[] }) {
+  if (links.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="dashboard-link-row">
+      {links.map((link) => (
+        <button
+          key={`${link.tab}:${link.value}`}
+          type="button"
+          className="dashboard-link-chip"
+          title={`${link.label}: ${link.value}`}
+          onClick={() => openTab(link.tab)}
+        >
+          <span>{link.label}</span>
+          <strong>{link.value}</strong>
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -771,6 +857,9 @@ export function OperationsDashboard() {
             Refresh
           </button>
           <TabButton tab="workflow" label="Open workflow" />
+          <TabButton tab="approvals" label="Open approvals" />
+          <TabButton tab="sessions" label="Open sessions" />
+          <TabButton tab="tool-calls" label="Open tool calls" />
           <TabButton tab="configuration" label="Open config" />
         </div>
       </div>
@@ -997,6 +1086,11 @@ export function OperationsDashboard() {
                           <span>
                             {run.trace_id ?? "no trace"} · {formatTimestamp(run.latest_activity_at ?? run.occurred_at)}
                           </span>
+                          <DashboardLinkRow
+                            links={[
+                              ...(run.trace_id ? [{ tab: "workflow" as AdminTab, label: "Trace", value: run.trace_id }] : []),
+                            ]}
+                          />
                         </div>
                         <span className={`status-pill ${stateClassName(runStatusTone(run.run_state))}`}>{run.run_state}</span>
                       </div>
@@ -1037,6 +1131,12 @@ export function OperationsDashboard() {
                           <span>
                             {graph.activity_count} activities · {graph.run_count} runs · {graph.node_count} nodes
                           </span>
+                          <DashboardLinkRow
+                            links={[
+                              { tab: "reports", label: "Graph", value: graph.graph_id },
+                              ...(graph.node_ids[0] ? [{ tab: "workflow" as AdminTab, label: "Node", value: graph.node_ids[0] }] : []),
+                            ]}
+                          />
                         </div>
                         <span className={`status-pill ${stateClassName(statusByCountClass(graph.activity_count))}`}>{graph.activity_count}</span>
                       </div>
@@ -1088,6 +1188,12 @@ export function OperationsDashboard() {
                           <span>
                             {item.session_id} · {formatTimestamp(item.created_at)}
                           </span>
+                          <DashboardLinkRow
+                            links={[
+                              { tab: "sessions", label: "Session", value: item.session_id },
+                              { tab: "approvals", label: "Approval", value: item.request_id },
+                            ]}
+                          />
                         </div>
                         <span className={`status-pill ${stateClassName(approvalItemTone(item.status))}`}>{item.status}</span>
                       </div>
@@ -1119,6 +1225,14 @@ export function OperationsDashboard() {
                       <span>Total</span>
                       <strong>{sessions.counts.total}</strong>
                     </div>
+                    <div>
+                      <span>Wake cue</span>
+                      <strong>
+                        {sessions.active_items.map(sessionWakeCue).find(Boolean) ??
+                          sessions.expired_items.map(sessionWakeCue).find(Boolean) ??
+                          "No wake-schedule cue exposed by the list payload."}
+                      </strong>
+                    </div>
                   </div>
                   <div style={{ display: "grid", gap: "0.4rem" }}>
                     {sessions.active_items.slice(0, 3).map((session) => (
@@ -1128,6 +1242,14 @@ export function OperationsDashboard() {
                           <span>
                             {panelTitleList([session.model ?? "no model", session.vm_id ?? "no VM", session.directory_path])}
                           </span>
+                          <DashboardLinkRow
+                            links={[
+                              ...(session.issue_number
+                                ? [{ tab: "issues" as AdminTab, label: "Issue", value: session.issue_number }]
+                                : []),
+                              { tab: "sessions", label: "Session", value: session.session_id },
+                            ]}
+                          />
                         </div>
                         <span className={`status-pill ${stateClassName(sessionItemTone(session))}`}>{session.is_expired ? "Expired" : "Active"}</span>
                       </div>
@@ -1183,11 +1305,25 @@ export function OperationsDashboard() {
                           <span>
                             {item.session_id ?? "no session"} · {formatTimestamp(item.created_at)}
                           </span>
-                          <span style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
-                            {item.workflow_run_id ? <span className="status-pill state-idle">Run {item.workflow_run_id}</span> : null}
-                            {item.approval_request_id ? <span className="status-pill state-missing">Approval {item.approval_request_id}</span> : null}
-                            {item.agent_id ? <span className="status-pill state-idle">Agent {item.agent_id}</span> : null}
-                          </span>
+                          <DashboardLinkRow
+                            links={[
+                              ...(item.session_id ? [{ tab: "sessions" as AdminTab, label: "Session", value: item.session_id }] : []),
+                              ...(item.approval_request_id
+                                ? [{ tab: "approvals" as AdminTab, label: "Approval", value: item.approval_request_id }]
+                                : []),
+                              ...(item.workflow_run_id ?? item.trace_id
+                                ? [
+                                    {
+                                      tab: "workflow" as AdminTab,
+                                      label: item.workflow_run_id ? "Run" : "Trace",
+                                      value: item.workflow_run_id ?? item.trace_id ?? "",
+                                    },
+                                  ]
+                                : []),
+                              ...(item.agent_id ? [{ tab: "agents" as AdminTab, label: "Agent", value: item.agent_id }] : []),
+                              ...(item.vm_id ? [{ tab: "vms" as AdminTab, label: "VM", value: item.vm_id }] : []),
+                            ]}
+                          />
                         </div>
                         <span className={`status-pill ${stateClassName(toolCallTone(item))}`}>{toolCallStatus(item)}</span>
                       </div>
@@ -1213,7 +1349,12 @@ export function OperationsDashboard() {
               state={state.workflowDocument}
               missingFallback="No workflow document has been created yet."
               summary={workflowDocument ? workflowDocumentSummary(workflowDocument) : null}
-              actions={<TabButton tab="workflow" label="Workflow" />}
+              actions={
+                <>
+                  <TabButton tab="workflow" label="Workflow" />
+                  <TabButton tab="configuration" label="Configuration" />
+                </>
+              }
             >
               {workflowDocument ? (
                 <div style={{ display: "grid", gap: "0.55rem" }}>
@@ -1248,7 +1389,12 @@ export function OperationsDashboard() {
               state={state.workflowCatalog}
               missingFallback="No workflow catalog nodes are available for this directory."
               summary={workflowCatalog ? workflowCatalogSummary(workflowCatalog) : null}
-              actions={<TabButton tab="workflow" label="Open workflow" />}
+              actions={
+                <>
+                  <TabButton tab="workflow" label="Open workflow" />
+                  <TabButton tab="configuration" label="Config" />
+                </>
+              }
             >
               {workflowCatalog ? (
                 <div style={{ display: "grid", gap: "0.55rem" }}>

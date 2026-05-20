@@ -4847,6 +4847,56 @@ select {
   font-size: 0.8rem;
 }
 
+.dashboard-link-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.dashboard-link-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  max-width: 100%;
+  padding: 0.44rem 0.72rem;
+  border: 1px solid rgba(32, 69, 78, 0.12);
+  border-radius: 999px;
+  background: rgba(241, 246, 244, 0.95);
+  color: #173241;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    transform 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    background 120ms ease;
+}
+
+.dashboard-link-chip span {
+  color: inherit;
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.dashboard-link-chip strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.dashboard-link-chip:hover {
+  transform: translateY(-1px);
+  border-color: rgba(23, 71, 87, 0.2);
+  box-shadow: 0 12px 24px rgba(21, 48, 59, 0.08);
+  background: rgba(233, 241, 238, 0.98);
+}
+
 .admin-panel {
   border: 1px solid rgba(32, 69, 78, 0.12);
   border-radius: 28px;
@@ -5755,6 +5805,18 @@ select {
 :root[data-theme="dark"] .node-activity-item span,
 :root[data-theme="dark"] .report-meta-block p {
   color: #a7bac8;
+}
+
+:root[data-theme="dark"] .dashboard-link-chip {
+  border-color: rgba(125, 170, 190, 0.16);
+  background: rgba(18, 31, 39, 0.92);
+  color: #d7e3ea;
+}
+
+:root[data-theme="dark"] .dashboard-link-chip:hover {
+  border-color: rgba(125, 170, 190, 0.28);
+  background: rgba(24, 39, 47, 0.96);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.24);
 }
 
 :root[data-theme="dark"] .empty-state-cell {
