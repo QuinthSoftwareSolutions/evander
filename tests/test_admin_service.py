@@ -134,6 +134,26 @@ def _write_run_detail_audit_log(path: Path, *, session_id: str, vm_id: str) -> N
             },
             "created_at": "2026-05-18T11:01:00+00:00",
         },
+        {
+            "event_type": "tool_call",
+            "session_id": session_id,
+            "vm_id": vm_id,
+            "directory_path": "root",
+            "tool_name": "make_phone_call",
+            "workflow_run_id": "evt-sqlite",
+            "trace_id": "trace-sqlite",
+            "decision": "allowed",
+            "reason": "trace-only match",
+            "args": {
+                "session_id": session_id,
+                "note": "trace-only",
+            },
+            "result": {
+                "status": "success",
+                "summary": "trace-only",
+            },
+            "created_at": "2026-05-18T11:00:30+00:00",
+        },
     ]
     path.write_text(
         "\n".join(json.dumps(entry, sort_keys=True) for entry in audit_entries) + "\n",
@@ -3573,6 +3593,8 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
     assert detail.graph.snapshot.snapshot_type == "compiled_runtime_graph"
     assert detail.graph.snapshot.workflow_graphs[0]["id"] == "graph-sqlite"
     assert detail.graph.data_availability.graph_snapshot == "available"
+    assert detail.graph.data_availability.agent_links == "available"
+    assert detail.graph.data_availability.communication_artifacts == "available"
     assert detail.graph.data_availability.tool_calls == "available"
     assert detail.recovery.resume.eligible is True
     assert detail.trigger_event is not None
@@ -3608,6 +3630,7 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
     assert agent_link.prompt == "Run the sqlite flow"
     assert agent_link.thread_id == "thread-sqlite"
     assert agent_link.execution_id == "execution-sqlite"
+    assert agent_link.artifact_ids == [artifact.artifact_id]
     assert agent_link.session_status == "available"
     assert agent_link.log_status == "log_available"
     assert agent_link.log_reference == {
@@ -3625,10 +3648,21 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
     assert artifact_link.provider == "teams"
     assert artifact_link.original_filename == "sqlite-notes.txt"
     assert artifact_link.metadata == {"storage": "host_artifact_store", "source": "sqlite-fixture"}
-    assert detail.tool_call_links[0].tool_name == "make_phone_call"
+    assert [link.tool_name for link in detail.tool_call_links] == [
+        "make_phone_call",
+        "make_phone_call",
+    ]
     assert detail.tool_call_links[0].decision == "denied"
     assert detail.tool_call_links[0].status == "denied"
     assert detail.tool_call_links[0].href == "#tool-calls?q=correlation-sqlite-run-level"
+    assert detail.tool_call_links[0].session_id == "session-sqlite"
+    assert detail.tool_call_links[1].decision == "allowed"
+    assert detail.tool_call_links[1].status == "success"
+    assert detail.tool_call_links[1].href == "#tool-calls?q=trace-sqlite"
+    assert detail.tool_call_links[1].session_id == "session-sqlite"
+    assert detail.data_availability.tool_calls == "available"
+    assert detail.data_availability.agent_links == "available"
+    assert detail.data_availability.communication_artifacts == "available"
 
 
 def test_conformance_reports_summarize_present_runtime_artifacts(tmp_path: Path) -> None:

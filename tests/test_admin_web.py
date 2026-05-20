@@ -1978,6 +1978,26 @@ def _write_run_detail_audit_log(path: Path, *, session_id: str, vm_id: str) -> N
             },
             "created_at": "2026-05-16T10:06:00+00:00",
         },
+        {
+            "event_type": "tool_call",
+            "session_id": session_id,
+            "vm_id": vm_id,
+            "directory_path": "root",
+            "tool_name": "make_phone_call",
+            "workflow_run_id": "evt-detail",
+            "trace_id": "trace-detail",
+            "decision": "allowed",
+            "reason": "trace-only match",
+            "args": {
+                "session_id": session_id,
+                "note": "trace-only",
+            },
+            "result": {
+                "status": "success",
+                "summary": "trace-only",
+            },
+            "created_at": "2026-05-16T10:05:30+00:00",
+        },
     ]
     path.write_text(
         "\n".join(json.dumps(entry, sort_keys=True) for entry in audit_entries) + "\n",
@@ -2372,6 +2392,7 @@ def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> 
     assert tool_call_link["workflow_run_id"] == fixture["rich_event_id"]
     assert tool_call_link["trace_id"] == fixture["trace_id"]
     assert tool_call_link["href"] == "#tool-calls?q=request-rich-node"
+    assert tool_call_link["session_id"] == fixture["session_id"]
     assert tool_call_link["args"]["token"] == "<redacted>"
     assert tool_call_link["result"]["secret"] == "<redacted>"
     approval_link = rich_node["approval_links"][0]
@@ -2388,10 +2409,12 @@ def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> 
     assert agent_link["prompt"] == "Investigate the issue"
     assert agent_link["thread_id"] == "thread-detail"
     assert agent_link["execution_id"] == "execution-detail"
-    assert agent_link["session_status"] == "session_missing"
+    assert agent_link["artifact_ids"] == [fixture["artifact_id"]]
+    assert agent_link["session_status"] == "available"
     assert agent_link["log_status"] == "log_unavailable"
     assert agent_link["log_reference"]["source_kind"] == "effect_execution"
     assert agent_link["log_reference"]["vm_name"] == "vm-detail"
+    assert agent_link["log_reference"]["session_id"] == fixture["session_id"]
     assert agent_link["log_reference"]["dispatch_id"] == "dispatch-detail"
 
     run_tool_call_link = event_payload["tool_call_links"][0]
@@ -2402,7 +2425,15 @@ def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> 
     assert run_tool_call_link["workflow_run_id"] == fixture["rich_event_id"]
     assert run_tool_call_link["trace_id"] == fixture["trace_id"]
     assert run_tool_call_link["href"] == "#tool-calls?q=correlation-run-level"
+    assert run_tool_call_link["session_id"] == fixture["session_id"]
     assert run_tool_call_link["args"]["number"] == "+1-555-0100"
+    trace_run_tool_call_link = event_payload["tool_call_links"][1]
+    assert trace_run_tool_call_link["tool_name"] == "make_phone_call"
+    assert trace_run_tool_call_link["workflow_run_id"] == fixture["rich_event_id"]
+    assert trace_run_tool_call_link["trace_id"] == fixture["trace_id"]
+    assert trace_run_tool_call_link["href"] == "#tool-calls?q=trace-detail"
+    assert trace_run_tool_call_link["session_id"] == fixture["session_id"]
+    assert trace_run_tool_call_link["args"]["note"] == "trace-only"
 
     artifact_link = rich_node["communication_artifact_links"][0]
     assert artifact_link["artifact_id"] == fixture["artifact_id"]
@@ -2427,8 +2458,11 @@ def test_admin_web_run_detail_marks_missing_legacy_data(tmp_path: Path) -> None:
     payload = response.json()
     assert payload["event_id"] == fixture["legacy_event_id"]
     assert payload["graph"]["data_availability"]["graph_snapshot"] == "missing_legacy_or_unrecorded"
+    assert payload["graph"]["data_availability"]["agent_links"] == "missing_legacy_or_unrecorded"
+    assert payload["graph"]["data_availability"]["communication_artifacts"] == "missing_legacy_or_unrecorded"
     assert payload["graph"]["data_availability"]["tool_calls"] == "missing_legacy_or_unrecorded"
     assert payload["graph"]["snapshot"] is None
+    assert payload["tool_call_links"] == []
     legacy_node = next(node for node in payload["nodes"] if node["node_id"] == "effect-prompt")
     assert "binding_trace" in legacy_node["missing_fields"]
     assert legacy_node["binding_trace"] is None
@@ -2436,6 +2470,7 @@ def test_admin_web_run_detail_marks_missing_legacy_data(tmp_path: Path) -> None:
     assert legacy_node["records"][0]["resolved_config"] == {}
     assert legacy_node["approval_links"] == []
     assert legacy_node["agent_links"] == []
+    assert legacy_node["communication_artifact_links"] == []
     assert legacy_node["tool_call_links"] == []
 
 
