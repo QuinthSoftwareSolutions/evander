@@ -210,6 +210,7 @@ export type WorkflowRunDataAvailability = {
   approvals: string;
   agent_links: string;
   communication_artifacts: string;
+  tool_calls: string;
   trigger_event: string;
 };
 
@@ -250,12 +251,57 @@ export type WorkflowRunApprovalLink = {
   human_summary?: string | null;
 };
 
+export type WorkflowRunToolCallLink = {
+  tool_name: string;
+  created_at?: string | null;
+  status?: string | null;
+  decision?: string | null;
+  request_id?: string | null;
+  correlation_id?: string | null;
+  approval_request_id?: string | null;
+  workflow_run_id?: string | null;
+  trace_id?: string | null;
+  session_id?: string | null;
+  node_id?: string | null;
+  node_type?: string | null;
+  args_summary?: string | null;
+  result_summary?: string | null;
+  args_missing_reason?: string | null;
+  result_status?: string | null;
+  result_missing_reason?: string | null;
+  result_empty?: boolean | null;
+  redacted_args?: unknown;
+  redacted_result?: unknown;
+  href?: string | null;
+  filter?: Record<string, unknown> | null;
+};
+
 export type WorkflowRunAgentLink = {
   node_id: string;
   node_type?: string | null;
   session_id?: string | null;
   vm_name?: string | null;
+  agent_id?: string | null;
+  agent_backend?: string | null;
+  agent_available?: boolean | null;
+  agent_status?: string | null;
+  agent_missing_reason?: string | null;
+  session_available?: boolean | null;
+  session_status?: string | null;
+  session_missing_reason?: string | null;
+  session_href?: string | null;
+  log_available?: boolean | null;
+  log_status?: string | null;
+  log_missing_reason?: string | null;
+  log_href?: string | null;
   prompt?: string | null;
+  prompt_summary?: string | null;
+  prompt_status?: string | null;
+  prompt_missing_reason?: string | null;
+  result_summary?: string | null;
+  result_status?: string | null;
+  result_missing_reason?: string | null;
+  result_empty?: boolean | null;
   dispatch_id?: string | null;
   thread_id?: string | null;
   execution_id?: string | null;
@@ -326,6 +372,7 @@ export type WorkflowRunNodeDetail = {
   retry_resume_eligible: boolean;
   retry_resume_reason?: string | null;
   missing_fields: string[];
+  tool_call_links: WorkflowRunToolCallLink[];
   approval_links: WorkflowRunApprovalLink[];
   agent_links: WorkflowRunAgentLink[];
   communication_artifact_links: WorkflowRunCommunicationArtifactLink[];
@@ -366,6 +413,7 @@ export type WorkflowRunDetail = WorkflowRunSummary & {
     payload: Record<string, unknown>;
   } | null;
   graph: WorkflowRunGraph;
+  tool_call_links?: WorkflowRunToolCallLink[];
   nodes: WorkflowRunNodeDetail[];
   data_availability: WorkflowRunDataAvailability;
 };

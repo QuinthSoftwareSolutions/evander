@@ -8,6 +8,7 @@ import {
   type FormEvent as ReactFormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
   type TouchEvent as ReactTouchEvent,
 } from "react";
 import {
@@ -43,10 +44,13 @@ import {
   type WorkflowNodeKind,
   type WorkflowOutputSchemas,
   type WorkflowRunDetail,
+  type WorkflowRunDataAvailability,
+  type WorkflowRunAgentLink,
   type WorkflowRunSearch,
   type WorkflowRunSearchItem,
   type WorkflowRunNodeDetail,
   type WorkflowRunNodeActivity,
+  type WorkflowRunToolCallLink,
   type WorkflowRunSnapshot,
   type WorkflowRunSummary,
   type WorkflowValidationDiagnostic,
@@ -1715,6 +1719,110 @@ function preferredWorkflowRunDetailNodeId(detail: WorkflowRunDetail): string | n
 
 function objectHasData(value: Record<string, unknown> | null | undefined): boolean {
   return Boolean(value && Object.keys(value).length > 0);
+}
+
+function truncateRunDetailText(value: string, maxLength = 120): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function firstNonEmptyString(...values: Array<string | null | undefined>): string | null {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  return null;
+}
+
+function normalizeAvailabilityState(value: string | null | undefined): string {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return "missing";
+  }
+  if (normalized === "available" || normalized === "recorded" || normalized === "present") {
+    return "available";
+  }
+  return normalized;
+}
+
+function availabilityFlag(value: boolean | string | null | undefined, fallback: boolean): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  const normalized = normalizeAvailabilityState(value);
+  if (
+    normalized === "available" ||
+    normalized === "session_available" ||
+    normalized === "agent_available" ||
+    normalized === "log_available" ||
+    normalized === "artifact_available" ||
+    normalized === "result_available" ||
+    normalized === "recorded"
+  ) {
+    return true;
+  }
+  if (
+    normalized === "missing" ||
+    normalized === "session_missing" ||
+    normalized === "agent_missing" ||
+    normalized === "log_unavailable" ||
+    normalized === "artifact_missing" ||
+    normalized === "result_missing" ||
+    normalized === "unavailable" ||
+    normalized === "empty" ||
+    normalized === "recorded_empty" ||
+    normalized === "missing_legacy_or_unrecorded"
+  ) {
+    return false;
+  }
+  return fallback;
+}
+
+function availabilitySummary(value: string | null | undefined, availableText = "Available", missingText = "Missing legacy or unrecorded"): string {
+  const normalized = normalizeAvailabilityState(value);
+  if (normalized === "available") {
+    return availableText;
+  }
+  return value ? `${missingText} (${value})` : missingText;
+}
+
+function structuredValueSummary(value: unknown, missingText: string, emptyText: string, maxLength = 120): string {
+  if (value === undefined || value === null) {
+    return missingText;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? truncateRunDetailText(trimmed, maxLength) : missingText;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value.length === 0 ? emptyText : truncateRunDetailText(formatJson(value, "[]").replace(/\s+/g, " "), maxLength);
+  }
+  if (isRecord(value)) {
+    return objectHasData(value)
+      ? truncateRunDetailText(formatJson(value, "{}").replace(/\s+/g, " "), maxLength)
+      : emptyText;
+  }
+  return String(value);
+}
+
+function detailHashTarget(tab: "tool-calls" | "agents" | "sessions", params: Record<string, string | null | undefined> = {}): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    const trimmed = value?.trim();
+    if (trimmed) {
+      query.set(key, trimmed);
+    }
+  }
+  const queryText = query.toString();
+  return queryText ? `${tab}?${queryText}` : tab;
 }
 
 function durationLabel(durationMs: number | null | undefined): string {
@@ -4542,8 +4650,159 @@ export default function App() {
           <span>{label}</span>
           <strong>{empty ? "Empty" : "Recorded"}</strong>
         </summary>
-        <pre>{formatJson(value, "null")}</pre>
+      <pre>{formatJson(value, "null")}</pre>
       </details>
+    );
+  }
+
+  function navigateToAdminHash(hash: string) {
+    window.location.hash = hash;
+  }
+
+  function renderRunDetailToolCallLink(link: WorkflowRunToolCallLink, scope: "run" | "node", index: number) {
+    const toolCallTarget = firstNonEmptyString(
+      link.request_id,
+      link.correlation_id,
+      link.trace_id,
+      link.workflow_run_id,
+      link.session_id,
+    );
+    const toolCallHash = toolCallTarget ? detailHashTarget("tool-calls", { q: toolCallTarget }) : null;
+    const argsSummary = firstNonEmptyString(
+      link.args_summary,
+      structuredValueSummary(link.redacted_args, "Args payload missing", "Empty args"),
+      link.args_missing_reason,
+    ) ?? "Args payload missing";
+    const resultSummary = link.result_empty || normalizeAvailabilityState(link.result_status) === "empty"
+      ? "Empty result"
+      : firstNonEmptyString(
+          link.result_summary,
+          structuredValueSummary(link.redacted_result, "Result payload missing", "Empty result"),
+          link.result_missing_reason,
+        ) ?? "Result payload missing";
+
+    return (
+      <div className="run-detail-link-item" key={`${scope}-${link.tool_name}-${index}-${toolCallTarget ?? "missing"}`}>
+        <strong>{scope === "run" ? "Run tool call" : "Tool call"} {link.tool_name}</strong>
+        <span>{link.status ?? "status missing"}{link.decision ? ` / ${link.decision}` : ""}</span>
+        <span>Request {link.request_id ?? "missing"}</span>
+        <span>Correlation {link.correlation_id ?? "missing"}</span>
+        {link.approval_request_id ? <span>Approval request {link.approval_request_id}</span> : null}
+        {link.workflow_run_id ? <span>Run {link.workflow_run_id}</span> : null}
+        {link.trace_id ? <span>Trace {link.trace_id}</span> : null}
+        {link.session_id ? <span>Session {link.session_id}</span> : null}
+        {link.node_id ? <span>Node {link.node_id}</span> : null}
+        <span>Args {argsSummary}</span>
+        <span>Result {resultSummary}</span>
+        {toolCallHash ? (
+          <div className="run-detail-link-actions">
+            <button type="button" onClick={() => navigateToAdminHash(toolCallHash)}>
+              Tool call audit
+            </button>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  function renderRunDetailAgentLink(agent: WorkflowRunAgentLink, index: number) {
+    const sessionAvailable = availabilityFlag(agent.session_available, Boolean(agent.session_id));
+    const agentAvailable = availabilityFlag(agent.agent_available, Boolean(firstNonEmptyString(agent.agent_id, agent.execution_id, agent.vm_name)));
+    const logAvailable = availabilityFlag(agent.log_available, Boolean(agent.log_reference || agent.log_href));
+    const sessionHash = sessionAvailable && agent.session_id ? detailHashTarget("sessions", { session_id: agent.session_id }) : null;
+    const agentTarget = agentAvailable
+      ? detailHashTarget("agents", {
+          agent_id: firstNonEmptyString(agent.agent_id, agent.execution_id),
+          session_id: agent.session_id,
+        })
+      : null;
+    const logTarget = logAvailable
+      ? detailHashTarget("agents", {
+          agent_id: firstNonEmptyString(agent.agent_id, agent.execution_id),
+          session_id: agent.session_id,
+        })
+      : null;
+    const promptSummary = firstNonEmptyString(
+      agent.prompt_summary,
+      agent.prompt,
+      agent.prompt_missing_reason,
+    ) ?? "Prompt summary missing";
+    const resultSummary = agent.result_empty || normalizeAvailabilityState(agent.result_status) === "empty"
+      ? "Empty result"
+      : firstNonEmptyString(
+          agent.result_summary,
+          agent.result_missing_reason,
+          agent.result_status && normalizeAvailabilityState(agent.result_status) !== "available"
+            ? `Result payload ${agent.result_status}`
+            : null,
+        ) ?? "Result payload missing";
+    const logReferenceSummary = agent.log_reference
+      ? structuredValueSummary(agent.log_reference, "Log reference recorded", "Log reference recorded")
+      : null;
+
+    return (
+      <div className="run-detail-link-item" key={`${agent.node_id}-${agent.session_id ?? "session-missing"}-${agent.execution_id ?? index}`}>
+        <strong>Agent {agent.session_id ?? agent.vm_name ?? agent.node_id}</strong>
+        <span>{agent.status ?? (agent.waiting ? "waiting" : agent.completed ? "completed" : "status missing")}</span>
+        {agent.node_type ? <span>Node type {agent.node_type}</span> : null}
+        {agent.dispatch_id ? <span>Dispatch {agent.dispatch_id}</span> : null}
+        {agent.thread_id ? <span>Thread {agent.thread_id}</span> : null}
+        {agent.execution_id ? <span>Execution {agent.execution_id}</span> : null}
+        {sessionAvailable ? (
+          <span>Session {agent.session_id ?? "missing"}</span>
+        ) : (
+          <span className="missing">{agent.session_missing_reason ?? "Session record missing"}</span>
+        )}
+        {agentAvailable && agentTarget ? <span>Agent target available</span> : null}
+        {logAvailable ? (
+          <span>{logReferenceSummary ?? "Log reference recorded"}</span>
+        ) : (
+          <span className="missing">{agent.log_missing_reason ?? "No persisted log reference"}</span>
+        )}
+        <span>Prompt {promptSummary}</span>
+        <span>Result {resultSummary}</span>
+        {agent.artifact_ids.length > 0 ? <span>Artifacts {agent.artifact_ids.join(", ")}</span> : <span className="missing">No communication artifact records</span>}
+        <div className="run-detail-link-actions">
+          {sessionHash ? (
+            <button type="button" onClick={() => navigateToAdminHash(sessionHash)}>
+              Session
+            </button>
+          ) : null}
+          {agentTarget ? (
+            <button type="button" onClick={() => navigateToAdminHash(agentTarget)}>
+              Agent
+            </button>
+          ) : null}
+          {logTarget ? (
+            <button type="button" onClick={() => navigateToAdminHash(logTarget)}>
+              Logs
+            </button>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
+  function renderRunDetailMissingBlock(label: string, message: string, key: string) {
+    return (
+      <div className="run-detail-data-block run-detail-missing" key={key}>
+        <span>{label}</span>
+        <strong>{message}</strong>
+      </div>
+    );
+  }
+
+  function renderRunDetailLinkGroup(
+    label: string,
+    missingMessage: string,
+    items: ReactNode[],
+  ) {
+    return (
+      <div className="run-detail-link-group" key={label}>
+        <div className="section-label">{label}</div>
+        {items.length > 0 ? <div className="run-detail-node-links">{items}</div> : null}
+        {items.length === 0 ? renderRunDetailMissingBlock(label, missingMessage, label) : null}
+      </div>
     );
   }
 
@@ -4608,6 +4867,11 @@ export default function App() {
 
   function renderInspectedRunPanel() {
     if (!runDetail) return null;
+    const availabilityItems = [
+      ["Tool calls", runDetail.data_availability.tool_calls],
+      ["Agent links", runDetail.data_availability.agent_links],
+      ["Communication artifacts", runDetail.data_availability.communication_artifacts],
+    ] as const;
     return (
       <div className="sidebar-section inspected-run-panel">
         <div className="run-detail-header">
@@ -4629,6 +4893,26 @@ export default function App() {
             {inspectVisitedNodeIds.size} visited / {inspectDisplayNodeIds.size} shown
           </span>
         </div>
+        <div className="run-detail-availability">
+          {availabilityItems.map(([label, value]) => (
+            <span key={label} className={normalizeAvailabilityState(value) === "available" ? "" : "missing"}>
+              {label} {availabilitySummary(value)}
+            </span>
+          ))}
+        </div>
+        {runDetail.tool_call_links?.length
+          ? renderRunDetailLinkGroup(
+              "Run-level tool calls",
+              availabilitySummary(runDetail.data_availability.tool_calls, "Available", "No persisted tool-call records"),
+              runDetail.tool_call_links.map((link, index) => renderRunDetailToolCallLink(link, "run", index)),
+            )
+          : runDetail.data_availability.tool_calls === "available"
+            ? null
+            : renderRunDetailMissingBlock(
+                "Run-level tool calls",
+                availabilitySummary(runDetail.data_availability.tool_calls, "Available", "No persisted tool-call records"),
+                "run-tool-calls-missing",
+              )}
         {runDetail.error ? <div className="runtime-run-error">{runDetail.error}</div> : null}
         <button type="button" className="primary" onClick={exitInspectMode}>
           Exit inspect mode
@@ -4697,7 +4981,7 @@ export default function App() {
         {selectedInspectNodeDetail.binding_error ? (
           <div className="runtime-run-error">Binding error: {selectedInspectNodeDetail.binding_error}</div>
         ) : null}
-        {renderRunDetailNodeLinks(selectedInspectNodeDetail)}
+        {renderRunDetailNodeLinks(selectedInspectNodeDetail, runDetail.data_availability)}
         {renderResolvedInputEditor(selectedInspectNodeDetail, selectedInspectCatalogEntry)}
         {renderRunDetailJson("Outputs", selectedInspectNodeDetail.outputs, selectedInspectNodeDetail.missing_fields.includes("outputs"))}
         {renderRunDetailJson("Input payload", selectedInspectNodeDetail.input_payload, selectedInspectNodeDetail.missing_fields.includes("payload"))}
@@ -4708,49 +4992,47 @@ export default function App() {
     );
   }
 
-  function renderRunDetailNodeLinks(node: WorkflowRunNodeDetail) {
+  function renderRunDetailNodeLinks(node: WorkflowRunNodeDetail, availability: WorkflowRunDataAvailability) {
+    const toolCallAvailable = normalizeAvailabilityState(availability.tool_calls) === "available";
+    const agentLinkAvailable = normalizeAvailabilityState(availability.agent_links) === "available";
+    const artifactAvailable = normalizeAvailabilityState(availability.communication_artifacts) === "available";
+    const toolCallItems = node.tool_call_links.map((link, index) => renderRunDetailToolCallLink(link, "node", index));
+    const approvalItems = node.approval_links.map((approval) => (
+      <div className="run-detail-link-item" key={approval.request_id}>
+        <strong>Approval {approval.request_id}</strong>
+        <span>{approval.action_type}{approval.tool_name ? ` / ${approval.tool_name}` : ""}</span>
+        <span>Boundary {approval.directory_path}</span>
+        <span>{approval.status}</span>
+        <span>Payload {approval.payload_digest}</span>
+        {approval.human_summary ? <span>{approval.human_summary}</span> : null}
+        {approval.approver ? <span>Approver {approval.approver}</span> : null}
+        {approval.decision_at ? <span>Decision {formatRuntimeTimestamp(approval.decision_at)}</span> : null}
+      </div>
+    ));
+    const agentItems = node.agent_links.map((agent, index) => renderRunDetailAgentLink(agent, index));
+    const artifactItems = node.communication_artifact_links.map((artifact) => (
+      <div className="run-detail-link-item" key={artifact.artifact_id}>
+        <strong>Artifact {artifact.artifact_id}</strong>
+        <span>{artifact.filename ?? artifact.original_filename ?? "filename missing"}</span>
+        <span>{artifact.provider ?? "provider missing"}</span>
+        {artifact.sha256 ? <span>SHA-256 {artifact.sha256}</span> : null}
+        {artifact.status ? <span>{artifact.status}</span> : null}
+      </div>
+    ));
     if (
-      node.approval_links.length === 0 &&
-      node.agent_links.length === 0 &&
-      node.communication_artifact_links.length === 0
+      toolCallItems.length === 0 &&
+      approvalItems.length === 0 &&
+      agentItems.length === 0 &&
+      artifactItems.length === 0
     ) {
       return null;
     }
     return (
       <div className="run-detail-node-links">
-        {node.approval_links.map((approval) => (
-          <div className="run-detail-link-item" key={approval.request_id}>
-            <strong>Approval {approval.request_id}</strong>
-            <span>{approval.action_type}{approval.tool_name ? ` / ${approval.tool_name}` : ""}</span>
-            <span>Boundary {approval.directory_path}</span>
-            <span>{approval.status}</span>
-            <span>Payload {approval.payload_digest}</span>
-            {approval.human_summary ? <span>{approval.human_summary}</span> : null}
-            {approval.approver ? <span>Approver {approval.approver}</span> : null}
-            {approval.decision_at ? <span>Decision {formatRuntimeTimestamp(approval.decision_at)}</span> : null}
-          </div>
-        ))}
-        {node.agent_links.map((agent, index) => (
-          <div className="run-detail-link-item" key={`${agent.session_id ?? "agent"}-${agent.execution_id ?? index}`}>
-            <strong>Agent {agent.session_id ?? "session missing"}</strong>
-            <span>{agent.status ?? (agent.waiting ? "waiting" : agent.completed ? "completed" : "status missing")}</span>
-            {agent.thread_id ? <span>Thread {agent.thread_id}</span> : null}
-            {agent.execution_id ? <span>Execution {agent.execution_id}</span> : null}
-            <span>{agent.waiting ? "Waiting" : agent.completed ? "Completed" : "Completion state missing"}</span>
-            {agent.prompt ? <span>{agent.prompt}</span> : null}
-            {agent.artifact_ids.length > 0 ? <span>Artifacts {agent.artifact_ids.join(", ")}</span> : null}
-            {agent.log_reference ? <span>Logs recorded</span> : null}
-          </div>
-        ))}
-        {node.communication_artifact_links.map((artifact) => (
-          <div className="run-detail-link-item" key={artifact.artifact_id}>
-            <strong>Artifact {artifact.artifact_id}</strong>
-            <span>{artifact.filename ?? artifact.original_filename ?? "filename missing"}</span>
-            <span>{artifact.provider ?? "provider missing"}</span>
-            {artifact.sha256 ? <span>SHA-256 {artifact.sha256}</span> : null}
-            {artifact.status ? <span>{artifact.status}</span> : null}
-          </div>
-        ))}
+        {toolCallItems.length > 0 || !toolCallAvailable ? renderRunDetailLinkGroup("Tool calls", "No tool-call audit records", toolCallItems) : null}
+        {approvalItems.length > 0 ? renderRunDetailLinkGroup("Approvals", "No approval records", approvalItems) : null}
+        {agentItems.length > 0 || !agentLinkAvailable ? renderRunDetailLinkGroup("Agents", "No agent session records", agentItems) : null}
+        {artifactItems.length > 0 || !artifactAvailable ? renderRunDetailLinkGroup("Communication artifacts", "No communication artifact records", artifactItems) : null}
       </div>
     );
   }
