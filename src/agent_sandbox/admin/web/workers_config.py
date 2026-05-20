@@ -83,6 +83,7 @@ _ASSISTANT_SETTINGS_FIELD_LABELS: dict[str, str] = {
 }
 _DIRECTORY_CONFIG_FIELD_LABELS: dict[tuple[str, str], str] = {
     (COMMUNICATION_TARGETS_DOMAIN, "targets"): "Communication targets",
+    ("providers", "execution_backend"): "Execution backend",
 }
 _SOURCE_DOMAIN_CONFIG_FIELD_TOOLTIPS: dict[tuple[str, str], str] = {
     (COMMUNICATION_TARGETS_DOMAIN, "targets"): (
@@ -230,9 +231,15 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
             ("azure_devops_",),
         ),
         (
-            "Container worker",
+            "Agent execution",
             (
                 ("providers", "execution_backend"),
+            ),
+            (),
+        ),
+        (
+            "Container worker settings",
+            (
                 ("providers", "container_worker_base_url"),
                 ("providers", "container_worker_token_env"),
                 ("providers", "container_worker_default_image"),
