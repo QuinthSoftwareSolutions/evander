@@ -50,3 +50,4 @@ agent_sandbox_shared_secrets_env:
   AGENT_SANDBOX_WORKER_TOKEN: "{{ vault_agent_sandbox_worker_token }}"
   EXAMPLE_APP_DEPLOY_DEMO_SCRIPT_PATH: "{{ agent_sandbox_example_app_deploy_demo_script_path }}"
   RETELL_API_KEY: "{{ vault_retell_api_key }}"
+  AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS: "{{ vault_agent_sandbox_workflow_event_machine_tokens }}"
