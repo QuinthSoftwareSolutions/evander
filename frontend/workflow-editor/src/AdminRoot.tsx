@@ -10,6 +10,7 @@ import { AgentsPage } from "./features/agents/AgentsPage";
 import { ConfigurationScreen } from "./features/configuration/ConfigurationScreen";
 import { IssuesPage } from "./features/issues/IssuesPage";
 import { ApprovalsScreen } from "./features/approvals/ApprovalsScreen";
+import { OperationsDashboard } from "./features/dashboard/OperationsDashboard";
 import { ReportsPage } from "./features/reports/ReportsPage";
 import { SessionsScreen } from "./features/sessions/SessionsScreen";
 import { ToolCallsPage } from "./features/toolCalls/ToolCallsPage";
@@ -1551,7 +1552,7 @@ export default function AdminRoot() {
             <DeploymentStatusBanner status={deploymentStatus} />
             {sessionError ? <div className="admin-shell-alert">{sessionError}</div> : null}
             {renderedTab === "dashboard" ? (
-              <PlaceholderView title={activeTab.label} description={activeTab.description} />
+              <OperationsDashboard />
             ) : renderedTab === "workflow" ? (
               <div className="admin-workflow-panel">
                 <WorkflowEditorApp />
