@@ -106,6 +106,7 @@ type GraphNodeData = {
   statusBadges: ReadonlyArray<GraphNodeStatusBadge>;
   diagnosticCount: number;
   hasDiagnostics: boolean;
+  hasUnsavedChanges: boolean;
   isInspectGhost?: boolean;
   pendingConnectionRole?: PendingConnectionRole | null;
 };
@@ -147,6 +148,16 @@ type StringMapDraftRow = {
   id: string;
   key: string;
   value: string;
+};
+
+type InspectorDraftSnapshot = {
+  nodeId: string;
+  displayName: string;
+  knownValues: Record<string, unknown>;
+  unknownValues: Record<string, unknown>;
+  jsonDrafts: Record<string, string>;
+  stringListDrafts: Record<string, string>;
+  stringMapDrafts: Record<string, StringMapDraftRow[]>;
 };
 
 type DirectorySelectOption = {
@@ -192,6 +203,15 @@ type CopiedWorkflowSelection = {
   nodes: CopiedWorkflowNode[];
   edges: WorkflowEdge[];
   primaryNodeId: string | null;
+};
+
+type WorkflowDocumentSurface = Pick<WorkflowEditorDocument, "config" | "layout" | "graphs">;
+
+type WorkflowDocumentLike = {
+  config: WorkflowConfig;
+  layout: WorkflowLayout;
+  graphs: WorkflowGraphMetadata[];
+  output_schemas?: WorkflowOutputSchemas;
 };
 
 const SYSTEM_BINDING_OPTIONS: ReadonlyArray<BindingOption> = [
@@ -387,6 +407,13 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
             {nodeData.hasDiagnostics ? (
               <Tooltip content={`${nodeData.diagnosticCount} workflow binding problem${nodeData.diagnosticCount === 1 ? "" : "s"}`}>
                 <div className="node-diagnostic-badge">{nodeData.diagnosticCount}</div>
+              </Tooltip>
+            ) : null}
+            {nodeData.hasUnsavedChanges ? (
+              <Tooltip content="Unsaved changes">
+                <div className="node-unsaved-badge" aria-label="Unsaved changes">
+                  Unsaved changes
+                </div>
               </Tooltip>
             ) : null}
             {nodeData.statusBadges.map((badge) => (
@@ -662,6 +689,7 @@ function buildNodes(
   diagnostics: WorkflowValidationDiagnostic[] = [],
   currentPositions: Record<string, { x: number; y: number }> = {},
   selectedNodeIds: string[] = [],
+  dirtyNodeIds: ReadonlySet<string> = new Set<string>(),
   ghostNodeIds: ReadonlySet<string> = new Set<string>(),
 ): Node<GraphNodeData>[] {
   const collections = nodeCollections(config);
@@ -696,6 +724,7 @@ function buildNodes(
         statusBadges: nodeStatusBadges(activity),
         diagnosticCount,
         hasDiagnostics: diagnosticCount > 0,
+        hasUnsavedChanges: dirtyNodeIds.has(node.id),
         isInspectGhost: ghostNodeIds.has(node.id),
       },
     };
@@ -975,6 +1004,84 @@ function cloneLayout(layout: WorkflowLayout): WorkflowLayout {
 
 function cloneNodeConfig(node: WorkflowNodeConfig): WorkflowNodeConfig {
   return JSON.parse(JSON.stringify(node)) as WorkflowNodeConfig;
+}
+
+function workflowComparableValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => workflowComparableValue(entry));
+  }
+  if (isRecord(value)) {
+    const result: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) {
+      const nextValue = workflowComparableValue(value[key]);
+      if (nextValue !== undefined) {
+        result[key] = nextValue;
+      }
+    }
+    return result;
+  }
+  return value;
+}
+
+function workflowValuesEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(workflowComparableValue(left)) === JSON.stringify(workflowComparableValue(right));
+}
+
+function normalizeWorkflowEditorDocument<T extends WorkflowDocumentLike>(
+  document: T,
+  defaultDirectoryPath: string,
+): T {
+  const backendOutputSchemas = document.output_schemas ?? {};
+  const normalizedConfig = normalizeDerivedNodeFields(
+    normalizeWorkflowConfigShape(document.config),
+    backendOutputSchemas,
+  );
+  const outputSchemas = deriveWorkflowOutputSchemas(normalizedConfig, backendOutputSchemas);
+  const normalizedGraphs = normalizeWorkflowGraphs(
+    normalizedConfig,
+    document.graphs ?? [],
+    defaultDirectoryPath,
+  );
+  return {
+    ...document,
+    config: normalizedConfig,
+    graphs: normalizedGraphs,
+    output_schemas: outputSchemas,
+  } as T;
+}
+
+function workflowEditableDocumentsEqual(left: WorkflowDocumentSurface, right: WorkflowDocumentSurface): boolean {
+  return workflowValuesEqual(left, right);
+}
+
+function dirtyWorkflowNodeIds(
+  current: WorkflowEditorDocument | null,
+  baseline: WorkflowEditorDocument | null,
+  nodeEditOrigins: Record<string, string>,
+): string[] {
+  if (!current || !baseline) return [];
+  const baselineNodesById = new Map(workflowNodes(baseline.config).map((node) => [node.id, node]));
+  const dirtyNodeIds: string[] = [];
+  for (const node of workflowNodes(current.config)) {
+    const originId = nodeEditOrigins[node.id] ?? node.id;
+    const baselineNode = baselineNodesById.get(originId);
+    if (!baselineNode) {
+      dirtyNodeIds.push(node.id);
+      continue;
+    }
+    if (originId !== node.id) {
+      dirtyNodeIds.push(node.id);
+      continue;
+    }
+    if (!workflowValuesEqual(node, baselineNode)) {
+      dirtyNodeIds.push(node.id);
+      continue;
+    }
+    if (!workflowValuesEqual(current.layout.nodes[node.id], baseline.layout.nodes[originId])) {
+      dirtyNodeIds.push(node.id);
+    }
+  }
+  return dirtyNodeIds;
 }
 
 function flattenWorkflowNodeConfig(node: WorkflowNodeConfig): WorkflowNodeConfig {
@@ -2362,7 +2469,7 @@ function parseNodeTypeDragPayload(dataTransfer: DataTransfer): NodeTypeDragPaylo
 }
 
 export default function App() {
-  const { privilegedUnlocked, selectedDirectoryPath, directoryTree } = useAdminUi();
+  const { privilegedUnlocked, selectedDirectoryPath, directoryTree, setWorkflowHasUnsavedChanges } = useAdminUi();
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const canvasShellRef = useRef<HTMLElement | null>(null);
   const hasAutoFitRef = useRef(false);
@@ -2371,6 +2478,7 @@ export default function App() {
   const copiedSelectionRef = useRef<CopiedWorkflowSelection | null>(null);
   const sidebarResizeRef = useRef<SidebarResizeState | null>(null);
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
+  const [savedDocument, setSavedDocument] = useState<WorkflowEditorDocument | null>(null);
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
   const [runDetail, setRunDetail] = useState<WorkflowRunDetail | null>(null);
@@ -2396,6 +2504,7 @@ export default function App() {
   const [selectedGraphId, setSelectedGraphId] = useState<string | null>(null);
   const [nodeConnectionMenu, setNodeConnectionMenu] = useState<NodeConnectionMenuState | null>(null);
   const [pendingConnection, setPendingConnection] = useState<PendingConnectionState | null>(null);
+  const [nodeEditOrigins, setNodeEditOrigins] = useState<Record<string, string>>({});
   const [graphNameDraft, setGraphNameDraft] = useState("");
   const [graphDescriptionDraft, setGraphDescriptionDraft] = useState("");
   const [graphDirectoriesDraft, setGraphDirectoriesDraft] = useState("");
@@ -2449,6 +2558,7 @@ export default function App() {
         [],
         {},
         selectedNodeId ? [selectedNodeId] : [],
+        new Set<string>(),
         inspectGhostNodeIds,
       )
     : [];
@@ -2526,6 +2636,31 @@ export default function App() {
   const selectedGraph = selectedGraphId
     ? visibleWorkflowGraphs.find((graph) => graph.id === selectedGraphId)
     : undefined;
+  const hasUnsavedWorkflowChanges = useMemo(
+    () => (
+      document !== null &&
+      savedDocument !== null &&
+      !workflowEditableDocumentsEqual(
+        {
+          config: document.config,
+          layout: document.layout,
+          graphs: document.graphs,
+        },
+        {
+          config: savedDocument.config,
+          layout: savedDocument.layout,
+          graphs: savedDocument.graphs,
+        },
+      )
+    ),
+    [document, savedDocument],
+  );
+  const dirtyNodeIds = useMemo(
+    () => dirtyWorkflowNodeIds(document, savedDocument, nodeEditOrigins),
+    [document, savedDocument, nodeEditOrigins],
+  );
+  const dirtyNodeIdSet = useMemo(() => new Set(dirtyNodeIds), [dirtyNodeIds]);
+  const selectedNodeHasUnsavedChanges = Boolean(selectedNodeId && dirtyNodeIdSet.has(selectedNodeId));
   const visibleWorkflowNodes = workflowNodes(config).filter((node) => visibleGraphNodeIds.has(node.id));
   const runSearchScopeOptions: WorkflowRunSearchScopeOption[] = [
     ...visibleWorkflowGraphs.map((graph) => ({
@@ -2571,6 +2706,27 @@ export default function App() {
   })();
   const effectTargetField = selectedCatalogEntry?.fields.find((field) => field.key === effectTargetKey)
     ?? selectedCatalogEntry?.fields.find((field) => field.key === "target");
+
+  useEffect(() => {
+    setWorkflowHasUnsavedChanges(hasUnsavedWorkflowChanges);
+  }, [hasUnsavedWorkflowChanges, setWorkflowHasUnsavedChanges]);
+
+  useEffect(
+    () => () => {
+      setWorkflowHasUnsavedChanges(false);
+    },
+    [setWorkflowHasUnsavedChanges],
+  );
+
+  useEffect(() => {
+    if (!hasUnsavedWorkflowChanges) return;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedWorkflowChanges]);
 
   useEffect(() => {
     setRunSearchScope((current) => {
@@ -2710,11 +2866,16 @@ export default function App() {
           graphs: normalizedGraphs,
           output_schemas: outputSchemas,
         };
+        const savedNormalizedDocument = normalizeWorkflowEditorDocument(
+          normalizedDocument,
+          initialGraphDirectoryPathRef.current,
+        );
         const nextDiagnostics = payload.validation_diagnostics
           ?? validateWorkflowBindingDiagnostics(normalizedConfig, outputSchemas);
         setRunSnapshot(runSnapshotPayload);
         setValidationDiagnostics(nextDiagnostics);
-        setDocument(normalizedDocument);
+        setDocument(savedNormalizedDocument);
+        setSavedDocument(savedNormalizedDocument);
         setError(null);
       })
       .catch((reason: unknown) => {
@@ -2745,6 +2906,7 @@ export default function App() {
             validationDiagnostics,
             currentPositionsFromNodes(currentNodes),
             currentNodes.filter((node) => node.selected).map((node) => node.id),
+            dirtyNodeIdSet,
           ),
         );
         setFlowEdges(buildEdges(document.config, catalogPayload));
@@ -2952,10 +3114,11 @@ export default function App() {
         validationDiagnostics,
         currentPositionsFromNodes(currentNodes),
         currentNodes.filter((node) => node.selected).map((node) => node.id),
+        dirtyNodeIdSet,
       );
     });
     setFlowEdges(buildEdges(document.config, catalog));
-  }, [catalog, document, runSnapshot, validationDiagnostics]);
+  }, [catalog, document, dirtyNodeIds, runSnapshot, validationDiagnostics]);
 
   useEffect(() => {
     hasAutoFitRef.current = false;
@@ -2990,8 +3153,11 @@ export default function App() {
     setSelectedGraphId(null);
   }, [selectedGraphId, visibleWorkflowGraphs]);
 
-  useEffect(() => {
-    if (!selectedNode) {
+  function hydrateInspectorDraftFromNode(
+    nextNode: WorkflowNodeConfig | undefined,
+    nextCatalogEntry: WorkflowEditorNodeCatalogEntry | undefined,
+  ) {
+    if (!nextNode) {
       setInspectorNodeId("");
       setInspectorDisplayName("");
       setInspectorKnownValues({});
@@ -3003,15 +3169,16 @@ export default function App() {
       setRawJsonDraft("{}");
       return;
     }
-    const { id: _id, display_name: _displayName, type: _type, ...extras } = selectedNode;
-    const knownFieldKeys = new Set((selectedCatalogEntry?.fields ?? []).map((field) => field.key));
+
+    const { id: _id, display_name: _displayName, type: _type, ...extras } = nextNode;
+    const knownFieldKeys = new Set((nextCatalogEntry?.fields ?? []).map((field) => field.key));
     const nextKnownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => knownFieldKeys.has(key)));
     const nextUnknownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => !knownFieldKeys.has(key)));
     const nextJsonDrafts: Record<string, string> = {};
     const nextStringListDrafts: Record<string, string> = {};
     const nextStringMapDrafts: Record<string, StringMapDraftRow[]> = {};
     const nextFieldModes: Record<string, "literal" | "bind" | "template"> = {};
-    for (const field of selectedCatalogEntry?.fields ?? []) {
+    for (const field of nextCatalogEntry?.fields ?? []) {
       nextFieldModes[field.key] = fieldValueMode(field, nextKnownValues[field.key]);
       if (field.kind !== "json") continue;
       const fallbackValue = field.required || field.key === "outputs" ? {} : undefined;
@@ -3020,7 +3187,7 @@ export default function App() {
         ? fallbackDraft
         : formatJson(nextKnownValues[field.key], fallbackDraft);
     }
-    for (const field of selectedCatalogEntry?.fields ?? []) {
+    for (const field of nextCatalogEntry?.fields ?? []) {
       if (field.kind !== "object_list") continue;
       const items: unknown[] = Array.isArray(nextKnownValues[field.key]) ? (nextKnownValues[field.key] as unknown[]) : [];
       items.forEach((item: unknown, index: number) => {
@@ -3037,18 +3204,18 @@ export default function App() {
         });
       });
     }
-    for (const field of selectedCatalogEntry?.fields ?? []) {
+    for (const field of nextCatalogEntry?.fields ?? []) {
       if (field.kind !== "string_list") continue;
       nextStringListDrafts[field.key] = Array.isArray(nextKnownValues[field.key])
         ? (nextKnownValues[field.key] as unknown[]).map((item) => String(item)).join("\n")
         : "";
     }
-    for (const field of selectedCatalogEntry?.fields ?? []) {
+    for (const field of nextCatalogEntry?.fields ?? []) {
       if (field.kind !== "string_map") continue;
       nextStringMapDrafts[field.key] = stringMapDraftRows(nextKnownValues[field.key]);
     }
-    setInspectorNodeId(selectedNode.id);
-    setInspectorDisplayName(selectedNode.display_name);
+    setInspectorNodeId(nextNode.id);
+    setInspectorDisplayName(nextNode.display_name);
     setInspectorKnownValues(nextKnownValues);
     setInspectorUnknownValues(nextUnknownValues);
     setInspectorJsonDrafts(nextJsonDrafts);
@@ -3056,7 +3223,11 @@ export default function App() {
     setInspectorStringMapDrafts(nextStringMapDrafts);
     setInspectorFieldModes(nextFieldModes);
     setRawJsonDraft(JSON.stringify(extras, null, 2));
-  }, [selectedNode, selectedCatalogEntry]);
+  }
+
+  useEffect(() => {
+    hydrateInspectorDraftFromNode(selectedNode, selectedCatalogEntry);
+  }, [selectedNode?.id, selectedCatalogEntry]);
 
   useEffect(() => {
     if (!selectedEdgeId) return;
@@ -3086,40 +3257,37 @@ export default function App() {
     revisionOverride?: string,
   ) {
     if (!document) return;
-    const backendOutputSchemas = outputSchemasOverride ?? document.output_schemas ?? {};
-    const normalizedConfig = normalizeDerivedNodeFields(
-      normalizeWorkflowConfigShape(nextConfig),
-      backendOutputSchemas,
-    );
-    const outputSchemas = deriveWorkflowOutputSchemas(normalizedConfig, backendOutputSchemas);
-    const normalizedGraphs = normalizeWorkflowGraphs(
-      normalizedConfig,
-      nextGraphs ?? document.graphs ?? [],
+    const nextDocument = normalizeWorkflowEditorDocument(
+      {
+        ...document,
+        config: nextConfig,
+        layout: nextLayout,
+        graphs: nextGraphs ?? document.graphs ?? [],
+        output_schemas: outputSchemasOverride ?? document.output_schemas ?? {},
+        revision: revisionOverride ?? document.revision,
+      },
       selectedDirectoryPath,
     );
-    const nextDocument = {
-      ...document,
-      config: normalizedConfig,
-      layout: nextLayout,
-      graphs: normalizedGraphs,
-      output_schemas: outputSchemas,
-      revision: revisionOverride ?? document.revision,
-    };
-    const nextDiagnostics = diagnosticsOverride ?? validateWorkflowBindingDiagnostics(normalizedConfig, outputSchemas);
+    const nextDiagnostics = diagnosticsOverride ?? validateWorkflowBindingDiagnostics(
+      nextDocument.config,
+      nextDocument.output_schemas,
+    );
+    const nextDirtyNodeIds = dirtyWorkflowNodeIds(nextDocument, savedDocument, nodeEditOrigins);
     setDocument(nextDocument);
     setValidationDiagnostics(nextDiagnostics);
     setFlowNodes((currentNodes) =>
       buildNodes(
-        normalizedConfig,
+        nextDocument.config,
         nextLayout,
         catalog,
         runSnapshot?.node_activity ?? {},
         nextDiagnostics,
         currentPositionsFromNodes(currentNodes),
         selectedNodeIdsAfterPatch ?? currentNodes.filter((node) => node.selected).map((node) => node.id),
+        new Set(nextDirtyNodeIds),
       ),
     );
-    setFlowEdges(buildEdges(normalizedConfig, catalog));
+    setFlowEdges(buildEdges(nextDocument.config, catalog));
     setSaveState("idle");
   }
 
@@ -3363,7 +3531,7 @@ export default function App() {
       return;
     }
     setNodeConnectionMenu(null);
-    setSelectedNodeId(node.id);
+    setProgrammaticSelection([node.id], node.id);
     setSelectedEdgeId(null);
     appShellRef.current?.focus();
   }
@@ -3475,6 +3643,13 @@ export default function App() {
     patchDocument(nextConfig, nextLayout);
     setProgrammaticSelection([]);
     setSelectedEdgeId(null);
+    setNodeEditOrigins((current) => {
+      const next = { ...current };
+      for (const nodeId of deletedNodeIds) {
+        delete next[nodeId];
+      }
+      return next;
+    });
     setError(null);
   }
 
@@ -3716,96 +3891,185 @@ export default function App() {
     setError(null);
   }
 
-  function applyInspectorChanges() {
-    if (!document || !selectedNode || workflowEditLocked) return;
-    try {
-      const rawId = inspectorNodeId.trim();
-      const rawName = inspectorDisplayName.trim();
-      if (!rawId) throw new Error("Node id is required.");
-      if (!rawName) throw new Error("Display name is required.");
-      if (rawId !== selectedNode.id && nodeById(document.config, rawId)) {
-        throw new Error(`Node ${rawId} already exists.`);
-      }
-    const nextKnownValues = { ...inspectorKnownValues };
-      if (hasCollapsedTargetUi) {
-        const activeTargetKey = activeEffectTargetKey(nextKnownValues);
-        for (const key of EFFECT_TARGET_KEYS) {
-          if (key !== activeTargetKey) {
-            delete nextKnownValues[key];
-          }
+  function materializeInspectorNodeFromDraft(draft: InspectorDraftSnapshot): WorkflowNodeConfig {
+    if (!selectedNode) throw new Error("No node is selected.");
+    const rawId = draft.nodeId.trim();
+    const rawName = draft.displayName.trim();
+    if (!rawId) throw new Error("Node id is required.");
+    if (!rawName) throw new Error("Display name is required.");
+    if (rawId !== selectedNode.id && nodeById(document?.config ?? emptyConfig(), rawId)) {
+      throw new Error(`Node ${rawId} already exists.`);
+    }
+
+    const nextKnownValues = { ...draft.knownValues };
+    if (hasCollapsedTargetUi) {
+      const activeTargetKey = activeEffectTargetKey(nextKnownValues);
+      for (const key of EFFECT_TARGET_KEYS) {
+        if (key !== activeTargetKey) {
+          delete nextKnownValues[key];
         }
       }
-      for (const field of selectedCatalogEntry?.fields ?? []) {
-        if (field.kind !== "json") continue;
-        if (isExactBindingValue(nextKnownValues[field.key])) continue;
-        if (field.read_only) continue;
-        const fallbackValue = workflowJsonFieldFallbackValue(field, field.required ? {} : undefined);
-        nextKnownValues[field.key] = parseJsonDraft(inspectorJsonDrafts[field.key] ?? "", fallbackValue);
-      }
-      for (const field of selectedCatalogEntry?.fields ?? []) {
-        if (field.kind !== "string_list") continue;
-        nextKnownValues[field.key] = (inspectorStringListDrafts[field.key] ?? "")
-          .split("\n")
-          .map((item) => item.trim())
-          .filter(Boolean);
-      }
-      for (const field of selectedCatalogEntry?.fields ?? []) {
-        if (field.kind !== "string_map") continue;
-        if (isExactBindingValue(nextKnownValues[field.key])) continue;
-        if (field.read_only) continue;
-        nextKnownValues[field.key] = parseStringMapDraftRows(
-          inspectorStringMapDrafts[field.key] ?? [],
-          field.label,
-          field.required,
-        );
-      }
-      for (const field of selectedCatalogEntry?.fields ?? []) {
-        if (field.kind !== "object_list") continue;
-        const currentItems = Array.isArray(nextKnownValues[field.key]) ? [...(nextKnownValues[field.key] as unknown[])] : [];
-        field.item_fields.forEach((itemField) => {
-          if (itemField.kind !== "json") return;
-          currentItems.forEach((item, index) => {
-            if (!isRecord(item)) return;
-            const draftKey = objectListJsonDraftKey(field.key, index, itemField.key);
-            const currentValue = item[itemField.key];
-            if (isExactBindingValue(currentValue)) return;
-            const fallbackValue = workflowJsonFieldFallbackValue(itemField, itemField.required ? {} : undefined);
-            const parsedValue = parseJsonDraft(inspectorJsonDrafts[draftKey] ?? "", fallbackValue);
-            if (parsedValue === undefined) {
-              delete item[itemField.key];
-            } else {
-              item[itemField.key] = parsedValue;
-            }
-          });
-        });
-        nextKnownValues[field.key] = currentItems;
-      }
-      const nextNode = removeUndefinedValues({
-        id: rawId,
-        display_name: rawName,
-        type: selectedNode.type,
-        ...inspectorUnknownValues,
-        ...nextKnownValues,
-      }) as WorkflowNodeConfig;
-      const nextConfig = cloneConfig(document.config);
-      const collectionName = kindCollectionKey(nodeKindFromType(selectedNode.type));
-      nextConfig[collectionName] = nextConfig[collectionName].map((node) =>
-        node.id === selectedNode.id ? nextNode : node,
+    }
+    for (const field of selectedCatalogEntry?.fields ?? []) {
+      if (field.kind !== "json") continue;
+      if (isExactBindingValue(nextKnownValues[field.key])) continue;
+      if (field.read_only) continue;
+      const fallbackValue = workflowJsonFieldFallbackValue(field, field.required ? {} : undefined);
+      nextKnownValues[field.key] = parseJsonDraft(draft.jsonDrafts[field.key] ?? "", fallbackValue);
+    }
+    for (const field of selectedCatalogEntry?.fields ?? []) {
+      if (field.kind !== "string_list") continue;
+      nextKnownValues[field.key] = (draft.stringListDrafts[field.key] ?? "")
+        .split("\n")
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+    for (const field of selectedCatalogEntry?.fields ?? []) {
+      if (field.kind !== "string_map") continue;
+      if (isExactBindingValue(nextKnownValues[field.key])) continue;
+      if (field.read_only) continue;
+      nextKnownValues[field.key] = parseStringMapDraftRows(
+        draft.stringMapDrafts[field.key] ?? [],
+        field.label,
+        field.required,
       );
+    }
+    for (const field of selectedCatalogEntry?.fields ?? []) {
+      if (field.kind !== "object_list") continue;
+      const currentItems = Array.isArray(nextKnownValues[field.key]) ? [...(nextKnownValues[field.key] as unknown[])] : [];
+      field.item_fields.forEach((itemField) => {
+        if (itemField.kind !== "json") return;
+        currentItems.forEach((item, index) => {
+          if (!isRecord(item)) return;
+          const draftKey = objectListJsonDraftKey(field.key, index, itemField.key);
+          const currentValue = item[itemField.key];
+          if (isExactBindingValue(currentValue)) return;
+          const fallbackValue = workflowJsonFieldFallbackValue(itemField, itemField.required ? {} : undefined);
+          const parsedValue = parseJsonDraft(draft.jsonDrafts[draftKey] ?? "", fallbackValue);
+          if (parsedValue === undefined) {
+            delete item[itemField.key];
+          } else {
+            item[itemField.key] = parsedValue;
+          }
+        });
+      });
+      nextKnownValues[field.key] = currentItems;
+    }
+
+    return removeUndefinedValues({
+      id: rawId,
+      display_name: rawName,
+      type: selectedNode.type,
+      ...draft.unknownValues,
+      ...nextKnownValues,
+    }) as WorkflowNodeConfig;
+  }
+
+  function replaceSelectedNode(nextNode: WorkflowNodeConfig, originalNodeId: string) {
+    if (!document || !selectedNode || workflowEditLocked) return;
+    const nextConfig = cloneConfig(document.config);
+    const collectionName = kindCollectionKey(nodeKindFromType(selectedNode.type));
+    nextConfig[collectionName] = nextConfig[collectionName].map((node) =>
+      node.id === originalNodeId ? nextNode : node,
+    );
+    nextConfig.edges = nextConfig.edges.map((edge) => ({
+      ...edge,
+      source_id: edge.source_id === originalNodeId ? nextNode.id : edge.source_id,
+      target_id: edge.target_id === originalNodeId ? nextNode.id : edge.target_id,
+    }));
+    const nextLayout = cloneLayout(document.layout);
+    if (nextNode.id !== originalNodeId) {
+      nextLayout.nodes[nextNode.id] = nextLayout.nodes[originalNodeId] ?? fallbackPosition(0);
+      delete nextLayout.nodes[originalNodeId];
+    }
+    patchDocument(nextConfig, nextLayout, undefined, [nextNode.id]);
+    setProgrammaticSelection([nextNode.id], nextNode.id);
+    setSelectedEdgeId(null);
+    setNodeEditOrigins((current) => {
+      const next = { ...current };
+      const originId = current[originalNodeId] ?? (savedDocument && nodeById(savedDocument.config, originalNodeId) ? originalNodeId : null);
+      delete next[originalNodeId];
+      if (originId && originId !== nextNode.id) {
+        next[nextNode.id] = originId;
+      }
+      return next;
+    });
+    setError(null);
+  }
+
+  function resetSelectedNodeChanges() {
+    if (!document || !selectedNode || workflowEditLocked) return;
+    const originalNodeId = nodeEditOrigins[selectedNode.id] ?? selectedNode.id;
+    const savedWorkflowDocument = savedDocument;
+    if (!savedWorkflowDocument) {
+      deleteNodes([selectedNode.id]);
+      return;
+    }
+    const savedNode = nodeById(savedWorkflowDocument.config, originalNodeId);
+    if (!savedNode) {
+      deleteNodes([selectedNode.id]);
+      return;
+    }
+
+    const nextConfig = cloneConfig(document.config);
+    const currentCollectionName = kindCollectionKey(nodeKindFromType(selectedNode.type));
+    const savedCollectionName = kindCollectionKey(nodeKindFromType(savedNode.type));
+    if (currentCollectionName === savedCollectionName) {
+      nextConfig[currentCollectionName] = nextConfig[currentCollectionName].map((node) =>
+        node.id === selectedNode.id ? cloneNodeConfig(savedNode) : node,
+      );
+    } else {
+      nextConfig.triggers = (nextConfig.triggers ?? []).filter((node) => node.id !== selectedNode.id);
+      nextConfig.gates = (nextConfig.gates ?? []).filter((node) => node.id !== selectedNode.id);
+      nextConfig.effects = (nextConfig.effects ?? []).filter((node) => node.id !== selectedNode.id);
+      nextConfig.queries = (nextConfig.queries ?? []).filter((node) => node.id !== selectedNode.id);
+      nextConfig[savedCollectionName] = [
+        ...(nextConfig[savedCollectionName] ?? []).filter((node) => node.id !== originalNodeId),
+        cloneNodeConfig(savedNode),
+      ];
+    }
+    if (selectedNode.id !== originalNodeId) {
       nextConfig.edges = nextConfig.edges.map((edge) => ({
         ...edge,
-        source_id: edge.source_id === selectedNode.id ? rawId : edge.source_id,
-        target_id: edge.target_id === selectedNode.id ? rawId : edge.target_id,
+        source_id: edge.source_id === selectedNode.id ? originalNodeId : edge.source_id,
+        target_id: edge.target_id === selectedNode.id ? originalNodeId : edge.target_id,
       }));
-      const nextLayout = cloneLayout(document.layout);
-      if (rawId !== selectedNode.id) {
-        nextLayout.nodes[rawId] = nextLayout.nodes[selectedNode.id] ?? fallbackPosition(0);
-        delete nextLayout.nodes[selectedNode.id];
+    }
+    const nextLayout = cloneLayout(document.layout);
+    const savedPosition = savedWorkflowDocument.layout.nodes[originalNodeId];
+    nextLayout.nodes[originalNodeId] = savedPosition ? { ...savedPosition } : fallbackPosition(0);
+    if (selectedNode.id !== originalNodeId) {
+      delete nextLayout.nodes[selectedNode.id];
+    }
+    patchDocument(nextConfig, nextLayout, undefined, [originalNodeId]);
+    setProgrammaticSelection([originalNodeId], originalNodeId);
+    setSelectedEdgeId(null);
+    hydrateInspectorDraftFromNode(savedNode, getCatalogEntry(catalog, savedNode.type));
+    setNodeEditOrigins((current) => {
+      const next = { ...current };
+      for (const [nodeId, originId] of Object.entries(current)) {
+        if (nodeId === selectedNode.id || originId === originalNodeId) {
+          delete next[nodeId];
+        }
       }
-      patchDocument(nextConfig, nextLayout, undefined, [rawId]);
-      setProgrammaticSelection([rawId], rawId);
-      setSelectedEdgeId(null);
-      setError(null);
+      return next;
+    });
+    setError(null);
+  }
+
+  function stageInspectorDraft(nextDraft: Partial<InspectorDraftSnapshot> = {}) {
+    if (!document || !selectedNode || workflowEditLocked) return;
+    try {
+      const nextNode = materializeInspectorNodeFromDraft({
+        nodeId: nextDraft.nodeId ?? inspectorNodeId,
+        displayName: nextDraft.displayName ?? inspectorDisplayName,
+        knownValues: nextDraft.knownValues ?? inspectorKnownValues,
+        unknownValues: nextDraft.unknownValues ?? inspectorUnknownValues,
+        jsonDrafts: nextDraft.jsonDrafts ?? inspectorJsonDrafts,
+        stringListDrafts: nextDraft.stringListDrafts ?? inspectorStringListDrafts,
+        stringMapDrafts: nextDraft.stringMapDrafts ?? inspectorStringMapDrafts,
+      });
+      replaceSelectedNode(nextNode, selectedNode.id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -3872,6 +4136,14 @@ export default function App() {
           }),
         },
       );
+      const normalizedSavedDocument = normalizeWorkflowEditorDocument(
+        {
+          ...document,
+          ...saved,
+          output_schemas: saved.output_schemas,
+        },
+        selectedDirectoryPath,
+      );
       patchDocument(
         saved.config,
         saved.layout,
@@ -3881,6 +4153,8 @@ export default function App() {
         saved.output_schemas,
         saved.revision,
       );
+      setSavedDocument(normalizedSavedDocument);
+      setNodeEditOrigins({});
       setSaveState("saved");
     } catch (reason) {
       setSaveState("idle");
@@ -3895,29 +4169,23 @@ export default function App() {
   }
 
   function updateKnownField(key: string, value: unknown) {
-    setInspectorKnownValues((current) => {
-      const next = { ...current, [key]: value };
-      if (selectedNode?.type === "gate:filter") {
-        if (key === "match" && value !== undefined && value !== null && value !== "") {
-          delete next.when;
-        }
-        if (key === "when" && value !== undefined && value !== null && value !== "") {
-          delete next.match;
-        }
-      }
-      return next;
-    });
+    const next = { ...inspectorKnownValues, [key]: value };
+    let nextJsonDrafts = inspectorJsonDrafts;
     if (selectedNode?.type === "gate:filter") {
-      setInspectorJsonDrafts((current) => {
-        if (key === "match" && value !== undefined && value !== null && value !== "") {
-          return { ...current, when: "" };
-        }
-        if (key === "when" && value !== undefined && value !== null && value !== "") {
-          return { ...current, match: "" };
-        }
-        return current;
-      });
+      if (key === "match" && value !== undefined && value !== null && value !== "") {
+        delete next.when;
+        nextJsonDrafts = { ...inspectorJsonDrafts, when: "" };
+      }
+      if (key === "when" && value !== undefined && value !== null && value !== "") {
+        delete next.match;
+        nextJsonDrafts = { ...inspectorJsonDrafts, match: "" };
+      }
     }
+    setInspectorKnownValues(next);
+    if (nextJsonDrafts !== inspectorJsonDrafts) {
+      setInspectorJsonDrafts(nextJsonDrafts);
+    }
+    stageInspectorDraft({ knownValues: next, jsonDrafts: nextJsonDrafts });
   }
 
   function updateFieldMode(key: string, mode: "literal" | "bind" | "template") {
@@ -3929,24 +4197,21 @@ export default function App() {
     const currentValue = inspectorKnownValues[currentKey];
     const currentMode = inspectorFieldModes[currentKey]
       ?? (effectTargetField ? fieldValueMode(effectTargetField, currentValue) : "literal");
-    setInspectorKnownValues((current) => {
-      const next = { ...current };
-      for (const key of EFFECT_TARGET_KEYS) {
-        delete next[key];
-      }
-      if (currentValue !== undefined && currentValue !== "") {
-        next[nextKey] = currentValue;
-      }
-      return next;
-    });
-    setInspectorFieldModes((current) => {
-      const next = { ...current };
-      for (const key of EFFECT_TARGET_KEYS) {
-        delete next[key];
-      }
-      next[nextKey] = currentMode;
-      return next;
-    });
+    const next = { ...inspectorKnownValues };
+    for (const key of EFFECT_TARGET_KEYS) {
+      delete next[key];
+    }
+    if (currentValue !== undefined && currentValue !== "") {
+      next[nextKey] = currentValue;
+    }
+    const nextModes = { ...inspectorFieldModes };
+    for (const key of EFFECT_TARGET_KEYS) {
+      delete nextModes[key];
+    }
+    nextModes[nextKey] = currentMode;
+    setInspectorKnownValues(next);
+    setInspectorFieldModes(nextModes);
+    stageInspectorDraft({ knownValues: next });
   }
 
   function renderEffectTargetField() {
@@ -4075,15 +4340,19 @@ export default function App() {
   }
 
   function updateStringListField(key: string, value: string) {
-    setInspectorStringListDrafts((current) => ({ ...current, [key]: value }));
+    const next = { ...inspectorStringListDrafts, [key]: value };
+    setInspectorStringListDrafts(next);
+    stageInspectorDraft({ stringListDrafts: next });
   }
 
   function addStringMapRow(key: string) {
     if (workflowEditLocked) return;
-    setInspectorStringMapDrafts((current) => ({
-      ...current,
-      [key]: [...(current[key] ?? []), createStringMapDraftRow()],
-    }));
+    const next = {
+      ...inspectorStringMapDrafts,
+      [key]: [...(inspectorStringMapDrafts[key] ?? []), createStringMapDraftRow()],
+    };
+    setInspectorStringMapDrafts(next);
+    stageInspectorDraft({ stringMapDrafts: next });
   }
 
   function updateStringMapRow(
@@ -4092,20 +4361,24 @@ export default function App() {
     key: "key" | "value",
     value: string,
   ) {
-    setInspectorStringMapDrafts((current) => ({
-      ...current,
-      [fieldKey]: (current[fieldKey] ?? []).map((row) =>
+    const next = {
+      ...inspectorStringMapDrafts,
+      [fieldKey]: (inspectorStringMapDrafts[fieldKey] ?? []).map((row) =>
         row.id === rowId ? { ...row, [key]: value } : row,
       ),
-    }));
+    };
+    setInspectorStringMapDrafts(next);
+    stageInspectorDraft({ stringMapDrafts: next });
   }
 
   function removeStringMapRow(fieldKey: string, rowId: string) {
     if (workflowEditLocked) return;
-    setInspectorStringMapDrafts((current) => ({
-      ...current,
-      [fieldKey]: (current[fieldKey] ?? []).filter((row) => row.id !== rowId),
-    }));
+    const next = {
+      ...inspectorStringMapDrafts,
+      [fieldKey]: (inspectorStringMapDrafts[fieldKey] ?? []).filter((row) => row.id !== rowId),
+    };
+    setInspectorStringMapDrafts(next);
+    stageInspectorDraft({ stringMapDrafts: next });
   }
 
   function renderDirectoryPathSelect(
@@ -4208,40 +4481,40 @@ export default function App() {
   }
 
   function updateObjectListItem(fieldKey: string, index: number, key: string, value: unknown) {
-    setInspectorKnownValues((current) => {
-      const currentItems = Array.isArray(current[fieldKey]) ? [...(current[fieldKey] as unknown[])] : [];
-      const currentItem = isRecord(currentItems[index]) ? { ...currentItems[index] } : {};
-      if (value === undefined || value === "") {
-        delete currentItem[key];
-      } else {
-        currentItem[key] = value;
-      }
-      currentItems[index] = currentItem;
-      return { ...current, [fieldKey]: currentItems };
-    });
+    const currentItems = Array.isArray(inspectorKnownValues[fieldKey]) ? [...(inspectorKnownValues[fieldKey] as unknown[])] : [];
+    const currentItem = isRecord(currentItems[index]) ? { ...currentItems[index] } : {};
+    if (value === undefined || value === "") {
+      delete currentItem[key];
+    } else {
+      currentItem[key] = value;
+    }
+    currentItems[index] = currentItem;
+    const next = { ...inspectorKnownValues, [fieldKey]: currentItems };
+    setInspectorKnownValues(next);
+    stageInspectorDraft({ knownValues: next });
   }
 
   function addObjectListItem(key: string, field: WorkflowEditorFieldDefinition) {
     if (workflowEditLocked) return;
-    setInspectorKnownValues((current) => {
-      const currentItems = Array.isArray(current[key]) ? [...current[key]] : [];
-      const nextItem = Object.fromEntries(
-        field.item_fields
-          .filter((itemField) => itemField.required)
-          .map((itemField) => [itemField.key, itemField.kind === "boolean" ? false : ""]),
-      );
-      currentItems.push(nextItem);
-      return { ...current, [key]: currentItems };
-    });
+    const currentItems = Array.isArray(inspectorKnownValues[key]) ? [...(inspectorKnownValues[key] as unknown[])] : [];
+    const nextItem = Object.fromEntries(
+      field.item_fields
+        .filter((itemField) => itemField.required)
+        .map((itemField) => [itemField.key, itemField.kind === "boolean" ? false : ""]),
+    );
+    currentItems.push(nextItem);
+    const next = { ...inspectorKnownValues, [key]: currentItems };
+    setInspectorKnownValues(next);
+    stageInspectorDraft({ knownValues: next });
   }
 
   function removeObjectListItem(key: string, index: number) {
     if (workflowEditLocked) return;
-    setInspectorKnownValues((current) => {
-      const currentItems = Array.isArray(current[key]) ? [...current[key]] : [];
-      currentItems.splice(index, 1);
-      return { ...current, [key]: currentItems };
-    });
+    const currentItems = Array.isArray(inspectorKnownValues[key]) ? [...(inspectorKnownValues[key] as unknown[])] : [];
+    currentItems.splice(index, 1);
+    const next = { ...inspectorKnownValues, [key]: currentItems };
+    setInspectorKnownValues(next);
+    stageInspectorDraft({ knownValues: next });
   }
 
   function renderField(field: WorkflowEditorFieldDefinition) {
@@ -4508,9 +4781,12 @@ export default function App() {
               <textarea
                 value={inspectorJsonDrafts[field.key] ?? ""}
                 rows={field.key === "outputs" ? 5 : 8}
-                onChange={(event) =>
-                  setInspectorJsonDrafts((current) => ({ ...current, [field.key]: event.target.value }))
-                }
+                onChange={(event) => {
+                  const nextText = event.target.value;
+                  const next = { ...inspectorJsonDrafts, [field.key]: nextText };
+                  setInspectorJsonDrafts(next);
+                  stageInspectorDraft({ jsonDrafts: next });
+                }}
                 disabled={isDisabled}
               />
             )}
@@ -4572,12 +4848,12 @@ export default function App() {
                             <textarea
                               value={inspectorJsonDrafts[nestedJsonKey] ?? ""}
                               rows={6}
-                              onChange={(event) =>
-                                setInspectorJsonDrafts((current) => ({
-                                  ...current,
-                                  [nestedJsonKey]: event.target.value,
-                                }))
-                              }
+                              onChange={(event) => {
+                                const nextText = event.target.value;
+                                const next = { ...inspectorJsonDrafts, [nestedJsonKey]: nextText };
+                                setInspectorJsonDrafts(next);
+                                stageInspectorDraft({ jsonDrafts: next });
+                              }}
                             />
                           )
                         : itemField.kind === "enum"
@@ -5482,13 +5758,24 @@ export default function App() {
                 <button onClick={selectDownstreamBranch}>Select downstream branch</button>
                 <label className="inspector-label">
                   <span>Node id</span>
-                  <input value={inspectorNodeId} onChange={(event) => setInspectorNodeId(event.target.value)} />
+                  <input
+                    value={inspectorNodeId}
+                    onChange={(event) => {
+                      const nextValue = event.target.value;
+                      setInspectorNodeId(nextValue);
+                      stageInspectorDraft({ nodeId: nextValue });
+                    }}
+                  />
                 </label>
                 <label className="inspector-label">
                   <span>Display name</span>
                   <input
                     value={inspectorDisplayName}
-                    onChange={(event) => setInspectorDisplayName(event.target.value)}
+                    onChange={(event) => {
+                      const nextValue = event.target.value;
+                      setInspectorDisplayName(nextValue);
+                      stageInspectorDraft({ displayName: nextValue });
+                    }}
                   />
                 </label>
 
@@ -5503,9 +5790,12 @@ export default function App() {
                   </details>
                 ) : null}
 
-                <button className="primary" onClick={applyInspectorChanges} disabled={workflowEditLocked}>
-                  Apply node changes
-                </button>
+                {selectedNodeHasUnsavedChanges ? (
+                  <button className="primary" onClick={resetSelectedNodeChanges} disabled={workflowEditLocked}>
+                    Reset changes
+                  </button>
+                ) : null}
+
                 <button className="danger" onClick={deleteSelectedNode} disabled={workflowEditLocked}>
                   Delete node
                 </button>

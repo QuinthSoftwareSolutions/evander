@@ -39,6 +39,8 @@ export type AdminUiState = {
   openDirectoryPicker: () => void;
   closeDirectoryPicker: () => void;
   setSelectedDirectoryPath: (path: string) => void;
+  workflowHasUnsavedChanges: boolean;
+  setWorkflowHasUnsavedChanges: (hasUnsavedChanges: boolean) => void;
   refreshDirectoryState: () => Promise<void>;
   refreshAdminState: () => Promise<void>;
 };
@@ -60,6 +62,8 @@ const DEFAULT_ADMIN_UI_STATE: AdminUiState = {
   openDirectoryPicker: () => {},
   closeDirectoryPicker: () => {},
   setSelectedDirectoryPath: () => {},
+  workflowHasUnsavedChanges: false,
+  setWorkflowHasUnsavedChanges: () => {},
   refreshDirectoryState: async () => {},
   refreshAdminState: async () => {},
 };
