@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { currentTab, tabFromHash, tabsForExecutionBackend } from "../src/adminRouting.ts";
+import { currentTab, nextPathFromHash, tabFromHash, tabsForExecutionBackend } from "../src/adminRouting.ts";
 
 test("empty and unknown hashes default to the dashboard tab", () => {
   assert.equal(tabFromHash(""), null);
@@ -21,6 +21,14 @@ test("known admin hashes resolve to their matching tabs", () => {
 test("settings remains a compatibility alias for configuration", () => {
   assert.equal(tabFromHash("#settings"), "configuration");
   assert.equal(currentTab("#settings"), "configuration");
+});
+
+test("hashes for valid tabs translate into safe Azure post-login next paths", () => {
+  assert.equal(nextPathFromHash(""), null);
+  assert.equal(nextPathFromHash("#"), null);
+  assert.equal(nextPathFromHash("#missing"), null);
+  assert.equal(nextPathFromHash("#workflow"), "/#workflow");
+  assert.equal(nextPathFromHash("#settings"), "/#settings");
 });
 
 test("dashboard is the first visible tab and vms stay backend-gated", () => {

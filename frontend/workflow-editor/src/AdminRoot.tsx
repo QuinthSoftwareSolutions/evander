@@ -20,7 +20,7 @@ import { VmsPage } from "./features/vms/VmsPage";
 import { WorkersScreen } from "./features/workers/WorkersScreen";
 import { ChatLauncher } from "./features/chat/ChatLauncher";
 import { Tooltip } from "./features/admin/Tooltip";
-import { currentTab, tabsForExecutionBackend, TABS, type AdminTab } from "./adminRouting";
+import { currentTab, nextPathFromHash, tabsForExecutionBackend, TABS, type AdminTab } from "./adminRouting";
 
 type AdminSession = {
   auth_mode: "none" | "local_password" | "azure_sso";
@@ -1337,7 +1337,12 @@ export default function AdminRoot() {
       return;
     }
     setAuthBusy(true);
-    window.location.assign(`${API_BASE}${session.azure_sso_login_url}`);
+    const loginUrl = new URL(`${API_BASE}${session.azure_sso_login_url}`, window.location.origin);
+    const nextPath = nextPathFromHash(window.location.hash);
+    if (nextPath) {
+      loginUrl.searchParams.set("next", nextPath);
+    }
+    window.location.assign(loginUrl.toString());
   }
 
   async function setPrivilegeLock(unlock: boolean) {

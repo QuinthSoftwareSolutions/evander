@@ -64,3 +64,11 @@ export function tabFromHash(hash: string): AdminTab | null {
 export function currentTab(hash: string): AdminTab {
   return tabFromHash(hash) ?? "dashboard";
 }
+
+export function nextPathFromHash(hash: string): string | null {
+  const normalizedHash = hash.trim();
+  if (!tabFromHash(normalizedHash)) {
+    return null;
+  }
+  return `/${normalizedHash.startsWith("#") ? normalizedHash : `#${normalizedHash}`}`;
+}
