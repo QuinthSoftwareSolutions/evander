@@ -480,6 +480,83 @@ def test_policy_config_resolver_inherits_approval_notification_targets(
     ]
 
 
+def test_policy_config_resolver_inherits_tool_argument_policies(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    store = DirectoryStore(runtime_dir / "directories.json")
+    service = DirectoryService(store)
+    config_store = DirectoryConfigStore(store, runtime_dir=runtime_dir)
+    resolver = PolicyConfigResolver(GatewayConfig(runtime_dir=runtime_dir))
+
+    team = service.create(parent="root", name="team")
+    sandbox = service.create(parent=team.id, name="sandbox")
+
+    policy_payload = {
+        "tool_argument_policies": {
+            "create_ado_backlog_item": [
+                {
+                    "id": "ado-item-policy",
+                    "name": "ADO backlog item guardrails",
+                    "constraints": [
+                        {
+                            "id": "project",
+                            "path": "project",
+                            "operator": "fixed",
+                            "value": "Example Project",
+                        },
+                        {
+                            "id": "type",
+                            "path": "type",
+                            "operator": "enum",
+                            "values": ["Task", "Product Backlog Item"],
+                        },
+                        {
+                            "id": "title",
+                            "path": "title",
+                            "operator": "required",
+                        },
+                        {
+                            "id": "iteration",
+                            "path": "iteration",
+                            "operator": "required",
+                        },
+                        {
+                            "id": "tags",
+                            "path": "tags[]",
+                            "operator": "denylist",
+                            "values": ["blocked-tag"],
+                        },
+                    ],
+                }
+            ]
+        }
+    }
+
+    expected_policy_payload = GatewayConfig.model_validate(policy_payload).model_dump(
+        mode="json", include={"tool_argument_policies"}
+    )
+
+    written = config_store.write(team.path, domain="policy", payload=policy_payload)
+
+    assert written == expected_policy_payload
+    assert config_store.read(team.path, domain="policy") == expected_policy_payload
+    assert (
+        resolver.resolve_for_directory(team.path).model_dump(
+            mode="json", include={"tool_argument_policies"}
+        )
+        == expected_policy_payload
+    )
+
+    config_store.write(sandbox.path, domain="policy", payload={"default_session_ttl_seconds": 120})
+    assert (
+        resolver.resolve_for_directory(sandbox.path).model_dump(
+            mode="json", include={"tool_argument_policies"}
+        )
+        == expected_policy_payload
+    )
+
+
 def test_directory_config_store_deletes_empty_domain_payload_and_clears_metadata(
     tmp_path: Path,
 ) -> None:

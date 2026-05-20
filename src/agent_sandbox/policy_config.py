@@ -13,7 +13,14 @@ from agent_sandbox.directory_config import (
     validate_effective_domain_payload,
 )
 from agent_sandbox.directories import DirectoryService, DirectoryStore
-from agent_sandbox.models import SessionManifest, ToolName, normalize_tool_names
+from agent_sandbox.models import (
+    SessionManifest,
+    ToolArgumentPolicyRule,
+    ToolName,
+    normalize_tool_argument_policies,
+    normalize_tool_names,
+    validate_tool_argument_policy_map,
+)
 from agent_sandbox.repositories.session_manifests import (
     JsonSessionManifestRepository,
     SessionManifestRepository,
@@ -43,6 +50,7 @@ class EffectivePolicyConfig(BaseModel):
     communication_file_require_approval_for_send: bool = False
     pr_reply_require_approval: bool = False
     approval_required_tools: list[ToolName] = Field(default_factory=list)
+    tool_argument_policies: dict[str, list[ToolArgumentPolicyRule]] = Field(default_factory=dict)
     redacted_keys: set[str] = Field(
         default_factory=lambda: {
             "body",
@@ -79,6 +87,20 @@ class EffectivePolicyConfig(BaseModel):
     @classmethod
     def normalize_approval_required_tools(cls, value: object) -> list[ToolName]:
         return normalize_tool_names(value, field_name="approval_required_tools")
+
+    @field_validator("tool_argument_policies", mode="before")
+    @classmethod
+    def normalize_tool_argument_policies_field(
+        cls, value: object
+    ) -> dict[str, list[object]]:
+        return normalize_tool_argument_policies(value, field_name="tool_argument_policies")
+
+    @field_validator("tool_argument_policies")
+    @classmethod
+    def validate_tool_argument_policies_field(
+        cls, value: dict[str, list[ToolArgumentPolicyRule]]
+    ) -> dict[str, list[ToolArgumentPolicyRule]]:
+        return validate_tool_argument_policy_map(value, field_name="tool_argument_policies")
 
 
 class PolicyConfigResolver:

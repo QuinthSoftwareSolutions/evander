@@ -19,7 +19,14 @@ from pydantic import (
     model_validator,
 )
 
-from agent_sandbox.models import DirectoryPath, ToolName, normalize_tool_names
+from agent_sandbox.models import (
+    DirectoryPath,
+    ToolArgumentPolicyRule,
+    ToolName,
+    normalize_tool_argument_policies,
+    normalize_tool_names,
+    validate_tool_argument_policy_map,
+)
 from agent_sandbox.provider_profiles import DEFAULT_PROVIDER_PROFILE_NAME, resolve_provider_profile
 from agent_sandbox.events.models import (
     EdgeDefinition,
@@ -214,6 +221,7 @@ class GatewayConfig(BaseModel):
     communication_file_require_approval_for_send: bool = False
     pr_reply_require_approval: bool = False
     approval_required_tools: list[ToolName] = Field(default_factory=list)
+    tool_argument_policies: dict[str, list[ToolArgumentPolicyRule]] = Field(default_factory=dict)
     github_token_env: str = "GITHUB_TOKEN"
     agent_prompt_token_secret_env: str = "AGENT_PROMPT_TOKEN_SECRET"
     agent_prompt_token_ttl_seconds: int = Field(default=3600, ge=1)
@@ -328,6 +336,20 @@ class GatewayConfig(BaseModel):
     @classmethod
     def normalize_approval_required_tools(cls, value: object) -> list[ToolName]:
         return normalize_tool_names(value, field_name="approval_required_tools")
+
+    @field_validator("tool_argument_policies", mode="before")
+    @classmethod
+    def normalize_tool_argument_policies_field(
+        cls, value: object
+    ) -> dict[str, list[object]]:
+        return normalize_tool_argument_policies(value, field_name="tool_argument_policies")
+
+    @field_validator("tool_argument_policies")
+    @classmethod
+    def validate_tool_argument_policies_field(
+        cls, value: dict[str, list[ToolArgumentPolicyRule]]
+    ) -> dict[str, list[ToolArgumentPolicyRule]]:
+        return validate_tool_argument_policy_map(value, field_name="tool_argument_policies")
 
     @field_validator(
         "gateway_url",
