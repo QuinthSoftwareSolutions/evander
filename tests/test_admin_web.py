@@ -1926,6 +1926,85 @@ def _write_json_payload(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _write_run_detail_audit_log(path: Path, *, session_id: str, vm_id: str) -> None:
+    audit_entries = [
+        {
+            "event_type": "tool_call",
+            "session_id": session_id,
+            "vm_id": vm_id,
+            "directory_path": "root",
+            "tool_name": "prompt_agent",
+            "request_id": "request-rich-node",
+            "correlation_id": "correlation-rich-node",
+            "approval_request_id": "approval-rich",
+            "workflow_run_id": "evt-detail",
+            "trace_id": "trace-detail",
+            "decision": "allowed",
+            "duration_ms": 17,
+            "args": {
+                "session_id": session_id,
+                "request_id": "request-rich-node",
+                "approval_request_id": "approval-rich",
+                "prompt": "Investigate the issue",
+                "token": "super-secret-token",
+            },
+            "result": {
+                "request_id": "request-rich-node",
+                "status": "success",
+                "response_token": "response-token-rich",
+                "secret": "result-secret",
+            },
+            "created_at": "2026-05-16T10:05:00+00:00",
+        },
+        {
+            "event_type": "tool_call",
+            "session_id": session_id,
+            "vm_id": vm_id,
+            "directory_path": "root",
+            "tool_name": "make_phone_call",
+            "correlation_id": "correlation-run-level",
+            "workflow_run_id": "evt-detail",
+            "trace_id": "trace-detail",
+            "decision": "denied",
+            "reason": "blocked",
+            "args": {
+                "session_id": session_id,
+                "correlation_id": "correlation-run-level",
+                "number": "+1-555-0100",
+            },
+            "result": {
+                "status": "denied",
+                "reason": "blocked",
+            },
+            "created_at": "2026-05-16T10:06:00+00:00",
+        },
+        {
+            "event_type": "tool_call",
+            "session_id": session_id,
+            "vm_id": vm_id,
+            "directory_path": "root",
+            "tool_name": "make_phone_call",
+            "workflow_run_id": "evt-detail",
+            "trace_id": "trace-detail",
+            "decision": "allowed",
+            "reason": "trace-only match",
+            "args": {
+                "session_id": session_id,
+                "note": "trace-only",
+            },
+            "result": {
+                "status": "success",
+                "summary": "trace-only",
+            },
+            "created_at": "2026-05-16T10:05:30+00:00",
+        },
+    ]
+    path.write_text(
+        "\n".join(json.dumps(entry, sort_keys=True) for entry in audit_entries) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -1961,9 +2040,25 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
         expires_at=datetime(2026, 5, 2, 10, 0, tzinfo=timezone.utc),
         created_at=datetime(2026, 5, 1, 10, 0, tzinfo=timezone.utc),
     )
+    session_manifest = SessionManifest(
+        session_id=session_id,
+        vm_id="vm-detail",
+        allowed_tools=[],
+        expires_at=datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc),
+        metadata={"labels": {"fixture": "run-detail"}},
+    )
+    _write_json_payload(
+        runtime_dir / "sessions.json",
+        {session_manifest.session_id: session_manifest.model_dump(mode="json")},
+    )
     _write_json_payload(
         runtime_dir / "approvals.json",
         {approval_request.request_id: approval_request.model_dump(mode="json")},
+    )
+    _write_run_detail_audit_log(
+        runtime_dir / "audit.jsonl",
+        session_id=session_id,
+        vm_id="vm-detail",
     )
     _write_json_payload(
         runtime_dir / "trigger-orchestrator-events.json",
@@ -2266,6 +2361,7 @@ def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> 
     assert event_payload["graph"]["data_availability"]["approvals"] == "available"
     assert event_payload["graph"]["data_availability"]["agent_links"] == "available"
     assert event_payload["graph"]["data_availability"]["communication_artifacts"] == "available"
+    assert event_payload["graph"]["data_availability"]["tool_calls"] == "available"
     assert event_payload["trigger_event"]["payload"] == {"issue_number": "99"}
     assert event_payload["lookup"]["event_id"] == fixture["rich_event_id"]
 
@@ -2286,6 +2382,24 @@ def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> 
     assert rich_node["binding_trace"]["entries"][0]["config_path"] == "$.prompt"
     assert rich_node["binding_error"] is None
     assert rich_node["retry_resume_eligible"] is True
+    tool_call_link = rich_node["tool_call_links"][0]
+    assert tool_call_link["tool_name"] == "prompt_agent"
+    assert tool_call_link["decision"] == "allowed"
+    assert tool_call_link["status"] == "success"
+    assert tool_call_link["request_id"] == "request-rich-node"
+    assert tool_call_link["correlation_id"] == "correlation-rich-node"
+    assert tool_call_link["approval_request_id"] == "approval-rich"
+    assert tool_call_link["workflow_run_id"] == fixture["rich_event_id"]
+    assert tool_call_link["trace_id"] == fixture["trace_id"]
+    assert tool_call_link["href"] == "#tool-calls?q=request-rich-node"
+    assert tool_call_link["session_id"] == fixture["session_id"]
+    assert tool_call_link["args"]["token"] == "<redacted>"
+    assert tool_call_link["result"]["secret"] == "<redacted>"
+    assert tool_call_link["redacted_args"]["token"] == "<redacted>"
+    assert tool_call_link["redacted_result"]["secret"] == "<redacted>"
+    assert tool_call_link["args_summary"] is not None
+    assert tool_call_link["result_summary"] is not None
+    assert tool_call_link["result_status"] == "available"
     approval_link = rich_node["approval_links"][0]
     assert approval_link["request_id"] == "approval-rich"
     assert approval_link["payload_digest"] == "digest-rich"
@@ -2300,9 +2414,36 @@ def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> 
     assert agent_link["prompt"] == "Investigate the issue"
     assert agent_link["thread_id"] == "thread-detail"
     assert agent_link["execution_id"] == "execution-detail"
+    assert agent_link["artifact_ids"] == [fixture["artifact_id"]]
+    assert agent_link["session_status"] == "available"
+    assert agent_link["session_available"] is True
+    assert agent_link["agent_available"] is True
+    assert agent_link["log_status"] == "log_unavailable"
+    assert agent_link["log_available"] is False
+    assert agent_link["result_status"] == "available"
+    assert agent_link["result_summary"] is not None
     assert agent_link["log_reference"]["source_kind"] == "effect_execution"
     assert agent_link["log_reference"]["vm_name"] == "vm-detail"
+    assert agent_link["log_reference"]["session_id"] == fixture["session_id"]
     assert agent_link["log_reference"]["dispatch_id"] == "dispatch-detail"
+
+    run_tool_call_link = event_payload["tool_call_links"][0]
+    assert run_tool_call_link["tool_name"] == "make_phone_call"
+    assert run_tool_call_link["decision"] == "denied"
+    assert run_tool_call_link["status"] == "denied"
+    assert run_tool_call_link["correlation_id"] == "correlation-run-level"
+    assert run_tool_call_link["workflow_run_id"] == fixture["rich_event_id"]
+    assert run_tool_call_link["trace_id"] == fixture["trace_id"]
+    assert run_tool_call_link["href"] == "#tool-calls?q=correlation-run-level"
+    assert run_tool_call_link["session_id"] == fixture["session_id"]
+    assert run_tool_call_link["args"]["number"] == "+1-555-0100"
+    trace_run_tool_call_link = event_payload["tool_call_links"][1]
+    assert trace_run_tool_call_link["tool_name"] == "make_phone_call"
+    assert trace_run_tool_call_link["workflow_run_id"] == fixture["rich_event_id"]
+    assert trace_run_tool_call_link["trace_id"] == fixture["trace_id"]
+    assert trace_run_tool_call_link["href"] == "#tool-calls?q=trace-detail"
+    assert trace_run_tool_call_link["session_id"] == fixture["session_id"]
+    assert trace_run_tool_call_link["args"]["note"] == "trace-only"
 
     artifact_link = rich_node["communication_artifact_links"][0]
     assert artifact_link["artifact_id"] == fixture["artifact_id"]
@@ -2327,7 +2468,11 @@ def test_admin_web_run_detail_marks_missing_legacy_data(tmp_path: Path) -> None:
     payload = response.json()
     assert payload["event_id"] == fixture["legacy_event_id"]
     assert payload["graph"]["data_availability"]["graph_snapshot"] == "missing_legacy_or_unrecorded"
+    assert payload["graph"]["data_availability"]["agent_links"] == "missing_legacy_or_unrecorded"
+    assert payload["graph"]["data_availability"]["communication_artifacts"] == "missing_legacy_or_unrecorded"
+    assert payload["graph"]["data_availability"]["tool_calls"] == "missing_legacy_or_unrecorded"
     assert payload["graph"]["snapshot"] is None
+    assert payload["tool_call_links"] == []
     legacy_node = next(node for node in payload["nodes"] if node["node_id"] == "effect-prompt")
     assert "binding_trace" in legacy_node["missing_fields"]
     assert legacy_node["binding_trace"] is None
@@ -2335,6 +2480,8 @@ def test_admin_web_run_detail_marks_missing_legacy_data(tmp_path: Path) -> None:
     assert legacy_node["records"][0]["resolved_config"] == {}
     assert legacy_node["approval_links"] == []
     assert legacy_node["agent_links"] == []
+    assert legacy_node["communication_artifact_links"] == []
+    assert legacy_node["tool_call_links"] == []
 
 
 def test_admin_web_run_search_finds_latest_graph_and_node_runs_without_sessions(

@@ -2360,6 +2360,28 @@ select {
   overflow-wrap: anywhere;
 }
 
+.run-detail-link-item .missing {
+  color: #8a3b1b;
+  font-weight: 600;
+}
+
+.run-detail-link-group {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.run-detail-link-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.run-detail-link-actions button {
+  min-height: 2rem;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.75rem;
+}
+
 .run-detail-candidates {
   align-items: start;
 }
