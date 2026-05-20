@@ -237,6 +237,7 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
     runs: [],
     node_activity: {},
   };
+  let savedWorkflowPayload = null;
 
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
@@ -276,7 +277,25 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
     }
 
     if (pathname === "/api/workflow-editor/document") {
-      await route.fulfill(jsonResponse(workflowDocument));
+      if (route.request().method() === "GET") {
+        await route.fulfill(jsonResponse(workflowDocument));
+        return;
+      }
+
+      assert.equal(route.request().method(), "PUT");
+      savedWorkflowPayload = route.request().postDataJSON();
+      assert.ok(savedWorkflowPayload, "expected a workflow save payload");
+      assert.equal(savedWorkflowPayload.expected_revision, "rev-1");
+      await route.fulfill(
+        jsonResponse({
+          config: savedWorkflowPayload.config,
+          layout: savedWorkflowPayload.layout,
+          graphs: savedWorkflowPayload.graphs,
+          revision: "rev-2",
+          validation_diagnostics: [],
+          output_schemas: {},
+        }),
+      );
       return;
     }
 
@@ -416,6 +435,79 @@ test("workflow editor compact canvas lets one-finger touch scroll the page and t
     twoFingerBefore.transform,
     "two-finger touch should change the ReactFlow viewport transform",
   );
+
+  const workflowNode = page.locator(".react-flow__node", { hasText: "Incoming command" });
+  await assert.doesNotReject(() => workflowNode.waitFor({ state: "visible" }));
+  const nodeBefore = await workflowNode.boundingBox();
+  assert.ok(nodeBefore, "expected the trigger node to have bounds");
+
+  const nodeDragStart = {
+    x: nodeBefore.x + nodeBefore.width / 2,
+    y: nodeBefore.y + nodeBefore.height / 2,
+  };
+  await dragTouch(
+    cdp,
+    [
+      {
+        id: 1,
+        x: nodeDragStart.x,
+        y: nodeDragStart.y,
+      },
+    ],
+    { x: 90, y: 70 },
+  );
+
+  await page.waitForFunction(
+    ({ beforeLeft, beforeTop, beforeWidth, beforeHeight }) => {
+      const node = Array.from(document.querySelectorAll(".react-flow__node")).find((element) =>
+        element.textContent?.includes("Incoming command"),
+      );
+      if (!node) return false;
+      const rect = node.getBoundingClientRect();
+      return (
+        Math.abs(rect.left - beforeLeft) > 1 ||
+        Math.abs(rect.top - beforeTop) > 1 ||
+        Math.abs(rect.width - beforeWidth) > 1 ||
+        Math.abs(rect.height - beforeHeight) > 1
+      );
+    },
+    {
+      beforeLeft: nodeBefore.x,
+      beforeTop: nodeBefore.y,
+      beforeWidth: nodeBefore.width,
+      beforeHeight: nodeBefore.height,
+    },
+    { timeout: 5000 },
+  );
+
+  const nodeAfter = await workflowNode.boundingBox();
+  assert.ok(nodeAfter, "expected the trigger node to keep bounds after drag");
+  assert.notDeepEqual(
+    {
+      x: nodeAfter.x,
+      y: nodeAfter.y,
+    },
+    {
+      x: nodeBefore.x,
+      y: nodeBefore.y,
+    },
+    "single-touch drag on an unlocked node should move that node",
+  );
+
+  const saveRequest = page.waitForRequest(
+    (request) => request.url().includes("/api/workflow-editor/document") && request.method() === "PUT",
+  );
+  await page.getByRole("button", { name: "Save workflow" }).click();
+  await saveRequest;
+
+  assert.ok(savedWorkflowPayload, "expected workflow save request to be captured");
+  assert.notDeepEqual(
+    savedWorkflowPayload.layout.nodes["trigger-1"],
+    workflowDocument.layout.nodes["trigger-1"],
+    "saving after a node drag should send the updated node position",
+  );
+  assert.equal(typeof savedWorkflowPayload.layout.nodes["trigger-1"].x, "number");
+  assert.equal(typeof savedWorkflowPayload.layout.nodes["trigger-1"].y, "number");
 
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
