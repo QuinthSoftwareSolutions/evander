@@ -3938,8 +3938,17 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     assert "communication_file_receive_enabled" in communication_file_fields
     assert "communication_file_require_approval_for_send" in communication_file_fields
     providers = next(tab for tab in payload["tabs"] if tab["key"] == "providers")
+    agent_execution = next(
+        section for section in providers["sections"] if section["title"] == "Agent execution"
+    )
+    agent_execution_fields = {
+        field["field_name"]: field for field in agent_execution["fields"]
+    }
+    assert agent_execution_fields["execution_backend"]["label"] == "Execution backend"
     container_worker = next(
-        section for section in providers["sections"] if section["title"] == "Container worker"
+        section
+        for section in providers["sections"]
+        if section["title"] == "Container worker settings"
     )
     container_worker_fields = {field["field_name"] for field in container_worker["fields"]}
     assert "container_worker_base_url" in container_worker_fields
