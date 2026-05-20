@@ -587,6 +587,9 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
   await assert.doesNotReject(() => page.getByText("Artifact comm_1").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Run-level tool calls").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".inspect-node-panel").getByRole("button", { name: "Tool call audit" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.locator(".inspect-node-panel").getByRole("button", { name: "Session" }).first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.locator(".inspect-node-panel").getByRole("button", { name: "Agent" }).first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.locator(".inspect-node-panel").getByRole("button", { name: "Logs" }).first().waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Session record missing").first().waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("No persisted log reference").first().waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Empty result").first().waitFor({ state: "visible" }));
@@ -602,6 +605,7 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
   await page.locator(".react-flow__node", { hasText: "Dispatch agent" }).click();
   await page.locator(".inspect-node-panel").getByRole("button", { name: "Tool call audit" }).click();
   await assert.doesNotReject(() => page.getByText("Tool call audit log").waitFor({ state: "visible" }));
+  assert.equal(await page.evaluate(() => window.location.hash), "#tool-calls?q=tool-req-1");
 
   assert.deepEqual(detailRequests, ["/api/workflow-editor/run-detail?event_id=evt-run-1"]);
   assert.deepEqual(pageErrors, []);
