@@ -102,6 +102,7 @@ def test_effect_queue_delivery_semantics_are_preserved(tmp_path: Path) -> None:
 
     assert result.pending_events_scanned == 1
     assert result.events_processed == 1
+    assert result.next_sleep_seconds == 0.0
     queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
     assert queue_payload["event-1"]["delivery_state"] == "delivered"
 
