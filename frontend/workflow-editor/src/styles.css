@@ -1431,6 +1431,10 @@ select {
     min-height: 28rem;
   }
 
+  .admin-workflow-panel .node-drag-surface {
+    touch-action: none;
+  }
+
   .modal-backdrop {
     padding: 0.9rem;
   }
