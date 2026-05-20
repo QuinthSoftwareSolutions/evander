@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -9,7 +10,9 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.gateway import create_server
+from agent_sandbox.directories import DirectoryStore
 from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.runtime import build_runtime
 
@@ -35,6 +38,24 @@ def call_tool(server, name: str, arguments: dict[str, object]):
             return structured["result"]
         return structured
     return result
+
+
+def read_audit_events(path: Path) -> list[dict[str, object]]:
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def write_root_policy_overlay(config: GatewayConfig, payload: dict[str, object]) -> None:
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir).write(
+        "root",
+        domain="policy",
+        payload=payload,
+    )
 
 
 def test_get_issue_reads_closed_issue_without_list_filters(tmp_path: Path) -> None:
@@ -152,11 +173,69 @@ def test_create_ado_backlog_item_success_with_allowed_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     context = make_context(tmp_path)
+    write_root_policy_overlay(context.config, {"redacted_keys": ["description"]})
     context.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
             directory_path="root/team-a",
             allowed_tools=[ToolName.CREATE_ADO_BACKLOG_ITEM],
+            tool_argument_policies={
+                "create_ado_backlog_item": [
+                    {
+                        "id": "project-lock",
+                        "name": "Lock ADO project",
+                        "constraints": [
+                            {
+                                "id": "project",
+                                "path": "project",
+                                "operator": "fixed",
+                                "value": "example-project",
+                            }
+                        ],
+                    },
+                    {
+                        "id": "type-allowlist",
+                        "name": "Allow work item types",
+                        "constraints": [
+                            {
+                                "id": "type",
+                                "path": "type",
+                                "operator": "enum",
+                                "values": ["task", "product backlog item"],
+                                "case_sensitive": False,
+                            }
+                        ],
+                    },
+                    {
+                        "id": "required-fields",
+                        "name": "Require backlog item fields",
+                        "constraints": [
+                            {
+                                "id": "title",
+                                "path": "title",
+                                "operator": "required",
+                            },
+                            {
+                                "id": "iteration",
+                                "path": "iteration",
+                                "operator": "required",
+                            },
+                        ],
+                    },
+                    {
+                        "id": "tag-denylist",
+                        "name": "Reject forbidden tags",
+                        "constraints": [
+                            {
+                                "id": "tags-deny",
+                                "path": "tags[]",
+                                "operator": "denylist",
+                                "values": ["blocked-tag"],
+                            }
+                        ],
+                    },
+                ]
+            },
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
@@ -217,6 +296,127 @@ def test_create_ado_backlog_item_success_with_allowed_tool(
     assert result["created_item_id"] == "9001"
     assert result["provider"] == "azure_devops"
     assert result["project"] == "example-project"
+    event = read_audit_events(context.config.audit_log_path)[-1]
+    assert event["decision"] == "allowed"
+    assert event["result"]["created_item_id"] == "9001"
+    assert event["args"]["description"] == "<redacted>"
+
+
+def test_create_ado_backlog_item_denies_argument_policy_violation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = make_context(tmp_path)
+    write_root_policy_overlay(context.config, {"redacted_keys": ["description"]})
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.CREATE_ADO_BACKLOG_ITEM],
+            tool_argument_policies={
+                "create_ado_backlog_item": [
+                    {
+                        "id": "project-lock",
+                        "name": "Lock ADO project",
+                        "constraints": [
+                            {
+                                "id": "project",
+                                "path": "project",
+                                "operator": "fixed",
+                                "value": "example-project",
+                            }
+                        ],
+                    },
+                    {
+                        "id": "type-allowlist",
+                        "name": "Allow work item types",
+                        "constraints": [
+                            {
+                                "id": "type",
+                                "path": "type",
+                                "operator": "enum",
+                                "values": ["task", "product backlog item"],
+                                "case_sensitive": False,
+                            }
+                        ],
+                    },
+                    {
+                        "id": "required-fields",
+                        "name": "Require backlog item fields",
+                        "constraints": [
+                            {
+                                "id": "title",
+                                "path": "title",
+                                "operator": "required",
+                            },
+                            {
+                                "id": "iteration",
+                                "path": "iteration",
+                                "operator": "required",
+                            },
+                        ],
+                    },
+                    {
+                        "id": "tag-denylist",
+                        "name": "Reject forbidden tags",
+                        "constraints": [
+                            {
+                                "id": "tags-deny",
+                                "path": "tags[]",
+                                "operator": "denylist",
+                                "values": ["blocked-tag"],
+                            }
+                        ],
+                    },
+                ]
+            },
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    class StubIssueService:
+        def __init__(self, provider_config: object) -> None:
+            captured["instantiated"] = True
+            raise AssertionError("IssueService should not be instantiated for denied arguments")
+
+        def create_remote_issue(self, **kwargs: object) -> dict[str, object]:
+            captured["request"] = kwargs
+            return {}
+
+    monkeypatch.setattr("agent_sandbox.gateway.IssueService", StubIssueService)
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="tool_argument_policy_denied"):
+        asyncio.run(
+            server.call_tool(
+                "create_ado_backlog_item",
+                {
+                    "session_id": "session-1",
+                    "type": "task",
+                    "project": "example-project",
+                    "iteration": "Project\\Sprint 1",
+                    "title": "Denied",
+                    "description": "secret description",
+                    "tags": ["blocked-tag", "backend"],
+                },
+            )
+        )
+
+    assert "instantiated" not in captured
+    events = read_audit_events(context.config.audit_log_path)
+    assert len(events) == 1
+    event = events[0]
+    assert event["decision"] == "denied"
+    assert event["reason"].startswith("tool argument policy violation for create_ado_backlog_item")
+    assert event["result"]["status"] == "denied"
+    assert event["result"]["error_class"] == "tool_argument_policy_violation"
+    assert event["result"]["policy_rule_id"] == "tag-denylist"
+    assert event["result"]["policy_rule_name"] == "Reject forbidden tags"
+    assert event["result"]["constraint_id"] == "tags-deny"
+    assert event["result"]["field_path"] == "tags[]"
+    assert event["result"]["payload_summary"]["description"] == "<redacted>"
+    assert event["args"]["description"] == "<redacted>"
+    assert event["args"]["tags"] == ["blocked-tag", "backend"]
 
 
 def test_create_ado_backlog_item_normalizes_assignee_identity_object(
