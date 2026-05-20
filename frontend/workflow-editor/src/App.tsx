@@ -3045,8 +3045,11 @@ export default function App() {
     setSelectedGraphId(null);
   }, [selectedGraphId, visibleWorkflowGraphs]);
 
-  useEffect(() => {
-    if (!selectedNode) {
+  function hydrateInspectorDraftFromNode(
+    nextNode: WorkflowNodeConfig | undefined,
+    nextCatalogEntry: WorkflowEditorNodeCatalogEntry | undefined,
+  ) {
+    if (!nextNode) {
       setInspectorNodeId("");
       setInspectorDisplayName("");
       setInspectorKnownValues({});
@@ -3058,15 +3061,16 @@ export default function App() {
       setRawJsonDraft("{}");
       return;
     }
-    const { id: _id, display_name: _displayName, type: _type, ...extras } = selectedNode;
-    const knownFieldKeys = new Set((selectedCatalogEntry?.fields ?? []).map((field) => field.key));
+
+    const { id: _id, display_name: _displayName, type: _type, ...extras } = nextNode;
+    const knownFieldKeys = new Set((nextCatalogEntry?.fields ?? []).map((field) => field.key));
     const nextKnownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => knownFieldKeys.has(key)));
     const nextUnknownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => !knownFieldKeys.has(key)));
     const nextJsonDrafts: Record<string, string> = {};
     const nextStringListDrafts: Record<string, string> = {};
     const nextStringMapDrafts: Record<string, StringMapDraftRow[]> = {};
     const nextFieldModes: Record<string, "literal" | "bind" | "template"> = {};
-    for (const field of selectedCatalogEntry?.fields ?? []) {
+    for (const field of nextCatalogEntry?.fields ?? []) {
       nextFieldModes[field.key] = fieldValueMode(field, nextKnownValues[field.key]);
       if (field.kind !== "json") continue;
       const fallbackValue = field.required || field.key === "outputs" ? {} : undefined;
@@ -3075,7 +3079,7 @@ export default function App() {
         ? fallbackDraft
         : formatJson(nextKnownValues[field.key], fallbackDraft);
     }
-    for (const field of selectedCatalogEntry?.fields ?? []) {
+    for (const field of nextCatalogEntry?.fields ?? []) {
       if (field.kind !== "object_list") continue;
       const items: unknown[] = Array.isArray(nextKnownValues[field.key]) ? (nextKnownValues[field.key] as unknown[]) : [];
       items.forEach((item: unknown, index: number) => {
@@ -3092,18 +3096,18 @@ export default function App() {
         });
       });
     }
-    for (const field of selectedCatalogEntry?.fields ?? []) {
+    for (const field of nextCatalogEntry?.fields ?? []) {
       if (field.kind !== "string_list") continue;
       nextStringListDrafts[field.key] = Array.isArray(nextKnownValues[field.key])
         ? (nextKnownValues[field.key] as unknown[]).map((item) => String(item)).join("\n")
         : "";
     }
-    for (const field of selectedCatalogEntry?.fields ?? []) {
+    for (const field of nextCatalogEntry?.fields ?? []) {
       if (field.kind !== "string_map") continue;
       nextStringMapDrafts[field.key] = stringMapDraftRows(nextKnownValues[field.key]);
     }
-    setInspectorNodeId(selectedNode.id);
-    setInspectorDisplayName(selectedNode.display_name);
+    setInspectorNodeId(nextNode.id);
+    setInspectorDisplayName(nextNode.display_name);
     setInspectorKnownValues(nextKnownValues);
     setInspectorUnknownValues(nextUnknownValues);
     setInspectorJsonDrafts(nextJsonDrafts);
@@ -3111,6 +3115,10 @@ export default function App() {
     setInspectorStringMapDrafts(nextStringMapDrafts);
     setInspectorFieldModes(nextFieldModes);
     setRawJsonDraft(JSON.stringify(extras, null, 2));
+  }
+
+  useEffect(() => {
+    hydrateInspectorDraftFromNode(selectedNode, selectedCatalogEntry);
   }, [selectedNode?.id, selectedCatalogEntry]);
 
   useEffect(() => {
@@ -3415,7 +3423,7 @@ export default function App() {
       return;
     }
     setNodeConnectionMenu(null);
-    setSelectedNodeId(node.id);
+    setProgrammaticSelection([node.id], node.id);
     setSelectedEdgeId(null);
     appShellRef.current?.focus();
   }
@@ -3928,6 +3936,7 @@ export default function App() {
     patchDocument(nextConfig, nextLayout, undefined, [originalNodeId]);
     setProgrammaticSelection([originalNodeId], originalNodeId);
     setSelectedEdgeId(null);
+    hydrateInspectorDraftFromNode(savedNode, getCatalogEntry(catalog, savedNode.type));
     setNodeEditOrigins((current) => {
       const next = { ...current };
       for (const [nodeId, originId] of Object.entries(current)) {

@@ -1426,55 +1426,25 @@ export default function AdminRoot() {
     }
   }
 
-  if (session === null) {
-    return (
-      <div className="admin-login-shell">
-        <div className="admin-login-toolbar">
-          <button
-            type="button"
-            className="admin-shell-button admin-shell-button-muted"
-            onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
-          >
-            {theme === "dark" ? "Light mode" : "Dark mode"}
-          </button>
-        </div>
-        <div className="admin-login-stage">
-          <DeploymentStatusBanner status={deploymentStatus} />
-          <div className="admin-login-card">
-            <div className="eyebrow">Agent Sandbox</div>
-            <h1>Loading admin shell</h1>
-            <p>{sessionError ?? "Checking authentication and bootstrapping the UI."}</p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (session.auth_required && !session.authenticated) {
-    return (
-      <LoginScreen session={session} theme={theme} onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))} deploymentStatus={deploymentStatus} error={sessionError} loading={authBusy} onSubmit={signIn} onAzureSignIn={startAzureSignIn} />
-    );
-  }
-
   const visibleTabs = tabsForExecutionBackend(adminExecutionBackend);
   const renderedTab = visibleTabs.some((tab) => tab.key === selectedTab)
     ? selectedTab
     : visibleTabs[0]?.key ?? "workflow";
   const activeTab = visibleTabs.find((tab) => tab.key === renderedTab) ?? TABS[TABS.length - 1];
-  const privilegeUnlocked = adminState?.privileged_operations.unlocked ?? session.privileged_operations.unlocked;
-  const currentUserRole = adminState?.role ?? session.role ?? null;
-  const canManageUsers = adminState?.can_manage_users ?? session.can_manage_users;
+  const privilegeUnlocked = adminState?.privileged_operations.unlocked ?? session?.privileged_operations.unlocked ?? false;
+  const currentUserRole = adminState?.role ?? session?.role ?? null;
+  const canManageUsers = adminState?.can_manage_users ?? session?.can_manage_users ?? false;
   const workflowFocus = renderedTab === "workflow";
   const currentUserId = (
-    session.username?.trim()
-    || session.display_name?.trim()
-    || session.session_id?.trim()
+    session?.username?.trim()
+    || session?.display_name?.trim()
+    || session?.session_id?.trim()
     || "anonymous"
   );
   const currentUserLabel = (
-    session.display_name?.trim()
-    || session.username?.trim()
-    || session.session_id?.trim()
+    session?.display_name?.trim()
+    || session?.username?.trim()
+    || session?.session_id?.trim()
     || "anonymous"
   );
 
@@ -1536,6 +1506,36 @@ export default function AdminRoot() {
       return true;
     }
     return window.confirm("Workflow has unsaved changes. Discard them and continue?");
+  }
+
+  if (session === null) {
+    return (
+      <div className="admin-login-shell">
+        <div className="admin-login-toolbar">
+          <button
+            type="button"
+            className="admin-shell-button admin-shell-button-muted"
+            onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+          >
+            {theme === "dark" ? "Light mode" : "Dark mode"}
+          </button>
+        </div>
+        <div className="admin-login-stage">
+          <DeploymentStatusBanner status={deploymentStatus} />
+          <div className="admin-login-card">
+            <div className="eyebrow">Agent Sandbox</div>
+            <h1>Loading admin shell</h1>
+            <p>{sessionError ?? "Checking authentication and bootstrapping the UI."}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (session.auth_required && !session.authenticated) {
+    return (
+      <LoginScreen session={session} theme={theme} onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))} deploymentStatus={deploymentStatus} error={sessionError} loading={authBusy} onSubmit={signIn} onAzureSignIn={startAzureSignIn} />
+    );
   }
 
   return (
