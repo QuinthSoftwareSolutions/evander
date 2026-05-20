@@ -51,16 +51,18 @@ _SESSION_POLICY_FIELD_KINDS: dict[str, str] = {
     "communication_file_allowed_extensions": "string_list",
     "communication_file_blocked_extensions": "string_list",
     "communication_file_require_approval_for_send": "bool",
+    "tool_argument_policies": "json",
 }
 
 _SESSION_POLICY_FIELD_LABELS: dict[str, str] = {
     field_name: field_name.removeprefix("communication_file_").replace("_", " ")
     for field_name in COMMUNICATION_FILE_SESSION_POLICY_FIELDS
 }
+_SESSION_POLICY_FIELD_LABELS["tool_argument_policies"] = "tool argument policy"
 
 
 def _session_policy_field_catalog() -> list[dict[str, str]]:
-    return [
+    catalog = [
         {
             "field_name": field_name,
             "label": _SESSION_POLICY_FIELD_LABELS[field_name],
@@ -69,6 +71,15 @@ def _session_policy_field_catalog() -> list[dict[str, str]]:
         }
         for field_name in COMMUNICATION_FILE_SESSION_POLICY_FIELDS
     ]
+    catalog.append(
+        {
+            "field_name": "tool_argument_policies",
+            "label": _SESSION_POLICY_FIELD_LABELS["tool_argument_policies"],
+            "kind": _SESSION_POLICY_FIELD_KINDS["tool_argument_policies"],
+            "section": "Tool argument policy",
+        }
+    )
+    return catalog
 
 
 def _parse_bool(value: str | None, *, default: bool = False) -> bool:
@@ -148,11 +159,12 @@ def _approval_review_payload(review: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _session_payload(summary: SessionSummary) -> dict[str, Any]:
+def _session_payload(service: AdminService, summary: SessionSummary) -> dict[str, Any]:
     payload = summary.model_dump(mode="json")
     payload["allowed_tools"] = [
         tool.value if isinstance(tool, ToolName) else str(tool) for tool in summary.allowed_tools
     ]
+    payload["effective_tool_policy"] = service.effective_tool_policy_payload(summary)
     return payload
 
 
@@ -279,9 +291,9 @@ def session_approval_routes(service: AdminService, _auth: AdminWebAuth) -> list[
         expired_items = [item for item in items if item.is_expired]
         return JSONResponse(
             {
-                "items": [_session_payload(item) for item in items],
-                "active_items": [_session_payload(item) for item in active_items],
-                "expired_items": [_session_payload(item) for item in expired_items],
+                "items": [_session_payload(service, item) for item in items],
+                "active_items": [_session_payload(service, item) for item in active_items],
+                "expired_items": [_session_payload(service, item) for item in expired_items],
                 "counts": {
                     "total": len(items),
                     "active": len(active_items),
@@ -305,7 +317,7 @@ def session_approval_routes(service: AdminService, _auth: AdminWebAuth) -> list[
             return json_error(str(exc), status_code=404)
         return JSONResponse(
             {
-                "session": _session_payload(summary),
+                "session": _session_payload(service, summary),
                 "wake_schedules": [_wake_schedule_payload(item) for item in wake_schedules],
                 "summary_json": _iso(summary.model_dump(mode="json")),
             }
@@ -364,7 +376,7 @@ def session_approval_routes(service: AdminService, _auth: AdminWebAuth) -> list[
         return JSONResponse(
             {
                 **result.model_dump(mode="json"),
-                "session": _session_payload(summary),
+                "session": _session_payload(service, summary),
             }
         )
 
@@ -389,7 +401,7 @@ def session_approval_routes(service: AdminService, _auth: AdminWebAuth) -> list[
         return JSONResponse(
             {
                 **result.model_dump(mode="json"),
-                "session": _session_payload(summary),
+                "session": _session_payload(service, summary),
             }
         )
 
@@ -409,7 +421,7 @@ def session_approval_routes(service: AdminService, _auth: AdminWebAuth) -> list[
         return JSONResponse(
             {
                 **result.model_dump(mode="json"),
-                "session": _session_payload(summary),
+                "session": _session_payload(service, summary),
             }
         )
 

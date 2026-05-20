@@ -84,10 +84,14 @@ _ASSISTANT_SETTINGS_FIELD_LABELS: dict[str, str] = {
 _DIRECTORY_CONFIG_FIELD_LABELS: dict[tuple[str, str], str] = {
     (COMMUNICATION_TARGETS_DOMAIN, "targets"): "Communication targets",
     ("providers", "execution_backend"): "Execution backend",
+    ("policy", "tool_argument_policies"): "Tool argument policy",
 }
 _SOURCE_DOMAIN_CONFIG_FIELD_TOOLTIPS: dict[tuple[str, str], str] = {
     (COMMUNICATION_TARGETS_DOMAIN, "targets"): (
         "Directory-scoped communication targets available to workflow notification and messaging effects."
+    ),
+    ("policy", "tool_argument_policies"): (
+        "Directory-scoped tool argument guardrails keyed by exact MCP tool name."
     ),
     (_ASSISTANT_SETTINGS_DOMAIN, "enabled"): (
         "Enables the admin web assistant launcher and chat endpoints."
@@ -207,6 +211,11 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
             "Communication files",
             _COMMUNICATION_FILE_POLICY_FIELDS,
             ("communication_file_",),
+        ),
+        (
+            "Tool argument policy",
+            (("policy", "tool_argument_policies"),),
+            (),
         ),
         ("PR feedback", (("policy", "pr_reply_require_approval"),), ()),
         ("Audit", (("policy", "redacted_keys"),), ()),
@@ -764,7 +773,7 @@ def _directory_tab_help_text(tab_key: str) -> str | None:
     if tab_key == "access_policy":
         return (
             "Directory-level guardrails for approvals, approval notifications, "
-            "recipients, mailboxes, communication files, and audit redaction defaults."
+            "recipients, mailboxes, communication files, tool arguments, and audit redaction defaults."
         )
     if tab_key == "contacts":
         return "Directory contacts available to host-side communication integrations."

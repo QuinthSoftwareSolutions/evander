@@ -202,6 +202,20 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
             vm_id="vm-14085",
             model="gpt-5.3-codex",
             allowed_tools=[ToolName.APPROVAL_CHECK],
+            tool_argument_policies={
+                "create_ado_backlog_item": [
+                    {
+                        "id": "issue-policy",
+                        "constraints": [
+                            {
+                                "id": "title",
+                                "path": "title",
+                                "operator": "required",
+                            }
+                        ],
+                    }
+                ]
+            },
             expires_at=datetime.now(UTC) + timedelta(hours=2),
         ),
     )
@@ -227,6 +241,12 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert catalog_response.status_code == 200
     catalog_payload = catalog_response.json()
     assert any(item["value"] == "approval_check" for item in catalog_payload["tool_options"])
+    assert any(
+        item["field_name"] == "tool_argument_policies"
+        and item["kind"] == "json"
+        and item["section"] == "Tool argument policy"
+        for item in catalog_payload["session_policy_fields"]
+    )
     session_policy_fields = {
         item["field_name"]: item for item in catalog_payload["session_policy_fields"]
     }
@@ -256,10 +276,25 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert "Read Retell phone call status" in tool_options["get_phone_call_result"]["description"]
     assert list_response.status_code == 200
     assert list_response.json()["items"][0]["session_id"] == "issue-14085-session"
+    assert (
+        list_response.json()["items"][0]["effective_tool_policy"]["tool_argument_policies"][
+            "create_ado_backlog_item"
+        ][0]["id"]
+        == "issue-policy"
+    )
     assert list_response.json()["active_items"][0]["session_id"] == "issue-14085-session"
     assert list_response.json()["counts"]["active"] == 1
     assert detail_response.status_code == 200
     assert detail_response.json()["session"]["model"] == "gpt-5.3-codex"
+    assert detail_response.json()["session"]["effective_tool_policy"]["allowed_tools"] == [
+        "approval_check"
+    ]
+    assert (
+        detail_response.json()["session"]["effective_tool_policy"]["tool_argument_policies"][
+            "create_ado_backlog_item"
+        ][0]["id"]
+        == "issue-policy"
+    )
     assert detail_response.json()["summary_json"]["session_id"] == "issue-14085-session"
     assert model_response.status_code == 200
     assert model_response.json()["action"] == "set_session_model"
@@ -298,6 +333,26 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
             "allowed_script_names": ["seed-demo", " seed-demo ", "collect-logs"],
             "discord_channel_allowlist": ["chan-a", "chan-b"],
             "teams_channel_allowlist": ["team-b/channel-2", "chat:chat-1"],
+            "tool_argument_policies": {
+                "create_ado_backlog_item": [
+                    {
+                        "id": "issue-policy",
+                        "constraints": [
+                            {
+                                "id": "title",
+                                "path": "title",
+                                "operator": "required",
+                            },
+                            {
+                                "id": "project",
+                                "path": "project",
+                                "operator": "fixed",
+                                "value": "Example Project",
+                            },
+                        ],
+                    }
+                ]
+            },
             "communication_file_receive_enabled": True,
             "communication_file_send_enabled": True,
             "communication_file_max_bytes": 4096,
@@ -320,8 +375,12 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
         "team-b/channel-2",
         "chat:chat-1",
     ]
+    assert response.json()["session"]["effective_tool_policy"]["tool_argument_policies"][
+        "create_ado_backlog_item"
+    ][0]["id"] == "issue-policy"
     updated = service.runtime.session_repository.get_session("issue-14085-session")
     assert updated is not None
+    assert updated.tool_argument_policies["create_ado_backlog_item"][0].id == "issue-policy"
     assert updated.communication_file_receive_enabled is True
     assert updated.communication_file_send_enabled is True
     assert updated.communication_file_max_bytes == 4096
@@ -444,3 +503,47 @@ def test_admin_web_session_detail_preserves_cron_wake_schedule_kind(tmp_path: Pa
     assert item["cron"] == "*/30 * * * *"
     assert item["resume_at"] is None
     assert item["schedule_kind"] == "cron"
+
+
+def test_admin_web_rejects_invalid_tool_argument_policy_updates(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-14087-session",
+            vm_id="vm-14087",
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    client = TestClient(create_app(service))
+
+    invalid_payload = {
+        "tool_argument_policies": {
+            "create_ado_backlog_item": [
+                {
+                    "id": "bad-policy",
+                    "constraints": [
+                        {
+                            "id": "project",
+                            "path": "project",
+                            "operator": "bogus",
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+
+    session_response = client.patch(
+        "/api/admin/sessions/issue-14087-session",
+        json=invalid_payload,
+    )
+    agent_response = client.patch(
+        "/api/admin/agents/issue-14087-session?backend=libvirt_vm",
+        json=invalid_payload,
+    )
+
+    assert session_response.status_code == 400
+    assert "operator" in session_response.json()["error"]
+    assert agent_response.status_code == 400
+    assert "operator" in agent_response.json()["error"]
