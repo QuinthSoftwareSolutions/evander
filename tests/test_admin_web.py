@@ -2925,13 +2925,12 @@ def test_workflow_event_api_rejects_invalid_bearer_payload_and_event_type(
     )
 
 
-def test_workflow_event_api_accepts_configured_machine_token(
+def test_workflow_event_api_accepts_configured_machine_tokens_with_source_names(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.setenv("AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS", "machine-secret")
     monkeypatch.setenv(
-        "AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_SOURCE_NAME",
-        "azure-devops-demo-environment-pipeline",
+        "AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS",
+        "ado-pipeline:ado-secret, github-action:github-secret",
     )
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
@@ -2940,9 +2939,9 @@ def test_workflow_event_api_accepts_configured_machine_token(
         headers={"Authorization": "Bearer wrong-secret"},
         json={"event_type": "app-demo-requested", "payload": {}},
     )
-    published = client.post(
+    ado_published = client.post(
         "/api/workflow-events",
-        headers={"Authorization": "Bearer machine-secret"},
+        headers={"Authorization": "Bearer ado-secret"},
         json={
             "event_type": "app-demo-requested",
             "payload": {"resourceBaseName": "customer-1"},
@@ -2950,15 +2949,20 @@ def test_workflow_event_api_accepts_configured_machine_token(
             "idempotency_key": "app-demo-ai:customer-1:123",
         },
     )
+    github_published = client.post(
+        "/api/workflow-events",
+        headers={"Authorization": "Bearer github-secret"},
+        json={"event_type": "repo-updated", "payload": {}},
+    )
 
     assert invalid.status_code == 401
-    assert published.status_code == 202
-    assert published.json()["event_type"] == "external.app-demo-requested"
-    assert published.json()["payload"] == {"resourceBaseName": "customer-1"}
-    assert published.json()["correlation_key"] == "app-demo:customer-1"
-    assert published.json()["source"] == {
+    assert ado_published.status_code == 202
+    assert ado_published.json()["event_type"] == "external.app-demo-requested"
+    assert ado_published.json()["payload"] == {"resourceBaseName": "customer-1"}
+    assert ado_published.json()["correlation_key"] == "app-demo:customer-1"
+    assert ado_published.json()["source"] == {
         "source_type": "workflow_event_api_machine",
-        "source_name": "azure-devops-demo-environment-pipeline",
+        "source_name": "ado-pipeline",
         "user_id": None,
         "user_login": None,
         "workflow_run_id": None,
@@ -2967,7 +2971,29 @@ def test_workflow_event_api_accepts_configured_machine_token(
         "node_id": None,
         "node_type": None,
     }
-    assert "machine-secret" not in json.dumps(published.json())
+    assert github_published.status_code == 202
+    assert github_published.json()["source"]["source_name"] == "github-action"
+    assert "ado-secret" not in json.dumps(ado_published.json())
+    assert "github-secret" not in json.dumps(github_published.json())
+
+
+@pytest.mark.parametrize(
+    "configured_tokens, expected_error",
+    [
+        ("machine-secret", "source-name:token format"),
+        ("source-only:", "both source name and token"),
+        (":token-only", "both source name and token"),
+        ("source:token:extra", "source-name:token format"),
+        ("ado-pipeline:secret,github-action:secret", "duplicate token values"),
+    ],
+)
+def test_admin_web_config_rejects_invalid_workflow_event_machine_token_entries(
+    monkeypatch, configured_tokens: str, expected_error: str
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS", configured_tokens)
+
+    with pytest.raises(ValueError, match=expected_error):
+        AdminWebConfig.from_env()
 
 
 def test_workflow_event_api_token_from_azure_session_publishes_user_metadata(

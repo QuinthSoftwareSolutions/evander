@@ -428,9 +428,9 @@ curl -X POST http://127.0.0.1:8100/api/workflow-events \
 ```
 
 For server-to-server publishers, set `AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS` on Admin Web
-to one or more comma-separated bearer tokens and use one of those token values in the same
-`Authorization: Bearer ...` header. `AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_SOURCE_NAME` optionally
-sets the source name recorded on machine-authenticated events.
+to one or more comma-separated `source-name:token` entries. The token value is used in the same
+`Authorization: Bearer ...` header, and the matching source name is recorded on
+machine-authenticated events. Token values must not contain commas or colons.
 
 Workflow-specific payloads are intentionally not schema-validated by the HTTP API beyond
 requiring a JSON object. Downstream nodes read custom fields from the trigger output payload, for

@@ -47,9 +47,44 @@ def _env_csv(name: str) -> tuple[str, ...]:
     return tuple(item for item in values if item)
 
 
+def _env_workflow_event_machine_tokens() -> tuple["WorkflowEventMachineToken", ...]:
+    values = _env_csv("AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS")
+    records: list[WorkflowEventMachineToken] = []
+    seen_tokens: set[str] = set()
+
+    for value in values:
+        if value.count(":") != 1:
+            raise ValueError(
+                "AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS entries must use "
+                "source-name:token format"
+            )
+
+        source_name, token = (part.strip() for part in value.split(":", 1))
+        if not source_name or not token:
+            raise ValueError(
+                "AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS entries must include "
+                "both source name and token"
+            )
+        if token in seen_tokens:
+            raise ValueError(
+                "AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS contains duplicate token values"
+            )
+
+        seen_tokens.add(token)
+        records.append(WorkflowEventMachineToken(source_name=source_name, token=token))
+
+    return tuple(records)
+
+
 def _normalize_user_identifier(value: str | None) -> str | None:
     normalized = str(value or "").strip().lower()
     return normalized or None
+
+
+@dataclass(frozen=True)
+class WorkflowEventMachineToken:
+    source_name: str
+    token: str
 
 
 @dataclass(frozen=True)
@@ -88,8 +123,7 @@ class AdminWebConfig:
     session_ttl_seconds: int
     cookie_name: str
     cookie_secure: bool
-    workflow_event_machine_tokens: tuple[str, ...]
-    workflow_event_machine_source_name: str
+    workflow_event_machine_tokens: tuple[WorkflowEventMachineToken, ...]
     azure_sso: AzureSsoConfig | None
 
     @property
@@ -129,14 +163,7 @@ class AdminWebConfig:
             ),
             cookie_name="agent_sandbox_admin_session",
             cookie_secure=_env_flag("AGENT_SANDBOX_ADMIN_WEB_COOKIE_SECURE", default=False),
-            workflow_event_machine_tokens=_env_csv(
-                "AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS"
-            ),
-            workflow_event_machine_source_name=os.environ.get(
-                "AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_SOURCE_NAME",
-                "workflow-event-machine",
-            ).strip()
-            or "workflow-event-machine",
+            workflow_event_machine_tokens=_env_workflow_event_machine_tokens(),
             azure_sso=azure_sso,
         )
 
@@ -294,10 +321,10 @@ class AdminWebAuth:
             return None
 
         for configured_token in self.config.workflow_event_machine_tokens:
-            if hmac.compare_digest(normalized_token, configured_token):
+            if hmac.compare_digest(normalized_token, configured_token.token):
                 return {
                     "kind": "workflow_event_api_machine",
-                    "source_name": self.config.workflow_event_machine_source_name,
+                    "source_name": configured_token.source_name,
                     "allowed_event_prefix": WORKFLOW_EVENT_API_ALLOWED_PREFIX,
                 }
 
