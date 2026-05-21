@@ -35,6 +35,8 @@ material. Newer entries are added incrementally as changes land.
 - Installed the Linux Codex platform package explicitly in the Azure worker archive step using the
   version declared by the installed Codex package, so hosted agents do not depend on npm optional
   dependency behavior to provide the executable.
+- Resolved both the current `vendor/<target>/bin/codex` package layout and the older
+  `vendor/<target>/codex/codex` layout when copying the native Codex binary into the runner image.
 
 ## 2026-05-21 - Dashboard Capacity Health
 
