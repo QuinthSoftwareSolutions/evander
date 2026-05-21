@@ -12,9 +12,30 @@ import pytest
 from starlette.testclient import TestClient
 
 from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.service import (
+    CapacityControlPlanePayload,
+    CapacityControlPlaneStoragePayload,
+    CapacityHealthPayload,
+    CapacityPromptTelemetryPayload,
+    CapacityQueueTelemetryPayload,
+    CapacitySessionStoragePayload,
+    CapacitySessionSummaryPayload,
+    CapacityWorkerTelemetryEntryPayload,
+    CapacityWorkerTelemetrySummaryPayload,
+)
+from agent_sandbox.admin import release_metadata as release_metadata_module
 from agent_sandbox.admin.web.app import _workflow_run_events, create_app
 from agent_sandbox.admin.web.shared import AdminWebConfig
 from agent_sandbox.admin.web.user_store import AdminWebUserStore
+from agent_sandbox.capacity_health import (
+    DiskThresholds,
+    DiskUsageTelemetry,
+    DirectorySizeTelemetry,
+    HealthState,
+    SessionStorageSample,
+    TelemetryError,
+    TelemetryStatus,
+)
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from agent_sandbox.daemons.trigger_orchestrator import TriggerOrchestratorWorker
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
@@ -979,6 +1000,67 @@ def test_admin_web_deployment_status_is_public_when_auth_required(
     assert protected_response.status_code == 401
 
 
+def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
+    monkeypatch, tmp_path: Path
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.setenv("AGENT_SANDBOX_REPO_VERSION", "build-abc123")
+    monkeypatch.setattr(
+        release_metadata_module.importlib_metadata,
+        "version",
+        lambda name: (_ for _ in ()).throw(
+            release_metadata_module.importlib_metadata.PackageNotFoundError(name)
+        ),
+    )
+    (service.project_dir / "pyproject.toml").write_text(
+        "[project]\nname = \"agent-sandbox\"\nversion = \"9.8.7\"\n",
+        encoding="utf-8",
+    )
+    (service.project_dir / "CHANGELOG.md").write_text(
+        "# Changelog\n\n"
+        "## 2026-05-21 - Release Metadata\n\n"
+        "- Added release metadata reader.\n"
+        "- Fixed missing build identity fallback.\n",
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/release-info")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "version": "9.8.7",
+        "version_source": str(service.project_dir / "pyproject.toml"),
+        "build": "build-abc123",
+        "build_source": "env:AGENT_SANDBOX_REPO_VERSION",
+        "changelog": {
+            "source": "CHANGELOG.md",
+            "path": str(service.project_dir / "CHANGELOG.md"),
+            "heading": "2026-05-21 - Release Metadata",
+            "entries": [
+                {"text": "Added release metadata reader.", "kind": "feature"},
+                {"text": "Fixed missing build identity fallback.", "kind": "bugfix"},
+            ],
+        },
+        "missing_reasons": [],
+    }
+
+
+def test_admin_web_release_info_is_protected_when_auth_required(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "secret")
+    service = AdminService(write_config(tmp_path))
+    client = TestClient(create_app(service))
+
+    protected_response = client.get("/api/admin/release-info")
+    state_response = client.get("/api/admin/state")
+
+    assert protected_response.status_code == 401
+    assert state_response.status_code == 401
+
+
 def test_admin_web_ignores_stale_deployment_status(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     stale_started_at = datetime.now(timezone.utc) - timedelta(minutes=10)
@@ -1028,6 +1110,245 @@ def test_admin_web_accepts_naive_deployment_status_timestamps(tmp_path: Path) ->
     assert state_response.status_code == 200
     assert state_response.json()["deployment"]["active"] is True
 
+
+def test_admin_web_exposes_capacity_health_endpoint(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    payload = CapacityHealthPayload(
+        generated_at=datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc),
+        control_plane=CapacityControlPlanePayload(
+            disk=DiskUsageTelemetry(
+                scope="control_plane_runtime",
+                status=TelemetryStatus.AVAILABLE,
+                health=HealthState.OK,
+                thresholds=DiskThresholds(source="test_override"),
+                total_bytes=10_000,
+                used_bytes=4_000,
+                free_bytes=6_000,
+                used_percent=40.0,
+                free_percent=60.0,
+            ),
+            storage=CapacityControlPlaneStoragePayload(
+                total=DirectorySizeTelemetry(
+                    scope="control_plane_known_storage",
+                    status=TelemetryStatus.AVAILABLE,
+                    health=HealthState.OK,
+                    size_bytes=2_048,
+                    file_count=2,
+                    directory_count=1,
+                    symlink_count=0,
+                ),
+                areas=[
+                    DirectorySizeTelemetry(
+                        scope="control_plane_session_store",
+                        status=TelemetryStatus.AVAILABLE,
+                        health=HealthState.OK,
+                        size_bytes=1_024,
+                        file_count=1,
+                        directory_count=1,
+                        symlink_count=0,
+                    )
+                ],
+            ),
+        ),
+        sessions=CapacitySessionSummaryPayload(
+            total_sessions=2,
+            lifecycle_counts={"active": 1, "retained": 1},
+            status_counts={"running": 1, "stopped": 1},
+            backend_counts={"libvirt_vm": 1, "container_worker_vm": 1},
+            directory_counts={"root": 2},
+            age_buckets={"lt_1h": 1, "lt_1d": 1},
+            storage=CapacitySessionStoragePayload(
+                measured_total=DirectorySizeTelemetry(
+                    scope="session_storage:container_worker_vm",
+                    status=TelemetryStatus.AVAILABLE,
+                    health=HealthState.OK,
+                    size_bytes=512,
+                    file_count=1,
+                    directory_count=1,
+                    symlink_count=0,
+                ),
+                measured_session_count=1,
+                largest_sessions=[
+                    SessionStorageSample(
+                        session_id="session-a",
+                        size_bytes=512,
+                        backend="container_worker_vm",
+                        directory_path="sessions/session-a",
+                        created_at=datetime(2026, 5, 21, 11, 0, tzinfo=timezone.utc),
+                        updated_at=datetime(2026, 5, 21, 11, 30, tzinfo=timezone.utc),
+                    )
+                ],
+                oldest_sessions=[
+                    SessionStorageSample(
+                        session_id="session-a",
+                        size_bytes=512,
+                        backend="container_worker_vm",
+                        directory_path="sessions/session-a",
+                        created_at=datetime(2026, 5, 21, 11, 0, tzinfo=timezone.utc),
+                        updated_at=datetime(2026, 5, 21, 11, 30, tzinfo=timezone.utc),
+                    )
+                ],
+                missing_telemetry=[
+                    DirectorySizeTelemetry(
+                        scope="session_storage:libvirt_vm",
+                        status=TelemetryStatus.UNSUPPORTED,
+                        health=HealthState.UNKNOWN,
+                        error_count=1,
+                        errors=[
+                            TelemetryError(
+                                status=TelemetryStatus.UNSUPPORTED,
+                                message="VM-local session storage is not host-readable",
+                            )
+                        ],
+                    )
+                ],
+            ),
+        ),
+        workers=CapacityWorkerTelemetrySummaryPayload(
+            total_workers=1,
+            reachable_workers=0,
+            telemetry_available_workers=0,
+            entries=[
+                CapacityWorkerTelemetryEntryPayload(
+                    worker_url="http://worker.example.test",
+                    directory_paths=["root"],
+                    discovered_from=["configured:root"],
+                    reachable=False,
+                    healthz_status=TelemetryStatus.MISSING,
+                    telemetry_status=TelemetryStatus.MISSING,
+                    errors=[
+                        TelemetryError(
+                            status=TelemetryStatus.MISSING,
+                            message="worker session storage telemetry is unavailable",
+                        )
+                    ],
+                )
+            ],
+        ),
+        queue=CapacityQueueTelemetryPayload(
+            status=TelemetryStatus.AVAILABLE,
+            health=HealthState.OK,
+            backend="json",
+            active_record_count=1,
+            pending_count=1,
+            inflight_count=0,
+            oldest_event_id="evt-1",
+            oldest_occurred_at=datetime(2026, 5, 21, 11, 59, tzinfo=timezone.utc),
+            oldest_age_seconds=60.0,
+        ),
+        prompts=CapacityPromptTelemetryPayload(
+            status=TelemetryStatus.MISSING,
+            health=HealthState.UNKNOWN,
+            unread_count=0,
+            errors=[
+                TelemetryError(
+                    status=TelemetryStatus.MISSING,
+                    message="agent prompt telemetry is unavailable",
+                )
+            ],
+        ),
+    )
+    service.read_capacity_health = MethodType(lambda self: payload, service)
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/capacity-health")
+
+    assert response.status_code == 200
+    response_payload = response.json()
+    assert response_payload["control_plane"]["disk"]["scope"] == "control_plane_runtime"
+    assert response_payload["sessions"]["directory_counts"] == {"root": 2}
+    assert response_payload["workers"]["entries"][0]["telemetry_status"] == "missing"
+    assert response_payload["queue"]["oldest_event_id"] == "evt-1"
+    assert response_payload["prompts"]["status"] == "missing"
+
+
+def test_admin_web_capacity_health_requires_auth_when_enabled(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "secret")
+    service = AdminService(write_config(tmp_path))
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/capacity-health")
+
+    assert response.status_code == 401
+
+
+def test_admin_web_release_info_uses_project_metadata(
+    monkeypatch, tmp_path: Path
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.setenv("AGENT_SANDBOX_REPO_VERSION", "build-abc123")
+    monkeypatch.setattr(
+        release_metadata_module.importlib_metadata,
+        "version",
+        lambda name: (_ for _ in ()).throw(
+            release_metadata_module.importlib_metadata.PackageNotFoundError(name)
+        ),
+    )
+    (service.project_dir / "pyproject.toml").write_text(
+        "[project]\nname = \"agent-sandbox\"\nversion = \"9.8.7\"\n",
+        encoding="utf-8",
+    )
+    (service.project_dir / "CHANGELOG.md").write_text(
+        "# Changelog\n\n"
+        "## 2026-05-21 - Release Metadata\n\n"
+        "- Added release metadata reader.\n"
+        "- Fixed missing build identity fallback.\n"
+        "\n"
+        "## 2026-05-20 - Older Entry\n\n"
+        "- Added something else.\n",
+        encoding="utf-8",
+    )
+
+    release_info = service.read_release_info()
+
+    assert release_info.version == "9.8.7"
+    assert release_info.version_source == str(service.project_dir / "pyproject.toml")
+    assert release_info.build == "build-abc123"
+    assert release_info.build_source == "env:AGENT_SANDBOX_REPO_VERSION"
+    assert release_info.missing_reasons == []
+    assert release_info.changelog is not None
+    assert release_info.changelog.source == "CHANGELOG.md"
+    assert release_info.changelog.path == str(service.project_dir / "CHANGELOG.md")
+    assert release_info.changelog.heading == "2026-05-21 - Release Metadata"
+    assert [entry.text for entry in release_info.changelog.entries] == [
+        "Added release metadata reader.",
+        "Fixed missing build identity fallback.",
+    ]
+    assert [entry.kind for entry in release_info.changelog.entries] == [
+        "feature",
+        "bugfix",
+    ]
+
+
+def test_admin_web_release_info_reports_missing_sources(
+    monkeypatch, tmp_path: Path
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.delenv("AGENT_SANDBOX_REPO_VERSION", raising=False)
+    monkeypatch.delenv("agent_sandbox_repo_version", raising=False)
+    monkeypatch.delenv("AGENT_SANDBOX_BUILD_VERSION", raising=False)
+    monkeypatch.delenv("agent_sandbox_build_version", raising=False)
+    monkeypatch.setattr(
+        release_metadata_module.importlib_metadata,
+        "version",
+        lambda name: (_ for _ in ()).throw(
+            release_metadata_module.importlib_metadata.PackageNotFoundError(name)
+        ),
+    )
+
+    release_info = service.read_release_info()
+
+    assert release_info.version is None
+    assert release_info.version_source is None
+    assert release_info.build is None
+    assert release_info.build_source is None
+    assert release_info.changelog is None
+    assert any("Version not found" in reason for reason in release_info.missing_reasons)
+    assert any("Build identity not found" in reason for reason in release_info.missing_reasons)
+    assert any("CHANGELOG.md is missing" in reason for reason in release_info.missing_reasons)
 
 def test_admin_web_skills_api_and_catalog_options(tmp_path: Path) -> None:
     client = TestClient(create_app(AdminService(write_config(tmp_path))))

@@ -44,6 +44,10 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
     async def health(_: Request) -> JSONResponse:
         return JSONResponse({"status": "ok"})
 
+    async def telemetry(_: Request) -> JSONResponse:
+        record = daemon.read_telemetry()
+        return JSONResponse(record.model_dump(mode="json"))
+
     async def create_job(request: Request) -> JSONResponse:
         try:
             payload = await request.json()
@@ -216,6 +220,7 @@ def build_worker_app(daemon: WorkerDaemon) -> Starlette:
         debug=False,
         routes=[
             Route("/healthz", health, methods=["GET"]),
+            Route("/v1/telemetry", telemetry, methods=["GET"]),
             Route("/v1/sessions", prepare_session, methods=["POST"]),
             Route("/v1/sessions/{session_id}/repo", clone_session_repo, methods=["POST"]),
             Route("/v1/sessions/{session_id}/files", write_session_files, methods=["POST"]),

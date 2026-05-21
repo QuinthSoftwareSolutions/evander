@@ -5081,11 +5081,28 @@ select {
   display: none;
 }
 
-.dashboard-panel-summary > div:first-child {
+.dashboard-panel-summary-copy {
+  display: grid;
+  gap: 0.34rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.dashboard-panel-kicker-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
   min-width: 0;
 }
 
-.dashboard-panel-summary h2 {
+.dashboard-panel-kicker-row .eyebrow {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.panel-heading.dashboard-panel-summary h2 {
+  margin-top: 0;
   font-size: 1.42rem;
   line-height: 1.15;
   overflow-wrap: anywhere;
@@ -5095,7 +5112,7 @@ select {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 0.65rem;
+  gap: 0.45rem;
   min-width: max-content;
 }
 
@@ -5103,16 +5120,16 @@ select {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 5.4rem;
-  min-height: 2rem;
-  padding: 0.34rem 0.78rem;
+  width: 1.7rem;
+  height: 1.7rem;
   border: 1px solid rgba(32, 69, 78, 0.12);
   border-radius: 999px;
   background: rgba(241, 246, 244, 0.95);
   color: #173241;
-  font-size: 0.82rem;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 1rem;
   font-weight: 800;
-  line-height: 1;
+  line-height: 1.7rem;
   white-space: nowrap;
 }
 
@@ -5255,6 +5272,108 @@ select {
 
 .panel-body {
   padding: 1.1rem 1.25rem 1.25rem;
+}
+
+.dashboard-release-summary {
+  color: #51636b;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.detail-list.dashboard-release-details {
+  gap: 0.65rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  padding: 0;
+}
+
+.dashboard-release-details > div {
+  padding: 0.82rem 0.9rem;
+  background: rgba(232, 239, 236, 0.76);
+}
+
+.release-missing-list {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px dashed rgba(32, 69, 78, 0.14);
+  border-radius: 16px;
+  background: rgba(244, 248, 246, 0.86);
+}
+
+.release-missing-list span,
+.release-entry-list-header span {
+  color: #6a7d86;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.release-missing-list strong {
+  color: #183142;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.release-entry-list {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.release-entry-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.release-entry-list-header strong {
+  color: #183142;
+}
+
+.release-entry-item {
+  padding: 0.72rem 0.85rem;
+  border: 1px solid rgba(32, 69, 78, 0.1);
+  border-radius: 14px;
+  background: rgba(245, 249, 247, 0.86);
+}
+
+.release-entry-copy {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.release-entry-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.release-kind-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.release-kind-feature {
+  background: rgba(223, 245, 231, 0.96);
+  color: #1f6a3f;
+}
+
+.release-kind-bugfix {
+  background: rgba(250, 224, 220, 0.96);
+  color: #9d392e;
+}
+
+.release-kind-change {
+  background: rgba(231, 237, 241, 0.96);
+  color: #28526a;
 }
 
 .toolbar-grid {
@@ -6057,6 +6176,40 @@ select {
 
 :root[data-theme="dark"] .admin-panel .panel-heading {
   border-bottom-color: rgba(125, 170, 190, 0.14);
+}
+
+:root[data-theme="dark"] .dashboard-release-summary,
+:root[data-theme="dark"] .release-missing-list span,
+:root[data-theme="dark"] .release-entry-list-header span {
+  color: #9eb2bf;
+}
+
+:root[data-theme="dark"] .dashboard-release-details > div,
+:root[data-theme="dark"] .release-entry-item,
+:root[data-theme="dark"] .release-missing-list {
+  border-color: rgba(125, 170, 190, 0.14);
+  background: rgba(18, 31, 39, 0.92);
+}
+
+:root[data-theme="dark"] .dashboard-release-details > div > strong,
+:root[data-theme="dark"] .release-missing-list strong,
+:root[data-theme="dark"] .release-entry-list-header strong {
+  color: #d7e3ea;
+}
+
+:root[data-theme="dark"] .release-kind-feature {
+  background: #13271f;
+  color: #aee8c9;
+}
+
+:root[data-theme="dark"] .release-kind-bugfix {
+  background: #321816;
+  color: #ffb6aa;
+}
+
+:root[data-theme="dark"] .release-kind-change {
+  background: #192c38;
+  color: #b9d3e0;
 }
 
 :root[data-theme="dark"] .inline-actions button {

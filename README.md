@@ -234,9 +234,17 @@ and put TLS plus ingress policy in front of the service.
 
 Admin Web opens to an operations dashboard by default after sign-in. The dashboard is an operator
 overview backed by the same live APIs as the detail tabs: deployment/admin state, workers, agents,
-workflow runs and graph activity, approvals, sessions, tool-call audit entries, and the workflow
-document/catalog. Empty or unsupported sources are shown as explicit missing/unavailable states,
-not as sample data.
+workflow runs and graph activity, approvals, sessions, tool-call audit entries, capacity health,
+and the workflow document/catalog. Empty or unsupported sources are shown as explicit
+missing/unavailable states, not as sample data. Capacity health intentionally omits raw host paths
+and secrets while still showing storage, per-directory lifecycle counts, worker telemetry, queue
+age, and unread prompt pressure.
+
+The product context panel also reads live release metadata from `/api/admin/release-info`. That
+endpoint reports the installed package or `pyproject.toml` version when available, a deployed build
+identity when one is configured, and recent entries from the top of `CHANGELOG.md`. When any source
+is missing, the panel surfaces explicit missing reasons instead of inferring or inventing release
+data.
 
 For a task-oriented guide to every Admin UI section, see
 [`docs/admin-ui-user-manual.md`](docs/admin-ui-user-manual.md).

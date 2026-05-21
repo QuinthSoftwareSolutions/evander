@@ -223,6 +223,29 @@ Those endpoints do not accept raw environment variables or secrets. Prompt and e
 use typed container jobs: the host builds an `ExecutionSpec.command`, starts the job, waits through
 the relevant completion path, then removes the container while preserving the session directory.
 
+## Worker Telemetry
+
+`GET /v1/telemetry` requires the same bearer token as the rest of the `/v1/...` API. It returns a
+machine-readable worker snapshot with `generated_at`, `disk.worker_root`, `session_storage`, and
+`jobs` fields. The storage view reports session-relative labels such as `sessions/<session_id>`
+rather than raw worker-root paths, so the payload can be forwarded into the control-plane
+capacity-health aggregate without exposing host filesystem layout.
+
+The telemetry payload is intentionally scoped to operational counters:
+
+- `disk.worker_root` includes disk usage plus threshold metadata for the worker root.
+- `session_storage.total` summarizes durable session storage under the worker root, and
+  `largest_sessions` / `oldest_sessions` surface only `session_id`, `backend`, relative
+  `directory_path`, byte size, and timestamps.
+- `jobs` includes `total_jobs`, `counts_by_status`, `running_job_count`, `queued_job_count`,
+  `queued_job_status`, `failed_start_count`, and `cleanup_failure_status`.
+
+`queued_job_status` currently remains `unsupported` because the worker daemon starts jobs
+synchronously and does not persist a worker-side queue. `cleanup_failure_status` also remains
+`unsupported` because cleanup-failure history is not persisted separately from the live job records.
+The host-side Admin Web capacity-health endpoint uses this telemetry when it can reach a configured
+worker; otherwise it reports missing or permission-denied worker telemetry explicitly.
+
 For `container_worker_vm`, `effect:agent:clone-repo` does not send upstream GitHub or Azure DevOps
 URLs to the clone API. The control plane resolves and refreshes a deterministic bare mirror under
 the configured `git_root`, rewrites the worker clone URL to `ssh://<git_ssh_alias><git_root>/<mirror>.git`,

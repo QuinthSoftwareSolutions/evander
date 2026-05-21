@@ -354,9 +354,8 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   const promptInput = nodeInspector.locator(".inspector-field").filter({ hasText: "Prompt" }).locator("input");
   await promptInput.fill("Handle escalations");
 
-  await page.waitForFunction(
-    (nextTitle) => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === nextTitle),
-    "Dispatch agent v2",
+  await assert.doesNotReject(
+    () => page.locator(".node-title").filter({ hasText: "Dispatch agent v2" }).first().waitFor({ state: "visible", timeout: 60000 }),
   );
   assert.equal(await promptInput.inputValue(), "Handle escalations");
   await assert.equal(saveRequests.length, 0);

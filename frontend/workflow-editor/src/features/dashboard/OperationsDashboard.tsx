@@ -240,6 +240,27 @@ type WorkflowGraphActivityReport = {
   graphs: WorkflowGraphActivityGraph[];
 };
 
+type ReleaseChangelogEntry = {
+  text: string;
+  kind: string | null;
+};
+
+type ReleaseChangelog = {
+  source: string | null;
+  path: string | null;
+  heading: string | null;
+  entries: ReleaseChangelogEntry[];
+};
+
+type ReleaseInfoPayload = {
+  version: string | null;
+  version_source: string | null;
+  build: string | null;
+  build_source: string | null;
+  changelog: ReleaseChangelog | null;
+  missing_reasons: string[];
+};
+
 type RemoteState<T> = {
   loading: boolean;
   error: string | null;
@@ -258,6 +279,7 @@ type DashboardState = {
   approvals: RemoteState<ApprovalIndexResponse>;
   sessions: RemoteState<SessionListResponse>;
   toolCalls: RemoteState<ToolCallsResponse>;
+  releaseInfo: RemoteState<ReleaseInfoPayload>;
   workflowDocument: RemoteState<WorkflowEditorDocument>;
   workflowCatalog: RemoteState<WorkflowEditorCatalog>;
   lastRefreshedAt: string | null;
@@ -286,6 +308,7 @@ function createDashboardPendingState(): DashboardState {
     approvals: createRemotePendingState(),
     sessions: createRemotePendingState(),
     toolCalls: createRemotePendingState(),
+    releaseInfo: createRemotePendingState(),
     workflowDocument: createRemotePendingState(),
     workflowCatalog: createRemotePendingState(),
     lastRefreshedAt: null,
@@ -598,27 +621,31 @@ function DashboardPanel({
   title,
   statusClassName,
   statusLabel,
+  className = "",
   children,
 }: {
   eyebrow: string;
   title: string;
   statusClassName: string;
   statusLabel: ReactNode;
+  className?: string;
   children: ReactNode;
 }) {
   return (
-    <details className="admin-panel dashboard-panel">
+    <details className={["admin-panel", "dashboard-panel", className].filter(Boolean).join(" ")}>
       <summary className="panel-heading dashboard-panel-summary">
-        <div>
-          <div className="eyebrow">{eyebrow}</div>
+        <div className="dashboard-panel-summary-copy">
+          <div className="dashboard-panel-kicker-row">
+            <div className="eyebrow">{eyebrow}</div>
+            <div className="dashboard-panel-summary-actions">
+              <span className={`status-pill ${statusClassName}`}>{statusLabel}</span>
+              <span className="dashboard-panel-expand-control" aria-hidden="true">
+                <span className="dashboard-panel-expand-text-closed">+</span>
+                <span className="dashboard-panel-expand-text-open">-</span>
+              </span>
+            </div>
+          </div>
           <h2>{title}</h2>
-        </div>
-        <div className="dashboard-panel-summary-actions">
-          <span className={`status-pill ${statusClassName}`}>{statusLabel}</span>
-          <span className="dashboard-panel-expand-control">
-            <span className="dashboard-panel-expand-text-closed">Expand</span>
-            <span className="dashboard-panel-expand-text-open">Collapse</span>
-          </span>
         </div>
       </summary>
       <div className="panel-body dashboard-panel-body">{children}</div>
@@ -737,6 +764,50 @@ function workflowCatalogSummary(catalog: WorkflowEditorCatalog): string {
   return `${catalog.nodes.length} catalog node${catalog.nodes.length === 1 ? "" : "s"} from ${catalog.worker_id}.`;
 }
 
+function releaseEntryKindLabel(kind: ReleaseChangelogEntry["kind"]): string | null {
+  if (!kind) return null;
+  if (kind === "feature") return "Feature";
+  if (kind === "bugfix") return "Bugfix";
+  return "Change";
+}
+
+function releaseEntryKindClass(kind: ReleaseChangelogEntry["kind"]): string | null {
+  if (!kind) return null;
+  if (kind === "feature") return "release-kind-feature";
+  if (kind === "bugfix") return "release-kind-bugfix";
+  return "release-kind-change";
+}
+
+function releaseInfoSummary(releaseInfo: ReleaseInfoPayload | null): string | null {
+  if (!releaseInfo) {
+    return null;
+  }
+
+  const parts: string[] = [];
+  parts.push(releaseInfo.version ? `Version ${releaseInfo.version}` : "Version unavailable");
+  parts.push(releaseInfo.build ? `Build ${releaseInfo.build}` : "Build unavailable");
+  if (releaseInfo.changelog?.heading) {
+    parts.push(releaseInfo.changelog.heading);
+  } else if (releaseInfo.missing_reasons.length > 0) {
+    parts.push("Recent changelog unavailable");
+  }
+  return parts.join(" · ");
+}
+
+function releaseInfoTone(state: RemoteState<ReleaseInfoPayload>): DashboardPillTone {
+  if (state.data && state.data.missing_reasons.length > 0) {
+    return "missing";
+  }
+  return statusTone(state);
+}
+
+function releaseInfoStatusLabel(state: RemoteState<ReleaseInfoPayload>): string {
+  if (state.data && state.data.missing_reasons.length > 0) {
+    return "Missing";
+  }
+  return statusLabel(state);
+}
+
 function statusByCountClass(count: number): DashboardPillTone {
   if (count > 0) return "pass";
   return "missing";
@@ -759,7 +830,20 @@ export function OperationsDashboard() {
         _dashboard: "1",
         _dashboard_refresh: refreshNonce > 0 ? refreshNonce : null,
       };
-      const [adminStateResult, deploymentStatusResult, workersResult, agentsResult, workflowRunsResult, workflowActivityResult, approvalsResult, sessionsResult, toolCallsResult, workflowDocumentResult, workflowCatalogResult] =
+      const [
+        adminStateResult,
+        deploymentStatusResult,
+        workersResult,
+        agentsResult,
+        workflowRunsResult,
+        workflowActivityResult,
+        approvalsResult,
+        sessionsResult,
+        toolCallsResult,
+        releaseInfoResult,
+        workflowDocumentResult,
+        workflowCatalogResult,
+      ] =
         await Promise.allSettled([
           fetchJson<DashboardAdminState>(`/api/admin/state${directoryQuery}`, { credentials: "same-origin", signal: controller.signal }),
           fetchJson<DeploymentStatus>(`/api/admin/deployment-status${makeQuery(dashboardCacheParams)}`, { signal: controller.signal }),
@@ -806,6 +890,7 @@ export function OperationsDashboard() {
             })}`,
             { signal: controller.signal },
           ),
+          fetchJson<ReleaseInfoPayload>(`/api/admin/release-info${makeQuery(dashboardCacheParams)}`, { signal: controller.signal }),
           fetchJson<WorkflowEditorDocument>(`/api/workflow-editor/document${makeQuery(dashboardCacheParams)}`, { signal: controller.signal }),
           fetchJson<WorkflowEditorCatalog>(
             `/api/workflow-editor/catalog${makeQuery({ directory_path: selectedDirectoryPath, ...dashboardCacheParams })}`,
@@ -852,6 +937,7 @@ export function OperationsDashboard() {
           "No tool-call audit entries were returned.",
           (value) => (value.items.length === 0 ? "No tool-call audit entries were returned." : null),
         ),
+        releaseInfo: remoteFromResult(releaseInfoResult),
         workflowDocument: remoteFromResult(
           workflowDocumentResult,
           "No workflow document has been created yet.",
@@ -882,6 +968,7 @@ export function OperationsDashboard() {
   const approvals = state.approvals.data;
   const sessions = state.sessions.data;
   const toolCalls = state.toolCalls.data;
+  const releaseInfo = state.releaseInfo.data;
   const workflowDocument = state.workflowDocument.data;
   const workflowCatalog = state.workflowCatalog.data;
   const anyLoading =
@@ -894,6 +981,7 @@ export function OperationsDashboard() {
     state.approvals.loading ||
     state.sessions.loading ||
     state.toolCalls.loading ||
+    state.releaseInfo.loading ||
     state.workflowDocument.loading ||
     state.workflowCatalog.loading;
 
@@ -1387,6 +1475,90 @@ export function OperationsDashboard() {
                 </div>
               ) : null}
             </DashboardBlock>
+        </DashboardPanel>
+
+        <DashboardPanel
+          eyebrow="Product context"
+          title="Version and changelog"
+          className="dashboard-release-panel"
+          statusClassName={stateClassName(releaseInfoTone(state.releaseInfo))}
+          statusLabel={releaseInfoStatusLabel(state.releaseInfo)}
+        >
+          <DashboardBlock
+            title="Release metadata"
+            state={state.releaseInfo}
+            missingFallback="Release metadata is not available."
+            summary={releaseInfoSummary(releaseInfo)}
+          >
+            {releaseInfo ? (
+              <div style={{ display: "grid", gap: "0.85rem" }}>
+                <p className="panel-meta dashboard-release-summary" style={{ margin: 0 }}>
+                  {releaseInfoSummary(releaseInfo)}
+                </p>
+                <div className="detail-list dashboard-release-details">
+                  <div>
+                    <span>Version</span>
+                    <strong>{releaseInfo.version ?? "Version unavailable"}</strong>
+                  </div>
+                  <div>
+                    <span>Version source</span>
+                    <strong>{releaseInfo.version_source ?? "No version source."}</strong>
+                  </div>
+                  <div>
+                    <span>Build</span>
+                    <strong>{releaseInfo.build ?? "Build unavailable"}</strong>
+                  </div>
+                  <div>
+                    <span>Build source</span>
+                    <strong>{releaseInfo.build_source ?? "No build source."}</strong>
+                  </div>
+                  <div>
+                    <span>Changelog</span>
+                    <strong>{releaseInfo.changelog ? releaseInfo.changelog.heading ?? "Recent release entries" : "Changelog unavailable"}</strong>
+                  </div>
+                  <div>
+                    <span>Changelog source</span>
+                    <strong>
+                      {releaseInfo.changelog
+                        ? [releaseInfo.changelog.source ?? "CHANGELOG.md", releaseInfo.changelog.path ?? null].filter(Boolean).join(" · ")
+                        : "No changelog source."}
+                    </strong>
+                  </div>
+                </div>
+                {releaseInfo.missing_reasons.length > 0 ? (
+                  <div className="release-missing-list">
+                    <span>Missing details</span>
+                    <strong>{releaseInfo.missing_reasons.join(" · ")}</strong>
+                  </div>
+                ) : null}
+                {releaseInfo.changelog ? (
+                  <div className="release-entry-list">
+                    <div className="release-entry-list-header">
+                      <span>Recent entries</span>
+                      <strong>{releaseInfo.changelog.entries.length}</strong>
+                    </div>
+                    {releaseInfo.changelog.entries.slice(0, 3).map((entry, index) => {
+                      const kindLabel = releaseEntryKindLabel(entry.kind);
+                      const kindClass = releaseEntryKindClass(entry.kind);
+                      return (
+                        <div
+                          key={`${releaseInfo.changelog?.heading ?? "release"}-${index}-${entry.text}`}
+                          className="release-entry-item"
+                        >
+                          <div className="release-entry-copy">
+                            <div className="release-entry-meta">
+                              {kindLabel && kindClass ? <span className={`release-kind-pill ${kindClass}`}>{kindLabel}</span> : null}
+                            </div>
+                            <strong>{entry.text}</strong>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </DashboardBlock>
         </DashboardPanel>
 
         <DashboardPanel
