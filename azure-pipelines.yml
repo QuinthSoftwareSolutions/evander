@@ -464,7 +464,7 @@ stages:
                     rm -rf "$codex_prefix"
                     mkdir -p "$codex_prefix"
 
-                    npm install --prefix "$codex_prefix" --no-audit --no-fund "$HOST_CODEX_NPM_PACKAGE"
+                    npm install --prefix "$codex_prefix" --include=optional --no-audit --no-fund "$HOST_CODEX_NPM_PACKAGE"
 
                     export HOST_CODEX_ROOT="$codex_prefix/node_modules/@openai/codex"
                     ./scripts/build_agent_sandbox_runner_image.sh

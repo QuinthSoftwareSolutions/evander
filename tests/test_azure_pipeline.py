@@ -60,7 +60,7 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
         "HOST_PLAYWRIGHT_NODE_MODULES: "
         "$(Build.SourcesDirectory)/frontend/workflow-editor/node_modules"
     ) in text
-    assert "npm install --prefix \"$codex_prefix\" --no-audit --no-fund" in text
+    assert "npm install --prefix \"$codex_prefix\" --include=optional --no-audit --no-fund" in text
     assert 'export HOST_CODEX_ROOT="$codex_prefix/node_modules/@openai/codex"' in text
     assert "Installed Codex package did not contain the expected executable" not in text
     assert "HOST_CODEX_NPM_PACKAGE: ${{ parameters.hostCodexNpmPackage }}" in text

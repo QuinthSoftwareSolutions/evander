@@ -10,6 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
 from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.shared import AdminWebAuth, json_error
 
 
@@ -25,7 +26,11 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-def capacity_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRoute]:
+def capacity_routes(
+    service: AdminService,
+    _auth: AdminWebAuth,
+    cache: AdminWebJsonResponseCache | None = None,
+) -> list[BaseRoute]:
     async def get_capacity_health(_: Request) -> JSONResponse:
         try:
             payload = await run_in_threadpool(service.read_capacity_health)
@@ -35,4 +40,12 @@ def capacity_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRout
             return json_error(str(exc), status_code=500)
         return JSONResponse(_jsonable(payload))
 
-    return [Route("/api/admin/capacity-health", get_capacity_health, methods=["GET"])]
+    return [
+        Route(
+            "/api/admin/capacity-health",
+            cache.wrap("admin.capacity_health", get_capacity_health)
+            if cache
+            else get_capacity_health,
+            methods=["GET"],
+        )
+    ]

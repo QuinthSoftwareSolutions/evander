@@ -4735,6 +4735,7 @@ def test_admin_web_dashboard_requests_use_opt_in_backend_cache(
 ) -> None:
     service = AdminService(write_config(tmp_path))
     calls = 0
+    capacity_calls = 0
 
     def list_background_workers() -> list[WorkerSummary]:
         nonlocal calls
@@ -4750,27 +4751,55 @@ def test_admin_web_dashboard_requests_use_opt_in_backend_cache(
             )
         ]
 
+    def read_capacity_health() -> dict[str, object]:
+        nonlocal capacity_calls
+        capacity_calls += 1
+        return {
+            "generated_at": "2026-05-21T12:00:00+00:00",
+            "workers": {"total_workers": capacity_calls},
+        }
+
     monkeypatch.setattr(service, "list_background_workers", list_background_workers)
+    monkeypatch.setattr(service, "read_capacity_health", read_capacity_health)
     client = TestClient(create_app(service))
 
     first = client.get("/api/workers?_dashboard=1")
     second = client.get("/api/workers?_dashboard=1")
     live = client.get("/api/workers")
     refreshed = client.get("/api/workers?_dashboard=1&_dashboard_refresh=1")
+    capacity_first = client.get("/api/admin/capacity-health?_dashboard=1")
+    capacity_second = client.get("/api/admin/capacity-health?_dashboard=1")
+    capacity_live = client.get("/api/admin/capacity-health")
+    capacity_refreshed = client.get(
+        "/api/admin/capacity-health?_dashboard=1&_dashboard_refresh=1"
+    )
 
     assert first.status_code == 200
     assert second.status_code == 200
     assert live.status_code == 200
     assert refreshed.status_code == 200
+    assert capacity_first.status_code == 200
+    assert capacity_second.status_code == 200
+    assert capacity_live.status_code == 200
+    assert capacity_refreshed.status_code == 200
     assert first.headers["x-admin-web-cache"] == "miss"
     assert second.headers["x-admin-web-cache"] == "hit"
     assert "x-admin-web-cache" not in live.headers
     assert refreshed.headers["x-admin-web-cache"] == "refresh"
+    assert capacity_first.headers["x-admin-web-cache"] == "miss"
+    assert capacity_second.headers["x-admin-web-cache"] == "hit"
+    assert "x-admin-web-cache" not in capacity_live.headers
+    assert capacity_refreshed.headers["x-admin-web-cache"] == "refresh"
     assert first.json() == second.json()
     assert first.json()["workers"][0]["active_state"] == "active-1"
     assert live.json()["workers"][0]["active_state"] == "active-2"
     assert refreshed.json()["workers"][0]["active_state"] == "active-3"
+    assert capacity_first.json() == capacity_second.json()
+    assert capacity_first.json()["workers"]["total_workers"] == 1
+    assert capacity_live.json()["workers"]["total_workers"] == 2
+    assert capacity_refreshed.json()["workers"]["total_workers"] == 3
     assert calls == 3
+    assert capacity_calls == 3
 
 
 def test_admin_web_conformance_report_endpoint_returns_invalid_records(

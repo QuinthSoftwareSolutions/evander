@@ -14,7 +14,7 @@ function jsonResponse(payload, status = 200) {
   };
 }
 
-test("admin shell release panel shows missing metadata without inventing release entries", async (t) => {
+test("admin shell release and capacity panels show missing states without inventing data", async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
     root: projectRoot,
@@ -322,6 +322,13 @@ test("admin shell release panel shows missing metadata without inventing release
       return;
     }
 
+    if (pathname === "/api/admin/capacity-health") {
+      assert.equal(url.searchParams.get("_dashboard"), "1");
+      assert.equal(url.searchParams.has("_dashboard_refresh"), false);
+      await route.fulfill(jsonResponse({ error: "Capacity health is unavailable on this host." }, 501));
+      return;
+    }
+
     if (pathname === "/api/admin/release-info") {
       assert.equal(url.searchParams.get("_dashboard"), "1");
       assert.equal(url.searchParams.has("_dashboard_refresh"), false);
@@ -353,12 +360,21 @@ test("admin shell release panel shows missing metadata without inventing release
   });
 
   const releasePanel = page.locator(".dashboard-panel-grid .dashboard-release-panel");
+  const systemHealthPanel = page.locator(".dashboard-panel-grid .dashboard-panel").filter({ hasText: "System health" });
   await assert.doesNotReject(() => releasePanel.getByRole("heading", { name: "Version and changelog" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.locator(".status-pill").filter({ hasText: "Missing" }).waitFor({ state: "visible" }));
   assert.equal(
     await releasePanel.evaluate((element) => element instanceof HTMLDetailsElement && element.open),
     true,
   );
+  await systemHealthPanel.evaluate((element) => {
+    if (element instanceof HTMLDetailsElement) {
+      element.open = true;
+    }
+  });
+  const capacityBlock = systemHealthPanel.locator(".dashboard-block").filter({ hasText: "Capacity" });
+  await assert.doesNotReject(() => capacityBlock.locator(".empty-state").filter({ hasText: "Capacity health is unavailable on this host." }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => capacityBlock.locator(".status-pill").filter({ hasText: "Missing" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.locator(".release-missing-list strong").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.getByText("Version unavailable", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.getByText("Build unavailable", { exact: true }).waitFor({ state: "visible" }));
@@ -369,10 +385,14 @@ test("admin shell release panel shows missing metadata without inventing release
   assert.equal(await releasePanel.locator(".release-entry-item").count(), 0);
   assert.equal(await releasePanel.locator(".release-kind-pill").count(), 0);
   assert.equal(await releasePanel.getByText("News", { exact: true }).count(), 0);
-  assert.equal(await releasePanel.getByText("0.2.1").count(), 0);
+  assert.equal(await releasePanel.getByText("0.2.2").count(), 0);
   assert.equal(await releasePanel.getByText("agent-sandbox-build-20260521").count(), 0);
 
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/capacity-health?_dashboard=1"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/release-info?_dashboard=1&news_index=0"));
   assert.deepEqual(pageErrors, []);
-  assert.deepEqual(consoleErrors, []);
+  assert.deepEqual(
+    consoleErrors.filter((message) => !message.includes("501 (Not Implemented)")),
+    [],
+  );
 });

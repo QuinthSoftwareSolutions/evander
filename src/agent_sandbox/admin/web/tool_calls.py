@@ -3,12 +3,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from agent_sandbox.admin.service import AdminService
-from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
+from agent_sandbox.admin.web.cache import DASHBOARD_CACHE_PARAM, AdminWebJsonResponseCache
 from agent_sandbox.admin.web.shared import json_error
 
 
@@ -51,6 +52,10 @@ def _optional_text(value: Any) -> str | None:
     return text or None
 
 
+def _dashboard_cache_requested(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def tool_call_routes(
     service: AdminService,
     cache: AdminWebJsonResponseCache | None = None,
@@ -58,7 +63,8 @@ def tool_call_routes(
     async def list_tool_calls(request: Request) -> JSONResponse:
         params = request.query_params
         try:
-            entries = service.list_tool_call_audit_entries(
+            entries = await run_in_threadpool(
+                service.list_tool_call_audit_entries,
                 session_id=_optional_text(params.get("session_id")),
                 tool_name=_optional_text(params.get("tool_name")),
                 status=_optional_text(params.get("status")),
@@ -68,6 +74,7 @@ def tool_call_routes(
                 created_before=_parse_datetime(params.get("created_before")),
                 q=_optional_text(params.get("q")),
                 limit=_parse_int(params.get("limit")),
+                recent_only=_dashboard_cache_requested(params.get(DASHBOARD_CACHE_PARAM)),
             )
         except ValueError as exc:
             return json_error(str(exc))
