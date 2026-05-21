@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import os
 import re
@@ -66,15 +69,17 @@ class ContainerGitMirrorResolver:
             resolved_repo_path=resolved_repo_path,
         )
 
-        self._ensure_bare_remote(mirror_name)
-        self._refresh_mirror(
-            mirror_path=mirror_path,
-            resolved_repo_path=resolved_repo_path,
-            original_repo_source=original_repo_source,
-            canonical_repo_source=canonical_repo_source,
-        )
-        if clone_branch:
-            self._ensure_branch_exists(mirror_path, clone_branch)
+        with self._mirror_initialization_lock(mirror_name):
+            self._ensure_bare_remote(mirror_name)
+            with self._mirror_sync_lock(mirror_path):
+                self._refresh_mirror(
+                    mirror_path=mirror_path,
+                    resolved_repo_path=resolved_repo_path,
+                    original_repo_source=original_repo_source,
+                    canonical_repo_source=canonical_repo_source,
+                )
+                if clone_branch:
+                    self._ensure_branch_exists(mirror_path, clone_branch)
 
         return ContainerGitMirror(
             original_repo_source=original_repo_source,
@@ -147,6 +152,28 @@ class ContainerGitMirrorResolver:
             env=self._helper_env(),
         )
 
+    @contextmanager
+    def _mirror_initialization_lock(self, mirror_name: str) -> Iterator[None]:
+        self.git_root_path.mkdir(parents=True, exist_ok=True)
+        with self._exclusive_lock(self.git_root_path / f".{mirror_name}.lock"):
+            yield
+
+    @contextmanager
+    def _mirror_sync_lock(self, mirror_path: Path) -> Iterator[None]:
+        with self._exclusive_lock(mirror_path / "agent-sandbox-sync.lock"):
+            yield
+
+    @contextmanager
+    def _exclusive_lock(self, path: Path) -> Iterator[None]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a+", encoding="utf-8") as handle:
+            self._repair_path_ownership_if_root(path, recursive=False)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
     def _refresh_mirror(
         self,
         *,
@@ -213,13 +240,20 @@ class ContainerGitMirrorResolver:
         self._repair_mirror_ownership_if_root(mirror_path)
 
     def _repair_mirror_ownership_if_root(self, mirror_path: Path) -> None:
+        self._repair_path_ownership_if_root(mirror_path, recursive=True)
+
+    def _repair_path_ownership_if_root(self, path: Path, *, recursive: bool) -> None:
         if os.geteuid() != 0 or not self.git_user or self.git_user == "root":
             return
         group_result = self._run(["id", "-gn", self.git_user])
         target_group = group_result.stdout.strip()
         if not target_group:
             raise RuntimeError(f"Cannot resolve group for Git remote owner {self.git_user!r}")
-        self._run(["chown", "-R", f"{self.git_user}:{target_group}", str(mirror_path)])
+        cmd = ["chown"]
+        if recursive:
+            cmd.append("-R")
+        cmd.extend([f"{self.git_user}:{target_group}", str(path)])
+        self._run(cmd)
 
     def _canonical_repo_source(
         self,
