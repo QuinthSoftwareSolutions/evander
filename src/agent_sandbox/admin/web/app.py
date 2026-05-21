@@ -13,6 +13,7 @@ from starlette.staticfiles import StaticFiles
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.agents import agent_routes
+from agent_sandbox.admin.web.capacity import capacity_routes
 from agent_sandbox.admin.web.artifacts import artifact_routes
 from agent_sandbox.admin.web.chat import chat_routes
 from agent_sandbox.admin.web.sessions_approvals import session_approval_routes
@@ -306,6 +307,7 @@ def create_app(service: AdminService) -> Starlette:
     ]
     routes.extend(workflow_routes(service))
     routes.extend(agent_routes(service, auth))
+    routes.extend(capacity_routes(service, auth))
     routes.extend(skill_routes(service, auth))
     routes.extend(vm_issue_routes(service, auth))
     routes.extend(session_approval_routes(service, auth))
