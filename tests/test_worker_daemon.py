@@ -916,6 +916,10 @@ def test_job_lifecycle_create_inspect_stop_delete(tmp_path: Path) -> None:
     assert deleted.status_code == 200
     assert deleted.json() == {"deleted": True, "job_id": "job-1"}
     assert runtime.removed == ["job-1"]
+    deleted_again = client.delete("/v1/jobs/job-1", headers=_auth())
+    assert deleted_again.status_code == 200
+    assert deleted_again.json() == {"deleted": True, "job_id": "job-1"}
+    assert runtime.removed == ["job-1"]
 
 
 def test_logs_are_written_and_read_from_session_logs(tmp_path: Path) -> None:

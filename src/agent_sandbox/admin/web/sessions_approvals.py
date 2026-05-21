@@ -373,6 +373,8 @@ def session_approval_routes(
             **result.model_dump(mode="json"),
             "session": _session_payload(service, summary),
         }
+        if not result.success:
+            payload["error"] = result.message
         status_code = 200 if result.success else 502
         return JSONResponse(payload, status_code=status_code)
 

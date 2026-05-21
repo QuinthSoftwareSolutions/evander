@@ -8457,15 +8457,58 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if session is not None
             else str(getattr(record, "target_name", "") or agent_id)
         )
-        cleanup_result = self.cleanup_container_session(session_id)
+        execution_records = self._container_execution_records_for_session(session_id)
+        worker_backend = self._container_worker_backend(
+            directory_path=(
+                session.directory_path
+                if session is not None
+                else getattr(record, "directory_path", None)
+            ),
+            worker_url=self._container_worker_url_for_target(
+                session=session,
+                record=record,
+                records=execution_records,
+            ),
+        )
+        if record is not None:
+            worker_backend.destroy(record.execution_id)
+        worker_session_deleted = worker_backend.delete_session(session_id)
+        worker_session_removed = self._worker_delete_session_removed(worker_session_deleted)
+        container_repository = self._container_worker_execution_repository()
+        removed_mappings = 0
+        for execution_id, candidate in list(container_repository.read_all().items()):
+            if candidate.session_id == session_id:
+                container_repository.delete(execution_id)
+                removed_mappings += 1
+        removed_session = self.runtime.session_repository.delete_session(session_id)
+        removed_assistant_mappings = self._delete_chat_assistant_session_mappings({session_id})
+        removed_approvals = _prune_approvals_for_sessions(self.runtime, session_ids={session_id})
+        removed_pr_map_entries, removed_streams = _prune_pr_map(
+            self.config.pr_map_path,
+            session_ids={session_id},
+        )
+        removed_cursors, removed_feedback = _prune_pr_feedback_store(
+            self.config.runtime_dir / "pr-feedback-store.json",
+            streams=removed_streams,
+        )
         return {
-            "success": cleanup_result.success,
+            "success": True,
             "agent_id": agent_id,
             "backend": "container_worker_vm",
             "target_name": target_name,
-            "action": cleanup_result.action,
-            "message": cleanup_result.message,
-            "status": "cleaned_up" if cleanup_result.success else "cleanup_failed",
+            "action": "delete",
+            "message": (
+                f"Deleted container worker session {session_id}; "
+                f"removed_mappings={removed_mappings} "
+                f"removed_session={int(removed_session)} "
+                f"removed_assistant_mappings={removed_assistant_mappings} "
+                f"removed_approvals={removed_approvals} "
+                f"removed_pr_map_entries={removed_pr_map_entries} "
+                f"removed_feedback_cursors={removed_cursors} "
+                f"removed_feedback_items={removed_feedback} "
+                f"worker_session_deleted={int(worker_session_removed)}"
+            ),
+            "status": "deleted",
             "session_id": session_id,
         }
 

@@ -492,6 +492,7 @@ def test_admin_web_cleanup_container_session_surfaces_failure_without_deleting_c
     cleanup_payload = cleanup_response.json()
     assert cleanup_payload["success"] is False
     assert cleanup_payload["action"] == "cleanup_container_session"
+    assert cleanup_payload["error"] == cleanup_payload["message"]
     assert "cleanup exploded" in cleanup_payload["message"]
     assert cleanup_payload["session"]["container_lifecycle"]["state"] == "cleanup_failed"
     assert cleanup_payload["session"]["container_lifecycle"]["actions"]["cleanup"][

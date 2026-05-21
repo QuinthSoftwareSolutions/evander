@@ -194,6 +194,13 @@ class WorkerDaemon:
         return record
 
     def remove_job(self, record: WorkerJobRecord) -> None:
+        if record.status == "removed":
+            logger.info(
+                "worker_job_remove_noop job_id=%s session_id=%s",
+                record.job_id,
+                record.session_id,
+            )
+            return
         attempted_at = now_utc()
         try:
             self.container_runtime.remove_job(record)
