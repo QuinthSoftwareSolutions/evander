@@ -81,52 +81,20 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "azure_devops_pr_pat_env": (
         "Name of the host environment variable that holds the Azure DevOps PR personal access token."
     ),
-    "ado_mssql_sa_password_env": (
-        "Name of the host environment variable that holds the MSSQL SA password used by ADO issue setup."
-    ),
     "ado_area_filters": (
         "Optional Azure DevOps area path allowlist used by the ADO worker when selecting work items."
     ),
     "ado_team_filters": (
         "Optional Azure DevOps team filter list used by the ADO worker when selecting work items."
     ),
-    "ado_project_or_solution": (
-        "Project or solution path handed to issue VM setup for NuGet prewarm tasks."
-    ),
-    "ado_prewarm_target": (
-        "Optional override target for prewarm steps; falls back to ado_project_or_solution when unset."
-    ),
     "ado_repo_source": (
-        "Default host repo path or remote URL associated with ADO-created issue records."
+        "Default host repo path or remote URL recorded on ADO proxy issue records."
     ),
     "create_prs_automatically": (
         "When enabled, post-receive automation opens upstream pull requests for promoted agent branches."
     ),
     "create_prs_as_draft": (
         "When enabled, new Azure DevOps pull requests opened for this directory are created as drafts."
-    ),
-    "ado_setup_vms": (
-        "Enable or disable VM setup in the legacy ADO worker for this directory while still allowing Azure issue ingestion."
-    ),
-    "ado_bootstrap_dotnet": (
-        "Enable or disable dotnet/bootstrap steps for ADO worker-created VMs."
-    ),
-    "ado_bootstrap_nuget": ("Enable or disable NuGet bootstrap setup for ADO worker-created VMs."),
-    "ado_bootstrap_mssql": ("Enable or disable MSSQL bootstrap setup for ADO worker-created VMs."),
-    "ado_mssql_init_root": (
-        "Optional host path containing SQL initialization scripts copied during MSSQL bootstrap."
-    ),
-    "ado_bootstrap_playwright": (
-        "Enable or disable Playwright bootstrap setup for ADO worker-created VMs."
-    ),
-    "ado_bootstrap_frontend_deps": (
-        "Enable or disable frontend dependency bootstrap setup for ADO worker-created VMs."
-    ),
-    "ado_frontend_host_checkout": (
-        "Optional host checkout path used by frontend dependency bootstrap."
-    ),
-    "ado_frontend_install_roots": (
-        "Optional list of install roots used by frontend dependency bootstrap."
     ),
     "azure_devops_project": (
         "Default Azure DevOps project name used by host-side PR feedback and reply integrations."

@@ -63,24 +63,18 @@ file directly for the `ado` worker.
 | `poll_interval_seconds` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
 | `directories` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py` (canonical directories to poll once per cycle; empty list means process nothing). |
 | `yaml_output_dir` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
-| `setup_log_dir` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
 | `processed_store_path` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
-| `setup_script_path` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
 | `ado_work_items_azure_devops_pat_env` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py` (name of the host env var that holds the ADO work-item PAT). |
-| `setup_timeout_seconds` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
-| `setup_concurrency_limit` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
-| `setup_lock_path` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
 | `fetch_retry_count` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
 | `fetch_retry_backoff_seconds` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
 | `include_comments` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
 | `comments_max_count` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
 | `comment_text_max_chars` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
 
-`ADO_*` environment variables still work as compatibility fallbacks for one release, but the new
-persisted source of truth is `config/ado-worker/config.json`. Secret values such as
-`MSSQL_SA_PASSWORD` remain host-supplied via the shell or `secrets.env`. The work-item Azure
-DevOps PAT value is read from the host env var named by `ado_work_items_azure_devops_pat_env`,
-defaulting to `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT`.
+`ADO_*` environment variables for polling/runtime settings still work as compatibility fallbacks
+for one release, but the new persisted source of truth is `config/ado-worker/config.json`. The
+work-item Azure DevOps PAT value is read from the host env var named by
+`ado_work_items_azure_devops_pat_env`, defaulting to `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT`.
 
 ## `config/trigger-orchestrator/config.json`
 
@@ -797,7 +791,7 @@ Supported directory config domains:
 | `contacts.json` | Directory contact list and admin-user contact attachments | `contacts`, `user_contact_links` |
 | `email.json` | Mailbox provider definitions and email provider runtime settings | `email_mailboxes`, `email_provider_timeout_seconds` |
 | `wake.json` | Directory-scoped wake prompt behavior | `pr_feedback_resume_prompt`, `discord_resume_prompt` |
-| `ado-worker.json` | Azure DevOps backlog worker setup/bootstrap behavior | `ado_area_filters`, `ado_team_filters`, `ado_project_or_solution`, `ado_prewarm_target`, `ado_repo_source`, `create_prs_automatically`, `create_prs_as_draft`, `ado_bootstrap_*`, `ado_mssql_sa_password_env`, frontend bootstrap fields |
+| `ado-worker.json` | Azure DevOps backlog worker filters, repo metadata, and PR automation flags | `ado_area_filters`, `ado_team_filters`, `ado_repo_source`, `create_prs_automatically`, `create_prs_as_draft` |
 | `issue-setup.json` | VM issue setup/git hand-off defaults | `git_root`, `git_host`, `git_user`, `git_ssh_alias`, optional `default_model`, `post_exec_verification_prompt`, `enable_guest_heartbeat`, `guest_heartbeat_prompt`, optional `issue_setup_azure_devops_pr_pat_env` |
 | `pr-template.json` | Directory-scoped markdown boilerplate prepended to automated PR bodies | `pr_template_markdown` |
 | `vm.json` | Guest-facing relay/network defaults | `bind_network_cidr`, `gateway_url`, OpenAI relay host/port, NuGet relay host/port, HTTP target relay host/port |

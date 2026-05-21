@@ -354,38 +354,10 @@ def migrate_ado_worker_env_to_root(
     overwrite: bool = False,
 ) -> DomainMigrationResult:
     env_values = _load_optional_env_file(env_file) if env_file is not None else {}
-    project_or_solution = _merged_env_value("ADO_PROJECT_OR_SOLUTION", env_values)
-    if not project_or_solution:
-        raise ValueError("ADO_PROJECT_OR_SOLUTION must be set in the environment or env file.")
     payload = AdoWorkerDirectoryConfig(
         ado_area_filters=_csv_values(_merged_env_value("ADO_AREA_FILTERS", env_values)),
         ado_team_filters=_csv_values(_merged_env_value("ADO_TEAM_FILTERS", env_values)),
-        ado_project_or_solution=project_or_solution,
-        ado_prewarm_target=_merged_env_value("ADO_PREWARM_TARGET", env_values)
-        or project_or_solution,
         ado_repo_source=_merged_env_value("ADO_REPO_PATH", env_values) or None,
-        ado_bootstrap_dotnet=_bool_value(
-            _merged_env_value("ADO_BOOTSTRAP_DOTNET", env_values), default=True
-        ),
-        ado_bootstrap_nuget=_bool_value(
-            _merged_env_value("ADO_BOOTSTRAP_NUGET", env_values), default=True
-        ),
-        ado_bootstrap_mssql=_bool_value(
-            _merged_env_value("ADO_BOOTSTRAP_MSSQL", env_values), default=True
-        ),
-        ado_mssql_init_root=_merged_env_value("ADO_MSSQL_INIT_ROOT", env_values) or None,
-        ado_bootstrap_playwright=_bool_value(
-            _merged_env_value("ADO_BOOTSTRAP_PLAYWRIGHT", env_values), default=False
-        ),
-        ado_bootstrap_frontend_deps=_bool_value(
-            _merged_env_value("ADO_BOOTSTRAP_FRONTEND_DEPS", env_values),
-            default=False,
-        ),
-        ado_frontend_host_checkout=_merged_env_value("ADO_FRONTEND_HOST_CHECKOUT", env_values)
-        or None,
-        ado_frontend_install_roots=_csv_values(
-            _merged_env_value("ADO_FRONTEND_INSTALL_ROOTS", env_values)
-        ),
     ).model_dump(mode="json", exclude_none=True)
     return _migrate_domain_payload_to_root(
         config, domain="ado_worker", payload=payload, overwrite=overwrite
