@@ -11,6 +11,7 @@ import { ArtifactsPage } from "./features/artifacts/ArtifactsPage";
 import { ConfigurationScreen } from "./features/configuration/ConfigurationScreen";
 import { IssuesPage } from "./features/issues/IssuesPage";
 import { ApprovalsScreen } from "./features/approvals/ApprovalsScreen";
+import { OperationsDashboard } from "./features/dashboard/OperationsDashboard";
 import { ReportsPage } from "./features/reports/ReportsPage";
 import { SessionsScreen } from "./features/sessions/SessionsScreen";
 import { ToolCallsPage } from "./features/toolCalls/ToolCallsPage";
@@ -20,6 +21,7 @@ import { VmsPage } from "./features/vms/VmsPage";
 import { WorkersScreen } from "./features/workers/WorkersScreen";
 import { ChatLauncher } from "./features/chat/ChatLauncher";
 import { Tooltip } from "./features/admin/Tooltip";
+import { currentTab, nextPathFromHash, tabsForExecutionBackend, TABS, type AdminTab } from "./adminRouting";
 
 type AdminSession = {
   auth_mode: "none" | "local_password" | "azure_sso";
@@ -78,61 +80,12 @@ type DirectoryStateResponse = {
 
 type DirectoryMutationResult = AdminResult<unknown>;
 
-type AdminTab =
-  | "agents"
-  | "approvals"
-  | "artifacts"
-  | "skills"
-  | "vms"
-  | "issues"
-  | "sessions"
-  | "tool-calls"
-  | "configuration"
-  | "reports"
-  | "users"
-  | "workers"
-  | "workflow";
-
 type AdminExecutionBackend = "libvirt_vm" | "container_worker_vm";
-type AdminTabDefinition = {
-  key: AdminTab;
-  label: string;
-  shortLabel: string;
-  description: string;
-};
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const WORKFLOW_SIDEBAR_STORAGE_KEY = "admin-web:workflow:sections-collapsed";
 const DIRECTORY_STORAGE_KEY = "admin-web:selected-directory";
 const THEME_STORAGE_KEY = "admin-web:theme";
-
-const TABS: ReadonlyArray<AdminTabDefinition> = [
-  { key: "agents", label: "Agents", shortLabel: "Agents", description: "Active and historical execution targets." },
-  { key: "approvals", label: "Approvals", shortLabel: "Approvals", description: "Review guarded approval requests and queued decisions." },
-  { key: "artifacts", label: "Artifacts", shortLabel: "Artifacts", description: "Resolve and download durable agent artifact archives." },
-  { key: "skills", label: "Skills", shortLabel: "Skills", description: "Managed Codex skill library." },
-  { key: "vms", label: "VMs", shortLabel: "VMs", description: "VM host lifecycle and machine details." },
-  { key: "issues", label: "Issues", shortLabel: "Issues", description: "Local issue intake and VM creation." },
-  { key: "sessions", label: "Sessions", shortLabel: "Sessions", description: "Session state, tools, and wake schedules." },
-  { key: "tool-calls", label: "Tool Calls", shortLabel: "Calls", description: "Search MCP tool invocation audit entries." },
-  { key: "configuration", label: "Configuration", shortLabel: "Config", description: "Directory-scoped config and policy." },
-  { key: "reports", label: "Reports", shortLabel: "Reports", description: "Workflow activity and operational reporting." },
-  { key: "users", label: "Users", shortLabel: "Users", description: "Azure SSO users and roles." },
-  { key: "workers", label: "Workers", shortLabel: "Workers", description: "Background worker state, logs, and settings." },
-  { key: "workflow", label: "Workflow", shortLabel: "Flow", description: "Workflow editor and runtime activity." },
-];
-
-function tabsForExecutionBackend(
-  executionBackend: AdminExecutionBackend | null,
-): ReadonlyArray<AdminTabDefinition> {
-  return TABS.filter((tab) => tab.key !== "vms" || executionBackend === "libvirt_vm");
-}
-
-function tabFromHash(hash: string): AdminTab | null {
-  const raw = hash.replace(/^#/, "").trim();
-  const tabName = raw.split("?")[0]?.trim() ?? "";
-  return TABS.some((tab) => tab.key === tabName) ? (tabName as AdminTab) : null;
-}
 
 const LOGIN_BACKGROUND_NODES = [
   { x: 0.08, y: 0.2, radius: 3.1, hue: "#7ce8ff", phase: 0.2 },
@@ -168,14 +121,6 @@ const LOGIN_BACKGROUND_EDGES = [
   { from: 1, to: 6, icons: ["mail", "chat"], speed: 0.00015, phase: 0.22 },
   { from: 7, to: 13, icons: ["agent", "vm"], speed: 0.00014, phase: 0.58 },
 ] as const;
-
-function currentTab(): AdminTab {
-  const tab = tabFromHash(window.location.hash);
-  if (tab) {
-    return tab;
-  }
-  return "workflow";
-}
 
 type AdminTheme = "light" | "dark";
 
@@ -1140,7 +1085,7 @@ export default function AdminRoot() {
   const [session, setSession] = useState<AdminSession | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
-  const [selectedTab, setSelectedTab] = useState<AdminTab>(() => currentTab());
+  const [selectedTab, setSelectedTab] = useState<AdminTab>(() => currentTab(window.location.hash));
   const [workflowHasUnsavedChanges, setWorkflowHasUnsavedChanges] = useState(false);
   const [adminState, setAdminState] = useState<AdminState | null>(null);
   const [deploymentStatus, setDeploymentStatus] = useState<DeploymentStatus | null>(null);
@@ -1388,7 +1333,12 @@ export default function AdminRoot() {
       return;
     }
     setAuthBusy(true);
-    window.location.assign(`${API_BASE}${session.azure_sso_login_url}`);
+    const loginUrl = new URL(`${API_BASE}${session.azure_sso_login_url}`, window.location.origin);
+    const nextPath = nextPathFromHash(window.location.hash);
+    if (nextPath) {
+      loginUrl.searchParams.set("next", nextPath);
+    }
+    window.location.assign(loginUrl.toString());
   }
 
   async function setPrivilegeLock(unlock: boolean) {
@@ -1457,7 +1407,7 @@ export default function AdminRoot() {
         suppressNextHashChangeRef.current = false;
         return;
       }
-      const nextTab = currentTab();
+      const nextTab = currentTab(window.location.hash);
       if (nextTab === selectedTab) {
         return;
       }
@@ -1647,7 +1597,9 @@ export default function AdminRoot() {
           <main className="admin-shell-main">
             <DeploymentStatusBanner status={deploymentStatus} />
             {sessionError ? <div className="admin-shell-alert">{sessionError}</div> : null}
-            {renderedTab === "workflow" ? (
+            {renderedTab === "dashboard" ? (
+              <OperationsDashboard />
+            ) : renderedTab === "workflow" ? (
               <div className="admin-workflow-panel">
                 <WorkflowEditorApp />
               </div>

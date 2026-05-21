@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchJson, formatRelativeSeconds, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { Tooltip } from "../admin/Tooltip";
+import { hashQueryParam } from "../../adminRouting";
 
 type ApprovalStatus = "pending" | "approved" | "denied" | "expired";
 
@@ -86,10 +87,18 @@ function displayToolName(item: Pick<ApprovalItem, "tool_name" | "action_type">):
   return item.tool_name || item.action_type;
 }
 
+function approvalRequestIdFromHash(): string {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  return hashQueryParam(window.location.hash, "request_id") ?? hashQueryParam(window.location.hash, "approval_id") ?? "";
+}
+
 export function ApprovalsScreen() {
   const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
+  const initialRequestId = approvalRequestIdFromHash();
   const [filters, setFilters] = useState<Filters>({
-    status: "pending",
+    status: initialRequestId ? "" : "pending",
     directOnly: true,
     sessionId: "",
     vmId: "",
@@ -97,7 +106,8 @@ export function ApprovalsScreen() {
     minAgeMinutes: "",
   });
   const [response, setResponse] = useState<ApprovalIndexResponse | null>(null);
-  const [selectedId, setSelectedId] = useState<string>("");
+  const [selectedId, setSelectedId] = useState<string>(initialRequestId);
+  const [deepLinkedRequestId, setDeepLinkedRequestId] = useState<string>(initialRequestId);
   const [detail, setDetail] = useState<ApprovalDetailResponse | null>(null);
   const [approver, setApprover] = useState("admin");
   const [reason, setReason] = useState("");
@@ -114,9 +124,26 @@ export function ApprovalsScreen() {
     setResponse(next);
     setSelectedId((current) => {
       if (current && next.items.some((item) => item.request_id === current)) return current;
+      if (current && current === deepLinkedRequestId) return current;
       return next.items[0]?.request_id ?? "";
     });
   }
+
+  useEffect(() => {
+    const applyDeepLink = () => {
+      const requestId = approvalRequestIdFromHash();
+      if (!requestId) {
+        return;
+      }
+      setDeepLinkedRequestId(requestId);
+      setSelectedId(requestId);
+      setFilters((current) => (current.status ? { ...current, status: "" } : current));
+    };
+
+    applyDeepLink();
+    window.addEventListener("hashchange", applyDeepLink);
+    return () => window.removeEventListener("hashchange", applyDeepLink);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -266,7 +293,10 @@ export function ApprovalsScreen() {
                 key={item.request_id}
                 type="button"
                 className={`feature-list-item${selectedId === item.request_id ? " selected" : ""}`}
-                onClick={() => setSelectedId(item.request_id)}
+                onClick={() => {
+                  setDeepLinkedRequestId("");
+                  setSelectedId(item.request_id);
+                }}
               >
                 <div className="feature-list-title-row">
                   <strong>{item.human_summary}</strong>

@@ -557,12 +557,12 @@ export function SessionsScreen() {
       if (deepLinkSessionId) {
         return payload.items.some((item) => item.session_id === deepLinkSessionId) ? deepLinkSessionId : current;
       }
+      if (current && payload.items.some((item) => item.session_id === current)) {
+        return current;
+      }
       const nextSelected = pickSessionIdForTab(payload, activeTab, current);
       if (nextSelected) {
         return nextSelected;
-      }
-      if (current && payload.items.some((item) => item.session_id === current)) {
-        return current;
       }
       return payload.active_items[0]?.session_id ?? payload.expired_items[0]?.session_id ?? "";
     });
@@ -679,11 +679,14 @@ export function SessionsScreen() {
   }, [activeTab, response?.active_items, response?.expired_items, sessionFilter]);
 
   useEffect(() => {
+    if (!response) {
+      return;
+    }
     if (selectedSessionId && visibleItems.some((item) => item.session_id === selectedSessionId)) {
       return;
     }
     setSelectedSessionId(visibleItems[0]?.session_id ?? "");
-  }, [selectedSessionId, visibleItems]);
+  }, [response, selectedSessionId, visibleItems]);
 
   const selectedSession = useMemo(
     () => response?.items.find((item) => item.session_id === selectedSessionId) ?? detail?.session ?? null,
@@ -1074,7 +1077,10 @@ export function SessionsScreen() {
               key={item.session_id}
               type="button"
               className={`feature-list-item session-list-item${item.session_id === selectedSessionId ? " selected" : ""}`}
-              onClick={() => setSelectedSessionId(item.session_id)}
+              onClick={() => {
+                setDeepLinkSessionId("");
+                setSelectedSessionId(item.session_id);
+              }}
             >
               <div className="feature-list-title-row session-list-item-row">
                 <Tooltip content={`Session id: ${item.session_id}`}>

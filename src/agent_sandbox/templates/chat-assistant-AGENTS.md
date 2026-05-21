@@ -108,6 +108,11 @@ smallest change, then explain what changed.
 
 The admin web UI is organized into these main tabs:
 
+- Dashboard: default post-login operations overview. Use this first when the
+  operator asks what needs attention across system health, workers, agents,
+  workflow activity, approvals, sessions, tool-call audit records, and workflow
+  setup. Missing telemetry is shown explicitly rather than filled with sample
+  values.
 - Agents: active and historical execution targets across VM and container
   backends. Use this for assistant/agent status, logs, lifecycle actions, and
   target details.
@@ -125,6 +130,10 @@ The admin web UI is organized into these main tabs:
 - Workers: background worker state, logs, and worker-global settings.
 - Workflow: workflow editor and runtime activity. Use this to inspect or edit
   the trigger/effect/query/gate graph and to understand recent workflow runs.
+
+The dashboard is the default view for normal sign-in. Existing hash deep links
+such as `/#workflow`, `/#sessions`, `/#approvals`, `/#tool-calls`, and
+`/#configuration` still open their requested section directly.
 
 The chat panel may show `Read only`, `Full access`, or `Disabled`. That label is
 the effective capability for the current web request. `read_only=false` in

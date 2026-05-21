@@ -157,6 +157,8 @@ Troubleshooting checklist:
 Admin Web is the supported operator GUI. It uses the same host-side orchestration layer as the CLI
 and surfaces:
 
+- a default operations dashboard after login, with live system health, worker, agent,
+  workflow, approval, session, audit, and workflow-onboarding panels
 - all active and inactive VMs
 - VM power state and guest agent state separately
 - one-click `Start`, `Shutdown`, `Enable`, `Disable`, and `Resume`
@@ -171,6 +173,13 @@ and surfaces:
 - Sessions policy controls for `approval_required_tools`, which lets operators require human
   approval before selected allowed tools execute
 - a configuration tab that inspects inherited per-domain directory config
+
+The dashboard is the default landing view for `/` and normal post-login redirects. Existing hash
+deep links remain direct: for example `/#workflow`, `/#sessions`, `/#approvals`, `/#tool-calls`,
+and `/#configuration` still open those sections instead of the dashboard. Dashboard panels use the
+same live Admin Web APIs as the detail tabs. When an endpoint has no data or is unavailable in the
+current environment, the panel shows an explicit missing or unavailable state rather than inferred
+or placeholder values.
 
 For machine-readable scripting that matches the GUI data model, use:
 

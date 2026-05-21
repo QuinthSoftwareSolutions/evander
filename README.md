@@ -230,6 +230,19 @@ including the dedicated container-worker VM playbook, see `ansible/README.md`.
 When you expose `agent-sandbox-admin-web` beyond localhost, configure auth in `config/admin-web.env`
 and put TLS plus ingress policy in front of the service.
 
+## Admin Web Operations Dashboard
+
+Admin Web opens to an operations dashboard by default after sign-in. The dashboard is an operator
+overview backed by the same live APIs as the detail tabs: deployment/admin state, workers, agents,
+workflow runs and graph activity, approvals, sessions, tool-call audit entries, and the workflow
+document/catalog. Empty or unsupported sources are shown as explicit missing/unavailable states,
+not as sample data.
+
+Existing hash deep links still route directly to the requested section. For example, `/#workflow`,
+`/#sessions`, `/#approvals`, `/#tool-calls`, and `/#configuration` bypass the dashboard and open the
+detail view. The Workflow tab remains a first-level navigation item for editing workflow graphs and
+inspecting runtime activity.
+
 ## Admin Web Authentication
 
 `agent-sandbox-admin-web` now supports three explicit auth modes:
