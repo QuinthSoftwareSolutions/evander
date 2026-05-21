@@ -174,12 +174,20 @@ and surfaces:
   approval before selected allowed tools execute
 - a configuration tab that inspects inherited per-domain directory config
 
+For detailed operator procedures and screenshots for every Admin UI section, see
+[`admin-ui-user-manual.md`](admin-ui-user-manual.md).
+
 The dashboard is the default landing view for `/` and normal post-login redirects. Existing hash
 deep links remain direct: for example `/#workflow`, `/#sessions`, `/#approvals`, `/#tool-calls`,
 and `/#configuration` still open those sections instead of the dashboard. Dashboard panels use the
 same live Admin Web APIs as the detail tabs. When an endpoint has no data or is unavailable in the
 current environment, the panel shows an explicit missing or unavailable state rather than inferred
 or placeholder values.
+
+Dashboard-tagged GET requests use a short-lived backend JSON cache to avoid repeating every
+systemd, VM inventory, workflow, approval, session, and audit read while an operator is moving in
+and out of the dashboard. The detailed tabs are not opted into that cache, and the dashboard Refresh
+button sends a cache-bypass marker for a fresh read.
 
 For machine-readable scripting that matches the GUI data model, use:
 

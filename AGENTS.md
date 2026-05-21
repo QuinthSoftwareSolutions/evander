@@ -313,7 +313,7 @@ egress, no autoscaling/Kubernetes scheduler, and no replacement for the existing
 - Guest Git push should use the restricted SSH key installed by `bootstrap_git_vm.sh`, not the host
   password.
 - Workflow pack edits can race with other operators. Use Admin Web/API revision and lock behavior;
-  do not rewrite live pack files from stale local copies.
+  do not rewrite live pack files from stale local copies. Never write directly to live pack files.
 - `frontend/workflow-editor/dist/index.html` is tracked and often churns during builds. If built
   assets are not in scope, avoid carrying generated hash-pointer changes.
 

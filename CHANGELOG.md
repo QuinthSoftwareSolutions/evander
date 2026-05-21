@@ -79,6 +79,14 @@ docs, tests.
   other users may be modifying those packs concurrently (`7cef1e4`, `0a880cb`,
   `6c0a718`, `8b35721`, `02e76ae`, `cac2d0d`, `71efbca`, `e3ea236`,
   `0b5b635`).
+- Added a dashboard-scoped Admin Web JSON response cache so repeated operations
+  dashboard loads reuse recent workers, agents, workflow, approval, session, and
+  audit reads while detail tabs keep live reads and manual dashboard refreshes
+  bypass the cache.
+- Added a comprehensive Admin UI user manual with task-oriented procedures and
+  screenshots covering the shared shell, dashboard, agents, approvals,
+  artifacts, skills, VMs, issues, sessions, tool calls, configuration, reports,
+  users, workers, workflow editing, and common operator workflows.
 
 ## 2026-05-18 - Pull Request Workflow Nodes
 

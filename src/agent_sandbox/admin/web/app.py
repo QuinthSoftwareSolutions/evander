@@ -12,6 +12,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.agents import agent_routes
 from agent_sandbox.admin.web.artifacts import artifact_routes
 from agent_sandbox.admin.web.chat import chat_routes
@@ -107,6 +108,7 @@ def create_app(service: AdminService) -> Starlette:
     dist_dir = _dist_dir()
     admin_user_store = AdminWebUserStore(service.config.runtime_dir / "admin-web-users.json")
     auth = AdminWebAuth(AdminWebConfig.from_env(), user_store=admin_user_store)
+    dashboard_cache = AdminWebJsonResponseCache()
 
     def privileged_operations_unlocked_for_request(request: Request) -> bool:
         return request_has_privileged_operations(auth=auth, service=service, request=request)
@@ -300,19 +302,23 @@ def create_app(service: AdminService) -> Starlette:
         Route("/api/auth/session", get_session, methods=["GET"]),
         Route("/api/auth/logout", logout, methods=["POST"]),
         Route("/api/admin/state", get_admin_state, methods=["GET"]),
-        Route("/api/admin/deployment-status", get_deployment_status, methods=["GET"]),
+        Route(
+            "/api/admin/deployment-status",
+            dashboard_cache.wrap("admin.deployment_status", get_deployment_status),
+            methods=["GET"],
+        ),
         Route("/api/admin/privileged/unlock", unlock_privileged_operations, methods=["POST"]),
         Route("/api/admin/privileged/lock", lock_privileged_operations, methods=["POST"]),
     ]
-    routes.extend(workflow_routes(service))
-    routes.extend(agent_routes(service, auth))
+    routes.extend(workflow_routes(service, dashboard_cache))
+    routes.extend(agent_routes(service, auth, dashboard_cache))
     routes.extend(skill_routes(service, auth))
     routes.extend(vm_issue_routes(service, auth))
-    routes.extend(session_approval_routes(service, auth))
-    routes.extend(tool_call_routes(service))
-    routes.extend(worker_config_routes(service, auth))
+    routes.extend(session_approval_routes(service, auth, dashboard_cache))
+    routes.extend(tool_call_routes(service, dashboard_cache))
+    routes.extend(worker_config_routes(service, auth, dashboard_cache))
     routes.extend(admin_user_routes(admin_user_store, auth, service))
-    routes.extend(report_routes(service))
+    routes.extend(report_routes(service, dashboard_cache))
     routes.extend(teams_auth_routes(service, auth))
     routes.extend(chat_routes(service, auth))
     routes.extend(workflow_event_routes(service, auth))
@@ -325,6 +331,7 @@ def create_app(service: AdminService) -> Starlette:
     app = Starlette(debug=False, routes=routes)
     app.state.auth = auth
     app.state.admin_user_store = admin_user_store
+    app.state.dashboard_cache = dashboard_cache
     app.add_middleware(AuthMiddleware, auth=auth)
     return app
 

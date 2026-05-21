@@ -9,6 +9,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from agent_sandbox.admin.service import AdminRevisionConflict, AdminService
+from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.shared import json_error
 
 
@@ -102,7 +103,10 @@ async def workflow_run_events(service: AdminService, request: Request) -> AsyncI
             yield ": keepalive\n\n"
 
 
-def workflow_routes(service: AdminService) -> list[Route]:
+def workflow_routes(
+    service: AdminService,
+    cache: AdminWebJsonResponseCache | None = None,
+) -> list[Route]:
     async def get_document(_: Request) -> JSONResponse:
         try:
             document = service.read_workflow_editor_document()
@@ -227,9 +231,21 @@ def workflow_routes(service: AdminService) -> list[Route]:
         return JSONResponse(save_result.model_dump(mode="json"))
 
     return [
-        Route("/api/workflow-editor/document", get_document, methods=["GET"]),
-        Route("/api/workflow-editor/catalog", get_catalog, methods=["GET"]),
-        Route("/api/workflow-editor/runs", get_runs, methods=["GET"]),
+        Route(
+            "/api/workflow-editor/document",
+            cache.wrap("workflow.document", get_document) if cache else get_document,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/workflow-editor/catalog",
+            cache.wrap("workflow.catalog", get_catalog) if cache else get_catalog,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/workflow-editor/runs",
+            cache.wrap("workflow.runs", get_runs) if cache else get_runs,
+            methods=["GET"],
+        ),
         Route("/api/workflow-editor/run-search", get_run_search, methods=["GET"]),
         Route("/api/workflow-editor/run-detail", get_run_detail, methods=["GET"]),
         Route("/api/workflow-editor/node-failures/{node_id:path}", dismiss_node_failures, methods=["DELETE"]),
