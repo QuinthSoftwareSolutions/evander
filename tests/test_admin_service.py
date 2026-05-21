@@ -6680,6 +6680,55 @@ def test_create_vm_merges_additional_allowed_tools_into_session_manifest(
     assert manifest.tool_argument_policies["create_ado_backlog_item"][0].id == "create-policy"
 
 
+def test_create_vm_upsert_validates_tool_argument_policies_for_existing_session(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="lab-session",
+            allowed_tools=[ToolName.CREATE_ADO_BACKLOG_ITEM],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service.subprocess.run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="ok", stderr=""
+        ),
+    )
+
+    result = service.create_vm(
+        vm_name="lab-vm",
+        session_id="lab-session",
+        allow_existing_session=True,
+        tool_argument_policies={
+            "create_ado_backlog_item": [
+                {
+                    "id": "upsert-policy",
+                    "constraints": [
+                        {"id": "project", "path": "project", "operator": "required"}
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert result.success is True
+    manifest = service.runtime.session_repository.get_session("lab-session")
+    assert manifest is not None
+    rule = manifest.tool_argument_policies["create_ado_backlog_item"][0]
+    assert rule.id == "upsert-policy"
+    assert rule.constraints[0].path == "project"
+
+
 def test_create_vm_sets_teams_chat_allowlist_on_session_manifest(
     tmp_path: Path, monkeypatch: Any
 ) -> None:

@@ -882,17 +882,21 @@ def _libvirt_create_vm(
         )
 
     if existing_session is not None:
+        policy_update: dict[str, Any] = {}
+        if tool_argument_policies is not None:
+            policy_update["tool_argument_policies"] = (
+                admin_service_module._session_tool_argument_policies_from_payload(
+                    existing_session,
+                    tool_argument_policies,
+                )
+            )
         manifest = existing_session.model_copy(
             update={
                 "vm_id": resolved_vm_name,
                 "vm_provider": provider or "libvirt",
                 "vm_provider_id": resolved_vm_name,
                 "directory_path": normalized_directory_path,
-                **(
-                    {"tool_argument_policies": tool_argument_policies}
-                    if tool_argument_policies is not None
-                    else {}
-                ),
+                **policy_update,
             }
         )
     else:
