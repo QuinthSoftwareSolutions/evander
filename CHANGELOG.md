@@ -124,6 +124,9 @@ docs, tests.
   reset, before-unload/tab/directory navigation guards, and unsaved-change smoke
   coverage (`66ac113`, `5abb233`, `4977971`, `80943de`, `81c42c2`,
   `0f4ed23`).
+- Restored workflow editor Ctrl/Cmd-click multi-selection and added smoke
+  coverage proving connected selected nodes copy and paste with their edge
+  intact.
 - Fixed compact/mobile workflow canvas behavior so one-finger gestures scroll the
   page, two-finger gestures pan the graph, and unlocked node drags still move and
   save node positions. Added mobile smoke coverage for scrolling, panning, and
