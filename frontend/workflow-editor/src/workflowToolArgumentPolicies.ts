@@ -127,11 +127,22 @@ function constraintPathBase(toolPathBase: string, ruleIndex: number, constraintI
   return `${rulePath}.constraints[${constraintIndex}]`;
 }
 
-function validateStructuredToolArgumentPoliciesValue(value: unknown): boolean {
+function knownToolNameSet(knownToolNames?: ReadonlyArray<string> | ReadonlySet<string>): ReadonlySet<string> | null {
+  if (!knownToolNames) return null;
+  return new Set(Array.from(knownToolNames).map((toolName) => normalizeText(toolName)).filter(Boolean));
+}
+
+function validateStructuredToolArgumentPoliciesValue(
+  value: unknown,
+  knownToolNames?: ReadonlyArray<string> | ReadonlySet<string>,
+): boolean {
   if (!isRecord(value)) return false;
+  const knownTools = knownToolNameSet(knownToolNames);
 
   for (const [toolName, rulesValue] of Object.entries(value)) {
-    if (!normalizeText(toolName)) return false;
+    const normalizedToolName = normalizeText(toolName);
+    if (!normalizedToolName) return false;
+    if (knownTools && !knownTools.has(normalizedToolName)) return false;
     if (!Array.isArray(rulesValue)) return false;
 
     for (const ruleValue of rulesValue) {
@@ -219,14 +230,18 @@ function validatePatternText(pattern: string, caseSensitive: boolean): string | 
   }
 }
 
-export function isStructuredToolArgumentPolicies(value: unknown): value is ToolArgumentPolicyMap {
-  return validateStructuredToolArgumentPoliciesValue(value);
+export function isStructuredToolArgumentPolicies(
+  value: unknown,
+  knownToolNames?: ReadonlyArray<string> | ReadonlySet<string>,
+): value is ToolArgumentPolicyMap {
+  return validateStructuredToolArgumentPoliciesValue(value, knownToolNames);
 }
 
 export function toolArgumentPolicyDraftRowsFromValue(
   value: unknown,
+  knownToolNames?: ReadonlyArray<string> | ReadonlySet<string>,
 ): ToolArgumentPolicyDraftRow[] | null {
-  if (!isStructuredToolArgumentPolicies(value)) return null;
+  if (!isStructuredToolArgumentPolicies(value, knownToolNames)) return null;
   return Object.entries(value).map(([toolName, rulesValue]) => ({
     toolName: normalizeText(toolName),
     rules: ruleRowsFromRulesValue(rulesValue),

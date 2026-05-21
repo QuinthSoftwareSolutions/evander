@@ -129,6 +129,28 @@ test("falls back to raw mode for unsupported shapes without mutating the source 
   assert.equal(toolArgumentPolicyDraftRowsFromValue({ run_script: [{ id: "policy" }] }), null);
 });
 
+test("falls back to raw mode for structurally valid policies using unknown catalog tools", () => {
+  const futurePolicy = {
+    future_tool: [
+      {
+        id: "policy",
+        constraints: [
+          {
+            id: "required",
+            path: "payload",
+            operator: "required",
+          },
+        ],
+      },
+    ],
+  };
+
+  assert.equal(isStructuredToolArgumentPolicies(futurePolicy), true);
+  assert.equal(isStructuredToolArgumentPolicies(futurePolicy, ["run_script"]), false);
+  assert.equal(toolArgumentPolicyDraftRowsFromValue(futurePolicy, ["run_script"]), null);
+  assert.deepEqual(toolArgumentPolicyDraftRowsFromValue(futurePolicy, ["future_tool"])?.[0].toolName, "future_tool");
+});
+
 test("reports field-level validation errors for invalid draft rows", () => {
   const rows = [
     {

@@ -3401,7 +3401,7 @@ export default function App() {
       }
       if (field.key === "tool_argument_policies" && supportsStructuredToolArgumentPolicies(nextNode.type)) {
         const fieldValue = nextKnownValues[field.key] ?? workflowJsonFieldFallbackValue(field, {});
-        const structuredRows = toolArgumentPolicyDraftRowsFromValue(fieldValue);
+        const structuredRows = toolArgumentPolicyDraftRowsFromValue(fieldValue, field.options.map((option) => option.value));
         if (structuredRows) {
           nextToolArgumentPolicyDrafts[field.key] = structuredRows;
           nextJsonDisplayModes[field.key] = "structured";
@@ -4474,7 +4474,7 @@ export default function App() {
       try {
         const fallbackValue = workflowJsonFieldFallbackValue(field, {});
         const parsedValue = parseJsonDraft(inspectorJsonDrafts[field.key] ?? "", fallbackValue);
-        const structuredRows = toolArgumentPolicyDraftRowsFromValue(parsedValue);
+        const structuredRows = toolArgumentPolicyDraftRowsFromValue(parsedValue, field.options.map((option) => option.value));
         if (!structuredRows) return;
         const validation = toolArgumentPolicyDraftRowsToValue(structuredRows);
         if (validation.errors.length > 0 || !validation.value) return;
