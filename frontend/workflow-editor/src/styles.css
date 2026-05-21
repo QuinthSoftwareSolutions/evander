@@ -1820,6 +1820,28 @@ select {
   align-self: end;
 }
 
+.tool-argument-policy-editor {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.tool-argument-policy-structured,
+.tool-argument-policy-rules,
+.tool-argument-policy-constraints {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.tool-argument-policy-tool .field-inline,
+.tool-argument-policy-rule .field-inline,
+.tool-argument-policy-constraint .field-inline {
+  margin-bottom: 0;
+}
+
+.tool-argument-policy-constraint .checkbox-row {
+  margin-top: 0.1rem;
+}
+
 @media (max-width: 720px) {
   .string-map-row {
     grid-template-columns: 1fr;
