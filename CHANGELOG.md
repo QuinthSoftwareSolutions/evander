@@ -5,6 +5,81 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-19 to 2026-05-21 - Workflow Runtime, Policy, and Admin Hardening
+
+Touched areas: Admin Web workflow APIs, MCP gateway policy enforcement,
+workflow editor, workflow runtime providers, worker clients, deployment config,
+docs, tests.
+
+- Added authenticated external workflow-event ingress through Admin Web, including
+  short-lived user tokens, configured machine tokens, durable `external.*`
+  workflow events, idempotency handling, source attribution for machine tokens,
+  and reference docs/env examples (`a73f1af`, `a2eea1f`, `52427a3`,
+  `85c07c0`).
+- Added approval-gated MCP tool invocation support for sessions and directory
+  policy. Operators can mark allowed tools as approval-required, the gateway
+  creates audited `mcp_tool_invocation` approval requests, and retries are
+  accepted only for the same session/tool/payload digest. Admin Web Approvals,
+  Sessions, and Tool Calls gained the related review and filtering surfaces
+  (`f39b0ed`).
+- Added tool argument policies to narrow already-allowed MCP calls with
+  `required`, `fixed`, `allowlist`, `denylist`, `pattern`, and `enum`
+  constraints. Directory/session policy now validates, merges, displays, and
+  enforces these rules before approval gating, with audited denials and a fix
+  for session policy upserts (`fe9891a`, `43e17f4`, `d57371d`, `01652a8`,
+  `803fcf5`, `8ebe99f`).
+- Added workflow-run-scoped MCP approval leases and
+  `effect:session:approve-mcp-tools-for-run`, allowing a workflow run to grant
+  selected tools to a target session without mutating the session manifest.
+  Agent prompt/enqueue effects carry the lease into the invocation and the
+  gateway checks run, session, tool, expiry, and revocation (`f8d8a70`,
+  `b92c5b9`).
+- Added workflow artifact publishing support: shared `/artifacts` handling,
+  `query:agent:artifact-text`, `effect:artifact:stage`,
+  `effect:artifact:publish-artifacts`, an immutable published-artifact store,
+  Admin Web artifact list/detail/download APIs, and an Artifacts tab
+  (`f8d8a70`, `b92c5b9`).
+- Expanded workflow run inspection with lookup/search by run, event, trigger
+  event, trace, session, or communication artifact id; run-detail payloads now
+  include tool-call audit links, agent/session/log references, approvals,
+  communication artifacts, binding traces, missing-data signals, and Admin Web
+  hash deep links into related tabs. Added a seed script and docs for the demo
+  run-inspector fixture (`fa220d9`, `7217773`, `a33ed3e`, `d731011`,
+  `05bec89`, `d68a495`, `ba374fb`, `bf02212`, `77dc5da`).
+- Fixed workflow run-detail regressions around audit-link targeting and editor
+  save-status display, with tests requiring real audit identifiers and preserving
+  visible missing-data states instead of silently omitting unavailable links
+  (`21dad2b`, `103c81a`).
+- Improved workflow editor draft safety: saved baselines, immediate inspector
+  edit staging, dirty-node tracking, per-node unsaved badges, selected-node
+  reset, before-unload/tab/directory navigation guards, and unsaved-change smoke
+  coverage (`66ac113`, `5abb233`, `4977971`, `80943de`, `81c42c2`,
+  `0f4ed23`).
+- Fixed compact/mobile workflow canvas behavior so one-finger gestures scroll the
+  page, two-finger gestures pan the graph, and unlocked node drags still move and
+  save node positions. Added mobile smoke coverage for scrolling, panning, and
+  node drag persistence (`1a1e510`, `1d8e98a`, `35c559d`, `25e0101`,
+  `ad5d76b`, `e2eface`).
+- Improved `gate:for` authoring and runtime validation with JSON-array defaults
+  for `items`, loopback validation for `body` paths, domain diagnostics that are
+  preserved through Admin Web validation/save, and orchestrator coverage for
+  loop execution behavior (`98afa69`, `476d01d`, `23d8033`).
+- Prevented duplicate agent branch promotion by serializing
+  `promote_agent_branch.sh` with a host-repo lock and tightened workflow-pack
+  branch policy examples to keep agent pushes under `agents/` refs (`0cbbed3`,
+  `b64f762`).
+- Reduced workflow latency for fast in-process effect chains by hot-draining
+  completed futures in the effect orchestrator cycle and scheduling another
+  immediate pass while completions are being published (`71efbca`, `bb9176d`).
+- Added retry/backoff handling for container-worker connect failures, including
+  safe error text and focused client tests (`bb36bbf`, `b92c5b9`).
+- Added an operator field-help inventory with taxonomy and regression checks,
+  relabeled selected configuration fields, polished Admin Web styling, and added
+  repo guidance to use existing APIs/locks when editing workflow packs because
+  other users may be modifying those packs concurrently (`7cef1e4`, `0a880cb`,
+  `6c0a718`, `8b35721`, `02e76ae`, `cac2d0d`, `71efbca`, `e3ea236`,
+  `0b5b635`).
+
 ## 2026-05-18 - Pull Request Workflow Nodes
 
 Touched areas: workflow providers, PR service layer, Admin Web catalog, docs,
