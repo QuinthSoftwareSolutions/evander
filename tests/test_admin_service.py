@@ -849,6 +849,51 @@ def test_read_capacity_health_aggregates_sessions_workers_queue_and_prompts(
     assert str(tmp_path) not in payload
 
 
+def test_capacity_worker_descriptors_ignore_historical_execution_only_worker_urls(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    expires_at = datetime.now(UTC) + timedelta(hours=1)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-current",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-current-target",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=expires_at,
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "worker_url": "http://worker-current.test",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-stale",
+            session_id="container-old",
+            worker_job_id="job-stale",
+            worker_url="http://worker-stale.test",
+            target_name="container-old-target",
+            started_at=expires_at - timedelta(days=2),
+            last_status="removed",
+            directory_path="root",
+        )
+    )
+
+    descriptors = service._capacity_worker_descriptors(
+        service.runtime.session_repository.list_sessions()
+    )
+
+    assert [descriptor["worker_url"] for descriptor in descriptors] == [
+        "http://worker-current.test"
+    ]
+    assert descriptors[0]["discovered_from"] == ["session:container-current"]
+
+
 def test_list_agents_all_directories_includes_vm_and_container_targets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

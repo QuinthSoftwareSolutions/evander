@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 from starlette.testclient import TestClient
@@ -191,6 +191,56 @@ def test_admin_service_lists_tool_call_audit_entries_with_filters_and_redaction(
     assert redaction_search_page.items == []
     assert "super-secret" not in json.dumps(default_page.model_dump(mode="json"))
     assert "result-secret" not in json.dumps(default_page.model_dump(mode="json"))
+
+
+def test_admin_service_tool_call_recent_only_reads_from_log_tail(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    entries = [
+        {
+            "event_type": "tool_call",
+            "session_id": f"old-session-{index}",
+            "directory_path": "root/archive",
+            "tool_name": "old_tool",
+            "decision": "allowed",
+            "created_at": f"2026-05-18T09:{index % 60:02d}:00+00:00",
+        }
+        for index in range(200)
+    ]
+    entries.extend(
+        {
+            "event_type": "tool_call",
+            "session_id": f"session-{index}",
+            "directory_path": "root/team",
+            "tool_name": f"tool_{index}",
+            "decision": "allowed" if index % 2 else "denied",
+            "created_at": f"2026-05-18T10:{index:02d}:00+00:00",
+        }
+        for index in range(10)
+    )
+    service.config.audit_log_path.write_text(
+        "\n".join(json.dumps(entry, sort_keys=True) for entry in entries) + "\n",
+        encoding="utf-8",
+    )
+
+    page = service.list_tool_call_audit_entries(
+        directory_path="root/team",
+        direct_only=True,
+        limit=5,
+        recent_only=True,
+    )
+
+    assert [item.tool_name for item in page.items] == [
+        "tool_9",
+        "tool_8",
+        "tool_7",
+        "tool_6",
+        "tool_5",
+    ]
+    assert page.has_more is True
+    assert page.counts.scanned == 6
+    assert page.counts.matched == 6
+    assert page.counts.returned == 5
+    assert page.counts.status_counts == {"denied": 2, "success": 3}
 
 
 def test_admin_web_tool_calls_route_returns_empty_payload_when_audit_log_is_missing(

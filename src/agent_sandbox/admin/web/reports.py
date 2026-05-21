@@ -43,7 +43,8 @@ def report_routes(
 ) -> list[Route]:
     async def workflow_graph_activity(request: Request) -> JSONResponse:
         try:
-            payload = service.read_workflow_graph_activity_report(
+            payload = await run_in_threadpool(
+                service.read_workflow_graph_activity_report,
                 period_start=_parse_optional_datetime(
                     request.query_params.get("start"),
                     field_name="start",

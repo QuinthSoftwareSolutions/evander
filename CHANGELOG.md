@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-21 - Admin Dashboard Latency Fixes
+
+- Cached dashboard-scoped capacity-health reads, stopped capacity health from probing
+  historical container-worker execution URLs, and moved slow dashboard audit/activity reads off
+  the Admin Web event loop.
+- Added a dashboard-only tail scan for recent tool-call audit entries so the operations dashboard
+  no longer parses the full audit log just to render the latest calls.
+- Made workflow graph activity reports read SQLite activity columns directly instead of
+  deserializing full orchestration payloads for dashboard summaries.
+
 ## 2026-05-21 - Dashboard Product Context Layout and 0.2.2 Version
 
 - Bumped the project and workflow-editor package metadata to version `0.2.2`.

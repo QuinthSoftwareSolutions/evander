@@ -339,7 +339,7 @@ def create_app(service: AdminService) -> Starlette:
     ]
     routes.extend(workflow_routes(service, dashboard_cache))
     routes.extend(agent_routes(service, auth, dashboard_cache))
-    routes.extend(capacity_routes(service, auth))
+    routes.extend(capacity_routes(service, auth, dashboard_cache))
     routes.extend(skill_routes(service, auth))
     routes.extend(vm_issue_routes(service, auth))
     routes.extend(session_approval_routes(service, auth, dashboard_cache))
