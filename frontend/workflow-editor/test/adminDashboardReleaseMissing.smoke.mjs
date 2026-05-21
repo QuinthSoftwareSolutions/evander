@@ -351,6 +351,7 @@ test("admin shell release panel shows missing metadata without inventing release
 
   const releasePanel = page.locator("article.dashboard-release-panel");
   await assert.doesNotReject(() => releasePanel.getByRole("heading", { name: "Version and changelog" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => releasePanel.locator(".status-pill").filter({ hasText: "Missing" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.locator(".release-missing-list strong").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.getByText("Version unavailable", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.getByText("Build unavailable", { exact: true }).waitFor({ state: "visible" }));

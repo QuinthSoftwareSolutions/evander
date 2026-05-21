@@ -757,6 +757,20 @@ function releaseInfoSummary(releaseInfo: ReleaseInfoPayload | null): string | nu
   return parts.join(" · ");
 }
 
+function releaseInfoTone(state: RemoteState<ReleaseInfoPayload>): DashboardPillTone {
+  if (state.data && state.data.missing_reasons.length > 0) {
+    return "missing";
+  }
+  return statusTone(state);
+}
+
+function releaseInfoStatusLabel(state: RemoteState<ReleaseInfoPayload>): string {
+  if (state.data && state.data.missing_reasons.length > 0) {
+    return "Missing";
+  }
+  return statusLabel(state);
+}
+
 function statusByCountClass(count: number): DashboardPillTone {
   if (count > 0) return "pass";
   return "missing";
@@ -1444,7 +1458,7 @@ export function OperationsDashboard() {
               <div className="eyebrow">Product context</div>
               <h2>Version and changelog</h2>
             </div>
-            <span className={`status-pill ${stateClassName(statusTone(state.releaseInfo))}`}>{statusLabel(state.releaseInfo)}</span>
+            <span className={`status-pill ${stateClassName(releaseInfoTone(state.releaseInfo))}`}>{releaseInfoStatusLabel(state.releaseInfo)}</span>
           </div>
           <div className="panel-body dashboard-release-body" style={{ display: "grid", gap: "0.85rem" }}>
             {state.releaseInfo.loading && !state.releaseInfo.data ? <div className="empty-state">Loading…</div> : null}
