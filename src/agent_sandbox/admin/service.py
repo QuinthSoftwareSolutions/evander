@@ -14,7 +14,7 @@ import threading
 import time
 import fcntl
 from collections import Counter, deque
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -151,6 +151,11 @@ from agent_sandbox.repositories.triggers import (
 from agent_sandbox.repositories.orchestration import (
     JsonWorkflowConfigSnapshotRepository,
     SqliteWorkflowConfigSnapshotRepository,
+)
+from agent_sandbox.repositories.orchestration_db import (
+    connect_orchestration_db,
+    datetime_to_storage,
+    ensure_orchestration_schema,
 )
 from agent_sandbox.messaging.teams_auth import (
     DeviceCodeLoginSession,
@@ -5674,9 +5679,10 @@ class AdminService:
                 discovered_from="configured:root",
             )
 
+        now = _utc_now()
         for session in sessions:
             directory_path = self._agent_record_directory_path(session.directory_path)
-            if self._is_container_session(session):
+            if self._is_container_session(session) and session.expires_at > now:
                 try:
                     resolved_config = self.runtime.provider_config.resolve_for_directory(
                         session.directory_path
@@ -5706,26 +5712,6 @@ class AdminService:
                     ),
                     discovered_from=f"session:{session.session_id}",
                 )
-
-        try:
-            execution_records = list(self._container_worker_execution_repository().read_all().values())
-        except Exception:
-            execution_records = []
-        for record in execution_records:
-            register(
-                record.worker_url,
-                directory_path=record.directory_path,
-                token_env=None,
-                timeout_seconds=None,
-                discovered_from=f"execution:{record.execution_id}",
-            )
-            register(
-                self._container_worker_url_from_metadata(record.metadata),
-                directory_path=record.directory_path,
-                token_env=None,
-                timeout_seconds=None,
-                discovered_from=f"execution-metadata:{record.execution_id}",
-            )
 
         ordered = sorted(
             descriptors.values(),
@@ -9916,6 +9902,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         created_before: datetime | None = None,
         q: str | None = None,
         limit: int | None = None,
+        recent_only: bool = False,
     ) -> ToolCallAuditListPayload:
         normalized_limit = 100 if limit is None else max(1, min(int(limit), 500))
         normalized_status = _tool_call_normalize_status(status)
@@ -9924,6 +9911,26 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if directory_path is not None
             else None
         )
+        if recent_only and _tool_call_audit_tail_scan_supported(
+            session_id=session_id,
+            tool_name=tool_name,
+            status=normalized_status,
+            created_after=created_after,
+            created_before=created_before,
+            q=q,
+            limit=normalized_limit,
+        ):
+            return self._list_recent_tool_call_audit_entries_from_tail(
+                session_id=session_id,
+                tool_name=tool_name,
+                status=normalized_status,
+                directory_path=normalized_directory_path,
+                direct_only=direct_only,
+                created_after=created_after,
+                created_before=created_before,
+                q=q,
+                limit=normalized_limit,
+            )
         entries: deque[ToolCallAuditEntryPayload] = deque(maxlen=normalized_limit)
         counts = ToolCallAuditCountsPayload()
         if not self.config.audit_log_path.exists():
@@ -9985,6 +9992,85 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             ),
             limit=normalized_limit,
             has_more=counts.matched > len(items),
+        )
+
+    def _list_recent_tool_call_audit_entries_from_tail(
+        self,
+        *,
+        session_id: str | None,
+        tool_name: str | None,
+        status: str | None,
+        directory_path: str | None,
+        direct_only: bool,
+        created_after: datetime | None,
+        created_before: datetime | None,
+        q: str | None,
+        limit: int,
+    ) -> ToolCallAuditListPayload:
+        if not self.config.audit_log_path.exists():
+            return ToolCallAuditListPayload(limit=limit)
+
+        counts = ToolCallAuditCountsPayload()
+        items: list[ToolCallAuditEntryPayload] = []
+        has_more = False
+        try:
+            for line in _iter_file_lines_reverse(self.config.audit_log_path):
+                line = line.strip()
+                if not line:
+                    continue
+                counts.scanned += 1
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    counts.skipped_malformed += 1
+                    continue
+                if not isinstance(payload, dict):
+                    counts.skipped_malformed += 1
+                    continue
+                event_type = str(payload.get("event_type") or "").strip().casefold()
+                if event_type != "tool_call":
+                    counts.skipped_non_tool_call += 1
+                    continue
+                entry = _tool_call_audit_entry_from_payload(payload)
+                if entry is None:
+                    counts.skipped_malformed += 1
+                    continue
+                if not _tool_call_audit_entry_matches_filters(
+                    entry,
+                    session_id=session_id,
+                    tool_name=tool_name,
+                    status=status,
+                    directory_path=directory_path,
+                    direct_only=direct_only,
+                    created_after=created_after,
+                    created_before=created_before,
+                    q=q,
+                ):
+                    continue
+                counts.matched += 1
+                if len(items) >= limit:
+                    has_more = True
+                    break
+                counts.status_counts[entry.status or "success"] = (
+                    counts.status_counts.get(entry.status or "success", 0) + 1
+                )
+                items.append(entry)
+        except Exception:
+            return ToolCallAuditListPayload(limit=limit)
+
+        counts.returned = len(items)
+        return ToolCallAuditListPayload(
+            items=items,
+            counts=ToolCallAuditCountsPayload(
+                scanned=counts.scanned,
+                matched=counts.matched,
+                returned=counts.returned,
+                skipped_malformed=counts.skipped_malformed,
+                skipped_non_tool_call=counts.skipped_non_tool_call,
+                status_counts=dict(sorted(counts.status_counts.items())),
+            ),
+            limit=limit,
+            has_more=has_more,
         )
 
     def get_approval_review(self, request_id: str) -> dict[str, Any]:
@@ -12394,69 +12480,140 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         stores = self._workflow_run_store_paths()
         if self._workflow_uses_sqlite_store(stores):
-            queue_store, effect_store, gate_store = self._workflow_sqlite_store_bundle(stores)
-            queue_payload = {
-                record.event_id: record.model_dump(mode="json")
-                for record in queue_store.list_activity_between(
-                    start_at=start_at, end_at=end_at
-                )
-            }
-            effect_payload = {
-                record.execution_id: record.model_dump(mode="json")
-                for record in effect_store.list_activity_between(
-                    start_at=start_at, end_at=end_at
-                )
-            }
-            gate_payload = {
-                record.execution_id: record.model_dump(mode="json")
-                for record in gate_store.list_activity_between(start_at=start_at, end_at=end_at)
-            }
+            start_text = datetime_to_storage(start_at)
+            end_text = datetime_to_storage(end_at)
+            db_path = Path(stores["orchestration_store_path"])
+            ensure_orchestration_schema(db_path)
+            with connect_orchestration_db(db_path) as connection:
+                for (
+                    event_id,
+                    trigger_id,
+                    trace_id,
+                    occurred_at,
+                    delivery_state,
+                ) in connection.execute(
+                    """
+                    SELECT event_id, trigger_id, trace_id, occurred_at, delivery_state
+                    FROM trigger_events
+                    WHERE occurred_at BETWEEN ? AND ?
+                    ORDER BY occurred_at ASC, event_id ASC
+                    """,
+                    (start_text, end_text),
+                ):
+                    register_activity(
+                        node_id=str(trigger_id or ""),
+                        timestamp=_coerce_optional_datetime(occurred_at),
+                        source="trigger",
+                        status=_coerce_optional_string(delivery_state) or "event",
+                        run_key=_coerce_optional_string(trace_id)
+                        or _coerce_optional_string(event_id),
+                    )
+
+                for (
+                    execution_id,
+                    event_id,
+                    trace_id,
+                    effect_id,
+                    status,
+                    started_at_text,
+                    finished_at_text,
+                ) in connection.execute(
+                    """
+                    SELECT execution_id, event_id, trace_id, effect_id, status, started_at, finished_at
+                    FROM effect_executions
+                    WHERE COALESCE(finished_at, started_at) BETWEEN ? AND ?
+                    ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
+                    """,
+                    (start_text, end_text),
+                ):
+                    register_activity(
+                        node_id=str(effect_id or ""),
+                        timestamp=latest_datetime(finished_at_text, started_at_text),
+                        source="effect",
+                        status=_coerce_optional_string(status),
+                        run_key=_coerce_optional_string(trace_id)
+                        or _coerce_optional_string(event_id)
+                        or _coerce_optional_string(execution_id),
+                    )
+
+                for (
+                    execution_id,
+                    event_id,
+                    trace_id,
+                    gate_id,
+                    status,
+                    started_at_text,
+                    finished_at_text,
+                ) in connection.execute(
+                    """
+                    SELECT execution_id, event_id, trace_id, gate_id, status, started_at, finished_at
+                    FROM gate_executions
+                    WHERE COALESCE(finished_at, started_at) BETWEEN ? AND ?
+                    ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
+                    """,
+                    (start_text, end_text),
+                ):
+                    register_activity(
+                        node_id=str(gate_id or ""),
+                        timestamp=latest_datetime(finished_at_text, started_at_text),
+                        source="gate",
+                        status=_coerce_optional_string(status),
+                        run_key=_coerce_optional_string(trace_id)
+                        or _coerce_optional_string(event_id)
+                        or _coerce_optional_string(execution_id),
+                    )
         else:
             queue_payload = _read_json_object(stores["event_queue_store_path"])
             effect_payload = _read_json_object(stores["effect_execution_store_path"])
             gate_payload = _read_json_object(stores["gate_execution_store_path"])
 
-        for record_key, raw_record in queue_payload.items():
-            if not isinstance(raw_record, dict):
-                continue
-            event_id = _coerce_optional_string(raw_record.get("event_id")) or record_key
-            trace_id = _coerce_optional_string(raw_record.get("trace_id"))
-            register_activity(
-                node_id=str(raw_record.get("trigger_id") or ""),
-                timestamp=(
-                    _coerce_optional_datetime(raw_record.get("occurred_at"))
-                    or latest_datetime(raw_record.get("delivered_at"), raw_record.get("inflight_at"))
-                ),
-                source="trigger",
-                status=_coerce_optional_string(raw_record.get("delivery_state")) or "event",
-                run_key=trace_id or event_id,
-            )
+            for record_key, raw_record in queue_payload.items():
+                if not isinstance(raw_record, dict):
+                    continue
+                event_id = _coerce_optional_string(raw_record.get("event_id")) or record_key
+                trace_id = _coerce_optional_string(raw_record.get("trace_id"))
+                register_activity(
+                    node_id=str(raw_record.get("trigger_id") or ""),
+                    timestamp=(
+                        _coerce_optional_datetime(raw_record.get("occurred_at"))
+                        or latest_datetime(
+                            raw_record.get("delivered_at"), raw_record.get("inflight_at")
+                        )
+                    ),
+                    source="trigger",
+                    status=_coerce_optional_string(raw_record.get("delivery_state")) or "event",
+                    run_key=trace_id or event_id,
+                )
 
-        for execution_id, raw_record in effect_payload.items():
-            if not isinstance(raw_record, dict):
-                continue
-            event_id = _coerce_optional_string(raw_record.get("event_id")) or execution_id
-            trace_id = _coerce_optional_string(raw_record.get("trace_id"))
-            register_activity(
-                node_id=str(raw_record.get("effect_id") or ""),
-                timestamp=latest_datetime(raw_record.get("finished_at"), raw_record.get("started_at")),
-                source="effect",
-                status=_coerce_optional_string(raw_record.get("status")),
-                run_key=trace_id or event_id,
-            )
+            for execution_id, raw_record in effect_payload.items():
+                if not isinstance(raw_record, dict):
+                    continue
+                event_id = _coerce_optional_string(raw_record.get("event_id")) or execution_id
+                trace_id = _coerce_optional_string(raw_record.get("trace_id"))
+                register_activity(
+                    node_id=str(raw_record.get("effect_id") or ""),
+                    timestamp=latest_datetime(
+                        raw_record.get("finished_at"), raw_record.get("started_at")
+                    ),
+                    source="effect",
+                    status=_coerce_optional_string(raw_record.get("status")),
+                    run_key=trace_id or event_id,
+                )
 
-        for execution_id, raw_record in gate_payload.items():
-            if not isinstance(raw_record, dict):
-                continue
-            event_id = _coerce_optional_string(raw_record.get("event_id")) or execution_id
-            trace_id = _coerce_optional_string(raw_record.get("trace_id"))
-            register_activity(
-                node_id=str(raw_record.get("gate_id") or ""),
-                timestamp=latest_datetime(raw_record.get("finished_at"), raw_record.get("started_at")),
-                source="gate",
-                status=_coerce_optional_string(raw_record.get("status")),
-                run_key=trace_id or event_id,
-            )
+            for execution_id, raw_record in gate_payload.items():
+                if not isinstance(raw_record, dict):
+                    continue
+                event_id = _coerce_optional_string(raw_record.get("event_id")) or execution_id
+                trace_id = _coerce_optional_string(raw_record.get("trace_id"))
+                register_activity(
+                    node_id=str(raw_record.get("gate_id") or ""),
+                    timestamp=latest_datetime(
+                        raw_record.get("finished_at"), raw_record.get("started_at")
+                    ),
+                    source="gate",
+                    status=_coerce_optional_string(raw_record.get("status")),
+                    run_key=trace_id or event_id,
+                )
 
         graphs: list[WorkflowGraphActivityGraphPayload] = []
         for graph_id, state in graph_states.items():
@@ -16340,6 +16497,44 @@ def _tool_call_audit_entry_from_payload(payload: dict[str, Any]) -> ToolCallAudi
     )
     entry.related_links = _tool_call_related_links(entry)
     return entry
+
+
+def _tool_call_audit_tail_scan_supported(
+    *,
+    session_id: str | None,
+    tool_name: str | None,
+    status: str | None,
+    created_after: datetime | None,
+    created_before: datetime | None,
+    q: str | None,
+    limit: int,
+) -> bool:
+    if limit > 50:
+        return False
+    if created_after is not None or created_before is not None:
+        return False
+    return not any(
+        str(value or "").strip() for value in (session_id, tool_name, status, q)
+    )
+
+
+def _iter_file_lines_reverse(path: Path, *, block_size: int = 64 * 1024) -> Iterator[str]:
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        position = handle.tell()
+        buffer = b""
+        while position > 0:
+            read_size = min(block_size, position)
+            position -= read_size
+            handle.seek(position)
+            chunk = handle.read(read_size)
+            lines = (chunk + buffer).split(b"\n")
+            buffer = lines[0]
+            for raw_line in reversed(lines[1:]):
+                if raw_line:
+                    yield raw_line.decode("utf-8", errors="replace")
+        if buffer:
+            yield buffer.decode("utf-8", errors="replace")
 
 
 def _tool_call_audit_entry_matches_filters(

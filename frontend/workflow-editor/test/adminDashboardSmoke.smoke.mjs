@@ -393,15 +393,123 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
     renew_extension_presets: ["1d"],
   };
 
+  const capacityHealthResponse = {
+    generated_at: "2026-05-18T10:06:00Z",
+    control_plane: {
+      disk: {
+        scope: "control_plane_runtime",
+        status: "available",
+        health: "ok",
+        total_bytes: 107374182400,
+        used_bytes: 42949672960,
+        free_bytes: 64424509440,
+        used_percent: 40,
+        free_percent: 60,
+        error_count: 0,
+        errors: [],
+      },
+      storage: {
+        total: {
+          scope: "control_plane_known_storage",
+          status: "available",
+          health: "ok",
+          size_bytes: 134217728,
+          file_count: 120,
+          directory_count: 12,
+          symlink_count: 0,
+          error_count: 0,
+          errors: [],
+        },
+        areas: [],
+      },
+    },
+    sessions: {
+      total_sessions: 2,
+      total_agents: 2,
+      lifecycle_counts: {
+        active: 1,
+        retained: 1,
+      },
+      status_counts: {
+        running: 1,
+        stopped: 1,
+      },
+      backend_counts: {
+        libvirt_vm: 1,
+        container_worker_vm: 1,
+      },
+      directory_counts: {
+        root: 2,
+      },
+      directory_breakdowns: {},
+      age_buckets: {
+        lt_1d: 2,
+      },
+      storage: {
+        measured_total: {
+          scope: "session_storage:container_worker_vm",
+          status: "available",
+          health: "ok",
+          size_bytes: 52428800,
+          file_count: 24,
+          directory_count: 6,
+          symlink_count: 0,
+          error_count: 0,
+          errors: [],
+        },
+        measured_session_count: 1,
+        largest_sessions: [
+          {
+            session_id: "session-1",
+            size_bytes: 50331648,
+            backend: "container_worker_vm",
+            directory_path: "sessions/session-1",
+            created_at: "2026-05-17T12:00:00Z",
+            updated_at: "2026-05-18T10:00:00Z",
+          },
+        ],
+        oldest_sessions: [],
+        missing_telemetry: [],
+      },
+    },
+    workers: {
+      total_workers: 2,
+      reachable_workers: 1,
+      telemetry_available_workers: 1,
+      entries: [],
+    },
+    queue: {
+      status: "available",
+      health: "warning",
+      backend: "json",
+      active_record_count: 3,
+      pending_count: 2,
+      inflight_count: 1,
+      oldest_event_id: "evt-old",
+      oldest_occurred_at: "2026-05-18T08:06:00Z",
+      oldest_age_seconds: 7200,
+      errors: [],
+    },
+    prompts: {
+      status: "available",
+      health: "warning",
+      unread_count: 3,
+      oldest_message_id: "prompt-old",
+      oldest_created_at: "2026-05-18T08:30:00Z",
+      oldest_age_seconds: 5400,
+      errors: [],
+    },
+  };
+
   const releaseInfoResponse = {
-    version: "0.2.1",
+    version: "0.2.2",
     version_source: "pyproject.toml",
     build: "agent-sandbox-build-20260521",
     build_source: "AGENT_SANDBOX_REPO_VERSION",
     changelog: {
       source: "CHANGELOG.md",
       path: "CHANGELOG.md",
-      heading: "0.2.1",
+      heading: "0.2.2",
       entries: [
         {
           text: "Added release metadata coverage to the dashboard.",
@@ -772,6 +880,12 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       return;
     }
 
+    if (pathname === "/api/admin/capacity-health") {
+      assertDashboardCacheParams(url);
+      await route.fulfill(jsonResponse(capacityHealthResponse));
+      return;
+    }
+
     if (pathname === "/api/admin/release-info") {
       assertDashboardCacheParams(url);
       await route.fulfill(jsonResponse(releaseInfoResponse));
@@ -794,6 +908,8 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   const approvalsPanel = topLevelPanels.filter({ hasText: "Human-control work" });
   const toolCallsPanel = topLevelPanels.filter({ hasText: "Explainability shortcuts" });
   const releasePanel = topLevelPanels.filter({ hasText: "Product context" });
+  const agentPanel = topLevelPanels.filter({ hasText: "Agent inventory" });
+  const onboardingPanel = topLevelPanels.filter({ hasText: "Onboarding / workflow actions" });
   assert.equal(
     await topLevelPanels.evaluateAll((elements) =>
       elements.every((element) =>
@@ -817,10 +933,25 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   const systemHealthBox = await systemHealthPanel.boundingBox();
   assert.ok(releaseBox && systemHealthBox, "expected dashboard panels to have layout boxes");
   assert.ok(releaseBox.x < systemHealthBox.x, `expected release panel to occupy the left dashboard column, got release x=${releaseBox.x} system x=${systemHealthBox.x}`);
+  let previousRightColumnY = -Infinity;
+  for (const panel of [systemHealthPanel, agentPanel, workflowPanel, approvalsPanel, toolCallsPanel, onboardingPanel]) {
+    const panelBox = await panel.boundingBox();
+    assert.ok(panelBox, "expected right-column dashboard panel to have a layout box");
+    assert.ok(Math.abs(panelBox.x - systemHealthBox.x) < 2, `expected right-column panels to share x=${systemHealthBox.x}, got ${panelBox.x}`);
+    assert.ok(panelBox.y >= previousRightColumnY, `expected right-column panels to stack vertically, got y=${panelBox.y} after ${previousRightColumnY}`);
+    previousRightColumnY = panelBox.y;
+  }
   assert.equal(await page.getByRole("button", { name: "Refresh dashboard" }).getAttribute("title"), "Refresh dashboard");
   assert.equal(await page.getByRole("button", { name: "Open workflow" }).getAttribute("title"), "Open workflow");
   await assert.doesNotReject(() => systemHealthPanel.locator(".detail-list strong").first().waitFor({ state: "visible" }));
   await assert.doesNotReject(() => workflowPanel.getByText("2 runs, 1 active, 1 failed, 1 resumable.").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => systemHealthPanel.getByText("Disk 40% used", { exact: false }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => systemHealthPanel.getByText("40% (40.0 GiB / 100.0 GiB)", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => systemHealthPanel.getByText("60% (60.0 GiB)", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => systemHealthPanel.getByText("128.0 MiB", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => systemHealthPanel.getByText("session-1 · 48.0 MiB · container_worker_vm", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => systemHealthPanel.getByText("2 pending, 1 in-flight", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => systemHealthPanel.getByText("3 unread", { exact: true }).waitFor({ state: "visible" }));
   const pendingApprovalPill = approvalsPanel.locator(".status-pill").filter({ hasText: "1 pending" }).first();
   await assert.doesNotReject(() => pendingApprovalPill.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => toolCallsPanel.getByText("No tool-call audit entries were returned.").first().waitFor({ state: "visible" }));
@@ -832,14 +963,19 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   assert.ok(erroredRunStateClass?.includes("state-fail"), `expected errored run to use failure tone, got ${erroredRunStateClass}`);
   assert.equal((await pendingApprovalPill.textContent())?.trim(), "1 pending");
   assert.equal((await toolCallsPanel.getByText("No tool-call audit entries were returned.").first().textContent())?.trim(), "No tool-call audit entries were returned.");
-  assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Version 0\.2\.1/);
+  assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Version 0\.2\.2/);
   assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Build agent-sandbox-build-20260521/);
   await assert.doesNotReject(() => releasePanel.getByRole("button", { name: "Download changelog" }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => releasePanel.getByText("News", { exact: true }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => releasePanel.getByText("Safer workflows, clearer operations", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => releasePanel.locator(".release-news-header span").filter({ hasText: "News" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => releasePanel.locator(".release-news-header strong").filter({ hasText: "Safer workflows, clearer operations" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.getByRole("button", { name: "Older" }).waitFor({ state: "visible" }));
   assert.equal(await releasePanel.getByText("Entry 1 · Latest", { exact: true }).count(), 1);
   assert.equal(await releasePanel.getByText("Recent entries", { exact: true }).count(), 0);
+  const releaseBlocks = releasePanel.locator(".dashboard-block");
+  const newsBlockBox = await releaseBlocks.nth(0).boundingBox();
+  const releaseMetadataBlockBox = await releaseBlocks.nth(1).boundingBox();
+  assert.ok(newsBlockBox && releaseMetadataBlockBox, "expected news and release metadata blocks to have layout boxes");
+  assert.ok(newsBlockBox.y < releaseMetadataBlockBox.y, `expected News above Release metadata, got news y=${newsBlockBox.y} metadata y=${releaseMetadataBlockBox.y}`);
 
   assert.equal(await page.evaluate(() => window.location.hash), "");
   assert.deepEqual(pageErrors, []);
@@ -869,6 +1005,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions/catalog"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions?include_expired=true&directory_path=root&direct_only=true"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions/session-1"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/capacity-health?_dashboard=1"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/release-info?_dashboard=1&news_index=0"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/document?_dashboard=1"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/catalog?directory_path=root&_dashboard=1"));

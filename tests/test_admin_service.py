@@ -4,6 +4,7 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -847,6 +848,51 @@ def test_read_capacity_health_aggregates_sessions_workers_queue_and_prompts(
     assert health.prompts.oldest_message_id == "prompt-1"
     assert health.prompts.health is HealthState.WARNING
     assert str(tmp_path) not in payload
+
+
+def test_capacity_worker_descriptors_ignore_historical_execution_only_worker_urls(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    expires_at = datetime.now(UTC) + timedelta(hours=1)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-current",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-current-target",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=expires_at,
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "worker_url": "http://worker-current.test",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-stale",
+            session_id="container-old",
+            worker_job_id="job-stale",
+            worker_url="http://worker-stale.test",
+            target_name="container-old-target",
+            started_at=expires_at - timedelta(days=2),
+            last_status="removed",
+            directory_path="root",
+        )
+    )
+
+    descriptors = service._capacity_worker_descriptors(
+        service.runtime.session_repository.list_sessions()
+    )
+
+    assert [descriptor["worker_url"] for descriptor in descriptors] == [
+        "http://worker-current.test"
+    ]
+    assert descriptors[0]["discovered_from"] == ["session:container-current"]
 
 
 def test_list_agents_all_directories_includes_vm_and_container_targets(
@@ -4588,6 +4634,69 @@ def test_workflow_graph_activity_report_groups_runtime_records_by_graph(
     assert cron_graph.activity_count == 1
     assert cron_graph.run_count == 1
     assert cron_graph.effect_execution_count == 0
+
+
+def test_workflow_graph_activity_report_initializes_fresh_sqlite_backend(
+    tmp_path: Path,
+) -> None:
+    packs_dir = tmp_path / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    (packs_dir / "demo.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "demo",
+                "pack_version": "v1",
+                "graphs": [
+                    {
+                        "id": "graph-ticket",
+                        "name": "Ticket intake",
+                        "directory_paths": ["root"],
+                        "node_ids": ["trigger-ticket"],
+                    }
+                ],
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-ticket",
+                            "display_name": "Ticket created",
+                            "type": "trigger:ticket:created",
+                            "directories": ["root"],
+                        }
+                    ],
+                    "edges": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime_dir = tmp_path / "runtime"
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "config.json").write_text(
+        json.dumps({"runtime_dir": str(runtime_dir), "workflow_packs": ["demo.v1.json"]}),
+        encoding="utf-8",
+    )
+    db_path = runtime_dir / "orchestration.db"
+    service = AdminService(write_config(tmp_path))
+
+    report = service.read_workflow_graph_activity_report(
+        period_start=datetime(2026, 5, 1, tzinfo=UTC),
+        period_end=datetime(2026, 5, 2, tzinfo=UTC),
+    )
+
+    assert db_path.exists()
+    assert [(graph.graph_id, graph.activity_count) for graph in report.graphs] == [
+        ("graph-ticket", 0)
+    ]
+    with sqlite3.connect(db_path) as connection:
+        table_names = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert {"trigger_events", "effect_executions", "gate_executions"} <= table_names
 
 
 def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
