@@ -7,7 +7,7 @@
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
 - A host-side OpenAI relay that keeps the API key on the host and exposes an OpenAI-compatible endpoint to guests
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
-- A host-side Azure DevOps backlog worker that polls tagged work items and drives issue VM bring-up
+- A host-side Azure DevOps backlog worker that polls tagged work items into local proxy issue state
 - A host-side workflow orchestrator that polls provider triggers, evaluates gates, and persists durable queue events for downstream workers/hooks
 - A host-side Teams ingest worker that polls Microsoft Graph and feeds `trigger:teams:new-message` orchestration
 - A host-side shared NuGet cache that can be mounted read-only into guests for faster cold restores
@@ -242,9 +242,11 @@ age, and unread prompt pressure.
 
 The product context panel also reads live release metadata from `/api/admin/release-info`. That
 endpoint reports the installed package or `pyproject.toml` version when available, a deployed build
-identity when one is configured, and recent entries from the top of `CHANGELOG.md`. When any source
-is missing, the panel surfaces explicit missing reasons instead of inferring or inventing release
-data.
+identity when one is configured, the maintained top section of `CHANGELOG.md`, and the latest prose
+entry from `NEWS.md`. News entries are paged with the `news_index` query parameter so the dashboard
+requests one blog entry at a time as operators move through older posts. The panel includes a
+changelog download button for retrieving the full `CHANGELOG.md`. When any source is missing, the
+panel surfaces explicit missing reasons instead of inferring or inventing release data.
 
 For a task-oriented guide to every Admin UI section, see
 [`docs/admin-ui-user-manual.md`](docs/admin-ui-user-manual.md).
@@ -359,8 +361,8 @@ The ADO worker reads `azure_devops_organization_url` and `azure_devops_project` 
 effective `root` provider config. Its work-item PAT env-var name now comes from
 `config/ado-worker/config.json` via `ado_work_items_azure_devops_pat_env` (default
 `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT`). The root `ado_worker` directory config is the primary source
-for worker bootstrap and filter settings, while `config/ado-worker/config.json` now also carries
-the canonical directory list that the singleton worker polls on each cycle.
+for filter and repo metadata, while `config/ado-worker/config.json` carries the canonical
+directory list that the singleton worker polls on each cycle.
 
 For one-off recovery actions:
 
@@ -369,7 +371,7 @@ For one-off recovery actions:
 set -a; source secrets.env; set +a
 agent-sandbox-cli poll-ado-backlog --forget 12345
 
-# Immediately reprocess one item now (fetch + setup path), then exit.
+# Immediately reprocess one item now (fetch + proxy issue/YAML refresh), then exit.
 set -a; source secrets.env; set +a
 agent-sandbox-cli poll-ado-backlog --reprocess 12345
 
@@ -383,17 +385,11 @@ The dedicated worker entry point is also available as `agent-sandbox-ado-worker`
 issues. It runs every five minutes by default, batches remote summary reads, skips comments, and
 refreshes `runtime/local-issues.json` so ticket triggers and UI screens continue to read local
 state.
-Backlog-worker VM setup calls can opt into `--dotnet`, `--nuget`, `--mssql`, `--playwright`,
-and `--frontend-deps` via `ADO_BOOTSTRAP_DOTNET`, `ADO_BOOTSTRAP_NUGET`,
-`ADO_BOOTSTRAP_MSSQL`, `ADO_BOOTSTRAP_PLAYWRIGHT`, and `ADO_BOOTSTRAP_FRONTEND_DEPS`.
-The first three default to `true`; the frontend-oriented toggles default to `false` because
-they depend on host-seeded artifacts. `ADO_BOOTSTRAP_MSSQL` also requires
-`ADO_MSSQL_SA_PASSWORD` (or legacy `MSSQL_SA_PASSWORD`), and can optionally use
-`ADO_MSSQL_INIT_ROOT`. `ADO_BOOTSTRAP_FRONTEND_DEPS`
-requires `ADO_FRONTEND_INSTALL_ROOTS`, and can optionally use `ADO_FRONTEND_HOST_CHECKOUT`
-when the mirrored repo source is remote.
-Directory-scoped `ado_worker` config can also set `ado_repo_source` so backlog-driven setup uses
-the correct host repo path or remote URL per directory.
+The ADO worker does not create sessions, create VMs, run issue setup scripts, or bootstrap guest
+toolchains. It only ingests Azure DevOps work items into local proxy issues/YAML, tracks processed
+state, and handles Azure DevOps PR feedback/completion polling. Directory-scoped `ado_worker`
+config can set `ado_repo_source` so the proxy issue records the relevant host repo path or remote
+URL per directory.
 
 ## Admin Web And CLI
 

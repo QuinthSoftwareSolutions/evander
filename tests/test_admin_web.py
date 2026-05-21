@@ -1035,9 +1035,21 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
         "- Fixed missing build identity fallback.\n",
         encoding="utf-8",
     )
+    (service.project_dir / "NEWS.md").write_text(
+        "# News\n\n"
+        "## 2026-05-21 - Control Plane Confidence\n\n"
+        "Operators now get release context and deployment hints in one place.\n\n"
+        "The dashboard news feed explains what changed and how to use it.\n"
+        "\n"
+        "## 2026-05-20 - Earlier Update\n\n"
+        "Older posts remain available without loading the whole news archive.\n",
+        encoding="utf-8",
+    )
     client = TestClient(create_app(service))
 
     response = client.get("/api/admin/release-info")
+    older_response = client.get("/api/admin/release-info?news_index=1")
+    invalid_response = client.get("/api/admin/release-info?news_index=-1")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -1054,8 +1066,45 @@ def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
                 {"text": "Fixed missing build identity fallback.", "kind": "bugfix"},
             ],
         },
+        "news": {
+            "source": "NEWS.md",
+            "path": str(service.project_dir / "NEWS.md"),
+            "index": 0,
+            "heading": "2026-05-21 - Control Plane Confidence",
+            "paragraphs": [
+                "Operators now get release context and deployment hints in one place.",
+                "The dashboard news feed explains what changed and how to use it.",
+            ],
+            "has_previous": False,
+            "has_next": True,
+            "previous_index": None,
+            "next_index": 1,
+        },
         "missing_reasons": [],
     }
+    assert "Older posts remain available" not in json.dumps(response.json())
+    assert older_response.status_code == 200
+    assert older_response.json()["news"] == {
+        "source": "NEWS.md",
+        "path": str(service.project_dir / "NEWS.md"),
+        "index": 1,
+        "heading": "2026-05-20 - Earlier Update",
+        "paragraphs": [
+            "Older posts remain available without loading the whole news archive.",
+        ],
+        "has_previous": True,
+        "has_next": False,
+        "previous_index": 0,
+        "next_index": None,
+    }
+    assert invalid_response.status_code == 400
+    assert invalid_response.json()["error"] == "news_index must be greater than or equal to 0."
+
+    download_response = client.get("/api/admin/release-info/changelog")
+    assert download_response.status_code == 200
+    assert download_response.content.startswith(b"# Changelog\n")
+    assert "attachment" in download_response.headers["content-disposition"]
+    assert "CHANGELOG.md" in download_response.headers["content-disposition"]
 
 
 def test_admin_web_release_info_is_protected_when_auth_required(
@@ -1067,9 +1116,11 @@ def test_admin_web_release_info_is_protected_when_auth_required(
     client = TestClient(create_app(service))
 
     protected_response = client.get("/api/admin/release-info")
+    protected_download_response = client.get("/api/admin/release-info/changelog")
     state_response = client.get("/api/admin/state")
 
     assert protected_response.status_code == 401
+    assert protected_download_response.status_code == 401
     assert state_response.status_code == 401
 
 
@@ -1313,8 +1364,19 @@ def test_admin_web_release_info_uses_project_metadata(
         "- Added something else.\n",
         encoding="utf-8",
     )
+    (service.project_dir / "NEWS.md").write_text(
+        "# News\n\n"
+        "## 2026-05-21 - Control Plane Confidence\n\n"
+        "Operators now get release context and deployment hints in one place.\n\n"
+        "The dashboard news feed explains what changed and how to use it.\n"
+        "\n"
+        "## 2026-05-20 - Earlier Update\n\n"
+        "Older posts remain available without loading the whole news archive.\n",
+        encoding="utf-8",
+    )
 
     release_info = service.read_release_info()
+    older_release_info = service.read_release_info(news_index=1)
 
     assert release_info.version == "9.8.7"
     assert release_info.version_source == str(service.project_dir / "pyproject.toml")
@@ -1333,6 +1395,29 @@ def test_admin_web_release_info_uses_project_metadata(
         "feature",
         "bugfix",
     ]
+    assert release_info.news is not None
+    assert release_info.news.source == "NEWS.md"
+    assert release_info.news.path == str(service.project_dir / "NEWS.md")
+    assert release_info.news.index == 0
+    assert release_info.news.heading == "2026-05-21 - Control Plane Confidence"
+    assert release_info.news.paragraphs == [
+        "Operators now get release context and deployment hints in one place.",
+        "The dashboard news feed explains what changed and how to use it.",
+    ]
+    assert release_info.news.has_previous is False
+    assert release_info.news.has_next is True
+    assert release_info.news.previous_index is None
+    assert release_info.news.next_index == 1
+    assert older_release_info.news is not None
+    assert older_release_info.news.index == 1
+    assert older_release_info.news.heading == "2026-05-20 - Earlier Update"
+    assert older_release_info.news.paragraphs == [
+        "Older posts remain available without loading the whole news archive.",
+    ]
+    assert older_release_info.news.has_previous is True
+    assert older_release_info.news.has_next is False
+    assert older_release_info.news.previous_index == 0
+    assert older_release_info.news.next_index is None
 
 
 def test_admin_web_release_info_reports_missing_sources(
@@ -1358,9 +1443,12 @@ def test_admin_web_release_info_reports_missing_sources(
     assert release_info.build is None
     assert release_info.build_source is None
     assert release_info.changelog is None
+    assert release_info.news is None
     assert any("Version not found" in reason for reason in release_info.missing_reasons)
     assert any("Build identity not found" in reason for reason in release_info.missing_reasons)
     assert any("CHANGELOG.md is missing" in reason for reason in release_info.missing_reasons)
+    assert any("NEWS.md is missing" in reason for reason in release_info.missing_reasons)
+
 
 def test_admin_web_skills_api_and_catalog_options(tmp_path: Path) -> None:
     client = TestClient(create_app(AdminService(write_config(tmp_path))))

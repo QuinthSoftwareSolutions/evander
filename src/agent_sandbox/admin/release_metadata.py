@@ -44,12 +44,26 @@ class ReleaseChangelogData:
 
 
 @dataclass(frozen=True, slots=True)
+class ReleaseNewsData:
+    source: str | None
+    path: str | None
+    index: int
+    heading: str | None
+    paragraphs: list[str]
+    has_previous: bool
+    has_next: bool
+    previous_index: int | None
+    next_index: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class ReleaseMetadataData:
     version: str | None
     version_source: str | None
     build: str | None
     build_source: str | None
     changelog: ReleaseChangelogData | None
+    news: ReleaseNewsData | None
     missing_reasons: list[str]
 
 
@@ -57,6 +71,7 @@ def read_release_metadata(
     project_dir: Path,
     *,
     env: Mapping[str, str] | None = None,
+    news_index: int = 0,
 ) -> ReleaseMetadataData:
     runtime_env = env or os.environ
     missing_reasons: list[str] = []
@@ -73,12 +88,17 @@ def read_release_metadata(
     if changelog_missing:
         missing_reasons.append(changelog_missing)
 
+    news, news_missing = _read_news(project_dir, news_index=news_index)
+    if news_missing:
+        missing_reasons.append(news_missing)
+
     return ReleaseMetadataData(
         version=version,
         version_source=version_source,
         build=build,
         build_source=build_source,
         changelog=changelog,
+        news=news,
         missing_reasons=missing_reasons,
     )
 
@@ -190,6 +210,91 @@ def _read_changelog(project_dir: Path) -> tuple[ReleaseChangelogData | None, str
         ),
         None,
     )
+
+
+def _read_news(
+    project_dir: Path,
+    *,
+    news_index: int,
+) -> tuple[ReleaseNewsData | None, str | None]:
+    if news_index < 0:
+        raise ValueError("news_index must be greater than or equal to 0.")
+
+    news_path = project_dir / "NEWS.md"
+    if not news_path.exists():
+        return None, f"{news_path.name} is missing."
+
+    found_any_entry = False
+    current_index = -1
+    heading: str | None = None
+    body_lines: list[str] = []
+    collecting = False
+    has_next = False
+
+    try:
+        with news_path.open(encoding="utf-8") as news_file:
+            for raw_line in news_file:
+                line = raw_line.rstrip("\r\n")
+                if re.match(r"^##\s+\S", line):
+                    found_any_entry = True
+                    if collecting:
+                        has_next = True
+                        break
+                    current_index += 1
+                    if current_index == news_index:
+                        heading = line.strip()[3:].strip()
+                        collecting = True
+                    continue
+                if collecting:
+                    body_lines.append(line)
+    except OSError:
+        return None, f"{news_path.name} could not be read."
+
+    if not found_any_entry:
+        return None, f"{news_path.name} does not contain a news section headed with ##."
+    if not collecting or heading is None:
+        return None, f"{news_path.name} does not contain news entry {news_index + 1}."
+
+    paragraphs = _parse_news_paragraphs(body_lines)
+    if not paragraphs:
+        return None, f"{news_path.name} news entry {news_index + 1} has no prose paragraphs."
+
+    return (
+        ReleaseNewsData(
+            source=news_path.name,
+            path=str(news_path),
+            index=news_index,
+            heading=heading,
+            paragraphs=paragraphs,
+            has_previous=news_index > 0,
+            has_next=has_next,
+            previous_index=news_index - 1 if news_index > 0 else None,
+            next_index=news_index + 1 if has_next else None,
+        ),
+        None,
+    )
+
+
+def _parse_news_paragraphs(lines: list[str]) -> list[str]:
+    paragraphs: list[str] = []
+    current_parts: list[str] = []
+
+    def flush() -> None:
+        if not current_parts:
+            return
+        text = " ".join(part.strip() for part in current_parts if part.strip()).strip()
+        if text:
+            paragraphs.append(text)
+        current_parts.clear()
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            flush()
+            continue
+        current_parts.append(stripped)
+    flush()
+    return paragraphs
 
 
 def _parse_changelog_entries(lines: list[str]) -> list[ReleaseChangelogEntryData]:

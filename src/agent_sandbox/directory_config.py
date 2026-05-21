@@ -184,21 +184,9 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
         {
             "ado_area_filters",
             "ado_team_filters",
-            "ado_project_or_solution",
-            "ado_prewarm_target",
             "ado_repo_source",
-            "ado_setup_vms",
             "create_prs_automatically",
             "create_prs_as_draft",
-            "ado_bootstrap_dotnet",
-            "ado_bootstrap_nuget",
-            "ado_bootstrap_mssql",
-            "ado_mssql_init_root",
-            "ado_bootstrap_playwright",
-            "ado_bootstrap_frontend_deps",
-            "ado_frontend_host_checkout",
-            "ado_frontend_install_roots",
-            "ado_mssql_sa_password_env",
         }
     ),
     "issue_setup": frozenset(
@@ -229,21 +217,9 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
 class AdoWorkerDirectoryConfig(BaseModel):
     ado_area_filters: list[str] = Field(default_factory=list)
     ado_team_filters: list[str] = Field(default_factory=list)
-    ado_project_or_solution: str = ""
-    ado_prewarm_target: str | None = None
     ado_repo_source: str | None = None
-    ado_setup_vms: bool = True
     create_prs_automatically: bool = True
     create_prs_as_draft: bool = False
-    ado_bootstrap_dotnet: bool = True
-    ado_bootstrap_nuget: bool = True
-    ado_bootstrap_mssql: bool = True
-    ado_mssql_init_root: str | None = None
-    ado_bootstrap_playwright: bool = False
-    ado_bootstrap_frontend_deps: bool = False
-    ado_frontend_host_checkout: str | None = None
-    ado_frontend_install_roots: list[str] = Field(default_factory=list)
-    ado_mssql_sa_password_env: str | None = None
 
 
 class IssueSetupDirectoryConfig(BaseModel):

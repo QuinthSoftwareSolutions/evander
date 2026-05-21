@@ -1069,12 +1069,25 @@ class ReleaseChangelogPayload(BaseModel):
     entries: list[ReleaseChangelogEntryPayload] = Field(default_factory=list)
 
 
+class ReleaseNewsPayload(BaseModel):
+    source: str | None = None
+    path: str | None = None
+    index: int = 0
+    heading: str | None = None
+    paragraphs: list[str] = Field(default_factory=list)
+    has_previous: bool = False
+    has_next: bool = False
+    previous_index: int | None = None
+    next_index: int | None = None
+
+
 class ReleaseInfoPayload(BaseModel):
     version: str | None = None
     version_source: str | None = None
     build: str | None = None
     build_source: str | None = None
     changelog: ReleaseChangelogPayload | None = None
+    news: ReleaseNewsPayload | None = None
     missing_reasons: list[str] = Field(default_factory=list)
 
 
@@ -5900,8 +5913,8 @@ class AdminService:
             ),
         )
 
-    def read_release_info(self) -> ReleaseInfoPayload:
-        release_metadata = read_release_metadata(self.project_dir)
+    def read_release_info(self, *, news_index: int = 0) -> ReleaseInfoPayload:
+        release_metadata = read_release_metadata(self.project_dir, news_index=news_index)
         return ReleaseInfoPayload(
             version=release_metadata.version,
             version_source=release_metadata.version_source,
@@ -5923,8 +5936,29 @@ class AdminService:
                     ],
                 )
             ),
+            news=(
+                None
+                if release_metadata.news is None
+                else ReleaseNewsPayload(
+                    source=release_metadata.news.source,
+                    path=release_metadata.news.path,
+                    index=release_metadata.news.index,
+                    heading=release_metadata.news.heading,
+                    paragraphs=release_metadata.news.paragraphs,
+                    has_previous=release_metadata.news.has_previous,
+                    has_next=release_metadata.news.has_next,
+                    previous_index=release_metadata.news.previous_index,
+                    next_index=release_metadata.news.next_index,
+                )
+            ),
             missing_reasons=release_metadata.missing_reasons,
         )
+
+    def release_changelog_file(self) -> Path:
+        changelog_path = self.project_dir / "CHANGELOG.md"
+        if not changelog_path.is_file():
+            raise FileNotFoundError(f"{changelog_path.name} is missing.")
+        return changelog_path
 
     def _execution_backend(self):
         backend = getattr(self, "_execution_backend_instance", None)

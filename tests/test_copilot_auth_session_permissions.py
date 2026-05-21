@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from agent_sandbox.daemons.ado_issue_worker import (
-    _build_issue_session_manifest as build_ado_issue_session_manifest,
-)
 from agent_sandbox.admin.service import (
     _build_issue_session_manifest as build_admin_issue_session_manifest,
 )
@@ -55,20 +52,6 @@ def test_cli_issue_session_manifest_adds_copilot_auth_for_copilot_provider(monke
         discord_channels=[],
         email_mailboxes=[],
         email_folders=[],
-    )
-
-    assert ToolName.COPILOT_HOST_AUTH in manifest.allowed_tools
-    assert manifest.metadata["agent_provider"] == "copilot"
-
-
-def test_ado_issue_session_manifest_adds_copilot_auth_for_copilot_provider(monkeypatch) -> None:
-    monkeypatch.setenv("AGENT_PROVIDER", "copilot")
-    manifest = build_ado_issue_session_manifest(
-        policy=EffectivePolicyConfig(),
-        session_id="session-copilot",
-        vm_id="vm-1",
-        directory_path="root",
-        ttl_hours=1,
     )
 
     assert ToolName.COPILOT_HOST_AUTH in manifest.allowed_tools

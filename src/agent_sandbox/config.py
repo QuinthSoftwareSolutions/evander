@@ -231,17 +231,6 @@ class GatewayConfig(BaseModel):
     azure_devops_project: str = "default"
     ado_area_filters: list[str] = Field(default_factory=list)
     ado_team_filters: list[str] = Field(default_factory=list)
-    ado_project_or_solution: str = ""
-    ado_prewarm_target: str | None = None
-    ado_bootstrap_dotnet: bool = True
-    ado_bootstrap_nuget: bool = True
-    ado_bootstrap_mssql: bool = True
-    ado_mssql_init_root: str | None = None
-    ado_bootstrap_playwright: bool = False
-    ado_bootstrap_frontend_deps: bool = False
-    ado_frontend_host_checkout: str | None = None
-    ado_frontend_install_roots: list[str] = Field(default_factory=list)
-    ado_mssql_sa_password_env: str | None = None
     email_provider_timeout_seconds: float = Field(default=30.0, gt=0)
     wake_poll_interval_seconds: float = Field(default=30.0, gt=0)
     wake_jitter_seconds: float = Field(default=5.0, ge=0)
@@ -560,13 +549,8 @@ class AdoWorkerGlobalConfig(BaseModel):
     poll_interval_seconds: float = Field(default=5.0, gt=0)
     directories: list[str] = Field(default_factory=list)
     yaml_output_dir: Path | None = None
-    setup_log_dir: Path | None = None
     processed_store_path: Path | None = None
-    setup_script_path: Path = Path("scripts/setup_vm.sh")
     ado_work_items_azure_devops_pat_env: str = "ADO_WORK_ITEMS_AZURE_DEVOPS_PAT"
-    setup_timeout_seconds: float = Field(default=1800.0, gt=0)
-    setup_concurrency_limit: int = Field(default=1, ge=1)
-    setup_lock_path: Path | None = None
     fetch_retry_count: int = Field(default=2, ge=0)
     fetch_retry_backoff_seconds: float = Field(default=2.0, ge=0.0)
     include_comments: bool = True
@@ -594,12 +578,8 @@ class AdoWorkerGlobalConfig(BaseModel):
     def apply_runtime_path_defaults(self) -> AdoWorkerGlobalConfig:
         if self.yaml_output_dir is None:
             self.yaml_output_dir = self.runtime_dir / "ado-work-items"
-        if self.setup_log_dir is None:
-            self.setup_log_dir = self.runtime_dir / "setup-logs"
         if self.processed_store_path is None:
             self.processed_store_path = self.runtime_dir / "ado-processed-work-items.json"
-        if self.setup_lock_path is None:
-            self.setup_lock_path = self.runtime_dir / "setup-vm.lock"
         return self
 
 
