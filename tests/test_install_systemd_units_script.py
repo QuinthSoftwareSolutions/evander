@@ -153,3 +153,27 @@ def test_service_templates_use_optional_shared_secrets_env() -> None:
     assert "--log-level ${TRIGGER_ORCHESTRATOR_LOG_LEVEL}" in trigger_orchestrator
     assert "agent-sandbox-cli trigger-orchestrator" in trigger_orchestrator
     assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in trigger_orchestrator
+
+
+def test_wake_service_templates_run_as_operator_user_and_load_shared_secrets() -> None:
+    repo = Path(__file__).resolve().parents[1]
+
+    discord_wake = (repo / "systemd" / "agent-sandbox-discord-wake.service.template").read_text(
+        encoding="utf-8"
+    )
+    scheduled_wake = (
+        repo / "systemd" / "agent-sandbox-scheduled-wake.service.template"
+    ).read_text(encoding="utf-8")
+
+    assert discord_wake.count("\nUser=__RUN_USER__\n") == 1
+    assert scheduled_wake.count("\nUser=__RUN_USER__\n") == 1
+    assert "WorkingDirectory=__PROJECT_DIR__" in discord_wake
+    assert "WorkingDirectory=__PROJECT_DIR__" in scheduled_wake
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in discord_wake
+    assert "EnvironmentFile=-__PROJECT_DIR__/secrets.env" in scheduled_wake
+    assert "Environment=DISCORD_WAKE_LOG_LEVEL=INFO" in discord_wake
+    assert "--log-level ${DISCORD_WAKE_LOG_LEVEL}" in discord_wake
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-discord-wake" in discord_wake
+    assert "Environment=SCHEDULED_WAKE_LOG_LEVEL=INFO" in scheduled_wake
+    assert "--log-level ${SCHEDULED_WAKE_LOG_LEVEL}" in scheduled_wake
+    assert "ExecStart=__PROJECT_DIR__/.venv/bin/agent-sandbox-scheduled-wake" in scheduled_wake
