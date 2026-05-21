@@ -237,7 +237,8 @@ overview backed by the same live APIs as the detail tabs: deployment/admin state
 workflow runs and graph activity, approvals, sessions, tool-call audit entries, capacity health,
 and the workflow document/catalog. Empty or unsupported sources are shown as explicit
 missing/unavailable states, not as sample data. Capacity health intentionally omits raw host paths
-and secrets while still showing storage, worker telemetry, queue age, and unread prompt pressure.
+and secrets while still showing storage, per-directory lifecycle counts, worker telemetry, queue
+age, and unread prompt pressure.
 
 Existing hash deep links still route directly to the requested section. For example, `/#workflow`,
 `/#sessions`, `/#approvals`, `/#tool-calls`, and `/#configuration` bypass the dashboard and open the

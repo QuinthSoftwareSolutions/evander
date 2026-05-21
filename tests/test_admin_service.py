@@ -782,11 +782,22 @@ def test_read_capacity_health_aggregates_sessions_workers_queue_and_prompts(
     assert health.control_plane.disk.status is TelemetryStatus.AVAILABLE
     assert health.control_plane.storage.total.status is TelemetryStatus.AVAILABLE
     assert health.sessions.total_sessions == 5
+    assert health.sessions.total_agents == 5
     assert health.sessions.backend_counts == {
         "container_worker_vm": 2,
         "libvirt_vm": 3,
     }
     assert health.sessions.directory_counts == {"root": 3, team_path: 2}
+    assert health.sessions.directory_breakdowns["root"]["total_sessions"] == 3
+    assert health.sessions.directory_breakdowns["root"]["lifecycle_counts"] == {
+        "active": 2,
+        "retained": 1,
+    }
+    assert health.sessions.directory_breakdowns[team_path]["total_sessions"] == 2
+    assert health.sessions.directory_breakdowns[team_path]["lifecycle_counts"] == {
+        "failed_stale": 1,
+        "waiting": 1,
+    }
     assert health.sessions.lifecycle_counts == {
         "active": 2,
         "failed_stale": 1,
@@ -807,14 +818,20 @@ def test_read_capacity_health_aggregates_sessions_workers_queue_and_prompts(
     assert "session_storage:libvirt_vm" in missing_scopes
     assert "session_storage:worker:http://worker-missing.test" in missing_scopes
     assert health.workers.total_workers == 2
-    assert health.workers.reachable_workers == 1
+    assert health.workers.reachable_workers == 2
     assert health.workers.telemetry_available_workers == 1
     assert worker_entries["http://worker-ok.test"].reachable is True
     assert worker_entries["http://worker-ok.test"].telemetry_status is TelemetryStatus.AVAILABLE
     assert worker_entries["http://worker-ok.test"].telemetry is not None
-    assert worker_entries["http://worker-missing.test"].reachable is False
+    assert worker_entries["http://worker-ok.test"].last_heartbeat_source == (
+        "worker_telemetry_live_probe"
+    )
+    assert worker_entries["http://worker-missing.test"].reachable is True
     assert worker_entries["http://worker-missing.test"].telemetry_status is TelemetryStatus.PERMISSION_DENIED
     assert worker_entries["http://worker-missing.test"].healthz_status is TelemetryStatus.AVAILABLE
+    assert worker_entries["http://worker-missing.test"].last_heartbeat_source == (
+        "healthz_live_probe"
+    )
     assert health.queue.status is TelemetryStatus.AVAILABLE
     assert health.queue.backend == "json"
     assert health.queue.pending_count == 1

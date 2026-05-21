@@ -195,6 +195,8 @@ def test_worker_daemon_read_telemetry_reports_disk_sessions_and_jobs_without_lea
     assert telemetry.jobs.total_jobs == 3
     assert telemetry.jobs.counts_by_status == {"running": 1, "failed": 1, "stopped": 1}
     assert telemetry.jobs.running_job_count == 1
+    assert telemetry.jobs.queued_job_count == 0
+    assert telemetry.jobs.queued_job_status is TelemetryStatus.UNSUPPORTED
     assert telemetry.jobs.failed_start_count == 1
     assert telemetry.jobs.cleanup_failure_status is TelemetryStatus.UNSUPPORTED
     assert str(tmp_path) not in payload

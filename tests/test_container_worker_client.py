@@ -205,6 +205,8 @@ def test_container_worker_client_telemetry_uses_auth_and_parses_payload(
 
     assert isinstance(telemetry, WorkerTelemetryPayload)
     assert telemetry.jobs.failed_start_count == 1
+    assert telemetry.jobs.queued_job_count == 0
+    assert telemetry.jobs.queued_job_status is TelemetryStatus.UNSUPPORTED
     assert telemetry.jobs.cleanup_failure_status is TelemetryStatus.UNSUPPORTED
     assert telemetry.session_storage.session_count == 1
     assert telemetry.session_storage.largest_sessions[0].directory_path == "sessions/session-1"

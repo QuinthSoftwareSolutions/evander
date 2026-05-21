@@ -417,6 +417,9 @@ class WorkerJobTelemetry(BaseModel):
     total_jobs: int = 0
     counts_by_status: dict[str, int] = Field(default_factory=dict)
     running_job_count: int = 0
+    queued_job_count: int = 0
+    queued_job_status: TelemetryStatus = TelemetryStatus.UNSUPPORTED
+    queued_job_message: str = "worker daemon starts jobs synchronously; no queue is persisted"
     failed_start_count: int = 0
     cleanup_failure_status: TelemetryStatus = TelemetryStatus.UNSUPPORTED
     cleanup_failure_message: str = "cleanup failures are not currently persisted"

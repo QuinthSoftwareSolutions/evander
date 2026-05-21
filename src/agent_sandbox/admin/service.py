@@ -78,10 +78,6 @@ from agent_sandbox.execution.container_worker_client import (
     ContainerWorkerClient,
     ContainerWorkerClientError,
 )
-from agent_sandbox.execution.container_worker_repository import (
-    ContainerWorkerExecutionRecord,
-    ContainerWorkerExecutionRepository,
-)
 from agent_sandbox.published_artifacts import (
     PublishedArtifact,
     PublishedArtifactMetadata,
@@ -994,10 +990,12 @@ class CapacitySessionStoragePayload(BaseModel):
 
 class CapacitySessionSummaryPayload(BaseModel):
     total_sessions: int = 0
+    total_agents: int = 0
     lifecycle_counts: dict[str, int] = Field(default_factory=dict)
     status_counts: dict[str, int] = Field(default_factory=dict)
     backend_counts: dict[str, int] = Field(default_factory=dict)
     directory_counts: dict[str, int] = Field(default_factory=dict)
+    directory_breakdowns: dict[str, dict[str, Any]] = Field(default_factory=dict)
     age_buckets: dict[str, int] = Field(default_factory=dict)
     storage: CapacitySessionStoragePayload
 
@@ -1007,6 +1005,9 @@ class CapacityWorkerTelemetryEntryPayload(BaseModel):
     directory_paths: list[str] = Field(default_factory=list)
     discovered_from: list[str] = Field(default_factory=list)
     reachable: bool = False
+    last_checked_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
+    last_heartbeat_source: str | None = None
     healthz_status: TelemetryStatus = TelemetryStatus.MISSING
     telemetry_status: TelemetryStatus = TelemetryStatus.MISSING
     healthz: dict[str, Any] | None = None
@@ -5200,20 +5201,37 @@ class AdminService:
         lifecycle_counts: Counter[str] = Counter()
         status_counts: Counter[str] = Counter()
         age_buckets: Counter[str] = Counter()
+        directory_breakdowns: dict[str, dict[str, Any]] = {}
         for session in sessions:
             backend = self._capacity_session_backend(session)
+            directory_path = self._agent_record_directory_path(session.directory_path)
             backend_counts[backend] += 1
-            directory_counts[self._agent_record_directory_path(session.directory_path)] += 1
+            directory_counts[directory_path] += 1
             agent_status = str(agent_statuses.get(session.session_id) or "").strip() or "unknown"
             status_counts[agent_status] += 1
-            lifecycle_counts[
-                self._capacity_session_lifecycle_bucket(
-                    session,
-                    agent_status=agent_status,
-                    now=now,
-                )
-            ] += 1
-            age_buckets[self._capacity_age_bucket(now - session.created_at)] += 1
+            lifecycle_bucket = self._capacity_session_lifecycle_bucket(
+                session,
+                agent_status=agent_status,
+                now=now,
+            )
+            age_bucket = self._capacity_age_bucket(now - session.created_at)
+            lifecycle_counts[lifecycle_bucket] += 1
+            age_buckets[age_bucket] += 1
+            directory_summary = directory_breakdowns.setdefault(
+                directory_path,
+                {
+                    "total_sessions": 0,
+                    "lifecycle_counts": Counter(),
+                    "status_counts": Counter(),
+                    "backend_counts": Counter(),
+                    "age_buckets": Counter(),
+                },
+            )
+            directory_summary["total_sessions"] += 1
+            directory_summary["lifecycle_counts"][lifecycle_bucket] += 1
+            directory_summary["status_counts"][agent_status] += 1
+            directory_summary["backend_counts"][backend] += 1
+            directory_summary["age_buckets"][age_bucket] += 1
 
         queue_payload = self._capacity_queue_telemetry(now=now)
         prompt_payload = self._capacity_prompt_telemetry(now=now)
@@ -5229,10 +5247,21 @@ class AdminService:
             ),
             sessions=CapacitySessionSummaryPayload(
                 total_sessions=len(sessions),
+                total_agents=len(agent_statuses),
                 lifecycle_counts=dict(lifecycle_counts),
                 status_counts=dict(status_counts),
                 backend_counts=dict(backend_counts),
                 directory_counts=dict(directory_counts),
+                directory_breakdowns={
+                    directory_path: {
+                        "total_sessions": int(summary["total_sessions"]),
+                        "lifecycle_counts": dict(summary["lifecycle_counts"]),
+                        "status_counts": dict(summary["status_counts"]),
+                        "backend_counts": dict(summary["backend_counts"]),
+                        "age_buckets": dict(summary["age_buckets"]),
+                    }
+                    for directory_path, summary in sorted(directory_breakdowns.items())
+                },
                 age_buckets=dict(age_buckets),
                 storage=session_storage,
             ),
@@ -5634,10 +5663,12 @@ class AdminService:
         worker_url = str(descriptor.get("worker_url") or "").strip().rstrip("/")
         token_env = str(descriptor.get("token_env") or "AGENT_SANDBOX_WORKER_TOKEN").strip()
         timeout_seconds = float(descriptor.get("timeout_seconds") or 30.0)
+        checked_at = _utc_now()
         entry = CapacityWorkerTelemetryEntryPayload(
             worker_url=worker_url,
             directory_paths=[str(path) for path in descriptor.get("directory_paths", [])],
             discovered_from=[str(item) for item in descriptor.get("discovered_from", [])],
+            last_checked_at=checked_at,
         )
         worker_client = ContainerWorkerClient(
             base_url=worker_url,
@@ -5650,6 +5681,9 @@ class AdminService:
                 update={
                     "healthz_status": TelemetryStatus.AVAILABLE,
                     "healthz": healthz,
+                    "reachable": True,
+                    "last_heartbeat_at": checked_at,
+                    "last_heartbeat_source": "healthz_live_probe",
                 }
             )
         except ContainerWorkerClientError as exc:
@@ -5664,6 +5698,8 @@ class AdminService:
                     "telemetry_status": TelemetryStatus.AVAILABLE,
                     "telemetry": telemetry,
                     "reachable": True,
+                    "last_heartbeat_at": telemetry.generated_at,
+                    "last_heartbeat_source": "worker_telemetry_live_probe",
                 }
             )
         except ContainerWorkerClientError as exc:
@@ -5672,7 +5708,6 @@ class AdminService:
             entry = entry.model_copy(
                 update={
                     "telemetry_status": status,
-                    "reachable": False,
                 }
             )
         return entry
@@ -5710,7 +5745,7 @@ class AdminService:
         try:
             queue_store, _, _ = self._workflow_run_store_bundle(stores)
             active_records = list(queue_store.list_active_records())
-        except FileNotFoundError as exc:
+        except FileNotFoundError:
             return CapacityQueueTelemetryPayload(
                 status=TelemetryStatus.MISSING,
                 health=HealthState.UNKNOWN,

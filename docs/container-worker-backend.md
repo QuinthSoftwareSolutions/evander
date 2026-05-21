@@ -237,13 +237,14 @@ The telemetry payload is intentionally scoped to operational counters:
 - `session_storage.total` summarizes durable session storage under the worker root, and
   `largest_sessions` / `oldest_sessions` surface only `session_id`, `backend`, relative
   `directory_path`, byte size, and timestamps.
-- `jobs` includes `total_jobs`, `counts_by_status`, `running_job_count`, `failed_start_count`, and
-  `cleanup_failure_status`.
+- `jobs` includes `total_jobs`, `counts_by_status`, `running_job_count`, `queued_job_count`,
+  `queued_job_status`, `failed_start_count`, and `cleanup_failure_status`.
 
-`cleanup_failure_status` currently remains `unsupported` because cleanup-failure history is not
-persisted separately from the live job records. The host-side Admin Web capacity-health endpoint
-uses this telemetry when it can reach a configured worker; otherwise it reports missing or
-permission-denied worker telemetry explicitly.
+`queued_job_status` currently remains `unsupported` because the worker daemon starts jobs
+synchronously and does not persist a worker-side queue. `cleanup_failure_status` also remains
+`unsupported` because cleanup-failure history is not persisted separately from the live job records.
+The host-side Admin Web capacity-health endpoint uses this telemetry when it can reach a configured
+worker; otherwise it reports missing or permission-denied worker telemetry explicitly.
 
 For `container_worker_vm`, `effect:agent:clone-repo` does not send upstream GitHub or Azure DevOps
 URLs to the clone API. The control plane resolves and refreshes a deterministic bare mirror under

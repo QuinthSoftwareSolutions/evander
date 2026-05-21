@@ -17,9 +17,9 @@ docs, tests.
   and reference docs/env examples (`a73f1af`, `a2eea1f`, `52427a3`,
   `85c07c0`).
 - Added the Admin Web capacity-health endpoint plus worker telemetry plumbing so
-  operators can inspect control-plane storage, worker/session health, queue age,
-  and prompt pressure with explicit missing and unsupported states instead of
-  inferred values.
+  operators can inspect control-plane storage, per-directory session lifecycle
+  counts, worker/session health, queue age, and prompt pressure with explicit
+  missing and unsupported states instead of inferred values.
 - Added approval-gated MCP tool invocation support for sessions and directory
   policy. Operators can mark allowed tools as approval-required, the gateway
   creates audited `mcp_tool_invocation` approval requests, and retries are

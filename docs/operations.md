@@ -179,11 +179,11 @@ deep links remain direct: for example `/#workflow`, `/#sessions`, `/#approvals`,
 and `/#configuration` still open those sections instead of the dashboard. Dashboard panels use the
 same live Admin Web APIs as the detail tabs. The capacity-health view is available at
 `/api/admin/capacity-health`; it returns control-plane disk and known-storage summaries, session
-counts and age/lifecycle/backend breakdowns, worker reachability and telemetry states, queue age,
-and unread prompt pressure. Unconfigured, unreachable, permission-denied, or unsupported sources
-are reported explicitly, and raw host paths or bearer secrets are not exposed. When an endpoint
-has no data or is unavailable in the current environment, the panel shows an explicit missing or
-unavailable state rather than inferred or placeholder values.
+counts plus per-directory age/lifecycle/backend breakdowns, worker reachability, live-check
+timestamps, telemetry states, queue age, and unread prompt pressure. Unconfigured, unreachable,
+permission-denied, or unsupported sources are reported explicitly, and raw host paths or bearer
+secrets are not exposed. When an endpoint has no data or is unavailable in the current environment,
+the panel shows an explicit missing or unavailable state rather than inferred or placeholder values.
 
 For machine-readable scripting that matches the GUI data model, use:
 
