@@ -234,9 +234,10 @@ and put TLS plus ingress policy in front of the service.
 
 Admin Web opens to an operations dashboard by default after sign-in. The dashboard is an operator
 overview backed by the same live APIs as the detail tabs: deployment/admin state, workers, agents,
-workflow runs and graph activity, approvals, sessions, tool-call audit entries, and the workflow
-document/catalog. Empty or unsupported sources are shown as explicit missing/unavailable states,
-not as sample data.
+workflow runs and graph activity, approvals, sessions, tool-call audit entries, capacity health,
+and the workflow document/catalog. Empty or unsupported sources are shown as explicit
+missing/unavailable states, not as sample data. Capacity health intentionally omits raw host paths
+and secrets while still showing storage, worker telemetry, queue age, and unread prompt pressure.
 
 Existing hash deep links still route directly to the requested section. For example, `/#workflow`,
 `/#sessions`, `/#approvals`, `/#tool-calls`, and `/#configuration` bypass the dashboard and open the
