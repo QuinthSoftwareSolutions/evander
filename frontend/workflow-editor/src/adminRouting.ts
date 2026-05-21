@@ -20,6 +20,8 @@ export type AdminTabDefinition = {
   description: string;
 };
 
+export type AdminHashParamValue = string | number | boolean | null | undefined;
+
 export const TABS: ReadonlyArray<AdminTabDefinition> = [
   {
     key: "dashboard",
@@ -71,4 +73,31 @@ export function nextPathFromHash(hash: string): string | null {
     return null;
   }
   return `/${normalizedHash.startsWith("#") ? normalizedHash : `#${normalizedHash}`}`;
+}
+
+export function adminHash(tab: AdminTab, params: Record<string, AdminHashParamValue> = {}): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value == null) continue;
+    const text = typeof value === "string" ? value.trim() : String(value);
+    if (!text) continue;
+    query.set(key, text);
+  }
+  const queryText = query.toString();
+  return `#${tab}${queryText ? `?${queryText}` : ""}`;
+}
+
+export function hashQuery(hash: string): URLSearchParams {
+  const raw = hash.replace(/^#/, "").trim();
+  const queryStart = raw.indexOf("?");
+  if (queryStart < 0) {
+    return new URLSearchParams();
+  }
+  return new URLSearchParams(raw.slice(queryStart + 1));
+}
+
+export function hashQueryParam(hash: string, name: string): string | null {
+  const value = hashQuery(hash).get(name);
+  const normalized = value?.trim() ?? "";
+  return normalized || null;
 }

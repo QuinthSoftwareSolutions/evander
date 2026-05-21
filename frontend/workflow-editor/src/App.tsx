@@ -54,6 +54,7 @@ import {
 import { ApiError } from "./features/admin/api";
 import { useAdminUi, type DirectoryTreeNode } from "./features/admin/AdminContext";
 import { Tooltip } from "./features/admin/Tooltip";
+import { hashQueryParam } from "./adminRouting";
 import {
   BindingParseError,
   isParsedBindingExpression,
@@ -1520,6 +1521,26 @@ function workflowRunDetailLookupQuery(value: string, kind: WorkflowRunDetailLook
   return query;
 }
 
+function workflowRunLookupFromHash(): { kind: WorkflowRunDetailLookupKind; value: string } | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const hash = window.location.hash;
+  const runId = hashQueryParam(hash, "run_id");
+  if (runId) {
+    return { kind: "run_id", value: runId };
+  }
+  const eventId = hashQueryParam(hash, "event_id");
+  if (eventId) {
+    return { kind: "event_id", value: eventId };
+  }
+  const traceId = hashQueryParam(hash, "trace_id");
+  if (traceId) {
+    return { kind: "trace_id", value: traceId };
+  }
+  return null;
+}
+
 function parseWorkflowRunSearchScope(value: string): { kind: "graph" | "node"; id: string } | null {
   const separatorIndex = value.indexOf(":");
   if (separatorIndex < 0) return null;
@@ -2255,6 +2276,7 @@ function parseNodeTypeDragPayload(dataTransfer: DataTransfer): NodeTypeDragPaylo
 
 export default function App() {
   const { privilegedUnlocked, selectedDirectoryPath, directoryTree } = useAdminUi();
+  const initialWorkflowRunLookup = workflowRunLookupFromHash();
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const canvasShellRef = useRef<HTMLElement | null>(null);
   const hasAutoFitRef = useRef(false);
@@ -2266,8 +2288,10 @@ export default function App() {
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
   const [runDetail, setRunDetail] = useState<WorkflowRunDetail | null>(null);
-  const [runDetailLookup, setRunDetailLookup] = useState("");
-  const [runDetailLookupKind, setRunDetailLookupKind] = useState<WorkflowRunDetailLookupKind>("auto");
+  const [runDetailLookup, setRunDetailLookup] = useState(initialWorkflowRunLookup?.value ?? "");
+  const [runDetailLookupKind, setRunDetailLookupKind] = useState<WorkflowRunDetailLookupKind>(
+    initialWorkflowRunLookup?.kind ?? "auto",
+  );
   const [runDetailLoading, setRunDetailLoading] = useState(false);
   const [runDetailError, setRunDetailError] = useState<string | null>(null);
   const [runSearchScope, setRunSearchScope] = useState("");
@@ -2769,6 +2793,22 @@ export default function App() {
     if (!normalizedEventId) return;
     void loadWorkflowRunDetail(new URLSearchParams({ event_id: normalizedEventId }), normalizedEventId);
   }
+
+  useEffect(() => {
+    const applyDeepLink = () => {
+      const lookup = workflowRunLookupFromHash();
+      if (!lookup) {
+        return;
+      }
+      setRunDetailLookup(lookup.value);
+      setRunDetailLookupKind(lookup.kind);
+      void loadWorkflowRunDetail(workflowRunDetailLookupQuery(lookup.value, lookup.kind), lookup.value);
+    };
+
+    applyDeepLink();
+    window.addEventListener("hashchange", applyDeepLink);
+    return () => window.removeEventListener("hashchange", applyDeepLink);
+  }, []);
 
   function submitWorkflowRunDetailLookup(event: ReactFormEvent<HTMLFormElement>) {
     event.preventDefault();

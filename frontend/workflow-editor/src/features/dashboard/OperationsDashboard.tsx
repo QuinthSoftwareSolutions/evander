@@ -3,7 +3,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { ApiError, fetchJson, formatRelativeSeconds, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import type { AgentBackend } from "../admin/types";
-import type { AdminTab } from "../../adminRouting";
+import { adminHash, type AdminHashParamValue, type AdminTab } from "../../adminRouting";
 import type { WorkflowEditorCatalog, WorkflowEditorDocument, WorkflowRunSnapshot } from "../../types";
 
 type DashboardAdminState = {
@@ -314,10 +314,11 @@ function remoteFromResult<T>(
   missingIfEmpty: ((data: T) => string | null) | null = null,
 ): RemoteState<T> {
   if (result.status === "fulfilled") {
+    const emptyMissing = missingIfEmpty?.(result.value);
     return {
       loading: false,
       error: null,
-      missing: missingIfEmpty?.(result.value) ?? missing,
+      missing: emptyMissing ?? (missingIfEmpty ? null : missing),
       data: result.value,
       updatedAt: new Date().toISOString(),
     };
@@ -383,7 +384,17 @@ function workerStatusTone(worker: WorkerSummary): DashboardPillTone {
 
 function runStatusTone(status: string): DashboardPillTone {
   const normalized = status.trim().toLowerCase();
-  if (normalized === "failed" || normalized === "error" || normalized === "cancelled") {
+  if (
+    normalized === "failed" ||
+    normalized === "failure" ||
+    normalized === "error" ||
+    normalized === "errored" ||
+    normalized === "cancelled" ||
+    normalized === "canceled" ||
+    normalized === "aborted" ||
+    normalized === "timed_out" ||
+    normalized === "timeout"
+  ) {
     return "fail";
   }
   if (normalized === "running" || normalized === "active" || normalized === "in_progress") {
@@ -459,8 +470,8 @@ function workflowCatalogTone(catalog: WorkflowEditorCatalog | null | undefined):
   return "pass";
 }
 
-function openTab(tab: AdminTab) {
-  window.location.hash = tab;
+function openTab(tab: AdminTab, params: Record<string, AdminHashParamValue> = {}) {
+  window.location.hash = adminHash(tab, params);
 }
 
 function panelTitleList(items: readonly string[]): string {
@@ -586,6 +597,7 @@ type DashboardLink = {
   tab: AdminTab;
   label: string;
   value: string;
+  params?: Record<string, AdminHashParamValue>;
 };
 
 function DashboardLinkRow({ links }: { links: DashboardLink[] }) {
@@ -595,18 +607,25 @@ function DashboardLinkRow({ links }: { links: DashboardLink[] }) {
 
   return (
     <div className="dashboard-link-row">
-      {links.map((link) => (
-        <button
-          key={`${link.tab}:${link.value}`}
-          type="button"
-          className="dashboard-link-chip"
-          title={`${link.label}: ${link.value}`}
-          onClick={() => openTab(link.tab)}
-        >
-          <span>{link.label}</span>
-          <strong>{link.value}</strong>
-        </button>
-      ))}
+      {links.map((link) =>
+        link.params ? (
+          <button
+            key={`${link.tab}:${link.value}`}
+            type="button"
+            className="dashboard-link-chip"
+            title={`${link.label}: ${link.value}`}
+            onClick={() => openTab(link.tab, link.params)}
+          >
+            <span>{link.label}</span>
+            <strong>{link.value}</strong>
+          </button>
+        ) : (
+          <span key={`${link.tab}:${link.value}`} className="dashboard-link-chip dashboard-link-chip-static" title={`${link.label}: ${link.value}`}>
+            <span>{link.label}</span>
+            <strong>{link.value}</strong>
+          </span>
+        ),
+      )}
     </div>
   );
 }
@@ -1088,7 +1107,9 @@ export function OperationsDashboard() {
                           </span>
                           <DashboardLinkRow
                             links={[
-                              ...(run.trace_id ? [{ tab: "workflow" as AdminTab, label: "Trace", value: run.trace_id }] : []),
+                              ...(run.trace_id
+                                ? [{ tab: "workflow" as AdminTab, label: "Trace", value: run.trace_id, params: { trace_id: run.trace_id } }]
+                                : []),
                             ]}
                           />
                         </div>
@@ -1190,8 +1211,8 @@ export function OperationsDashboard() {
                           </span>
                           <DashboardLinkRow
                             links={[
-                              { tab: "sessions", label: "Session", value: item.session_id },
-                              { tab: "approvals", label: "Approval", value: item.request_id },
+                              { tab: "sessions", label: "Session", value: item.session_id, params: { session_id: item.session_id } },
+                              { tab: "approvals", label: "Approval", value: item.request_id, params: { request_id: item.request_id } },
                             ]}
                           />
                         </div>
@@ -1247,7 +1268,7 @@ export function OperationsDashboard() {
                               ...(session.issue_number
                                 ? [{ tab: "issues" as AdminTab, label: "Issue", value: session.issue_number }]
                                 : []),
-                              { tab: "sessions", label: "Session", value: session.session_id },
+                              { tab: "sessions", label: "Session", value: session.session_id, params: { session_id: session.session_id } },
                             ]}
                           />
                         </div>
@@ -1307,9 +1328,18 @@ export function OperationsDashboard() {
                           </span>
                           <DashboardLinkRow
                             links={[
-                              ...(item.session_id ? [{ tab: "sessions" as AdminTab, label: "Session", value: item.session_id }] : []),
+                              ...(item.session_id
+                                ? [{ tab: "sessions" as AdminTab, label: "Session", value: item.session_id, params: { session_id: item.session_id } }]
+                                : []),
                               ...(item.approval_request_id
-                                ? [{ tab: "approvals" as AdminTab, label: "Approval", value: item.approval_request_id }]
+                                ? [
+                                    {
+                                      tab: "approvals" as AdminTab,
+                                      label: "Approval",
+                                      value: item.approval_request_id,
+                                      params: { request_id: item.approval_request_id },
+                                    },
+                                  ]
                                 : []),
                               ...(item.workflow_run_id ?? item.trace_id
                                 ? [
@@ -1317,6 +1347,9 @@ export function OperationsDashboard() {
                                       tab: "workflow" as AdminTab,
                                       label: item.workflow_run_id ? "Run" : "Trace",
                                       value: item.workflow_run_id ?? item.trace_id ?? "",
+                                      params: item.workflow_run_id
+                                        ? { run_id: item.workflow_run_id }
+                                        : { trace_id: item.trace_id ?? "" },
                                     },
                                   ]
                                 : []),

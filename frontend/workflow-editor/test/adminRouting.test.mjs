@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { currentTab, nextPathFromHash, tabFromHash, tabsForExecutionBackend } from "../src/adminRouting.ts";
+import { adminHash, currentTab, hashQueryParam, nextPathFromHash, tabFromHash, tabsForExecutionBackend } from "../src/adminRouting.ts";
 
 test("empty and unknown hashes default to the dashboard tab", () => {
   assert.equal(tabFromHash(""), null);
@@ -13,7 +13,9 @@ test("empty and unknown hashes default to the dashboard tab", () => {
 
 test("known admin hashes resolve to their matching tabs", () => {
   assert.equal(tabFromHash("#workflow"), "workflow");
+  assert.equal(tabFromHash("#workflow?trace_id=trace-1"), "workflow");
   assert.equal(tabFromHash("#sessions"), "sessions");
+  assert.equal(tabFromHash("#sessions?session_id=session-1"), "sessions");
   assert.equal(tabFromHash("#tool-calls"), "tool-calls");
   assert.equal(tabFromHash("#configuration"), "configuration");
 });
@@ -28,7 +30,15 @@ test("hashes for valid tabs translate into safe Azure post-login next paths", ()
   assert.equal(nextPathFromHash("#"), null);
   assert.equal(nextPathFromHash("#missing"), null);
   assert.equal(nextPathFromHash("#workflow"), "/#workflow");
+  assert.equal(nextPathFromHash("#workflow?trace_id=trace-1"), "/#workflow?trace_id=trace-1");
   assert.equal(nextPathFromHash("#settings"), "/#settings");
+});
+
+test("admin hashes carry non-empty query parameters", () => {
+  assert.equal(adminHash("workflow", { trace_id: " trace-1 ", empty: "", skip: null }), "#workflow?trace_id=trace-1");
+  assert.equal(adminHash("sessions", { session_id: "session 1" }), "#sessions?session_id=session+1");
+  assert.equal(hashQueryParam("#workflow?trace_id=trace-1", "trace_id"), "trace-1");
+  assert.equal(hashQueryParam("#workflow", "trace_id"), null);
 });
 
 test("dashboard is the first visible tab and vms stay backend-gated", () => {

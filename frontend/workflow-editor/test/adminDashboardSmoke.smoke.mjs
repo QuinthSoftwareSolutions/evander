@@ -32,6 +32,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
   const page = await context.newPage();
+  page.setDefaultTimeout(10000);
 
   const requestedEndpoints = [];
   const pageErrors = [];
@@ -438,6 +439,101 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
     revision: "rev-1",
   };
 
+  const workflowRunDetailResponse = {
+    ...workflowRunsResponse.runs[1],
+    worker_id: "workflow-run-worker",
+    generated_at: "2026-05-18T10:02:00Z",
+    matched_by: ["trace_id"],
+    lookup_candidates: [
+      {
+        event_id: "evt-2",
+        trace_id: "trace-2",
+        latest_activity_at: "2026-05-18T09:01:00Z",
+        matched_by: ["trace_id"],
+      },
+    ],
+    recovery: {
+      clear: { eligible: true, event_id: "evt-2" },
+      resume: { eligible: false, reason: "Run is not resumable.", event_id: "evt-2" },
+    },
+    trigger_event: {
+      event_id: "evt-2",
+      trigger_id: "trigger-2",
+      trigger_type: "trigger:manual",
+      trace_id: "trace-2",
+      occurred_at: "2026-05-18T09:00:00Z",
+      delivery_state: "failed",
+      payload: { command: "fail" },
+    },
+    graph: {
+      config_revision: "rev-1",
+      config: workflowDocumentResponse.config,
+      snapshot: {
+        revision: "rev-1",
+        captured_at: "2026-05-18T09:00:00Z",
+        snapshot_type: "run_start",
+        source: "runtime",
+        node_count: 2,
+        edge_count: 1,
+        triggers: workflowDocumentResponse.config.triggers,
+        gates: [],
+        effects: workflowDocumentResponse.config.effects,
+        queries: [],
+        edges: workflowDocumentResponse.config.edges,
+      },
+      data_availability: {
+        graph_snapshot: "available",
+        binding_trace: "available",
+        approvals: "missing_legacy_or_unrecorded",
+        agent_links: "missing_legacy_or_unrecorded",
+        communication_artifacts: "missing_legacy_or_unrecorded",
+        trigger_event: "available",
+      },
+    },
+    nodes: [
+      {
+        node_id: "agent-2",
+        node_type: "effect:agent",
+        display_name: "Audit runner",
+        source_kind: "effect",
+        execution_id: "exec-2",
+        event_id: "evt-2",
+        trace_id: "trace-2",
+        status: "failed",
+        started_at: "2026-05-18T09:00:30Z",
+        finished_at: "2026-05-18T09:01:00Z",
+        duration_ms: 30000,
+        occurred_at: null,
+        delivery_state: null,
+        resolved_config: {},
+        binding_trace: null,
+        binding_error: null,
+        input_payload: {},
+        outputs: {},
+        inputs_by_source: {},
+        error: "boom",
+        published_event_id: null,
+        completion_event_enqueued_at: null,
+        config_revision: "rev-1",
+        retry_resume_eligible: false,
+        retry_resume_reason: "Run is not resumable.",
+        missing_fields: [],
+        approval_links: [],
+        agent_links: [],
+        communication_artifact_links: [],
+        records: [],
+      },
+    ],
+    data_availability: {
+      graph_snapshot: "available",
+      binding_trace: "available",
+      approvals: "missing_legacy_or_unrecorded",
+      agent_links: "missing_legacy_or_unrecorded",
+      communication_artifacts: "missing_legacy_or_unrecorded",
+      trigger_event: "available",
+    },
+  };
+
   const workflowCatalogResponse = {
     worker_id: "trigger-orchestrator",
     nodes: [
@@ -527,6 +623,25 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       return;
     }
 
+    if (pathname === "/api/workflow-editor/runs/stream") {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        headers: {
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        },
+        body: ": workflow run stream\n\n",
+      });
+      return;
+    }
+
+    if (pathname === "/api/workflow-editor/run-detail") {
+      assert.equal(url.searchParams.get("trace_id"), "trace-2");
+      await route.fulfill(jsonResponse(workflowRunDetailResponse));
+      return;
+    }
+
     if (pathname === "/api/admin/reports/workflow-graph-activity") {
       assert.equal(url.searchParams.get("limit"), "5");
       await route.fulfill(jsonResponse(workflowActivityResponse));
@@ -605,18 +720,30 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Control-plane status" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Live execution targets" }).waitFor({ state: "visible" }));
   const systemHealthPanel = page.locator("article.admin-panel").first();
+  const workflowPanel = page.locator('article.admin-panel').filter({ hasText: "Automation activity" });
   const approvalsPanel = page.locator('article.admin-panel').filter({ hasText: "Human-control work" });
   const toolCallsPanel = page.locator('article.admin-panel').filter({ hasText: "Explainability shortcuts" });
   await assert.doesNotReject(() => systemHealthPanel.locator(".detail-list strong").first().waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => approvalsPanel.getByText("1 pending").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => workflowPanel.getByText("2 runs, 1 active, 1 failed, 1 resumable.").waitFor({ state: "visible" }));
+  const pendingApprovalPill = approvalsPanel.locator(".status-pill").filter({ hasText: "1 pending" }).first();
+  await assert.doesNotReject(() => pendingApprovalPill.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => toolCallsPanel.getByText("No tool-call audit entries were returned.").first().waitFor({ state: "visible" }));
   assert.equal((await systemHealthPanel.locator(".detail-list strong").first().textContent())?.trim(), "root");
-  assert.equal((await approvalsPanel.getByText("1 pending").textContent())?.trim(), "1 pending");
+  const erroredRun = workflowPanel.locator(".node-activity-item").filter({ hasText: "evt-2" });
+  const erroredRunStateClass = await erroredRun.locator(".status-pill").last().getAttribute("class");
+  assert.ok(erroredRunStateClass?.includes("state-fail"), `expected errored run to use failure tone, got ${erroredRunStateClass}`);
+  assert.equal((await pendingApprovalPill.textContent())?.trim(), "1 pending");
   assert.equal((await toolCallsPanel.getByText("No tool-call audit entries were returned.").first().textContent())?.trim(), "No tool-call audit entries were returned.");
 
   assert.equal(await page.evaluate(() => window.location.hash), "");
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
+
+  await erroredRun.locator(".dashboard-link-chip").filter({ hasText: "trace-2" }).click();
+  await assert.doesNotReject(() => page.getByText("Inspected run").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("evt-2").waitFor({ state: "visible" }));
+  assert.equal(await page.evaluate(() => window.location.hash), "#workflow?trace_id=trace-2");
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/run-detail?trace_id=trace-2"));
 
   await page.goto(`http://127.0.0.1:${address.port}/#sessions`, {
     waitUntil: "domcontentloaded",

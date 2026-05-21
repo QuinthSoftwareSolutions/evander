@@ -4,6 +4,7 @@ import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { DeleteIcon, ExtendIcon, RevokeIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
+import { hashQueryParam } from "../../adminRouting";
 
 type SessionRecord = {
   session_id: string;
@@ -388,6 +389,13 @@ function pickSessionIdForTab(response: SessionListResponse, tab: TabKey, preferr
   return tabItems[0]?.session_id ?? "";
 }
 
+function sessionIdFromHash(): string {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  return hashQueryParam(window.location.hash, "session_id") ?? "";
+}
+
 function RenewSessionModal({
   open,
   sessionId,
@@ -460,8 +468,10 @@ function RenewSessionModal({
 
 export function SessionsScreen() {
   const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
+  const initialSessionId = sessionIdFromHash();
   const [response, setResponse] = useState<SessionListResponse | null>(null);
-  const [selectedSessionId, setSelectedSessionId] = useState("");
+  const [selectedSessionId, setSelectedSessionId] = useState(initialSessionId);
+  const [deepLinkedSessionId, setDeepLinkedSessionId] = useState(initialSessionId);
   const [detail, setDetail] = useState<SessionDetailResponse | null>(null);
   const [catalog, setCatalog] = useState<SessionCatalogResponse | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>("active");
@@ -514,17 +524,36 @@ export function SessionsScreen() {
     const payload = await fetchJson<SessionListResponse>(`/api/admin/sessions?${query.toString()}`);
     setResponse(payload);
     setSelectedSessionId((current) => {
+      if (current && payload.items.some((item) => item.session_id === current)) {
+        return current;
+      }
+      if (deepLinkedSessionId && payload.items.some((item) => item.session_id === deepLinkedSessionId)) {
+        return deepLinkedSessionId;
+      }
       const nextSelected = pickSessionIdForTab(payload, activeTab, current);
       if (nextSelected) {
         return nextSelected;
-      }
-      if (current && payload.items.some((item) => item.session_id === current)) {
-        return current;
       }
       return payload.active_items[0]?.session_id ?? payload.expired_items[0]?.session_id ?? "";
     });
     return payload;
   }
+
+  useEffect(() => {
+    const applyDeepLink = () => {
+      const sessionId = sessionIdFromHash();
+      if (!sessionId) {
+        return;
+      }
+      setDeepLinkedSessionId(sessionId);
+      setSelectedSessionId(sessionId);
+      setSessionFilter("");
+    };
+
+    applyDeepLink();
+    window.addEventListener("hashchange", applyDeepLink);
+    return () => window.removeEventListener("hashchange", applyDeepLink);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -552,12 +581,24 @@ export function SessionsScreen() {
   }, [activeTab, selectedDirectoryPath]);
 
   useEffect(() => {
+    if (!response) {
+      return;
+    }
+    if (deepLinkedSessionId) {
+      const linkedSession = response.items.find((item) => item.session_id === deepLinkedSessionId);
+      if (linkedSession) {
+        setActiveTab(linkedSession.is_expired ? "expired" : "active");
+        setSelectedSessionId(linkedSession.session_id);
+        setDeepLinkedSessionId("");
+        return;
+      }
+    }
     const nextItems = activeTab === "active" ? response?.active_items ?? [] : response?.expired_items ?? [];
     if (selectedSessionId && nextItems.some((item) => item.session_id === selectedSessionId)) {
       return;
     }
     setSelectedSessionId(nextItems[0]?.session_id ?? "");
-  }, [activeTab, response?.active_items, response?.expired_items, selectedSessionId]);
+  }, [activeTab, deepLinkedSessionId, response, selectedSessionId]);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -633,11 +674,14 @@ export function SessionsScreen() {
   }, [activeTab, response?.active_items, response?.expired_items, sessionFilter]);
 
   useEffect(() => {
+    if (!response) {
+      return;
+    }
     if (selectedSessionId && visibleItems.some((item) => item.session_id === selectedSessionId)) {
       return;
     }
     setSelectedSessionId(visibleItems[0]?.session_id ?? "");
-  }, [selectedSessionId, visibleItems]);
+  }, [response, selectedSessionId, visibleItems]);
 
   const selectedSession = useMemo(
     () => response?.items.find((item) => item.session_id === selectedSessionId) ?? detail?.session ?? null,
@@ -1028,7 +1072,10 @@ export function SessionsScreen() {
               key={item.session_id}
               type="button"
               className={`feature-list-item session-list-item${item.session_id === selectedSessionId ? " selected" : ""}`}
-              onClick={() => setSelectedSessionId(item.session_id)}
+              onClick={() => {
+                setDeepLinkedSessionId("");
+                setSelectedSessionId(item.session_id);
+              }}
             >
               <div className="feature-list-title-row session-list-item-row">
                 <Tooltip content={`Session id: ${item.session_id}`}>

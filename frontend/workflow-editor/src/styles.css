@@ -4897,6 +4897,17 @@ select {
   background: rgba(233, 241, 238, 0.98);
 }
 
+.dashboard-link-chip-static {
+  cursor: default;
+}
+
+.dashboard-link-chip-static:hover {
+  transform: none;
+  border-color: rgba(32, 69, 78, 0.12);
+  box-shadow: none;
+  background: rgba(241, 246, 244, 0.95);
+}
+
 .admin-panel {
   border: 1px solid rgba(32, 69, 78, 0.12);
   border-radius: 28px;
@@ -5817,6 +5828,12 @@ select {
   border-color: rgba(125, 170, 190, 0.28);
   background: rgba(24, 39, 47, 0.96);
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.24);
+}
+
+:root[data-theme="dark"] .dashboard-link-chip-static:hover {
+  border-color: rgba(125, 170, 190, 0.16);
+  background: rgba(18, 31, 39, 0.92);
+  box-shadow: none;
 }
 
 :root[data-theme="dark"] .empty-state-cell {
