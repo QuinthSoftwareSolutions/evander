@@ -23,6 +23,7 @@ from agent_sandbox.models import (
     VmActionResult,
 )
 from agent_sandbox.repositories.session_manifests import as_session_manifest_repository
+from agent_sandbox.admin.services.local_issue_identity import LocalIssueIdentityResolver
 
 
 def _apply_issue_metadata_dot_patch(
@@ -136,6 +137,7 @@ class IssueGitAdminSupport:
     runtime: Any
     config: Any
     local_issue_store: Any
+    local_issue_identity_resolver: LocalIssueIdentityResolver
     local_issue_counter_path: Path
     local_issue_create_lock_path: Path
     local_issue_yaml_dir: Path
@@ -196,95 +198,15 @@ class IssueGitAdminSupport:
         return self.canonical_local_issue_id(record.issue_number, record.directory_path)
 
     def resolve_local_issue_key(self, identifier: str) -> str | None:
-        normalized = str(identifier or "").strip()
-        if not normalized:
-            return None
-        issues = self.local_issue_store.read_all()
-        if normalized in issues:
-            return normalized
-        matches = [
-            issue_id for issue_id, issue in issues.items() if issue.issue_number == normalized
-        ]
-        if not matches:
-            return None
-        if len(matches) == 1:
-            return matches[0]
-        sorted_matches = sorted(matches)
-        raise ValueError(
-            "Ambiguous local issue identifier: "
-            f"{normalized}. Matches: {', '.join(sorted_matches)}. "
-            "Use a scoped issue identifier."
-        )
+        return self.local_issue_identity_resolver.resolve_key(identifier)
 
     def find_local_issue_by_remote_identifier(
         self, issue_identifier: str
     ) -> LocalIssueRecord | None:
-        normalized = issue_identifier.strip()
-        if not normalized:
-            return None
-        provider = ""
-        remote_issue_id = ""
-        prefixed_match = re.match(
-            r"^(?:(?:proxy:)?(azure_devops|ado)[:/])([0-9]+)$",
-            normalized,
-            flags=re.IGNORECASE,
-        )
-        if prefixed_match:
-            provider = "azure_devops"
-            remote_issue_id = prefixed_match.group(2)
-        if not remote_issue_id:
-            return None
-        matches: list[LocalIssueRecord] = []
-        for issue in self.local_issue_store.read_all().values():
-            remote = issue.remote_reference
-            if remote is not None:
-                issue_provider = str(remote.provider or "").strip()
-                issue_remote_id = str(remote.work_item_id or "").strip()
-            else:
-                legacy_remote = (
-                    issue.metadata.get("remote")
-                    if isinstance(issue.metadata.get("remote"), dict)
-                    else {}
-                )
-                issue_provider = str(legacy_remote.get("provider") or "").strip()
-                issue_remote_id = str(legacy_remote.get("issue_id") or "").strip()
-            if issue_provider != provider:
-                continue
-            if issue_remote_id == remote_issue_id:
-                matches.append(issue)
-        if not matches:
-            return None
-        if len(matches) == 1:
-            return matches[0]
-        sorted_matches = sorted(issue.issue_id for issue in matches)
-        raise ValueError(
-            "Ambiguous proxy issue identifier: "
-            f"{normalized}. Matches: {', '.join(sorted_matches)}. "
-            "Use a canonical proxy issue identifier."
-        )
-        return None
+        return self.local_issue_identity_resolver.find_by_remote_identifier(issue_identifier)
 
     def resolve_local_issue_record(self, issue_identifier: str) -> LocalIssueRecord:
-        candidate = Path(issue_identifier)
-        if candidate.is_file():
-            candidate_path = candidate.resolve()
-            for issue in self.local_issue_store.read_all().values():
-                if issue.yaml_path and Path(issue.yaml_path).resolve() == candidate_path:
-                    return issue
-            issue_number = _admin_service._read_issue_number_from_yaml(candidate)
-            raise ValueError(f"Unknown local issue: {issue_number}")
-
-        issue_key = self.resolve_local_issue_key(issue_identifier)
-        if issue_key is not None:
-            issue = self.local_issue_store.get(issue_key)
-            if issue is not None:
-                return issue
-
-        by_remote_identifier = self.find_local_issue_by_remote_identifier(issue_identifier)
-        if by_remote_identifier is not None:
-            return by_remote_identifier
-
-        raise ValueError(f"Unknown local issue identifier: {issue_identifier}")
+        return self.local_issue_identity_resolver.resolve_record(issue_identifier)
 
     def proxy_target_for_issue(self, issue: LocalIssueRecord) -> tuple[str, str] | None:
         remote = issue.remote_reference
