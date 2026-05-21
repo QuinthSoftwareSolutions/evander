@@ -12,6 +12,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin import release_metadata as release_metadata_module
 from agent_sandbox.admin.web.app import _workflow_run_events, create_app
 from agent_sandbox.admin.web.shared import AdminWebConfig
 from agent_sandbox.admin.web.user_store import AdminWebUserStore
@@ -1025,6 +1026,82 @@ def test_admin_web_accepts_naive_deployment_status_timestamps(tmp_path: Path) ->
     assert response.json()["updated_at"].endswith(("Z", "+00:00"))
     assert state_response.status_code == 200
     assert state_response.json()["deployment"]["active"] is True
+
+
+def test_admin_web_release_info_uses_project_metadata(
+    monkeypatch, tmp_path: Path
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.setenv("AGENT_SANDBOX_REPO_VERSION", "build-abc123")
+    monkeypatch.setattr(
+        release_metadata_module.importlib_metadata,
+        "version",
+        lambda name: (_ for _ in ()).throw(
+            release_metadata_module.importlib_metadata.PackageNotFoundError(name)
+        ),
+    )
+    (service.project_dir / "pyproject.toml").write_text(
+        "[project]\nname = \"agent-sandbox\"\nversion = \"9.8.7\"\n",
+        encoding="utf-8",
+    )
+    (service.project_dir / "CHANGELOG.md").write_text(
+        "# Changelog\n\n"
+        "## 2026-05-21 - Release Metadata\n\n"
+        "- Added release metadata reader.\n"
+        "- Fixed missing build identity fallback.\n"
+        "\n"
+        "## 2026-05-20 - Older Entry\n\n"
+        "- Added something else.\n",
+        encoding="utf-8",
+    )
+
+    release_info = service.read_release_info()
+
+    assert release_info.version == "9.8.7"
+    assert release_info.version_source == str(service.project_dir / "pyproject.toml")
+    assert release_info.build == "build-abc123"
+    assert release_info.build_source == "env:AGENT_SANDBOX_REPO_VERSION"
+    assert release_info.missing_reasons == []
+    assert release_info.changelog is not None
+    assert release_info.changelog.source == "CHANGELOG.md"
+    assert release_info.changelog.path == str(service.project_dir / "CHANGELOG.md")
+    assert release_info.changelog.heading == "2026-05-21 - Release Metadata"
+    assert [entry.text for entry in release_info.changelog.entries] == [
+        "Added release metadata reader.",
+        "Fixed missing build identity fallback.",
+    ]
+    assert [entry.kind for entry in release_info.changelog.entries] == [
+        "feature",
+        "bugfix",
+    ]
+
+
+def test_admin_web_release_info_reports_missing_sources(
+    monkeypatch, tmp_path: Path
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.delenv("AGENT_SANDBOX_REPO_VERSION", raising=False)
+    monkeypatch.delenv("agent_sandbox_repo_version", raising=False)
+    monkeypatch.delenv("AGENT_SANDBOX_BUILD_VERSION", raising=False)
+    monkeypatch.delenv("agent_sandbox_build_version", raising=False)
+    monkeypatch.setattr(
+        release_metadata_module.importlib_metadata,
+        "version",
+        lambda name: (_ for _ in ()).throw(
+            release_metadata_module.importlib_metadata.PackageNotFoundError(name)
+        ),
+    )
+
+    release_info = service.read_release_info()
+
+    assert release_info.version is None
+    assert release_info.version_source is None
+    assert release_info.build is None
+    assert release_info.build_source is None
+    assert release_info.changelog is None
+    assert any("Version not found" in reason for reason in release_info.missing_reasons)
+    assert any("Build identity not found" in reason for reason in release_info.missing_reasons)
+    assert any("CHANGELOG.md is missing" in reason for reason in release_info.missing_reasons)
 
 
 def test_admin_web_skills_api_and_catalog_options(tmp_path: Path) -> None:
