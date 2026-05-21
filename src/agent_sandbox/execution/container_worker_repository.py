@@ -22,6 +22,10 @@ class ContainerWorkerExecutionRecord(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     last_status: str = "unknown"
+    cleanup_status: str = "unknown"
+    cleanup_attempted_at: datetime | None = None
+    cleanup_completed_at: datetime | None = None
+    cleanup_error: str | None = None
     directory_path: str = "root"
     metadata: dict[str, Any] = Field(default_factory=dict)
 

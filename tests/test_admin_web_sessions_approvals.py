@@ -2,11 +2,19 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import MethodType
 
+import pytest
 from starlette.testclient import TestClient
 
+import agent_sandbox.admin.service as admin_service
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.app import create_app
+from agent_sandbox.execution.container_worker_client import ContainerWorkerClientError
+from agent_sandbox.execution.container_worker_repository import (
+    ContainerWorkerExecutionRecord,
+    ContainerWorkerExecutionRepository,
+)
 from agent_sandbox.models import (
     ApprovalNotificationDeliveryRecord,
     ApprovalNotificationDeliveryStatus,
@@ -309,6 +317,193 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert renew_response.json()["action"] == "renew_session"
     assert revoke_response.status_code == 200
     assert revoke_response.json()["action"] == "revoke_session"
+
+
+def test_admin_web_exposes_container_session_lifecycle_and_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            expires_at=now + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+                "worker_url": "http://worker.test",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-1",
+            session_id="container-session",
+            worker_job_id="job-1",
+            worker_url="http://worker.test",
+            target_name="container-target",
+            started_at=now - timedelta(minutes=15),
+            finished_at=now - timedelta(minutes=5),
+            updated_at=now - timedelta(minutes=4),
+            last_status="exited",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def delete_session(self, session_id: str) -> dict[str, object]:
+            attempted_at = now
+            completed_at = now
+            for record in repository.read_all().values():
+                if record.session_id != session_id:
+                    continue
+                record.last_status = "removed"
+                record.cleanup_status = "cleanup_succeeded"
+                record.cleanup_attempted_at = attempted_at
+                record.cleanup_completed_at = completed_at
+                record.cleanup_error = None
+                record.metadata = {
+                    **record.metadata,
+                    "worker_status": "removed",
+                    "cleanup_status": "cleanup_succeeded",
+                    "cleanup_attempted_at": attempted_at.isoformat(),
+                    "cleanup_completed_at": completed_at.isoformat(),
+                }
+                repository.put(record)
+            return {"deleted": True, "session_id": session_id}
+
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: FakeContainerBackend(), service),
+    )
+    client = TestClient(create_app(service))
+
+    list_response = client.get("/api/admin/sessions")
+    detail_response = client.get("/api/admin/sessions/container-session")
+    cleanup_response = client.post("/api/admin/sessions/container-session/cleanup")
+    refreshed_detail = client.get("/api/admin/sessions/container-session")
+
+    assert list_response.status_code == 200
+    list_item = list_response.json()["items"][0]
+    assert list_item["container_lifecycle"]["state"] == "stopped"
+    assert list_item["container_lifecycle"]["actions"]["cleanup"]["supported"] is True
+    assert list_item["container_lifecycle"]["last_signal_at"] == "2026-05-21T11:55:00Z"
+    assert detail_response.status_code == 200
+    assert detail_response.json()["session"]["container_lifecycle"]["state"] == "stopped"
+    assert detail_response.json()["session"]["container_lifecycle"]["actions"]["cleanup"][
+        "supported"
+    ] is True
+    assert cleanup_response.status_code == 200
+    cleanup_payload = cleanup_response.json()
+    assert cleanup_payload["action"] == "cleanup_container_session"
+    assert cleanup_payload["message"] == "Cleaned up container worker session container-session"
+    assert cleanup_payload["session"]["container_lifecycle"]["state"] == "cleaned_up"
+    assert cleanup_payload["session"]["container_lifecycle"]["actions"]["cleanup"][
+        "supported"
+    ] is False
+    assert refreshed_detail.json()["session"]["container_lifecycle"]["state"] == "cleaned_up"
+    assert service.runtime.session_repository.get_session("container-session") is not None
+
+
+def test_admin_web_cleanup_container_session_surfaces_failure_without_deleting_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            expires_at=now + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+                "worker_url": "http://worker.test",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-1",
+            session_id="container-session",
+            worker_job_id="job-1",
+            worker_url="http://worker.test",
+            target_name="container-target",
+            started_at=now - timedelta(minutes=15),
+            finished_at=now - timedelta(minutes=5),
+            updated_at=now - timedelta(minutes=4),
+            last_status="exited",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def delete_session(self, session_id: str) -> dict[str, object]:
+            attempted_at = now
+            completed_at = now
+            for record in repository.read_all().values():
+                if record.session_id != session_id:
+                    continue
+                record.last_status = "cleanup_failed"
+                record.cleanup_status = "cleanup_failed"
+                record.cleanup_attempted_at = attempted_at
+                record.cleanup_completed_at = completed_at
+                record.cleanup_error = (
+                    f"container worker DELETE /v1/sessions/{session_id} failed: cleanup exploded"
+                )
+                record.metadata = {
+                    **record.metadata,
+                    "worker_status": "cleanup_failed",
+                    "cleanup_status": "cleanup_failed",
+                    "cleanup_attempted_at": attempted_at.isoformat(),
+                    "cleanup_completed_at": completed_at.isoformat(),
+                    "cleanup_error": record.cleanup_error,
+                }
+                repository.put(record)
+            raise ContainerWorkerClientError(
+                f"container worker DELETE /v1/sessions/{session_id} failed: cleanup exploded"
+            )
+
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: FakeContainerBackend(), service),
+    )
+    client = TestClient(create_app(service))
+
+    cleanup_response = client.post("/api/admin/sessions/container-session/cleanup")
+    detail_response = client.get("/api/admin/sessions/container-session")
+
+    assert cleanup_response.status_code == 502
+    cleanup_payload = cleanup_response.json()
+    assert cleanup_payload["success"] is False
+    assert cleanup_payload["action"] == "cleanup_container_session"
+    assert cleanup_payload["error"] == cleanup_payload["message"]
+    assert "cleanup exploded" in cleanup_payload["message"]
+    assert cleanup_payload["session"]["container_lifecycle"]["state"] == "cleanup_failed"
+    assert cleanup_payload["session"]["container_lifecycle"]["actions"]["cleanup"][
+        "supported"
+    ] is True
+    assert cleanup_payload["session"]["container_lifecycle"]["cleanup_error"].endswith(
+        "cleanup exploded"
+    )
+    assert detail_response.status_code == 200
+    assert detail_response.json()["session"]["container_lifecycle"]["state"] == "cleanup_failed"
+    assert service.runtime.session_repository.get_session("container-session") is not None
 
 
 def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:

@@ -194,10 +194,24 @@ class WorkerDaemon:
         return record
 
     def remove_job(self, record: WorkerJobRecord) -> None:
-        self.container_runtime.remove_job(record)
-        record.status = "removed"
-        record.finished_at = record.finished_at or now_utc()
-        self.store.put(record)
+        if record.status == "removed":
+            logger.info(
+                "worker_job_remove_noop job_id=%s session_id=%s",
+                record.job_id,
+                record.session_id,
+            )
+            return
+        attempted_at = now_utc()
+        try:
+            self.container_runtime.remove_job(record)
+        except subprocess.CalledProcessError as exc:
+            self._mark_job_cleanup_failure(
+                record,
+                error=safe_subprocess_error(exc),
+                attempted_at=attempted_at,
+            )
+            raise
+        self._mark_job_cleanup_success(record, attempted_at=attempted_at)
         logger.info("worker_job_removed job_id=%s session_id=%s", record.job_id, record.session_id)
 
     def get_logs(
@@ -501,21 +515,55 @@ class WorkerDaemon:
 
         mssql_cleanup = self.drop_mssql_session(normalized_session_id)
         removed_any = False
-        for record in list(self.store.read_all().values()):
-            if record.session_id != normalized_session_id:
+        session_records = [
+            record
+            for record in list(self.store.read_all().values())
+            if record.session_id == normalized_session_id
+        ]
+        cleanup_started_at = now_utc()
+        for record in session_records:
+            if record.status == "removed":
+                self._mark_job_cleanup_success(
+                    record,
+                    attempted_at=cleanup_started_at,
+                    completed_at=cleanup_started_at,
+                )
+                removed_any = True
                 continue
-            if record.status != "removed":
-                self.container_runtime.remove_job(record)
-            self.store.delete(record.job_id)
+            try:
+                self.remove_job(record)
+            except subprocess.CalledProcessError as exc:
+                error = safe_subprocess_error(exc)
+                self._mark_job_cleanup_failure(
+                    record,
+                    error=error,
+                    attempted_at=cleanup_started_at,
+                    completed_at=now_utc(),
+                )
+                raise RuntimeError(
+                    f"worker session cleanup failed for {normalized_session_id}: {error}"
+                ) from exc
             removed_any = True
 
         session_root = self.worker_root / "sessions" / normalized_session_id
-        if session_root.is_symlink() or session_root.is_file():
-            session_root.unlink()
-            removed_any = True
-        elif session_root.exists():
-            shutil.rmtree(session_root)
-            removed_any = True
+        try:
+            if session_root.is_symlink() or session_root.is_file():
+                session_root.unlink()
+                removed_any = True
+            elif session_root.exists():
+                shutil.rmtree(session_root)
+                removed_any = True
+        except OSError as exc:
+            error = sanitize_text(str(exc))
+            self._mark_session_cleanup_failure(
+                session_records,
+                error=error,
+                attempted_at=cleanup_started_at,
+                completed_at=now_utc(),
+            )
+            raise RuntimeError(
+                f"worker session cleanup failed for {normalized_session_id}: {error}"
+            ) from exc
         logger.info(
             "worker_session_deleted session_id=%s removed=%s mssql_databases=%s",
             normalized_session_id,
@@ -653,18 +701,45 @@ class WorkerDaemon:
         counts_by_status: dict[str, int] = {}
         running_job_count = 0
         failed_start_count = 0
+        cleanup_failure_count = 0
         for record in records:
             counts_by_status[record.status] = counts_by_status.get(record.status, 0) + 1
             if record.status == "running":
                 running_job_count += 1
             if record.status == "failed":
                 failed_start_count += 1
+            if record.status == "cleanup_failed" or record.cleanup_status == "cleanup_failed":
+                cleanup_failure_count += 1
+
+        if cleanup_failure_count:
+            cleanup_failure_message = (
+                f"{cleanup_failure_count} cleanup failure"
+                f"{'s' if cleanup_failure_count != 1 else ''} recorded"
+            )
+            cleanup_failure_status = TelemetryStatus.AVAILABLE
+            telemetry_health = HealthState.WARNING
+            telemetry_error_count = cleanup_failure_count
+            telemetry_errors = [
+                TelemetryError(status=TelemetryStatus.AVAILABLE, message=cleanup_failure_message)
+            ]
+        else:
+            cleanup_failure_message = "cleanup failures are not currently persisted"
+            cleanup_failure_status = TelemetryStatus.UNSUPPORTED
+            telemetry_health = HealthState.OK
+            telemetry_error_count = 0
+            telemetry_errors = []
 
         return WorkerJobTelemetry(
+            health=telemetry_health,
             total_jobs=len(records),
             counts_by_status=counts_by_status,
             running_job_count=running_job_count,
             failed_start_count=failed_start_count,
+            cleanup_failure_status=cleanup_failure_status,
+            cleanup_failure_message=cleanup_failure_message,
+            cleanup_failure_count=cleanup_failure_count,
+            error_count=telemetry_error_count,
+            errors=telemetry_errors,
         )
 
     @staticmethod
@@ -678,6 +753,61 @@ class WorkerDaemon:
             error_count=1,
             errors=[TelemetryError(status=status, message=message)],
         )
+
+    def _mark_job_cleanup_success(
+        self,
+        record: WorkerJobRecord,
+        *,
+        attempted_at: datetime | None = None,
+        completed_at: datetime | None = None,
+    ) -> WorkerJobRecord:
+        completed = completed_at or now_utc()
+        record.status = "removed"
+        record.finished_at = record.finished_at or completed
+        record.cleanup_status = "cleanup_succeeded"
+        record.cleanup_attempted_at = attempted_at or record.cleanup_attempted_at or completed
+        record.cleanup_completed_at = completed
+        record.cleanup_error = None
+        self.store.put(record)
+        return record
+
+    def _mark_job_cleanup_failure(
+        self,
+        record: WorkerJobRecord,
+        *,
+        error: str,
+        attempted_at: datetime | None = None,
+        completed_at: datetime | None = None,
+    ) -> WorkerJobRecord:
+        completed = completed_at or now_utc()
+        record.status = "cleanup_failed"
+        record.finished_at = completed
+        record.cleanup_status = "cleanup_failed"
+        record.cleanup_attempted_at = attempted_at or record.cleanup_attempted_at or completed
+        record.cleanup_completed_at = completed
+        record.cleanup_error = sanitize_text(error)
+        self.store.put(record)
+        return record
+
+    def _mark_session_cleanup_failure(
+        self,
+        records: list[WorkerJobRecord],
+        *,
+        error: str,
+        attempted_at: datetime | None = None,
+        completed_at: datetime | None = None,
+    ) -> None:
+        completed = completed_at or now_utc()
+        sanitized_error = sanitize_text(error)
+        for record in records:
+            record.cleanup_status = "cleanup_failed"
+            record.cleanup_attempted_at = attempted_at or record.cleanup_attempted_at or completed
+            record.cleanup_completed_at = completed
+            record.cleanup_error = sanitized_error
+            if record.status != "removed":
+                record.status = "cleanup_failed"
+                record.finished_at = completed
+            self.store.put(record)
 
     def _clone_repo_if_requested(
         self,

@@ -2270,13 +2270,27 @@ def test_agent_destroy_provider_deletes_container_session(tmp_path) -> None:
 
         def delete_admin_agent(self, agent_id: str, *, backend: str | None = None):
             self.calls.append((agent_id, backend))
-            session_repository.delete_session(agent_id)
+            session = session_repository.get_session(agent_id)
+            assert session is not None
+            session_repository.upsert_session(
+                session.model_copy(
+                    update={
+                        "metadata": {
+                            **session.metadata,
+                            "container_lifecycle": {
+                                "state": "cleaned_up",
+                                "cleanup_status": "cleanup_succeeded",
+                            },
+                        },
+                    }
+                )
+            )
             return {
                 "success": True,
                 "target_name": agent_id,
-                "status": "deleted",
+                "status": "cleaned_up",
                 "session_id": agent_id,
-                "message": "worker_session_deleted=1",
+                "message": "Cleaned up container worker session",
             }
 
     admin_service = DeleteAdminStub()
@@ -2298,8 +2312,11 @@ def test_agent_destroy_provider_deletes_container_session(tmp_path) -> None:
     assert output["success"] is True
     assert output["execution_backend"] == "container_worker_vm"
     assert output["session_id"] == "session-container"
-    assert output["status"] == "deleted"
-    assert session_repository.get_session("session-container") is None
+    assert output["status"] == "cleaned_up"
+    assert session_repository.get_session("session-container") is not None
+    assert session_repository.get_session("session-container").metadata["container_lifecycle"][
+        "state"
+    ] == "cleaned_up"
 
 
 def test_agent_exec_provider_delegates_libvirt_sessions_to_vm_exec(tmp_path) -> None:
