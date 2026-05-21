@@ -5063,9 +5063,20 @@ select {
 
 .dashboard-panel-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
   gap: 1rem;
+}
+
+.dashboard-panel-column {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 1rem;
+}
+
+.dashboard-release-panel {
+  order: -1;
 }
 
 .dashboard-panel {
@@ -5150,12 +5161,6 @@ select {
   gap: 0.85rem;
 }
 
-@media (min-width: 960px) {
-  .dashboard-panel[open] {
-    grid-column: span 2;
-  }
-}
-
 .dashboard-block {
   display: grid;
   gap: 0.85rem;
@@ -5192,7 +5197,37 @@ select {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 0.42rem;
   min-width: max-content;
+}
+
+.dashboard-icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 2.35rem;
+  min-width: 2.35rem;
+  height: 2.35rem;
+  min-height: 2.35rem;
+  padding: 0;
+  line-height: 1;
+}
+
+.admin-shell-button.dashboard-icon-button,
+.admin-toolbar button.dashboard-icon-button,
+.inline-actions button.dashboard-icon-button,
+.release-news-pager button.dashboard-icon-button {
+  width: 2.35rem;
+  min-width: 2.35rem;
+  height: 2.35rem;
+  min-height: 2.35rem;
+  padding: 0;
+  border-radius: 999px;
+}
+
+.dashboard-icon-button svg {
+  display: block;
+  width: 1rem;
+  height: 1rem;
 }
 
 .dashboard-link-chip {
@@ -5377,6 +5412,22 @@ select {
   font-size: 0.8rem;
   font-weight: 700;
   cursor: pointer;
+}
+
+@media (min-width: 1040px) {
+  .dashboard-panel-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .dashboard-panel-column-primary {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .dashboard-panel-column-secondary {
+    grid-column: 2;
+    grid-row: 1;
+  }
 }
 
 .release-news-pager button:disabled {
