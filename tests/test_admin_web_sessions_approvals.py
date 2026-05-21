@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import MethodType
 
+import pytest
 from starlette.testclient import TestClient
 
 import agent_sandbox.admin.service as admin_service
