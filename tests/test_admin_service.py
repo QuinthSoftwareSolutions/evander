@@ -47,6 +47,7 @@ from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
 from agent_sandbox.daemons.effect_orchestrator import (
     GateExecutionRecord,
     EffectExecutionRecord,
+    JsonExecutionStore,
     SqliteExecutionStore,
     SqliteGateExecutionStore,
 )
@@ -995,6 +996,245 @@ def test_run_admin_agent_action_prompt_agent_dispatches_via_enqueue_provider(
     assert result["session_id"] == "receptionist-session"
     assert result["thread_id"] == "thread-new-1"
     assert result["status"] == "dispatched"
+
+
+def test_run_admin_agent_action_prompt_agent_returns_queued_when_dispatch_fails_after_queueing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="receptionist-session",
+            vm_id="agent-sandbox-receptionist-vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    monkeypatch.setattr(
+        service,
+        "list_vms",
+        MethodType(
+            lambda self, **kwargs: [
+                VmSummary(
+                    vm_name="agent-sandbox-receptionist-vm",
+                    power_state="shut off",
+                    agent_state="stopped",
+                    session_ids=["receptionist-session"],
+                )
+            ],
+            service,
+        ),
+    )
+
+    def failing_resume_agent(
+        self: AdminService,
+        target: str,
+        prompt: str,
+        *,
+        model: str | None = None,
+        vm_user: str = "agent",
+        dispatch_id: str | None = None,
+        resume_thread_id: str | None = None,
+        resume_mode: str = "new_context",
+        mcp_gateway_url: str | None = None,
+    ) -> VmActionResult:
+        del self, target, prompt, model, vm_user, dispatch_id, resume_thread_id
+        del resume_mode, mcp_gateway_url
+        return VmActionResult(
+            success=False,
+            vm_name="agent-sandbox-receptionist-vm",
+            action="resume_issue_agent",
+            message="resume failed",
+        )
+
+    monkeypatch.setattr(service, "resume_agent", MethodType(failing_resume_agent, service))
+
+    result = service.run_admin_agent_action(
+        "receptionist-session",
+        "prompt-agent",
+        backend="libvirt_vm",
+        payload={"prompt": "Continue the investigation"},
+    )
+
+    queue_key = "admin-agent-prompt:libvirt_vm:receptionist-session"
+    queued = AgentPromptQueueStore(
+        tmp_path / "runtime" / "queued-agent-prompts.json"
+    ).get(queue_key)
+
+    assert result["success"] is True
+    assert result["queued"] is True
+    assert result["status"] == "queued"
+    assert result["queue_key"] == queue_key
+    assert result["target_name"] == "agent-sandbox-receptionist-vm"
+    assert result["session_id"] == "receptionist-session"
+    assert "queued prompt for retry" in result["dispatch_error"]
+    assert queued is not None
+    assert queued.prompt == "Continue the investigation"
+
+
+def test_run_admin_agent_action_prompt_agent_records_direct_container_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_sandbox.effects.providers.agent_enqueue_prompt import (
+        AgentEnqueuePromptEffectProvider,
+    )
+    from agent_sandbox.execution import ExecutionStatusKind
+
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+            },
+        )
+    )
+
+    class DirectContainerBackend:
+        def __init__(self) -> None:
+            self.repository = SimpleNamespace(read_all=lambda: {})
+            self.started_specs: list[object] = []
+
+        def prepare(self, spec):
+            return spec
+
+        def start(self, spec):
+            self.started_specs.append(spec)
+            return SimpleNamespace(execution_id=spec.target_name)
+
+    backend = DirectContainerBackend()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        lambda context, config: backend,
+    )
+
+    result = service.run_admin_agent_action(
+        "container-session",
+        "prompt-agent",
+        backend="container_worker_vm",
+        payload={"prompt": "Continue the container workflow"},
+    )
+
+    stores = service._workflow_run_store_paths()
+    if service._workflow_uses_sqlite_store(stores):
+        execution_store = SqliteExecutionStore(Path(stores["orchestration_store_path"]))
+    else:
+        execution_store = JsonExecutionStore(Path(stores["effect_execution_store_path"]))
+    records = list(execution_store.read_all().values())
+
+    assert result["success"] is True
+    assert result["queued"] is False
+    assert result["status"] == "dispatched"
+    assert result["execution_id"] == backend.started_specs[0].target_name
+    assert len(records) == 1
+    assert records[0].status == "waiting"
+    assert records[0].effect_type == "effect:agent:enqueue-prompt"
+    assert records[0].resolved_config["execution_backend"] == "container_worker_vm"
+    assert records[0].resolved_config["directory_path"] == "root"
+    assert records[0].outputs["output_mode"] == "on_completion"
+    assert records[0].outputs["execution_id"] == backend.started_specs[0].target_name
+    assert str(records[0].outputs["thread_id"]).startswith("dispatch-")
+    assert (
+        records[0].outputs["queue_key"]
+        == "admin-agent-prompt:container_worker_vm:container-session"
+    )
+
+    class ReconcileContainerBackend:
+        def inspect(self, execution_id: str) -> SimpleNamespace:
+            assert execution_id == backend.started_specs[0].target_name
+            return SimpleNamespace(
+                status=ExecutionStatusKind.RUNNING,
+                message=None,
+                metadata={},
+            )
+
+        def get_log_snapshot(self, execution_id: str, *, lines: int = 400) -> str:
+            assert execution_id == backend.started_specs[0].target_name
+            assert lines in {80, 400}
+            return "prompt complete\nsession id: thread-real-container-1\n"
+
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_prompt.build_execution_backend",
+        lambda config, admin_service: ReconcileContainerBackend(),
+    )
+    worker = SimpleNamespace(
+        execution_store=execution_store,
+        provider_config_resolver=service.runtime.provider_config,
+        provider_factory=SimpleNamespace(admin_service=service),
+        config=service.config,
+    )
+
+    reconciled = AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=worker)
+    refreshed_record = execution_store.get_execution(records[0].execution_id)
+    refreshed_session = service.runtime.session_repository.get_session("container-session")
+
+    assert reconciled == 0
+    assert refreshed_record is not None
+    assert refreshed_record.outputs["thread_id"] == "thread-real-container-1"
+    assert refreshed_session is not None
+    assert refreshed_session.metadata["agent_thread_id"] == "thread-real-container-1"
+
+
+def test_run_admin_agent_action_prompt_agent_returns_queued_when_container_dispatch_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+            },
+        )
+    )
+
+    class FailingContainerBackend:
+        def __init__(self) -> None:
+            self.repository = SimpleNamespace(read_all=lambda: {})
+
+        def prepare(self, spec):
+            return spec
+
+        def start(self, spec):
+            del spec
+            raise RuntimeError("container start failed")
+
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        lambda context, config: FailingContainerBackend(),
+    )
+
+    result = service.run_admin_agent_action(
+        "container-session",
+        "prompt-agent",
+        backend="container_worker_vm",
+        payload={"prompt": "Continue the container workflow"},
+    )
+
+    queue_key = "admin-agent-prompt:container_worker_vm:container-session"
+    queued = AgentPromptQueueStore(
+        tmp_path / "runtime" / "queued-agent-prompts.json"
+    ).get(queue_key)
+
+    assert result["success"] is True
+    assert result["queued"] is True
+    assert result["status"] == "queued"
+    assert result["queue_key"] == queue_key
+    assert result["target_name"] == "container-target"
+    assert result["session_id"] == "container-session"
+    assert "container dispatch failed" in result["dispatch_error"]
+    assert queued is not None
+    assert queued.prompt == "Continue the container workflow"
 
 
 def test_run_admin_agent_action_prompt_agent_queues_busy_container_session(

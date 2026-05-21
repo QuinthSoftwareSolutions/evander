@@ -87,6 +87,9 @@ docs, tests.
   screenshots covering the shared shell, dashboard, agents, approvals,
   artifacts, skills, VMs, issues, sessions, tool calls, configuration, reports,
   users, workers, workflow editing, and common operator workflows.
+- Added Admin Web agent prompt actions for operators to send prompts to VM and
+  container-backed agents, including durable queued retry responses and
+  container execution tracking for later thread resumption.
 
 ## 2026-05-18 - Pull Request Workflow Nodes
 
