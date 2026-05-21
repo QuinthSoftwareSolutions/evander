@@ -1447,7 +1447,8 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
 - The scaffold includes `agent-sandbox-ado-worker` and the equivalent foreground CLI command
   `agent-sandbox-cli poll-ado-backlog`.
 - The worker polls Azure DevOps work items in `Committed` state tagged `truman`, writes YAML
-  payloads under `ADO_YAML_OUTPUT_DIR`, and invokes `scripts/setup_vm.sh`.
+  payloads under `ADO_YAML_OUTPUT_DIR`, and refreshes local proxy issue records. It does not
+  create sessions, create VMs, invoke issue setup scripts, or bootstrap guest toolchains.
 - The same worker now owns Azure DevOps PR feedback ingestion and PR completion polling for
   configured PR streams; it updates `runtime/pr-feedback-store.json`, records PR status in
   `runtime/pr-map.json`, and publishes `trigger:pull-request:new-feedback` plus
@@ -1460,19 +1461,11 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
 - Re-polling the same remote issue updates the existing local proxy record/cache instead of
   creating duplicates, so Desktop and CLI views remain stable across worker cycles.
 - `agent-sandbox-proxy-issue-sync` keeps all Azure DevOps proxy issues fresh independently of the
-  backlog setup worker. It defaults to a five-minute interval/freshness window, uses batched
+  backlog worker. It defaults to a five-minute interval/freshness window, uses batched
   `workitemsbatch` summary reads, leaves comments to on-demand detail reads, and writes missing or
   inaccessible item diagnostics into `metadata.proxy_sync` without deleting local issues.
-- Worker-triggered setup calls honor `ADO_BOOTSTRAP_DOTNET`, `ADO_BOOTSTRAP_NUGET`,
-  `ADO_BOOTSTRAP_MSSQL`, `ADO_BOOTSTRAP_PLAYWRIGHT`, and `ADO_BOOTSTRAP_FRONTEND_DEPS` to
-  decide which guest toolchains are bootstrapped for backlog-driven issue VMs. The first three
-  default to `true`; the frontend-oriented toggles default to `false` because they require
-  host-seeded Node artifacts. `ADO_BOOTSTRAP_MSSQL` requires `ADO_MSSQL_SA_PASSWORD`
-  (or legacy `MSSQL_SA_PASSWORD`). `ADO_BOOTSTRAP_FRONTEND_DEPS` requires
-  `ADO_FRONTEND_INSTALL_ROOTS` and can optionally use `ADO_FRONTEND_HOST_CHECKOUT`
-  when the mirrored repo source is remote.
 - Directory-scoped `ado_worker` config can set `ado_repo_source` to control the repo source path
-  or remote URL later passed to `clone_repo_into_vm(...)` for each directory.
+  or remote URL recorded on proxy issue records for each directory.
 - Preferred configuration now lives in directory domain `ado_worker` (`ado-worker.json`) so values
   inherit through directory ancestry and appear in the Admin GUI automatically.
 - Global worker settings now live in `config/ado-worker/config.json` and are edited from the
@@ -1726,6 +1719,8 @@ Then clone the repo and apply repo-specific bootstraps as needed:
 `create-issue-vm` still resolves issue-scoped Git settings from the `root` issue setup config,
 including `AGENT_SANDBOX_GIT_ROOT` and `AGENT_SANDBOX_GIT_SSH_ALIAS`, so later repo clone steps
 can use the issue-numbered host mirror.
+The CLI path wraps `scripts/setup_vm.sh`; that setup script remains a standalone operator/CLI
+surface and is not invoked by the ADO worker.
 
 Toolchain bootstraps are now split by concern:
 

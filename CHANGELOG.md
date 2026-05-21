@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-21 - ADO Worker Bootstrap Removal
+
+- Removed ADO worker issue VM creation, setup script invocation, and guest bootstrap configuration.
+  The worker now ingests Azure DevOps work items into local proxy issue/YAML state and leaves
+  agent/session creation to workflows and effects.
+- Trimmed ADO worker runtime, directory, Admin Web, and migration configuration surfaces to polling
+  settings, filters, repo metadata, and PR automation flags.
+
 ## 2026-05-21 - Dashboard News and Changelog Download
 
 - Added a root `NEWS.md` operator news feed, surfaced the latest news entry in

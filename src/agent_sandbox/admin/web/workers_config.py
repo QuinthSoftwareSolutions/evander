@@ -407,49 +407,17 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
             ("ado_",),
         ),
         (
-            "Repo and prewarm",
-            (
-                ("ado_worker", "ado_project_or_solution"),
-                ("ado_worker", "ado_prewarm_target"),
-                ("ado_worker", "ado_repo_source"),
-            ),
+            "Repo metadata",
+            (("ado_worker", "ado_repo_source"),),
             ("ado_",),
         ),
         (
             "Automation",
             (
-                ("ado_worker", "ado_setup_vms"),
                 ("ado_worker", "create_prs_as_draft"),
                 ("ado_worker", "create_prs_automatically"),
             ),
             ("ado_",),
-        ),
-        (
-            "Bootstrap",
-            (
-                ("ado_worker", "ado_bootstrap_dotnet"),
-                ("ado_worker", "ado_bootstrap_nuget"),
-                ("ado_worker", "ado_bootstrap_playwright"),
-                ("ado_worker", "ado_bootstrap_frontend_deps"),
-            ),
-            ("ado_bootstrap_",),
-        ),
-        (
-            "Frontend",
-            (
-                ("ado_worker", "ado_frontend_host_checkout"),
-                ("ado_worker", "ado_frontend_install_roots"),
-            ),
-            ("ado_frontend_",),
-        ),
-        (
-            "MSSQL",
-            (
-                ("ado_worker", "ado_bootstrap_mssql"),
-                ("ado_worker", "ado_mssql_init_root"),
-                ("ado_worker", "ado_mssql_sa_password_env"),
-            ),
-            ("ado_bootstrap_", "ado_mssql_"),
         ),
     ),
     "automation": (
@@ -482,13 +450,8 @@ _WORKER_GLOBAL_CONFIG_TOOLTIPS: dict[str, str] = {
     "runtime_dir": "Base runtime directory for the worker's state and default relative paths.",
     "poll_interval_seconds": "Base polling interval in seconds for the worker loop.",
     "directories": "Canonical directory paths the worker should process on each cycle.",
-    "yaml_output_dir": "Directory where fetched work items are rendered as YAML before setup runs.",
-    "setup_log_dir": "Directory where setup invocation logs are written.",
+    "yaml_output_dir": "Directory where fetched work items are rendered as YAML.",
     "processed_store_path": "JSON state file used to remember handled work items.",
-    "setup_script_path": "Host script invoked to provision an issue VM for selected work items.",
-    "setup_timeout_seconds": "Timeout in seconds for the issue VM setup script.",
-    "setup_concurrency_limit": "Maximum number of setup jobs that may run at once.",
-    "setup_lock_path": "Lock file used to serialize setup work when concurrency is limited.",
     "fetch_retry_count": "How many times the worker retries Azure DevOps fetch calls.",
     "fetch_retry_backoff_seconds": "Backoff in seconds between Azure DevOps fetch retries.",
     "include_comments": "Whether fetched work item comments are attached to YAML payloads.",
@@ -787,7 +750,7 @@ def _directory_tab_help_text(tab_key: str) -> str | None:
     if tab_key == "issue_setup":
         return "Repository bootstrap and post-execution defaults applied during issue VM setup."
     if tab_key == "ado_worker":
-        return "ADO ingestion and VM bootstrap behavior for directory-scoped issue provisioning."
+        return "ADO ingestion filters, repo metadata, and PR automation flags."
     if tab_key == "pr_template":
         return "Default markdown scaffold prepended to automated pull request descriptions."
     return None
