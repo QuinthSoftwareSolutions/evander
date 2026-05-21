@@ -662,6 +662,44 @@ class DirectoryDetails(BaseModel):
 class SessionSummary(SessionManifest):
     issue_number: str | None = None
     is_expired: bool = False
+    container_lifecycle: "ContainerSessionLifecycle | None" = None
+
+
+class ContainerSessionLifecycleState(str, Enum):
+    PREPARED = "prepared"
+    STARTING = "starting"
+    RUNNING = "running"
+    STOPPED = "stopped"
+    FAILED = "failed"
+    ABANDONED = "abandoned"
+    CLEANUP_FAILED = "cleanup_failed"
+    CLEANED_UP = "cleaned_up"
+    UNKNOWN = "unknown"
+
+
+class ContainerSessionLifecycleAction(BaseModel):
+    supported: bool = False
+    kind: str | None = None
+    label: str | None = None
+    reason: str | None = None
+
+
+class ContainerSessionLifecycleActions(BaseModel):
+    cleanup: ContainerSessionLifecycleAction = Field(default_factory=ContainerSessionLifecycleAction)
+    recovery: ContainerSessionLifecycleAction = Field(default_factory=ContainerSessionLifecycleAction)
+
+
+class ContainerSessionLifecycle(BaseModel):
+    state: ContainerSessionLifecycleState = ContainerSessionLifecycleState.UNKNOWN
+    last_heartbeat_at: datetime | None = None
+    last_completion_at: datetime | None = None
+    last_signal_at: datetime | None = None
+    cleanup_attempted_at: datetime | None = None
+    cleanup_completed_at: datetime | None = None
+    cleanup_error: str | None = None
+    actions: ContainerSessionLifecycleActions = Field(
+        default_factory=ContainerSessionLifecycleActions
+    )
 
 
 class SessionActionResult(BaseModel):

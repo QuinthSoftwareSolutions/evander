@@ -381,6 +381,16 @@ class WorkerJobRecord(BaseModel):
     logs_path: str
     metadata: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
+    cleanup_status: str = "unknown"
+    cleanup_attempted_at: datetime | None = None
+    cleanup_completed_at: datetime | None = None
+    cleanup_error: str | None = None
+
+    @field_validator("cleanup_status", mode="before")
+    @classmethod
+    def normalize_cleanup_status(cls, value: object) -> str:
+        text = str(value or "").strip()
+        return text or "unknown"
 
     @model_validator(mode="before")
     @classmethod
@@ -423,6 +433,7 @@ class WorkerJobTelemetry(BaseModel):
     failed_start_count: int = 0
     cleanup_failure_status: TelemetryStatus = TelemetryStatus.UNSUPPORTED
     cleanup_failure_message: str = "cleanup failures are not currently persisted"
+    cleanup_failure_count: int = 0
     error_count: int = 0
     errors: list[TelemetryError] = Field(default_factory=list)
 

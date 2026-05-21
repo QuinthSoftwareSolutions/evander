@@ -89,8 +89,12 @@ session manifest and worker directories, `effect:agent:clone-repo` clones into
 runs deterministic setup commands in a transient worker job, and `effect:agent:prompt`
 starts a disposable worker job for Codex and removes the job after completion.
 `effect:agent:destroy` is the cleanup counterpart: VM-backed sessions destroy the linked VM,
-while container-backed sessions delete the worker session, worker-side files, host session
-manifest, and execution mappings.
+while container-backed sessions delete worker-side files and jobs but keep the host session
+manifest and container execution mappings as cleanup tombstones. Admin Web > Sessions surfaces
+the resulting container lifecycle state as `stopped`, `failed`, `abandoned`, `cleanup_failed`, or
+`cleaned_up`, along with the last worker observation/completion signal and any cleanup error. A
+cleanup failure must remain visible so operators can retry manual cleanup without losing the
+session/run context in `runtime/sessions.json` or `runtime/container-worker-executions.json`.
 
 
 Chat Assistant session resolution is backend-aware and durable. Admin Web prewarms
