@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -154,6 +157,70 @@ def test_container_git_mirror_prunes_deleted_branch_before_clone_branch_validati
         resolver.resolve(repo_source=str(source), clone_branch="feature/stale")
 
     assert not _has_ref(mirror.mirror_path, "refs/heads/feature/stale")
+
+
+def test_container_git_mirror_waits_for_upload_pack_sync_lock(tmp_path: Path) -> None:
+    source = _source_repo(tmp_path / "repo")
+    resolver = _resolver(tmp_path)
+    mirror = resolver.resolve(repo_source=str(source), clone_branch="main")
+    lock_path = mirror.mirror_path / "agent-sandbox-sync.lock"
+    ready_path = tmp_path / "lock-ready"
+    release_path = tmp_path / "lock-release"
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import fcntl,pathlib,sys,time\n"
+                "lock_path=pathlib.Path(sys.argv[1])\n"
+                "ready_path=pathlib.Path(sys.argv[2])\n"
+                "release_path=pathlib.Path(sys.argv[3])\n"
+                "with lock_path.open('a+', encoding='utf-8') as handle:\n"
+                "    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)\n"
+                "    ready_path.write_text('ready', encoding='utf-8')\n"
+                "    while not release_path.exists():\n"
+                "        time.sleep(0.05)\n"
+            ),
+            str(lock_path),
+            str(ready_path),
+            str(release_path),
+        ],
+        text=True,
+    )
+    try:
+        for _ in range(100):
+            if ready_path.exists():
+                break
+            holder.poll()
+            assert holder.returncode is None
+            time.sleep(0.05)
+        assert ready_path.exists()
+
+        done = threading.Event()
+        errors: list[BaseException] = []
+
+        def resolve_again() -> None:
+            try:
+                resolver.resolve(repo_source=str(source), clone_branch="main")
+            except BaseException as exc:  # pragma: no cover - surfaced after join
+                errors.append(exc)
+            finally:
+                done.set()
+
+        thread = threading.Thread(target=resolve_again)
+        thread.start()
+        assert not done.wait(0.25)
+        release_path.write_text("release", encoding="utf-8")
+        thread.join(timeout=5)
+        assert done.is_set()
+        assert errors == []
+    finally:
+        release_path.write_text("release", encoding="utf-8")
+        try:
+            holder.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            holder.terminate()
+            holder.wait(timeout=5)
 
 
 def test_container_git_mirror_refuses_stale_local_branch_before_mirroring(

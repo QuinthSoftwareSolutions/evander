@@ -394,14 +394,14 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   };
 
   const releaseInfoResponse = {
-    version: "0.1.0",
+    version: "0.2.1",
     version_source: "pyproject.toml",
     build: "agent-sandbox-build-20260521",
     build_source: "AGENT_SANDBOX_REPO_VERSION",
     changelog: {
       source: "CHANGELOG.md",
       path: "CHANGELOG.md",
-      heading: "0.1.0",
+      heading: "0.2.1",
       entries: [
         {
           text: "Added release metadata coverage to the dashboard.",
@@ -787,26 +787,38 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
 
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Control-plane status" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Live execution targets" }).waitFor({ state: "visible" }));
-  const topLevelPanels = page.locator(".dashboard-panel-grid > .dashboard-panel");
+  const topLevelPanels = page.locator(".dashboard-panel-grid .dashboard-panel");
   assert.equal(await topLevelPanels.count(), 7);
-  assert.equal(
-    await topLevelPanels.evaluateAll((elements) =>
-      elements.every((element) => element instanceof HTMLDetailsElement && !element.open),
-    ),
-    true,
-  );
-  const systemHealthPanel = topLevelPanels.first();
+  const systemHealthPanel = topLevelPanels.filter({ hasText: "System health" });
   const workflowPanel = topLevelPanels.filter({ hasText: "Automation activity" });
   const approvalsPanel = topLevelPanels.filter({ hasText: "Human-control work" });
   const toolCallsPanel = topLevelPanels.filter({ hasText: "Explainability shortcuts" });
   const releasePanel = topLevelPanels.filter({ hasText: "Product context" });
-  for (const panel of [systemHealthPanel, workflowPanel, approvalsPanel, toolCallsPanel, releasePanel]) {
+  assert.equal(
+    await topLevelPanels.evaluateAll((elements) =>
+      elements.every((element) =>
+        element instanceof HTMLDetailsElement
+          ? element.classList.contains("dashboard-release-panel")
+            ? element.open
+            : !element.open
+          : false,
+      ),
+    ),
+    true,
+  );
+  for (const panel of [systemHealthPanel, workflowPanel, approvalsPanel, toolCallsPanel]) {
     await panel.evaluate((element) => {
       if (element instanceof HTMLDetailsElement) {
         element.open = true;
       }
     });
   }
+  const releaseBox = await releasePanel.boundingBox();
+  const systemHealthBox = await systemHealthPanel.boundingBox();
+  assert.ok(releaseBox && systemHealthBox, "expected dashboard panels to have layout boxes");
+  assert.ok(releaseBox.x < systemHealthBox.x, `expected release panel to occupy the left dashboard column, got release x=${releaseBox.x} system x=${systemHealthBox.x}`);
+  assert.equal(await page.getByRole("button", { name: "Refresh dashboard" }).getAttribute("title"), "Refresh dashboard");
+  assert.equal(await page.getByRole("button", { name: "Open workflow" }).getAttribute("title"), "Open workflow");
   await assert.doesNotReject(() => systemHealthPanel.locator(".detail-list strong").first().waitFor({ state: "visible" }));
   await assert.doesNotReject(() => workflowPanel.getByText("2 runs, 1 active, 1 failed, 1 resumable.").waitFor({ state: "visible" }));
   const pendingApprovalPill = approvalsPanel.locator(".status-pill").filter({ hasText: "1 pending" }).first();
@@ -820,7 +832,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   assert.ok(erroredRunStateClass?.includes("state-fail"), `expected errored run to use failure tone, got ${erroredRunStateClass}`);
   assert.equal((await pendingApprovalPill.textContent())?.trim(), "1 pending");
   assert.equal((await toolCallsPanel.getByText("No tool-call audit entries were returned.").first().textContent())?.trim(), "No tool-call audit entries were returned.");
-  assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Version 0\.1\.0/);
+  assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Version 0\.2\.1/);
   assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Build agent-sandbox-build-20260521/);
   await assert.doesNotReject(() => releasePanel.getByRole("button", { name: "Download changelog" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.getByText("News", { exact: true }).waitFor({ state: "visible" }));
