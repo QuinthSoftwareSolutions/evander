@@ -362,6 +362,22 @@ test("workflow editor structured tool argument policies support structured editi
 
   const scenario = {
     empty: createWorkflowDocument({}),
+    pythonRegex: createWorkflowDocument({
+      run_script: [
+        {
+          id: "python-regex",
+          constraints: [
+            {
+              id: "named-group",
+              path: "script_name",
+              operator: "pattern",
+              pattern: "(?P<script>^seed-[a-z]+$)",
+              case_sensitive: true,
+            },
+          ],
+        },
+      ],
+    }),
     unsupported: createWorkflowDocument({
       run_script: [
         {
@@ -402,6 +418,18 @@ test("workflow editor structured tool argument policies support structured editi
   await structuredConstraint.getByLabel("Path").fill("script_name");
   await structuredConstraint.getByLabel("Operator").selectOption("fixed");
   await structuredConstraint.getByLabel("Fixed value").fill("seed-demo");
+
+  const graphsSection = page.locator(".workflow-graphs-section");
+  await graphsSection.locator("summary").click();
+  await graphsSection.locator(".workflow-graph-item").filter({ hasText: "Tool argument policies smoke" }).click();
+  const graphNameInput = graphsSection.locator(".inspector-label").filter({ hasText: "Graph name" }).locator("input");
+  await page.waitForFunction(
+    () => document.querySelector(".workflow-graphs-section .workflow-graph-editor input")?.value === "Tool argument policies smoke",
+  );
+  await graphNameInput.fill("");
+  await assert.equal(await graphNameInput.inputValue(), "");
+  await graphsSection.getByRole("button", { name: "Apply graph details" }).click();
+  await page.getByText("Graph name is required.").first().waitFor({ state: "visible" });
 
   await page.getByRole("button", { name: "Save workflow" }).click();
   await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
@@ -494,6 +522,30 @@ test("workflow editor structured tool argument policies support structured editi
   await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
   assert.equal(saveRequests.length, 1);
   assert.deepEqual(saveRequests[0].config.effects[0].tool_argument_policies, rawValue);
+
+  await page.close();
+  page = await context.newPage();
+  attachPageListeners(page, pageErrors, consoleErrors);
+  state.nextDocument = scenario.pythonRegex;
+  await loadScenario(page, address, state);
+  const pythonRegexInspector = page.locator(".sidebar-section.inspector").filter({ hasText: "Tool argument policies" });
+  await pythonRegexInspector.waitFor({ state: "visible" });
+  await assert.equal(await page.getByLabel("JSON mode").inputValue(), "structured");
+  const pythonRegexConstraint = pythonRegexInspector.locator(".tool-argument-policy-constraint").first();
+  await assert.equal(await pythonRegexConstraint.getByLabel("Operator").inputValue(), "pattern");
+  await assert.equal(
+    await pythonRegexConstraint.locator("label").filter({ hasText: "Pattern" }).locator("input").inputValue(),
+    "(?P<script>^seed-[a-z]+$)",
+  );
+
+  saveRequests.length = 0;
+  await page.getByRole("button", { name: "Save workflow" }).click();
+  await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
+  assert.equal(saveRequests.length, 1);
+  assert.equal(
+    saveRequests[0].config.effects[0].tool_argument_policies.run_script[0].constraints[0].pattern,
+    "(?P<script>^seed-[a-z]+$)",
+  );
 
   await page.close();
   page = await context.newPage();

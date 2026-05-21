@@ -184,7 +184,7 @@ test("reports field-level validation errors for invalid draft rows", () => {
               operator: "pattern",
               valueText: "",
               valuesText: "",
-              pattern: "[",
+              pattern: "",
               caseSensitive: true,
             },
           ],
@@ -255,10 +255,50 @@ test("reports field-level validation errors for invalid draft rows", () => {
   const messages = result.errors.map((error) => error.message);
   assert.ok(messages.some((message) => message.includes("duplicate rule id")));
   assert.ok(messages.some((message) => message.includes("duplicate constraint id")));
-  assert.ok(messages.some((message) => message.includes("pattern is not a valid JavaScript regular expression")));
+  assert.ok(messages.some((message) => message.includes("pattern must be a non-empty string")));
   assert.ok(messages.some((message) => message.includes("valuesText must contain at least one value")));
   assert.ok(messages.some((message) => message.includes("valueText must be a non-empty string")));
   assert.ok(messages.some((message) => message.includes("toolName must be a non-empty string")));
+});
+
+test("does not reject backend regex syntax that JavaScript RegExp cannot parse", () => {
+  const rows = [
+    {
+      toolName: "run_script",
+      rules: [
+        {
+          id: "python-regex",
+          name: "",
+          constraints: [
+            {
+              id: "named-group",
+              path: "script_name",
+              operator: "pattern",
+              valueText: "",
+              valuesText: "",
+              pattern: "(?P<script>^seed-[a-z]+$)",
+              caseSensitive: true,
+            },
+            {
+              id: "inline-flags",
+              path: "script_name",
+              operator: "pattern",
+              valueText: "",
+              valuesText: "",
+              pattern: "(?i)^seed-[a-z]+$",
+              caseSensitive: true,
+            },
+          ],
+        },
+      ],
+    },
+  ];
+
+  const result = toolArgumentPolicyDraftRowsToValue(rows);
+
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.value.run_script[0].constraints[0].pattern, "(?P<script>^seed-[a-z]+$)");
+  assert.equal(result.value.run_script[0].constraints[1].pattern, "(?i)^seed-[a-z]+$");
 });
 
 test("validateToolArgumentPolicyDraftRows returns the same validation errors without converting a value", () => {

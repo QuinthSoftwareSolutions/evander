@@ -2674,6 +2674,7 @@ export default function App() {
   const [resumingRunIds, setResumingRunIds] = useState<Record<string, boolean>>({});
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [inspectorDraftError, setInspectorDraftError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => readStoredWorkflowSidebarWidth());
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
@@ -3363,6 +3364,7 @@ export default function App() {
     nextCatalogEntry: WorkflowEditorNodeCatalogEntry | undefined,
   ) {
     if (!nextNode) {
+      setInspectorDraftError(null);
       setInspectorNodeId("");
       setInspectorDisplayName("");
       setInspectorKnownValues({});
@@ -3457,6 +3459,7 @@ export default function App() {
     setInspectorStringMapDrafts(nextStringMapDrafts);
     setInspectorFieldModes(nextFieldModes);
     setRawJsonDraft(JSON.stringify(extras, null, 2));
+    setInspectorDraftError(null);
   }
 
   useEffect(() => {
@@ -3891,6 +3894,7 @@ export default function App() {
       }
       return next;
     });
+    setInspectorDraftError(null);
     setError(null);
   }
 
@@ -4058,6 +4062,7 @@ export default function App() {
     patchDocument(nextConfig, nextLayout, undefined, [node.id]);
     setProgrammaticSelection([node.id], node.id);
     setSelectedEdgeId(null);
+    setInspectorDraftError(null);
     setError(null);
   }
 
@@ -4248,6 +4253,7 @@ export default function App() {
       }
       return next;
     });
+    setInspectorDraftError(null);
     setError(null);
   }
 
@@ -4308,6 +4314,7 @@ export default function App() {
       }
       return next;
     });
+    setInspectorDraftError(null);
     setError(null);
   }
 
@@ -4327,7 +4334,9 @@ export default function App() {
       });
       replaceSelectedNode(nextNode, selectedNode.id);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setInspectorDraftError(message);
+      setError(message);
     }
   }
 
@@ -4376,7 +4385,7 @@ export default function App() {
   }
 
   async function saveDocument() {
-    if (!document || workflowEditLocked || error) return;
+    if (!document || workflowEditLocked || inspectorDraftError) return;
     setSaveState("saving");
     setError(null);
     try {
@@ -4483,6 +4492,7 @@ export default function App() {
         setInspectorToolArgumentPolicyDrafts(nextToolArgumentPolicyDrafts);
         setInspectorJsonDrafts(nextJsonDrafts);
         setInspectorJsonDisplayModes((current) => ({ ...current, [field.key]: "structured" }));
+        setInspectorDraftError(null);
         setError(null);
       } catch {
         return;
@@ -4499,6 +4509,7 @@ export default function App() {
       }));
     }
     setInspectorJsonDisplayModes((current) => ({ ...current, [field.key]: "raw" }));
+    setInspectorDraftError(null);
     setError(null);
   }
 

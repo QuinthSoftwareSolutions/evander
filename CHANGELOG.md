@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-21 - Workflow Tool Policy Editor Fixes
+
+- Allowed valid workflow saves to proceed after unrelated workflow-editor UI
+  errors while still blocking invalid inspector drafts.
+- Stopped browser-side JavaScript regex validation for tool argument policy
+  pattern constraints so Python backend regex syntax remains editable and
+  saveable from structured mode.
+
 ## 2026-05-21 - Workflow Smoke Test Hardening
 
 - Hardened the workflow tool-argument-policies smoke coverage so effect-node

@@ -214,20 +214,11 @@ function parseValuesText(valuesText: string): { values: unknown[] | null; error?
   return { values };
 }
 
-function validatePatternText(pattern: string, caseSensitive: boolean): string | null {
+function validatePatternText(pattern: string): string | null {
   if (!pattern.trim()) {
     return "pattern must be a non-empty string";
   }
-  try {
-    // Quick browser-side feedback only; Python regex semantics remain the backend source of truth.
-    // eslint-disable-next-line no-new
-    new RegExp(pattern, caseSensitive ? "" : "i");
-    return null;
-  } catch (error) {
-    return error instanceof Error
-      ? `pattern is not a valid JavaScript regular expression: ${error.message}`
-      : "pattern is not a valid JavaScript regular expression";
-  }
+  return null;
 }
 
 export function isStructuredToolArgumentPolicies(
@@ -383,7 +374,7 @@ export function toolArgumentPolicyDraftRowsToValue(
           }
           constraint.values = parsedValues.values;
         } else if (operator === "pattern") {
-          const patternError = validatePatternText(constraintRow.pattern, constraintRow.caseSensitive);
+          const patternError = validatePatternText(constraintRow.pattern);
           if (patternError) {
             errors.push({
               path: `${constraintPath}.pattern`,
