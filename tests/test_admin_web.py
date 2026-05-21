@@ -18,6 +18,7 @@ from agent_sandbox.admin.web.user_store import AdminWebUserStore
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from agent_sandbox.daemons.trigger_orchestrator import TriggerOrchestratorWorker
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
+from agent_sandbox.published_artifacts import PublishedArtifactStore
 from agent_sandbox.execution.container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
@@ -380,6 +381,10 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:prompt"
     )
     assert any(field["key"] == "model" and field["bindable"] for field in agent_prompt["fields"])
+    assert any(
+        field["key"] == "mcp_tool_approval_lease_id" and field["bindable"]
+        for field in agent_prompt["fields"]
+    )
     assert all(field["key"] != "output_mode" for field in agent_prompt["fields"])
     assert agent_prompt["output_ports"] == [
         {
@@ -404,6 +409,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "model",
         "vm_user",
         "resume_thread_id",
+        "mcp_tool_approval_lease_id",
         "queue_key",
     ]
     assert agent_enqueue_prompt["output_ports"] == [
@@ -418,6 +424,22 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
             "description": "Emits after the dispatched agent run has completed.",
         },
     ]
+    tool_approval = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "effect:session:approve-mcp-tools-for-run"
+    )
+    assert [field["key"] for field in tool_approval["fields"]] == [
+        "target",
+        "session_id",
+        "vm_name",
+        "tools",
+        "expires_in_seconds",
+    ]
+    assert any(
+        field["key"] == "tools" and field["required"] and field["bindable"]
+        for field in tool_approval["fields"]
+    )
     bash_script = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:bash:script"
     )
@@ -682,6 +704,29 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "vm_name",
         "extend_by",
         "directory_path",
+    ]
+    artifact_stage = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:artifact:stage"
+    )
+    assert [field["key"] for field in artifact_stage["fields"]] == [
+        "target",
+        "session_id",
+        "vm_name",
+        "path",
+        "destination_path",
+        "vm_user",
+    ]
+    artifact_publish = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "effect:artifact:publish-artifacts"
+    )
+    assert [field["key"] for field in artifact_publish["fields"]] == [
+        "target",
+        "session_id",
+        "vm_name",
+        "key",
+        "vm_user",
     ]
     agent_clone_repo = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:clone-repo"
@@ -1922,6 +1967,250 @@ def test_admin_web_can_dismiss_errored_workflow_run(tmp_path: Path) -> None:
     )
     assert '"dismissed_at"' in updated_effects
     assert '"dismiss_reason": "manual_dismiss_errored_workflow_run"' in updated_effects
+
+
+def test_admin_web_can_dismiss_all_failed_runs_for_workflow_node(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    _write_json_payload(
+        runtime_dir / "effect-orchestrator-executions.json",
+        {
+            "exec-failed-1": {
+                "execution_id": "exec-failed-1",
+                "idempotency_key": "evt-failed-1::effect-prompt",
+                "event_id": "evt-failed-1",
+                "trace_id": "trace-failed-1",
+                "source_node_id": "trigger-ticket",
+                "source_trigger_type": "trigger:ticket:created",
+                "effect_id": "effect-prompt",
+                "effect_type": "effect:agent:prompt",
+                "status": "failed",
+                "started_at": "2026-04-08T12:00:05Z",
+                "finished_at": "2026-04-08T12:00:07Z",
+                "resolved_config_hash": "abc",
+                "resolved_config": {},
+                "input_payload": {},
+                "outputs": {},
+                "error": "first failure",
+            },
+            "exec-failed-2": {
+                "execution_id": "exec-failed-2",
+                "idempotency_key": "evt-failed-2::effect-prompt",
+                "event_id": "evt-failed-2",
+                "trace_id": "trace-failed-2",
+                "source_node_id": "trigger-ticket",
+                "source_trigger_type": "trigger:ticket:created",
+                "effect_id": "effect-prompt",
+                "effect_type": "effect:agent:prompt",
+                "status": "failed",
+                "started_at": "2026-04-08T12:01:05Z",
+                "finished_at": "2026-04-08T12:01:07Z",
+                "resolved_config_hash": "def",
+                "resolved_config": {},
+                "input_payload": {},
+                "outputs": {},
+                "error": "second failure",
+            },
+            "exec-dismissed": {
+                "execution_id": "exec-dismissed",
+                "idempotency_key": "evt-dismissed::effect-prompt",
+                "event_id": "evt-dismissed",
+                "trace_id": "trace-dismissed",
+                "source_node_id": "trigger-ticket",
+                "source_trigger_type": "trigger:ticket:created",
+                "effect_id": "effect-prompt",
+                "effect_type": "effect:agent:prompt",
+                "status": "failed",
+                "started_at": "2026-04-08T12:02:05Z",
+                "finished_at": "2026-04-08T12:02:07Z",
+                "resolved_config_hash": "ghi",
+                "resolved_config": {},
+                "input_payload": {},
+                "outputs": {},
+                "dismissed_at": "2026-04-08T12:03:00Z",
+                "dismiss_reason": "manual_dismiss_errored_workflow_run",
+            },
+            "exec-running": {
+                "execution_id": "exec-running",
+                "idempotency_key": "evt-running::effect-prompt",
+                "event_id": "evt-running",
+                "trace_id": "trace-running",
+                "source_node_id": "trigger-ticket",
+                "source_trigger_type": "trigger:ticket:created",
+                "effect_id": "effect-prompt",
+                "effect_type": "effect:agent:prompt",
+                "status": "running",
+                "started_at": "2026-04-08T12:04:05Z",
+                "finished_at": "2026-04-08T12:04:07Z",
+                "resolved_config_hash": "jkl",
+                "resolved_config": {},
+                "input_payload": {},
+                "outputs": {},
+            },
+            "exec-other": {
+                "execution_id": "exec-other",
+                "idempotency_key": "evt-other::effect-other",
+                "event_id": "evt-other",
+                "trace_id": "trace-other",
+                "source_node_id": "trigger-ticket",
+                "source_trigger_type": "trigger:ticket:created",
+                "effect_id": "effect-other",
+                "effect_type": "effect:agent:prompt",
+                "status": "failed",
+                "started_at": "2026-04-08T12:05:05Z",
+                "finished_at": "2026-04-08T12:05:07Z",
+                "resolved_config_hash": "mno",
+                "resolved_config": {},
+                "input_payload": {},
+                "outputs": {},
+                "error": "other node failure",
+            },
+        },
+    )
+    _write_json_payload(
+        runtime_dir / "gate-orchestrator-executions.json",
+        {
+            "gate-failed": {
+                "execution_id": "gate-failed",
+                "idempotency_key": "evt-gate::gate-review",
+                "event_id": "evt-gate",
+                "trace_id": "trace-gate",
+                "source_node_id": "trigger-ticket",
+                "source_trigger_type": "trigger:ticket:created",
+                "gate_id": "gate-review",
+                "gate_type": "gate:filter",
+                "status": "failed",
+                "started_at": "2026-04-08T12:06:05Z",
+                "finished_at": "2026-04-08T12:06:07Z",
+                "resolved_config_hash": "pqr",
+                "resolved_config": {},
+                "input_payload": {},
+                "outputs": {},
+                "inputs_by_source": {},
+                "input_event_ids_by_source": {},
+                "input_occurred_at_by_source": {},
+                "error": "gate failure",
+            }
+        },
+    )
+
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    before_response = client.get("/api/workflow-editor/runs")
+    dismiss_response = client.delete("/api/workflow-editor/node-failures/effect-prompt")
+    after_response = client.get("/api/workflow-editor/runs")
+
+    assert before_response.status_code == 200
+    assert before_response.json()["node_activity"]["effect-prompt"] == {
+        "failed": 2,
+        "running": 1,
+    }
+    assert dismiss_response.status_code == 200
+    assert dismiss_response.json()["node_id"] == "effect-prompt"
+    assert dismiss_response.json()["effect_records_updated"] == 2
+    assert dismiss_response.json()["gate_records_updated"] == 0
+    assert after_response.status_code == 200
+    assert after_response.json()["node_activity"]["effect-prompt"] == {"running": 1}
+    assert after_response.json()["node_activity"]["effect-other"] == {"failed": 1}
+    assert after_response.json()["node_activity"]["gate-review"] == {"failed": 1}
+
+    updated_effects = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    assert updated_effects["exec-failed-1"]["dismiss_reason"] == "manual_dismiss_node_failures"
+    assert updated_effects["exec-failed-2"]["dismiss_reason"] == "manual_dismiss_node_failures"
+    assert updated_effects["exec-running"].get("dismissed_at") is None
+    assert updated_effects["exec-other"].get("dismissed_at") is None
+
+    dismiss_gate_response = client.delete("/api/workflow-editor/node-failures/gate-review")
+    final_response = client.get("/api/workflow-editor/runs")
+
+    assert dismiss_gate_response.status_code == 200
+    assert dismiss_gate_response.json()["effect_records_updated"] == 0
+    assert dismiss_gate_response.json()["gate_records_updated"] == 1
+    assert final_response.status_code == 200
+    assert "gate-review" not in final_response.json()["node_activity"]
+
+
+def test_admin_web_lists_resolves_and_downloads_published_artifacts(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    archive = tmp_path / "artifact.tar.gz"
+    archive.write_bytes(b"published archive")
+    store = PublishedArtifactStore(runtime_dir)
+    store.publish_archive(
+        key="runs/session-1/report",
+        session_id="session-1",
+        archive_path=archive,
+        source_artifacts_root="/artifacts",
+        source_file_count=1,
+        source_byte_count=12,
+        published_at=datetime(2026, 5, 20, 8, 0, tzinfo=timezone.utc),
+    )
+    store.publish_archive(
+        key="runs/session-2/report",
+        session_id="session-2",
+        archive_path=archive,
+        source_artifacts_root="/artifacts",
+        source_file_count=2,
+        source_byte_count=24,
+        published_at=datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc),
+    )
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    list_response = client.get("/api/admin/artifacts?limit=1")
+    detail_response = client.get("/api/admin/artifacts/runs%2Fsession-1%2Freport")
+    filtered_response = client.get(
+        "/api/admin/artifacts?published_after=2026-05-20T08:30:00Z"
+    )
+    download_response = client.get("/api/admin/artifact-downloads/runs%2Fsession-1%2Freport")
+
+    assert list_response.status_code == 200
+    assert list_response.json()["total"] == 2
+    assert list_response.json()["items"][0]["key"] == "runs/session-2/report"
+    assert list_response.json()["next_cursor"] == "1"
+    assert detail_response.status_code == 200
+    assert detail_response.json()["key"] == "runs/session-1/report"
+    assert detail_response.json()["filename"] == "report.tar.gz"
+    assert filtered_response.status_code == 200
+    assert [item["key"] for item in filtered_response.json()["items"]] == [
+        "runs/session-2/report"
+    ]
+    assert download_response.status_code == 200
+    assert download_response.content == b"published archive"
+    assert (
+        download_response.headers["content-disposition"]
+        == 'attachment; filename="report.tar.gz"'
+    )
+
+
+def test_admin_web_artifact_key_ending_download_resolves_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    archive = tmp_path / "artifact.tar.gz"
+    archive.write_bytes(b"published archive")
+    store = PublishedArtifactStore(runtime_dir)
+    store.publish_archive(
+        key="runs/foo",
+        session_id="session-1",
+        archive_path=archive,
+    )
+    store.publish_archive(
+        key="runs/foo/download",
+        session_id="session-1",
+        archive_path=archive,
+    )
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    detail_response = client.get("/api/admin/artifacts/runs%2Ffoo%2Fdownload")
+    download_response = client.get("/api/admin/artifact-downloads/runs%2Ffoo%2Fdownload")
+
+    assert detail_response.status_code == 200
+    assert detail_response.json()["key"] == "runs/foo/download"
+    assert download_response.status_code == 200
+    assert download_response.content == b"published archive"
 
 
 def _write_json_payload(path: Path, payload: dict[str, object]) -> None:

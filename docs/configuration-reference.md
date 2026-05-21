@@ -304,9 +304,11 @@ Type-specific keys:
 | `effect:vm:start` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `outputs` |
 | `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
 | `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `discord_channels`, `teams_channel_allowlist`, `teams_chat_allowlist`, `teams_user_allowlist`, `email_mailboxes`, `email_folders`, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `outputs` |
-| `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `outputs` |
-| `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `vm_user`, `resume_thread_id`, `queue_key`, `outputs` |
+| `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `mcp_tool_approval_lease_id`, `outputs` |
+| `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `vm_user`, `resume_thread_id`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
 | `effect:agent:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
+| `effect:artifact:stage` | one of `target`, `session_id`, `vm_name`; `path` | `destination_path`, `vm_user`, `outputs` |
+| `effect:artifact:publish-artifacts` | one of `target`, `session_id`, `vm_name`; `key` | `vm_user`, `outputs` |
 | `effect:semantic:ensure-collection` | `collection_name` | `directory_path`, `outputs` |
 | `effect:semantic:upsert` | `collection_name`, `point_id`, `text` | `payload`, `directory_path`, `wait`, `outputs` |
 | `effect:semantic:delete` | `collection_name`, `point_ids` | `directory_path`, `wait`, `outputs` |
@@ -318,6 +320,7 @@ Type-specific keys:
 | `effect:pull-request:update` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `title`, `description`, `status`, `add_tags`, `remove_tags`, `expected_statuses`, `outputs` |
 | `effect:communication:send-message` | `communication_target_id`, `message` | `thread_id`, `outputs` |
 | `effect:notification:send` | `communication_target_id`, `message` | `severity`, `subject`, `thread_id`, `outputs` |
+| `effect:session:approve-mcp-tools-for-run` | one of `target`, `session_id`, `vm_name`; `tools` | `expires_in_seconds`, `outputs` |
 | `effect:session:renew-if-expired` | one of `target`, `session_id`, `vm_name` | `extend_by`, `directory_path`, `outputs` |
 | `effect:pr:create` | `host_repo_path` | `local_branch`, `origin_branch`, `canonical_origin_url`, `provider`, `base_branch`, `session_id`, `work_item_id`, `title`, `body`, `body_file`, `body_artifact_ids`, `draft`, `fill`, `outputs` |
 
@@ -335,6 +338,19 @@ after the agent run completes.
 `session_id`, or `vm_name`. If the session has already expired, it sets
 `expires_at` to now plus `extend_by` (for example `8h`, `2d`, or `PT8H`);
 active sessions are left unchanged.
+
+`effect:session:approve-mcp-tools-for-run` writes a workflow-run-scoped MCP
+tool approval lease for the selected session. The approval is not persisted in
+the session manifest, and `effect:agent:prompt` / `effect:agent:enqueue-prompt`
+carry the lease into the agent invocation through `mcp_tool_approval_lease_id`.
+Direct upstream approval outputs are detected automatically.
+
+`effect:artifact:stage` copies a file or directory that resolves under
+`/home/agent` into the session `/artifacts` folder. `destination_path`, when
+set, is relative to `/artifacts` and cannot contain dot or parent segments.
+`effect:artifact:publish-artifacts` compresses the entire `/artifacts` folder
+as a `tar.gz` archive and stores it in the host durable artifact store under an
+immutable caller-provided `key`. Reusing a key fails.
 
 ### Query definition schema keys
 

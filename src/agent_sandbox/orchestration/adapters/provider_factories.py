@@ -135,6 +135,7 @@ class _AdminServiceAgentPromptDispatchPort:
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
+        mcp_gateway_url: str | None = None,
     ) -> Any:
         return self._admin_service.resume_agent(
             target=target,
@@ -143,4 +144,5 @@ class _AdminServiceAgentPromptDispatchPort:
             vm_user=vm_user,
             dispatch_id=dispatch_id,
             resume_thread_id=resume_thread_id,
+            mcp_gateway_url=mcp_gateway_url,
         )

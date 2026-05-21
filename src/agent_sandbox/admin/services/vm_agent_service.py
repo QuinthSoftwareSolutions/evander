@@ -1646,6 +1646,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
         resume_mode: str = "new_context",
+        mcp_gateway_url: str | None = None,
     ) -> VmActionResult:
         vm_name = self._resolve_vm_name_from_target(target)
         session_id: str | None = None
@@ -1698,6 +1699,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                 if effective_resume_thread_id
                 else ["--resume-mode", normalized_resume_mode]
             ),
+            *(["--mcp-gateway-url", mcp_gateway_url] if mcp_gateway_url else []),
         ]
         try:
             resume_timeout_seconds = max(

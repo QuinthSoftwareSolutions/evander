@@ -63,6 +63,12 @@ from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.repositories.chat_assistant_sessions import JsonChatAssistantSessionRepository
 from agent_sandbox.repositories.session_manifests import as_session_manifest_repository
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
+from agent_sandbox.published_artifacts import (
+    PublishedArtifact,
+    PublishedArtifactMetadata,
+    PublishedArtifactStore,
+    validate_artifact_key,
+)
 from agent_sandbox.session_artifacts import (
     AGENT_ARTIFACTS_ENV,
     DEFAULT_AGENT_ARTIFACTS_DIR,
@@ -805,6 +811,7 @@ class ToolCallAuditEntryPayload(BaseModel):
     request_id: str | None = None
     correlation_id: str | None = None
     approval_request_id: str | None = None
+    mcp_tool_approval_lease_id: str | None = None
     workflow_run_id: str | None = None
     trace_id: str | None = None
     duration_ms: int | None = None
@@ -920,6 +927,21 @@ class WorkflowRunClearPayload(BaseModel):
     effect_records_updated: int = 0
     gate_records_updated: int = 0
     await_agent_records_removed: int = 0
+
+
+class WorkflowNodeFailuresDismissPayload(BaseModel):
+    worker_id: str = "trigger-orchestrator"
+    node_id: str
+    dismissed_at: datetime
+    effect_records_updated: int = 0
+    gate_records_updated: int = 0
+
+
+class PublishedArtifactListPayload(BaseModel):
+    items: list[PublishedArtifactMetadata]
+    limit: int
+    total: int
+    next_cursor: str | None = None
 
 
 class DeploymentStatusPayload(BaseModel):
@@ -1286,8 +1308,15 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     ),
     "effect:notification:send": "Send a notification through a configured communication target.",
     "effect:session:update-metadata": "Patch metadata on a host-side session record.",
+    "effect:session:approve-mcp-tools-for-run": (
+        "Approve MCP tools for one agent session during the current workflow run."
+    ),
     "effect:session:renew-if-expired": (
         "Extend a host-side session only when its expiry has already passed."
+    ),
+    "effect:artifact:stage": "Copy a file or directory from /home/agent into the session artifacts folder.",
+    "effect:artifact:publish-artifacts": (
+        "Compress and publish the session artifacts folder to the durable artifact store."
     ),
     "effect:git:promote-agent-branch": (
         "Promote an agent branch into a trusted host checkout."
@@ -2295,6 +2324,54 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="effect",
+        type="effect:artifact:stage",
+        label="Stage artifact",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field(
+                "path",
+                "Path",
+                "string",
+                required=True,
+                bindable=True,
+                description="File or directory path that resolves under /home/agent.",
+                placeholder="repos/project/output/report.html",
+            ),
+            _field(
+                "destination_path",
+                "Destination path",
+                "string",
+                bindable=True,
+                description="Optional relative destination under /artifacts. Defaults to the source basename.",
+                placeholder="reports/report.html",
+            ),
+            _field("vm_user", "VM user", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:artifact:publish-artifacts",
+        label="Publish artifacts",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field(
+                "key",
+                "Key",
+                "string",
+                required=True,
+                bindable=True,
+                description="Immutable key for the published tar.gz archive.",
+                placeholder="runs/${{trigger.event_id}}",
+            ),
+            _field("vm_user", "VM user", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
         type="effect:agent:prompt",
         label="Agent prompt",
         fields=[
@@ -2305,6 +2382,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("model", "Model", "string", bindable=True),
             _field("vm_user", "VM user", "string", bindable=True),
             _field("resume_thread_id", "Resume thread ID", "string", bindable=True),
+            _field(
+                "mcp_tool_approval_lease_id",
+                "MCP tool approval lease ID",
+                "string",
+                bindable=True,
+                description=(
+                    "Lease ID from Approve MCP tools for run. Direct upstream approval "
+                    "outputs are detected automatically."
+                ),
+            ),
         ],
         output_ports=[
             _port(
@@ -2331,6 +2418,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("model", "Model", "string", bindable=True),
             _field("vm_user", "VM user", "string", bindable=True),
             _field("resume_thread_id", "Resume thread ID", "string", bindable=True),
+            _field(
+                "mcp_tool_approval_lease_id",
+                "MCP tool approval lease ID",
+                "string",
+                bindable=True,
+                description=(
+                    "Lease ID from Approve MCP tools for run. Direct upstream approval "
+                    "outputs are detected automatically."
+                ),
+            ),
             _field("queue_key", "Queue key", "string", bindable=True),
         ],
         output_ports=[
@@ -2629,6 +2726,37 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("session_id", "Session ID", "string", bindable=True),
             _field("vm_name", "VM name", "string", bindable=True),
             _field("metadata", "Metadata", "json", required=True, bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:session:approve-mcp-tools-for-run",
+        label="Approve MCP tools for run",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field(
+                "tools",
+                "Tools",
+                "string_list",
+                required=True,
+                bindable=True,
+                description=(
+                    "MCP tools to approve only for this workflow run and session."
+                ),
+                options=_tool_field_options(),
+            ),
+            _field(
+                "expires_in_seconds",
+                "Expires in seconds",
+                "number",
+                bindable=True,
+                description=(
+                    "Optional lease lifetime. Defaults to 24 hours and never extends "
+                    "past the session expiry."
+                ),
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -4825,6 +4953,7 @@ class AdminService:
                 read_workflow_run_detail=self._read_workflow_run_detail,
                 read_workflow_run_search=self._read_workflow_run_search,
                 clear_workflow_run=self._clear_workflow_run,
+                dismiss_workflow_node_failures=self._dismiss_workflow_node_failures,
                 resume_workflow_run=self._resume_workflow_run,
                 workflow_event_journal=self._workflow_event_journal,
                 upsert_trigger_config=self._upsert_trigger_config,
@@ -7656,6 +7785,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
         resume_mode: str = "new_context",
+        mcp_gateway_url: str | None = None,
     ) -> VmActionResult:
         return self.vm_agent_admin.resume_agent(
             target,
@@ -7665,6 +7795,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             dispatch_id=dispatch_id,
             resume_thread_id=resume_thread_id,
             resume_mode=resume_mode,
+            mcp_gateway_url=mcp_gateway_url,
         )
 
     def _spawn_agent_completion_watcher(
@@ -7947,6 +8078,42 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "vm_name": result.get("vm_name") or session.vm_id,
             "vm_provider": session.vm_provider,
         }
+
+    def list_published_artifacts(
+        self,
+        *,
+        key: str | None = None,
+        published_after: datetime | None = None,
+        published_before: datetime | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> PublishedArtifactListPayload:
+        normalized_limit = max(1, min(int(limit or 50), 200))
+        try:
+            offset = int(str(cursor or "0").strip() or "0")
+        except ValueError as exc:
+            raise ValueError("cursor must be a non-negative integer offset") from exc
+        if offset < 0:
+            raise ValueError("cursor must be a non-negative integer offset")
+        records = self._published_artifact_store().list_metadata(
+            key=key,
+            published_after=published_after,
+            published_before=published_before,
+        )
+        page = records[offset : offset + normalized_limit]
+        next_offset = offset + normalized_limit
+        return PublishedArtifactListPayload(
+            items=page,
+            limit=normalized_limit,
+            total=len(records),
+            next_cursor=str(next_offset) if next_offset < len(records) else None,
+        )
+
+    def get_published_artifact(self, key: str) -> PublishedArtifactMetadata:
+        return self._published_artifact_store().get(validate_artifact_key(key)).metadata
+
+    def published_artifact_file(self, key: str) -> PublishedArtifact:
+        return self._published_artifact_store().get(validate_artifact_key(key))
 
     @staticmethod
     def _derive_local_pr_notes_ref(remote_url: str) -> str:
@@ -8497,6 +8664,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
     def clear_workflow_run(self, event_id: str) -> WorkflowRunClearPayload:
         return self.workflow_config_admin.clear_workflow_run(event_id)
+
+    def dismiss_workflow_node_failures(self, node_id: str) -> WorkflowNodeFailuresDismissPayload:
+        return self.workflow_config_admin.dismiss_workflow_node_failures(node_id)
 
     def resume_workflow_run(self, event_id: str) -> WorkflowRunResumePayload:
         return self.workflow_config_admin.resume_workflow_run(event_id)
@@ -10292,6 +10462,66 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             await_agent_records_removed=await_agent_records_removed,
         )
 
+    def _dismiss_workflow_node_failures(self, node_id: str) -> WorkflowNodeFailuresDismissPayload:
+        normalized_node_id = str(node_id or "").strip()
+        if not normalized_node_id:
+            raise ValueError("Workflow node_id is required.")
+
+        stores = self._workflow_run_store_paths()
+        dismissed_at = _utc_now()
+        dismiss_reason = "manual_dismiss_node_failures"
+
+        def _dismiss_failed_records(records: dict[str, Any], *, node_id_field: str) -> int:
+            updated = 0
+            for execution_id, record in records.items():
+                record_node_id = str(getattr(record, node_id_field, "") or "").strip()
+                if record_node_id != normalized_node_id:
+                    continue
+                status = str(getattr(record, "status", "") or "").strip()
+                if status != "failed" or getattr(record, "dismissed_at", None):
+                    continue
+                setattr(record, "dismissed_at", dismissed_at)
+                setattr(record, "dismiss_reason", dismiss_reason)
+                records[execution_id] = record
+                updated += 1
+            return updated
+
+        if self._workflow_uses_sqlite_store(stores):
+            _, effect_store, gate_store = self._workflow_sqlite_store_bundle(stores)
+        else:
+            from agent_sandbox.daemons.effect_orchestrator import (
+                JsonExecutionStore,
+                JsonGateExecutionStore,
+            )
+
+            effect_store = JsonExecutionStore(stores["effect_execution_store_path"])
+            gate_store = JsonGateExecutionStore(stores["gate_execution_store_path"])
+
+        effect_records_updated = effect_store.update_all(
+            lambda records: _dismiss_failed_records(records, node_id_field="effect_id")
+        )
+        gate_records_updated = gate_store.update_all(
+            lambda records: _dismiss_failed_records(records, node_id_field="gate_id")
+        )
+
+        if effect_records_updated or gate_records_updated:
+            self._workflow_event_journal().append(
+                "workflow.node_failures.dismissed",
+                source="workflow_editor",
+                subject_id=normalized_node_id,
+                payload={
+                    "effect_records_updated": effect_records_updated,
+                    "gate_records_updated": gate_records_updated,
+                },
+            )
+
+        return WorkflowNodeFailuresDismissPayload(
+            node_id=normalized_node_id,
+            dismissed_at=dismissed_at,
+            effect_records_updated=effect_records_updated,
+            gate_records_updated=gate_records_updated,
+        )
+
     def _resume_workflow_run(self, event_id: str) -> WorkflowRunResumePayload:
         normalized_event_id = str(event_id or "").strip()
         if not normalized_event_id:
@@ -11050,6 +11280,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
     def _communication_artifact_store(self) -> CommunicationArtifactStore:
         return CommunicationArtifactStore(self.config.runtime_dir)
+
+    def _published_artifact_store(self) -> PublishedArtifactStore:
+        return PublishedArtifactStore(self.config.runtime_dir)
 
     def _read_workflow_run_detail(
         self,
@@ -13606,6 +13839,19 @@ def _tool_call_audit_entry_from_payload(payload: dict[str, Any]) -> ToolCallAudi
         if text:
             approval_request_id = text
             break
+    mcp_tool_approval_lease_id = None
+    for candidate in (
+        payload.get("mcp_tool_approval_lease_id"),
+        payload.get("tool_approval_lease_id"),
+        raw_args.get("mcp_tool_approval_lease_id"),
+        raw_args.get("tool_approval_lease_id"),
+        raw_result.get("mcp_tool_approval_lease_id"),
+        raw_result.get("tool_approval_lease_id"),
+    ):
+        text = str(candidate or "").strip()
+        if text:
+            mcp_tool_approval_lease_id = text
+            break
     tool_name = None
     for candidate in (payload.get("tool_name"), payload.get("tool"), raw_args.get("tool_name")):
         text = str(candidate or "").strip()
@@ -13688,6 +13934,7 @@ def _tool_call_audit_entry_from_payload(payload: dict[str, Any]) -> ToolCallAudi
         request_id=request_id,
         correlation_id=correlation_id,
         approval_request_id=approval_request_id,
+        mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
         workflow_run_id=workflow_run_id,
         trace_id=trace_id,
         duration_ms=normalized_duration_ms,
@@ -13743,6 +13990,7 @@ def _tool_call_audit_entry_matches_filters(
                 _tool_call_safe_text(entry.request_id),
                 _tool_call_safe_text(entry.correlation_id),
                 _tool_call_safe_text(entry.approval_request_id),
+                _tool_call_safe_text(entry.mcp_tool_approval_lease_id),
                 _tool_call_safe_text(entry.workflow_run_id),
                 _tool_call_safe_text(entry.trace_id),
                 _tool_call_safe_text(entry.decision),

@@ -13,6 +13,10 @@ from agent_sandbox.effects.providers.agent_clone_repo import AgentCloneRepoEffec
 from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
 from agent_sandbox.effects.providers.agent_create import AgentCreateEffectProvider
 from agent_sandbox.effects.providers.agent_destroy import AgentDestroyEffectProvider
+from agent_sandbox.effects.providers.artifacts import (
+    ArtifactPublishArtifactsEffectProvider,
+    ArtifactStageEffectProvider,
+)
 from agent_sandbox.effects.providers.event_emit import EventEmitEffectProvider
 from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
 from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
@@ -36,6 +40,9 @@ from agent_sandbox.effects.providers.semantic_ensure_collection import (
 from agent_sandbox.effects.providers.semantic_upsert import SemanticUpsertEffectProvider
 from agent_sandbox.effects.providers.session_update_metadata import (
     SessionUpdateMetadataEffectProvider,
+)
+from agent_sandbox.effects.providers.session_approve_mcp_tools import (
+    SessionApproveMcpToolsForRunEffectProvider,
 )
 from agent_sandbox.effects.providers.session_renew_if_expired import (
     SessionRenewIfExpiredEffectProvider,
@@ -137,6 +144,8 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:agent:clone-repo": AgentCloneRepoEffectProvider,
             "effect:agent:bootstrap-frontend": AgentBootstrapFrontendEffectProvider,
             "effect:agent:copy-files": AgentCopyFilesEffectProvider,
+            "effect:artifact:stage": ArtifactStageEffectProvider,
+            "effect:artifact:publish-artifacts": ArtifactPublishArtifactsEffectProvider,
             "effect:agent:prompt": AgentPromptEffectProvider,
             "effect:agent:enqueue-prompt": AgentEnqueuePromptEffectProvider,
             "effect:chat-assistant:ensure-session": ChatAssistantEnsureSessionEffectProvider,
@@ -150,6 +159,9 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:ado:update-work-item": AdoUpdateWorkItemEffectProvider,
             "effect:communication:send-message": CommunicationSendMessageEffectProvider,
             "effect:notification:send": NotificationSendEffectProvider,
+            "effect:session:approve-mcp-tools-for-run": (
+                SessionApproveMcpToolsForRunEffectProvider
+            ),
             "effect:session:update-metadata": SessionUpdateMetadataEffectProvider,
             "effect:session:renew-if-expired": SessionRenewIfExpiredEffectProvider,
             "effect:git:promote-agent-branch": GitPromoteAgentBranchEffectProvider,

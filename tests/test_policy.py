@@ -14,8 +14,17 @@ from agent_sandbox.models import (
     TeamsMessageEnvelope,
     ToolName,
 )
-from agent_sandbox.policy import PolicyEngine, PolicyError, ToolArgumentPolicyError
+from agent_sandbox.policy import (
+    PolicyEngine,
+    PolicyError,
+    ToolArgumentPolicyError,
+    reset_tool_approval_context,
+    set_tool_approval_context,
+)
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from agent_sandbox.repositories.session_tool_approval_leases import (
+    JsonSessionToolApprovalLeaseRepository,
+)
 from agent_sandbox.runtime import allowed_tools_for_capability_profile
 from agent_sandbox.services import (
     effective_teams_channel_targets,
@@ -188,6 +197,76 @@ def test_require_tool_rejects_unknown_tool(tmp_path: Path) -> None:
         assert "not allowed" in str(exc)
     else:
         raise AssertionError("Expected PolicyError")
+
+
+def test_require_tool_accepts_matching_run_scoped_tool_approval_lease(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    engine.tool_approval_leases = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    lease = engine.tool_approval_leases.upsert_lease(
+        session_id="s1",
+        workflow_run_id="run-1",
+        tools=[ToolName.RUN_SCRIPT],
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+    )
+
+    session = engine.require_tool(
+        "s1",
+        ToolName.RUN_SCRIPT,
+        workflow_run_id="run-1",
+        mcp_tool_approval_lease_id=lease.lease_id,
+    )
+
+    assert session.session_id == "s1"
+    with pytest.raises(PolicyError, match="not allowed"):
+        engine.require_tool(
+            "s1",
+            ToolName.RUN_SCRIPT,
+            workflow_run_id="run-2",
+            mcp_tool_approval_lease_id=lease.lease_id,
+        )
+
+
+def test_require_tool_reads_and_resets_run_scoped_tool_approval_context(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    engine.tool_approval_leases = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    lease = engine.tool_approval_leases.upsert_lease(
+        session_id="s1",
+        workflow_run_id="run-1",
+        tools=[ToolName.RUN_SCRIPT],
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+    )
+
+    token = set_tool_approval_context(
+        session_id="s1",
+        workflow_run_id="run-1",
+        lease_id=lease.lease_id,
+    )
+    try:
+        session = engine.require_tool("s1", ToolName.RUN_SCRIPT)
+    finally:
+        reset_tool_approval_context(token)
+
+    assert session.session_id == "s1"
+    with pytest.raises(PolicyError, match="not allowed"):
+        engine.require_tool("s1", ToolName.RUN_SCRIPT)
 
 
 def test_require_tool_schedule_resume_requires_vm_binding(tmp_path: Path) -> None:

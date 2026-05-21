@@ -488,6 +488,23 @@ class SessionManifest(BaseModel):
         return self.app_metadata().require_environment(alias)
 
 
+class SessionToolApprovalLease(BaseModel):
+    lease_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    workflow_run_id: str = Field(min_length=1)
+    tools: list[ToolName]
+    effect_execution_id: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    expires_at: datetime
+    revoked_at: datetime | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("tools", mode="before")
+    @classmethod
+    def normalize_tools(cls, value: object) -> list[ToolName]:
+        return normalize_tool_names(value, field_name="tools")
+
+
 class HttpTargetMetadata(BaseModel):
     base_url: str = Field(validation_alias=AliasChoices("base_url", "allowed_base_url"))
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -1257,6 +1274,7 @@ class AuditEvent(BaseModel):
     request_id: str | None = None
     correlation_id: str | None = None
     approval_request_id: str | None = None
+    mcp_tool_approval_lease_id: str | None = None
     workflow_run_id: str | None = None
     trace_id: str | None = None
     duration_ms: int | None = None

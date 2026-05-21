@@ -9,7 +9,9 @@ from typing import Any
 from agent_sandbox.execution import ExecutionBackendKind, ExecutionSpec, build_execution_backend
 from agent_sandbox.effects.providers.base import EffectLifecycleHookBase
 from agent_sandbox.effects.providers.agent_session import (
+    container_worker_guest_gateway_url,
     container_prompt_command,
+    gateway_url_with_session_context,
     safe_effect_execution_id,
 )
 from agent_sandbox.orchestration.effect_extensions import (
@@ -107,6 +109,10 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 vm_user=record.vm_user,
                 dispatch_id=dispatch_id,
                 resume_thread_id=record.resume_thread_id,
+                mcp_gateway_url=self._mcp_gateway_url_for_libvirt_record(
+                    worker=worker,
+                    record=record,
+                ),
             )
             if result is not None and bool(getattr(result, "success", False)):
                 self._persist_chat_assistant_thread_id(
@@ -189,6 +195,25 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         dispatch_id = f"dispatch-{record.effect_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
         model = str(record.model or getattr(session, "model", None) or "gpt-5.4").strip()
         execution_id = safe_effect_execution_id("agent", session_id)
+        record_metadata = getattr(record, "metadata", {})
+        workflow_run_id = (
+            str(record_metadata.get("workflow_run_id") or "").strip()
+            if isinstance(record_metadata, dict)
+            else ""
+        )
+        mcp_tool_approval_lease_id = (
+            str(record_metadata.get("mcp_tool_approval_lease_id") or "").strip()
+            if isinstance(record_metadata, dict)
+            else ""
+        )
+        mcp_gateway_url = None
+        if mcp_tool_approval_lease_id:
+            mcp_gateway_url = gateway_url_with_session_context(
+                container_worker_guest_gateway_url(config),
+                session_id=session_id,
+                workflow_run_id=workflow_run_id or None,
+                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+            )
         try:
             handle = backend.start(
                 backend.prepare(
@@ -201,6 +226,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                             prompt=record.prompt,
                             model=model,
                             resume_thread_id=record.resume_thread_id,
+                            mcp_gateway_url=mcp_gateway_url,
                         ),
                         metadata={
                             "effect_type": "effect:agent:enqueue-prompt",
@@ -530,6 +556,111 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             except Exception:
                 continue
         return getattr(worker, "config", None)
+
+    def _mcp_gateway_url_for_libvirt_record(
+        self,
+        *,
+        worker: Any,
+        record: Any,
+    ) -> str | None:
+        record_metadata = getattr(record, "metadata", {})
+        if not isinstance(record_metadata, dict):
+            return None
+        mcp_tool_approval_lease_id = str(
+            record_metadata.get("mcp_tool_approval_lease_id") or ""
+        ).strip()
+        if not mcp_tool_approval_lease_id:
+            return None
+
+        workflow_run_id = str(record_metadata.get("workflow_run_id") or "").strip() or None
+        session_id, session = self._session_context_for_libvirt_record(
+            worker=worker,
+            record=record,
+        )
+        if not session_id:
+            return None
+        config = self._config_for_libvirt_record(
+            worker=worker,
+            session_id=session_id,
+            session=session,
+        )
+        base_gateway_url = str(getattr(config, "gateway_url", "") or "").strip()
+        if not base_gateway_url:
+            return None
+        return gateway_url_with_session_context(
+            base_gateway_url,
+            session_id=session_id,
+            workflow_run_id=workflow_run_id,
+            mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+        )
+
+    def _session_context_for_libvirt_record(
+        self,
+        *,
+        worker: Any,
+        record: Any,
+    ) -> tuple[str | None, Any | None]:
+        repository = self._session_repository_for_worker(worker)
+        session_id = str(getattr(record, "session_id", "") or "").strip()
+        if repository is not None and session_id:
+            get_session = getattr(repository, "get_session", None)
+            if callable(get_session):
+                try:
+                    return session_id, get_session(session_id)
+                except Exception:
+                    return session_id, None
+        if repository is not None:
+            resolve_session_target = getattr(repository, "resolve_session_target", None)
+            if callable(resolve_session_target):
+                try:
+                    session = resolve_session_target(str(getattr(record, "target", "") or ""))
+                except Exception:
+                    session = None
+                resolved_session_id = str(getattr(session, "session_id", "") or "").strip()
+                if resolved_session_id:
+                    return resolved_session_id, session
+        return session_id or None, None
+
+    @staticmethod
+    def _session_repository_for_worker(worker: Any) -> Any | None:
+        admin_service = getattr(getattr(worker, "provider_factory", None), "admin_service", None)
+        runtime = getattr(admin_service, "runtime", None)
+        return getattr(runtime, "session_repository", None)
+
+    def _config_for_libvirt_record(
+        self,
+        *,
+        worker: Any,
+        session_id: str,
+        session: Any | None,
+    ) -> Any | None:
+        for resolver in self._provider_config_resolvers_for_worker(worker):
+            resolve_for_session_id = getattr(resolver, "resolve_for_session_id", None)
+            if callable(resolve_for_session_id):
+                try:
+                    return resolve_for_session_id(session_id)
+                except Exception:
+                    pass
+            directory_path = getattr(session, "directory_path", None)
+            resolve_for_directory = getattr(resolver, "resolve_for_directory", None)
+            if directory_path and callable(resolve_for_directory):
+                try:
+                    return resolve_for_directory(directory_path)
+                except Exception:
+                    pass
+        return getattr(worker, "config", None)
+
+    @staticmethod
+    def _provider_config_resolvers_for_worker(worker: Any) -> tuple[Any, ...]:
+        resolvers: list[Any] = []
+        direct_resolver = getattr(worker, "provider_config_resolver", None)
+        if direct_resolver is not None:
+            resolvers.append(direct_resolver)
+        admin_service = getattr(getattr(worker, "provider_factory", None), "admin_service", None)
+        runtime_resolver = getattr(getattr(admin_service, "runtime", None), "provider_config", None)
+        if runtime_resolver is not None and runtime_resolver is not direct_resolver:
+            resolvers.append(runtime_resolver)
+        return tuple(resolvers)
 
 
 def build_effect_lifecycle_hooks(*, provider_factory: Any) -> tuple[EffectLifecycleHookBase, ...]:

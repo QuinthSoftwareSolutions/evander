@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextvars import ContextVar, Token
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import re
 from pathlib import PurePath, PurePosixPath, PureWindowsPath
@@ -31,11 +33,45 @@ from agent_sandbox.repositories.session_manifests import (
     SessionManifestRepository,
     as_session_manifest_repository,
 )
+from agent_sandbox.repositories.session_tool_approval_leases import (
+    SessionToolApprovalLeaseRepository,
+)
 from agent_sandbox.storage import JsonStore
 
 
 class PolicyError(RuntimeError):
     """Raised when a tool action violates the session policy."""
+
+
+@dataclass(frozen=True, slots=True)
+class ToolApprovalContext:
+    session_id: str | None = None
+    workflow_run_id: str | None = None
+    lease_id: str | None = None
+
+
+_TOOL_APPROVAL_CONTEXT: ContextVar[ToolApprovalContext | None] = ContextVar(
+    "agent_sandbox_tool_approval_context",
+    default=None,
+)
+
+
+def set_tool_approval_context(
+    *,
+    session_id: str | None,
+    workflow_run_id: str | None,
+    lease_id: str | None,
+) -> Token[ToolApprovalContext | None]:
+    context = ToolApprovalContext(
+        session_id=str(session_id or "").strip() or None,
+        workflow_run_id=str(workflow_run_id or "").strip() or None,
+        lease_id=str(lease_id or "").strip() or None,
+    )
+    return _TOOL_APPROVAL_CONTEXT.set(context)
+
+
+def reset_tool_approval_context(token: Token[ToolApprovalContext | None]) -> None:
+    _TOOL_APPROVAL_CONTEXT.reset(token)
 
 
 class ToolArgumentPolicyError(PolicyError):
@@ -191,10 +227,12 @@ class PolicyEngine:
         approval_store: JsonStore[ApprovalRequest],
         *,
         policy_config: PolicyConfigResolver | None = None,
+        tool_approval_leases: SessionToolApprovalLeaseRepository | None = None,
     ) -> None:
         self.config = config
         self.session_store = as_session_manifest_repository(session_store)
         self.approval_store = approval_store
+        self.tool_approval_leases = tool_approval_leases
         self.policy_config = policy_config or PolicyConfigResolver(
             config,
             session_store=session_store,
@@ -212,7 +250,14 @@ class PolicyEngine:
             raise PolicyError(f"Expired session: {session_id}")
         return session
 
-    def require_tool(self, session_id: str, tool_name: ToolName) -> SessionManifest:
+    def require_tool(
+        self,
+        session_id: str,
+        tool_name: ToolName,
+        *,
+        workflow_run_id: str | None = None,
+        mcp_tool_approval_lease_id: str | None = None,
+    ) -> SessionManifest:
         session = self.get_session(session_id)
         if tool_name.value.startswith("assistant_"):
             profile = str(session.metadata.get("capability_profile") or "").strip().lower()
@@ -230,6 +275,13 @@ class PolicyEngine:
         if tool_name == ToolName.LIST_PENDING_AGENT_PROMPTS and not has_tool_permission:
             has_tool_permission = ToolName.RESPOND_TO_AGENT in session.allowed_tools
         if not has_tool_permission:
+            has_tool_permission = self._lease_allows_tool(
+                session_id=session_id,
+                tool_name=tool_name,
+                workflow_run_id=workflow_run_id,
+                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+            )
+        if not has_tool_permission:
             raise PolicyError(f"Tool {tool_name.value} is not allowed for session {session_id}")
         if tool_name == ToolName.SCHEDULE_RESUME and not str(session.vm_id or "").strip():
             raise PolicyError(f"Tool {tool_name.value} requires a session with a VM binding")
@@ -240,6 +292,32 @@ class PolicyEngine:
         }:
             self.require_pr_feedback_streams(session)
         return session
+
+    def _lease_allows_tool(
+        self,
+        *,
+        session_id: str,
+        tool_name: ToolName,
+        workflow_run_id: str | None,
+        mcp_tool_approval_lease_id: str | None,
+    ) -> bool:
+        if self.tool_approval_leases is None:
+            return False
+        context = _TOOL_APPROVAL_CONTEXT.get()
+        normalized_session_id = str(session_id or "").strip()
+        resolved_workflow_run_id = str(workflow_run_id or "").strip() or None
+        resolved_lease_id = str(mcp_tool_approval_lease_id or "").strip() or None
+        if context is not None and context.session_id == normalized_session_id:
+            resolved_workflow_run_id = resolved_workflow_run_id or context.workflow_run_id
+            resolved_lease_id = resolved_lease_id or context.lease_id
+        if not resolved_workflow_run_id or not resolved_lease_id:
+            return False
+        return self.tool_approval_leases.is_tool_approved(
+            lease_id=resolved_lease_id,
+            session_id=normalized_session_id,
+            workflow_run_id=resolved_workflow_run_id,
+            tool_name=tool_name,
+        )
 
     def approval_required_for_tool(self, session: SessionManifest, tool_name: ToolName) -> bool:
         if tool_name in {ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK}:

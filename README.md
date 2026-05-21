@@ -487,7 +487,9 @@ session-namespaced push pattern. The guest-side PID and state files live under
 `/home/agent/.agent-sandbox/`; root-owned transcript logs live under `/var/log/agent-sandbox/agent-runs/`.
 VM and container agents share `/artifacts` as the workflow-readable artifacts
 folder. Workflow query nodes can read UTF-8 text files from this folder by
-session id and relative path.
+session id and relative path. Artifact workflow effects can stage files from
+`/home/agent` into this folder and publish the folder as an immutable keyed
+`tar.gz` archive in the host runtime artifact store.
 When `--python` is enabled, the guest repo also gets a repo-local `.venv`. Activate it with
 `. .venv/bin/activate`, then run `python -m pytest -q` and `python -m ruff check` from inside
 the guest clone.

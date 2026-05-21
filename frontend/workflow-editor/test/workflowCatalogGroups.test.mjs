@@ -27,6 +27,7 @@ test("groups effect node types by related functionality", () => {
     catalogNode("effect", "effect:issue:update-metadata", "Issue update metadata"),
     catalogNode("effect", "effect:ado:update-work-item", "ADO update work item"),
     catalogNode("effect", "effect:bash:script", "Bash script"),
+    catalogNode("effect", "effect:artifact:publish-artifacts", "Publish artifacts"),
     catalogNode("effect", "effect:communication:send-message", "Send message"),
     catalogNode("effect", "effect:notification:send", "Send notification"),
   ], "effect");
@@ -52,6 +53,10 @@ test("groups effect node types by related functionality", () => {
       {
         label: "Semantic store",
         types: ["effect:semantic:upsert"],
+      },
+      {
+        label: "Artifacts",
+        types: ["effect:artifact:publish-artifacts"],
       },
       {
         label: "Issues & sessions",

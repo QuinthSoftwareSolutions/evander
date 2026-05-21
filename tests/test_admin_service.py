@@ -1300,6 +1300,45 @@ def test_resume_agent_passes_explicit_resume_thread_id(tmp_path: Path, monkeypat
     assert "receptionist-session" in watcher["cmd"]
 
 
+def test_resume_agent_passes_mcp_gateway_url(tmp_path: Path, monkeypatch) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="receptionist-session",
+            vm_id="agent-sandbox-receptionist-vm",
+            expires_at=datetime(2026, 4, 7, 12, 0, tzinfo=UTC),
+            allowed_tools=[],
+            model="gpt-5.4",
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run_subprocess(cmd: list[str], **kwargs: object):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="thread_id=thread-mcp-1\nok\n", stderr=""
+        )
+
+    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", fake_run_subprocess)
+
+    result = service.resume_agent(
+        "agent-sandbox-receptionist-vm",
+        "Resume now",
+        mcp_gateway_url=(
+            "http://gateway.test/mcp?"
+            "session_id=receptionist-session&mcp_tool_approval_lease_id=lease-1"
+        ),
+    )
+
+    assert result.success is True
+    assert "--mcp-gateway-url" in captured["cmd"]
+    gateway_url_index = captured["cmd"].index("--mcp-gateway-url")
+    assert captured["cmd"][gateway_url_index + 1] == (
+        "http://gateway.test/mcp?"
+        "session_id=receptionist-session&mcp_tool_approval_lease_id=lease-1"
+    )
+
+
 def test_resume_agent_reuses_stored_session_thread_id(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
