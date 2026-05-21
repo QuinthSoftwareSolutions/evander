@@ -566,16 +566,16 @@ function DashboardBlock({
   const tone = statusTone(state);
   const showChildren = !state.loading && !state.error && !state.missing && state.data !== null;
   return (
-    <section style={{ display: "grid", gap: "0.85rem" }}>
-      <div className="panel-heading" style={{ padding: 0, borderBottom: "0" }}>
-        <div style={{ minWidth: 0 }}>
-          <div className="eyebrow">{title}</div>
+    <section className="dashboard-block">
+      <div className="dashboard-block-header">
+        <div className="dashboard-block-copy">
+          <div className="dashboard-block-title-row">
+            <div className="eyebrow">{title}</div>
+            <span className={`status-pill ${stateClassName(tone)}`}>{statusLabel(state)}</span>
+          </div>
           <p style={{ margin: "0.2rem 0 0", color: "inherit" }}>{remoteMessage(state, missingFallback, summary)}</p>
         </div>
-        <div className="inline-actions" style={{ alignItems: "center", flexWrap: "wrap" }}>
-          <span className={`status-pill ${stateClassName(tone)}`}>{statusLabel(state)}</span>
-          {actions}
-        </div>
+        {actions ? <div className="dashboard-block-actions">{actions}</div> : null}
       </div>
       {state.loading && !state.data ? <div className="empty-state">Loading…</div> : null}
       {!state.loading && !state.error && state.missing && !state.data ? <div className="empty-state">{state.missing}</div> : null}
@@ -590,6 +590,39 @@ function TabButton({ tab, label }: { tab: AdminTab; label: string }) {
     <button type="button" className="admin-shell-button admin-shell-button-muted" onClick={() => openTab(tab)}>
       {label}
     </button>
+  );
+}
+
+function DashboardPanel({
+  eyebrow,
+  title,
+  statusClassName,
+  statusLabel,
+  children,
+}: {
+  eyebrow: string;
+  title: string;
+  statusClassName: string;
+  statusLabel: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <details className="admin-panel dashboard-panel">
+      <summary className="panel-heading dashboard-panel-summary">
+        <div>
+          <div className="eyebrow">{eyebrow}</div>
+          <h2>{title}</h2>
+        </div>
+        <div className="dashboard-panel-summary-actions">
+          <span className={`status-pill ${statusClassName}`}>{statusLabel}</span>
+          <span className="dashboard-panel-expand-control">
+            <span className="dashboard-panel-expand-text-closed">Expand</span>
+            <span className="dashboard-panel-expand-text-open">Collapse</span>
+          </span>
+        </div>
+      </summary>
+      <div className="panel-body dashboard-panel-body">{children}</div>
+    </details>
   );
 }
 
@@ -891,16 +924,13 @@ export function OperationsDashboard() {
         </div>
       </div>
 
-      <div style={{ display: "grid", gap: "1rem", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" }}>
-        <article className="admin-panel">
-          <div className="panel-heading">
-            <div>
-              <div className="eyebrow">System health</div>
-              <h2>Control-plane status</h2>
-            </div>
-            <span className={`status-pill ${stateClassName(statusTone(state.adminState))}`}>{statusLabel(state.adminState)}</span>
-          </div>
-          <div className="panel-body" style={{ display: "grid", gap: "0.9rem" }}>
+      <div className="dashboard-panel-grid">
+        <DashboardPanel
+          eyebrow="System health"
+          title="Control-plane status"
+          statusClassName={stateClassName(statusTone(state.adminState))}
+          statusLabel={statusLabel(state.adminState)}
+        >
             <DashboardBlock
               title="Admin state"
               state={state.adminState}
@@ -1006,18 +1036,14 @@ export function OperationsDashboard() {
                 </div>
               ) : null}
             </DashboardBlock>
-          </div>
-        </article>
+        </DashboardPanel>
 
-        <article className="admin-panel">
-          <div className="panel-heading">
-            <div>
-              <div className="eyebrow">Agent inventory</div>
-              <h2>Live execution targets</h2>
-            </div>
-            <span className={`status-pill ${stateClassName(statusTone(state.agents))}`}>{statusLabel(state.agents)}</span>
-          </div>
-          <div className="panel-body" style={{ display: "grid", gap: "0.85rem" }}>
+        <DashboardPanel
+          eyebrow="Agent inventory"
+          title="Live execution targets"
+          statusClassName={stateClassName(statusTone(state.agents))}
+          statusLabel={statusLabel(state.agents)}
+        >
             <DashboardBlock
               title="Agents"
               state={state.agents}
@@ -1066,18 +1092,14 @@ export function OperationsDashboard() {
                 </div>
               ) : null}
             </DashboardBlock>
-          </div>
-        </article>
+        </DashboardPanel>
 
-        <article className="admin-panel">
-          <div className="panel-heading">
-            <div>
-              <div className="eyebrow">Automation activity</div>
-              <h2>Workflow runtime</h2>
-            </div>
-            <span className={`status-pill ${stateClassName(statusTone(state.workflowRuns))}`}>{statusLabel(state.workflowRuns)}</span>
-          </div>
-          <div className="panel-body" style={{ display: "grid", gap: "0.85rem" }}>
+        <DashboardPanel
+          eyebrow="Automation activity"
+          title="Workflow runtime"
+          statusClassName={stateClassName(statusTone(state.workflowRuns))}
+          statusLabel={statusLabel(state.workflowRuns)}
+        >
             <DashboardBlock
               title="Workflow runs"
               state={state.workflowRuns}
@@ -1174,18 +1196,14 @@ export function OperationsDashboard() {
                 </div>
               ) : null}
             </DashboardBlock>
-          </div>
-        </article>
+        </DashboardPanel>
 
-        <article className="admin-panel">
-          <div className="panel-heading">
-            <div>
-              <div className="eyebrow">Human-control work</div>
-              <h2>Approvals and sessions</h2>
-            </div>
-            <span className={`status-pill ${stateClassName(approvalTone(approvals))}`}>{approvals ? `${approvals.health.pending} pending` : statusLabel(state.approvals)}</span>
-          </div>
-          <div className="panel-body" style={{ display: "grid", gap: "0.85rem" }}>
+        <DashboardPanel
+          eyebrow="Human-control work"
+          title="Approvals and sessions"
+          statusClassName={stateClassName(approvalTone(approvals))}
+          statusLabel={approvals ? `${approvals.health.pending} pending` : statusLabel(state.approvals)}
+        >
             <DashboardBlock
               title="Approvals"
               state={state.approvals}
@@ -1287,18 +1305,14 @@ export function OperationsDashboard() {
                 </div>
               ) : null}
             </DashboardBlock>
-          </div>
-        </article>
+        </DashboardPanel>
 
-        <article className="admin-panel">
-          <div className="panel-heading">
-            <div>
-              <div className="eyebrow">Explainability shortcuts</div>
-              <h2>Tool-call audit trail</h2>
-            </div>
-            <span className={`status-pill ${stateClassName(statusTone(state.toolCalls))}`}>{statusLabel(state.toolCalls)}</span>
-          </div>
-          <div className="panel-body" style={{ display: "grid", gap: "0.85rem" }}>
+        <DashboardPanel
+          eyebrow="Explainability shortcuts"
+          title="Tool-call audit trail"
+          statusClassName={stateClassName(statusTone(state.toolCalls))}
+          statusLabel={statusLabel(state.toolCalls)}
+        >
             <DashboardBlock
               title="Tool calls"
               state={state.toolCalls}
@@ -1373,18 +1387,14 @@ export function OperationsDashboard() {
                 </div>
               ) : null}
             </DashboardBlock>
-          </div>
-        </article>
+        </DashboardPanel>
 
-        <article className="admin-panel">
-          <div className="panel-heading">
-            <div>
-              <div className="eyebrow">Onboarding / workflow actions</div>
-              <h2>Workflow document and catalog</h2>
-            </div>
-            <span className={`status-pill ${stateClassName(workflowDocumentTone(workflowDocument))}`}>{workflowDocument ? `${workflowDocument.graphs.length} graphs` : statusLabel(state.workflowDocument)}</span>
-          </div>
-          <div className="panel-body" style={{ display: "grid", gap: "0.85rem" }}>
+        <DashboardPanel
+          eyebrow="Onboarding / workflow actions"
+          title="Workflow document and catalog"
+          statusClassName={stateClassName(workflowDocumentTone(workflowDocument))}
+          statusLabel={workflowDocument ? `${workflowDocument.graphs.length} graphs` : statusLabel(state.workflowDocument)}
+        >
             <DashboardBlock
               title="Workflow document"
               state={state.workflowDocument}
@@ -1471,8 +1481,7 @@ export function OperationsDashboard() {
                 </div>
               ) : null}
             </DashboardBlock>
-          </div>
-        </article>
+        </DashboardPanel>
       </div>
     </div>
   );
