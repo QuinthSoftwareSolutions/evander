@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
 import os
+import random
+import time
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
 
@@ -22,6 +26,8 @@ from agent_sandbox.worker.models import (
 )
 from agent_sandbox.worker.security import sanitize_metadata, sanitize_text
 
+logger = logging.getLogger(__name__)
+
 
 class ContainerWorkerClientError(RuntimeError):
     pass
@@ -34,14 +40,28 @@ class ContainerWorkerClient:
         base_url: str,
         token_env: str = "AGENT_SANDBOX_WORKER_TOKEN",
         timeout_seconds: float = 30.0,
+        max_connect_attempts: int = 5,
+        base_connect_backoff_seconds: float = 1.0,
+        max_connect_backoff_seconds: float = 8.0,
+        sleep: Callable[[float], None] | None = None,
         client: httpx.Client | None = None,
     ) -> None:
         normalized_url = str(base_url or "").strip().rstrip("/")
         if not normalized_url:
             raise ValueError("container_worker_base_url is required for container_worker_vm.")
+        if max_connect_attempts < 1:
+            raise ValueError("max_connect_attempts must be at least 1.")
+        if base_connect_backoff_seconds <= 0:
+            raise ValueError("base_connect_backoff_seconds must be greater than 0.")
+        if max_connect_backoff_seconds <= 0:
+            raise ValueError("max_connect_backoff_seconds must be greater than 0.")
         self.base_url = normalized_url
         self.token_env = token_env
         self.timeout_seconds = timeout_seconds
+        self.max_connect_attempts = max_connect_attempts
+        self.base_connect_backoff_seconds = base_connect_backoff_seconds
+        self.max_connect_backoff_seconds = max_connect_backoff_seconds
+        self._sleep = sleep or time.sleep
         self._client = client
 
     def health(self) -> dict[str, Any]:
@@ -214,22 +234,62 @@ class ContainerWorkerClient:
                     f"container worker bearer token is not configured in env var {self.token_env}"
                 )
             headers["Authorization"] = f"Bearer {token}"
-        try:
-            if self._client is not None:
-                response = self._client.request(method, self._url(path), headers=headers, **kwargs)
-            else:
-                with httpx.Client(timeout=self.timeout_seconds) as client:
-                    response = client.request(method, self._url(path), headers=headers, **kwargs)
-        except httpx.HTTPError as exc:
+        method_normalized = method.upper()
+        for attempt in range(1, self.max_connect_attempts + 1):
+            try:
+                response = self._send_once(method_normalized, path, headers=headers, **kwargs)
+                break
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                if attempt >= self.max_connect_attempts:
+                    raise ContainerWorkerClientError(
+                        f"container worker {method_normalized} {path} failed after connect "
+                        f"retries attempts={attempt}/{self.max_connect_attempts}: "
+                        f"{sanitize_text(str(exc))}"
+                    ) from exc
+                sleep_seconds = self._connect_retry_sleep_seconds(attempt)
+                logger.warning(
+                    "container worker request connect failure; retrying method=%s path=%s "
+                    "attempt=%d/%d sleep=%.3fs error=%s",
+                    method_normalized,
+                    path,
+                    attempt,
+                    self.max_connect_attempts,
+                    sleep_seconds,
+                    sanitize_text(str(exc)),
+                )
+                self._sleep(sleep_seconds)
+            except httpx.HTTPError as exc:
+                raise ContainerWorkerClientError(
+                    f"container worker {method_normalized} {path} failed: "
+                    f"{sanitize_text(str(exc))}"
+                ) from exc
+        else:  # pragma: no cover - loop always returns or raises.
             raise ContainerWorkerClientError(
-                f"container worker {method} {path} failed: {sanitize_text(str(exc))}"
-            ) from exc
+                f"container worker {method_normalized} {path} failed unexpectedly"
+            )
         if response.status_code >= 400:
             raise ContainerWorkerClientError(
-                f"container worker {method} {path} returned HTTP {response.status_code}: "
+                f"container worker {method_normalized} {path} returned HTTP "
+                f"{response.status_code}: "
                 f"{self._safe_response_text(response)}"
             )
         return response
+
+    def _send_once(
+        self, method: str, path: str, *, headers: dict[str, str], **kwargs: Any
+    ) -> httpx.Response:
+        if self._client is not None:
+            return self._client.request(method, self._url(path), headers=headers, **kwargs)
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            return client.request(method, self._url(path), headers=headers, **kwargs)
+
+    def _connect_retry_sleep_seconds(self, attempt: int) -> float:
+        planned = min(
+            self.max_connect_backoff_seconds,
+            self.base_connect_backoff_seconds * (2 ** (attempt - 1)),
+        )
+        jitter_multiplier = 0.8 + (random.random() * 0.4)
+        return min(self.max_connect_backoff_seconds, planned * jitter_multiplier)
 
     def _url(self, path: str) -> str:
         return f"{self.base_url}{path}"
