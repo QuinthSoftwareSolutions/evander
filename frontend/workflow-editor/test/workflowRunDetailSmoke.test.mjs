@@ -76,6 +76,11 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         type: "effect:notify",
       },
       {
+        id: "legacy-gap-1",
+        display_name: "Legacy audit gap",
+        type: "effect:notify",
+      },
+      {
         id: "unrelated-1",
         display_name: "Unrelated effect",
         type: "effect:notify",
@@ -85,6 +90,7 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
     edges: [
       { source_id: "trigger-1", target_id: "agent-1", source_port: "completed" },
       { source_id: "agent-1", target_id: "notify-1", source_port: "completed" },
+      { source_id: "agent-1", target_id: "legacy-gap-1", source_port: "completed" },
       { source_id: "trigger-2", target_id: "unrelated-1", source_port: "completed" },
     ],
   };
@@ -94,7 +100,7 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
     description: null,
     directory_paths: ["root"],
     user_ids: [],
-    node_ids: ["trigger-1", "agent-1", "notify-1"],
+    node_ids: ["trigger-1", "agent-1", "notify-1", "legacy-gap-1"],
   };
   const workflowDocument = {
     config_path: "workflow.json",
@@ -107,6 +113,7 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         "trigger-1": { x: 80, y: 80 },
         "agent-1": { x: 360, y: 80 },
         "notify-1": { x: 640, y: 80 },
+        "legacy-gap-1": { x: 640, y: 220 },
         "trigger-2": { x: 80, y: 320 },
         "unrelated-1": { x: 360, y: 320 },
       },
@@ -194,8 +201,8 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         captured_at: "2026-05-16T12:00:00Z",
         snapshot_type: "run_start",
         source: "runtime",
-        node_count: 3,
-        edge_count: 2,
+        node_count: 4,
+        edge_count: 3,
         triggers: config.triggers,
         gates: [],
         effects: config.effects,
@@ -206,7 +213,7 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         graph_snapshot: "available",
         binding_trace: "available",
         approvals: "available",
-        agent_links: "available",
+        agent_links: "missing_legacy_or_unrecorded",
         communication_artifacts: "missing_legacy_or_unrecorded",
         tool_calls: "missing_legacy_or_unrecorded",
         trigger_event: "available",
@@ -389,12 +396,45 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         ],
         records: [],
       },
+      {
+        node_id: "legacy-gap-1",
+        node_type: "effect:notify",
+        display_name: "Legacy audit gap",
+        source_kind: "effect",
+        execution_id: "exec-gap-1",
+        event_id: "evt-run-1",
+        trace_id: "trace-1",
+        status: "succeeded",
+        started_at: "2026-05-16T12:00:04Z",
+        finished_at: "2026-05-16T12:00:05Z",
+        duration_ms: 1000,
+        occurred_at: null,
+        delivery_state: null,
+        resolved_config: {},
+        binding_trace: null,
+        binding_error: null,
+        input_payload: {},
+        outputs: {},
+        inputs_by_source: {},
+        error: null,
+        published_event_id: null,
+        completion_event_enqueued_at: null,
+        config_revision: "rev-1",
+        retry_resume_eligible: false,
+        retry_resume_reason: null,
+        missing_fields: ["binding_trace"],
+        tool_call_links: [],
+        approval_links: [],
+        agent_links: [],
+        communication_artifact_links: [],
+        records: [],
+      },
     ],
     data_availability: {
       graph_snapshot: "available",
       binding_trace: "available",
       approvals: "available",
-      agent_links: "available",
+      agent_links: "missing_legacy_or_unrecorded",
       communication_artifacts: "missing_legacy_or_unrecorded",
       tool_calls: "missing_legacy_or_unrecorded",
       trigger_event: "available",
@@ -597,6 +637,12 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
 
   await page.locator(".react-flow__node", { hasText: "Notify operator" }).click();
   await assert.doesNotReject(() => page.getByText("Not visited in this run").waitFor({ state: "visible" }));
+
+  await page.locator(".react-flow__node", { hasText: "Legacy audit gap" }).click();
+  const inspectPanel = page.locator(".inspect-node-panel");
+  await assert.doesNotReject(() => inspectPanel.locator(".run-detail-link-group", { hasText: "Tool calls" }).getByText("No tool-call audit records").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => inspectPanel.locator(".run-detail-link-group", { hasText: "Agents" }).getByText("No agent session records").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => inspectPanel.locator(".run-detail-link-group", { hasText: "Communication artifacts" }).getByText("No communication artifact records").waitFor({ state: "visible" }));
 
   await page.locator(".react-flow__node", { hasText: "Dispatch agent" }).click();
   await page.locator(".inspect-node-panel").getByRole("button", { name: "Tool call audit" }).click();

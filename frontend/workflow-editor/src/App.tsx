@@ -5323,7 +5323,10 @@ export default function App() {
       toolCallItems.length === 0 &&
       approvalItems.length === 0 &&
       agentItems.length === 0 &&
-      artifactItems.length === 0
+      artifactItems.length === 0 &&
+      toolCallAvailable &&
+      agentLinkAvailable &&
+      artifactAvailable
     ) {
       return null;
     }

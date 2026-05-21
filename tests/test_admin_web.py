@@ -1998,6 +1998,60 @@ def _write_run_detail_audit_log(path: Path, *, session_id: str, vm_id: str) -> N
             },
             "created_at": "2026-05-16T10:05:30+00:00",
         },
+        {
+            "event_type": "tool_call",
+            "session_id": session_id,
+            "vm_id": vm_id,
+            "directory_path": "root",
+            "tool_name": "prompt_agent",
+            "request_id": "request-legacy-node",
+            "approval_request_id": "approval-rich",
+            "workflow_run_id": "evt-legacy",
+            "trace_id": "trace-legacy",
+            "decision": "allowed",
+            "args": {
+                "session_id": session_id,
+                "request_id": "request-legacy-node",
+                "approval_request_id": "approval-rich",
+            },
+            "result": {"status": "success"},
+            "created_at": "2026-05-16T09:05:00+00:00",
+        },
+        {
+            "event_type": "tool_call",
+            "session_id": session_id,
+            "vm_id": vm_id,
+            "directory_path": "root",
+            "tool_name": "make_phone_call",
+            "workflow_run_id": "evt-other",
+            "decision": "allowed",
+            "args": {"session_id": session_id},
+            "result": {"status": "success"},
+            "created_at": "2026-05-16T10:07:00+00:00",
+        },
+        {
+            "event_type": "tool_call",
+            "session_id": "session-unrelated",
+            "vm_id": "vm-unrelated",
+            "directory_path": "root",
+            "tool_name": "shell",
+            "decision": "allowed",
+            "args": {"session_id": "session-unrelated"},
+            "result": {"status": "success"},
+            "created_at": "2026-05-16T08:00:00+00:00",
+        },
+        {
+            "event_type": "tool_call",
+            "session_id": "session-notrace",
+            "vm_id": "vm-notrace",
+            "directory_path": "root",
+            "tool_name": "read_file",
+            "workflow_run_id": "evt-notrace",
+            "decision": "allowed",
+            "args": {"path": "notes.txt"},
+            "result": {"status": "success"},
+            "created_at": "2026-05-16T08:10:00+00:00",
+        },
     ]
     path.write_text(
         "\n".join(json.dumps(entry, sort_keys=True) for entry in audit_entries) + "\n",
@@ -2087,6 +2141,17 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
                 "delivered_at": "2026-05-01T09:00:05Z",
                 "idempotency_key": None,
             },
+            "evt-notrace": {
+                "event_id": "evt-notrace",
+                "trigger_id": "trigger-ticket",
+                "trigger_type": "trigger:ticket:created",
+                "occurred_at": "2026-05-01T08:00:00Z",
+                "payload": {"issue_number": "13"},
+                "delivery_state": "delivered",
+                "inflight_at": "2026-05-01T08:00:04Z",
+                "delivered_at": "2026-05-01T08:00:05Z",
+                "idempotency_key": None,
+            },
         },
     )
     _write_json_payload(
@@ -2161,7 +2226,12 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
                 "finished_at": "2026-05-01T09:00:07Z",
                 "resolved_config_hash": "hash-legacy",
                 "resolved_config": {},
-                "input_payload": {"issue_number": "12"},
+                "input_payload": {
+                    "issue_number": "12",
+                    "session_id": session_id,
+                    "request_id": "approval-rich",
+                    "artifact_ids": [artifact.artifact_id],
+                },
                 "outputs": {},
                 "error": "legacy failure",
             },
@@ -2456,6 +2526,22 @@ def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> 
     assert rich_node["records"][0]["binding_trace"]["entries"][0]["resolved_value_preview"] == '"99"'
 
 
+def test_admin_web_run_detail_requires_real_audit_identifiers(tmp_path: Path) -> None:
+    fixture = _seed_workflow_run_detail_fixture(tmp_path)
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    response = client.get(
+        "/api/workflow-editor/run-detail", params={"event_id": "evt-notrace"}
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["event_id"] == "evt-notrace"
+    assert payload["trace_id"] is None
+    assert [link["tool_name"] for link in payload["tool_call_links"]] == ["read_file"]
+    assert payload["tool_call_links"][0]["workflow_run_id"] == "evt-notrace"
+
+
 def test_admin_web_run_detail_marks_missing_legacy_data(tmp_path: Path) -> None:
     fixture = _seed_workflow_run_detail_fixture(tmp_path)
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
@@ -2468,9 +2554,10 @@ def test_admin_web_run_detail_marks_missing_legacy_data(tmp_path: Path) -> None:
     payload = response.json()
     assert payload["event_id"] == fixture["legacy_event_id"]
     assert payload["graph"]["data_availability"]["graph_snapshot"] == "missing_legacy_or_unrecorded"
-    assert payload["graph"]["data_availability"]["agent_links"] == "missing_legacy_or_unrecorded"
-    assert payload["graph"]["data_availability"]["communication_artifacts"] == "missing_legacy_or_unrecorded"
-    assert payload["graph"]["data_availability"]["tool_calls"] == "missing_legacy_or_unrecorded"
+    assert payload["graph"]["data_availability"]["approvals"] == "available"
+    assert payload["graph"]["data_availability"]["agent_links"] == "available"
+    assert payload["graph"]["data_availability"]["communication_artifacts"] == "available"
+    assert payload["graph"]["data_availability"]["tool_calls"] == "available"
     assert payload["graph"]["snapshot"] is None
     assert payload["tool_call_links"] == []
     legacy_node = next(node for node in payload["nodes"] if node["node_id"] == "effect-prompt")
@@ -2478,10 +2565,10 @@ def test_admin_web_run_detail_marks_missing_legacy_data(tmp_path: Path) -> None:
     assert legacy_node["binding_trace"] is None
     assert legacy_node["records"][0]["binding_trace"] is None
     assert legacy_node["records"][0]["resolved_config"] == {}
-    assert legacy_node["approval_links"] == []
-    assert legacy_node["agent_links"] == []
-    assert legacy_node["communication_artifact_links"] == []
-    assert legacy_node["tool_call_links"] == []
+    assert legacy_node["approval_links"][0]["request_id"] == "approval-rich"
+    assert legacy_node["agent_links"][0]["session_id"] == fixture["session_id"]
+    assert legacy_node["communication_artifact_links"][0]["artifact_id"] == fixture["artifact_id"]
+    assert legacy_node["tool_call_links"][0]["request_id"] == "request-legacy-node"
 
 
 def test_admin_web_run_search_finds_latest_graph_and_node_runs_without_sessions(

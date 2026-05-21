@@ -11469,6 +11469,17 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         tool_call_audit_entries: list[tuple[ToolCallAuditEntryPayload, dict[str, Any]]] = []
         audit_log_path = self.config.audit_log_path
+
+        def tool_call_entry_matches_selected_run(entry: ToolCallAuditEntryPayload) -> bool:
+            entry_run_id = _coerce_optional_string(entry.workflow_run_id)
+            if entry_run_id is not None:
+                return entry_run_id == selected_event_id
+            entry_trace_id = _coerce_optional_string(entry.trace_id)
+            if entry_trace_id is not None:
+                return selected_trace_id is not None and entry_trace_id == selected_trace_id
+            entry_session_id = _coerce_optional_string(entry.session_id)
+            return entry_session_id is not None and entry_session_id in selected_session_ids
+
         if audit_log_path.exists():
             try:
                 with audit_log_path.open(encoding="utf-8") as handle:
@@ -11487,14 +11498,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                         entry = _tool_call_audit_entry_from_payload(payload)
                         if entry is None:
                             continue
-                        if not (
-                            entry.workflow_run_id == selected_event_id
-                            or entry.trace_id == selected_trace_id
-                            or (
-                                entry.session_id is not None
-                                and entry.session_id in selected_session_ids
-                            )
-                        ):
+                        if not tool_call_entry_matches_selected_run(entry):
                             continue
                         tool_call_audit_entries.append((entry, payload))
             except Exception:
@@ -11941,78 +11945,77 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 result_empty=result_empty,
             )
 
-        if graph_snapshot is not None:
-            for node_id, record_entries in node_groups.items():
-                for _source_kind, record, _node_id, node_type in record_entries:
-                    request_ids = collect_keyed_values(record, key_suffix="request_id")
-                    if request_ids:
-                        node_request_ids_by_node.setdefault(node_id, set()).update(request_ids)
-                    for request_id in request_ids:
-                        request = approval_requests_by_id.get(request_id)
-                        if request is None:
-                            continue
+        for node_id, record_entries in node_groups.items():
+            for _source_kind, record, _node_id, node_type in record_entries:
+                request_ids = collect_keyed_values(record, key_suffix="request_id")
+                if request_ids:
+                    node_request_ids_by_node.setdefault(node_id, set()).update(request_ids)
+                for request_id in request_ids:
+                    request = approval_requests_by_id.get(request_id)
+                    if request is None:
+                        continue
+                    approval_links_by_node.setdefault(node_id, []).append(
+                        build_approval_link(request)
+                    )
+                session_candidates = collect_keyed_values(record, key_suffix="session_id")
+                for session_candidate in session_candidates:
+                    for request in approval_requests_by_session.get(session_candidate, []):
                         approval_links_by_node.setdefault(node_id, []).append(
                             build_approval_link(request)
                         )
-                    session_candidates = collect_keyed_values(record, key_suffix="session_id")
-                    for session_candidate in session_candidates:
-                        for request in approval_requests_by_session.get(session_candidate, []):
-                            approval_links_by_node.setdefault(node_id, []).append(
-                                build_approval_link(request)
-                            )
-                    agent_link = build_agent_link(
-                        node_id=node_id,
-                        node_type=node_type,
-                        record=record,
-                        source_kind=_source_kind,
-                    )
-                    if agent_link is not None:
-                        agent_links_by_node.setdefault(node_id, []).append(agent_link)
-                    artifact_ids = collect_artifact_ids(record)
-                    for artifact in artifact_ids:
-                        try:
-                            link_payload = build_artifact_link(artifact_store.payload(artifact))
-                        except FileNotFoundError:
-                            link_payload = WorkflowRunCommunicationArtifactLinkPayload(
-                                artifact_id=artifact,
-                                status="missing_legacy_or_unrecorded",
-                            )
-                        artifact_links_by_node.setdefault(node_id, []).append(link_payload)
-
-            for entry, _raw_payload in sorted(
-                tool_call_audit_entries,
-                key=lambda item: (
-                    item[0].created_at,
-                    item[0].tool_name or "",
-                    item[0].request_id or "",
-                    item[0].correlation_id or "",
-                    item[0].approval_request_id or "",
-                ),
-                reverse=True,
-            ):
-                node_matches = [
-                    node_id
-                    for node_id in sorted(node_groups)
-                    if (
-                        (
-                            entry.request_id
-                            and entry.request_id in node_request_ids_by_node.get(node_id, set())
-                        )
-                        or (
-                            entry.approval_request_id
-                            and entry.approval_request_id
-                            in node_request_ids_by_node.get(node_id, set())
-                        )
-                    )
-                ]
-                link_payload = build_tool_call_link(
-                    entry,
-                    node_id=node_matches[0] if len(node_matches) == 1 else None,
+                agent_link = build_agent_link(
+                    node_id=node_id,
+                    node_type=node_type,
+                    record=record,
+                    source_kind=_source_kind,
                 )
-                if len(node_matches) == 1:
-                    tool_call_links_by_node.setdefault(node_matches[0], []).append(link_payload)
-                    continue
-                run_tool_call_links.append(link_payload)
+                if agent_link is not None:
+                    agent_links_by_node.setdefault(node_id, []).append(agent_link)
+                artifact_ids = collect_artifact_ids(record)
+                for artifact in artifact_ids:
+                    try:
+                        link_payload = build_artifact_link(artifact_store.payload(artifact))
+                    except FileNotFoundError:
+                        link_payload = WorkflowRunCommunicationArtifactLinkPayload(
+                            artifact_id=artifact,
+                            status="missing_legacy_or_unrecorded",
+                        )
+                    artifact_links_by_node.setdefault(node_id, []).append(link_payload)
+
+        for entry, _raw_payload in sorted(
+            tool_call_audit_entries,
+            key=lambda item: (
+                item[0].created_at,
+                item[0].tool_name or "",
+                item[0].request_id or "",
+                item[0].correlation_id or "",
+                item[0].approval_request_id or "",
+            ),
+            reverse=True,
+        ):
+            node_matches = [
+                node_id
+                for node_id in sorted(node_groups)
+                if (
+                    (
+                        entry.request_id
+                        and entry.request_id in node_request_ids_by_node.get(node_id, set())
+                    )
+                    or (
+                        entry.approval_request_id
+                        and entry.approval_request_id
+                        in node_request_ids_by_node.get(node_id, set())
+                    )
+                )
+            ]
+            link_payload = build_tool_call_link(
+                entry,
+                node_id=node_matches[0] if len(node_matches) == 1 else None,
+            )
+            if len(node_matches) == 1:
+                tool_call_links_by_node.setdefault(node_matches[0], []).append(link_payload)
+                continue
+            run_tool_call_links.append(link_payload)
 
         def build_node_detail(
             node_id: str, record_entries: list[tuple[str, dict[str, Any], str | None, str | None]]
@@ -12213,7 +12216,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 continue
             seen_run_tool_call_keys.add(tool_call_key)
             deduped_run_tool_call_links.append(tool_call_link)
-        if graph_snapshot is not None and tool_call_audit_entries:
+        if tool_call_audit_entries:
             graph_data_availability.tool_calls = "available"
 
         resumable_node = next(
