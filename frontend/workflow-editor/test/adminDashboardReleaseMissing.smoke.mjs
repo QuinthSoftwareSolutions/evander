@@ -182,7 +182,8 @@ test("admin shell release panel shows missing metadata without inventing release
     build: null,
     build_source: null,
     changelog: null,
-    missing_reasons: ["Version unavailable", "Build unavailable", "Recent changelog unavailable"],
+    news: null,
+    missing_reasons: ["Version unavailable", "Build unavailable", "Recent changelog unavailable", "NEWS.md is missing"],
   };
 
   const workflowDocumentResponse = {
@@ -369,12 +370,14 @@ test("admin shell release panel shows missing metadata without inventing release
   assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Version unavailable/);
   assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Build unavailable/);
   assert.match(await releasePanel.locator(".release-missing-list strong").innerText(), /Recent changelog unavailable/);
+  assert.match(await releasePanel.locator(".release-missing-list strong").innerText(), /NEWS\.md is missing/);
   assert.equal(await releasePanel.locator(".release-entry-item").count(), 0);
   assert.equal(await releasePanel.locator(".release-kind-pill").count(), 0);
+  assert.equal(await releasePanel.getByText("News", { exact: true }).count(), 0);
   assert.equal(await releasePanel.getByText("0.1.0").count(), 0);
   assert.equal(await releasePanel.getByText("agent-sandbox-build-20260521").count(), 0);
 
-  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/release-info?_dashboard=1"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/release-info?_dashboard=1&news_index=0"));
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
 });

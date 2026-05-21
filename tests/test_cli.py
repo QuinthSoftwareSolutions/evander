@@ -1225,16 +1225,7 @@ def test_migrate_ado_worker_env_to_root_materializes_root_domain_file(tmp_path: 
     )
     assert payload == {
         "ado_area_filters": [],
-        "ado_bootstrap_dotnet": True,
-        "ado_bootstrap_frontend_deps": False,
-        "ado_bootstrap_mssql": True,
-        "ado_bootstrap_nuget": True,
-        "ado_bootstrap_playwright": False,
-        "ado_frontend_install_roots": ["/tmp/repo/Src/Clients", "/tmp/repo/Src/Admin"],
-        "ado_prewarm_target": "/tmp/Prewarm.slnx",
-        "ado_project_or_solution": "/tmp/Example.slnx",
         "ado_repo_source": "/tmp/repo",
-        "ado_setup_vms": True,
         "ado_team_filters": [],
         "create_prs_automatically": True,
         "create_prs_as_draft": False,
@@ -1363,10 +1354,10 @@ def test_migrate_ado_worker_env_to_root_imports_env_file(tmp_path: Path) -> None
     payload = json.loads(
         (tmp_path / "runtime" / "directory-config" / "root" / "ado-worker.json").read_text("utf-8")
     )
-    assert payload["ado_project_or_solution"] == "/tmp/Example.slnx"
     assert payload["ado_repo_source"] == "/tmp/repo"
     assert payload["ado_area_filters"] == ["Root\\Area", "Root\\Other"]
-    assert payload["ado_bootstrap_mssql"] is True
+    assert "ado_project_or_solution" not in payload
+    assert "ado_bootstrap_mssql" not in payload
     assert "ado_mssql_sa_password_env" not in payload
     directories = DirectoryStore(tmp_path / "runtime" / "directories.json").read_all()
     assert "ado_worker" in directories["root"].metadata["directory_config"]["domains"]

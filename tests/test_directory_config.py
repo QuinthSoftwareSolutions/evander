@@ -778,12 +778,7 @@ def test_directory_config_store_validates_ado_worker_and_issue_setup_domains(
     worker_payload = config_store.write(
         team.path,
         domain="ado_worker",
-        payload={
-            "ado_project_or_solution": "/tmp/Example.slnx",
-            "ado_repo_source": "/tmp/repo",
-            "ado_setup_vms": False,
-            "ado_bootstrap_mssql": False,
-        },
+        payload={"ado_repo_source": "/tmp/repo"},
     )
     issue_payload = config_store.write(
         team.path,
@@ -798,10 +793,7 @@ def test_directory_config_store_validates_ado_worker_and_issue_setup_domains(
     )
 
     assert worker_payload == {
-        "ado_project_or_solution": "/tmp/Example.slnx",
         "ado_repo_source": "/tmp/repo",
-        "ado_setup_vms": False,
-        "ado_bootstrap_mssql": False,
     }
     assert issue_payload == {
         "git_root": "/tmp/git",
@@ -959,9 +951,9 @@ def test_directory_config_resolver_inherits_ado_worker_and_issue_setup_overlays(
     config_store.write(
         team.path,
         domain="ado_worker",
-        payload={"ado_project_or_solution": "/tmp/Team.slnx", "ado_repo_source": "/tmp/team-repo"},
+        payload={"ado_repo_source": "/tmp/team-repo"},
     )
-    config_store.write(child.path, domain="ado_worker", payload={"ado_bootstrap_mssql": False})
+    config_store.write(child.path, domain="ado_worker", payload={"create_prs_as_draft": True})
     config_store.write(
         team.path,
         domain="issue_setup",
@@ -987,9 +979,10 @@ def test_directory_config_resolver_inherits_ado_worker_and_issue_setup_overlays(
         validator=lambda candidate: validate_effective_domain_payload("issue_setup", candidate),
     )
 
-    assert ado_resolution.effective_config["ado_project_or_solution"] == "/tmp/Team.slnx"
     assert ado_resolution.effective_config["ado_repo_source"] == "/tmp/team-repo"
-    assert ado_resolution.effective_config["ado_bootstrap_mssql"] is False
+    assert ado_resolution.effective_config["create_prs_as_draft"] is True
+    assert "ado_project_or_solution" not in ado_resolution.effective_config
+    assert "ado_bootstrap_mssql" not in ado_resolution.effective_config
     assert issue_resolution.effective_config["git_root"] == "/tmp/team-git"
     assert issue_resolution.effective_config["git_user"] == "team-bot"
     assert issue_resolution.effective_config["enable_guest_heartbeat"] is True
