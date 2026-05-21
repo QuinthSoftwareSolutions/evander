@@ -6062,11 +6062,12 @@ def test_delete_session_cleans_detached_worker_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = AdminService(write_config(tmp_path))
+    now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
     service.runtime.session_repository.upsert_session(
         SessionManifest(
             session_id="detached-session",
             allowed_tools=[],
-            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            expires_at=now + timedelta(hours=1),
         ),
     )
     repository = ContainerWorkerExecutionRepository(
@@ -6089,6 +6090,24 @@ def test_delete_session_cleans_detached_worker_state(
 
         def delete_session(self, session_id: str) -> dict[str, object]:
             self.deleted_sessions.append(session_id)
+            attempted_at = now
+            completed_at = now
+            for record in repository.read_all().values():
+                if record.session_id != session_id:
+                    continue
+                record.last_status = "removed"
+                record.cleanup_status = "cleanup_succeeded"
+                record.cleanup_attempted_at = attempted_at
+                record.cleanup_completed_at = completed_at
+                record.cleanup_error = None
+                record.metadata = {
+                    **record.metadata,
+                    "worker_status": "removed",
+                    "cleanup_status": "cleanup_succeeded",
+                    "cleanup_attempted_at": attempted_at.isoformat(),
+                    "cleanup_completed_at": completed_at.isoformat(),
+                }
+                repository.put(record)
             return {"deleted": True, "session_id": session_id}
 
     fake_backend = FakeContainerBackend()
@@ -6106,6 +6125,166 @@ def test_delete_session_cleans_detached_worker_state(
     assert repository.read_all() == {}
     assert "worker_session_deleted=1" in result.message
     assert "removed_mappings=1" in result.message
+
+
+def test_cleanup_container_session_records_cleaned_up_tombstone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[],
+            expires_at=now + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+                "worker_url": "http://worker.test",
+            },
+        ),
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-1",
+            session_id="container-session",
+            worker_job_id="job-1",
+            worker_url="http://worker.test",
+            target_name="container-target",
+            started_at=now - timedelta(minutes=15),
+            finished_at=now - timedelta(minutes=5),
+            updated_at=now - timedelta(minutes=4),
+            last_status="exited",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.deleted_sessions: list[str] = []
+
+        def delete_session(self, session_id: str) -> dict[str, object]:
+            self.deleted_sessions.append(session_id)
+            return {"deleted": True, "session_id": session_id}
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    result = service.cleanup_container_session("container-session")
+
+    assert result.success is True
+    assert result.action == "cleanup_container_session"
+    assert fake_backend.deleted_sessions == ["container-session"]
+    updated = service.runtime.session_repository.get_session("container-session")
+    assert updated is not None
+    assert updated.metadata["container_lifecycle"]["state"] == "cleaned_up"
+    assert updated.metadata["container_lifecycle"]["cleanup_status"] == "cleanup_succeeded"
+    assert updated.expires_at <= now
+    summaries = {item.session_id: item for item in service.list_sessions(include_expired=True)}
+    lifecycle = summaries["container-session"].container_lifecycle
+    assert lifecycle is not None
+    assert lifecycle.state == ContainerSessionLifecycleState.CLEANED_UP
+    assert lifecycle.actions.cleanup.supported is False
+    assert lifecycle.cleanup_error is None
+    assert lifecycle.last_signal_at == now - timedelta(minutes=5)
+
+
+def test_cleanup_container_session_records_failure_and_keeps_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[],
+            expires_at=now + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+                "worker_url": "http://worker.test",
+            },
+        ),
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-1",
+            session_id="container-session",
+            worker_job_id="job-1",
+            worker_url="http://worker.test",
+            target_name="container-target",
+            started_at=now - timedelta(minutes=15),
+            finished_at=now - timedelta(minutes=5),
+            updated_at=now - timedelta(minutes=4),
+            last_status="exited",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def delete_session(self, session_id: str) -> dict[str, object]:
+            attempted_at = now
+            completed_at = now
+            for record in repository.read_all().values():
+                if record.session_id != session_id:
+                    continue
+                record.last_status = "cleanup_failed"
+                record.cleanup_status = "cleanup_failed"
+                record.cleanup_attempted_at = attempted_at
+                record.cleanup_completed_at = completed_at
+                record.cleanup_error = "container worker DELETE /v1/sessions/container-session failed: cleanup exploded"
+                record.metadata = {
+                    **record.metadata,
+                    "worker_status": "cleanup_failed",
+                    "cleanup_status": "cleanup_failed",
+                    "cleanup_attempted_at": attempted_at.isoformat(),
+                    "cleanup_completed_at": completed_at.isoformat(),
+                    "cleanup_error": record.cleanup_error,
+                }
+                repository.put(record)
+            raise ContainerWorkerClientError(
+                f"container worker DELETE /v1/sessions/{session_id} failed: cleanup exploded"
+            )
+
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: FakeContainerBackend(), service),
+    )
+
+    result = service.cleanup_container_session("container-session")
+
+    assert result.success is False
+    assert result.action == "cleanup_container_session"
+    assert "cleanup exploded" in result.message
+    updated = service.runtime.session_repository.get_session("container-session")
+    assert updated is not None
+    assert updated.metadata["container_lifecycle"]["state"] == "cleanup_failed"
+    assert updated.metadata["container_lifecycle"]["cleanup_status"] == "cleanup_failed"
+    assert "cleanup exploded" in updated.metadata["container_lifecycle"]["cleanup_error"]
+    summaries = {item.session_id: item for item in service.list_sessions(include_expired=True)}
+    lifecycle = summaries["container-session"].container_lifecycle
+    assert lifecycle is not None
+    assert lifecycle.state == ContainerSessionLifecycleState.CLEANUP_FAILED
+    assert lifecycle.actions.cleanup.supported is True
+    assert lifecycle.cleanup_error == "container worker DELETE /v1/sessions/container-session failed: cleanup exploded"
+    assert lifecycle.last_signal_at == now - timedelta(minutes=5)
 
 
 def test_delete_admin_vm_agent_removes_chat_assistant_mapping(
@@ -6154,7 +6333,7 @@ def test_delete_admin_vm_agent_removes_chat_assistant_mapping(
     assert "removed_assistant_mappings=1" in result["message"]
 
 
-def test_delete_admin_agent_prunes_container_pr_state(
+def test_delete_admin_agent_cleans_container_session_without_pruning_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = AdminService(write_config(tmp_path))
@@ -6234,16 +6413,21 @@ def test_delete_admin_agent_prunes_container_pr_state(
     result = service.delete_admin_agent("container-session", backend="container_worker_vm")
 
     assert result["success"] is True
-    assert "removed_pr_map_entries=1" in result["message"]
-    assert "removed_feedback_cursors=1" in result["message"]
-    assert "removed_feedback_items=1" in result["message"]
+    assert result["status"] == "cleaned_up"
+    assert result["action"] == "cleanup_container_session"
     pr_map_payload = json.loads(service.config.pr_map_path.read_text(encoding="utf-8"))
-    assert set(pr_map_payload["entries"]) == {"azure_devops:org/other:1"}
+    assert set(pr_map_payload["entries"]) == {
+        "azure_devops:org/repo:6070",
+        "azure_devops:org/other:1",
+    }
     feedback_payload = PrFeedbackStore(
         service.config.runtime_dir / "pr-feedback-store.json"
     ).read_raw()
-    assert feedback_payload["cursors"] == {}
-    assert feedback_payload["feedback"] == {}
+    assert feedback_payload["cursors"] == {"azure_devops:org/repo:6070": "2026-05-15T10:00:00Z"}
+    assert feedback_payload["feedback"] != {}
+    session = service.runtime.session_repository.get_session("container-session")
+    assert session is not None
+    assert session.metadata["container_lifecycle"]["state"] == "cleaned_up"
 
 
 def test_set_session_allowed_tools_updates_manifest(tmp_path: Path) -> None:

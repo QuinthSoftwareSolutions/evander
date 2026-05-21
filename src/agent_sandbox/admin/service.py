@@ -192,6 +192,7 @@ from agent_sandbox.services import (
     normalize_teams_target,
     normalize_teams_user_target,
 )
+from agent_sandbox.worker.security import sanitize_text
 
 _WORKER_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("ado", "ADO Worker", "agent-sandbox-ado-worker.service"),
@@ -6689,6 +6690,77 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             result.message = f"{result.message}; " + " ".join(cleanup_parts)
         return result
 
+    def cleanup_container_session(self, session_id: str) -> SessionActionResult:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("session_id is required")
+        session = self.runtime.session_repository.get_session(normalized_session_id)
+        if session is None:
+            raise ValueError(f"Unknown session: {normalized_session_id}")
+        if not self._is_container_session(session):
+            raise ValueError(
+                f"Session {normalized_session_id!r} is not a container worker session"
+            )
+
+        lifecycle = self._container_session_lifecycle(session)
+        if lifecycle is None or not lifecycle.actions.cleanup.supported:
+            reason = (
+                lifecycle.actions.cleanup.reason
+                if lifecycle is not None and lifecycle.actions.cleanup.reason
+                else "Cleanup is not currently supported for this session."
+            )
+            raise ValueError(reason)
+
+        execution_records = self._container_execution_records_for_session(normalized_session_id)
+        worker_backend = self._container_worker_backend(
+            directory_path=session.directory_path,
+            worker_url=self._container_worker_url_for_target(
+                session=session,
+                records=execution_records,
+            ),
+        )
+        attempted_at = _utc_now()
+        try:
+            worker_backend.delete_session(normalized_session_id)
+        except ContainerWorkerClientError as exc:
+            completed_at = _utc_now()
+            sanitized_error = sanitize_text(str(exc))
+            updated_session = self._container_session_lifecycle_tombstone(
+                session,
+                state=ContainerSessionLifecycleState.CLEANUP_FAILED,
+                cleanup_status="cleanup_failed",
+                attempted_at=attempted_at,
+                completed_at=completed_at,
+                cleanup_error=sanitized_error,
+            )
+            self.runtime.session_repository.upsert_session(updated_session)
+            return SessionActionResult(
+                success=False,
+                session_id=normalized_session_id,
+                action="cleanup_container_session",
+                message=(
+                    f"Cleanup failed for container worker session {normalized_session_id}: "
+                    f"{sanitized_error}"
+                ),
+            )
+
+        completed_at = _utc_now()
+        updated_session = self._container_session_lifecycle_tombstone(
+            session,
+            state=ContainerSessionLifecycleState.CLEANED_UP,
+            cleanup_status="cleanup_succeeded",
+            attempted_at=attempted_at,
+            completed_at=completed_at,
+            cleanup_error=None,
+        )
+        self.runtime.session_repository.upsert_session(updated_session)
+        return SessionActionResult(
+            success=True,
+            session_id=normalized_session_id,
+            action="cleanup_container_session",
+            message=f"Cleaned up container worker session {normalized_session_id}",
+        )
+
     def set_session_allowed_tools(
         self, target: str, allowed_tools: list[str | ToolName]
     ) -> SessionActionResult:
@@ -6983,6 +7055,39 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         return payload
 
     @staticmethod
+    def _container_session_lifecycle_tombstone(
+        session: SessionManifest,
+        *,
+        state: ContainerSessionLifecycleState,
+        cleanup_status: str,
+        attempted_at: datetime,
+        completed_at: datetime,
+        cleanup_error: str | None,
+    ) -> SessionManifest:
+        metadata = dict(session.metadata) if isinstance(session.metadata, dict) else {}
+        lifecycle = metadata.get("container_lifecycle")
+        payload: dict[str, Any] = dict(lifecycle) if isinstance(lifecycle, dict) else {}
+        payload.update(
+            {
+                "state": state.value,
+                "cleanup_status": cleanup_status,
+                "cleanup_attempted_at": attempted_at,
+                "cleanup_completed_at": completed_at,
+                "cleanup_error": cleanup_error,
+            }
+        )
+        metadata["container_lifecycle"] = payload
+        updated_expires_at = session.expires_at
+        if state == ContainerSessionLifecycleState.CLEANED_UP and session.expires_at > completed_at:
+            updated_expires_at = completed_at
+        return session.model_copy(
+            update={
+                "metadata": metadata,
+                "expires_at": updated_expires_at,
+            }
+        )
+
+    @staticmethod
     def _container_execution_lifecycle_status(record: Any) -> str:
         normalized = str(getattr(record, "last_status", "") or "").strip().casefold()
         if normalized in {"created", "starting"}:
@@ -7104,11 +7209,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         completion_candidates: list[datetime] = []
         for record in execution_records:
-            if self._container_execution_lifecycle_status(record) not in {
-                "stopped",
-                "failed",
-            }:
-                continue
             finished_at = getattr(record, "finished_at", None)
             if isinstance(finished_at, datetime):
                 completion_candidates.append(finished_at)
@@ -7485,7 +7585,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         execution_payloads = [
             self._container_execution_payload(record) for record in execution_records
         ]
+        lifecycle = self._container_session_lifecycle(session, executions=execution_records)
         status = self._container_session_status(execution_records)
+        if lifecycle is not None and lifecycle.state in {
+            ContainerSessionLifecycleState.ABANDONED,
+            ContainerSessionLifecycleState.CLEANUP_FAILED,
+            ContainerSessionLifecycleState.CLEANED_UP,
+        }:
+            status = lifecycle.state.value
         active_count = sum(
             1
             for record in execution_records
@@ -8316,58 +8423,15 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if session is not None
             else str(getattr(record, "target_name", "") or agent_id)
         )
-        execution_records = self._container_execution_records_for_session(session_id)
-        worker_backend = self._container_worker_backend(
-            directory_path=(
-                session.directory_path
-                if session is not None
-                else getattr(record, "directory_path", None)
-            ),
-            worker_url=self._container_worker_url_for_target(
-                session=session,
-                record=record,
-                records=execution_records,
-            ),
-        )
-        if record is not None:
-            worker_backend.destroy(record.execution_id)
-        worker_session_deleted = worker_backend.delete_session(session_id)
-        worker_session_removed = self._worker_delete_session_removed(worker_session_deleted)
-        container_repository = self._container_worker_execution_repository()
-        removed_mappings = 0
-        for execution_id, candidate in list(container_repository.read_all().items()):
-            if candidate.session_id == session_id:
-                container_repository.delete(execution_id)
-                removed_mappings += 1
-        removed_session = self.runtime.session_repository.delete_session(session_id)
-        removed_assistant_mappings = self._delete_chat_assistant_session_mappings({session_id})
-        removed_approvals = _prune_approvals_for_sessions(self.runtime, session_ids={session_id})
-        removed_pr_map_entries, removed_streams = _prune_pr_map(
-            self.config.pr_map_path,
-            session_ids={session_id},
-        )
-        removed_cursors, removed_feedback = _prune_pr_feedback_store(
-            self.config.runtime_dir / "pr-feedback-store.json",
-            streams=removed_streams,
-        )
+        cleanup_result = self.cleanup_container_session(session_id)
         return {
-            "success": True,
+            "success": cleanup_result.success,
             "agent_id": agent_id,
             "backend": "container_worker_vm",
             "target_name": target_name,
-            "action": "delete",
-            "message": (
-                f"Deleted container worker session {session_id}; "
-                f"removed_mappings={removed_mappings} "
-                f"removed_session={int(removed_session)} "
-                f"removed_assistant_mappings={removed_assistant_mappings} "
-                f"removed_approvals={removed_approvals} "
-                f"removed_pr_map_entries={removed_pr_map_entries} "
-                f"removed_feedback_cursors={removed_cursors} "
-                f"removed_feedback_items={removed_feedback} "
-                f"worker_session_deleted={int(worker_session_removed)}"
-            ),
-            "status": "deleted",
+            "action": cleanup_result.action,
+            "message": cleanup_result.message,
+            "status": "cleaned_up" if cleanup_result.success else "cleanup_failed",
             "session_id": session_id,
         }
 

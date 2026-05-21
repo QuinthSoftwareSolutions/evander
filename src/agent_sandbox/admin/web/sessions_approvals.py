@@ -362,6 +362,20 @@ def session_approval_routes(
             return json_error(str(exc), status_code=404 if "Unknown" in str(exc) else 400)
         return JSONResponse(result.model_dump(mode="json"))
 
+    async def cleanup_session(request: Request) -> JSONResponse:
+        session_id = request.path_params.get("session_id", "")
+        try:
+            result = service.cleanup_container_session(session_id)
+            summary = _get_session_summary(session_id)
+        except ValueError as exc:
+            return json_error(str(exc), status_code=404 if "Unknown" in str(exc) else 400)
+        payload = {
+            **result.model_dump(mode="json"),
+            "session": _session_payload(service, summary),
+        }
+        status_code = 200 if result.success else 502
+        return JSONResponse(payload, status_code=status_code)
+
     async def update_session_model(request: Request) -> JSONResponse:
         session_id = request.path_params.get("session_id", "")
         try:
@@ -524,6 +538,7 @@ def session_approval_routes(
         Route("/api/admin/sessions/{session_id:str}", update_session_policy, methods=["PATCH"]),
         Route("/api/admin/sessions/{session_id:str}/renew", renew_session, methods=["POST"]),
         Route("/api/admin/sessions/{session_id:str}/revoke", revoke_session, methods=["POST"]),
+        Route("/api/admin/sessions/{session_id:str}/cleanup", cleanup_session, methods=["POST"]),
         Route("/api/admin/sessions/{session_id:str}", delete_session, methods=["DELETE"]),
         Route("/api/admin/sessions/{session_id:str}/model", update_session_model, methods=["PUT"]),
         Route(
