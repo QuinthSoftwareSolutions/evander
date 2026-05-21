@@ -7144,13 +7144,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             key=self._container_execution_sort_key,
             reverse=True,
         )
-        metadata_payloads = [self._container_session_lifecycle_metadata(session)]
-        metadata_payloads.extend(
+        session_lifecycle_payload = self._container_session_lifecycle_metadata(session)
+        record_lifecycle_payloads = [
             self._container_record_lifecycle_metadata(record) for record in execution_records
-        )
+        ]
+        metadata_payloads = [session_lifecycle_payload, *record_lifecycle_payloads]
 
-        def _first_value(*keys: str) -> Any:
-            for payload in metadata_payloads:
+        def _first_value(payloads: list[dict[str, Any]], *keys: str) -> Any:
+            for payload in payloads:
                 for key in keys:
                     if key not in payload:
                         continue
@@ -7176,33 +7177,51 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 return None
             return max(candidates)
 
-        cleanup_status = str(_first_value("cleanup_status", "state") or "").strip().casefold()
+        session_cleanup_status = (
+            str(_first_value([session_lifecycle_payload], "cleanup_status", "state") or "")
+            .strip()
+            .casefold()
+        )
+        record_cleanup_status = (
+            str(_first_value(record_lifecycle_payloads, "cleanup_status", "state") or "")
+            .strip()
+            .casefold()
+        )
         cleanup_attempted_at = _max_datetime("cleanup_attempted_at")
         cleanup_completed_at = _max_datetime("cleanup_completed_at")
         cleanup_error = _coerce_optional_string(
-            _first_value("cleanup_error")
+            _first_value(metadata_payloads, "cleanup_error")
         )
 
-        if cleanup_status in {"cleaned_up", "cleanup_succeeded", "succeeded", "success"}:
+        active_records = [
+            record
+            for record in execution_records
+            if self._container_execution_lifecycle_status(record) in {"starting", "running"}
+        ]
+        if active_records:
+            state = (
+                ContainerSessionLifecycleState.RUNNING
+                if any(
+                    self._container_execution_lifecycle_status(record) == "running"
+                    for record in active_records
+                )
+                else ContainerSessionLifecycleState.STARTING
+            )
+        elif session_cleanup_status in {
+            "cleaned_up",
+            "cleanup_succeeded",
+            "succeeded",
+            "success",
+        }:
             state = ContainerSessionLifecycleState.CLEANED_UP
-        elif cleanup_status in {"cleanup_failed", "failed", "error"} or cleanup_error:
+        elif (
+            session_cleanup_status in {"cleanup_failed", "failed", "error"}
+            or record_cleanup_status in {"cleanup_failed", "failed", "error"}
+            or cleanup_error
+        ):
             state = ContainerSessionLifecycleState.CLEANUP_FAILED
         else:
-            active_records = [
-                record
-                for record in execution_records
-                if self._container_execution_lifecycle_status(record) in {"starting", "running"}
-            ]
-            if active_records:
-                state = (
-                    ContainerSessionLifecycleState.RUNNING
-                    if any(
-                        self._container_execution_lifecycle_status(record) == "running"
-                        for record in active_records
-                    )
-                    else ContainerSessionLifecycleState.STARTING
-                )
-            elif execution_records:
+            if execution_records:
                 latest_record = execution_records[0]
                 latest_status = self._container_execution_lifecycle_status(latest_record)
                 if latest_status == "failed":

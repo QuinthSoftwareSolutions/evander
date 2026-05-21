@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-21 - Container Agent Status Cleanup Fix
+
+- Stopped per-execution container cleanup tombstones from making active or reusable
+  container-worker sessions appear as `cleaned_up` on the Agents page.
+
 ## 2026-05-21 - Admin Dashboard Latency Fixes
 
 - Cached dashboard-scoped capacity-health reads, stopped capacity health from probing
@@ -27,6 +32,9 @@ material. Newer entries are added incrementally as changes land.
 
 - Forced optional Codex platform packages during Azure runner-image preparation and made the
   runner-image build script resolve nested, hoisted, and Node-resolved npm layouts before failing.
+- Installed the Linux Codex platform package explicitly in the Azure worker archive step using the
+  version declared by the installed Codex package, so hosted agents do not depend on npm optional
+  dependency behavior to provide the executable.
 
 ## 2026-05-21 - Dashboard Capacity Health
 

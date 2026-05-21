@@ -348,7 +348,12 @@ def test_list_agents_groups_container_executions_under_session(
             worker_url="http://worker.test",
             target_name="container-target",
             last_status="removed",
-            metadata={"image": "runner:old"},
+            cleanup_status="cleanup_succeeded",
+            cleanup_completed_at=datetime.now(UTC) - timedelta(minutes=5),
+            metadata={
+                "image": "runner:old",
+                "cleanup_status": "cleanup_succeeded",
+            },
         )
     )
     repository.put(
@@ -382,6 +387,66 @@ def test_list_agents_groups_container_executions_under_session(
         "exec-current",
         "exec-old",
     ]
+    sessions = {item.session_id: item for item in service.list_sessions(include_expired=True)}
+    lifecycle = sessions["container-session"].container_lifecycle
+    assert lifecycle is not None
+    assert lifecycle.state == ContainerSessionLifecycleState.RUNNING
+
+
+def test_list_agents_ignores_execution_cleanup_success_for_session_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-old",
+            session_id="container-session",
+            worker_job_id="job-old",
+            worker_url="http://worker.test",
+            target_name="container-target",
+            last_status="removed",
+            cleanup_status="cleanup_succeeded",
+            cleanup_completed_at=datetime.now(UTC) - timedelta(minutes=5),
+            metadata={
+                "image": "runner:old",
+                "cleanup_status": "cleanup_succeeded",
+            },
+        )
+    )
+    monkeypatch.setattr(service, "list_vms", MethodType(lambda self, **kwargs: [], service))
+
+    agents = service.list_agents(
+        directory_path="root",
+        direct_only=True,
+        include_inactive=True,
+        reconcile_containers=False,
+    )
+
+    assert [(agent.agent_id, agent.status) for agent in agents] == [
+        ("container-session", "idle")
+    ]
+    sessions = {item.session_id: item for item in service.list_sessions(include_expired=True)}
+    lifecycle = sessions["container-session"].container_lifecycle
+    assert lifecycle is not None
+    assert lifecycle.state == ContainerSessionLifecycleState.STOPPED
+    assert lifecycle.actions.cleanup.supported is True
 
 
 def test_list_agents_still_returns_container_sessions_when_vm_inventory_fails(
