@@ -2040,6 +2040,160 @@ select {
   overflow: hidden;
 }
 
+.guided-sample-section {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.guided-sample-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.9rem;
+}
+
+.guided-sample-header h2 {
+  margin: 0;
+  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  font-size: 1.15rem;
+  line-height: 1.08;
+  color: #243d39;
+}
+
+.guided-sample-header p {
+  margin-top: 0.28rem;
+  color: #594a3a;
+  font-size: 0.9rem;
+}
+
+.sample-state-pill {
+  flex: 0 0 auto;
+  padding: 0.18rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-family: "Avenir Next Condensed", "Franklin Gothic Medium", sans-serif;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sample-state-pill.state-active {
+  background: #d7efe7;
+  color: #1b5c49;
+  border-color: #b7ddce;
+}
+
+.sample-state-pill.state-idle {
+  background: #f0e6d4;
+  color: #7a5a31;
+  border-color: #ddcaa8;
+}
+
+.guided-sample-actions {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.guided-sample-actions button {
+  margin-bottom: 0;
+}
+
+.guided-sample-current-step {
+  padding: 0.8rem 0.9rem;
+  border-radius: 14px;
+  background: rgba(235, 244, 240, 0.82);
+  border: 1px solid rgba(35, 89, 79, 0.14);
+}
+
+.guided-sample-current-step strong {
+  display: block;
+  margin-bottom: 0.2rem;
+  color: #19322c;
+}
+
+.guided-sample-current-step p {
+  margin-top: 0;
+  color: #4d5f69;
+  font-size: 0.86rem;
+}
+
+.guided-sample-steps {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.guided-sample-step {
+  padding: 0.75rem 0.85rem;
+  border-radius: 14px;
+  border: 1px solid rgba(91, 67, 37, 0.12);
+  background: rgba(255, 251, 242, 0.7);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42);
+}
+
+.guided-sample-step.is-current {
+  border-color: rgba(35, 89, 79, 0.32);
+  background: rgba(221, 237, 232, 0.82);
+}
+
+.guided-sample-step-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.guided-sample-step-heading span {
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(91, 67, 37, 0.1);
+  color: #7a5a31;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.guided-sample-step.status-active .guided-sample-step-heading span {
+  background: rgba(122, 74, 0, 0.1);
+  color: #915c13;
+}
+
+.guided-sample-step.status-completed .guided-sample-step-heading span {
+  background: rgba(35, 89, 79, 0.12);
+  color: #1b5c49;
+}
+
+.guided-sample-step.status-pending .guided-sample-step-heading span {
+  background: rgba(91, 67, 37, 0.1);
+  color: #7a5a31;
+}
+
+.guided-sample-step.status-failed .guided-sample-step-heading span {
+  background: rgba(178, 59, 26, 0.1);
+  color: #8a3b1b;
+}
+
+.guided-sample-step p {
+  margin: 0.3rem 0 0;
+  color: #564534;
+  font-size: 0.84rem;
+}
+
+.guided-sample-step-node {
+  margin-top: 0.25rem;
+  color: #6d5d49;
+  font-size: 0.72rem;
+  font-family: "SFMono-Regular", "Consolas", monospace;
+  overflow-wrap: anywhere;
+}
+
+.guided-sample-empty {
+  margin-top: 0.2rem;
+}
+
+.guided-sample-run-card {
+  margin-top: 0.2rem;
+}
+
 .current-runs-summary {
   display: flex;
   align-items: center;
@@ -6248,12 +6402,61 @@ select {
 :root[data-theme="dark"] .option-checkbox-list,
 :root[data-theme="dark"] .string-map-row,
 :root[data-theme="dark"] .object-list-item,
+:root[data-theme="dark"] .guided-sample-current-step,
+:root[data-theme="dark"] .guided-sample-step,
 :root[data-theme="dark"] .runtime-run-card,
 :root[data-theme="dark"] .log-panel {
   border-color: rgba(128, 106, 66, 0.18);
   background: rgba(29, 26, 21, 0.9);
   color: #d7e3ea;
   box-shadow: 0 14px 38px rgba(0, 0, 0, 0.2);
+}
+
+:root[data-theme="dark"] .guided-sample-header h2 {
+  color: #e2efe9;
+}
+
+:root[data-theme="dark"] .guided-sample-header p,
+:root[data-theme="dark"] .guided-sample-current-step p,
+:root[data-theme="dark"] .guided-sample-step p {
+  color: #b7c5bb;
+}
+
+:root[data-theme="dark"] .sample-state-pill.state-active {
+  background: rgba(52, 107, 88, 0.42);
+  border-color: rgba(104, 177, 151, 0.28);
+  color: #b9f1d6;
+}
+
+:root[data-theme="dark"] .sample-state-pill.state-idle {
+  background: rgba(82, 63, 28, 0.52);
+  border-color: rgba(163, 128, 49, 0.28);
+  color: #f0d183;
+}
+
+:root[data-theme="dark"] .guided-sample-step-heading span {
+  background: rgba(125, 170, 190, 0.12);
+  color: #b7c5bb;
+}
+
+:root[data-theme="dark"] .guided-sample-step.status-active .guided-sample-step-heading span {
+  background: rgba(163, 128, 49, 0.14);
+  color: #f0d183;
+}
+
+:root[data-theme="dark"] .guided-sample-step.status-completed .guided-sample-step-heading span {
+  background: rgba(82, 146, 117, 0.14);
+  color: #9bddba;
+}
+
+:root[data-theme="dark"] .guided-sample-step.status-pending .guided-sample-step-heading span {
+  background: rgba(125, 170, 190, 0.12);
+  color: #b7c5bb;
+}
+
+:root[data-theme="dark"] .guided-sample-step.status-failed .guided-sample-step-heading span {
+  background: rgba(178, 59, 26, 0.14);
+  color: #f3b6ac;
 }
 
 :root[data-theme="dark"] .admin-panel {
