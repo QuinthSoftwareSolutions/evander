@@ -82,6 +82,85 @@ def write_config(tmp_path: Path, *, enable_directory_scoped_config: bool = False
     return config_path
 
 
+def _write_run_detail_audit_log(path: Path, *, session_id: str, vm_id: str) -> None:
+    audit_entries = [
+        {
+            "event_type": "tool_call",
+            "session_id": session_id,
+            "vm_id": vm_id,
+            "directory_path": "root",
+            "tool_name": "prompt_agent",
+            "request_id": "request-sqlite-node",
+            "correlation_id": "correlation-sqlite-node",
+            "approval_request_id": "approval-sqlite",
+            "workflow_run_id": "evt-sqlite",
+            "trace_id": "trace-sqlite",
+            "decision": "allowed",
+            "duration_ms": 19,
+            "args": {
+                "session_id": session_id,
+                "request_id": "request-sqlite-node",
+                "approval_request_id": "approval-sqlite",
+                "prompt": "Run the sqlite flow",
+                "token": "sqlite-secret-token",
+            },
+            "result": {
+                "request_id": "request-sqlite-node",
+                "status": "success",
+                "response_token": "response-token-sqlite",
+                "secret": "sqlite-result-secret",
+            },
+            "created_at": "2026-05-18T11:00:00+00:00",
+        },
+        {
+            "event_type": "tool_call",
+            "session_id": session_id,
+            "vm_id": vm_id,
+            "directory_path": "root",
+            "tool_name": "make_phone_call",
+            "correlation_id": "correlation-sqlite-run-level",
+            "workflow_run_id": "evt-sqlite",
+            "trace_id": "trace-sqlite",
+            "decision": "denied",
+            "reason": "blocked",
+            "args": {
+                "session_id": session_id,
+                "correlation_id": "correlation-sqlite-run-level",
+                "number": "+1-555-0199",
+            },
+            "result": {
+                "status": "denied",
+                "reason": "blocked",
+            },
+            "created_at": "2026-05-18T11:01:00+00:00",
+        },
+        {
+            "event_type": "tool_call",
+            "session_id": session_id,
+            "vm_id": vm_id,
+            "directory_path": "root",
+            "tool_name": "make_phone_call",
+            "workflow_run_id": "evt-sqlite",
+            "trace_id": "trace-sqlite",
+            "decision": "allowed",
+            "reason": "trace-only match",
+            "args": {
+                "session_id": session_id,
+                "note": "trace-only",
+            },
+            "result": {
+                "status": "success",
+                "summary": "trace-only",
+            },
+            "created_at": "2026-05-18T11:00:30+00:00",
+        },
+    ]
+    path.write_text(
+        "\n".join(json.dumps(entry, sort_keys=True) for entry in audit_entries) + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_create_local_issue_persists_yaml_and_store(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
 
@@ -3316,6 +3395,34 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
     service = AdminService(write_config(tmp_path))
     runtime_dir = tmp_path / "runtime"
     db_path = runtime_dir / "orchestration.db"
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-sqlite",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-sqlite",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime(2026, 6, 1, 11, 0, tzinfo=UTC),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-sqlite",
+            },
+        )
+    )
+    ContainerWorkerExecutionRepository(
+        runtime_dir / "container-worker-executions.json"
+    ).put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-sqlite-agent",
+            session_id="session-sqlite",
+            worker_job_id="job-sqlite-agent",
+            worker_url="http://worker.test",
+            target_name="target-sqlite",
+            last_status="running",
+            directory_path="root",
+            metadata={"image": "runner:sqlite"},
+        )
+    )
     artifact_store = CommunicationArtifactStore(runtime_dir)
     artifact = artifact_store.stage(
         provider="teams",
@@ -3377,7 +3484,7 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
             resolved_config_hash="hash-sqlite",
             resolved_config={
                 "session_id": "session-sqlite",
-                "vm_name": "vm-sqlite",
+                "vm_name": "target-sqlite",
                 "prompt": "Run the sqlite flow",
                 "dispatch_id": "dispatch-sqlite",
                 "thread_id": "thread-sqlite",
@@ -3471,6 +3578,11 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
             ],
         }
     )
+    _write_run_detail_audit_log(
+        runtime_dir / "audit.jsonl",
+        session_id="session-sqlite",
+        vm_id="target-sqlite",
+    )
 
     detail = service.read_workflow_run_detail(event_id="evt-sqlite")
 
@@ -3481,6 +3593,9 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
     assert detail.graph.snapshot.snapshot_type == "compiled_runtime_graph"
     assert detail.graph.snapshot.workflow_graphs[0]["id"] == "graph-sqlite"
     assert detail.graph.data_availability.graph_snapshot == "available"
+    assert detail.graph.data_availability.agent_links == "available"
+    assert detail.graph.data_availability.communication_artifacts == "available"
+    assert detail.graph.data_availability.tool_calls == "available"
     assert detail.recovery.resume.eligible is True
     assert detail.trigger_event is not None
     assert detail.trigger_event.payload == {"issue_number": "11"}
@@ -3491,6 +3606,23 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
     assert effect_node.binding_trace is not None
     assert effect_node.binding_trace["entries"] == []
     assert effect_node.retry_resume_eligible is True
+    tool_call_link = effect_node.tool_call_links[0]
+    assert tool_call_link.tool_name == "prompt_agent"
+    assert tool_call_link.decision == "allowed"
+    assert tool_call_link.status == "success"
+    assert tool_call_link.request_id == "request-sqlite-node"
+    assert tool_call_link.correlation_id == "correlation-sqlite-node"
+    assert tool_call_link.approval_request_id == "approval-sqlite"
+    assert tool_call_link.workflow_run_id == "evt-sqlite"
+    assert tool_call_link.trace_id == "trace-sqlite"
+    assert tool_call_link.href == "#tool-calls?q=request-sqlite-node"
+    assert tool_call_link.args["token"] == "<redacted>"
+    assert tool_call_link.result["secret"] == "<redacted>"
+    assert tool_call_link.redacted_args["token"] == "<redacted>"
+    assert tool_call_link.redacted_result["secret"] == "<redacted>"
+    assert tool_call_link.args_summary is not None
+    assert tool_call_link.result_summary is not None
+    assert tool_call_link.result_status == "available"
     approval_link = effect_node.approval_links[0]
     assert approval_link.request_id == "approval-sqlite"
     assert approval_link.status == "approved"
@@ -3503,11 +3635,20 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
     assert agent_link.prompt == "Run the sqlite flow"
     assert agent_link.thread_id == "thread-sqlite"
     assert agent_link.execution_id == "execution-sqlite"
+    assert agent_link.artifact_ids == [artifact.artifact_id]
+    assert agent_link.session_status == "available"
+    assert agent_link.session_available is True
+    assert agent_link.agent_available is True
+    assert agent_link.log_status == "log_available"
+    assert agent_link.log_available is True
+    assert agent_link.log_href is not None
+    assert agent_link.result_status == "available"
+    assert agent_link.result_summary is not None
     assert agent_link.log_reference == {
         "source_kind": "effect_execution",
         "node_id": "effect-prompt",
         "session_id": "session-sqlite",
-        "vm_name": "vm-sqlite",
+        "vm_name": "target-sqlite",
         "thread_id": "thread-sqlite",
         "execution_id": "execution-sqlite",
         "dispatch_id": "dispatch-sqlite",
@@ -3518,6 +3659,21 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
     assert artifact_link.provider == "teams"
     assert artifact_link.original_filename == "sqlite-notes.txt"
     assert artifact_link.metadata == {"storage": "host_artifact_store", "source": "sqlite-fixture"}
+    assert [link.tool_name for link in detail.tool_call_links] == [
+        "make_phone_call",
+        "make_phone_call",
+    ]
+    assert detail.tool_call_links[0].decision == "denied"
+    assert detail.tool_call_links[0].status == "denied"
+    assert detail.tool_call_links[0].href == "#tool-calls?q=correlation-sqlite-run-level"
+    assert detail.tool_call_links[0].session_id == "session-sqlite"
+    assert detail.tool_call_links[1].decision == "allowed"
+    assert detail.tool_call_links[1].status == "success"
+    assert detail.tool_call_links[1].href == "#tool-calls?q=trace-sqlite"
+    assert detail.tool_call_links[1].session_id == "session-sqlite"
+    assert detail.data_availability.tool_calls == "available"
+    assert detail.data_availability.agent_links == "available"
+    assert detail.data_availability.communication_artifacts == "available"
 
 
 def test_conformance_reports_summarize_present_runtime_artifacts(tmp_path: Path) -> None:
@@ -4951,6 +5107,20 @@ def test_update_session_policy_updates_allowlists_and_metadata(
             allowed_tools=[ToolName.CLAIM_NEXT_ISSUE],
             allowed_script_names=["old-script"],
             approval_required_tools=[ToolName.COMPLETE_ISSUE],
+            tool_argument_policies={
+                "create_ado_backlog_item": [
+                    {
+                        "id": "session-policy",
+                        "constraints": [
+                            {
+                                "id": "title",
+                                "path": "title",
+                                "operator": "required",
+                            }
+                        ],
+                    }
+                ]
+            },
             discord_channel_allowlist=["old-discord"],
             teams_channel_allowlist=["team-a/channel-1"],
             teams_chat_allowlist=["chat:chat-old"],
@@ -4963,6 +5133,25 @@ def test_update_session_policy_updates_allowlists_and_metadata(
         "13302",
         {
             "approval_required_tools": [" complete_issue ", "approval_submit"],
+            "tool_argument_policies": {
+                "create_ado_backlog_item": [
+                    {
+                        "id": "session-policy",
+                        "constraints": [
+                            {
+                                "id": "title",
+                                "path": "title",
+                                "operator": "required",
+                            },
+                            {
+                                "id": "iteration",
+                                "path": "iteration",
+                                "operator": "required",
+                            },
+                        ],
+                    }
+                ]
+            },
             "allowed_script_names": [" deploy-review ", "deploy-review", "collect-logs"],
             "discord_channel_allowlist": [" chan-a ", "chan-a", "chan-b"],
             "teams_channel_allowlist": [" team-b/channel-2 ", "chat:chat-1"],
@@ -4986,6 +5175,7 @@ def test_update_session_policy_updates_allowlists_and_metadata(
         ToolName.COMPLETE_ISSUE,
         ToolName.APPROVAL_SUBMIT,
     ]
+    assert updated.tool_argument_policies["create_ado_backlog_item"][0].id == "session-policy"
     assert updated.allowed_script_names == ["deploy-review", "collect-logs"]
     assert updated.discord_channel_allowlist == ["chan-a", "chan-b"]
     assert updated.teams_channel_allowlist == ["team-b/channel-2", "chat:chat-1"]
@@ -4998,6 +5188,72 @@ def test_update_session_policy_updates_allowlists_and_metadata(
     assert updated.communication_file_blocked_extensions == [".exe", "exe"]
     assert updated.communication_file_require_approval_for_send is True
     assert updated.metadata == {"keep": "new-value"}
+
+
+def test_effective_tool_policy_payload_combines_directory_and_session_rules(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.write_directory_domain_config(
+        "root",
+        "policy",
+        {
+            "approval_required_tools": ["approval_check"],
+            "tool_argument_policies": {
+                "create_ado_backlog_item": [
+                    {
+                        "id": "directory-policy",
+                        "constraints": [
+                            {
+                                "id": "project",
+                                "path": "project",
+                                "operator": "fixed",
+                                "value": "Example Project",
+                            }
+                        ],
+                    }
+                ]
+            },
+        },
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-13302-session",
+            vm_id="vm-13302",
+            allowed_tools=[ToolName.CLAIM_NEXT_ISSUE, ToolName.APPROVAL_CHECK],
+            approval_required_tools=[ToolName.COMPLETE_ISSUE],
+            tool_argument_policies={
+                "create_ado_backlog_item": [
+                    {
+                        "id": "session-policy",
+                        "constraints": [
+                            {
+                                "id": "title",
+                                "path": "title",
+                                "operator": "required",
+                            }
+                        ],
+                    }
+                ]
+            },
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+
+    effective = service.effective_tool_policy_payload(
+        service.runtime.session_repository.get_session("issue-13302-session")
+    )
+
+    assert effective is not None
+    assert effective["allowed_tools"] == ["claim_next_issue", "approval_check"]
+    assert effective["approval_required_tools"] == [
+        "approval_check",
+        "complete_issue",
+    ]
+    assert [item["id"] for item in effective["tool_argument_policies"]["create_ado_backlog_item"]] == [
+        "directory-policy",
+        "session-policy",
+    ]
 
 
 def test_update_admin_agent_updates_chat_allowlist(tmp_path: Path) -> None:
@@ -6402,6 +6658,16 @@ def test_create_vm_merges_additional_allowed_tools_into_session_manifest(
         vm_name="lab-vm",
         session_id="lab-session",
         allowed_tools=["list_unread_feedback", "post_pr_feedback_reply"],
+        tool_argument_policies={
+            "create_ado_backlog_item": [
+                {
+                    "id": "create-policy",
+                    "constraints": [
+                        {"id": "title", "path": "title", "operator": "required"}
+                    ],
+                }
+            ]
+        },
     )
 
     assert result.success is True
@@ -6411,6 +6677,56 @@ def test_create_vm_merges_additional_allowed_tools_into_session_manifest(
     assert ToolName.APPROVAL_CHECK in manifest.allowed_tools
     assert ToolName.LIST_UNREAD_FEEDBACK in manifest.allowed_tools
     assert ToolName.POST_PR_FEEDBACK_REPLY in manifest.allowed_tools
+    assert manifest.tool_argument_policies["create_ado_backlog_item"][0].id == "create-policy"
+
+
+def test_create_vm_upsert_validates_tool_argument_policies_for_existing_session(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="lab-session",
+            allowed_tools=[ToolName.CREATE_ADO_BACKLOG_ITEM],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    )
+
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._dominfo_field", lambda vm_name, field_name: None
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service._resolve_vm_ip", lambda vm_name: "192.168.250.10"
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.admin.service.subprocess.run",
+        lambda cmd, **kwargs: subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout="ok", stderr=""
+        ),
+    )
+
+    result = service.create_vm(
+        vm_name="lab-vm",
+        session_id="lab-session",
+        allow_existing_session=True,
+        tool_argument_policies={
+            "create_ado_backlog_item": [
+                {
+                    "id": "upsert-policy",
+                    "constraints": [
+                        {"id": "project", "path": "project", "operator": "required"}
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert result.success is True
+    manifest = service.runtime.session_repository.get_session("lab-session")
+    assert manifest is not None
+    rule = manifest.tool_argument_policies["create_ado_backlog_item"][0]
+    assert rule.id == "upsert-policy"
+    assert rule.constraints[0].path == "project"
 
 
 def test_create_vm_sets_teams_chat_allowlist_on_session_manifest(

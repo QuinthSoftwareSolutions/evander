@@ -2,8 +2,8 @@
 
 This demo seeds a dedicated runtime tree under `runtime/workflow-run-inspector-demo` with a
 representative workflow path. It is built from the existing ticket-created agent prompt slice,
-then augmented with a graph snapshot, a staged communication artifact, an approval request, and a
-legacy run that still shows missing historical detail.
+then augmented with a graph snapshot, a staged communication artifact, a session manifest, an
+audit log, an approval request, and a legacy run that still shows missing historical detail.
 
 ## Seed The Demo Runtime
 
@@ -19,6 +19,9 @@ The script is idempotent. Re-running it rewrites the same demo records with the 
 - `trace_id`: `trace-detail`
 - `session_id`: `session-detail`
 - `artifact_id`: `comm_0123456789abcdef0123456789abcdef`
+- `tool_call_id`: `toolcall-rich-01`
+- `request_id`: `tool-request-detail`
+- `correlation_id`: `tool-correlation-detail`
 
 If you want the files somewhere else, pass `--runtime-dir` explicitly.
 
@@ -45,6 +48,9 @@ visible current run opens the same detail panel by event id.
 - `trace_id=trace-detail`
 - `session_id=session-detail`
 - `artifact_id=comm_0123456789abcdef0123456789abcdef`
+- `tool_call_id=toolcall-rich-01`
+- `request_id=tool-request-detail`
+- `correlation_id=tool-correlation-detail`
 
 The rich run should show:
 
@@ -54,10 +60,14 @@ The rich run should show:
 - graph snapshot revision `rev-detail-rich`
 - approval link `approval-rich`
 - communication artifact `notes.txt`
+- tool-call audit link `toolcall-rich-01`
+- session record `session-detail`
+- log reference status for the agent session
 - resumable failed effect history plus a waiting branch
 
 The legacy run `evt-legacy` should still resolve, but its detail payload should show missing
-historical graph data and no recorded binding trace.
+historical graph data, no recorded binding trace, and explicit missing tool-call, agent-session,
+log, and artifact data rather than silently omitting those sections.
 
 ## Expected Shapes
 
@@ -69,6 +79,8 @@ workflow inspector:
 - an agent prompt effect with bindings, outputs, and a resumable failure
 - an approval record linked by `request_id`
 - a staged communication artifact linked by `artifact_id`
+- a session manifest under `sessions.json`
+- a tool-call audit record under `audit.jsonl`
 - a graph snapshot for the captured config revision
 
 If you need to reset the demo, run the seed script again. It will overwrite the demo records in the

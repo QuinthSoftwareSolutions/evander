@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { Tooltip } from "../admin/Tooltip";
+import { readAdminHashQuery } from "../admin/hash";
 import type {
   AgentActionResponse,
   AgentBackend,
@@ -264,6 +265,29 @@ async function loadAgentLogPage(
 
 function agentKey(agent: AgentRecord): string {
   return `${agent.backend}:${agent.agent_id}`;
+}
+
+type AgentHashSelection = {
+  agentId: string;
+  sessionId: string;
+};
+
+function agentSelectionFromHash(): AgentHashSelection {
+  const params = readAdminHashQuery();
+  return {
+    agentId: params.get("agent_id")?.trim() ?? "",
+    sessionId: params.get("session_id")?.trim() ?? "",
+  };
+}
+
+function agentMatchesSelection(agent: AgentRecord, selection: AgentHashSelection): boolean {
+  if (selection.agentId && agent.agent_id === selection.agentId) {
+    return true;
+  }
+  if (selection.sessionId && agent.session_id === selection.sessionId) {
+    return true;
+  }
+  return false;
 }
 
 function backendLabel(backend: AgentBackend): string {
@@ -575,6 +599,7 @@ export function AgentsPage() {
   const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
   const [items, setItems] = useState<AgentRecord[]>([]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [hashSelection, setHashSelection] = useState<AgentHashSelection>(() => agentSelectionFromHash());
   const [backendFilter, setBackendFilter] = useState<BackendFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [agentLog, setAgentLog] = useState<AgentLogViewState>(() => emptyLogState());
@@ -605,14 +630,33 @@ export function AgentsPage() {
   const logSticksToBottomRef = useRef(true);
   const logLoadedLinesRef = useRef(LOG_PAGE_LIMIT);
   const pendingLogScrollRef = useRef<"bottom" | { previousHeight: number; previousTop: number } | null>(null);
+  const hashSelectionActive = Boolean(hashSelection.agentId || hashSelection.sessionId);
+
+  useEffect(() => {
+    const syncHashSelection = () => {
+      const nextSelection = agentSelectionFromHash();
+      setHashSelection(nextSelection);
+      if (nextSelection.agentId || nextSelection.sessionId) {
+        setSelectedKey(null);
+        setBackendFilter("all");
+        setStatusFilter("all");
+      }
+    };
+
+    syncHashSelection();
+    window.addEventListener("hashchange", syncHashSelection);
+    return () => {
+      window.removeEventListener("hashchange", syncHashSelection);
+    };
+  }, []);
 
   useEffect(() => {
     const saved = window.localStorage.getItem(AGENT_SELECTION_STORAGE_KEY);
-    if (saved) {
+    if (saved && !hashSelectionActive) {
       setSelectedKey(saved);
     }
     setSelectionHydrated(true);
-  }, []);
+  }, [hashSelectionActive]);
 
   useEffect(() => {
     if (!selectionHydrated) return;
@@ -684,17 +728,28 @@ export function AgentsPage() {
   }, [filteredItems]);
 
   const selectedAgent = useMemo(
-    () => filteredItems.find((item) => agentKey(item) === selectedKey) ?? filteredItems[0] ?? null,
-    [filteredItems, selectedKey],
+    () => {
+      const explicitSelection = selectedKey
+        ? filteredItems.find((item) => agentKey(item) === selectedKey) ?? null
+        : null;
+      if (explicitSelection) {
+        return explicitSelection;
+      }
+      const hashSelectionMatch = hashSelection.agentId || hashSelection.sessionId
+        ? filteredItems.find((item) => agentMatchesSelection(item, hashSelection)) ?? null
+        : null;
+      if (hashSelectionMatch) {
+        return hashSelectionMatch;
+      }
+      return filteredItems[0] ?? null;
+    },
+    [filteredItems, hashSelection, selectedKey],
   );
+  const selectedAgentKey = selectedAgent ? agentKey(selectedAgent) : null;
 
   const refreshAgents = useCallback(async () => {
     const payload = await loadAgentList(selectedDirectoryPath, true, backendFilter);
     setItems(payload.items);
-    setSelectedKey((current) => {
-      if (current && payload.items.some((item) => agentKey(item) === current)) return current;
-      return payload.items[0] ? agentKey(payload.items[0]) : null;
-    });
   }, [backendFilter, selectedDirectoryPath]);
 
   useEffect(() => {
@@ -1209,7 +1264,7 @@ export function AgentsPage() {
                   <button
                     key={agentKey(item)}
                     type="button"
-                    className={`feature-list-item vm-list-item agent-list-item${selectedAgent && agentKey(selectedAgent) === agentKey(item) ? " selected" : ""}`}
+                    className={`feature-list-item vm-list-item agent-list-item${selectedAgentKey === agentKey(item) ? " selected" : ""}`}
                     onClick={() => {
                       setSelectedKey(agentKey(item));
                       setShowResumeForm(false);

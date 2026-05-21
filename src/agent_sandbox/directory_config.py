@@ -69,6 +69,7 @@ DIRECTORY_CONFIG_DOMAIN_FIELDS: dict[str, frozenset[str]] = {
             "communication_file_require_approval_for_send",
             "pr_reply_require_approval",
             "approval_required_tools",
+            "tool_argument_policies",
             "redacted_keys",
         }
     ),

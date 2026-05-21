@@ -247,7 +247,7 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
     }
   });
 
-  await page.goto(`http://127.0.0.1:${address.port}/#sessions`, {
+  await page.goto(`http://127.0.0.1:${address.port}/#sessions?session_id=session-1`, {
     waitUntil: "domcontentloaded",
   });
 
@@ -257,6 +257,11 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   await page.getByRole("button", { name: "Expand sections" }).click();
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Sessions" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByLabel("Find session").waitFor({ state: "visible" }));
+  assert.equal(await page.getByLabel("Find session").inputValue(), "session-1");
+  assert.equal(await page.getByRole("combobox", { name: "State" }).inputValue(), "active");
+  await assert.doesNotReject(() => page.locator(".session-list-item.selected").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.locator(".session-list-item.selected").getByText("session-1").waitFor({ state: "visible" }));
   await page.locator(".session-tool-group-summary").filter({ hasText: "Agent control" }).click();
   const promptAgentGroup = page.locator("details.session-tool-group[open]").filter({ hasText: "Agent control" });
   const promptAgentRow = promptAgentGroup.locator(".session-tool-row").filter({ hasText: "Prompt agent" });
@@ -287,7 +292,7 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   await saveButton.click();
   await assert.doesNotReject(() => page.locator(".session-tools-panel .success-box").first().waitFor({ state: "visible" }));
 
-  assert.equal(await page.evaluate(() => window.location.hash), "#sessions");
+  assert.equal(await page.evaluate(() => window.location.hash), "#sessions?session_id=session-1");
   assert.equal(await navEntry.count(), 1);
   assert.equal(await allowedToolsBodies.length, 1);
   assert.equal(await policyBodies.length, 1);
