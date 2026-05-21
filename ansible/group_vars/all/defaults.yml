@@ -239,6 +239,10 @@ agent_sandbox_admin_web_caddy_hostname: >-
 agent_sandbox_admin_web_caddy_upstream_host: "127.0.0.1"
 agent_sandbox_admin_web_caddy_upstream_port: "{{ agent_sandbox_admin_web_env.get('ADMIN_WEB_PORT', '8100') }}"
 agent_sandbox_admin_web_caddy_validate_config: true
+agent_sandbox_admin_web_caddy_verification_connect_timeout_seconds: 5
+agent_sandbox_admin_web_caddy_verification_max_time_seconds: 20
+agent_sandbox_admin_web_caddy_verification_retries: 6
+agent_sandbox_admin_web_caddy_verification_delay_seconds: 10
 
 # Workflow editor layout for a single-pack workflow is stored beside that pack.
 agent_sandbox_managed_workflow_pack_files:

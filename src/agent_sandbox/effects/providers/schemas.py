@@ -214,6 +214,7 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     model: ConfigValue | None = None
     vm_user: ConfigValue | None = None
     resume_thread_id: ConfigValue | None = None
+    resume_thread_metadata_key: ConfigValue | None = None
     queue_key: ConfigValue | None = None
     mcp_tool_approval_lease_id: ConfigValue | None = None
 

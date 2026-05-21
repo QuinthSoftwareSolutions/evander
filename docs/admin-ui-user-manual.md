@@ -152,7 +152,10 @@ Common tasks:
    skills.
 7. Use the policy edit action to adjust an existing agent's host-side policy.
 8. Use the skill install action to copy managed Codex skills into an existing session.
-9. Use lifecycle actions only after confirming the target and directory are correct.
+9. Use the prompt action to queue a direct prompt for the selected agent. The dialog accepts a
+   multiline prompt and an optional resume thread ID, prefilled from the session's latest known
+   agent thread when available.
+10. Use lifecycle actions only after confirming the target and directory are correct.
 
 Notes:
 

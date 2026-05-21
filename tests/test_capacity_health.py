@@ -167,4 +167,3 @@ def test_top_session_storage_orders_largest_and_oldest() -> None:
     assert largest[0].directory_path == "root/team-b"
     assert largest[0].backend == "container_worker_vm"
     assert largest[0].size_bytes == 90
-

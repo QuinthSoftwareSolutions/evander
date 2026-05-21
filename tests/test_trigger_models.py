@@ -12,6 +12,7 @@ from agent_sandbox.events.models import (
     materialize_node_definition,
 )
 from agent_sandbox.events.provider_models import (
+    AgentEnqueuePromptEffectDefinition,
     AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
     ArtifactPublishArtifactsEffectDefinition,
@@ -746,6 +747,23 @@ def test_session_update_metadata_effect_allows_templated_metadata_reference() ->
     )
 
     assert effect.metadata == "${{effect-bash-script-1.session_metadata_patch}}"
+
+
+def test_agent_enqueue_prompt_accepts_resume_thread_metadata_key() -> None:
+    effect = AgentEnqueuePromptEffectDefinition.model_validate(
+        {
+            "id": "effect-agent-enqueue",
+            "display_name": "Enqueue agent",
+            "type": "effect:agent:enqueue-prompt",
+            "session_id": "session-1",
+            "prompt": "continue",
+            "resume_thread_metadata_key": "teams:${{trigger-teams.channel_target}}:agent_thread_id",
+        }
+    )
+
+    assert effect.resume_thread_metadata_key == (
+        "teams:${{trigger-teams.channel_target}}:agent_thread_id"
+    )
 
 
 def test_vm_copy_files_effect_rejects_mixed_source_kinds() -> None:

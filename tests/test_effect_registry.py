@@ -172,10 +172,15 @@ class _AdminServiceStub:
                 expires_at=datetime.now(UTC) + timedelta(hours=1),
             )
         ]
+        self._sessions = {session.session_id: session for session in sessions}
         self.runtime = SimpleNamespace(
             session_repository=SimpleNamespace(
-                list_sessions=lambda: sessions,
-                read_all=lambda: {session.session_id: session for session in sessions},
+                list_sessions=lambda: list(self._sessions.values()),
+                read_all=lambda: dict(self._sessions),
+                get_session=lambda session_id: self._sessions.get(session_id),
+                upsert_session=lambda session: self._sessions.__setitem__(
+                    session.session_id, session
+                ),
             )
         )
 
@@ -238,6 +243,12 @@ class _AdminServiceStub:
             message="ok",
             thread_id=resume_thread_id or "thread-new-123",
         )
+
+    def session_update_metadata(self, *, target: str, metadata: dict[str, object]):
+        session = self._sessions[target]
+        updated = session.model_copy(update={"metadata": {**session.metadata, **metadata}})
+        self._sessions[target] = updated
+        return {"success": True, "session_id": target, "metadata": updated.metadata}
 
 
 class _RecordingProvider(EffectProviderBase):
@@ -893,6 +904,73 @@ def test_agent_enqueue_prompt_provider_dispatches_immediately_when_idle() -> Non
     ]
 
 
+def test_agent_enqueue_prompt_provider_uses_resume_thread_metadata_key() -> None:
+    effect = AgentEnqueuePromptEffectDefinition(
+        id="effect-prompt",
+        display_name="Prompt",
+        type="effect:agent:enqueue-prompt",
+        prompt="continue",
+        session_id="session-42",
+        resume_thread_metadata_key="teams:chat-1:agent_thread_id",
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    session = admin_service._sessions["session-42"]
+    admin_service._sessions["session-42"] = session.model_copy(
+        update={"metadata": {"teams:chat-1:agent_thread_id": "thread-existing"}}
+    )
+    admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+
+    output = factory.build(effect).execute()
+
+    assert output["thread_id"] == "thread-existing"
+    assert admin_service.resume_calls[0]["resume_thread_id"] == "thread-existing"
+    updated = admin_service._sessions["session-42"]
+    assert updated.metadata["teams:chat-1:agent_thread_id"] == "thread-existing"
+
+
+def test_agent_enqueue_prompt_provider_explicit_resume_thread_overrides_metadata_key() -> None:
+    effect = AgentEnqueuePromptEffectDefinition(
+        id="effect-prompt",
+        display_name="Prompt",
+        type="effect:agent:enqueue-prompt",
+        prompt="continue",
+        session_id="session-42",
+        resume_thread_id="thread-explicit",
+        resume_thread_metadata_key="teams:chat-1:agent_thread_id",
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    session = admin_service._sessions["session-42"]
+    admin_service._sessions["session-42"] = session.model_copy(
+        update={"metadata": {"teams:chat-1:agent_thread_id": "thread-existing"}}
+    )
+    admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+
+    output = factory.build(effect).execute()
+
+    assert output["thread_id"] == "thread-explicit"
+    assert admin_service.resume_calls[0]["resume_thread_id"] == "thread-explicit"
+    updated = admin_service._sessions["session-42"]
+    assert updated.metadata["teams:chat-1:agent_thread_id"] == "thread-explicit"
+
+
 def test_agent_enqueue_prompt_provider_uses_container_backend_for_container_session(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1111,6 +1189,7 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
             target="session-1",
             prompt="check teams",
             queue_key="chat:thread-1:msg-1",
+            resume_thread_metadata_key="teams:chat-1:agent_thread_id",
         )
     ).execute()
 
@@ -1121,6 +1200,85 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
     queued_payload = (tmp_path / "queued-agent-prompts.json").read_text(encoding="utf-8")
     assert "check teams" in queued_payload
     assert "chat:thread-1:msg-1" in queued_payload
+    assert "teams:chat-1:agent_thread_id" in queued_payload
+
+
+def test_agent_enqueue_prompt_keeps_distinct_busy_messages_for_same_metadata_key(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        ),
+        list_vms=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("container enqueue must not list libvirt VMs")
+        ),
+    )
+    backend = _FakeContainerBackend()
+    backend.status = SimpleNamespace(
+        status=ExecutionStatusKind.RUNNING,
+        message=None,
+        metadata={},
+    )
+    backend.repository = SimpleNamespace(
+        read_all=lambda: {
+            "agent-session-1-old": ContainerWorkerExecutionRecord(
+                execution_id="agent-session-1-old",
+                session_id="session-1",
+                worker_job_id="job-1",
+                worker_url="http://worker.test",
+                target_name="agent-session-1-old",
+                last_status="running",
+            )
+        }
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    for message_id in ("msg-1", "msg-2"):
+        output = factory.build(
+            AgentEnqueuePromptEffectDefinition(
+                id="agent-enqueue",
+                display_name="Enqueue",
+                type="effect:agent:enqueue-prompt",
+                target="session-1",
+                prompt=f"check teams {message_id}",
+                queue_key=f"teams:chat-1:{message_id}",
+                resume_thread_metadata_key="teams:chat-1:agent_thread_id",
+            )
+        ).execute()
+        assert output["queued"] is True
+
+    queued = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").read_all()
+    assert sorted(queued) == ["teams:chat-1:msg-1", "teams:chat-1:msg-2"]
+    assert {
+        record.resume_thread_metadata_key for record in queued.values()
+    } == {"teams:chat-1:agent_thread_id"}
 
 
 def test_chat_assistant_ensure_session_uses_event_capability_mode(tmp_path) -> None:

@@ -75,6 +75,8 @@ from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.repositories.chat_assistant_sessions import JsonChatAssistantSessionRepository
 from agent_sandbox.repositories.session_manifests import as_session_manifest_repository
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
+from agent_sandbox.effects.registry import EffectProviderFactory
+from agent_sandbox.events.provider_models import AgentEnqueuePromptEffectDefinition
 from agent_sandbox.execution.container_worker_client import (
     ContainerWorkerClient,
     ContainerWorkerClientError,
@@ -2540,6 +2542,12 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("model", "Model", "string", bindable=True),
             _field("vm_user", "VM user", "string", bindable=True),
             _field("resume_thread_id", "Resume thread ID", "string", bindable=True),
+            _field(
+                "resume_thread_metadata_key",
+                "Resume thread metadata key",
+                "string",
+                bindable=True,
+            ),
             _field(
                 "mcp_tool_approval_lease_id",
                 "MCP tool approval lease ID",
@@ -8421,6 +8429,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 if pid in {None, ""}:
                     raise ValueError("kill-agent requires a running agent pid")
                 result = self.kill_agent(agent_id, int(pid))
+            elif action == "prompt-agent":
+                return self._prompt_admin_agent(agent_id, backend=selected_backend, payload=body)
             elif action == "resume-agent":
                 prompt = str(body.get("prompt") or "").strip()
                 if not prompt:
@@ -8464,6 +8474,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     backend="container_worker_vm",
                     skill_names=self._agent_string_list(body, "codex_skills"),
                     vm_user=self._agent_optional_string(body, "vm_user") or "agent",
+                )
+            if action == "prompt-agent":
+                return self._prompt_admin_agent(
+                    agent_id,
+                    backend=selected_backend,
+                    payload=body,
                 )
             session, record = self._resolve_container_agent_session(agent_id, require_session=False)
             is_session_target = session is not None and record is None
@@ -8546,6 +8562,259 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "session_id": session.session_id if session is not None else status.session_id,
             }
         raise ValueError(f"Unknown agent backend: {selected_backend}")
+
+    def _prompt_admin_agent(
+        self,
+        agent_id: str,
+        *,
+        backend: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        prompt = self._agent_optional_string(payload, "prompt")
+        if not prompt:
+            raise ValueError("prompt-agent requires a non-empty prompt")
+        resume_thread_id = self._agent_optional_string(payload, "resume_thread_id")
+        vm_user = self._agent_optional_string(payload, "vm_user") or "agent"
+
+        if backend == "libvirt_vm":
+            session = self._resolve_optional_vm_agent_session(agent_id)
+            session_id = session.session_id if session is not None else None
+            target_name = (
+                str((session.vm_id if session is not None else None) or agent_id).strip()
+                or agent_id
+            )
+            directory_path = (
+                str((session.directory_path if session is not None else None) or "root").strip()
+                or "root"
+            )
+            agent_response_id = target_name
+        elif backend == "container_worker_vm":
+            session, record = self._resolve_container_agent_session(agent_id, require_session=True)
+            if session is None:
+                raise ValueError(f"Unknown container worker agent target: {agent_id}")
+            del record
+            session_id = session.session_id
+            target_name = self._container_session_target_name(session)
+            directory_path = str(getattr(session, "directory_path", None) or "root").strip() or "root"
+            agent_response_id = session_id
+        else:
+            raise ValueError(f"Unknown agent backend: {backend}")
+
+        target = session_id or target_name
+        effect_id = f"admin-agent-prompt:{backend}:{target}"
+        effect = AgentEnqueuePromptEffectDefinition(
+            id=effect_id,
+            display_name="Admin prompt agent",
+            type="effect:agent:enqueue-prompt",
+            target=target,
+            session_id=session_id,
+            vm_name=target_name,
+            prompt=prompt,
+            resume_thread_id=resume_thread_id,
+            vm_user=vm_user,
+            queue_key=effect_id,
+        )
+        provider = EffectProviderFactory(
+            provider_config_resolver=self.runtime.provider_config,
+            admin_service=self,
+        ).build(effect, directory_path=directory_path)
+        dispatch_started_at = datetime.now(UTC)
+        try:
+            result = provider.execute()
+        except RuntimeError as exc:
+            queued_result = self._queued_admin_prompt_result_after_dispatch_error(
+                queue_key=effect_id,
+                target_name=target_name,
+                session_id=session_id,
+                backend=backend,
+                attempted_at=dispatch_started_at,
+                error=exc,
+            )
+            if queued_result is None:
+                raise
+            result = queued_result
+        if (
+            backend == "container_worker_vm"
+            and not bool(result.get("queued"))
+            and str(result.get("output_mode") or "").strip() == "on_completion"
+        ):
+            self._record_direct_container_admin_prompt_execution(
+                effect_id=effect_id,
+                target=target,
+                target_name=target_name,
+                session_id=session_id,
+                prompt=prompt,
+                resume_thread_id=resume_thread_id,
+                vm_user=vm_user,
+                directory_path=directory_path,
+                result=result,
+            )
+        queued = bool(result.get("queued"))
+        message = str(result.get("message") or "").strip()
+        if not message:
+            message = (
+                f"Queued prompt for {target_name}"
+                if queued
+                else f"Dispatched prompt to {target_name}"
+            )
+        response = dict(result)
+        response.update(
+            {
+                "success": bool(result.get("success", True)),
+                "agent_id": agent_response_id,
+                "backend": backend,
+                "target_name": target_name,
+                "action": "prompt-agent",
+                "message": message,
+                "status": "queued" if queued else "dispatched",
+                "session_id": session_id,
+            }
+        )
+        return response
+
+    def _queued_admin_prompt_result_after_dispatch_error(
+        self,
+        *,
+        queue_key: str,
+        target_name: str,
+        session_id: str | None,
+        backend: str,
+        attempted_at: datetime,
+        error: RuntimeError,
+    ) -> dict[str, Any] | None:
+        from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
+
+        queued = AgentPromptQueueStore(self.config.runtime_dir / "queued-agent-prompts.json").get(
+            queue_key
+        )
+        if queued is None:
+            return None
+        queued_updated_at = queued.updated_at
+        if queued_updated_at.tzinfo is None:
+            queued_updated_at = queued_updated_at.replace(tzinfo=UTC)
+        if queued_updated_at < attempted_at - timedelta(seconds=1):
+            return None
+        queued_session_id = str(queued.session_id or "").strip() or session_id
+        queued_target_name = str(queued.vm_name or "").strip() or target_name
+        return {
+            "success": True,
+            "queued": True,
+            "queue_key": queued.queue_key,
+            "vm_name": queued_target_name,
+            "session_id": queued_session_id,
+            "coalesced_count": queued.coalesced_count,
+            "execution_backend": backend,
+            "message": f"Queued prompt for {queued_target_name}",
+            "dispatch_error": str(error),
+        }
+
+    def _record_direct_container_admin_prompt_execution(
+        self,
+        *,
+        effect_id: str,
+        target: str,
+        target_name: str,
+        session_id: str | None,
+        prompt: str,
+        resume_thread_id: str | None,
+        vm_user: str,
+        directory_path: str,
+        result: Mapping[str, Any],
+    ) -> None:
+        dispatch_id = str(result.get("dispatch_id") or "").strip()
+        worker_execution_id = str(result.get("execution_id") or "").strip()
+        if not dispatch_id or not worker_execution_id or not session_id:
+            raise RuntimeError(
+                "prompt-agent container dispatch did not include execution tracking identifiers"
+            )
+
+        from agent_sandbox.daemons.effect_orchestrator import (
+            EffectExecutionRecord,
+            JsonExecutionStore,
+            SqliteExecutionStore,
+        )
+
+        event_id = f"admin-agent-prompt:{session_id}:{dispatch_id}"
+        idempotency_key = f"{event_id}::{effect_id}"
+        stores = self._workflow_run_store_paths()
+        if self._workflow_uses_sqlite_store(stores):
+            execution_store = SqliteExecutionStore(Path(stores["orchestration_store_path"]))
+        else:
+            execution_store = JsonExecutionStore(Path(stores["effect_execution_store_path"]))
+        if execution_store.find_execution_by_idempotency_key(idempotency_key) is not None:
+            return
+
+        resolved_config = {
+            "target": target,
+            "vm_name": target_name,
+            "session_id": session_id,
+            "prompt": prompt,
+            "model": result.get("model"),
+            "vm_user": vm_user,
+            "resume_thread_id": resume_thread_id,
+            "directory_path": directory_path,
+            "execution_backend": "container_worker_vm",
+            "queue_key": effect_id,
+        }
+        input_payload = {
+            "target": target,
+            "vm_name": target_name,
+            "session_id": session_id,
+            "prompt": prompt,
+            "model": result.get("model"),
+            "vm_user": vm_user,
+            "resume_thread_id": resume_thread_id,
+            "queue_key": effect_id,
+        }
+        outputs = dict(result)
+        outputs.update(
+            {
+                "dispatch_id": dispatch_id,
+                "thread_id": str(result.get("thread_id") or resume_thread_id or dispatch_id),
+                "success": True,
+                "queued": False,
+                "output_mode": "on_completion",
+                "vm_name": target_name,
+                "session_id": session_id,
+                "execution_backend": "container_worker_vm",
+                "execution_id": worker_execution_id,
+                "queue_key": effect_id,
+            }
+        )
+        now = datetime.now(UTC)
+        execution_store.record_execution(
+            EffectExecutionRecord(
+                execution_id=(
+                    f"exec-{hashlib.sha1(idempotency_key.encode('utf-8')).hexdigest()[:16]}"
+                ),
+                idempotency_key=idempotency_key,
+                event_id=event_id,
+                trace_id=f"admin-agent-prompt:{session_id}",
+                source_node_id=effect_id,
+                source_trigger_type="admin:agent:prompt",
+                effect_id=effect_id,
+                effect_type="effect:agent:enqueue-prompt",
+                status="waiting",
+                started_at=now,
+                finished_at=now,
+                resolved_config_hash=self._stable_json_revision(resolved_config),
+                resolved_config=resolved_config,
+                input_payload=input_payload,
+                outputs=outputs,
+            )
+        )
+
+    def _resolve_optional_vm_agent_session(self, agent_id: str) -> SessionManifest | None:
+        direct_session = self.runtime.session_repository.get_session(agent_id)
+        if direct_session is not None:
+            return direct_session
+        matches = self.runtime.session_repository.list_sessions_for_vm(agent_id)
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            session_ids = ", ".join(sorted(session.session_id for session in matches))
+            raise ValueError(f"VM {agent_id!r} is associated with multiple sessions: {session_ids}")
+        return None
 
     def list_background_workers(self) -> list[WorkerSummary]:
         return self.operations_admin.list_background_workers()

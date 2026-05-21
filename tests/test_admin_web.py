@@ -431,6 +431,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "model",
         "vm_user",
         "resume_thread_id",
+        "resume_thread_metadata_key",
         "mcp_tool_approval_lease_id",
         "queue_key",
     ]
@@ -6460,6 +6461,163 @@ def test_admin_web_vm_agent_action_uses_existing_vm_path(tmp_path: Path, monkeyp
     assert response.status_code == 200
     assert response.json()["backend"] == "libvirt_vm"
     assert called == ["vm-1"]
+
+
+def test_admin_web_agent_prompt_action_uses_existing_vm_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    calls: list[dict[str, object]] = []
+
+    def prompt_admin_agent(
+        self: AdminService,
+        agent_id: str,
+        *,
+        backend: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        calls.append(
+            {
+                "agent_id": agent_id,
+                "backend": backend,
+                "payload": payload,
+            }
+        )
+        return {
+            "success": True,
+            "queued": True,
+            "queue_key": "admin-agent-prompt:libvirt_vm:vm-1",
+            "dispatch_id": "dispatch-admin-agent-prompt:libvirt_vm:vm-1-123",
+            "thread_id": "thread-123",
+            "execution_id": "execution-123",
+            "agent_id": "vm-1",
+            "backend": backend,
+            "target_name": "vm-1",
+            "action": "prompt-agent",
+            "message": "Queued prompt for vm-1",
+            "status": "queued",
+            "session_id": "session-123",
+        }
+
+    monkeypatch.setattr(service, "_prompt_admin_agent", MethodType(prompt_admin_agent, service))
+
+    client = TestClient(create_app(service))
+    response = client.post(
+        "/api/admin/agents/vm-1/actions/prompt-agent?backend=libvirt_vm",
+        json={"prompt": "Summarize the latest changes", "resume_thread_id": "thread-keep-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": True,
+        "queued": True,
+        "queue_key": "admin-agent-prompt:libvirt_vm:vm-1",
+        "dispatch_id": "dispatch-admin-agent-prompt:libvirt_vm:vm-1-123",
+        "thread_id": "thread-123",
+        "execution_id": "execution-123",
+        "agent_id": "vm-1",
+        "backend": "libvirt_vm",
+        "target_name": "vm-1",
+        "action": "prompt-agent",
+        "message": "Queued prompt for vm-1",
+        "status": "queued",
+        "session_id": "session-123",
+    }
+    assert calls == [
+        {
+            "agent_id": "vm-1",
+            "backend": "libvirt_vm",
+            "payload": {
+                "prompt": "Summarize the latest changes",
+                "resume_thread_id": "thread-keep-1",
+            },
+        }
+    ]
+
+
+def test_admin_web_agent_prompt_action_uses_existing_container_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, execution_backend="container_worker_vm"))
+    calls: list[dict[str, object]] = []
+
+    def prompt_admin_agent(
+        self: AdminService,
+        agent_id: str,
+        *,
+        backend: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        calls.append(
+            {
+                "agent_id": agent_id,
+                "backend": backend,
+                "payload": payload,
+            }
+        )
+        return {
+            "success": True,
+            "queued": False,
+            "queue_key": "admin-agent-prompt:container_worker_vm:container-session",
+            "dispatch_id": "dispatch-admin-agent-prompt:container_worker_vm:container-session-123",
+            "thread_id": "thread-456",
+            "execution_id": "container-exec-1",
+            "agent_id": "container-session",
+            "backend": backend,
+            "target_name": "container-target",
+            "action": "prompt-agent",
+            "message": "Dispatched prompt to container-target",
+            "status": "dispatched",
+            "session_id": "container-session",
+        }
+
+    monkeypatch.setattr(service, "_prompt_admin_agent", MethodType(prompt_admin_agent, service))
+
+    client = TestClient(create_app(service))
+    response = client.post(
+        "/api/admin/agents/container-session/actions/prompt-agent?backend=container_worker_vm",
+        json={"prompt": "Continue the container workflow", "resume_thread_id": "thread-keep-2"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": True,
+        "queued": False,
+        "queue_key": "admin-agent-prompt:container_worker_vm:container-session",
+        "dispatch_id": "dispatch-admin-agent-prompt:container_worker_vm:container-session-123",
+        "thread_id": "thread-456",
+        "execution_id": "container-exec-1",
+        "agent_id": "container-session",
+        "backend": "container_worker_vm",
+        "target_name": "container-target",
+        "action": "prompt-agent",
+        "message": "Dispatched prompt to container-target",
+        "status": "dispatched",
+        "session_id": "container-session",
+    }
+    assert calls == [
+        {
+            "agent_id": "container-session",
+            "backend": "container_worker_vm",
+            "payload": {
+                "prompt": "Continue the container workflow",
+                "resume_thread_id": "thread-keep-2",
+            },
+        }
+    ]
+
+
+def test_admin_web_agent_prompt_action_rejects_blank_prompt(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        "/api/admin/agents/vm-1/actions/prompt-agent?backend=libvirt_vm",
+        json={"prompt": "   "},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "prompt-agent requires a non-empty prompt"
 
 
 def test_admin_web_issue_detail_preserves_local_editability(tmp_path: Path) -> None:

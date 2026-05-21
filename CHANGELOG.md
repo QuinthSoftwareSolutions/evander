@@ -90,10 +90,19 @@ docs, tests.
 - Made operations dashboard top-level panels consistently collapsible, including
   the release metadata panel, and aligned the release panel styling with the
   existing dashboard panel treatment.
+- Made the managed Admin Web Caddy post-deploy verification retry the local
+  HTTPS/SNI probe with configurable timeouts, so transient TLS/listener readiness
+  lag does not fail an otherwise healthy deploy.
+- Added `resume_thread_metadata_key` to `effect:agent:enqueue-prompt` so queued
+  prompts can resolve and persist per-target agent thread IDs without duplicating
+  enqueue nodes in Teams workflow graphs.
 - Added a comprehensive Admin UI user manual with task-oriented procedures and
   screenshots covering the shared shell, dashboard, agents, approvals,
   artifacts, skills, VMs, issues, sessions, tool calls, configuration, reports,
   users, workers, workflow editing, and common operator workflows.
+- Added Admin Web agent prompt actions for operators to send prompts to VM and
+  container-backed agents, including durable queued retry responses and
+  container execution tracking for later thread resumption.
 
 ## 2026-05-18 - Pull Request Workflow Nodes
 

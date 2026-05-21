@@ -289,6 +289,9 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
             "teams:${{trigger-teams-new-message-2.channel_target}}:"
             "${{trigger-teams-new-message-2.message_id ?? trigger-teams-new-message-2.cursor}}"
         )
+        assert effects["effect-agent-enqueue-prompt-1"]["config"][
+            "resume_thread_metadata_key"
+        ] == "teams:${{trigger-teams-new-message-2.channel_target}}:agent_thread_id"
     assert (
         default_effects["effect-agent-enqueue-prompt-2"]["type"]
         == "effect:agent:enqueue-prompt"
@@ -312,17 +315,18 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         == "completed"
     )
     assert (
-        default_edges[("effect-agent-enqueue-prompt-1", "effect-session-update-metadata-3")][
-            "source_port"
-        ]
-        == "started"
+        "effect-session-update-metadata-3"
+        not in default_effects
+        and "effect-session-update-metadata-3" not in container_effects
     )
     assert (
-        container_edges[("effect-agent-enqueue-prompt-1", "effect-session-update-metadata-3")][
-            "source_port"
-        ]
-        == "started"
-    )
+        "effect-agent-enqueue-prompt-1",
+        "effect-session-update-metadata-3",
+    ) not in default_edges
+    assert (
+        "effect-agent-enqueue-prompt-1",
+        "effect-session-update-metadata-3",
+    ) not in container_edges
     assert (
         default_queries["query-git-pr-note-1"]["config"]["notes_ref"]
         == "${{trigger-git-push-1.notes_ref}}"
