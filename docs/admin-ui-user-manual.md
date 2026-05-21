@@ -457,7 +457,8 @@ Common editing tasks:
 7. Select a node to open the Inspector.
 8. Edit node ID, display name, and type-specific fields. Fields can support literal values,
    bindings, templates, directory selectors, structured lists/maps, JSON, and catalog-backed
-   options.
+   options. Agent/VM creation tool argument policies use a structured rule-and-constraint editor
+   for common policies, with raw JSON still available for advanced policy maps.
 9. Review diagnostics on dirty or invalid nodes.
 10. Use **Reset changes** for a selected dirty node when you want to return it to the saved
     version.

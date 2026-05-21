@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from agent_sandbox.config import GatewayConfig
@@ -20,10 +21,10 @@ from agent_sandbox.worker.models import (
     WorkerSessionRecord,
     now_utc,
 )
-from agent_sandbox.worker.security import sanitize_metadata
+from agent_sandbox.worker.security import sanitize_metadata, sanitize_text
 
 from .backend import ExecutionTarget
-from .container_worker_client import ContainerWorkerClient
+from .container_worker_client import ContainerWorkerClient, ContainerWorkerClientError
 from .container_worker_repository import (
     ContainerWorkerExecutionRecord,
     ContainerWorkerExecutionRepository,
@@ -167,11 +168,22 @@ class ContainerWorkerVmExecutionBackend:
 
     def destroy(self, target: ExecutionTarget) -> ExecutionStatus:
         mapping = self._mapping_for_target(target)
-        self.client.delete(mapping.worker_job_id)
-        mapping.last_status = "removed"
-        mapping.finished_at = mapping.finished_at or now_utc()
-        mapping.metadata = {**mapping.metadata, "worker_status": "removed"}
-        self.repository.put(mapping)
+        attempted_at = now_utc()
+        try:
+            self.client.delete(mapping.worker_job_id)
+        except ContainerWorkerClientError as exc:
+            self._mark_cleanup_failed(
+                mapping,
+                error=sanitize_text(str(exc)),
+                attempted_at=attempted_at,
+            )
+            raise
+        completed_at = now_utc()
+        self._mark_cleanup_succeeded(
+            mapping,
+            attempted_at=attempted_at,
+            completed_at=completed_at,
+        )
         return self._status_from_record(mapping, "removed", message="container worker job deleted")
 
     def get_log_snapshot(
@@ -304,7 +316,32 @@ class ContainerWorkerVmExecutionBackend:
         return self.client.drop_mssql_database(session_id, logical_name)
 
     def delete_session(self, session_id: str) -> dict[str, Any]:
-        return self.client.delete_session(session_id)
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            raise ValueError("session_id is required")
+        mappings = [
+            record
+            for record in self.repository.read_all().values()
+            if record.session_id == normalized_session_id
+        ]
+        attempted_at = now_utc()
+        try:
+            response = self.client.delete_session(normalized_session_id)
+        except ContainerWorkerClientError as exc:
+            error = sanitize_text(str(exc))
+            self._mark_session_cleanup_failed(
+                mappings,
+                error=error,
+                attempted_at=attempted_at,
+            )
+            raise
+        completed_at = now_utc()
+        self._mark_session_cleanup_succeeded(
+            mappings,
+            attempted_at=attempted_at,
+            completed_at=completed_at,
+        )
+        return response
 
     def _job_request(self, prepared: PreparedExecution) -> WorkerJobRequest:
         command = self._command_from_spec(prepared.command)
@@ -426,9 +463,86 @@ class ContainerWorkerVmExecutionBackend:
             return ExecutionStatusKind.STOPPED
         if normalized == "failed":
             return ExecutionStatusKind.FAILED
+        if normalized == "cleanup_failed":
+            return ExecutionStatusKind.FAILED
         if normalized == "removed":
             return ExecutionStatusKind.DESTROYED
         return ExecutionStatusKind.UNKNOWN
+
+    def _mark_cleanup_succeeded(
+        self,
+        mapping: ContainerWorkerExecutionRecord,
+        *,
+        attempted_at: datetime,
+        completed_at: datetime,
+    ) -> None:
+        mapping.last_status = "removed"
+        mapping.finished_at = mapping.finished_at or completed_at
+        mapping.cleanup_status = "cleanup_succeeded"
+        mapping.cleanup_attempted_at = attempted_at
+        mapping.cleanup_completed_at = completed_at
+        mapping.cleanup_error = None
+        mapping.metadata = {
+            **mapping.metadata,
+            "worker_status": "removed",
+            "cleanup_status": "cleanup_succeeded",
+            "cleanup_attempted_at": attempted_at.isoformat(),
+            "cleanup_completed_at": completed_at.isoformat(),
+        }
+        self.repository.put(mapping)
+
+    def _mark_cleanup_failed(
+        self,
+        mapping: ContainerWorkerExecutionRecord,
+        *,
+        error: str,
+        attempted_at: datetime,
+    ) -> None:
+        completed_at = now_utc()
+        sanitized_error = sanitize_text(error)
+        mapping.last_status = "cleanup_failed"
+        mapping.finished_at = completed_at
+        mapping.cleanup_status = "cleanup_failed"
+        mapping.cleanup_attempted_at = attempted_at
+        mapping.cleanup_completed_at = completed_at
+        mapping.cleanup_error = sanitized_error
+        mapping.metadata = {
+            **mapping.metadata,
+            "worker_status": "cleanup_failed",
+            "cleanup_status": "cleanup_failed",
+            "cleanup_attempted_at": attempted_at.isoformat(),
+            "cleanup_completed_at": completed_at.isoformat(),
+            "cleanup_error": sanitized_error,
+        }
+        self.repository.put(mapping)
+
+    def _mark_session_cleanup_succeeded(
+        self,
+        mappings: list[ContainerWorkerExecutionRecord],
+        *,
+        attempted_at: datetime,
+        completed_at: datetime,
+    ) -> None:
+        for mapping in mappings:
+            self._mark_cleanup_succeeded(
+                mapping,
+                attempted_at=attempted_at,
+                completed_at=completed_at,
+            )
+
+    def _mark_session_cleanup_failed(
+        self,
+        mappings: list[ContainerWorkerExecutionRecord],
+        *,
+        error: str,
+        attempted_at: datetime,
+    ) -> None:
+        for mapping in mappings:
+            self._mark_cleanup_failed(
+                mapping,
+                error=error,
+                attempted_at=attempted_at,
+            )
 
 
 def _log_page_from_end(

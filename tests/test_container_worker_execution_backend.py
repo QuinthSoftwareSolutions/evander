@@ -8,6 +8,7 @@ import pytest
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.execution import ExecutionSpec, ExecutionStatusKind
 from agent_sandbox.execution.container_worker_backend import ContainerWorkerVmExecutionBackend
+from agent_sandbox.execution.container_worker_client import ContainerWorkerClientError
 from agent_sandbox.execution.container_worker_repository import ContainerWorkerExecutionRepository
 from agent_sandbox.worker.models import (
     WorkerFileWriteRecord,
@@ -285,6 +286,42 @@ def test_stop_destroy_and_logs_call_expected_endpoints(tmp_path: Path) -> None:
     assert client.stopped == ["exec-1"]
     assert client.logged == [("exec-1", None), ("exec-1", "raw")]
     assert client.deleted == ["exec-1"]
+    store = json.loads((tmp_path / "container-worker-executions.json").read_text(encoding="utf-8"))
+    assert set(store) == {"exec-1"}
+    assert store["exec-1"]["last_status"] == "removed"
+    assert store["exec-1"]["cleanup_status"] == "cleanup_succeeded"
+    assert store["exec-1"]["cleanup_error"] is None
+
+
+def test_destroy_records_cleanup_failed_tombstone_when_delete_fails(
+    tmp_path: Path,
+) -> None:
+    client = FakeContainerWorkerClient()
+    backend = _backend(tmp_path, client)
+    backend.start(
+        backend.prepare(
+            ExecutionSpec(
+                backend="container_worker_vm",
+                target_name="exec-1",
+                session_id="session-1",
+                command=["true"],
+            )
+        )
+    )
+
+    def _raise(_: str) -> None:
+        raise ContainerWorkerClientError("container worker DELETE /v1/jobs/exec-1 failed: boom")
+
+    client.delete = _raise  # type: ignore[method-assign]
+
+    with pytest.raises(ContainerWorkerClientError):
+        backend.destroy("exec-1")
+
+    store = json.loads((tmp_path / "container-worker-executions.json").read_text(encoding="utf-8"))
+    assert store["exec-1"]["last_status"] == "cleanup_failed"
+    assert store["exec-1"]["cleanup_status"] == "cleanup_failed"
+    assert "boom" in store["exec-1"]["cleanup_error"]
+    assert store["exec-1"]["finished_at"] is not None
 
 
 def test_session_preparation_clone_and_write_delegate_to_worker_client(tmp_path: Path) -> None:
@@ -312,11 +349,25 @@ def test_session_preparation_clone_and_write_delegate_to_worker_client(tmp_path:
 def test_delete_session_delegates_to_worker_client(tmp_path: Path) -> None:
     client = FakeContainerWorkerClient()
     backend = _backend(tmp_path, client)
+    backend.start(
+        backend.prepare(
+            ExecutionSpec(
+                backend="container_worker_vm",
+                target_name="exec-1",
+                session_id="session-1",
+                command=["true"],
+            )
+        )
+    )
 
     result = backend.delete_session("session-1")
 
     assert result == {"deleted": True, "session_id": "session-1"}
     assert client.deleted_sessions == ["session-1"]
+    store = json.loads((tmp_path / "container-worker-executions.json").read_text(encoding="utf-8"))
+    assert store["exec-1"]["last_status"] == "removed"
+    assert store["exec-1"]["cleanup_status"] == "cleanup_succeeded"
+    assert store["exec-1"]["cleanup_error"] is None
 
 
 def test_mssql_provisioning_uses_configured_advertised_endpoint(tmp_path: Path) -> None:

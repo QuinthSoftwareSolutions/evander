@@ -5,6 +5,20 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-21 - Workflow Tool Policy Editor Fixes
+
+- Allowed valid workflow saves to proceed after unrelated workflow-editor UI
+  errors while still blocking invalid inspector drafts.
+- Stopped browser-side JavaScript regex validation for tool argument policy
+  pattern constraints so Python backend regex syntax remains editable and
+  saveable from structured mode.
+
+## 2026-05-21 - Workflow Smoke Test Hardening
+
+- Hardened the workflow tool-argument-policies smoke coverage so effect-node
+  selection uses Playwright locator actionability and waits for the specific
+  tool policy inspector content instead of relying on cached click coordinates.
+
 ## 2026-05-21 - Container Git Mirror Concurrency
 
 - Serialized container-worker Git mirror creation and refresh through the same per-mirror
@@ -19,6 +33,19 @@ material. Newer entries are added incrementally as changes land.
   open by default as the left-side product context anchor.
 - Replaced dashboard action button text with icon-only controls that retain accessible labels and
   hover tooltips.
+
+## 2026-05-21 - Container Cleanup Review Fixes
+
+- Restored destructive Agents delete behavior for prepared and active
+  `container_worker_vm` sessions while keeping manual session cleanup as a
+  tombstone-preserving lifecycle action.
+- Returned error-shaped Admin Web cleanup failure responses and made worker job
+  delete retries no-op successfully for already-removed job tombstones.
+
+## 2026-05-21 - Test Lint Hygiene
+
+- Imported `pytest` in the Admin Web sessions and approvals test module so
+  `pytest.MonkeyPatch` type annotations pass Ruff undefined-name checks.
 
 ## 2026-05-21 - ADO Worker Bootstrap Removal
 
@@ -141,6 +168,10 @@ docs, tests.
 - Added Admin Web agent prompt actions for operators to send prompts to VM and
   container-backed agents, including durable queued retry responses and
   container execution tracking for later thread resumption.
+- Added a structured workflow editor form for agent/VM creation
+  `tool_argument_policies`, including field-level validation for tool rules and
+  constraints while preserving raw JSON editing for advanced or future policy
+  shapes.
 
 ## 2026-05-18 - Pull Request Workflow Nodes
 

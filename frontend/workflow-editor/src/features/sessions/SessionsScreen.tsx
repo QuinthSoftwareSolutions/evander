@@ -28,6 +28,28 @@ type SessionRecord = {
   metadata: Record<string, unknown>;
   issue_number?: string | null;
   is_expired: boolean;
+  container_lifecycle?: ContainerSessionLifecycle | null;
+};
+
+type ContainerSessionLifecycleAction = {
+  supported: boolean;
+  kind?: string | null;
+  label?: string | null;
+  reason?: string | null;
+};
+
+type ContainerSessionLifecycle = {
+  state: string;
+  last_heartbeat_at?: string | null;
+  last_completion_at?: string | null;
+  last_signal_at?: string | null;
+  cleanup_attempted_at?: string | null;
+  cleanup_completed_at?: string | null;
+  cleanup_error?: string | null;
+  actions?: {
+    cleanup?: ContainerSessionLifecycleAction | null;
+    recovery?: ContainerSessionLifecycleAction | null;
+  } | null;
 };
 
 type SessionListResponse = {
@@ -375,10 +397,39 @@ function groupTools(toolOptions: ToolOption[]) {
 function matchesFilter(item: SessionRecord, query: string): boolean {
   const normalized = query.trim().toLowerCase();
   if (!normalized) return true;
-  return [item.session_id, item.vm_id ?? "", item.issue_number ?? "", item.directory_path, item.model ?? ""]
+  return [item.session_id, item.vm_id ?? "", item.issue_number ?? "", item.directory_path, item.model ?? "", item.container_lifecycle?.state ?? ""]
     .join(" ")
     .toLowerCase()
     .includes(normalized);
+}
+
+function lifecycleLabel(session: SessionRecord): string {
+  const state = session.container_lifecycle?.state?.trim();
+  if (!state) return session.is_expired ? "Expired" : "Active";
+  const labels: Record<string, string> = {
+    prepared: "Prepared",
+    starting: "Starting",
+    running: "Running",
+    stopped: "Stopped",
+    failed: "Failed",
+    abandoned: "Abandoned",
+    cleanup_failed: "Cleanup failed",
+    cleaned_up: "Cleaned up",
+    unknown: "Unknown",
+  };
+  return labels[state] ?? state.replace(/_/g, " ");
+}
+
+function lifecycleClass(session: SessionRecord): string {
+  const state = session.container_lifecycle?.state?.trim().toLowerCase();
+  if (state === "running" || state === "starting") return "running";
+  if (state === "failed" || state === "cleanup_failed" || state === "abandoned") return "failed";
+  if (state) return "idle";
+  return session.is_expired ? "failed" : "running";
+}
+
+function cleanupSupported(session: SessionRecord): boolean {
+  return Boolean(session.container_lifecycle?.actions?.cleanup?.supported);
 }
 
 function pickSessionIdForTab(response: SessionListResponse, tab: TabKey, preferredSessionId?: string): string {
@@ -737,13 +788,16 @@ export function SessionsScreen() {
     return payload;
   }
 
-  async function runSessionAction(action: "renew" | "revoke" | "delete") {
+  async function runSessionAction(action: "renew" | "revoke" | "delete" | "cleanup") {
     if (!selectedSession) return;
     if (action === "renew" && !renewExtension.trim()) {
       setError("Renew extension is required.");
       return;
     }
     if (action === "delete" && !window.confirm(`Delete session ${selectedSession.session_id}? This cannot be undone.`)) {
+      return;
+    }
+    if (action === "cleanup" && !window.confirm(`Clean up worker state for ${selectedSession.session_id}? Session history will remain visible.`)) {
       return;
     }
     if (action === "revoke" && !window.confirm(`Revoke session ${selectedSession.session_id}?`)) {
@@ -1086,8 +1140,11 @@ export function SessionsScreen() {
                 <Tooltip content={`Session id: ${item.session_id}`}>
                   <strong>{item.session_id}</strong>
                 </Tooltip>
-                <span className={`status-pill session-state-pill state-${item.is_expired ? "failed" : "running"}`}>{item.is_expired ? "Expired" : "Active"}</span>
+                <span className={`status-pill session-state-pill state-${lifecycleClass(item)}`}>{lifecycleLabel(item)}</span>
               </div>
+              {item.container_lifecycle?.last_signal_at ? (
+                <div className="feature-list-meta">Last signal {formatTimestamp(item.container_lifecycle.last_signal_at)}</div>
+              ) : null}
             </button>
           ))}
           {visibleItems.length === 0 ? <div className="empty-state">No sessions matched the current view.</div> : null}
@@ -1106,8 +1163,8 @@ export function SessionsScreen() {
           {selectedSession ? (
             <div className="feature-toolbar-actions icon-actions">
               <Tooltip content={selectedSession.is_expired ? "This session has expired and can no longer be resumed until it is renewed." : "This session is active and can still be used by its guest agent."}>
-                <span className={`status-pill state-${selectedSession.is_expired ? "failed" : "running"}`}>
-                  {selectedSession.is_expired ? "Expired" : "Active"}
+                <span className={`status-pill state-${lifecycleClass(selectedSession)}`}>
+                  {lifecycleLabel(selectedSession)}
                 </span>
               </Tooltip>
               <Tooltip content={selectedSession.vm_id ? `Attached VM: ${selectedSession.vm_id}` : "This session is not currently attached to a VM."}>
@@ -1124,6 +1181,19 @@ export function SessionsScreen() {
                   <ExtendIcon />
                 </button>
               </Tooltip>
+              {cleanupSupported(selectedSession) ? (
+                <Tooltip content={selectedSession.container_lifecycle?.actions?.cleanup?.reason ?? "Remove worker-side container state while keeping the session record visible for audit."}>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() => void runSessionAction("cleanup")}
+                    disabled={busy === "cleanup" || mutationLocked}
+                    aria-label={busy === "cleanup" ? "Cleaning up session" : "Clean up session"}
+                  >
+                    {busy === "cleanup" ? "…" : "Cleanup"}
+                  </button>
+                </Tooltip>
+              ) : null}
               <Tooltip content="Revoke the session so further guest access is denied even before the expiry time.">
                 <button
                   type="button"
@@ -1168,6 +1238,27 @@ export function SessionsScreen() {
                 </dl>
               </div>
             </article>
+            {selectedSession.container_lifecycle ? (
+              <article className="panel">
+                <div className="panel-header">
+                  <h3>Container lifecycle</h3>
+                  <span className={`status-pill state-${lifecycleClass(selectedSession)}`}>{lifecycleLabel(selectedSession)}</span>
+                </div>
+                <div className="panel-body">
+                  {selectedSession.container_lifecycle.cleanup_error ? (
+                    <div className="callout error-callout">{selectedSession.container_lifecycle.cleanup_error}</div>
+                  ) : null}
+                  <dl className="property-grid">
+                    <div><dt>Last signal</dt><dd>{formatTimestamp(selectedSession.container_lifecycle.last_signal_at)}</dd></div>
+                    <div><dt>Last heartbeat</dt><dd>{formatTimestamp(selectedSession.container_lifecycle.last_heartbeat_at)}</dd></div>
+                    <div><dt>Last completion</dt><dd>{formatTimestamp(selectedSession.container_lifecycle.last_completion_at)}</dd></div>
+                    <div><dt>Cleanup attempted</dt><dd>{formatTimestamp(selectedSession.container_lifecycle.cleanup_attempted_at)}</dd></div>
+                    <div><dt>Cleanup completed</dt><dd>{formatTimestamp(selectedSession.container_lifecycle.cleanup_completed_at)}</dd></div>
+                    <div><dt>Recovery</dt><dd>{selectedSession.container_lifecycle.actions?.recovery?.supported ? selectedSession.container_lifecycle.actions.recovery.label ?? "Available" : selectedSession.container_lifecycle.actions?.recovery?.reason ?? "Unavailable"}</dd></div>
+                  </dl>
+                </div>
+              </article>
+            ) : null}
             <div className="feature-grid">
               <article className="panel">
                 <div className="panel-header">

@@ -88,6 +88,14 @@ import {
   workflowJsonFieldFallbackValue,
 } from "./workflowFieldDefaults";
 import {
+  toolArgumentPolicyDraftRowsFromValue,
+  toolArgumentPolicyDraftRowsToValue,
+  type ToolArgumentPolicyConstraintDraftRow,
+  type ToolArgumentPolicyDraftRow,
+  type ToolArgumentPolicyRuleDraftRow,
+  type ToolArgumentPolicyFieldError,
+} from "./workflowToolArgumentPolicies";
+import {
   FALLBACK_NODE_HEIGHT,
   FALLBACK_NODE_WIDTH,
   snapDraggedNodes,
@@ -151,12 +159,16 @@ type StringMapDraftRow = {
   value: string;
 };
 
+type JsonDisplayMode = "structured" | "raw";
+
 type InspectorDraftSnapshot = {
   nodeId: string;
   displayName: string;
   knownValues: Record<string, unknown>;
   unknownValues: Record<string, unknown>;
   jsonDrafts: Record<string, string>;
+  toolArgumentPolicyDrafts: Record<string, ToolArgumentPolicyDraftRow[]>;
+  jsonDisplayModes: Record<string, JsonDisplayMode>;
   stringListDrafts: Record<string, string>;
   stringMapDrafts: Record<string, StringMapDraftRow[]>;
 };
@@ -835,6 +847,33 @@ function stringMapRowsToObject(rows: StringMapDraftRow[]): Record<string, string
     result[key] = row.value;
   }
   return result;
+}
+
+function createToolArgumentPolicyConstraintDraftRow(): ToolArgumentPolicyConstraintDraftRow {
+  return {
+    id: `constraint-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    path: "",
+    operator: "",
+    valueText: "",
+    valuesText: "",
+    pattern: "",
+    caseSensitive: true,
+  };
+}
+
+function createToolArgumentPolicyRuleDraftRow(): ToolArgumentPolicyRuleDraftRow {
+  return {
+    id: `rule-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    name: "",
+    constraints: [createToolArgumentPolicyConstraintDraftRow()],
+  };
+}
+
+function createToolArgumentPolicyDraftRow(toolName = ""): ToolArgumentPolicyDraftRow {
+  return {
+    toolName,
+    rules: [],
+  };
 }
 
 function parseStringMapDraftRows(
@@ -2522,6 +2561,57 @@ function parseNodeTypeDragPayload(dataTransfer: DataTransfer): NodeTypeDragPaylo
   }
 }
 
+const TOOL_ARGUMENT_POLICY_STRUCTURED_NODE_TYPES = new Set([
+  "effect:agent:create",
+  "effect:vm:create",
+]);
+
+function supportsStructuredToolArgumentPolicies(nodeType: string | undefined): boolean {
+  return Boolean(nodeType && TOOL_ARGUMENT_POLICY_STRUCTURED_NODE_TYPES.has(nodeType));
+}
+
+function toolArgumentPolicyRowPath(toolName: string, toolIndex: number): string {
+  const normalizedToolName = toolName.trim();
+  return normalizedToolName
+    ? `tool_argument_policies.${normalizedToolName}`
+    : `tool_argument_policies[${toolIndex}]`;
+}
+
+function toolArgumentPolicyRulePath(toolName: string, toolIndex: number, ruleIndex: number): string {
+  return `${toolArgumentPolicyRowPath(toolName, toolIndex)}[${ruleIndex}]`;
+}
+
+function toolArgumentPolicyConstraintPath(
+  toolName: string,
+  toolIndex: number,
+  ruleIndex: number,
+  constraintIndex: number,
+): string {
+  return `${toolArgumentPolicyRulePath(toolName, toolIndex, ruleIndex)}.constraints[${constraintIndex}]`;
+}
+
+function toolArgumentPolicyFieldErrorMessages(
+  errors: ToolArgumentPolicyFieldError[],
+  path: string,
+): string[] {
+  return errors.filter((error) => error.path === path).map((error) => error.message);
+}
+
+function toolArgumentPolicyValidationErrorSummary(errors: ToolArgumentPolicyFieldError[]): string {
+  return errors.map((error) => `${error.path}: ${error.message}`).join("; ");
+}
+
+function renderToolArgumentPolicyErrorMessages(messages: string[]) {
+  if (messages.length === 0) return null;
+  return (
+    <div className="error-text">
+      {messages.map((message, index) => (
+        <div key={`${message}-${index}`}>{message}</div>
+      ))}
+    </div>
+  );
+}
+
 export default function App() {
   const { privilegedUnlocked, selectedDirectoryPath, directoryTree, setWorkflowHasUnsavedChanges } = useAdminUi();
   const initialWorkflowRunLookup = workflowRunLookupFromHash();
@@ -2571,6 +2661,10 @@ export default function App() {
   const [inspectorKnownValues, setInspectorKnownValues] = useState<Record<string, unknown>>({});
   const [inspectorUnknownValues, setInspectorUnknownValues] = useState<Record<string, unknown>>({});
   const [inspectorJsonDrafts, setInspectorJsonDrafts] = useState<Record<string, string>>({});
+  const [inspectorToolArgumentPolicyDrafts, setInspectorToolArgumentPolicyDrafts] = useState<
+    Record<string, ToolArgumentPolicyDraftRow[]>
+  >({});
+  const [inspectorJsonDisplayModes, setInspectorJsonDisplayModes] = useState<Record<string, JsonDisplayMode>>({});
   const [inspectorStringListDrafts, setInspectorStringListDrafts] = useState<Record<string, string>>({});
   const [inspectorStringMapDrafts, setInspectorStringMapDrafts] = useState<Record<string, StringMapDraftRow[]>>({});
   const [inspectorFieldModes, setInspectorFieldModes] = useState<Record<string, "literal" | "bind" | "template">>({});
@@ -2580,6 +2674,7 @@ export default function App() {
   const [resumingRunIds, setResumingRunIds] = useState<Record<string, boolean>>({});
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [inspectorDraftError, setInspectorDraftError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => readStoredWorkflowSidebarWidth());
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
@@ -3269,11 +3364,14 @@ export default function App() {
     nextCatalogEntry: WorkflowEditorNodeCatalogEntry | undefined,
   ) {
     if (!nextNode) {
+      setInspectorDraftError(null);
       setInspectorNodeId("");
       setInspectorDisplayName("");
       setInspectorKnownValues({});
       setInspectorUnknownValues({});
       setInspectorJsonDrafts({});
+      setInspectorToolArgumentPolicyDrafts({});
+      setInspectorJsonDisplayModes({});
       setInspectorStringListDrafts({});
       setInspectorStringMapDrafts({});
       setInspectorFieldModes({});
@@ -3286,12 +3384,37 @@ export default function App() {
     const nextKnownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => knownFieldKeys.has(key)));
     const nextUnknownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => !knownFieldKeys.has(key)));
     const nextJsonDrafts: Record<string, string> = {};
+    const nextToolArgumentPolicyDrafts: Record<string, ToolArgumentPolicyDraftRow[]> = {};
+    const nextJsonDisplayModes: Record<string, JsonDisplayMode> = {};
     const nextStringListDrafts: Record<string, string> = {};
     const nextStringMapDrafts: Record<string, StringMapDraftRow[]> = {};
     const nextFieldModes: Record<string, "literal" | "bind" | "template"> = {};
     for (const field of nextCatalogEntry?.fields ?? []) {
       nextFieldModes[field.key] = fieldValueMode(field, nextKnownValues[field.key]);
       if (field.kind !== "json") continue;
+      if (isExactBindingValue(nextKnownValues[field.key])) {
+        const fallbackValue = field.required || field.key === "outputs" ? {} : undefined;
+        const fallbackDraft = workflowJsonFieldDraftFallback(field, fallbackValue);
+        nextJsonDrafts[field.key] = formatJson(nextKnownValues[field.key], fallbackDraft);
+        if (field.key === "tool_argument_policies" && supportsStructuredToolArgumentPolicies(nextNode.type)) {
+          nextJsonDisplayModes[field.key] = "raw";
+        }
+        continue;
+      }
+      if (field.key === "tool_argument_policies" && supportsStructuredToolArgumentPolicies(nextNode.type)) {
+        const fieldValue = nextKnownValues[field.key] ?? workflowJsonFieldFallbackValue(field, {});
+        const structuredRows = toolArgumentPolicyDraftRowsFromValue(fieldValue, field.options.map((option) => option.value));
+        if (structuredRows) {
+          nextToolArgumentPolicyDrafts[field.key] = structuredRows;
+          nextJsonDisplayModes[field.key] = "structured";
+          const validation = toolArgumentPolicyDraftRowsToValue(structuredRows);
+          nextJsonDrafts[field.key] = JSON.stringify(validation.value ?? {}, null, 2);
+        } else {
+          nextJsonDisplayModes[field.key] = "raw";
+          nextJsonDrafts[field.key] = JSON.stringify(fieldValue, null, 2);
+        }
+        continue;
+      }
       const fallbackValue = field.required || field.key === "outputs" ? {} : undefined;
       const fallbackDraft = workflowJsonFieldDraftFallback(field, fallbackValue);
       nextJsonDrafts[field.key] = nextKnownValues[field.key] === undefined
@@ -3330,10 +3453,13 @@ export default function App() {
     setInspectorKnownValues(nextKnownValues);
     setInspectorUnknownValues(nextUnknownValues);
     setInspectorJsonDrafts(nextJsonDrafts);
+    setInspectorToolArgumentPolicyDrafts(nextToolArgumentPolicyDrafts);
+    setInspectorJsonDisplayModes(nextJsonDisplayModes);
     setInspectorStringListDrafts(nextStringListDrafts);
     setInspectorStringMapDrafts(nextStringMapDrafts);
     setInspectorFieldModes(nextFieldModes);
     setRawJsonDraft(JSON.stringify(extras, null, 2));
+    setInspectorDraftError(null);
   }
 
   useEffect(() => {
@@ -3768,6 +3894,7 @@ export default function App() {
       }
       return next;
     });
+    setInspectorDraftError(null);
     setError(null);
   }
 
@@ -3935,6 +4062,7 @@ export default function App() {
     patchDocument(nextConfig, nextLayout, undefined, [node.id]);
     setProgrammaticSelection([node.id], node.id);
     setSelectedEdgeId(null);
+    setInspectorDraftError(null);
     setError(null);
   }
 
@@ -4032,6 +4160,19 @@ export default function App() {
       if (field.kind !== "json") continue;
       if (isExactBindingValue(nextKnownValues[field.key])) continue;
       if (field.read_only) continue;
+      if (field.key === "tool_argument_policies" && supportsStructuredToolArgumentPolicies(selectedNode.type)) {
+        if (draft.jsonDisplayModes[field.key] === "structured") {
+          const validation = toolArgumentPolicyDraftRowsToValue(draft.toolArgumentPolicyDrafts[field.key] ?? []);
+          if (validation.errors.length > 0 || !validation.value) {
+            throw new Error(toolArgumentPolicyValidationErrorSummary(validation.errors));
+          }
+          nextKnownValues[field.key] = validation.value;
+          continue;
+        }
+        const fallbackValue = workflowJsonFieldFallbackValue(field, {});
+        nextKnownValues[field.key] = parseJsonDraft(draft.jsonDrafts[field.key] ?? "", fallbackValue);
+        continue;
+      }
       const fallbackValue = workflowJsonFieldFallbackValue(field, field.required ? {} : undefined);
       nextKnownValues[field.key] = parseJsonDraft(draft.jsonDrafts[field.key] ?? "", fallbackValue);
     }
@@ -4112,6 +4253,7 @@ export default function App() {
       }
       return next;
     });
+    setInspectorDraftError(null);
     setError(null);
   }
 
@@ -4172,6 +4314,7 @@ export default function App() {
       }
       return next;
     });
+    setInspectorDraftError(null);
     setError(null);
   }
 
@@ -4184,12 +4327,16 @@ export default function App() {
         knownValues: nextDraft.knownValues ?? inspectorKnownValues,
         unknownValues: nextDraft.unknownValues ?? inspectorUnknownValues,
         jsonDrafts: nextDraft.jsonDrafts ?? inspectorJsonDrafts,
+        toolArgumentPolicyDrafts: nextDraft.toolArgumentPolicyDrafts ?? inspectorToolArgumentPolicyDrafts,
+        jsonDisplayModes: nextDraft.jsonDisplayModes ?? inspectorJsonDisplayModes,
         stringListDrafts: nextDraft.stringListDrafts ?? inspectorStringListDrafts,
         stringMapDrafts: nextDraft.stringMapDrafts ?? inspectorStringMapDrafts,
       });
       replaceSelectedNode(nextNode, selectedNode.id);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setInspectorDraftError(message);
+      setError(message);
     }
   }
 
@@ -4238,7 +4385,7 @@ export default function App() {
   }
 
   async function saveDocument() {
-    if (!document || workflowEditLocked) return;
+    if (!document || workflowEditLocked || inspectorDraftError) return;
     setSaveState("saving");
     setError(null);
     try {
@@ -4304,6 +4451,74 @@ export default function App() {
       setInspectorJsonDrafts(nextJsonDrafts);
     }
     stageInspectorDraft({ knownValues: next, jsonDrafts: nextJsonDrafts });
+  }
+
+  function updateToolArgumentPolicyDraftRows(fieldKey: string, nextRows: ToolArgumentPolicyDraftRow[]) {
+    const nextToolArgumentPolicyDrafts = { ...inspectorToolArgumentPolicyDrafts, [fieldKey]: nextRows };
+    const validation = toolArgumentPolicyDraftRowsToValue(nextRows);
+    const nextJsonDrafts = validation.value
+      ? { ...inspectorJsonDrafts, [fieldKey]: JSON.stringify(validation.value, null, 2) }
+      : inspectorJsonDrafts;
+    setInspectorToolArgumentPolicyDrafts(nextToolArgumentPolicyDrafts);
+    if (validation.value) {
+      setInspectorJsonDrafts(nextJsonDrafts);
+    }
+    stageInspectorDraft({
+      toolArgumentPolicyDrafts: nextToolArgumentPolicyDrafts,
+      ...(validation.value ? { jsonDrafts: nextJsonDrafts } : {}),
+    });
+  }
+
+  function updateToolArgumentPolicyJsonDisplayMode(
+    field: WorkflowEditorFieldDefinition,
+    nextMode: JsonDisplayMode,
+  ) {
+    if (!supportsStructuredToolArgumentPolicies(selectedNode?.type) || field.key !== "tool_argument_policies") {
+      return;
+    }
+    const currentMode = inspectorJsonDisplayModes[field.key] ?? "structured";
+    if (currentMode === nextMode) return;
+
+    if (nextMode === "structured") {
+      try {
+        const fallbackValue = workflowJsonFieldFallbackValue(field, {});
+        const parsedValue = parseJsonDraft(inspectorJsonDrafts[field.key] ?? "", fallbackValue);
+        const structuredRows = toolArgumentPolicyDraftRowsFromValue(parsedValue, field.options.map((option) => option.value));
+        if (!structuredRows) return;
+        const validation = toolArgumentPolicyDraftRowsToValue(structuredRows);
+        if (validation.errors.length > 0 || !validation.value) return;
+        const nextToolArgumentPolicyDrafts = { ...inspectorToolArgumentPolicyDrafts, [field.key]: structuredRows };
+        const nextJsonDrafts = { ...inspectorJsonDrafts, [field.key]: JSON.stringify(validation.value, null, 2) };
+        setInspectorToolArgumentPolicyDrafts(nextToolArgumentPolicyDrafts);
+        setInspectorJsonDrafts(nextJsonDrafts);
+        setInspectorJsonDisplayModes((current) => ({ ...current, [field.key]: "structured" }));
+        setInspectorDraftError(null);
+        setError(null);
+      } catch {
+        return;
+      }
+      return;
+    }
+
+    const currentRows = inspectorToolArgumentPolicyDrafts[field.key] ?? [];
+    const validation = toolArgumentPolicyDraftRowsToValue(currentRows);
+    if (validation.value) {
+      setInspectorJsonDrafts((current) => ({
+        ...current,
+        [field.key]: JSON.stringify(validation.value, null, 2),
+      }));
+    }
+    setInspectorJsonDisplayModes((current) => ({ ...current, [field.key]: "raw" }));
+    setInspectorDraftError(null);
+    setError(null);
+  }
+
+  function mutateToolArgumentPolicyDraftRows(
+    fieldKey: string,
+    updater: (rows: ToolArgumentPolicyDraftRow[]) => ToolArgumentPolicyDraftRow[],
+  ) {
+    const nextRows = updater(inspectorToolArgumentPolicyDrafts[fieldKey] ?? []);
+    updateToolArgumentPolicyDraftRows(fieldKey, nextRows);
   }
 
   function updateFieldMode(key: string, mode: "literal" | "bind" | "template") {
@@ -4598,6 +4813,594 @@ export default function App() {
     );
   }
 
+  function renderToolArgumentPolicyField(
+    field: WorkflowEditorFieldDefinition,
+    value: unknown,
+    mode: "literal" | "bind" | "template",
+    disabled: boolean,
+  ) {
+    const rows = inspectorToolArgumentPolicyDrafts[field.key] ?? [];
+    const displayMode = inspectorJsonDisplayModes[field.key] ?? "structured";
+    const validation = toolArgumentPolicyDraftRowsToValue(rows);
+    const operatorOptions = [
+      { value: "required", label: "required" },
+      { value: "allowlist", label: "allowlist" },
+      { value: "denylist", label: "denylist" },
+      { value: "fixed", label: "fixed" },
+      { value: "pattern", label: "pattern" },
+      { value: "enum", label: "enum" },
+    ] as const;
+
+    return (
+      <div key={field.key} className="inspector-field">
+        <div className="field-toolbar">
+          {renderFieldHeader(field)}
+          {renderModeSelect(field, mode, (nextMode) => {
+            updateFieldMode(field.key, nextMode);
+            if (nextMode === "bind") {
+              updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
+            } else {
+              updateKnownField(field.key, undefined);
+            }
+          }, disabled)}
+        </div>
+        {mode === "bind" ? (
+          renderBindingSelect(field, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(field.key, nextValue))
+        ) : (
+          <div className="tool-argument-policy-editor">
+            <label className="mode-select">
+              <span>JSON mode</span>
+              <select
+                value={displayMode}
+                onChange={(event) => updateToolArgumentPolicyJsonDisplayMode(field, event.target.value as JsonDisplayMode)}
+                disabled={disabled}
+              >
+                <option value="structured">Structured</option>
+                <option value="raw">Raw JSON</option>
+              </select>
+            </label>
+
+            {displayMode === "structured" ? (
+              <div className="tool-argument-policy-structured">
+                {rows.length === 0 ? (
+                  <p className="field-description">No structured tool policies yet.</p>
+                ) : null}
+                {rows.map((toolRow, toolIndex) => {
+                  const toolPathBase = toolArgumentPolicyRowPath(toolRow.toolName, toolIndex);
+                  return (
+                    <div key={`${toolIndex}-${toolRow.toolName || "tool"}`} className="object-list-item tool-argument-policy-tool">
+                      <div className="object-list-title">
+                        <span>Tool policy {toolIndex + 1}</span>
+                        <button
+                          type="button"
+                          className="subtle-button"
+                          onClick={() =>
+                            mutateToolArgumentPolicyDraftRows(field.key, (currentRows) =>
+                              currentRows.filter((_, currentIndex) => currentIndex !== toolIndex),
+                            )
+                          }
+                          disabled={disabled}
+                        >
+                          Remove
+                        </button>
+                      </div>
+
+                      <label className="field-inline">
+                        <span>Tool name</span>
+                        {field.options.length > 0 ? (
+                          <select
+                            value={toolRow.toolName}
+                            onChange={(event) =>
+                              mutateToolArgumentPolicyDraftRows(field.key, (currentRows) =>
+                                currentRows.map((row, currentIndex) =>
+                                  currentIndex === toolIndex ? { ...row, toolName: event.target.value } : row,
+                                ),
+                              )
+                            }
+                            disabled={disabled}
+                          >
+                            <option value="">Select tool</option>
+                            {field.options.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            value={toolRow.toolName}
+                            onChange={(event) =>
+                              mutateToolArgumentPolicyDraftRows(field.key, (currentRows) =>
+                                currentRows.map((row, currentIndex) =>
+                                  currentIndex === toolIndex ? { ...row, toolName: event.target.value } : row,
+                                ),
+                              )
+                            }
+                            placeholder="Tool name"
+                            disabled={disabled}
+                          />
+                        )}
+                        {renderToolArgumentPolicyErrorMessages(
+                          toolArgumentPolicyFieldErrorMessages(validation.errors, `${toolPathBase}.toolName`),
+                        )}
+                      </label>
+
+                      <div className="tool-argument-policy-rules">
+                        {toolRow.rules.length === 0 ? (
+                          <p className="field-description">Add a rule to define argument constraints.</p>
+                        ) : null}
+                        {toolRow.rules.map((ruleRow, ruleIndex) => {
+                          const rulePathBase = toolArgumentPolicyRulePath(toolRow.toolName, toolIndex, ruleIndex);
+                          return (
+                            <div key={ruleRow.id} className="object-list-item tool-argument-policy-rule">
+                              <div className="object-list-title">
+                                <span>Rule {ruleIndex + 1}</span>
+                                <button
+                                  type="button"
+                                  className="subtle-button"
+                                  onClick={() =>
+                                    mutateToolArgumentPolicyDraftRows(field.key, (currentRows) =>
+                                      currentRows.map((row, currentIndex) =>
+                                        currentIndex === toolIndex
+                                          ? {
+                                              ...row,
+                                              rules: row.rules.filter((_, currentRuleIndex) => currentRuleIndex !== ruleIndex),
+                                            }
+                                          : row,
+                                      ),
+                                    )
+                                  }
+                                  disabled={disabled}
+                                >
+                                  Remove
+                                </button>
+                              </div>
+
+                              <label className="field-inline">
+                                <span>Rule id</span>
+                                <input
+                                  value={ruleRow.id}
+                                  onChange={(event) =>
+                                    mutateToolArgumentPolicyDraftRows(field.key, (currentRows) =>
+                                      currentRows.map((row, currentIndex) =>
+                                        currentIndex === toolIndex
+                                          ? {
+                                              ...row,
+                                              rules: row.rules.map((rule, currentRuleIndex) =>
+                                                currentRuleIndex === ruleIndex ? { ...rule, id: event.target.value } : rule,
+                                              ),
+                                            }
+                                          : row,
+                                      ),
+                                    )
+                                  }
+                                  disabled={disabled}
+                                />
+                                {renderToolArgumentPolicyErrorMessages(
+                                  toolArgumentPolicyFieldErrorMessages(validation.errors, `${rulePathBase}.id`),
+                                )}
+                              </label>
+
+                              <label className="field-inline">
+                                <span>Name</span>
+                                <input
+                                  value={ruleRow.name}
+                                  onChange={(event) =>
+                                    mutateToolArgumentPolicyDraftRows(field.key, (currentRows) =>
+                                      currentRows.map((row, currentIndex) =>
+                                        currentIndex === toolIndex
+                                          ? {
+                                              ...row,
+                                              rules: row.rules.map((rule, currentRuleIndex) =>
+                                                currentRuleIndex === ruleIndex
+                                                  ? { ...rule, name: event.target.value }
+                                                  : rule,
+                                              ),
+                                            }
+                                          : row,
+                                      ),
+                                    )
+                                  }
+                                  placeholder="Optional rule name"
+                                  disabled={disabled}
+                                />
+                              </label>
+
+                              <div className="tool-argument-policy-constraints">
+                                {ruleRow.constraints.map((constraintRow, constraintIndex) => {
+                                  const constraintPathBase = toolArgumentPolicyConstraintPath(
+                                    toolRow.toolName,
+                                    toolIndex,
+                                    ruleIndex,
+                                    constraintIndex,
+                                  );
+                                  const operator = constraintRow.operator;
+                                  const comparisonOperators = new Set(["allowlist", "denylist", "enum", "pattern"]);
+                                  return (
+                                    <div
+                                      key={constraintRow.id}
+                                      className="object-list-item tool-argument-policy-constraint"
+                                    >
+                                      <div className="object-list-title">
+                                        <span>Constraint {constraintIndex + 1}</span>
+                                        <button
+                                          type="button"
+                                          className="subtle-button"
+                                          onClick={() =>
+                                            mutateToolArgumentPolicyDraftRows(field.key, (currentRows) =>
+                                              currentRows.map((row, currentIndex) =>
+                                                currentIndex === toolIndex
+                                                  ? {
+                                                      ...row,
+                                                      rules: row.rules.map((rule, currentRuleIndex) =>
+                                                        currentRuleIndex === ruleIndex
+                                                          ? {
+                                                              ...rule,
+                                                              constraints: rule.constraints.filter(
+                                                                (_, currentConstraintIndex) =>
+                                                                  currentConstraintIndex !== constraintIndex,
+                                                              ),
+                                                            }
+                                                          : rule,
+                                                      ),
+                                                    }
+                                                  : row,
+                                              ),
+                                            )
+                                          }
+                                          disabled={disabled}
+                                        >
+                                          Remove
+                                        </button>
+                                      </div>
+
+                                      <label className="field-inline">
+                                        <span>Constraint id</span>
+                                        <input
+                                          value={constraintRow.id}
+                                          onChange={(event) =>
+                                            mutateToolArgumentPolicyDraftRows(field.key, (currentRows) =>
+                                              currentRows.map((row, currentIndex) =>
+                                                currentIndex === toolIndex
+                                                  ? {
+                                                      ...row,
+                                                      rules: row.rules.map((rule, currentRuleIndex) =>
+                                                        currentRuleIndex === ruleIndex
+                                                          ? {
+                                                              ...rule,
+                                                              constraints: rule.constraints.map((constraint, currentConstraintIndex) =>
+                                                                currentConstraintIndex === constraintIndex
+                                                                  ? { ...constraint, id: event.target.value }
+                                                                  : constraint,
+                                                              ),
+                                                            }
+                                                          : rule,
+                                                      ),
+                                                    }
+                                                  : row,
+                                              ),
+                                            )
+                                          }
+                                          disabled={disabled}
+                                        />
+                                        {renderToolArgumentPolicyErrorMessages(
+                                          toolArgumentPolicyFieldErrorMessages(validation.errors, `${constraintPathBase}.id`),
+                                        )}
+                                      </label>
+
+                                      <label className="field-inline">
+                                        <span>Path</span>
+                                        <input
+                                          value={constraintRow.path}
+                                          onChange={(event) =>
+                                            mutateToolArgumentPolicyDraftRows(field.key, (currentRows) =>
+                                              currentRows.map((row, currentIndex) =>
+                                                currentIndex === toolIndex
+                                                  ? {
+                                                      ...row,
+                                                      rules: row.rules.map((rule, currentRuleIndex) =>
+                                                        currentRuleIndex === ruleIndex
+                                                          ? {
+                                                              ...rule,
+                                                              constraints: rule.constraints.map((constraint, currentConstraintIndex) =>
+                                                                currentConstraintIndex === constraintIndex
+                                                                  ? { ...constraint, path: event.target.value }
+                                                                  : constraint,
+                                                              ),
+                                                            }
+                                                          : rule,
+                                                      ),
+                                                    }
+                                                  : row,
+                                              ),
+                                            )
+                                          }
+                                          disabled={disabled}
+                                        />
+                                        {renderToolArgumentPolicyErrorMessages(
+                                          toolArgumentPolicyFieldErrorMessages(validation.errors, `${constraintPathBase}.path`),
+                                        )}
+                                      </label>
+
+                                      <label className="field-inline">
+                                        <span>Operator</span>
+                                        <select
+                                          value={constraintRow.operator}
+                                          onChange={(event) =>
+                                            mutateToolArgumentPolicyDraftRows(field.key, (currentRows) =>
+                                              currentRows.map((row, currentIndex) =>
+                                                currentIndex === toolIndex
+                                                  ? {
+                                                      ...row,
+                                                      rules: row.rules.map((rule, currentRuleIndex) =>
+                                                        currentRuleIndex === ruleIndex
+                                                          ? {
+                                                              ...rule,
+                                                              constraints: rule.constraints.map((constraint, currentConstraintIndex) =>
+                                                                currentConstraintIndex === constraintIndex
+                                                                  ? { ...constraint, operator: event.target.value as typeof constraintRow.operator }
+                                                                  : constraint,
+                                                              ),
+                                                            }
+                                                          : rule,
+                                                      ),
+                                                    }
+                                                  : row,
+                                              ),
+                                            )
+                                          }
+                                          disabled={disabled}
+                                        >
+                                          <option value="">Select operator</option>
+                                          {operatorOptions.map((option) => (
+                                            <option key={option.value} value={option.value}>
+                                              {option.label}
+                                            </option>
+                                          ))}
+                                        </select>
+                                        {renderToolArgumentPolicyErrorMessages(
+                                          toolArgumentPolicyFieldErrorMessages(validation.errors, `${constraintPathBase}.operator`),
+                                        )}
+                                      </label>
+
+                                      {operator === "fixed" ? (
+                                        <label className="field-inline">
+                                          <span>Fixed value</span>
+                                          <input
+                                            value={constraintRow.valueText}
+                                            onChange={(event) =>
+                                              mutateToolArgumentPolicyDraftRows(field.key, (currentRows) =>
+                                                currentRows.map((row, currentIndex) =>
+                                                  currentIndex === toolIndex
+                                                    ? {
+                                                        ...row,
+                                                        rules: row.rules.map((rule, currentRuleIndex) =>
+                                                          currentRuleIndex === ruleIndex
+                                                            ? {
+                                                                ...rule,
+                                                                constraints: rule.constraints.map((constraint, currentConstraintIndex) =>
+                                                                  currentConstraintIndex === constraintIndex
+                                                                    ? { ...constraint, valueText: event.target.value }
+                                                                    : constraint,
+                                                                ),
+                                                              }
+                                                            : rule,
+                                                        ),
+                                                      }
+                                                    : row,
+                                                ),
+                                              )
+                                            }
+                                            disabled={disabled}
+                                          />
+                                          {renderToolArgumentPolicyErrorMessages(
+                                            toolArgumentPolicyFieldErrorMessages(validation.errors, `${constraintPathBase}.valueText`),
+                                          )}
+                                        </label>
+                                      ) : null}
+
+                                      {operator === "allowlist" || operator === "denylist" || operator === "enum" ? (
+                                        <label className="field-inline">
+                                          <span>Values</span>
+                                          <textarea
+                                            value={constraintRow.valuesText}
+                                            rows={4}
+                                            onChange={(event) =>
+                                              mutateToolArgumentPolicyDraftRows(field.key, (currentRows) =>
+                                                currentRows.map((row, currentIndex) =>
+                                                  currentIndex === toolIndex
+                                                    ? {
+                                                        ...row,
+                                                        rules: row.rules.map((rule, currentRuleIndex) =>
+                                                          currentRuleIndex === ruleIndex
+                                                            ? {
+                                                                ...rule,
+                                                                constraints: rule.constraints.map((constraint, currentConstraintIndex) =>
+                                                                  currentConstraintIndex === constraintIndex
+                                                                    ? { ...constraint, valuesText: event.target.value }
+                                                                    : constraint,
+                                                                ),
+                                                              }
+                                                            : rule,
+                                                        ),
+                                                      }
+                                                    : row,
+                                                ),
+                                              )
+                                            }
+                                            disabled={disabled}
+                                          />
+                                          {renderToolArgumentPolicyErrorMessages(
+                                            toolArgumentPolicyFieldErrorMessages(validation.errors, `${constraintPathBase}.valuesText`),
+                                          )}
+                                        </label>
+                                      ) : null}
+
+                                      {operator === "pattern" ? (
+                                        <label className="field-inline">
+                                          <span>Pattern</span>
+                                          <input
+                                            value={constraintRow.pattern}
+                                            onChange={(event) =>
+                                              mutateToolArgumentPolicyDraftRows(field.key, (currentRows) =>
+                                                currentRows.map((row, currentIndex) =>
+                                                  currentIndex === toolIndex
+                                                    ? {
+                                                        ...row,
+                                                        rules: row.rules.map((rule, currentRuleIndex) =>
+                                                          currentRuleIndex === ruleIndex
+                                                            ? {
+                                                                ...rule,
+                                                                constraints: rule.constraints.map((constraint, currentConstraintIndex) =>
+                                                                  currentConstraintIndex === constraintIndex
+                                                                    ? { ...constraint, pattern: event.target.value }
+                                                                    : constraint,
+                                                                ),
+                                                              }
+                                                            : rule,
+                                                        ),
+                                                      }
+                                                    : row,
+                                                ),
+                                              )
+                                            }
+                                            disabled={disabled}
+                                          />
+                                          {renderToolArgumentPolicyErrorMessages(
+                                            toolArgumentPolicyFieldErrorMessages(validation.errors, `${constraintPathBase}.pattern`),
+                                          )}
+                                        </label>
+                                      ) : null}
+
+                                      {comparisonOperators.has(operator) ? (
+                                        <label className="checkbox-row">
+                                          <input
+                                            type="checkbox"
+                                            checked={constraintRow.caseSensitive}
+                                            onChange={(event) =>
+                                              mutateToolArgumentPolicyDraftRows(field.key, (currentRows) =>
+                                                currentRows.map((row, currentIndex) =>
+                                                  currentIndex === toolIndex
+                                                    ? {
+                                                        ...row,
+                                                        rules: row.rules.map((rule, currentRuleIndex) =>
+                                                          currentRuleIndex === ruleIndex
+                                                            ? {
+                                                                ...rule,
+                                                                constraints: rule.constraints.map((constraint, currentConstraintIndex) =>
+                                                                  currentConstraintIndex === constraintIndex
+                                                                    ? { ...constraint, caseSensitive: event.target.checked }
+                                                                    : constraint,
+                                                                ),
+                                                              }
+                                                            : rule,
+                                                        ),
+                                                      }
+                                                    : row,
+                                                ),
+                                              )
+                                            }
+                                            disabled={disabled}
+                                          />
+                                          <span>Case sensitive</span>
+                                        </label>
+                                      ) : null}
+                                    </div>
+                                  );
+                                })}
+                                <button
+                                  type="button"
+                                  className="subtle-button"
+                                  onClick={() =>
+                                    mutateToolArgumentPolicyDraftRows(field.key, (currentRows) =>
+                                      currentRows.map((row, currentIndex) =>
+                                        currentIndex === toolIndex
+                                          ? {
+                                              ...row,
+                                              rules: row.rules.map((rule, currentRuleIndex) =>
+                                                currentRuleIndex === ruleIndex
+                                                  ? {
+                                                      ...rule,
+                                                      constraints: [...rule.constraints, createToolArgumentPolicyConstraintDraftRow()],
+                                                    }
+                                                  : rule,
+                                              ),
+                                            }
+                                          : row,
+                                      ),
+                                    )
+                                  }
+                                  disabled={disabled}
+                                >
+                                  Add constraint
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        <button
+                          type="button"
+                          className="subtle-button"
+                          onClick={() =>
+                            mutateToolArgumentPolicyDraftRows(field.key, (currentRows) =>
+                              currentRows.map((row, currentIndex) =>
+                                currentIndex === toolIndex
+                                  ? {
+                                      ...row,
+                                      rules: [...row.rules, createToolArgumentPolicyRuleDraftRow()],
+                                    }
+                                  : row,
+                              ),
+                            )
+                          }
+                          disabled={disabled}
+                        >
+                          Add rule
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+                <button
+                  type="button"
+                  className="subtle-button"
+                  onClick={() =>
+                    mutateToolArgumentPolicyDraftRows(field.key, (currentRows) => [
+                      ...currentRows,
+                      createToolArgumentPolicyDraftRow(field.options[0]?.value ?? ""),
+                    ])
+                  }
+                  disabled={disabled}
+                >
+                  Add policy tool
+                </button>
+                {validation.errors.length > 0 ? (
+                  <div className="error-text">
+                    {validation.errors.map((error) => (
+                      <div key={`${error.path}-${error.message}`}>{error.path}: {error.message}</div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <textarea
+                value={inspectorJsonDrafts[field.key] ?? ""}
+                rows={8}
+                onChange={(event) => {
+                  const nextText = event.target.value;
+                  const next = { ...inspectorJsonDrafts, [field.key]: nextText };
+                  setInspectorJsonDrafts(next);
+                  stageInspectorDraft({ jsonDrafts: next });
+                }}
+                disabled={disabled}
+              />
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   function updateObjectListItem(fieldKey: string, index: number, key: string, value: unknown) {
     const currentItems = Array.isArray(inspectorKnownValues[fieldKey]) ? [...(inspectorKnownValues[fieldKey] as unknown[])] : [];
     const currentItem = isRecord(currentItems[index]) ? { ...currentItems[index] } : {};
@@ -4877,6 +5680,10 @@ export default function App() {
             : renderStringMapEditor(field, isDisabled)}
         </div>
       );
+    }
+
+    if (field.key === "tool_argument_policies" && supportsStructuredToolArgumentPolicies(selectedNode?.type)) {
+      return renderToolArgumentPolicyField(field, value, mode, isDisabled);
     }
 
     if (field.kind === "json") {
