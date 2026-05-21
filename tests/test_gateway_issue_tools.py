@@ -87,6 +87,40 @@ def test_get_issue_reads_closed_issue_without_list_filters(tmp_path: Path) -> No
     assert result["rejection_reason"] == "Out of scope"
 
 
+def test_list_issues_returns_rejected_closed_local_issue(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.LIST_ISSUES],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+    admin = AdminService(context.config.runtime_dir)
+    created = admin.create_local_issue(
+        title="Rejected issue",
+        body="x",
+        directory_path="root/team-a",
+    )
+    admin.update_issue(created.issue_number, state="Closed", fields={"Reason": "Out of scope"})
+
+    result = call_tool(
+        server,
+        "list_issues",
+        {
+            "session_id": "session-1",
+            "status": ["Rejected"],
+        },
+    )
+
+    assert [entry["issue_number"] for entry in result["issues"]] == [created.issue_number]
+    assert result["issues"][0]["state"] == "Closed"
+    assert result["issues"][0]["reason"] == "Out of scope"
+    assert result["issues"][0]["rejection_reason"] == "Out of scope"
+
+
 def test_get_issue_requires_permission_in_gateway_issue_tools(tmp_path: Path) -> None:
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
