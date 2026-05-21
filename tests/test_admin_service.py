@@ -7544,6 +7544,17 @@ def test_proxy_identifier_rejects_ambiguous_ado_work_item_ids_across_projects(
     )
 
 
+def test_issue_actions_reject_unknown_proxy_identifier(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    with pytest.raises(ValueError, match=r"Unknown local issue identifier: proxy:ado/999"):
+        service.read_issue("proxy:ado/999")
+    with pytest.raises(ValueError, match=r"Unknown local issue identifier: proxy:ado/999"):
+        service.update_issue("proxy:ado/999", state="Resolved")
+    with pytest.raises(ValueError, match=r"Unknown local issue identifier: proxy:ado/999"):
+        service.post_issue_comment("proxy:ado/999", "push to remote")
+
+
 def test_create_issue_vm_accepts_unified_proxy_identifier(tmp_path: Path, monkeypatch: Any) -> None:
     service = AdminService(write_config(tmp_path))
     service.create_local_issue(
@@ -7572,6 +7583,24 @@ def test_create_issue_vm_accepts_unified_proxy_identifier(tmp_path: Path, monkey
     assert any(str(part).endswith("setup_vm.sh") for part in captured["cmd"])
     assert "vm-77" in captured["cmd"]
     assert captured["cmd"][-1] == "agent"
+
+
+def test_create_issue_vm_from_local_issue_rejects_unknown_proxy_identifier_without_setup(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    def _fail_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise AssertionError(
+            "create_issue_vm_from_local_issue should reject unknown identifiers before setup"
+        )
+
+    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fail_run)
+
+    result = service.create_issue_vm_from_local_issue("proxy:ado/999")
+
+    assert result.success is False
+    assert result.message == "Unknown local issue identifier: proxy:ado/999"
 
 
 def test_create_issue_vm_from_local_issue_accepts_unified_proxy_identifier(

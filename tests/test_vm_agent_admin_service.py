@@ -11,6 +11,7 @@ import pytest
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin import service as admin_service_module
 from agent_sandbox.admin.services import VmAgentAdminDependencies, VmAgentAdminService
+from agent_sandbox.admin.services.local_issue_identity import LocalIssueIdentityResolver
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.models import SessionManifest, ToolName, VmActionResult
 
@@ -1236,3 +1237,26 @@ def test_vm_agent_admin_service_create_issue_vm_from_local_issue_rejects_ambiguo
 
     assert result.success is False
     assert result.message.startswith("Ambiguous proxy issue identifier: proxy:ado/42.")
+
+
+def test_vm_agent_admin_service_create_issue_vm_from_local_issue_rejects_unknown_proxy_identifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sessions = FakeSessionsStore()
+    admin = FakeAdmin(sessions=sessions)
+    admin.local_issue_store = SimpleNamespace(read_all=lambda: {}, get=lambda key: None)
+    admin._resolve_local_issue_record = LocalIssueIdentityResolver(
+        local_issue_store=admin.local_issue_store,
+        read_issue_number_from_yaml=admin_service_module._read_issue_number_from_yaml,
+    ).resolve_record
+    service = VmAgentAdminService(_vm_agent_dependencies(admin))
+
+    def fail_create_issue_vm(self: VmAgentAdminService, **kwargs: Any) -> VmActionResult:
+        raise AssertionError("create_issue_vm should not be called for unknown identifiers")
+
+    monkeypatch.setattr(VmAgentAdminService, "create_issue_vm", fail_create_issue_vm)
+
+    result = service.create_issue_vm_from_local_issue("proxy:ado/999")
+
+    assert result.success is False
+    assert result.message == "Unknown local issue identifier: proxy:ado/999"
