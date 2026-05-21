@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-21 - Rejected Issue Listing Filter
+
+- MCP `list_issues(status=["Rejected"])` now returns closed local issues with a
+  rejection reason while preserving the existing closed/completed filtering
+  semantics.
+
 ## 2026-05-21 - Workflow Tool Policy Editor Fixes
 
 - Allowed valid workflow saves to proceed after unrelated workflow-editor UI
