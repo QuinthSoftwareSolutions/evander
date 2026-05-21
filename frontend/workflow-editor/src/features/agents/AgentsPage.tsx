@@ -1215,7 +1215,10 @@ export function AgentsPage() {
   const showEnable = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.enable_disable && agentState === "disabled";
   const showDisable = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.enable_disable && agentState !== "disabled";
   const showKill = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.kill && agentState === "running" && agentPid != null;
-  const canPromptAgent = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.resume && agentState !== "disabled";
+  const canPromptAgent =
+    selectedAgent != null &&
+    agentState !== "disabled" &&
+    (selectedAgent.backend === "container_worker_vm" || selectedAgent.capabilities.resume);
   const showContainerStop = selectedAgent?.backend === "container_worker_vm" && selectedAgent.capabilities.stop;
   const showDestroy = Boolean(selectedAgent?.capabilities.destroy);
   const canEditPolicy = Boolean(selectedAgent && sessionPolicyForAgent(selectedAgent));
