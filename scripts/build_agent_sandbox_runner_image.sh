@@ -36,7 +36,12 @@ HOST_CODEX_ROOT="${HOST_CODEX_ROOT:-${CALLER_HOME}/.nvm/versions/node/v24.14.0/l
 HOST_CODEX_BINARY_PATH="${HOST_CODEX_BINARY_PATH:-}"
 HOST_CODEX_PLATFORM_PACKAGE="${HOST_CODEX_PLATFORM_PACKAGE:-@openai/codex-linux-x64}"
 CODEX_TARGET_TRIPLE="${CODEX_TARGET_TRIPLE:-x86_64-unknown-linux-musl}"
-CODEX_BINARY_RELATIVE_PATH="vendor/${CODEX_TARGET_TRIPLE}/codex/codex"
+CODEX_BINARY_RELATIVE_PATH="vendor/${CODEX_TARGET_TRIPLE}/bin/codex"
+CODEX_LEGACY_BINARY_RELATIVE_PATH="vendor/${CODEX_TARGET_TRIPLE}/codex/codex"
+CODEX_BINARY_RELATIVE_PATHS=(
+  "${CODEX_BINARY_RELATIVE_PATH}"
+  "${CODEX_LEGACY_BINARY_RELATIVE_PATH}"
+)
 RUNNER_IMAGE_NAME="${RUNNER_IMAGE_NAME:-agent-sandbox-runner:latest}"
 RUNNER_ARCHIVE_PATH="${RUNNER_ARCHIVE_PATH:-${ROOT_DIR}/dist/agent-sandbox-runner.tar}"
 RUNNER_BUILD_NETWORK="${RUNNER_BUILD_NETWORK:-}"
@@ -44,20 +49,27 @@ DOCKER="${DOCKER:-docker}"
 
 declare -a HOST_CODEX_BINARY_CANDIDATES=()
 
+add_codex_binary_candidates() {
+  local package_root="$1"
+  local relative_path
+
+  for relative_path in "${CODEX_BINARY_RELATIVE_PATHS[@]}"; do
+    HOST_CODEX_BINARY_CANDIDATES+=("${package_root}/${relative_path}")
+  done
+}
+
 if [[ -z "${HOST_CODEX_BINARY_PATH}" ]]; then
-  HOST_CODEX_BINARY_CANDIDATES+=(
-    "${HOST_CODEX_ROOT}/node_modules/${HOST_CODEX_PLATFORM_PACKAGE}/${CODEX_BINARY_RELATIVE_PATH}"
-    "${HOST_CODEX_ROOT}/${CODEX_BINARY_RELATIVE_PATH}"
-  )
+  add_codex_binary_candidates "${HOST_CODEX_ROOT}/node_modules/${HOST_CODEX_PLATFORM_PACKAGE}"
+  add_codex_binary_candidates "${HOST_CODEX_ROOT}"
 
   HOST_CODEX_NODE_MODULES="$(cd "${HOST_CODEX_ROOT}/../.." 2>/dev/null && pwd || true)"
   if [[ -n "${HOST_CODEX_NODE_MODULES}" ]]; then
-    HOISTED_CODEX_BINARY="${HOST_CODEX_NODE_MODULES}/${HOST_CODEX_PLATFORM_PACKAGE}/${CODEX_BINARY_RELATIVE_PATH}"
-    HOST_CODEX_BINARY_CANDIDATES+=("${HOISTED_CODEX_BINARY}")
+    HOISTED_CODEX_BINARY_ROOT="${HOST_CODEX_NODE_MODULES}/${HOST_CODEX_PLATFORM_PACKAGE}"
+    add_codex_binary_candidates "${HOISTED_CODEX_BINARY_ROOT}"
   fi
 
   if command -v node >/dev/null 2>&1; then
-    NODE_RESOLVED_CODEX_BINARY="$(
+    NODE_RESOLVED_CODEX_BINARY_ROOT="$(
       node -e '
 const fs = require("node:fs");
 const path = require("node:path");
@@ -65,21 +77,20 @@ const { createRequire } = require("node:module");
 
 const root = process.argv[1];
 const platformPackage = process.argv[2];
-const relativeBinaryPath = process.argv[3];
 const packageJsonPath = path.join(root, "package.json");
 const requireBase = fs.existsSync(packageJsonPath) ? packageJsonPath : path.join(root, "noop.js");
 
 try {
   const requireFromCodexRoot = createRequire(requireBase);
   const platformPackageJson = requireFromCodexRoot.resolve(`${platformPackage}/package.json`);
-  process.stdout.write(path.join(path.dirname(platformPackageJson), relativeBinaryPath));
+  process.stdout.write(path.dirname(platformPackageJson));
 } catch {
   process.exit(0);
 }
-' "${HOST_CODEX_ROOT}" "${HOST_CODEX_PLATFORM_PACKAGE}" "${CODEX_BINARY_RELATIVE_PATH}" 2>/dev/null || true
+' "${HOST_CODEX_ROOT}" "${HOST_CODEX_PLATFORM_PACKAGE}" 2>/dev/null || true
     )"
-    if [[ -n "${NODE_RESOLVED_CODEX_BINARY}" ]]; then
-      HOST_CODEX_BINARY_CANDIDATES+=("${NODE_RESOLVED_CODEX_BINARY}")
+    if [[ -n "${NODE_RESOLVED_CODEX_BINARY_ROOT}" ]]; then
+      add_codex_binary_candidates "${NODE_RESOLVED_CODEX_BINARY_ROOT}"
     fi
   fi
 else
