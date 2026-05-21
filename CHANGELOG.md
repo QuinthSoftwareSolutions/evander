@@ -14,6 +14,8 @@ material. Newer entries are added incrementally as changes land.
   no longer parses the full audit log just to render the latest calls.
 - Made workflow graph activity reports read SQLite activity columns directly instead of
   deserializing full orchestration payloads for dashboard summaries.
+- Initialized the orchestration SQLite schema before direct workflow graph activity queries so
+  fresh default stores return empty reports instead of failing on missing tables.
 
 ## 2026-05-21 - Dashboard Product Context Layout and 0.2.2 Version
 

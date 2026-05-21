@@ -155,6 +155,7 @@ from agent_sandbox.repositories.orchestration import (
 from agent_sandbox.repositories.orchestration_db import (
     connect_orchestration_db,
     datetime_to_storage,
+    ensure_orchestration_schema,
 )
 from agent_sandbox.messaging.teams_auth import (
     DeviceCodeLoginSession,
@@ -12414,7 +12415,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if self._workflow_uses_sqlite_store(stores):
             start_text = datetime_to_storage(start_at)
             end_text = datetime_to_storage(end_at)
-            with connect_orchestration_db(Path(stores["orchestration_store_path"])) as connection:
+            db_path = Path(stores["orchestration_store_path"])
+            ensure_orchestration_schema(db_path)
+            with connect_orchestration_db(db_path) as connection:
                 for (
                     event_id,
                     trigger_id,
