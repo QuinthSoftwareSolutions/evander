@@ -51,6 +51,21 @@ The build script creates `agent-sandbox-runner:latest` locally and saves
 `/var/lib/agent-worker`, and verifies the local `/healthz` endpoint. It intentionally does not
 install the control-plane services.
 
+## Cleanup Visibility
+
+Container session cleanup is intentionally non-destructive on the control plane. When an operator
+or workflow cleans up a container-backed session, the worker daemon removes worker-side session
+files and jobs, but the host keeps the session manifest and container execution mappings as
+tombstones for audit and recovery decisions. Operators can inspect the lifecycle in Admin Web >
+Sessions; the session list and detail views show whether a container session is `stopped`,
+`failed`, `abandoned`, `cleanup_failed`, or `cleaned_up`, plus the last worker observation or
+completion signal and any sanitized cleanup error.
+
+Manual cleanup is only offered for states the backend can clean up, such as stopped, failed,
+abandoned, or cleanup-failed sessions. A cleanup failure records `cleanup_failed` state and keeps
+the original session and execution context visible so the operator can retry cleanup or inspect
+logs and metadata before taking manual action.
+
 Worker host OS packages are provisioned through the control-plane apt-cacher-ng relay on `3142`.
 The worker playbook writes `/etc/apt/apt.conf.d/01agent-sandbox-proxy` before its first
 `host_prereqs` apt update. Container-session `pip` and `npm` traffic remains separate and resolves
