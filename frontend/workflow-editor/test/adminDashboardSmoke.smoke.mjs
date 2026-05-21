@@ -784,6 +784,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   });
 
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Sessions", level: 1 }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.locator(".session-tools-panel").waitFor({ state: "visible" }));
   assert.equal(await page.getByRole("heading", { name: "Control-plane status" }).count(), 0);
   assert.equal(await page.evaluate(() => window.location.hash), "#sessions");
 

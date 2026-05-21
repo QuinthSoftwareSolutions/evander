@@ -352,11 +352,11 @@ test("admin shell release panel shows missing metadata without inventing release
   const releasePanel = page.locator("article.dashboard-release-panel");
   await assert.doesNotReject(() => releasePanel.getByRole("heading", { name: "Version and changelog" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.locator(".release-missing-list strong").waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => releasePanel.getByText("Version unavailable").waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => releasePanel.getByText("Build unavailable").waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => releasePanel.getByText("Recent changelog unavailable").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => releasePanel.getByText("Version unavailable", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => releasePanel.getByText("Build unavailable", { exact: true }).waitFor({ state: "visible" }));
   assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Version unavailable/);
   assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Build unavailable/);
+  assert.match(await releasePanel.locator(".release-missing-list strong").innerText(), /Recent changelog unavailable/);
   assert.equal(await releasePanel.locator(".release-entry-item").count(), 0);
   assert.equal(await releasePanel.locator(".release-kind-pill").count(), 0);
   assert.equal(await releasePanel.getByText("0.1.0").count(), 0);
