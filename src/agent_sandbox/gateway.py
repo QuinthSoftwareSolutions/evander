@@ -6525,6 +6525,17 @@ def create_server(context: RuntimeContext) -> FastMCP:
         except PolicyError as exc:
             audit_failure(session_id, ToolName.ADD_MESSAGE_REACTION, args, str(exc))
             raise
+        except ValueError as exc:
+            message = str(exc)
+            audit_failure(
+                session_id,
+                ToolName.ADD_MESSAGE_REACTION,
+                args,
+                message,
+                decision="error",
+                error_class="validation_error",
+            )
+            raise ToolError(message) from exc
         except httpx.HTTPError as exc:
             audit_failure(
                 session_id,
