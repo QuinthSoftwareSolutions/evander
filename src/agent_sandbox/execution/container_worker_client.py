@@ -23,6 +23,7 @@ from agent_sandbox.worker.models import (
     WorkerRepoCloneRequest,
     WorkerSessionPrepareRequest,
     WorkerSessionRecord,
+    WorkerTelemetryPayload,
 )
 from agent_sandbox.worker.security import sanitize_metadata, sanitize_text
 
@@ -170,6 +171,12 @@ class ContainerWorkerClient:
     def delete_session(self, session_id: str) -> dict[str, Any]:
         response = self._request("DELETE", f"/v1/sessions/{session_id}")
         return self._json_dict(response, operation="delete session")
+
+    def telemetry(self) -> WorkerTelemetryPayload:
+        response = self._request("GET", "/v1/telemetry")
+        return WorkerTelemetryPayload.model_validate(
+            self._json_dict(response, operation="telemetry")
+        )
 
     def logs(
         self,

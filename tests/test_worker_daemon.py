@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 import subprocess
 from datetime import UTC, datetime, timedelta
@@ -11,6 +12,7 @@ import pytest
 from pydantic import ValidationError
 from starlette.testclient import TestClient
 
+from agent_sandbox.capacity_health import TelemetryStatus
 from agent_sandbox.worker.service import WorkerDaemon
 from agent_sandbox.worker_daemon import (
     WorkerJobRecord,
@@ -77,12 +79,22 @@ def _auth() -> dict[str, str]:
     return {"Authorization": "Bearer test-token"}
 
 
+def _set_session_created_at(paths: WorkerSessionPaths, created_at: datetime) -> None:
+    payload = json.loads(paths.metadata_path.read_text(encoding="utf-8"))
+    payload["created_at"] = created_at.isoformat()
+    paths.metadata_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    timestamp = created_at.timestamp()
+    os.utime(paths.root, (timestamp, timestamp))
+    os.utime(paths.metadata_path, (timestamp, timestamp))
+
+
 def test_auth_rejects_missing_or_wrong_bearer_token_and_accepts_configured_token(
     tmp_path: Path,
 ) -> None:
     client = _client(tmp_path)
 
     assert client.get("/healthz").status_code == 200
+    assert client.get("/v1/telemetry").status_code == 401
     assert client.post("/v1/jobs", json={}).status_code == 401
     assert (
         client.post("/v1/jobs", headers={"Authorization": "Bearer wrong"}, json={}).status_code
@@ -101,6 +113,91 @@ def test_auth_rejects_missing_or_wrong_bearer_token_and_accepts_configured_token
     )
 
     assert response.status_code == 201
+
+
+def test_worker_daemon_read_telemetry_reports_disk_sessions_and_jobs_without_leaking_paths(
+    tmp_path: Path,
+) -> None:
+    runtime = FakeContainerRuntime()
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+
+    old_paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-old")
+    new_paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-new")
+    _set_session_created_at(old_paths, datetime(2026, 5, 20, 9, 0, tzinfo=UTC))
+    _set_session_created_at(new_paths, datetime(2026, 5, 21, 9, 0, tzinfo=UTC))
+    (old_paths.artifacts / "small.txt").write_text("tiny\n", encoding="utf-8")
+    (new_paths.artifacts / "nested").mkdir()
+    (new_paths.artifacts / "nested" / "large.bin").write_bytes(b"x" * 1024)
+
+    daemon.store.put(
+        WorkerJobRecord(
+            job_id="job-running",
+            session_id="session-new",
+            image="runner:latest",
+            command=["true"],
+            container_name="agent-worker-job-running",
+            status="running",
+            started_at=datetime(2026, 5, 21, 10, 0, tzinfo=UTC),
+            agent_home_path=str(new_paths.agent_home),
+            repo_root_path=str(new_paths.repo_root),
+            artifacts_path=str(new_paths.artifacts),
+            logs_path=str(new_paths.logs),
+        )
+    )
+    daemon.store.put(
+        WorkerJobRecord(
+            job_id="job-failed",
+            session_id="session-old",
+            image="runner:latest",
+            command=["true"],
+            container_name="agent-worker-job-failed",
+            status="failed",
+            started_at=datetime(2026, 5, 21, 10, 5, tzinfo=UTC),
+            finished_at=datetime(2026, 5, 21, 10, 6, tzinfo=UTC),
+            agent_home_path=str(old_paths.agent_home),
+            repo_root_path=str(old_paths.repo_root),
+            artifacts_path=str(old_paths.artifacts),
+            logs_path=str(old_paths.logs),
+        )
+    )
+    daemon.store.put(
+        WorkerJobRecord(
+            job_id="job-stopped",
+            session_id="session-new",
+            image="runner:latest",
+            command=["true"],
+            container_name="agent-worker-job-stopped",
+            status="stopped",
+            started_at=datetime(2026, 5, 21, 10, 10, tzinfo=UTC),
+            finished_at=datetime(2026, 5, 21, 10, 15, tzinfo=UTC),
+            agent_home_path=str(new_paths.agent_home),
+            repo_root_path=str(new_paths.repo_root),
+            artifacts_path=str(new_paths.artifacts),
+            logs_path=str(new_paths.logs),
+        )
+    )
+
+    telemetry = daemon.read_telemetry()
+    payload = json.dumps(telemetry.model_dump(mode="json"))
+
+    assert telemetry.disk.worker_root.status is TelemetryStatus.AVAILABLE
+    assert telemetry.session_storage.total.status is TelemetryStatus.AVAILABLE
+    assert telemetry.session_storage.session_count == 2
+    assert telemetry.session_storage.largest_sessions[0].session_id == "session-new"
+    assert telemetry.session_storage.largest_sessions[0].directory_path == "sessions/session-new"
+    assert telemetry.session_storage.largest_sessions[0].backend == "container_worker_vm"
+    assert telemetry.session_storage.oldest_sessions[0].session_id == "session-old"
+    assert telemetry.jobs.total_jobs == 3
+    assert telemetry.jobs.counts_by_status == {"running": 1, "failed": 1, "stopped": 1}
+    assert telemetry.jobs.running_job_count == 1
+    assert telemetry.jobs.failed_start_count == 1
+    assert telemetry.jobs.cleanup_failure_status is TelemetryStatus.UNSUPPORTED
+    assert str(tmp_path) not in payload
 
 
 def test_worker_job_request_rejects_egress_policy_fields() -> None:

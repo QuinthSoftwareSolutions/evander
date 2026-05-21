@@ -3,6 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from agent_sandbox.capacity_health import TelemetryStatus
 from agent_sandbox.execution.container_worker_client import (
     ContainerWorkerClient,
     ContainerWorkerClientError,
@@ -13,6 +14,7 @@ from agent_sandbox.worker.models import (
     WorkerMssqlDatabaseRequest,
     WorkerRepoCloneRequest,
     WorkerSessionPrepareRequest,
+    WorkerTelemetryPayload,
 )
 
 
@@ -114,6 +116,99 @@ def test_container_worker_client_health_create_get_stop_delete_and_logs(
         ("GET", "/v1/jobs/job-1/logs", "mode=raw"),
         ("GET", "/v1/jobs/job-1/logs", "mode=session&limit=25&offset=50&query=needle"),
     ]
+
+
+def test_container_worker_client_telemetry_uses_auth_and_parses_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORKER_TOKEN", "secret-token")
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        assert request.headers["authorization"] == "Bearer secret-token"
+        return httpx.Response(
+            200,
+            json={
+                "generated_at": "2026-05-21T12:00:00Z",
+                "disk": {
+                    "worker_root": {
+                        "scope": "worker_root",
+                        "status": "available",
+                        "health": "ok",
+                        "total_bytes": 100,
+                        "used_bytes": 40,
+                        "free_bytes": 60,
+                        "used_percent": 40.0,
+                        "free_percent": 60.0,
+                        "error_count": 0,
+                        "errors": [],
+                    }
+                },
+                "session_storage": {
+                    "total": {
+                        "scope": "worker_sessions",
+                        "status": "available",
+                        "health": "ok",
+                        "size_bytes": 2048,
+                        "file_count": 2,
+                        "directory_count": 1,
+                        "symlink_count": 0,
+                        "error_count": 0,
+                        "errors": [],
+                    },
+                    "session_count": 1,
+                    "largest_sessions": [
+                        {
+                            "session_id": "session-1",
+                            "directory_path": "sessions/session-1",
+                            "backend": "container_worker_vm",
+                            "size_bytes": 2048,
+                            "created_at": "2026-05-20T09:00:00Z",
+                            "updated_at": "2026-05-21T09:00:00Z",
+                        }
+                    ],
+                    "oldest_sessions": [
+                        {
+                            "session_id": "session-1",
+                            "directory_path": "sessions/session-1",
+                            "backend": "container_worker_vm",
+                            "size_bytes": 2048,
+                            "created_at": "2026-05-20T09:00:00Z",
+                            "updated_at": "2026-05-21T09:00:00Z",
+                        }
+                    ],
+                },
+                "jobs": {
+                    "status": "available",
+                    "health": "ok",
+                    "total_jobs": 3,
+                    "counts_by_status": {"running": 1, "failed": 1, "stopped": 1},
+                    "running_job_count": 1,
+                    "failed_start_count": 1,
+                    "cleanup_failure_status": "unsupported",
+                    "cleanup_failure_message": "cleanup failures are not currently persisted",
+                    "error_count": 0,
+                    "errors": [],
+                },
+            },
+            request=request,
+        )
+
+    worker = ContainerWorkerClient(
+        base_url="http://worker.test",
+        token_env="WORKER_TOKEN",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    telemetry = worker.telemetry()
+
+    assert isinstance(telemetry, WorkerTelemetryPayload)
+    assert telemetry.jobs.failed_start_count == 1
+    assert telemetry.jobs.cleanup_failure_status is TelemetryStatus.UNSUPPORTED
+    assert telemetry.session_storage.session_count == 1
+    assert telemetry.session_storage.largest_sessions[0].directory_path == "sessions/session-1"
+    assert seen == [("GET", "/v1/telemetry")]
 
 
 def test_container_worker_client_prepares_session_clones_repo_and_writes_files(

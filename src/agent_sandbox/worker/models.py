@@ -8,6 +8,15 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from agent_sandbox.capacity_health import (
+    DiskUsageTelemetry,
+    DirectorySizeTelemetry,
+    HealthState,
+    SessionStorageSample,
+    TelemetryError,
+    TelemetryStatus,
+)
+
 DEFAULT_WORKER_ROOT = Path("/var/lib/agent-worker")
 SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 
@@ -383,3 +392,42 @@ class WorkerJobRecord(BaseModel):
         if "repo_root_path" not in migrated:
             migrated["repo_root_path"] = workspace_path
         return migrated
+
+
+class WorkerDiskTelemetry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    worker_root: DiskUsageTelemetry
+
+
+class WorkerSessionStorageTelemetry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    total: DirectorySizeTelemetry
+    session_count: int = 0
+    largest_sessions: list[SessionStorageSample] = Field(default_factory=list)
+    oldest_sessions: list[SessionStorageSample] = Field(default_factory=list)
+
+
+class WorkerJobTelemetry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: TelemetryStatus = TelemetryStatus.AVAILABLE
+    health: HealthState = HealthState.OK
+    total_jobs: int = 0
+    counts_by_status: dict[str, int] = Field(default_factory=dict)
+    running_job_count: int = 0
+    failed_start_count: int = 0
+    cleanup_failure_status: TelemetryStatus = TelemetryStatus.UNSUPPORTED
+    cleanup_failure_message: str = "cleanup failures are not currently persisted"
+    error_count: int = 0
+    errors: list[TelemetryError] = Field(default_factory=list)
+
+
+class WorkerTelemetryPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    generated_at: datetime = Field(default_factory=now_utc)
+    disk: WorkerDiskTelemetry
+    session_storage: WorkerSessionStorageTelemetry
+    jobs: WorkerJobTelemetry
