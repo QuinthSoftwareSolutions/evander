@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-21 - Workflow Smoke Test Hardening
+
+- Hardened the workflow tool-argument-policies smoke coverage so effect-node
+  selection uses Playwright locator actionability and waits for the specific
+  tool policy inspector content instead of relying on cached click coordinates.
+
 ## 2026-05-21 - ADO Worker Bootstrap Removal
 
 - Removed ADO worker issue VM creation, setup script invocation, and guest bootstrap configuration.

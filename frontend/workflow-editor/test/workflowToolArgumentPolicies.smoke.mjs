@@ -134,9 +134,7 @@ function createWorkflowCatalog() {
 async function selectEffectNode(page) {
   const effectNode = page.locator('.react-flow__node[data-id="effect-1"]');
   await effectNode.waitFor({ state: "visible" });
-  const effectBox = await effectNode.boundingBox();
-  assert.ok(effectBox, "expected effect node bounds");
-  await page.mouse.click(effectBox.x + effectBox.width / 2, effectBox.y + effectBox.height / 2);
+  await effectNode.click();
 }
 
 async function openWorkflowEditor(page, address) {
@@ -145,7 +143,7 @@ async function openWorkflowEditor(page, address) {
   });
   await page.waitForSelector(".canvas-shell .react-flow__pane");
   await selectEffectNode(page);
-  await page.locator(".sidebar-section.inspector").waitFor({ state: "visible" });
+  await page.locator(".sidebar-section.inspector").filter({ hasText: "Tool argument policies" }).waitFor({ state: "visible" });
 }
 
 async function loadScenario(page, address, state) {
