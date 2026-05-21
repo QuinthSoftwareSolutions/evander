@@ -792,7 +792,7 @@ Supported directory config domains:
 
 | Domain file | Purpose | YAML fields allowed |
 |---|---|---|
-| `policy.json` | Session/policy defaults and operator restrictions | `approval_ttl_seconds`, `approval_notification_target_ids`, `default_session_ttl_seconds`, Discord/email allowlists, `email_send_enabled`, `pr_reply_require_approval`, `redacted_keys` |
+| `policy.json` | Session/policy defaults and operator restrictions | `approval_ttl_seconds`, `approval_notification_target_ids`, `default_session_ttl_seconds`, Discord/email allowlists, `email_send_enabled`, `pr_reply_require_approval`, `redacted_keys`, `tool_argument_policies` |
 | `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, HTTP target relay, NuGet, GitHub, Azure DevOps, Teams, container worker, Retell |
 | `contacts.json` | Directory contact list and admin-user contact attachments | `contacts`, `user_contact_links` |
 | `email.json` | Mailbox provider definitions and email provider runtime settings | `email_mailboxes`, `email_provider_timeout_seconds` |
@@ -841,6 +841,87 @@ Approval-required tool policy:
   id.
 - `approval_submit` and `approval_check` are excluded from generic invocation gating so agents can
   request and inspect approvals.
+
+Tool argument policy:
+
+- `tool_argument_policies` is a tool-keyed map of additive argument rules. Keys must match a known
+  MCP `ToolName`, such as `create_ado_backlog_item`.
+- Values can come from inherited directory `policy.json` overlays or from the session manifest. The
+  effective policy appends session rules after inherited directory rules; it does not replace or
+  subtract them.
+- This list narrows argument shapes only. It does not grant access, so `allowed_tools` must still
+  contain the tool name before the gateway will consider the argument rules.
+- Each tool entry contains one or more rules with a unique `id`, optional `name`, and a
+  `constraints` list. Keep rule and constraint ids unique within the tool entry; duplicate ids are
+  rejected during validation.
+- Each constraint uses:
+  - `id`
+  - `path`
+  - `operator`
+  - optional `value`
+  - optional `values`
+  - optional `pattern`
+  - optional `case_sensitive` (defaults to `true`)
+- Supported operators are `required`, `allowlist`, `denylist`, `fixed`, `pattern`, and `enum`.
+- Paths use dotted object access with `[]` for list flattening, for example `project`,
+  `metadata.labels[].name`, or `tags[]`.
+- `required` fails when the path is absent or when all extracted values are null, blank, or empty.
+- `allowlist` and `enum` require every present value to appear in `values`.
+- `denylist` fails when any present value appears in `values`.
+- `fixed` requires the extracted scalar to equal `value`.
+- `pattern` requires present string values to match `pattern`; regexes are validated when the model is
+  loaded.
+- Missing optional paths pass for every operator except `required` and `fixed`.
+- Set `case_sensitive: false` for case-insensitive string comparisons and regex matching.
+
+Example `policy.json` overlay:
+
+```json
+{
+  "tool_argument_policies": {
+    "create_ado_backlog_item": [
+      {
+        "id": "app-ado-work-item-constraints",
+        "name": "APP backlog item constraints",
+        "constraints": [
+          {
+            "id": "project-fixed",
+            "path": "project",
+            "operator": "fixed",
+            "value": "Example Industry APP"
+          },
+          {
+            "id": "type-allowed",
+            "path": "type",
+            "operator": "enum",
+            "values": ["Task", "Product Backlog Item"]
+          },
+          {
+            "id": "title-required",
+            "path": "title",
+            "operator": "required"
+          },
+          {
+            "id": "iteration-required",
+            "path": "iteration",
+            "operator": "required"
+          },
+          {
+            "id": "tags-denylist",
+            "path": "tags[]",
+            "operator": "denylist",
+            "values": ["auto-dev-forbidden"]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+This policy narrows `create_ado_backlog_item` only after the tool is already allowed. A session or
+agent still needs `allowed_tools` to include `create_ado_backlog_item` before the gateway will
+evaluate the argument constraints.
 
 Teams delegated auth follows the same host-side model. The preferred operator flow is to sign in on
 the host with device code flow and keep the credential host-only. Directory-scoped `providers.json`

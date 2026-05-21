@@ -144,6 +144,7 @@ from agent_sandbox.models import (
 )
 from agent_sandbox.policy import (
     PolicyError,
+    ToolArgumentPolicyError,
     reset_tool_approval_context,
     set_tool_approval_context,
 )
@@ -8298,6 +8299,86 @@ def create_server(context: RuntimeContext) -> FastMCP:
         )
         _mark_tool_call_audited()
 
+    def audit_tool_argument_policy_denial(
+        *,
+        session_id: str,
+        session: Any,
+        tool_name: ToolName,
+        raw_args: dict[str, Any],
+        sanitized_arguments: dict[str, Any],
+        error: ToolArgumentPolicyError,
+    ) -> None:
+        redacted_keys = redacted_keys_for_session_id(session_id)
+        denial_result = {
+            "status": "denied",
+            "error": str(error),
+            "error_class": "tool_argument_policy_violation",
+            "policy_rule_id": error.rule_id,
+            "policy_rule_name": error.rule_name,
+            "constraint_id": error.constraint_id,
+            "field_path": error.path,
+            "payload_summary": _redact_nested_value(redacted_keys, sanitized_arguments),
+        }
+        context.audit.log(
+            AuditEvent(
+                event_type="tool_call",
+                session_id=session_id,
+                vm_id=None if session is None else session.vm_id,
+                directory_path=None if session is None else session.directory_path,
+                agent_role=_session_actor_role(session),
+                tool_name=tool_name.value,
+                actor_user_id=_session_actor_user_id(session),
+                **_tool_call_audit_fields(
+                    session=session,
+                    tool_name=tool_name,
+                    args=raw_args,
+                    result=denial_result,
+                ),
+                decision="denied",
+                reason=str(error),
+                args=_redact_args(redacted_keys, raw_args),
+                result=denial_result,
+            )
+        )
+        _mark_tool_call_audited()
+        logger.info(
+            "metric_mcp_tool_decision outcome=denied tool=%s session_id=%s reason=%s error_class=%s",
+            tool_name.value,
+            session_id,
+            error,
+            "tool_argument_policy_violation",
+        )
+
+    def enforce_tool_argument_policy(
+        *,
+        raw_tool_name: str,
+        raw_arguments: dict[str, Any],
+        sanitized_arguments: dict[str, Any],
+        call_context: _ToolCallAuditContext,
+    ) -> None:
+        tool_enum = ToolName._value2member_map_.get(raw_tool_name)
+        if tool_enum is None:
+            return
+        session_id = call_context.session_id
+        if not session_id:
+            return
+        try:
+            session = context.policy.require_tool(session_id, tool_enum)
+        except PolicyError:
+            return
+        try:
+            context.policy.require_tool_arguments(session, tool_enum, sanitized_arguments)
+        except ToolArgumentPolicyError as exc:
+            audit_tool_argument_policy_denial(
+                session_id=session_id,
+                session=session,
+                tool_name=tool_enum,
+                raw_args=raw_arguments,
+                sanitized_arguments=sanitized_arguments,
+                error=exc,
+            )
+            raise ToolError(f"tool_argument_policy_denied: {exc}") from exc
+
     def maybe_require_invocation_approval(
         *,
         raw_tool_name: str,
@@ -8424,6 +8505,12 @@ def create_server(context: RuntimeContext) -> FastMCP:
             lease_id=call_context.mcp_tool_approval_lease_id,
         )
         try:
+            enforce_tool_argument_policy(
+                raw_tool_name=raw_tool_name,
+                raw_arguments=raw_arguments,
+                sanitized_arguments=sanitized_arguments,
+                call_context=call_context,
+            )
             maybe_require_invocation_approval(
                 raw_tool_name=raw_tool_name,
                 raw_arguments=raw_arguments,

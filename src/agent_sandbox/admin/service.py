@@ -522,6 +522,7 @@ class WorkflowRunDataAvailabilityPayload(BaseModel):
     approvals: str = "available"
     agent_links: str = "available"
     communication_artifacts: str = "available"
+    tool_calls: str = "available"
     trigger_event: str = "available"
 
 
@@ -594,8 +595,18 @@ class WorkflowRunAgentLinkPayload(BaseModel):
     node_id: str
     node_type: str | None = None
     session_id: str | None = None
+    agent_id: str | None = None
+    backend: str | None = None
+    agent_backend: str | None = None
+    agent_available: bool = False
+    agent_status: str | None = None
+    agent_missing_reason: str | None = None
+    target_name: str | None = None
     vm_name: str | None = None
     prompt: str | None = None
+    prompt_summary: str | None = None
+    prompt_status: str | None = None
+    prompt_missing_reason: str | None = None
     dispatch_id: str | None = None
     thread_id: str | None = None
     execution_id: str | None = None
@@ -603,7 +614,20 @@ class WorkflowRunAgentLinkPayload(BaseModel):
     status: str | None = None
     waiting: bool | None = None
     completed: bool | None = None
+    session_status: str = "session_missing"
+    session_available: bool = False
+    session_missing_reason: str | None = None
+    session_href: str | None = None
+    log_status: str = "log_unavailable"
+    log_available: bool = False
+    log_href: str | None = None
+    log_reference_href: str | None = None
+    log_missing_reason: str | None = None
     log_reference: dict[str, Any] | None = None
+    result_summary: str | None = None
+    result_status: str | None = None
+    result_missing_reason: str | None = None
+    result_empty: bool | None = None
 
 
 class WorkflowRunCommunicationArtifactLinkPayload(BaseModel):
@@ -624,6 +648,34 @@ class WorkflowRunCommunicationArtifactLinkPayload(BaseModel):
     staged_at: datetime | None = None
     status: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowRunToolCallLinkPayload(BaseModel):
+    created_at: datetime
+    node_id: str | None = None
+    tool_name: str | None = None
+    request_id: str | None = None
+    correlation_id: str | None = None
+    approval_request_id: str | None = None
+    workflow_run_id: str | None = None
+    trace_id: str | None = None
+    session_id: str | None = None
+    vm_id: str | None = None
+    decision: str | None = None
+    status: str | None = None
+    error_summary: str | None = None
+    href: str | None = None
+    filter: dict[str, Any] | None = None
+    args_summary: str | None = None
+    result_summary: str | None = None
+    args_missing_reason: str | None = None
+    result_status: str | None = None
+    result_missing_reason: str | None = None
+    result_empty: bool = False
+    args: dict[str, Any] = Field(default_factory=dict)
+    result: dict[str, Any] = Field(default_factory=dict)
+    redacted_args: dict[str, Any] = Field(default_factory=dict)
+    redacted_result: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowRunNodeRecordPayload(BaseModel):
@@ -686,6 +738,7 @@ class WorkflowRunNodeDetailPayload(BaseModel):
     communication_artifact_links: list[WorkflowRunCommunicationArtifactLinkPayload] = Field(
         default_factory=list
     )
+    tool_call_links: list[WorkflowRunToolCallLinkPayload] = Field(default_factory=list)
     records: list[WorkflowRunNodeRecordPayload] = Field(default_factory=list)
 
 
@@ -733,6 +786,7 @@ class WorkflowRunDetailPayload(BaseModel):
     trigger_event: WorkflowRunTriggerEventPayload | None = None
     graph: WorkflowRunGraphPayload = Field(default_factory=WorkflowRunGraphPayload)
     nodes: list[WorkflowRunNodeDetailPayload] = Field(default_factory=list)
+    tool_call_links: list[WorkflowRunToolCallLinkPayload] = Field(default_factory=list)
     data_availability: WorkflowRunDataAvailabilityPayload = Field(
         default_factory=WorkflowRunDataAvailabilityPayload
     )
@@ -1806,6 +1860,15 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Additional MCP tools to allow for the created session.",
             ),
             _field(
+                "tool_argument_policies",
+                "Tool argument policy",
+                "json",
+                bindable=True,
+                description="Tool-keyed argument policy rules to attach to the created session.",
+                json_value_type="object",
+                default_value={},
+            ),
+            _field(
                 "allowed_script_names",
                 "Allowed script names",
                 "string_list",
@@ -1963,6 +2026,15 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Allowed tools",
                 "string_list",
                 description="MCP tools the created session may invoke through the host gateway.",
+            ),
+            _field(
+                "tool_argument_policies",
+                "Tool argument policy",
+                "json",
+                bindable=True,
+                description="Tool-keyed argument policy rules to attach to the created session.",
+                json_value_type="object",
+                default_value={},
             ),
             _field(
                 "allowed_script_names",
@@ -4278,6 +4350,7 @@ def _build_issue_session_manifest(
     directory_path: str,
     ttl_hours: int | None,
     extra_allowed_tools: list[str | ToolName] | None = None,
+    tool_argument_policies: dict[str, list[Any]] | None = None,
     allowed_script_names: list[str] | None = None,
     discord_channels: list[str],
     teams_channel_allowlist: list[str] | None = None,
@@ -4344,6 +4417,7 @@ def _build_issue_session_manifest(
         directory_path=directory_path,
         allowed_tools=list(dict.fromkeys(resolved_allowed_tools)),
         approval_required_tools=list(policy.approval_required_tools),
+        tool_argument_policies=tool_argument_policies or {},
         allowed_script_names=_normalize_allowed_script_names(allowed_script_names or []),
         discord_channel_allowlist=discord_channels,
         teams_channel_allowlist=_normalize_teams_channel_allowlist(
@@ -4415,6 +4489,23 @@ def _normalize_allowed_tools(value: list[str | ToolName]) -> list[ToolName]:
         seen.add(normalized_tool)
         normalized_tools.append(normalized_tool)
     return normalized_tools
+
+
+def _session_tool_argument_policies_from_payload(
+    session: SessionManifest, value: object
+) -> dict[str, list[Any]]:
+    try:
+        validated = SessionManifest.model_validate(
+            {
+                "session_id": session.session_id,
+                "allowed_tools": list(session.allowed_tools),
+                "expires_at": session.expires_at,
+                "tool_argument_policies": value,
+            }
+        )
+    except ValidationError as exc:
+        raise ValueError(str(exc)) from exc
+    return validated.tool_argument_policies
 
 
 def _normalize_allowed_script_names(value: list[str]) -> list[str]:
@@ -4539,6 +4630,7 @@ def _session_policy_update_from_payload(
 ) -> dict[str, Any]:
     allowed_fields = {
         "approval_required_tools",
+        "tool_argument_policies",
         "allowed_script_names",
         "discord_channel_allowlist",
         "discord_channels",
@@ -4566,6 +4658,11 @@ def _session_policy_update_from_payload(
                 payload.get("approval_required_tools"),
                 field_name="approval_required_tools",
             )
+        )
+    if "tool_argument_policies" in payload:
+        update["tool_argument_policies"] = _session_tool_argument_policies_from_payload(
+            session,
+            payload.get("tool_argument_policies"),
         )
 
     discord_field = (
@@ -6003,6 +6100,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 tool.value if isinstance(tool, ToolName) else str(tool)
                 for tool in session.approval_required_tools
             ],
+            "tool_argument_policies": {
+                tool_name: [rule.model_dump(mode="json") for rule in rules]
+                for tool_name, rules in session.tool_argument_policies.items()
+            },
             "allowed_script_names": list(session.allowed_script_names),
             "discord_channels": list(session.discord_channel_allowlist),
             "discord_channel_allowlist": list(session.discord_channel_allowlist),
@@ -6030,15 +6131,52 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "labels": labels,
         }
 
+    def effective_tool_policy_payload(
+        self, session: SessionManifest | None
+    ) -> dict[str, Any] | None:
+        if session is None:
+            return None
+        effective_policy = self.runtime.policy_config.resolve_for_session_manifest(session)
+        approval_required_tools: list[str] = []
+        seen_tools: set[str] = set()
+        for tool in effective_policy.approval_required_tools:
+            value = tool.value if isinstance(tool, ToolName) else str(tool)
+            if value in seen_tools:
+                continue
+            seen_tools.add(value)
+            approval_required_tools.append(value)
+        for tool in session.approval_required_tools:
+            value = tool.value if isinstance(tool, ToolName) else str(tool)
+            if value in seen_tools:
+                continue
+            seen_tools.add(value)
+            approval_required_tools.append(value)
+
+        tool_argument_policies: dict[str, list[dict[str, Any]]] = {}
+        for source in (effective_policy.tool_argument_policies, session.tool_argument_policies):
+            for tool_name, rules in source.items():
+                tool_rules = tool_argument_policies.setdefault(tool_name, [])
+                tool_rules.extend(rule.model_dump(mode="json") for rule in rules)
+
+        return {
+            "allowed_tools": [
+                tool.value if isinstance(tool, ToolName) else str(tool)
+                for tool in session.allowed_tools
+            ],
+            "approval_required_tools": approval_required_tools,
+            "tool_argument_policies": tool_argument_policies,
+        }
+
     def _agent_record_from_vm(self, summary: VmSummary) -> AgentRecord:
         power_state = str(summary.power_state or summary.libvirt_state or "unknown").strip()
         status = "running" if power_state == "running" else "stopped"
         directory_path = summary.directory_paths[0] if len(summary.directory_paths) == 1 else "root"
         session_policy = None
+        effective_tool_policy = None
         if len(summary.session_ids) == 1:
-            session_policy = self._agent_session_policy_payload(
-                self.runtime.session_repository.get_session(summary.session_ids[0])
-            )
+            session = self.runtime.session_repository.get_session(summary.session_ids[0])
+            session_policy = self._agent_session_policy_payload(session)
+            effective_tool_policy = self.effective_tool_policy_payload(session)
         return AgentRecord(
             agent_id=summary.vm_name,
             backend="libvirt_vm",
@@ -6047,6 +6185,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             directory_path=directory_path,
             status=status,
             updated_at=summary.last_state_update_at,
+            effective_tool_policy=effective_tool_policy,
             host={
                 "kind": "vm",
                 "vm_name": summary.vm_name,
@@ -6113,6 +6252,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             directory_path=directory_path,
             status="stale",
             updated_at=session.created_at,
+            effective_tool_policy=self.effective_tool_policy_payload(session),
             host=host,
             capabilities={
                 "start": False,
@@ -6174,6 +6314,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     ) -> AgentRecord:
         status = self._container_agent_status(record.last_status)
         message: str | None = None
+        session = self.runtime.session_repository.get_session(record.session_id)
         if reconcile:
             try:
                 self._container_worker_backend(
@@ -6191,9 +6332,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "worker_url": record.worker_url,
             "last_status": record.last_status,
             "metadata": dict(record.metadata),
-            "session_policy": self._agent_session_policy_payload(
-                self.runtime.session_repository.get_session(record.session_id)
-            ),
+            "session_policy": self._agent_session_policy_payload(session),
         }
         if message:
             host["reconcile_error"] = message
@@ -6210,6 +6349,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             started_at=record.started_at,
             finished_at=record.finished_at,
             updated_at=record.updated_at,
+            effective_tool_policy=self.effective_tool_policy_payload(session),
             host=host,
             capabilities={
                 "start": False,
@@ -6293,6 +6433,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             updated_at=(
                 latest_execution.updated_at if latest_execution is not None else session.created_at
             ),
+            effective_tool_policy=self.effective_tool_policy_payload(session),
             host=host,
             capabilities={
                 "start": False,
@@ -6423,6 +6564,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 vm_user=self._agent_optional_string(payload, "vm_user") or "agent",
                 ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
                 allowed_tools=self._agent_string_list(payload, "allowed_tools"),
+                **(
+                    {"tool_argument_policies": payload["tool_argument_policies"]}
+                    if "tool_argument_policies" in payload
+                    else {}
+                ),
                 allowed_script_names=self._agent_string_list(payload, "allowed_script_names"),
                 discord_channels=self._agent_string_list(payload, "discord_channels"),
                 teams_channel_allowlist=self._agent_string_list(
@@ -6481,6 +6627,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 directory_path=self._agent_optional_string(payload, "directory_path") or "root",
             )
             session_id = self._agent_optional_string(payload, "session_id")
+            session = self.runtime.session_repository.get_session(session_id) if session_id else None
             return {
                 "success": result.success,
                 "agent_id": result.vm_name or vm_name,
@@ -6492,6 +6639,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "session_id": session_id,
                 "provider": result.provider,
                 "provider_operation_id": result.provider_operation_id,
+                "effective_tool_policy": self.effective_tool_policy_payload(session),
             }
 
         session_id = self._agent_optional_string(payload, "session_id")
@@ -6535,6 +6683,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             directory_path=directory_path,
             ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
             extra_allowed_tools=self._agent_string_list(payload, "allowed_tools"),
+            **(
+                {"tool_argument_policies": payload["tool_argument_policies"]}
+                if "tool_argument_policies" in payload
+                else {}
+            ),
             allowed_script_names=self._agent_string_list(payload, "allowed_script_names"),
             discord_channels=self._agent_string_list(payload, "discord_channels") or [],
             teams_channel_allowlist=self._agent_string_list(payload, "teams_channel_allowlist")
@@ -6613,6 +6766,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             ],
         )
         session_repository.upsert_session(manifest)
+        session = session_repository.get_session(session_id)
         return {
             "success": True,
             "agent_id": session_id,
@@ -6624,6 +6778,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "session_id": session_id,
             "agent_home": session_record.agent_home_container_path,
             "repo_root": session_record.repo_root_container_path,
+            "effective_tool_policy": self.effective_tool_policy_payload(session),
         }
 
     def _resolve_container_agent_session(
@@ -6915,6 +7070,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "ttl_hours",
             "allowed_tools",
             "approval_required_tools",
+            "tool_argument_policies",
             "allowed_script_names",
             "discord_channels",
             "discord_channel_allowlist",
@@ -6956,6 +7112,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             key: body[key]
             for key in (
                 "approval_required_tools",
+                "tool_argument_policies",
                 "allowed_script_names",
                 "discord_channels",
                 "discord_channel_allowlist",
@@ -6996,6 +7153,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "message": f"Updated policy for session {updated.session_id}",
             "status": "updated",
             "session_id": updated.session_id,
+            "effective_tool_policy": self.effective_tool_policy_payload(updated),
         }
 
     def delete_admin_agent(
@@ -11583,8 +11741,19 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             approvals="missing_legacy_or_unrecorded",
             agent_links="missing_legacy_or_unrecorded",
             communication_artifacts="missing_legacy_or_unrecorded",
+            tool_calls="missing_legacy_or_unrecorded",
             trigger_event="available" if trigger_record is not None else "missing_legacy_or_unrecorded",
         )
+
+        selected_trace_id = next(
+            (trace_id for trace_id in sorted(selected_group["trace_ids"]) if trace_id),
+            None,
+        )
+        selected_session_ids = {
+            str(value)
+            for value in selected_group["session_ids"]
+            if isinstance(value, str) and value.strip()
+        }
 
         node_metadata_by_id: dict[str, dict[str, Any]] = {}
 
@@ -11615,6 +11784,67 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     "edges": graph_snapshot.edges,
                 }
             )
+
+        agent_records_by_session_id: dict[str, list[AgentRecord]] = {}
+        agent_records_by_target_name: dict[str, list[AgentRecord]] = {}
+        try:
+            agent_records = self.list_agents(
+                include_inactive=True,
+                reconcile_containers=False,
+                backend="all",
+                all_directories=True,
+            )
+        except Exception:
+            agent_records = []
+        for agent_record in agent_records:
+            session_key = _coerce_optional_string(agent_record.session_id)
+            if session_key:
+                agent_records_by_session_id.setdefault(session_key, []).append(agent_record)
+            target_key = _coerce_optional_string(agent_record.target_name)
+            if target_key:
+                agent_records_by_target_name.setdefault(target_key, []).append(agent_record)
+
+        tool_call_audit_entries: list[tuple[ToolCallAuditEntryPayload, dict[str, Any]]] = []
+        audit_log_path = self.config.audit_log_path
+
+        def tool_call_entry_matches_selected_run(entry: ToolCallAuditEntryPayload) -> bool:
+            entry_run_id = _coerce_optional_string(entry.workflow_run_id)
+            if entry_run_id is not None and entry_run_id in {
+                selected_event_id,
+                selected_trace_id,
+            }:
+                return True
+            entry_trace_id = _coerce_optional_string(entry.trace_id)
+            if entry_trace_id is not None:
+                return selected_trace_id is not None and entry_trace_id == selected_trace_id
+            if entry_run_id is not None:
+                return False
+            entry_session_id = _coerce_optional_string(entry.session_id)
+            return entry_session_id is not None and entry_session_id in selected_session_ids
+
+        if audit_log_path.exists():
+            try:
+                with audit_log_path.open(encoding="utf-8") as handle:
+                    for raw_line in handle:
+                        line = raw_line.strip()
+                        if not line:
+                            continue
+                        try:
+                            payload = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(payload, dict):
+                            continue
+                        if str(payload.get("event_type") or "").strip().casefold() != "tool_call":
+                            continue
+                        entry = _tool_call_audit_entry_from_payload(payload)
+                        if entry is None:
+                            continue
+                        if not tool_call_entry_matches_selected_run(entry):
+                            continue
+                        tool_call_audit_entries.append((entry, payload))
+            except Exception:
+                tool_call_audit_entries = []
 
         def build_node_record_payload(
             *,
@@ -11732,6 +11962,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         approval_links_by_node: dict[str, list[WorkflowRunApprovalLinkPayload]] = {}
         agent_links_by_node: dict[str, list[WorkflowRunAgentLinkPayload]] = {}
         artifact_links_by_node: dict[str, list[WorkflowRunCommunicationArtifactLinkPayload]] = {}
+        tool_call_links_by_node: dict[str, list[WorkflowRunToolCallLinkPayload]] = {}
+        run_tool_call_links: list[WorkflowRunToolCallLinkPayload] = []
+        node_request_ids_by_node: dict[str, set[str]] = {}
+        node_session_ids_by_node: dict[str, set[str]] = {}
 
         def build_approval_link(request: ApprovalRequest) -> WorkflowRunApprovalLinkPayload:
             return WorkflowRunApprovalLinkPayload(
@@ -11782,6 +12016,106 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 metadata=normalize_record_payload(artifact_payload.get("metadata")),
             )
 
+        def infer_agent_backend(
+            session: SessionManifest | None,
+            *,
+            vm_name: str | None,
+        ) -> str | None:
+            if session is None:
+                return "libvirt_vm" if vm_name else None
+            metadata = dict(session.metadata) if isinstance(session.metadata, dict) else {}
+            execution_backend = _coerce_optional_string(metadata.get("execution_backend"))
+            if execution_backend == "container_worker_vm":
+                return execution_backend
+            if _coerce_optional_string(session.vm_provider) == "container_worker_vm":
+                return "container_worker_vm"
+            if _coerce_optional_string(session.vm_provider_id) or _coerce_optional_string(
+                session.vm_id
+            ):
+                return "libvirt_vm"
+            return "libvirt_vm" if vm_name else None
+
+        def select_agent_record_for_link(
+            *,
+            session_id: str | None,
+            vm_name: str | None,
+            backend_hint: str | None,
+        ) -> AgentRecord | None:
+            candidates: list[AgentRecord] = []
+            if session_id:
+                candidates.extend(agent_records_by_session_id.get(session_id, []))
+            if not candidates and vm_name:
+                candidates.extend(agent_records_by_target_name.get(vm_name, []))
+            if not candidates:
+                return None
+            if backend_hint is not None:
+                for candidate in candidates:
+                    if candidate.backend == backend_hint:
+                        return candidate
+            return candidates[0]
+
+        def build_tool_call_href(entry: ToolCallAuditEntryPayload) -> str | None:
+            for candidate in (
+                entry.request_id,
+                entry.correlation_id,
+                entry.approval_request_id,
+                entry.trace_id,
+                entry.session_id,
+            ):
+                text = str(candidate or "").strip()
+                if text:
+                    return f"#tool-calls?q={quote(text, safe='')}"
+            return None
+
+        def compact_payload_summary(value: Any, *, max_length: int = 180) -> str | None:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                text = value.strip()
+            elif isinstance(value, (dict, list)):
+                if not value:
+                    return None
+                text = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+            else:
+                text = str(value).strip()
+            if not text:
+                return None
+            if len(text) <= max_length:
+                return text
+            return f"{text[: max_length - 1].rstrip()}..."
+
+        def build_tool_call_link(
+            entry: ToolCallAuditEntryPayload,
+            *,
+            node_id: str | None = None,
+        ) -> WorkflowRunToolCallLinkPayload:
+            payload = entry.model_dump(mode="python", exclude={"related_links"})
+            payload["node_id"] = node_id
+            payload["href"] = build_tool_call_href(entry)
+            filter_payload: dict[str, Any] = {}
+            if entry.request_id:
+                filter_payload["q"] = entry.request_id
+            elif entry.correlation_id:
+                filter_payload["q"] = entry.correlation_id
+            elif entry.approval_request_id:
+                filter_payload["q"] = entry.approval_request_id
+            elif entry.trace_id:
+                filter_payload["q"] = entry.trace_id
+            elif entry.session_id:
+                filter_payload["q"] = entry.session_id
+            payload["filter"] = filter_payload or None
+            payload["redacted_args"] = dict(entry.args)
+            payload["redacted_result"] = dict(entry.result)
+            payload["args_summary"] = compact_payload_summary(entry.args)
+            payload["args_missing_reason"] = None if entry.args else "Args payload missing."
+            payload["result_summary"] = compact_payload_summary(entry.result)
+            payload["result_empty"] = not bool(entry.result)
+            payload["result_status"] = "available" if entry.result else "recorded_empty"
+            payload["result_missing_reason"] = (
+                None if entry.result else "Tool call recorded an empty result."
+            )
+            return WorkflowRunToolCallLinkPayload.model_validate(payload)
+
         def build_agent_link(
             *,
             node_id: str,
@@ -11831,12 +12165,96 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 )
             ):
                 return None
+            session_id = session_candidates[0] if session_candidates else None
+            session = (
+                self.runtime.session_repository.get_session(session_id)
+                if session_id is not None
+                else None
+            )
+            backend_hint = infer_agent_backend(session, vm_name=vm_name)
+            selected_agent_record = select_agent_record_for_link(
+                session_id=session_id,
+                vm_name=vm_name,
+                backend_hint=backend_hint,
+            )
+            agent_id = (
+                _coerce_optional_string(selected_agent_record.agent_id)
+                if selected_agent_record is not None
+                else session_id
+                or vm_name
+            )
+            backend = (
+                _coerce_optional_string(selected_agent_record.backend)
+                if selected_agent_record is not None
+                else backend_hint
+            )
+            target_name = (
+                _coerce_optional_string(selected_agent_record.target_name)
+                if selected_agent_record is not None
+                else _coerce_optional_string(session.vm_id if session is not None else None)
+                or vm_name
+            )
+            session_status = "available" if session is not None else "session_missing"
+            session_missing_reason = None if session is not None else "Session record missing."
+            agent_available = selected_agent_record is not None
+            agent_status = (
+                _coerce_optional_string(selected_agent_record.status)
+                if selected_agent_record is not None
+                else "missing"
+            )
+            agent_missing_reason = (
+                None
+                if selected_agent_record is not None
+                else "No agent record matched the session."
+            )
+            log_status = "log_unavailable"
+            log_reference_href = None
+            log_missing_reason = None
+            if session is None:
+                log_missing_reason = session_missing_reason
+            elif selected_agent_record is None:
+                log_missing_reason = agent_missing_reason
+            elif selected_agent_record.capabilities.get("logs"):
+                log_status = "log_available"
+                log_reference_href = (
+                    f"/api/admin/agents/{quote(selected_agent_record.agent_id, safe='')}/log"
+                    f"?backend={quote(selected_agent_record.backend, safe='')}"
+                )
+            else:
+                log_missing_reason = "Agent record does not advertise log support."
+            if "outputs" not in record:
+                result_status = "missing"
+                result_summary = None
+                result_missing_reason = "Result payload missing."
+                result_empty = None
+            elif outputs:
+                result_status = "available"
+                result_summary = compact_payload_summary(outputs)
+                result_missing_reason = None
+                result_empty = False
+            else:
+                result_status = "recorded_empty"
+                result_summary = "Empty result"
+                result_missing_reason = None
+                result_empty = True
+            prompt_summary = prompt
+            prompt_missing_reason = None if prompt_summary else "Prompt summary missing."
             return WorkflowRunAgentLinkPayload(
                 node_id=node_id,
                 node_type=node_type,
-                session_id=session_candidates[0] if session_candidates else None,
+                session_id=session_id,
+                agent_id=agent_id,
+                backend=backend,
+                agent_backend=backend,
+                agent_available=agent_available,
+                agent_status=agent_status,
+                agent_missing_reason=agent_missing_reason,
+                target_name=target_name,
                 vm_name=vm_name,
                 prompt=prompt,
+                prompt_summary=prompt_summary,
+                prompt_status="available" if prompt_summary else "missing",
+                prompt_missing_reason=prompt_missing_reason,
                 dispatch_id=dispatch_id,
                 thread_id=thread_id,
                 execution_id=execution_id,
@@ -11844,26 +12262,49 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 status=status,
                 waiting=waiting,
                 completed=completed,
+                session_status=session_status,
+                session_available=session is not None,
+                session_missing_reason=session_missing_reason,
+                session_href=f"#sessions?session_id={quote(session_id, safe='')}"
+                if session_id
+                else None,
+                log_status=log_status,
+                log_available=log_status == "log_available",
+                log_href=log_reference_href,
+                log_reference_href=log_reference_href,
+                log_missing_reason=log_missing_reason,
                 log_reference={
                     "source_kind": source_kind,
                     "node_id": node_id,
-                    "session_id": session_candidates[0] if session_candidates else None,
+                    "session_id": session_id,
                     "vm_name": vm_name,
                     "thread_id": thread_id,
                     "execution_id": execution_id,
                     "dispatch_id": dispatch_id,
                 },
+                result_summary=result_summary,
+                result_status=result_status,
+                result_missing_reason=result_missing_reason,
+                result_empty=result_empty,
             )
 
         for node_id, record_entries in node_groups.items():
             for _source_kind, record, _node_id, node_type in record_entries:
                 request_ids = collect_keyed_values(record, key_suffix="request_id")
+                if request_ids:
+                    node_request_ids_by_node.setdefault(node_id, set()).update(request_ids)
                 for request_id in request_ids:
                     request = approval_requests_by_id.get(request_id)
                     if request is None:
                         continue
-                    approval_links_by_node.setdefault(node_id, []).append(build_approval_link(request))
+                    approval_links_by_node.setdefault(node_id, []).append(
+                        build_approval_link(request)
+                    )
                 session_candidates = collect_keyed_values(record, key_suffix="session_id")
+                if session_candidates:
+                    node_session_ids_by_node.setdefault(node_id, set()).update(
+                        session_candidates
+                    )
                 for session_candidate in session_candidates:
                     for request in approval_requests_by_session.get(session_candidate, []):
                         approval_links_by_node.setdefault(node_id, []).append(
@@ -11887,6 +12328,51 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                             status="missing_legacy_or_unrecorded",
                         )
                     artifact_links_by_node.setdefault(node_id, []).append(link_payload)
+
+        for entry, _raw_payload in sorted(
+            tool_call_audit_entries,
+            key=lambda item: (
+                item[0].created_at,
+                item[0].tool_name or "",
+                item[0].request_id or "",
+                item[0].correlation_id or "",
+                item[0].approval_request_id or "",
+            ),
+            reverse=True,
+        ):
+            request_node_matches = [
+                node_id
+                for node_id in sorted(node_groups)
+                if (
+                    (
+                        entry.request_id
+                        and entry.request_id in node_request_ids_by_node.get(node_id, set())
+                    )
+                    or (
+                        entry.approval_request_id
+                        and entry.approval_request_id
+                        in node_request_ids_by_node.get(node_id, set())
+                    )
+                )
+            ]
+            node_matches = request_node_matches
+            entry_session_id = _coerce_optional_string(entry.session_id)
+            if not node_matches and entry_session_id is not None:
+                session_node_matches = [
+                    node_id
+                    for node_id in sorted(node_groups)
+                    if entry_session_id in node_session_ids_by_node.get(node_id, set())
+                ]
+                if len(session_node_matches) == 1:
+                    node_matches = session_node_matches
+            link_payload = build_tool_call_link(
+                entry,
+                node_id=node_matches[0] if len(node_matches) == 1 else None,
+            )
+            if len(node_matches) == 1:
+                tool_call_links_by_node.setdefault(node_matches[0], []).append(link_payload)
+                continue
+            run_tool_call_links.append(link_payload)
 
         def build_node_detail(
             node_id: str, record_entries: list[tuple[str, dict[str, Any], str | None, str | None]]
@@ -11982,6 +12468,23 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     continue
                 seen_artifact_ids.add(artifact_link.artifact_id)
                 deduped_artifact_links.append(artifact_link)
+            tool_call_links = tool_call_links_by_node.get(node_id, [])
+            deduped_tool_call_links: list[WorkflowRunToolCallLinkPayload] = []
+            seen_tool_call_keys: set[
+                tuple[str | None, str | None, str | None, str | None, datetime]
+            ] = set()
+            for tool_call_link in tool_call_links:
+                tool_call_key = (
+                    tool_call_link.tool_name,
+                    tool_call_link.request_id,
+                    tool_call_link.correlation_id,
+                    tool_call_link.approval_request_id,
+                    tool_call_link.created_at,
+                )
+                if tool_call_key in seen_tool_call_keys:
+                    continue
+                seen_tool_call_keys.add(tool_call_key)
+                deduped_tool_call_links.append(tool_call_link)
             return WorkflowRunNodeDetailPayload(
                 node_id=node_id,
                 node_type=_coerce_optional_string(latest_node_type)
@@ -12027,6 +12530,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 approval_links=deduped_approval_links,
                 agent_links=deduped_agent_links,
                 communication_artifact_links=deduped_artifact_links,
+                tool_call_links=deduped_tool_call_links,
                 records=[
                     build_node_record_payload(
                         record_kind=source_kind,
@@ -12042,6 +12546,35 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             build_node_detail(node_id, record_entries)
             for node_id, record_entries in sorted(node_groups.items())
         ]
+
+        deduped_run_tool_call_links: list[WorkflowRunToolCallLinkPayload] = []
+        seen_run_tool_call_keys: set[
+            tuple[str | None, str | None, str | None, str | None, datetime]
+        ] = set()
+        for tool_call_link in sorted(
+            run_tool_call_links,
+            key=lambda item: (
+                item.created_at,
+                item.tool_name or "",
+                item.request_id or "",
+                item.correlation_id or "",
+                item.approval_request_id or "",
+            ),
+            reverse=True,
+        ):
+            tool_call_key = (
+                tool_call_link.tool_name,
+                tool_call_link.request_id,
+                tool_call_link.correlation_id,
+                tool_call_link.approval_request_id,
+                tool_call_link.created_at,
+            )
+            if tool_call_key in seen_run_tool_call_keys:
+                continue
+            seen_run_tool_call_keys.add(tool_call_key)
+            deduped_run_tool_call_links.append(tool_call_link)
+        if tool_call_audit_entries:
+            graph_data_availability.tool_calls = "available"
 
         resumable_node = next(
             (node for node in node_details if node.retry_resume_eligible),
@@ -12091,10 +12624,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if any(node.binding_trace is not None for node in node_details):
             graph_data_availability.binding_trace = "available"
 
-        selected_trace_id = next(
-            (trace_id for trace_id in sorted(selected_group["trace_ids"]) if trace_id),
-            None,
-        )
         selected_summary = WorkflowRunSummaryPayload.model_validate(
             {
                 "event_id": selected_event_id,
@@ -12169,6 +12698,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 data_availability=graph_data_availability,
             ),
             nodes=node_details,
+            tool_call_links=deduped_run_tool_call_links,
             data_availability=graph_data_availability,
         )
 
@@ -12922,6 +13452,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         vm_user: str = "agent",
         ttl_hours: int | None = None,
         allowed_tools: list[str | ToolName] | None = None,
+        tool_argument_policies: dict[str, list[Any]] | None = None,
         allowed_script_names: list[str] | None = None,
         discord_channels: list[str] | None = None,
         teams_channel_allowlist: list[str] | None = None,
@@ -12969,6 +13500,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             vm_user=vm_user,
             ttl_hours=ttl_hours,
             allowed_tools=allowed_tools,
+            tool_argument_policies=tool_argument_policies,
             allowed_script_names=allowed_script_names,
             discord_channels=discord_channels,
             email_mailboxes=email_mailboxes,

@@ -629,7 +629,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     agent_create = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:create"
     )
-    assert [field["key"] for field in agent_create["fields"]] == [
+    assert {field["key"] for field in agent_create["fields"]} == {
         "provider",
         "execution_backend",
         "vm_name",
@@ -640,6 +640,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "vm_user",
         "ttl_hours",
         "allowed_tools",
+        "tool_argument_policies",
         "allowed_script_names",
         "discord_channels",
         "teams_channel_allowlist",
@@ -658,7 +659,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "playwright",
         "codex_skills",
         "directory_path",
-    ]
+    }
     agent_create_fields = {field["key"]: field for field in agent_create["fields"]}
     assert agent_create_fields["labels"]["kind"] == "string_map"
     assert agent_create_fields["labels"]["description"]
@@ -796,7 +797,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "install_roots",
         "vm_user",
     ]
-    assert [field["key"] for field in vm_create["fields"]] == [
+    assert {field["key"] for field in vm_create["fields"]} == {
         "vm_name",
         "session_id",
         "labels",
@@ -804,6 +805,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "vm_user",
         "ttl_hours",
         "allowed_tools",
+        "tool_argument_policies",
         "allowed_script_names",
         "discord_channels",
         "email_mailboxes",
@@ -815,7 +817,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "playwright",
         "codex_skills",
         "directory_path",
-    ]
+    }
 
 
 def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
@@ -2215,6 +2217,160 @@ def _write_json_payload(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _write_run_detail_audit_log(path: Path, *, session_id: str, vm_id: str) -> None:
+    audit_entries = [
+        {
+            "event_type": "tool_call",
+            "session_id": session_id,
+            "vm_id": vm_id,
+            "directory_path": "root",
+            "tool_name": "prompt_agent",
+            "request_id": "request-rich-node",
+            "correlation_id": "correlation-rich-node",
+            "approval_request_id": "approval-rich",
+            "workflow_run_id": "evt-detail",
+            "trace_id": "trace-detail",
+            "decision": "allowed",
+            "duration_ms": 17,
+            "args": {
+                "session_id": session_id,
+                "request_id": "request-rich-node",
+                "approval_request_id": "approval-rich",
+                "prompt": "Investigate the issue",
+                "token": "super-secret-token",
+            },
+            "result": {
+                "request_id": "request-rich-node",
+                "status": "success",
+                "response_token": "response-token-rich",
+                "secret": "result-secret",
+            },
+            "created_at": "2026-05-16T10:05:00+00:00",
+        },
+        {
+            "event_type": "tool_call",
+            "session_id": session_id,
+            "vm_id": vm_id,
+            "directory_path": "root",
+            "tool_name": "make_phone_call",
+            "correlation_id": "correlation-run-level",
+            "workflow_run_id": "evt-detail",
+            "trace_id": "trace-detail",
+            "decision": "denied",
+            "reason": "blocked",
+            "args": {
+                "session_id": session_id,
+                "correlation_id": "correlation-run-level",
+                "number": "+1-555-0100",
+            },
+            "result": {
+                "status": "denied",
+                "reason": "blocked",
+            },
+            "created_at": "2026-05-16T10:06:00+00:00",
+        },
+        {
+            "event_type": "tool_call",
+            "session_id": session_id,
+            "vm_id": vm_id,
+            "directory_path": "root",
+            "tool_name": "make_phone_call",
+            "workflow_run_id": "evt-detail",
+            "trace_id": "trace-detail",
+            "decision": "allowed",
+            "reason": "trace-only match",
+            "args": {
+                "session_id": session_id,
+                "note": "trace-only",
+            },
+            "result": {
+                "status": "success",
+                "summary": "trace-only",
+            },
+            "created_at": "2026-05-16T10:05:30+00:00",
+        },
+        {
+            "event_type": "tool_call",
+            "session_id": session_id,
+            "vm_id": vm_id,
+            "directory_path": "root",
+            "tool_name": "prompt_agent",
+            "request_id": "request-legacy-node",
+            "approval_request_id": "approval-rich",
+            "workflow_run_id": "evt-legacy",
+            "trace_id": "trace-legacy",
+            "decision": "allowed",
+            "args": {
+                "session_id": session_id,
+                "request_id": "request-legacy-node",
+                "approval_request_id": "approval-rich",
+            },
+            "result": {"status": "success"},
+            "created_at": "2026-05-16T09:05:00+00:00",
+        },
+        {
+            "event_type": "tool_call",
+            "session_id": session_id,
+            "vm_id": vm_id,
+            "directory_path": "root",
+            "tool_name": "make_phone_call",
+            "workflow_run_id": "evt-other",
+            "decision": "allowed",
+            "args": {"session_id": session_id},
+            "result": {"status": "success"},
+            "created_at": "2026-05-16T10:07:00+00:00",
+        },
+        {
+            "event_type": "tool_call",
+            "session_id": "session-unrelated",
+            "vm_id": "vm-unrelated",
+            "directory_path": "root",
+            "tool_name": "shell",
+            "decision": "allowed",
+            "args": {"session_id": "session-unrelated"},
+            "result": {"status": "success"},
+            "created_at": "2026-05-16T08:00:00+00:00",
+        },
+        {
+            "event_type": "tool_call",
+            "session_id": "session-notrace",
+            "vm_id": "vm-notrace",
+            "directory_path": "root",
+            "tool_name": "read_file",
+            "workflow_run_id": "evt-notrace",
+            "decision": "allowed",
+            "args": {"path": "notes.txt"},
+            "result": {"status": "success"},
+            "created_at": "2026-05-16T08:10:00+00:00",
+        },
+        {
+            "event_type": "tool_call",
+            "session_id": "session-session-only",
+            "vm_id": "vm-session-only",
+            "directory_path": "root",
+            "tool_name": "list_files",
+            "workflow_run_id": "trace-session-only",
+            "trace_id": "trace-session-only",
+            "decision": "allowed",
+            "args": {
+                "session_id": "session-session-only",
+                "workflow_run_id": "trace-session-only",
+                "workflow_trace_id": "trace-session-only",
+                "path": ".",
+            },
+            "result": {
+                "status": "success",
+                "items": ["README.md"],
+            },
+            "created_at": "2026-05-16T08:20:00+00:00",
+        },
+    ]
+    path.write_text(
+        "\n".join(json.dumps(entry, sort_keys=True) for entry in audit_entries) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -2250,9 +2406,25 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
         expires_at=datetime(2026, 5, 2, 10, 0, tzinfo=timezone.utc),
         created_at=datetime(2026, 5, 1, 10, 0, tzinfo=timezone.utc),
     )
+    session_manifest = SessionManifest(
+        session_id=session_id,
+        vm_id="vm-detail",
+        allowed_tools=[],
+        expires_at=datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc),
+        metadata={"labels": {"fixture": "run-detail"}},
+    )
+    _write_json_payload(
+        runtime_dir / "sessions.json",
+        {session_manifest.session_id: session_manifest.model_dump(mode="json")},
+    )
     _write_json_payload(
         runtime_dir / "approvals.json",
         {approval_request.request_id: approval_request.model_dump(mode="json")},
+    )
+    _write_run_detail_audit_log(
+        runtime_dir / "audit.jsonl",
+        session_id=session_id,
+        vm_id="vm-detail",
     )
     _write_json_payload(
         runtime_dir / "trigger-orchestrator-events.json",
@@ -2279,6 +2451,29 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
                 "delivery_state": "delivered",
                 "inflight_at": "2026-05-01T09:00:04Z",
                 "delivered_at": "2026-05-01T09:00:05Z",
+                "idempotency_key": None,
+            },
+            "evt-notrace": {
+                "event_id": "evt-notrace",
+                "trigger_id": "trigger-ticket",
+                "trigger_type": "trigger:ticket:created",
+                "occurred_at": "2026-05-01T08:00:00Z",
+                "payload": {"issue_number": "13"},
+                "delivery_state": "delivered",
+                "inflight_at": "2026-05-01T08:00:04Z",
+                "delivered_at": "2026-05-01T08:00:05Z",
+                "idempotency_key": None,
+            },
+            "evt-session-only": {
+                "event_id": "evt-session-only",
+                "trigger_id": "trigger-ticket",
+                "trigger_type": "trigger:ticket:created",
+                "trace_id": "trace-session-only",
+                "occurred_at": "2026-05-01T08:20:00Z",
+                "payload": {"issue_number": "14"},
+                "delivery_state": "delivered",
+                "inflight_at": "2026-05-01T08:20:04Z",
+                "delivered_at": "2026-05-01T08:20:05Z",
                 "idempotency_key": None,
             },
         },
@@ -2355,9 +2550,44 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
                 "finished_at": "2026-05-01T09:00:07Z",
                 "resolved_config_hash": "hash-legacy",
                 "resolved_config": {},
-                "input_payload": {"issue_number": "12"},
+                "input_payload": {
+                    "issue_number": "12",
+                    "session_id": session_id,
+                    "request_id": "approval-rich",
+                    "artifact_ids": [artifact.artifact_id],
+                },
                 "outputs": {},
                 "error": "legacy failure",
+            },
+            "exec-session-only": {
+                "execution_id": "exec-session-only",
+                "idempotency_key": "evt-session-only::effect-prompt",
+                "event_id": "evt-session-only",
+                "trace_id": "trace-session-only",
+                "source_node_id": "trigger-ticket",
+                "source_trigger_type": "trigger:ticket:created",
+                "effect_id": "effect-prompt",
+                "effect_type": "effect:agent:prompt",
+                "status": "succeeded",
+                "started_at": "2026-05-01T08:20:06Z",
+                "finished_at": "2026-05-01T08:20:07Z",
+                "resolved_config_hash": "hash-session-only",
+                "resolved_config": {
+                    "session_id": "session-session-only",
+                    "prompt": "Inspect the workspace",
+                },
+                "input_payload": {
+                    "issue_number": "14",
+                    "session_id": "session-session-only",
+                },
+                "outputs": {
+                    "status": "queued",
+                },
+                "binding_trace": {
+                    "consumed_output_keys": ["trigger-ticket.issue_number"],
+                    "entries": [],
+                },
+                "config_revision": rich_revision,
             },
         },
     )
@@ -2555,6 +2785,7 @@ def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> 
     assert event_payload["graph"]["data_availability"]["approvals"] == "available"
     assert event_payload["graph"]["data_availability"]["agent_links"] == "available"
     assert event_payload["graph"]["data_availability"]["communication_artifacts"] == "available"
+    assert event_payload["graph"]["data_availability"]["tool_calls"] == "available"
     assert event_payload["trigger_event"]["payload"] == {"issue_number": "99"}
     assert event_payload["lookup"]["event_id"] == fixture["rich_event_id"]
 
@@ -2575,6 +2806,24 @@ def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> 
     assert rich_node["binding_trace"]["entries"][0]["config_path"] == "$.prompt"
     assert rich_node["binding_error"] is None
     assert rich_node["retry_resume_eligible"] is True
+    tool_call_link = rich_node["tool_call_links"][0]
+    assert tool_call_link["tool_name"] == "prompt_agent"
+    assert tool_call_link["decision"] == "allowed"
+    assert tool_call_link["status"] == "success"
+    assert tool_call_link["request_id"] == "request-rich-node"
+    assert tool_call_link["correlation_id"] == "correlation-rich-node"
+    assert tool_call_link["approval_request_id"] == "approval-rich"
+    assert tool_call_link["workflow_run_id"] == fixture["rich_event_id"]
+    assert tool_call_link["trace_id"] == fixture["trace_id"]
+    assert tool_call_link["href"] == "#tool-calls?q=request-rich-node"
+    assert tool_call_link["session_id"] == fixture["session_id"]
+    assert tool_call_link["args"]["token"] == "<redacted>"
+    assert tool_call_link["result"]["secret"] == "<redacted>"
+    assert tool_call_link["redacted_args"]["token"] == "<redacted>"
+    assert tool_call_link["redacted_result"]["secret"] == "<redacted>"
+    assert tool_call_link["args_summary"] is not None
+    assert tool_call_link["result_summary"] is not None
+    assert tool_call_link["result_status"] == "available"
     approval_link = rich_node["approval_links"][0]
     assert approval_link["request_id"] == "approval-rich"
     assert approval_link["payload_digest"] == "digest-rich"
@@ -2589,9 +2838,36 @@ def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> 
     assert agent_link["prompt"] == "Investigate the issue"
     assert agent_link["thread_id"] == "thread-detail"
     assert agent_link["execution_id"] == "execution-detail"
+    assert agent_link["artifact_ids"] == [fixture["artifact_id"]]
+    assert agent_link["session_status"] == "available"
+    assert agent_link["session_available"] is True
+    assert agent_link["agent_available"] is True
+    assert agent_link["log_status"] == "log_unavailable"
+    assert agent_link["log_available"] is False
+    assert agent_link["result_status"] == "available"
+    assert agent_link["result_summary"] is not None
     assert agent_link["log_reference"]["source_kind"] == "effect_execution"
     assert agent_link["log_reference"]["vm_name"] == "vm-detail"
+    assert agent_link["log_reference"]["session_id"] == fixture["session_id"]
     assert agent_link["log_reference"]["dispatch_id"] == "dispatch-detail"
+
+    run_tool_call_link = event_payload["tool_call_links"][0]
+    assert run_tool_call_link["tool_name"] == "make_phone_call"
+    assert run_tool_call_link["decision"] == "denied"
+    assert run_tool_call_link["status"] == "denied"
+    assert run_tool_call_link["correlation_id"] == "correlation-run-level"
+    assert run_tool_call_link["workflow_run_id"] == fixture["rich_event_id"]
+    assert run_tool_call_link["trace_id"] == fixture["trace_id"]
+    assert run_tool_call_link["href"] == "#tool-calls?q=correlation-run-level"
+    assert run_tool_call_link["session_id"] == fixture["session_id"]
+    assert run_tool_call_link["args"]["number"] == "+1-555-0100"
+    trace_run_tool_call_link = event_payload["tool_call_links"][1]
+    assert trace_run_tool_call_link["tool_name"] == "make_phone_call"
+    assert trace_run_tool_call_link["workflow_run_id"] == fixture["rich_event_id"]
+    assert trace_run_tool_call_link["trace_id"] == fixture["trace_id"]
+    assert trace_run_tool_call_link["href"] == "#tool-calls?q=trace-detail"
+    assert trace_run_tool_call_link["session_id"] == fixture["session_id"]
+    assert trace_run_tool_call_link["args"]["note"] == "trace-only"
 
     artifact_link = rich_node["communication_artifact_links"][0]
     assert artifact_link["artifact_id"] == fixture["artifact_id"]
@@ -2602,6 +2878,49 @@ def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> 
     assert rich_node["records"][0]["record_kind"] == "effect_execution"
     assert rich_node["records"][0]["config_revision"] == fixture["rich_revision"]
     assert rich_node["records"][0]["binding_trace"]["entries"][0]["resolved_value_preview"] == '"99"'
+
+
+def test_admin_web_run_detail_requires_real_audit_identifiers(tmp_path: Path) -> None:
+    _seed_workflow_run_detail_fixture(tmp_path)
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    response = client.get(
+        "/api/workflow-editor/run-detail", params={"event_id": "evt-notrace"}
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["event_id"] == "evt-notrace"
+    assert payload["trace_id"] is None
+    assert [link["tool_name"] for link in payload["tool_call_links"]] == ["read_file"]
+    assert payload["tool_call_links"][0]["workflow_run_id"] == "evt-notrace"
+
+
+def test_admin_web_run_detail_attaches_session_scoped_tool_call_to_single_node(
+    tmp_path: Path,
+) -> None:
+    _seed_workflow_run_detail_fixture(tmp_path)
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    response = client.get(
+        "/api/workflow-editor/run-detail", params={"event_id": "evt-session-only"}
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["event_id"] == "evt-session-only"
+    assert payload["trace_id"] == "trace-session-only"
+    assert payload["tool_call_links"] == []
+    effect_node = next(node for node in payload["nodes"] if node["node_id"] == "effect-prompt")
+    assert len(effect_node["tool_call_links"]) == 1
+    tool_call_link = effect_node["tool_call_links"][0]
+    assert tool_call_link["tool_name"] == "list_files"
+    assert tool_call_link["session_id"] == "session-session-only"
+    assert tool_call_link["workflow_run_id"] == "trace-session-only"
+    assert tool_call_link["trace_id"] == "trace-session-only"
+    assert tool_call_link["request_id"] is None
+    assert tool_call_link["approval_request_id"] is None
+    assert tool_call_link["node_id"] == "effect-prompt"
 
 
 def test_admin_web_run_detail_marks_missing_legacy_data(tmp_path: Path) -> None:
@@ -2616,14 +2935,21 @@ def test_admin_web_run_detail_marks_missing_legacy_data(tmp_path: Path) -> None:
     payload = response.json()
     assert payload["event_id"] == fixture["legacy_event_id"]
     assert payload["graph"]["data_availability"]["graph_snapshot"] == "missing_legacy_or_unrecorded"
+    assert payload["graph"]["data_availability"]["approvals"] == "available"
+    assert payload["graph"]["data_availability"]["agent_links"] == "available"
+    assert payload["graph"]["data_availability"]["communication_artifacts"] == "available"
+    assert payload["graph"]["data_availability"]["tool_calls"] == "available"
     assert payload["graph"]["snapshot"] is None
+    assert payload["tool_call_links"] == []
     legacy_node = next(node for node in payload["nodes"] if node["node_id"] == "effect-prompt")
     assert "binding_trace" in legacy_node["missing_fields"]
     assert legacy_node["binding_trace"] is None
     assert legacy_node["records"][0]["binding_trace"] is None
     assert legacy_node["records"][0]["resolved_config"] == {}
-    assert legacy_node["approval_links"] == []
-    assert legacy_node["agent_links"] == []
+    assert legacy_node["approval_links"][0]["request_id"] == "approval-rich"
+    assert legacy_node["agent_links"][0]["session_id"] == fixture["session_id"]
+    assert legacy_node["communication_artifact_links"][0]["artifact_id"] == fixture["artifact_id"]
+    assert legacy_node["tool_call_links"][0]["request_id"] == "request-legacy-node"
 
 
 def test_admin_web_run_search_finds_latest_graph_and_node_runs_without_sessions(
@@ -4226,6 +4552,19 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     communication_file_fields = {field["field_name"] for field in communication_files["fields"]}
     assert "communication_file_receive_enabled" in communication_file_fields
     assert "communication_file_require_approval_for_send" in communication_file_fields
+    tool_argument_policy = next(
+        section
+        for section in access_policy["sections"]
+        if section["title"] == "Tool argument policy"
+    )
+    tool_argument_policy_fields = {
+        field["field_name"]: field for field in tool_argument_policy["fields"]
+    }
+    assert tool_argument_policy_fields["tool_argument_policies"]["kind"] == "json"
+    assert tool_argument_policy_fields["tool_argument_policies"]["label"] == (
+        "Tool argument policy"
+    )
+    assert "MCP tool name" in tool_argument_policy_fields["tool_argument_policies"]["tooltip"]
     providers = next(tab for tab in payload["tabs"] if tab["key"] == "providers")
     agent_execution = next(
         section for section in providers["sections"] if section["title"] == "Agent execution"
@@ -5445,6 +5784,21 @@ def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
             model="old-model",
             directory_path="root",
             allowed_tools=[ToolName.APPROVAL_SUBMIT],
+            tool_argument_policies={
+                "create_ado_backlog_item": [
+                    {
+                        "id": "policy",
+                        "constraints": [
+                            {
+                                "id": "project",
+                                "path": "project",
+                                "operator": "fixed",
+                                "value": "Example Project",
+                            }
+                        ],
+                    }
+                ]
+            },
             allowed_script_names=["old-script"],
             discord_channel_allowlist=["old-channel"],
             teams_channel_allowlist=["old-team/channel"],
@@ -5462,6 +5816,21 @@ def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
             "model": "new-model",
             "ttl_hours": 4,
             "allowed_tools": ["run_script"],
+            "tool_argument_policies": {
+                "create_ado_backlog_item": [
+                    {
+                        "id": "policy",
+                        "constraints": [
+                            {
+                                "id": "project",
+                                "path": "project",
+                                "operator": "fixed",
+                                "value": "Example Project",
+                            }
+                        ],
+                    }
+                ]
+            },
             "allowed_script_names": ["new-script"],
             "discord_channels": ["new-channel"],
             "teams_channel_allowlist": ["team-a/channel-1", "chat:chat-1"],
@@ -5485,10 +5854,15 @@ def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
 
     assert response.status_code == 200
     assert rename_response.status_code == 400
+    assert response.json()["effective_tool_policy"]["allowed_tools"] == ["run_script"]
+    assert response.json()["effective_tool_policy"]["tool_argument_policies"][
+        "create_ado_backlog_item"
+    ][0]["id"] == "policy"
     updated = service.runtime.session_repository.get_session("lab-session")
     assert updated is not None
     assert updated.model == "new-model"
     assert updated.allowed_tools == [ToolName.RUN_SCRIPT]
+    assert updated.tool_argument_policies["create_ado_backlog_item"][0].id == "policy"
     assert updated.allowed_script_names == ["new-script"]
     assert updated.discord_channel_allowlist == ["new-channel"]
     assert updated.teams_channel_allowlist == ["team-a/channel-1", "chat:chat-1"]

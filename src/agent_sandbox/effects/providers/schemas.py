@@ -40,6 +40,7 @@ class VmCreateEffectDefinition(EffectDefinition):
     vm_user: ConfigValue | None = None
     ttl_hours: ConfigValue | None = None
     allowed_tools: list[str] | None = None
+    tool_argument_policies: ConfigValue | None = None
     allowed_script_names: list[str] | None = None
     discord_channels: list[str] | None = None
     email_mailboxes: list[str] | None = None
@@ -118,6 +119,7 @@ class AgentCreateEffectDefinition(EffectDefinition):
     ttl_hours: ConfigValue | None = None
     capability_profile: ConfigValue | None = None
     allowed_tools: list[str] | None = None
+    tool_argument_policies: ConfigValue | None = None
     allowed_script_names: list[str] | None = None
     discord_channels: list[str] | None = None
     teams_channel_allowlist: list[str] | None = None

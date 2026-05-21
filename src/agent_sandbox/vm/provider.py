@@ -818,6 +818,7 @@ def _libvirt_create_vm(
     vm_user: str = "agent",
     ttl_hours: int | None = None,
     allowed_tools: list[str | Any] | None = None,
+    tool_argument_policies: dict[str, list[Any]] | None = None,
     allowed_script_names: list[str] | None = None,
     discord_channels: list[str] | None = None,
     teams_channel_allowlist: list[str] | None = None,
@@ -881,12 +882,21 @@ def _libvirt_create_vm(
         )
 
     if existing_session is not None:
+        policy_update: dict[str, Any] = {}
+        if tool_argument_policies is not None:
+            policy_update["tool_argument_policies"] = (
+                admin_service_module._session_tool_argument_policies_from_payload(
+                    existing_session,
+                    tool_argument_policies,
+                )
+            )
         manifest = existing_session.model_copy(
             update={
                 "vm_id": resolved_vm_name,
                 "vm_provider": provider or "libvirt",
                 "vm_provider_id": resolved_vm_name,
                 "directory_path": normalized_directory_path,
+                **policy_update,
             }
         )
     else:
@@ -898,6 +908,7 @@ def _libvirt_create_vm(
             directory_path=normalized_directory_path,
             ttl_hours=ttl_hours,
             extra_allowed_tools=allowed_tools,
+            tool_argument_policies=tool_argument_policies,
             allowed_script_names=allowed_script_names,
             discord_channels=discord_channels or [],
             teams_channel_allowlist=teams_channel_allowlist or [],

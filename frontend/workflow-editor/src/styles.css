@@ -1431,6 +1431,10 @@ select {
     min-height: 28rem;
   }
 
+  .admin-workflow-panel .node-drag-surface {
+    touch-action: none;
+  }
+
   .modal-backdrop {
     padding: 0.9rem;
   }
@@ -1869,6 +1873,47 @@ select {
   line-height: 1.45;
 }
 
+.save-status {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid rgba(91, 67, 37, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 248, 236, 0.62);
+  color: #6a5740;
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
+.save-status strong {
+  color: #3f3325;
+}
+
+.save-status span {
+  overflow-wrap: anywhere;
+}
+
+.save-status-dirty {
+  border-color: rgba(122, 74, 0, 0.26);
+  background: #fff3dc;
+  color: #6b4b10;
+}
+
+.save-status-dirty strong {
+  color: #7a4a00;
+}
+
+.save-status-saved {
+  border-color: rgba(28, 127, 116, 0.22);
+  background: #e8f6f0;
+  color: #245f48;
+}
+
+.save-status-saved strong {
+  color: #1f6a3f;
+}
+
 .problems-panel {
   display: grid;
   gap: 0.55rem;
@@ -2088,13 +2133,15 @@ select {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 0.35rem;
   min-width: 0;
 }
 
 .runtime-run-state,
 .node-runtime-badge,
-.node-diagnostic-badge {
+.node-diagnostic-badge,
+.node-unsaved-badge {
   padding: 0.2rem 0.5rem;
   border-radius: 999px;
   font-family: "Avenir Next Condensed", "Franklin Gothic Medium", sans-serif;
@@ -2109,6 +2156,15 @@ select {
   background: #ffe3dc;
   color: #9a3412;
   border: 1px solid rgba(178, 59, 26, 0.22);
+}
+
+.node-unsaved-badge {
+  white-space: nowrap;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  background: #f7e1ba;
+  color: #7a4a00;
+  border: 1px solid rgba(122, 74, 0, 0.22);
 }
 
 .node-runtime-badge.compact {
@@ -2395,6 +2451,28 @@ select {
   border-radius: 8px;
   background: rgba(231, 220, 201, 0.48);
   overflow-wrap: anywhere;
+}
+
+.run-detail-link-item .missing {
+  color: #8a3b1b;
+  font-weight: 600;
+}
+
+.run-detail-link-group {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.run-detail-link-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.run-detail-link-actions button {
+  min-height: 2rem;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.75rem;
 }
 
 .run-detail-candidates {
@@ -2732,6 +2810,15 @@ select {
 
 .node-card.runtime-failed {
   box-shadow: 0 0 0 3px rgba(178, 59, 26, 0.16), 0 18px 42px rgba(48, 38, 25, 0.18);
+}
+
+.node-card.unsaved {
+  border-color: rgba(122, 74, 0, 0.44);
+  box-shadow: 0 0 0 3px rgba(245, 178, 58, 0.18), 0 18px 42px rgba(48, 38, 25, 0.18);
+}
+
+.node-card.unsaved.selected {
+  outline-color: #a46200;
 }
 
 .status-failed,
@@ -5472,6 +5559,36 @@ select {
   color: #a7bac8;
 }
 
+:root[data-theme="dark"] .save-status {
+  border-color: rgba(124, 142, 154, 0.18);
+  background: rgba(16, 28, 36, 0.64);
+  color: #a7bac8;
+}
+
+:root[data-theme="dark"] .save-status strong {
+  color: #d7e3ea;
+}
+
+:root[data-theme="dark"] .save-status-dirty {
+  border-color: rgba(255, 217, 143, 0.22);
+  background: #2d2416;
+  color: #ffd98f;
+}
+
+:root[data-theme="dark"] .save-status-dirty strong {
+  color: #ffd98f;
+}
+
+:root[data-theme="dark"] .save-status-saved {
+  border-color: rgba(93, 201, 150, 0.2);
+  background: #13271f;
+  color: #aee8c9;
+}
+
+:root[data-theme="dark"] .save-status-saved strong {
+  color: #aee8c9;
+}
+
 :root[data-theme="dark"] .eyebrow,
 :root[data-theme="dark"] .section-label,
 :root[data-theme="dark"] .node-kind,
@@ -6080,6 +6197,15 @@ select {
   outline-color: #ef6d4a;
 }
 
+:root[data-theme="dark"] .node-card.unsaved {
+  border-color: rgba(255, 217, 143, 0.36);
+  box-shadow: 0 0 0 3px rgba(255, 217, 143, 0.14), 0 14px 36px rgba(0, 0, 0, 0.28);
+}
+
+:root[data-theme="dark"] .node-card.unsaved.selected {
+  outline-color: #ffd98f;
+}
+
 :root[data-theme="dark"] .node-trigger {
   background: linear-gradient(145deg, #362a17, #231a10);
 }
@@ -6099,6 +6225,12 @@ select {
 :root[data-theme="dark"] .node-id,
 :root[data-theme="dark"] .runtime-run-event {
   color: #9fb3c0;
+}
+
+:root[data-theme="dark"] .node-unsaved-badge {
+  background: #3d2d12;
+  color: #ffd98f;
+  border-color: rgba(255, 217, 143, 0.22);
 }
 
 :root[data-theme="dark"] .status-failed,

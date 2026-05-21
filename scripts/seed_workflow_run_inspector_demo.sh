@@ -7,8 +7,8 @@ Usage:
   seed_workflow_run_inspector_demo.sh [--runtime-dir PATH]
 
 Seeds a deterministic workflow run inspector demo runtime with one rich run,
-one legacy run, a graph snapshot, a staged communication artifact, and an
-approval request. The default runtime directory is
+one legacy run, a graph snapshot, a staged communication artifact, a session
+manifest, an audit log, and an approval request. The default runtime directory is
 ./runtime/workflow-run-inspector-demo.
 EOF
 }
@@ -59,6 +59,7 @@ rich_revision = "rev-detail-rich"
 artifact_content = b"hello from the run detail fixture\n"
 artifact_dir = runtime_dir / "communication-artifacts"
 artifact_dir.mkdir(parents=True, exist_ok=True)
+tool_call_id = "toolcall-rich-01"
 
 artifact_metadata = {
     "artifact_id": artifact_id,
@@ -78,6 +79,23 @@ artifact_metadata = {
     "staged_at": "2026-05-01T10:04:00Z",
     "session_id": session_id,
     "metadata": {"storage": "host_artifact_store", "source": "fixture"},
+}
+
+session_manifest = {
+    "session_id": session_id,
+    "vm_id": "vm-detail",
+    "vm_provider": "libvirt",
+    "vm_provider_id": "vm-detail",
+    "model": "gpt-5.2-codex",
+    "directory_path": "root",
+    "allowed_tools": ["prompt_agent", "get_agent_logs", "approval_submit"],
+    "approval_required_tools": ["approval_submit"],
+    "expires_at": "2099-01-01T00:00:00Z",
+    "created_at": "2026-05-01T09:55:00Z",
+    "metadata": {
+        "labels": {"fixture": "run-detail"},
+        "capabilities": {"logs": True},
+    },
 }
 
 approval_request = {
@@ -327,12 +345,73 @@ def write_json(path: Path, payload: object) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def write_jsonl(path: Path, entries: list[dict[str, object]]) -> None:
+    path.write_text(
+        "\n".join(json.dumps(entry, sort_keys=True) for entry in entries) + "\n",
+        encoding="utf-8",
+    )
+
+
+audit_entries = [
+    {
+        "event_type": "tool_call",
+        "tool_call_id": tool_call_id,
+        "session_id": session_id,
+        "vm_id": "vm-detail",
+        "directory_path": "root",
+        "agent_role": "automation",
+        "actor_user_id": "workflow-admin",
+        "tool_name": "prompt_agent",
+        "request_id": "tool-request-detail",
+        "correlation_id": "tool-correlation-detail",
+        "approval_request_id": "approval-rich",
+        "workflow_run_id": "evt-detail",
+        "trace_id": "trace-detail",
+        "duration_ms": 42,
+        "decision": "allowed",
+        "args": {
+            "approval_request_id": "approval-rich",
+            "correlation_id": "tool-correlation-detail",
+            "prompt": "Investigate the issue",
+            "request_id": "tool-request-detail",
+            "session_id": session_id,
+            "token": "super-secret",
+            "trace_id": "trace-detail",
+            "vm_name": "vm-detail",
+            "workflow_run_id": "evt-detail",
+            "nested": {"password": "nested-secret"},
+        },
+        "result": {
+            "approval_request_id": "approval-rich",
+            "correlation_id": "tool-correlation-detail",
+            "dispatch_id": "dispatch-detail",
+            "execution_id": "execution-detail",
+            "request_id": "tool-request-detail",
+            "session_id": session_id,
+            "status": "success",
+            "thread_id": "thread-detail",
+            "trace_id": "trace-detail",
+            "workflow_run_id": "evt-detail",
+            "secret": "result-secret",
+        },
+        "created_at": "2026-05-01T10:00:09+00:00",
+    },
+    {
+        "event_type": "approval_decision",
+        "session_id": session_id,
+        "created_at": "2026-05-01T10:05:00+00:00",
+    },
+]
+
+
 write_json(runtime_dir / "approvals.json", {approval_request["request_id"]: approval_request})
+write_json(runtime_dir / "sessions.json", {session_manifest["session_id"]: session_manifest})
 write_json(runtime_dir / "trigger-orchestrator-events.json", trigger_events)
 write_json(runtime_dir / "effect-orchestrator-executions.json", effect_executions)
 write_json(runtime_dir / "gate-orchestrator-executions.json", gate_executions)
 write_json(runtime_dir / "await-agent-pending.json", await_agent_pending)
 write_json(runtime_dir / "workflow-config-snapshots.json", workflow_config_snapshot)
+write_jsonl(runtime_dir / "audit.jsonl", audit_entries)
 (artifact_dir / f"{artifact_id}.json").write_text(
     json.dumps(artifact_metadata, indent=2, sort_keys=True) + "\n",
     encoding="utf-8",

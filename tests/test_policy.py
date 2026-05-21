@@ -17,6 +17,7 @@ from agent_sandbox.models import (
 from agent_sandbox.policy import (
     PolicyEngine,
     PolicyError,
+    ToolArgumentPolicyError,
     reset_tool_approval_context,
     set_tool_approval_context,
 )
@@ -42,6 +43,10 @@ def make_engine(tmp_path: Path) -> PolicyEngine:
         email_store_path=tmp_path / "emails.json",
         discord_command_store_path=tmp_path / "discord.json",
     )
+    return make_engine_from_config(config)
+
+
+def make_engine_from_config(config: GatewayConfig) -> PolicyEngine:
     sessions = JsonSessionManifestRepository(config.session_store_path)
     approvals = JsonStore(config.approval_store_path, ApprovalRequest)
     return PolicyEngine(config, sessions, approvals)
@@ -55,6 +60,126 @@ def write_root_policy_overlay(config: GatewayConfig, payload: dict[str, object])
         domain="policy",
         payload=payload,
     )
+
+
+def make_ado_tool_policy_engine(tmp_path: Path) -> tuple[PolicyEngine, SessionManifest]:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        audit_log_path=tmp_path / "audit.jsonl",
+        session_store_path=tmp_path / "sessions.json",
+        approval_store_path=tmp_path / "approvals.json",
+        draft_store_path=tmp_path / "drafts.json",
+        email_store_path=tmp_path / "emails.json",
+        discord_command_store_path=tmp_path / "discord.json",
+    )
+    write_root_policy_overlay(
+        config,
+        {
+            "tool_argument_policies": {
+                "create_ado_backlog_item": [
+                    {
+                        "id": "project-lock",
+                        "name": "Lock project",
+                        "constraints": [
+                            {
+                                "id": "project",
+                                "path": "project",
+                                "operator": "fixed",
+                                "value": "Truman",
+                                "case_sensitive": False,
+                            }
+                        ],
+                    },
+                    {
+                        "id": "type-allowlist",
+                        "name": "Allow backlog item types",
+                        "constraints": [
+                            {
+                                "id": "type",
+                                "path": "type",
+                                "operator": "allowlist",
+                                "values": ["Task", "Product Backlog Item"],
+                                "case_sensitive": False,
+                            }
+                        ],
+                    },
+                    {
+                        "id": "title-required",
+                        "name": "Require title",
+                        "constraints": [
+                            {
+                                "id": "title",
+                                "path": "title",
+                                "operator": "required",
+                            }
+                        ],
+                    },
+                    {
+                        "id": "title-pattern",
+                        "name": "Title pattern",
+                        "constraints": [
+                            {
+                                "id": "title-pattern",
+                                "path": "title",
+                                "operator": "pattern",
+                                "pattern": r"^Implement [A-Za-z ]+$",
+                                "case_sensitive": False,
+                            }
+                        ],
+                    },
+                    {
+                        "id": "state-enum",
+                        "name": "Allow state values",
+                        "constraints": [
+                            {
+                                "id": "state",
+                                "path": "state",
+                                "operator": "enum",
+                                "values": ["Ready", "Active"],
+                                "case_sensitive": False,
+                            }
+                        ],
+                    },
+                ]
+            }
+        },
+    )
+    engine = make_engine_from_config(config)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.CREATE_ADO_BACKLOG_ITEM],
+        tool_argument_policies={
+            "create_ado_backlog_item": [
+                {
+                    "id": "iteration-required",
+                    "name": "Require iteration",
+                    "constraints": [
+                        {
+                            "id": "iteration",
+                            "path": "iteration",
+                            "operator": "required",
+                        }
+                    ],
+                },
+                {
+                    "id": "tags-deny",
+                    "name": "Block forbidden tags",
+                    "constraints": [
+                        {
+                            "id": "tags",
+                            "path": "tags[]",
+                            "operator": "denylist",
+                            "values": ["forbidden-tag"],
+                            "case_sensitive": False,
+                        }
+                    ],
+                },
+            ]
+        },
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.session_store.upsert_session(session)
+    return engine, session
 
 
 def test_require_tool_rejects_unknown_tool(tmp_path: Path) -> None:
@@ -214,6 +339,152 @@ def test_assistant_destructive_operation_can_require_approval_gate(tmp_path: Pat
     )
     with pytest.raises(PolicyError, match="destructive approval gate"):
         engine.require_tool("s1", ToolName.ASSISTANT_RUN_SAFE_OPERATION)
+
+
+def test_tool_argument_policy_for_session_combines_directory_and_session_rules(
+    tmp_path: Path,
+) -> None:
+    engine, session = make_ado_tool_policy_engine(tmp_path)
+
+    rules = engine.tool_argument_policy_for_session(session, ToolName.CREATE_ADO_BACKLOG_ITEM)
+
+    assert [rule.id for rule in rules] == [
+        "project-lock",
+        "type-allowlist",
+        "title-required",
+        "title-pattern",
+        "state-enum",
+        "iteration-required",
+        "tags-deny",
+    ]
+
+
+def test_require_tool_arguments_allows_matching_payload(tmp_path: Path) -> None:
+    engine, session = make_ado_tool_policy_engine(tmp_path)
+
+    engine.require_tool_arguments(
+        session,
+        ToolName.CREATE_ADO_BACKLOG_ITEM,
+        {
+            "project": "truman",
+            "type": "task",
+            "title": "IMPLEMENT POLICY ENGINE",
+            "state": "ready",
+            "iteration": "Sprint 1",
+            "tags": ["alpha", "beta"],
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("payload", "rule_id", "constraint_id", "path", "message_fragment"),
+    [
+        (
+            {
+                "project": "truman",
+                "type": "task",
+                "title": "",
+                "state": "ready",
+                "iteration": "Sprint 1",
+                "tags": ["alpha", "beta"],
+            },
+            "title-required",
+            "title",
+            "title",
+            "must be present",
+        ),
+        (
+            {
+                "project": "truman",
+                "type": "bug",
+                "title": "IMPLEMENT POLICY ENGINE",
+                "state": "ready",
+                "iteration": "Sprint 1",
+                "tags": ["alpha", "beta"],
+            },
+            "type-allowlist",
+            "type",
+            "type",
+            "allowed set",
+        ),
+        (
+            {
+                "project": "truman",
+                "type": "task",
+                "title": "IMPLEMENT POLICY ENGINE",
+                "state": "ready",
+                "iteration": "Sprint 1",
+                "tags": ["alpha", "forbidden-tag"],
+            },
+            "tags-deny",
+            "tags",
+            "tags[]",
+            "denied value",
+        ),
+        (
+            {
+                "project": "Other Project",
+                "type": "task",
+                "title": "IMPLEMENT POLICY ENGINE",
+                "state": "ready",
+                "iteration": "Sprint 1",
+                "tags": ["alpha", "beta"],
+            },
+            "project-lock",
+            "project",
+            "project",
+            "must equal",
+        ),
+        (
+            {
+                "project": "truman",
+                "type": "task",
+                "title": "Ship policy engine",
+                "state": "ready",
+                "iteration": "Sprint 1",
+                "tags": ["alpha", "beta"],
+            },
+            "title-pattern",
+            "title-pattern",
+            "title",
+            "required pattern",
+        ),
+        (
+            {
+                "project": "truman",
+                "type": "task",
+                "title": "IMPLEMENT POLICY ENGINE",
+                "state": "blocked",
+                "iteration": "Sprint 1",
+                "tags": ["alpha", "beta"],
+            },
+            "state-enum",
+            "state",
+            "state",
+            "allowed set",
+        ),
+    ],
+)
+def test_require_tool_arguments_rejects_violations(
+    tmp_path: Path,
+    payload: dict[str, object],
+    rule_id: str,
+    constraint_id: str,
+    path: str,
+    message_fragment: str,
+) -> None:
+    engine, session = make_ado_tool_policy_engine(tmp_path)
+
+    with pytest.raises(ToolArgumentPolicyError) as excinfo:
+        engine.require_tool_arguments(session, ToolName.CREATE_ADO_BACKLOG_ITEM, payload)
+
+    exc = excinfo.value
+    assert exc.rule_id == rule_id
+    assert exc.constraint_id == constraint_id
+    assert exc.path == path
+    assert exc.rule_name is not None
+    assert "tool argument policy violation for create_ado_backlog_item" in str(exc)
+    assert message_fragment in str(exc)
 
 
 def test_require_approved_rejects_payload_mismatch(tmp_path: Path) -> None:

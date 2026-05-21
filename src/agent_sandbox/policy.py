@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+import re
 from pathlib import PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 
@@ -13,6 +14,9 @@ from agent_sandbox.models import (
     ApprovalStatus,
     DiscordCommandEnvelope,
     SessionManifest,
+    ToolArgumentConstraint,
+    ToolArgumentConstraintOperator,
+    ToolArgumentPolicyRule,
     TeamsMessageEnvelope,
     ToolName,
     digest_payload,
@@ -70,6 +74,25 @@ def reset_tool_approval_context(token: Token[ToolApprovalContext | None]) -> Non
     _TOOL_APPROVAL_CONTEXT.reset(token)
 
 
+class ToolArgumentPolicyError(PolicyError):
+    """Raised when tool arguments violate a declared policy rule."""
+
+    def __init__(
+        self,
+        *,
+        rule_id: str,
+        constraint_id: str,
+        path: str,
+        message: str,
+        rule_name: str | None = None,
+    ) -> None:
+        self.rule_id = rule_id
+        self.rule_name = rule_name
+        self.constraint_id = constraint_id
+        self.path = path
+        super().__init__(message)
+
+
 def _normalize_extension(value: str | None) -> str:
     text = str(value or "").strip().lower()
     if not text:
@@ -100,6 +123,94 @@ def _redact_nested_payload(redacted_keys: set[str], value: Any) -> Any:
     if isinstance(value, list):
         return [_redact_nested_payload(redacted_keys, item) for item in value]
     return value
+
+
+_MISSING = object()
+
+
+def _lookup_argument_value(candidate: Any, key: str) -> Any:
+    if isinstance(candidate, dict):
+        return candidate.get(key, _MISSING)
+    if hasattr(candidate, key):
+        return getattr(candidate, key)
+    return _MISSING
+
+
+def _is_empty_argument_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, dict):
+        return not value or all(_is_empty_argument_value(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return not value or all(_is_empty_argument_value(item) for item in value)
+    return False
+
+
+def _extract_argument_values(arguments: Any, path: str) -> list[Any]:
+    segments = [segment.strip() for segment in str(path or "").split(".") if segment.strip()]
+    if not segments:
+        return []
+
+    values: list[Any] = [arguments]
+    for segment in segments:
+        flatten = segment.endswith("[]")
+        key = segment[:-2] if flatten else segment
+        next_values: list[Any] = []
+        for candidate in values:
+            current = candidate if not key else _lookup_argument_value(candidate, key)
+            if current is _MISSING:
+                continue
+            if flatten:
+                if isinstance(current, (list, tuple)):
+                    next_values.extend(current)
+                else:
+                    next_values.append(current)
+            else:
+                next_values.append(current)
+        values = next_values
+        if not values:
+            break
+    return values
+
+
+def _stringify_path(path: str) -> str:
+    return str(path or "").strip() or "<root>"
+
+
+def _normalize_string_case(value: str, *, case_sensitive: bool) -> str:
+    return value if case_sensitive else value.casefold()
+
+
+def _values_equal(left: Any, right: Any, *, case_sensitive: bool) -> bool:
+    if isinstance(left, str) and isinstance(right, str):
+        return _normalize_string_case(left, case_sensitive=case_sensitive) == _normalize_string_case(
+            right, case_sensitive=case_sensitive
+        )
+    return left == right
+
+
+def _matches_pattern(value: Any, pattern: str, *, case_sensitive: bool) -> bool:
+    if not isinstance(value, str):
+        return False
+    flags = 0 if case_sensitive else re.IGNORECASE
+    return re.fullmatch(pattern, value, flags=flags) is not None
+
+
+def _tool_argument_policy_error(
+    tool_name: ToolName,
+    rule: ToolArgumentPolicyRule,
+    constraint: ToolArgumentConstraint,
+    message: str,
+) -> ToolArgumentPolicyError:
+    return ToolArgumentPolicyError(
+        rule_id=rule.id,
+        rule_name=rule.name,
+        constraint_id=constraint.id,
+        path=constraint.path,
+        message=f"tool argument policy violation for {tool_name.value}: {message}",
+    )
 
 
 def _approval_request_is_reusable(request: ApprovalRequest, now: datetime) -> bool:
@@ -214,6 +325,134 @@ class PolicyEngine:
         required_tools = set(session.approval_required_tools or [])
         required_tools.update(self.effective_policy_for_session(session).approval_required_tools)
         return tool_name in required_tools
+
+    def tool_argument_policy_for_session(
+        self, session: SessionManifest, tool_name: ToolName
+    ) -> list[ToolArgumentPolicyRule]:
+        effective_policy = self.effective_policy_for_session(session)
+        inherited_rules = list(effective_policy.tool_argument_policies.get(tool_name.value, []))
+        session_rules = list(session.tool_argument_policies.get(tool_name.value, []))
+        return inherited_rules + session_rules
+
+    def require_tool_arguments(
+        self,
+        session: SessionManifest,
+        tool_name: ToolName,
+        arguments: dict[str, Any] | Any,
+    ) -> None:
+        rules = self.tool_argument_policy_for_session(session, tool_name)
+        if not rules:
+            return
+
+        for rule in rules:
+            for constraint in rule.constraints:
+                extracted_values = _extract_argument_values(arguments, constraint.path)
+                present_values = [
+                    value for value in extracted_values if not _is_empty_argument_value(value)
+                ]
+
+                if constraint.operator == ToolArgumentConstraintOperator.REQUIRED:
+                    if present_values:
+                        continue
+                    raise _tool_argument_policy_error(
+                        tool_name,
+                        rule,
+                        constraint,
+                        f"path {_stringify_path(constraint.path)!r} must be present",
+                    )
+
+                if constraint.operator == ToolArgumentConstraintOperator.FIXED:
+                    if not present_values:
+                        raise _tool_argument_policy_error(
+                            tool_name,
+                            rule,
+                            constraint,
+                            f"path {_stringify_path(constraint.path)!r} must be present",
+                        )
+                    if len(present_values) != 1:
+                        raise _tool_argument_policy_error(
+                            tool_name,
+                            rule,
+                            constraint,
+                            f"path {_stringify_path(constraint.path)!r} must resolve to a single scalar",
+                        )
+                    if _values_equal(
+                        present_values[0],
+                        constraint.value,
+                        case_sensitive=constraint.case_sensitive,
+                    ):
+                        continue
+                    raise _tool_argument_policy_error(
+                        tool_name,
+                        rule,
+                        constraint,
+                        f"path {_stringify_path(constraint.path)!r} must equal {constraint.value!r}",
+                    )
+
+                if not present_values:
+                    continue
+
+                if constraint.operator in {
+                    ToolArgumentConstraintOperator.ALLOWLIST,
+                    ToolArgumentConstraintOperator.ENUM,
+                }:
+                    allowed_values = list(constraint.values or [])
+                    if all(
+                        any(
+                            _values_equal(
+                                present_value,
+                                allowed_value,
+                                case_sensitive=constraint.case_sensitive,
+                            )
+                            for allowed_value in allowed_values
+                        )
+                        for present_value in present_values
+                    ):
+                        continue
+                    raise _tool_argument_policy_error(
+                        tool_name,
+                        rule,
+                        constraint,
+                        f"path {_stringify_path(constraint.path)!r} contains a value outside the allowed set",
+                    )
+
+                if constraint.operator == ToolArgumentConstraintOperator.DENYLIST:
+                    denied_values = list(constraint.values or [])
+                    if all(
+                        all(
+                            not _values_equal(
+                                present_value,
+                                denied_value,
+                                case_sensitive=constraint.case_sensitive,
+                            )
+                            for denied_value in denied_values
+                        )
+                        for present_value in present_values
+                    ):
+                        continue
+                    raise _tool_argument_policy_error(
+                        tool_name,
+                        rule,
+                        constraint,
+                        f"path {_stringify_path(constraint.path)!r} contains a denied value",
+                    )
+
+                if constraint.operator == ToolArgumentConstraintOperator.PATTERN:
+                    if all(
+                        _matches_pattern(
+                            present_value,
+                            str(constraint.pattern or ""),
+                            case_sensitive=constraint.case_sensitive,
+                        )
+                        for present_value in present_values
+                    ):
+                        continue
+                    raise _tool_argument_policy_error(
+                        tool_name,
+                        rule,
+                        constraint,
+                        f"path {_stringify_path(constraint.path)!r} does not match the required pattern",
+                    )
 
     def _require_assistant_mutation_guardrails(
         self, session: SessionManifest, tool_name: ToolName

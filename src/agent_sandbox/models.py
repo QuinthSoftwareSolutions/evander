@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from datetime import UTC, datetime
 from enum import Enum
 from hashlib import sha256
@@ -16,6 +17,7 @@ from pydantic import (
     TypeAdapter,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 _HTTP_URL_ADAPTER = TypeAdapter(AnyHttpUrl)
@@ -130,6 +132,201 @@ def normalize_tool_names(value: object, *, field_name: str) -> list[ToolName]:
     return normalized
 
 
+class ToolArgumentConstraintOperator(str, Enum):
+    REQUIRED = "required"
+    ALLOWLIST = "allowlist"
+    DENYLIST = "denylist"
+    FIXED = "fixed"
+    PATTERN = "pattern"
+    ENUM = "enum"
+
+
+def normalize_tool_argument_policies(
+    value: object, *, field_name: str
+) -> dict[str, list[object]]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be a JSON object mapping tool names to rule lists")
+    normalized: dict[str, list[object]] = {}
+    seen_tools: set[str] = set()
+    for raw_tool_name, raw_rules in value.items():
+        candidate = raw_tool_name.value if isinstance(raw_tool_name, ToolName) else str(raw_tool_name).strip()
+        if not candidate:
+            raise ValueError(f"{field_name} tool names must be non-empty")
+        try:
+            tool_name = ToolName(candidate).value
+        except ValueError as exc:
+            raise ValueError(f"{field_name} contains unknown tool name: {candidate!r}") from exc
+        if tool_name in seen_tools:
+            raise ValueError(f"duplicate {field_name} entry for tool: {tool_name}")
+        seen_tools.add(tool_name)
+        if not isinstance(raw_rules, (list, tuple)):
+            raise ValueError(f"{field_name}[{tool_name!r}] must be a JSON array of rules")
+        normalized[tool_name] = list(raw_rules)
+    return normalized
+
+
+class ToolArgumentConstraint(BaseModel):
+    id: str
+    path: str
+    operator: ToolArgumentConstraintOperator
+    value: Any | None = None
+    values: list[Any] | None = None
+    pattern: str | None = None
+    case_sensitive: bool = True
+
+    @field_validator("id", "path", mode="before")
+    @classmethod
+    def normalize_required_text(cls, value: object, info) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError(f"{info.field_name} must be a non-empty string")
+        return text
+
+    @field_validator("operator", mode="before")
+    @classmethod
+    def normalize_operator(cls, value: object) -> object:
+        if isinstance(value, ToolArgumentConstraintOperator):
+            return value.value
+        candidate = getattr(value, "value", value)
+        text = str(candidate or "").strip().lower()
+        if not text:
+            raise ValueError("operator must be a non-empty string")
+        if text.startswith("toolargumentconstraintoperator."):
+            text = text.split(".", 1)[1]
+        return text
+
+    @field_validator("values", mode="before")
+    @classmethod
+    def normalize_values(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("values must be a JSON array")
+        return list(value)
+
+    @field_validator("pattern", mode="before")
+    @classmethod
+    def normalize_pattern(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value)
+        if not text.strip():
+            raise ValueError("pattern must be a non-empty string")
+        return text
+
+    @field_validator("case_sensitive", mode="before")
+    @classmethod
+    def normalize_case_sensitive(cls, value: object) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in {"true", "1", "yes", "on"}:
+                return True
+            if text in {"false", "0", "no", "off"}:
+                return False
+            raise ValueError("case_sensitive must be a boolean")
+        return value
+
+    @model_validator(mode="after")
+    def validate_operator_specific_fields(self) -> "ToolArgumentConstraint":
+        if self.operator in {
+            ToolArgumentConstraintOperator.ALLOWLIST,
+            ToolArgumentConstraintOperator.DENYLIST,
+            ToolArgumentConstraintOperator.ENUM,
+        }:
+            if not self.values:
+                raise ValueError(
+                    f"values must be a non-empty JSON array when operator is {self.operator.value}"
+                )
+        elif self.operator == ToolArgumentConstraintOperator.FIXED:
+            if "value" not in self.model_fields_set:
+                raise ValueError("value is required when operator is fixed")
+        elif self.operator == ToolArgumentConstraintOperator.PATTERN:
+            if self.pattern is None:
+                raise ValueError("pattern is required when operator is pattern")
+            flags = 0 if self.case_sensitive else re.IGNORECASE
+            try:
+                re.compile(self.pattern, flags=flags)
+            except re.error as exc:
+                raise ValueError(f"pattern is not a valid regular expression: {exc}") from exc
+        return self
+
+
+class ToolArgumentPolicyRule(BaseModel):
+    id: str
+    name: str | None = None
+    constraints: list[ToolArgumentConstraint]
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def normalize_id(cls, value: object) -> str:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("id must be a non-empty string")
+        return text
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("constraints", mode="before")
+    @classmethod
+    def normalize_constraints(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, tuple):
+            value = list(value)
+        if not isinstance(value, list):
+            raise ValueError("constraints must be a JSON array")
+        if not value:
+            raise ValueError("constraints must contain at least one constraint")
+        return value
+
+    @model_validator(mode="after")
+    def validate_unique_constraint_ids(self) -> "ToolArgumentPolicyRule":
+        duplicates = sorted(
+            constraint_id
+            for constraint_id, count in Counter(constraint.id for constraint in self.constraints).items()
+            if count > 1
+        )
+        if duplicates:
+            duplicate_list = ", ".join(duplicates)
+            raise ValueError(
+                f"duplicate tool argument constraint ids are not allowed in rule {self.id!r}: {duplicate_list}"
+            )
+        return self
+
+
+def validate_tool_argument_policy_map(
+    value: dict[str, list[Any]], *, field_name: str
+) -> dict[str, list[Any]]:
+    duplicate_rules: list[str] = []
+    for tool_name, rules in value.items():
+        rule_ids = [rule.id for rule in rules if hasattr(rule, "id")]
+        duplicates = sorted(rule_id for rule_id, count in Counter(rule_ids).items() if count > 1)
+        if duplicates:
+            duplicate_rules.append(
+                f"{tool_name}: {', '.join(duplicates)}"
+            )
+    if duplicate_rules:
+        raise ValueError(
+            f"duplicate tool argument policy rule ids are not allowed for {field_name}: "
+            + "; ".join(duplicate_rules)
+        )
+    return value
+
+
 class AdoBacklogItemType(str, Enum):
     EPIC = "Epic"
     FEATURE = "Feature"
@@ -204,6 +401,7 @@ class SessionManifest(BaseModel):
     email_draft_recipient_allowlist: list[str] = Field(default_factory=list)
     email_draft_domain_allowlist: list[str] = Field(default_factory=list)
     email_send_enabled: bool = False
+    tool_argument_policies: dict[str, list[ToolArgumentPolicyRule]] = Field(default_factory=dict)
     communication_file_receive_enabled: bool = False
     communication_file_send_enabled: bool = False
     communication_file_max_bytes: int | None = Field(default=None, ge=0)
@@ -244,6 +442,20 @@ class SessionManifest(BaseModel):
     @classmethod
     def normalize_approval_required_tools(cls, value: object) -> list[ToolName]:
         return normalize_tool_names(value, field_name="approval_required_tools")
+
+    @field_validator("tool_argument_policies", mode="before")
+    @classmethod
+    def normalize_tool_argument_policies_field(
+        cls, value: object
+    ) -> dict[str, list[object]]:
+        return normalize_tool_argument_policies(value, field_name="tool_argument_policies")
+
+    @field_validator("tool_argument_policies")
+    @classmethod
+    def validate_tool_argument_policies_field(
+        cls, value: dict[str, list[ToolArgumentPolicyRule]]
+    ) -> dict[str, list[ToolArgumentPolicyRule]]:
+        return validate_tool_argument_policy_map(value, field_name="tool_argument_policies")
 
     def http_targets_metadata(self) -> "SessionHttpTargetsMetadata":
         raw_metadata = self.metadata.get("http_targets")
@@ -505,6 +717,7 @@ class AgentRecord(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     updated_at: datetime | None = None
+    effective_tool_policy: dict[str, Any] | None = None
     host: dict[str, Any] = Field(default_factory=dict)
     capabilities: dict[str, bool] = Field(default_factory=dict)
 

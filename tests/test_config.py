@@ -9,6 +9,7 @@ from agent_sandbox.config import (
     TeamsIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
+from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.policy_config import EffectivePolicyConfig
 from agent_sandbox.effects.providers.agent_session import (
     container_worker_guest_http_target_relay_base_url,
@@ -81,6 +82,175 @@ def test_approval_notification_target_ids_are_normalized_and_deduplicated() -> N
         "ops-primary",
         "ops-secondary",
     ]
+
+
+def test_tool_argument_policies_round_trip_through_config_models() -> None:
+    payload = {
+        "tool_argument_policies": {
+            "create_ado_backlog_item": [
+                {
+                    "id": "ado-item-policy",
+                    "name": "ADO backlog item guardrails",
+                    "constraints": [
+                        {
+                            "id": "project",
+                            "path": "project",
+                            "operator": "fixed",
+                            "value": "Example Project",
+                        },
+                        {
+                            "id": "type",
+                            "path": "type",
+                            "operator": "enum",
+                            "values": ["Task", "Product Backlog Item"],
+                        },
+                        {
+                            "id": "title",
+                            "path": "title",
+                            "operator": "required",
+                        },
+                        {
+                            "id": "iteration",
+                            "path": "iteration",
+                            "operator": "required",
+                        },
+                        {
+                            "id": "tags",
+                            "path": "tags[]",
+                            "operator": "denylist",
+                            "values": ["blocked-tag"],
+                        },
+                    ],
+                }
+            ]
+        }
+    }
+
+    gateway_config = GatewayConfig.model_validate(payload)
+    policy_config = EffectivePolicyConfig.model_validate(payload)
+    session_manifest = SessionManifest.model_validate(
+        {
+            "session_id": "session-1",
+            "allowed_tools": [ToolName.CREATE_ADO_BACKLOG_ITEM.value],
+            "expires_at": "2030-01-01T00:00:00Z",
+            **payload,
+        }
+    )
+
+    assert gateway_config.model_dump(
+        mode="json", include={"tool_argument_policies"}, exclude_defaults=True
+    ) == payload
+    assert policy_config.model_dump(
+        mode="json", include={"tool_argument_policies"}, exclude_defaults=True
+    ) == payload
+    assert session_manifest.model_dump(
+        mode="json", include={"tool_argument_policies"}, exclude_defaults=True
+    ) == payload
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (
+            {
+                "tool_argument_policies": {
+                    "not_a_real_tool": [
+                        {
+                            "id": "rule",
+                            "constraints": [
+                                {"id": "path", "path": "x", "operator": "required"}
+                            ],
+                        }
+                    ]
+                }
+            },
+            "unknown tool name",
+        ),
+        (
+            {
+                "tool_argument_policies": {
+                    "create_ado_backlog_item": [
+                        {
+                            "id": "rule",
+                            "constraints": [
+                                {"id": "path", "path": "x", "operator": "bogus"}
+                            ],
+                        }
+                    ]
+                }
+            },
+            "operator",
+        ),
+        (
+            {
+                "tool_argument_policies": {
+                    "create_ado_backlog_item": [
+                        {
+                            "id": "rule",
+                            "constraints": [
+                                {"id": "path", "path": "x", "operator": "pattern", "pattern": "("}
+                            ],
+                        }
+                    ]
+                }
+            },
+            "pattern is not a valid regular expression",
+        ),
+        (
+            {
+                "tool_argument_policies": {
+                    "create_ado_backlog_item": [
+                        {
+                            "id": "rule",
+                            "constraints": [
+                                {"id": "path", "path": "x", "operator": "required"},
+                                {"id": "path", "path": "y", "operator": "required"},
+                            ],
+                        }
+                    ]
+                }
+            },
+            "duplicate tool argument constraint ids",
+        ),
+        (
+            {
+                "tool_argument_policies": {
+                    "create_ado_backlog_item": [
+                        {
+                            "id": "rule",
+                            "constraints": [
+                                {"id": "path", "path": "x", "operator": "required"}
+                            ],
+                        },
+                        {
+                            "id": "rule",
+                            "constraints": [
+                                {"id": "other", "path": "y", "operator": "required"}
+                            ],
+                        },
+                    ]
+                }
+            },
+            "duplicate tool argument policy rule ids",
+        ),
+    ],
+)
+def test_tool_argument_policies_reject_invalid_configs(
+    payload: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        GatewayConfig.model_validate(payload)
+    with pytest.raises(ValueError, match=message):
+        EffectivePolicyConfig.model_validate(payload)
+    with pytest.raises(ValueError, match=message):
+        SessionManifest.model_validate(
+            {
+                "session_id": "session-1",
+                "allowed_tools": [ToolName.CREATE_ADO_BACKLOG_ITEM.value],
+                "expires_at": "2030-01-01T00:00:00Z",
+                **payload,
+            }
+        )
 
 
 def test_unique_email_mailbox_ids_pass_validation_with_alias_fields() -> None:
