@@ -185,6 +185,13 @@ permission-denied, or unsupported sources are reported explicitly, and raw host 
 secrets are not exposed. When an endpoint has no data or is unavailable in the current environment,
 the panel shows an explicit missing or unavailable state rather than inferred or placeholder values.
 
+The product context panel is backed by `/api/admin/release-info`. It reads the installed package
+version or `pyproject.toml` version when present, an explicit deployed build identity when the
+environment provides one, and recent release notes from the maintained top section of
+`CHANGELOG.md`. Operators should update `[project].version` when the package version changes and
+add release notes to the top changelog section before deployment. Missing version/build/changelog
+sources are reported as explicit missing reasons.
+
 For machine-readable scripting that matches the GUI data model, use:
 
 ```bash

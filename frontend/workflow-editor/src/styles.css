@@ -5096,9 +5096,19 @@ select {
   overflow: hidden;
 }
 
+.dashboard-release-panel {
+  border-color: rgba(32, 69, 78, 0.1);
+  background: linear-gradient(180deg, rgba(247, 250, 249, 0.95) 0%, rgba(238, 244, 241, 0.94) 100%);
+  box-shadow: 0 14px 30px rgba(22, 45, 52, 0.05);
+}
+
 .panel-heading {
   padding: 1.15rem 1.25rem 0.95rem;
   border-bottom: 1px solid rgba(32, 69, 78, 0.08);
+}
+
+.dashboard-release-panel .panel-heading {
+  padding: 0.95rem 1.1rem 0.75rem;
 }
 
 .panel-heading h2 {
@@ -5108,8 +5118,116 @@ select {
   color: #132633;
 }
 
+.dashboard-release-panel .panel-heading h2 {
+  font-size: 1.42rem;
+}
+
 .panel-body {
   padding: 1.1rem 1.25rem 1.25rem;
+}
+
+.dashboard-release-panel .panel-body {
+  padding: 1rem 1.1rem 1.1rem;
+}
+
+.dashboard-release-summary {
+  color: #51636b;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.dashboard-release-details {
+  gap: 0.65rem;
+}
+
+.dashboard-release-details > div {
+  padding: 0.82rem 0.9rem;
+  background: rgba(232, 239, 236, 0.76);
+}
+
+.release-missing-list {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px dashed rgba(32, 69, 78, 0.14);
+  border-radius: 16px;
+  background: rgba(244, 248, 246, 0.86);
+}
+
+.release-missing-list span,
+.release-entry-list-header span {
+  color: #6a7d86;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.release-missing-list strong {
+  color: #183142;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.release-entry-list {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.release-entry-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.release-entry-list-header strong {
+  color: #183142;
+}
+
+.release-entry-item {
+  padding: 0.72rem 0.85rem;
+  border: 1px solid rgba(32, 69, 78, 0.1);
+  border-radius: 14px;
+  background: rgba(245, 249, 247, 0.86);
+}
+
+.release-entry-copy {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.release-entry-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.release-kind-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.release-kind-feature {
+  background: rgba(223, 245, 231, 0.96);
+  color: #1f6a3f;
+}
+
+.release-kind-bugfix {
+  background: rgba(250, 224, 220, 0.96);
+  color: #9d392e;
+}
+
+.release-kind-change {
+  background: rgba(231, 237, 241, 0.96);
+  color: #28526a;
 }
 
 .toolbar-grid {
@@ -5910,8 +6028,56 @@ select {
   box-shadow: 0 16px 38px rgba(0, 0, 0, 0.24);
 }
 
+:root[data-theme="dark"] .dashboard-release-panel {
+  border-color: rgba(125, 170, 190, 0.12);
+  background: linear-gradient(180deg, rgba(19, 31, 39, 0.97) 0%, rgba(13, 23, 30, 0.97) 100%);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.18);
+}
+
 :root[data-theme="dark"] .admin-panel .panel-heading {
   border-bottom-color: rgba(125, 170, 190, 0.14);
+}
+
+:root[data-theme="dark"] .dashboard-release-panel .panel-heading {
+  border-bottom-color: rgba(125, 170, 190, 0.12);
+}
+
+:root[data-theme="dark"] .dashboard-release-panel .panel-heading h2 {
+  color: #e4eef5;
+}
+
+:root[data-theme="dark"] .dashboard-release-summary,
+:root[data-theme="dark"] .release-missing-list span,
+:root[data-theme="dark"] .release-entry-list-header span {
+  color: #9eb2bf;
+}
+
+:root[data-theme="dark"] .dashboard-release-details > div,
+:root[data-theme="dark"] .release-entry-item,
+:root[data-theme="dark"] .release-missing-list {
+  border-color: rgba(125, 170, 190, 0.14);
+  background: rgba(18, 31, 39, 0.92);
+}
+
+:root[data-theme="dark"] .dashboard-release-details > div > strong,
+:root[data-theme="dark"] .release-missing-list strong,
+:root[data-theme="dark"] .release-entry-list-header strong {
+  color: #d7e3ea;
+}
+
+:root[data-theme="dark"] .release-kind-feature {
+  background: #13271f;
+  color: #aee8c9;
+}
+
+:root[data-theme="dark"] .release-kind-bugfix {
+  background: #321816;
+  color: #ffb6aa;
+}
+
+:root[data-theme="dark"] .release-kind-change {
+  background: #192c38;
+  color: #b9d3e0;
 }
 
 :root[data-theme="dark"] .inline-actions button {

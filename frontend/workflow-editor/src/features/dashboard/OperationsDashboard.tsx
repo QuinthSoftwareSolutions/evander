@@ -240,6 +240,27 @@ type WorkflowGraphActivityReport = {
   graphs: WorkflowGraphActivityGraph[];
 };
 
+type ReleaseChangelogEntry = {
+  text: string;
+  kind: string | null;
+};
+
+type ReleaseChangelog = {
+  source: string | null;
+  path: string | null;
+  heading: string | null;
+  entries: ReleaseChangelogEntry[];
+};
+
+type ReleaseInfoPayload = {
+  version: string | null;
+  version_source: string | null;
+  build: string | null;
+  build_source: string | null;
+  changelog: ReleaseChangelog | null;
+  missing_reasons: string[];
+};
+
 type RemoteState<T> = {
   loading: boolean;
   error: string | null;
@@ -258,6 +279,7 @@ type DashboardState = {
   approvals: RemoteState<ApprovalIndexResponse>;
   sessions: RemoteState<SessionListResponse>;
   toolCalls: RemoteState<ToolCallsResponse>;
+  releaseInfo: RemoteState<ReleaseInfoPayload>;
   workflowDocument: RemoteState<WorkflowEditorDocument>;
   workflowCatalog: RemoteState<WorkflowEditorCatalog>;
   lastRefreshedAt: string | null;
@@ -286,6 +308,7 @@ function createDashboardPendingState(): DashboardState {
     approvals: createRemotePendingState(),
     sessions: createRemotePendingState(),
     toolCalls: createRemotePendingState(),
+    releaseInfo: createRemotePendingState(),
     workflowDocument: createRemotePendingState(),
     workflowCatalog: createRemotePendingState(),
     lastRefreshedAt: null,
@@ -704,6 +727,50 @@ function workflowCatalogSummary(catalog: WorkflowEditorCatalog): string {
   return `${catalog.nodes.length} catalog node${catalog.nodes.length === 1 ? "" : "s"} from ${catalog.worker_id}.`;
 }
 
+function releaseEntryKindLabel(kind: ReleaseChangelogEntry["kind"]): string | null {
+  if (!kind) return null;
+  if (kind === "feature") return "Feature";
+  if (kind === "bugfix") return "Bugfix";
+  return "Change";
+}
+
+function releaseEntryKindClass(kind: ReleaseChangelogEntry["kind"]): string | null {
+  if (!kind) return null;
+  if (kind === "feature") return "release-kind-feature";
+  if (kind === "bugfix") return "release-kind-bugfix";
+  return "release-kind-change";
+}
+
+function releaseInfoSummary(releaseInfo: ReleaseInfoPayload | null): string | null {
+  if (!releaseInfo) {
+    return null;
+  }
+
+  const parts: string[] = [];
+  parts.push(releaseInfo.version ? `Version ${releaseInfo.version}` : "Version unavailable");
+  parts.push(releaseInfo.build ? `Build ${releaseInfo.build}` : "Build unavailable");
+  if (releaseInfo.changelog?.heading) {
+    parts.push(releaseInfo.changelog.heading);
+  } else if (releaseInfo.missing_reasons.length > 0) {
+    parts.push("Recent changelog unavailable");
+  }
+  return parts.join(" · ");
+}
+
+function releaseInfoTone(state: RemoteState<ReleaseInfoPayload>): DashboardPillTone {
+  if (state.data && state.data.missing_reasons.length > 0) {
+    return "missing";
+  }
+  return statusTone(state);
+}
+
+function releaseInfoStatusLabel(state: RemoteState<ReleaseInfoPayload>): string {
+  if (state.data && state.data.missing_reasons.length > 0) {
+    return "Missing";
+  }
+  return statusLabel(state);
+}
+
 function statusByCountClass(count: number): DashboardPillTone {
   if (count > 0) return "pass";
   return "missing";
@@ -722,7 +789,20 @@ export function OperationsDashboard() {
 
     async function load() {
       const directoryQuery = makeQuery({ directory_path: selectedDirectoryPath });
-      const [adminStateResult, deploymentStatusResult, workersResult, agentsResult, workflowRunsResult, workflowActivityResult, approvalsResult, sessionsResult, toolCallsResult, workflowDocumentResult, workflowCatalogResult] =
+      const [
+        adminStateResult,
+        deploymentStatusResult,
+        workersResult,
+        agentsResult,
+        workflowRunsResult,
+        workflowActivityResult,
+        approvalsResult,
+        sessionsResult,
+        toolCallsResult,
+        releaseInfoResult,
+        workflowDocumentResult,
+        workflowCatalogResult,
+      ] =
         await Promise.allSettled([
           fetchJson<DashboardAdminState>(`/api/admin/state${directoryQuery}`, { credentials: "same-origin", signal: controller.signal }),
           fetchJson<DeploymentStatus>("/api/admin/deployment-status", { signal: controller.signal }),
@@ -765,6 +845,7 @@ export function OperationsDashboard() {
             })}`,
             { signal: controller.signal },
           ),
+          fetchJson<ReleaseInfoPayload>("/api/admin/release-info", { signal: controller.signal }),
           fetchJson<WorkflowEditorDocument>("/api/workflow-editor/document", { signal: controller.signal }),
           fetchJson<WorkflowEditorCatalog>(
             `/api/workflow-editor/catalog${makeQuery({ directory_path: selectedDirectoryPath })}`,
@@ -811,6 +892,7 @@ export function OperationsDashboard() {
           "No tool-call audit entries were returned.",
           (value) => (value.items.length === 0 ? "No tool-call audit entries were returned." : null),
         ),
+        releaseInfo: remoteFromResult(releaseInfoResult),
         workflowDocument: remoteFromResult(
           workflowDocumentResult,
           "No workflow document has been created yet.",
@@ -841,6 +923,7 @@ export function OperationsDashboard() {
   const approvals = state.approvals.data;
   const sessions = state.sessions.data;
   const toolCalls = state.toolCalls.data;
+  const releaseInfo = state.releaseInfo.data;
   const workflowDocument = state.workflowDocument.data;
   const workflowCatalog = state.workflowCatalog.data;
   const anyLoading =
@@ -853,6 +936,7 @@ export function OperationsDashboard() {
     state.approvals.loading ||
     state.sessions.loading ||
     state.toolCalls.loading ||
+    state.releaseInfo.loading ||
     state.workflowDocument.loading ||
     state.workflowCatalog.loading;
 
@@ -1365,6 +1449,91 @@ export function OperationsDashboard() {
                 </div>
               ) : null}
             </DashboardBlock>
+          </div>
+        </article>
+
+        <article className="admin-panel dashboard-release-panel">
+          <div className="panel-heading">
+            <div>
+              <div className="eyebrow">Product context</div>
+              <h2>Version and changelog</h2>
+            </div>
+            <span className={`status-pill ${stateClassName(releaseInfoTone(state.releaseInfo))}`}>{releaseInfoStatusLabel(state.releaseInfo)}</span>
+          </div>
+          <div className="panel-body dashboard-release-body" style={{ display: "grid", gap: "0.85rem" }}>
+            {state.releaseInfo.loading && !state.releaseInfo.data ? <div className="empty-state">Loading…</div> : null}
+            {!state.releaseInfo.loading && !state.releaseInfo.error && state.releaseInfo.missing && !releaseInfo ? (
+              <div className="empty-state">{state.releaseInfo.missing}</div>
+            ) : null}
+            {state.releaseInfo.error && !state.releaseInfo.data ? <div className="callout error-callout">{state.releaseInfo.error}</div> : null}
+            {!state.releaseInfo.loading && !state.releaseInfo.error && releaseInfo ? (
+              <div style={{ display: "grid", gap: "0.85rem" }}>
+                <p className="panel-meta dashboard-release-summary" style={{ margin: 0 }}>
+                  {releaseInfoSummary(releaseInfo)}
+                </p>
+                <div className="detail-list dashboard-release-details">
+                  <div>
+                    <span>Version</span>
+                    <strong>{releaseInfo.version ?? "Version unavailable"}</strong>
+                  </div>
+                  <div>
+                    <span>Version source</span>
+                    <strong>{releaseInfo.version_source ?? "No version source."}</strong>
+                  </div>
+                  <div>
+                    <span>Build</span>
+                    <strong>{releaseInfo.build ?? "Build unavailable"}</strong>
+                  </div>
+                  <div>
+                    <span>Build source</span>
+                    <strong>{releaseInfo.build_source ?? "No build source."}</strong>
+                  </div>
+                  <div>
+                    <span>Changelog</span>
+                    <strong>{releaseInfo.changelog ? releaseInfo.changelog.heading ?? "Recent release entries" : "Changelog unavailable"}</strong>
+                  </div>
+                  <div>
+                    <span>Changelog source</span>
+                    <strong>
+                      {releaseInfo.changelog
+                        ? [releaseInfo.changelog.source ?? "CHANGELOG.md", releaseInfo.changelog.path ?? null].filter(Boolean).join(" · ")
+                        : "No changelog source."}
+                    </strong>
+                  </div>
+                </div>
+                {releaseInfo.missing_reasons.length > 0 ? (
+                  <div className="release-missing-list">
+                    <span>Missing details</span>
+                    <strong>{releaseInfo.missing_reasons.join(" · ")}</strong>
+                  </div>
+                ) : null}
+                {releaseInfo.changelog ? (
+                  <div className="release-entry-list">
+                    <div className="release-entry-list-header">
+                      <span>Recent entries</span>
+                      <strong>{releaseInfo.changelog.entries.length}</strong>
+                    </div>
+                    {releaseInfo.changelog.entries.slice(0, 3).map((entry, index) => {
+                      const kindLabel = releaseEntryKindLabel(entry.kind);
+                      const kindClass = releaseEntryKindClass(entry.kind);
+                      return (
+                        <div
+                          key={`${releaseInfo.changelog?.heading ?? "release"}-${index}-${entry.text}`}
+                          className="release-entry-item"
+                        >
+                          <div className="release-entry-copy">
+                            <div className="release-entry-meta">
+                              {kindLabel && kindClass ? <span className={`release-kind-pill ${kindClass}`}>{kindLabel}</span> : null}
+                            </div>
+                            <strong>{entry.text}</strong>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </article>
 

@@ -263,6 +263,9 @@ def create_app(service: AdminService) -> Starlette:
     async def get_deployment_status(_: Request) -> JSONResponse:
         return JSONResponse(service.read_deployment_status().model_dump(mode="json"))
 
+    async def get_release_info(_: Request) -> JSONResponse:
+        return JSONResponse(service.read_release_info().model_dump(mode="json"))
+
     async def unlock_privileged_operations(request: Request) -> JSONResponse:
         auth.require(request)
         try:
@@ -302,6 +305,7 @@ def create_app(service: AdminService) -> Starlette:
         Route("/api/auth/logout", logout, methods=["POST"]),
         Route("/api/admin/state", get_admin_state, methods=["GET"]),
         Route("/api/admin/deployment-status", get_deployment_status, methods=["GET"]),
+        Route("/api/admin/release-info", get_release_info, methods=["GET"]),
         Route("/api/admin/privileged/unlock", unlock_privileged_operations, methods=["POST"]),
         Route("/api/admin/privileged/lock", lock_privileged_operations, methods=["POST"]),
     ]

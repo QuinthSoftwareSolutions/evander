@@ -57,6 +57,7 @@ from agent_sandbox.config import (
 )
 from agent_sandbox.cron import cron_min_interval_seconds, validate_cron_expression
 from agent_sandbox.admin.directory import DirectoryAdminService
+from agent_sandbox.admin.release_metadata import read_release_metadata
 from agent_sandbox.directory_config import (
     DirectoryConfigResolver,
     DirectoryConfigStore,
@@ -1052,6 +1053,27 @@ class CapacityHealthPayload(BaseModel):
     workers: CapacityWorkerTelemetrySummaryPayload
     queue: CapacityQueueTelemetryPayload
     prompts: CapacityPromptTelemetryPayload
+
+
+class ReleaseChangelogEntryPayload(BaseModel):
+    text: str
+    kind: str | None = None
+
+
+class ReleaseChangelogPayload(BaseModel):
+    source: str | None = None
+    path: str | None = None
+    heading: str | None = None
+    entries: list[ReleaseChangelogEntryPayload] = Field(default_factory=list)
+
+
+class ReleaseInfoPayload(BaseModel):
+    version: str | None = None
+    version_source: str | None = None
+    build: str | None = None
+    build_source: str | None = None
+    changelog: ReleaseChangelogPayload | None = None
+    missing_reasons: list[str] = Field(default_factory=list)
 
 
 class WorkflowRunResumePayload(BaseModel):
@@ -5866,6 +5888,32 @@ class AdminService:
             oldest_age_seconds=(
                 max(0.0, (now - oldest[1]).total_seconds()) if oldest is not None else None
             ),
+        )
+
+    def read_release_info(self) -> ReleaseInfoPayload:
+        release_metadata = read_release_metadata(self.project_dir)
+        return ReleaseInfoPayload(
+            version=release_metadata.version,
+            version_source=release_metadata.version_source,
+            build=release_metadata.build,
+            build_source=release_metadata.build_source,
+            changelog=(
+                None
+                if release_metadata.changelog is None
+                else ReleaseChangelogPayload(
+                    source=release_metadata.changelog.source,
+                    path=release_metadata.changelog.path,
+                    heading=release_metadata.changelog.heading,
+                    entries=[
+                        ReleaseChangelogEntryPayload(
+                            text=entry.text,
+                            kind=entry.kind,
+                        )
+                        for entry in release_metadata.changelog.entries
+                    ],
+                )
+            ),
+            missing_reasons=release_metadata.missing_reasons,
         )
 
     def _execution_backend(self):
