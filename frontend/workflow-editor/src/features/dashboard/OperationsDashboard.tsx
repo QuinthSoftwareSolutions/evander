@@ -275,6 +275,117 @@ type ReleaseInfoPayload = {
   missing_reasons: string[];
 };
 
+type TelemetryStatus = "available" | "missing" | "unsupported" | "permission_denied";
+
+type HealthState = "ok" | "warning" | "critical" | "unknown";
+
+type TelemetryError = {
+  status: TelemetryStatus;
+  message: string;
+};
+
+type DiskUsageTelemetry = {
+  scope: string;
+  status: TelemetryStatus;
+  health: HealthState;
+  total_bytes: number | null;
+  used_bytes: number | null;
+  free_bytes: number | null;
+  used_percent: number | null;
+  free_percent: number | null;
+  error_count: number;
+  errors: TelemetryError[];
+};
+
+type DirectorySizeTelemetry = {
+  scope: string;
+  status: TelemetryStatus;
+  health: HealthState;
+  size_bytes: number;
+  file_count: number;
+  directory_count: number;
+  symlink_count: number;
+  error_count: number;
+  errors: TelemetryError[];
+};
+
+type SessionStorageSample = {
+  session_id: string;
+  size_bytes: number;
+  backend: string | null;
+  directory_path: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type CapacityHealthPayload = {
+  generated_at: string;
+  control_plane: {
+    disk: DiskUsageTelemetry;
+    storage: {
+      total: DirectorySizeTelemetry;
+      areas: DirectorySizeTelemetry[];
+    };
+  };
+  sessions: {
+    total_sessions: number;
+    total_agents: number;
+    lifecycle_counts: Record<string, number>;
+    status_counts: Record<string, number>;
+    backend_counts: Record<string, number>;
+    directory_counts: Record<string, number>;
+    directory_breakdowns: Record<string, Record<string, unknown>>;
+    age_buckets: Record<string, number>;
+    storage: {
+      measured_total: DirectorySizeTelemetry;
+      measured_session_count: number;
+      largest_sessions: SessionStorageSample[];
+      oldest_sessions: SessionStorageSample[];
+      missing_telemetry: DirectorySizeTelemetry[];
+    };
+  };
+  workers: {
+    total_workers: number;
+    reachable_workers: number;
+    telemetry_available_workers: number;
+    entries: Array<{
+      worker_url: string;
+      directory_paths: string[];
+      discovered_from: string[];
+      reachable: boolean;
+      last_checked_at: string | null;
+      last_heartbeat_at: string | null;
+      last_heartbeat_source: string | null;
+      healthz_status: TelemetryStatus;
+      telemetry_status: TelemetryStatus;
+      healthz: Record<string, unknown> | null;
+      telemetry: Record<string, unknown> | null;
+      errors: TelemetryError[];
+    }>;
+  };
+  queue: {
+    status: TelemetryStatus;
+    health: HealthState;
+    backend: string | null;
+    active_record_count: number;
+    pending_count: number;
+    inflight_count: number;
+    oldest_event_id: string | null;
+    oldest_occurred_at: string | null;
+    oldest_age_seconds: number | null;
+    errors: TelemetryError[];
+  };
+  prompts: {
+    status: TelemetryStatus;
+    health: HealthState;
+    unread_count: number;
+    oldest_message_id: string | null;
+    oldest_created_at: string | null;
+    oldest_age_seconds: number | null;
+    errors: TelemetryError[];
+  };
+};
+
 type RemoteState<T> = {
   loading: boolean;
   error: string | null;
@@ -293,6 +404,7 @@ type DashboardState = {
   approvals: RemoteState<ApprovalIndexResponse>;
   sessions: RemoteState<SessionListResponse>;
   toolCalls: RemoteState<ToolCallsResponse>;
+  capacityHealth: RemoteState<CapacityHealthPayload>;
   releaseInfo: RemoteState<ReleaseInfoPayload>;
   workflowDocument: RemoteState<WorkflowEditorDocument>;
   workflowCatalog: RemoteState<WorkflowEditorCatalog>;
@@ -322,6 +434,7 @@ function createDashboardPendingState(): DashboardState {
     approvals: createRemotePendingState(),
     sessions: createRemotePendingState(),
     toolCalls: createRemotePendingState(),
+    capacityHealth: createRemotePendingState(),
     releaseInfo: createRemotePendingState(),
     workflowDocument: createRemotePendingState(),
     workflowCatalog: createRemotePendingState(),
@@ -519,6 +632,51 @@ function detailValue(value: string | number | boolean | null | undefined): strin
   if (value == null) return "n/a";
   if (typeof value === "boolean") return value ? "Yes" : "No";
   return String(value);
+}
+
+function formatBytes(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "n/a";
+  const bytes = Math.max(0, value);
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
+}
+
+function formatPercent(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "n/a";
+  const digits = Math.abs(value) >= 10 || Number.isInteger(value) ? 0 : 1;
+  return `${value.toFixed(digits)}%`;
+}
+
+function healthStateTone(health: HealthState): DashboardPillTone {
+  if (health === "critical") return "fail";
+  if (health === "warning") return "running";
+  if (health === "unknown") return "missing";
+  return "pass";
+}
+
+function capacityWorkerTone(workers: CapacityHealthPayload["workers"]): DashboardPillTone {
+  if (workers.total_workers === 0) return "missing";
+  if (workers.reachable_workers < workers.total_workers) return "fail";
+  if (workers.telemetry_available_workers < workers.total_workers) return "running";
+  return "pass";
+}
+
+function capacitySummary(payload: CapacityHealthPayload): string {
+  const disk = payload.control_plane.disk;
+  return [
+    `Disk ${formatPercent(disk.used_percent)} used`,
+    `${formatBytes(disk.free_bytes)} free`,
+    `${payload.workers.reachable_workers}/${payload.workers.total_workers} workers reachable`,
+    `${payload.queue.pending_count} queued`,
+    `${payload.prompts.unread_count} unread prompts`,
+  ].join(" · ");
+}
+
+function sessionStorageSampleSummary(sample: SessionStorageSample | null | undefined): string {
+  if (!sample) return "n/a";
+  return `${sample.session_id} · ${formatBytes(sample.size_bytes)}${sample.backend ? ` · ${sample.backend}` : ""}`;
 }
 
 function sessionWakeCue(session: SessionRecord): string | null {
@@ -926,6 +1084,145 @@ function statusByCountClass(count: number): DashboardPillTone {
   return "missing";
 }
 
+function ProductContextPanel({
+  releaseInfo,
+  releaseInfoState,
+  onLoadNewsEntry,
+}: {
+  releaseInfo: ReleaseInfoPayload | null;
+  releaseInfoState: RemoteState<ReleaseInfoPayload>;
+  onLoadNewsEntry: (targetIndex: number) => void;
+}) {
+  return (
+    <DashboardPanel
+      eyebrow="Product context"
+      title="Version and changelog"
+      className="dashboard-release-panel"
+      defaultOpen
+      statusClassName={stateClassName(releaseInfoTone(releaseInfoState))}
+      statusLabel={releaseInfoStatusLabel(releaseInfoState)}
+    >
+      {releaseInfo?.news ? (
+        <DashboardBlock
+          title="News"
+          state={releaseInfoState}
+          missingFallback="News is not available."
+          summary={releaseInfo.news.heading ?? "Latest update"}
+        >
+          <div className="release-news-card">
+            <div className="release-news-header">
+              <span>News</span>
+              <strong>{releaseInfo.news.heading ?? "Latest update"}</strong>
+            </div>
+            <div className="release-news-copy">
+              {releaseInfo.news.paragraphs.map((paragraph, index) => (
+                <p key={`${releaseInfo.news?.heading ?? "news"}-${index}`}>{paragraph}</p>
+              ))}
+            </div>
+            <p className="panel-meta release-news-source">
+              {[releaseInfo.news.source ?? "NEWS.md", releaseInfo.news.path ?? null].filter(Boolean).join(" · ")}
+            </p>
+            <div className="release-news-pager">
+              <button
+                type="button"
+                className="dashboard-icon-button release-news-page-button"
+                aria-label="Newer"
+                title="Show newer news entry"
+                disabled={!releaseInfo.news.has_previous || releaseInfoState.loading}
+                onClick={() => {
+                  if (releaseInfo.news?.previous_index != null) {
+                    onLoadNewsEntry(releaseInfo.news.previous_index);
+                  }
+                }}
+              >
+                <DashboardIcon name="newer" />
+              </button>
+              <span>
+                Entry {releaseInfo.news.index + 1}
+                {releaseInfo.news.index === 0 ? " · Latest" : ""}
+              </span>
+              <button
+                type="button"
+                className="dashboard-icon-button release-news-page-button"
+                aria-label="Older"
+                title="Show older news entry"
+                disabled={!releaseInfo.news.has_next || releaseInfoState.loading}
+                onClick={() => {
+                  if (releaseInfo.news?.next_index != null) {
+                    onLoadNewsEntry(releaseInfo.news.next_index);
+                  }
+                }}
+              >
+                <DashboardIcon name="older" />
+              </button>
+            </div>
+          </div>
+        </DashboardBlock>
+      ) : null}
+
+      <DashboardBlock
+        title="Release metadata"
+        state={releaseInfoState}
+        missingFallback="Release metadata is not available."
+        summary={releaseInfoSummary(releaseInfo)}
+        actions={
+          releaseInfo?.changelog ? (
+            <div className="feature-toolbar-actions icon-actions dashboard-release-actions">
+              <button type="button" aria-label="Download changelog" title="Download changelog" onClick={downloadChangelog}>
+                <DownloadIcon />
+              </button>
+            </div>
+          ) : null
+        }
+      >
+        {releaseInfo ? (
+          <div style={{ display: "grid", gap: "0.85rem" }}>
+            <p className="panel-meta dashboard-release-summary" style={{ margin: 0 }}>
+              {releaseInfoSummary(releaseInfo)}
+            </p>
+            <div className="detail-list dashboard-release-details">
+              <div>
+                <span>Version</span>
+                <strong>{releaseInfo.version ?? "Version unavailable"}</strong>
+              </div>
+              <div>
+                <span>Version source</span>
+                <strong>{releaseInfo.version_source ?? "No version source."}</strong>
+              </div>
+              <div>
+                <span>Build</span>
+                <strong>{releaseInfo.build ?? "Build unavailable"}</strong>
+              </div>
+              <div>
+                <span>Build source</span>
+                <strong>{releaseInfo.build_source ?? "No build source."}</strong>
+              </div>
+              <div>
+                <span>Changelog</span>
+                <strong>{releaseInfo.changelog ? releaseInfo.changelog.heading ?? "Recent release entries" : "Changelog unavailable"}</strong>
+              </div>
+              <div>
+                <span>Changelog source</span>
+                <strong>
+                  {releaseInfo.changelog
+                    ? [releaseInfo.changelog.source ?? "CHANGELOG.md", releaseInfo.changelog.path ?? null].filter(Boolean).join(" · ")
+                    : "No changelog source."}
+                </strong>
+              </div>
+            </div>
+            {releaseInfo.missing_reasons.length > 0 ? (
+              <div className="release-missing-list">
+                <span>Missing details</span>
+                <strong>{releaseInfo.missing_reasons.join(" · ")}</strong>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </DashboardBlock>
+    </DashboardPanel>
+  );
+}
+
 export function OperationsDashboard() {
   const { selectedDirectoryPath } = useAdminUi();
   const [refreshNonce, setRefreshNonce] = useState(0);
@@ -954,6 +1251,7 @@ export function OperationsDashboard() {
         approvalsResult,
         sessionsResult,
         toolCallsResult,
+        capacityHealthResult,
         releaseInfoResult,
         workflowDocumentResult,
         workflowCatalogResult,
@@ -1004,6 +1302,7 @@ export function OperationsDashboard() {
             })}`,
             { signal: controller.signal },
           ),
+          fetchJson<CapacityHealthPayload>(`/api/admin/capacity-health${makeQuery(dashboardCacheParams)}`, { signal: controller.signal }),
           fetchJson<ReleaseInfoPayload>(
             `/api/admin/release-info${makeQuery({ ...dashboardCacheParams, news_index: newsIndex })}`,
             { signal: controller.signal },
@@ -1057,6 +1356,7 @@ export function OperationsDashboard() {
           "No tool-call audit entries were returned.",
           (value) => (value.items.length === 0 ? "No tool-call audit entries were returned." : null),
         ),
+        capacityHealth: remoteFromResult(capacityHealthResult),
         releaseInfo: remoteFromResult(releaseInfoResult),
         workflowDocument: remoteFromResult(
           workflowDocumentResult,
@@ -1137,6 +1437,7 @@ export function OperationsDashboard() {
   const approvals = state.approvals.data;
   const sessions = state.sessions.data;
   const toolCalls = state.toolCalls.data;
+  const capacityHealth = state.capacityHealth.data;
   const releaseInfo = state.releaseInfo.data;
   const workflowDocument = state.workflowDocument.data;
   const workflowCatalog = state.workflowCatalog.data;
@@ -1150,6 +1451,7 @@ export function OperationsDashboard() {
     state.approvals.loading ||
     state.sessions.loading ||
     state.toolCalls.loading ||
+    state.capacityHealth.loading ||
     state.releaseInfo.loading ||
     state.workflowDocument.loading ||
     state.workflowCatalog.loading;
@@ -1188,6 +1490,10 @@ export function OperationsDashboard() {
       </div>
 
       <div className="dashboard-panel-grid">
+        <div className="dashboard-panel-column dashboard-panel-column-primary">
+          <ProductContextPanel releaseInfo={releaseInfo} releaseInfoState={state.releaseInfo} onLoadNewsEntry={loadNewsEntry} />
+        </div>
+
         <div className="dashboard-panel-column dashboard-panel-column-secondary">
         <DashboardPanel
           eyebrow="System health"
@@ -1296,6 +1602,92 @@ export function OperationsDashboard() {
                         <span className={`status-pill ${stateClassName(workerStatusTone(worker))}`}>{worker.active_state}</span>
                       </div>
                     ))}
+                  </div>
+                </div>
+              ) : null}
+            </DashboardBlock>
+
+            <DashboardBlock
+              title="Capacity"
+              state={state.capacityHealth}
+              missingFallback="Capacity health is not available."
+              summary={capacityHealth ? capacitySummary(capacityHealth) : null}
+            >
+              {capacityHealth ? (
+                <div style={{ display: "grid", gap: "0.55rem" }}>
+                  <div className="detail-list">
+                    <div>
+                      <span>Disk used</span>
+                      <strong>
+                        {formatPercent(capacityHealth.control_plane.disk.used_percent)} ({formatBytes(capacityHealth.control_plane.disk.used_bytes)} /{" "}
+                        {formatBytes(capacityHealth.control_plane.disk.total_bytes)})
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Disk free</span>
+                      <strong>
+                        {formatPercent(capacityHealth.control_plane.disk.free_percent)} ({formatBytes(capacityHealth.control_plane.disk.free_bytes)})
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Known storage</span>
+                      <strong>{formatBytes(capacityHealth.control_plane.storage.total.size_bytes)}</strong>
+                    </div>
+                    <div>
+                      <span>Sessions</span>
+                      <strong>
+                        {capacityHealth.sessions.total_sessions} sessions, {capacityHealth.sessions.total_agents} agents
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Session storage</span>
+                      <strong>
+                        {formatBytes(capacityHealth.sessions.storage.measured_total.size_bytes)} across{" "}
+                        {capacityHealth.sessions.storage.measured_session_count} measured
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Largest session</span>
+                      <strong>{sessionStorageSampleSummary(capacityHealth.sessions.storage.largest_sessions[0])}</strong>
+                    </div>
+                    <div>
+                      <span>Workers</span>
+                      <strong>
+                        {capacityHealth.workers.reachable_workers}/{capacityHealth.workers.total_workers} reachable,{" "}
+                        {capacityHealth.workers.telemetry_available_workers} telemetry
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Queue</span>
+                      <strong>
+                        {capacityHealth.queue.pending_count} pending, {capacityHealth.queue.inflight_count} in-flight
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Oldest queue</span>
+                      <strong>{capacityHealth.queue.oldest_age_seconds == null ? "n/a" : formatRelativeSeconds(capacityHealth.queue.oldest_age_seconds)}</strong>
+                    </div>
+                    <div>
+                      <span>Prompts</span>
+                      <strong>{capacityHealth.prompts.unread_count} unread</strong>
+                    </div>
+                  </div>
+                  <div className="status-pills">
+                    <span className={`status-pill ${stateClassName(healthStateTone(capacityHealth.control_plane.disk.health))}`}>
+                      Disk {capacityHealth.control_plane.disk.health}
+                    </span>
+                    <span className={`status-pill ${stateClassName(healthStateTone(capacityHealth.control_plane.storage.total.health))}`}>
+                      Storage {capacityHealth.control_plane.storage.total.health}
+                    </span>
+                    <span className={`status-pill ${stateClassName(capacityWorkerTone(capacityHealth.workers))}`}>
+                      Workers {capacityHealth.workers.telemetry_available_workers}/{capacityHealth.workers.total_workers} telemetry
+                    </span>
+                    <span className={`status-pill ${stateClassName(healthStateTone(capacityHealth.queue.health))}`}>
+                      Queue {capacityHealth.queue.health}
+                    </span>
+                    <span className={`status-pill ${stateClassName(healthStateTone(capacityHealth.prompts.health))}`}>
+                      Prompts {capacityHealth.prompts.health}
+                    </span>
                   </div>
                 </div>
               ) : null}
@@ -1461,9 +1853,7 @@ export function OperationsDashboard() {
               ) : null}
             </DashboardBlock>
         </DashboardPanel>
-        </div>
 
-        <div className="dashboard-panel-column dashboard-panel-column-primary">
         <DashboardPanel
           eyebrow="Human-control work"
           title="Approvals and sessions"
@@ -1653,125 +2043,6 @@ export function OperationsDashboard() {
                 </div>
               ) : null}
             </DashboardBlock>
-        </DashboardPanel>
-
-        <DashboardPanel
-          eyebrow="Product context"
-          title="Version and changelog"
-          className="dashboard-release-panel"
-          defaultOpen
-          statusClassName={stateClassName(releaseInfoTone(state.releaseInfo))}
-          statusLabel={releaseInfoStatusLabel(state.releaseInfo)}
-        >
-          <DashboardBlock
-            title="Release metadata"
-            state={state.releaseInfo}
-            missingFallback="Release metadata is not available."
-            summary={releaseInfoSummary(releaseInfo)}
-            actions={
-              releaseInfo?.changelog ? (
-                <div className="feature-toolbar-actions icon-actions dashboard-release-actions">
-                  <button type="button" aria-label="Download changelog" title="Download changelog" onClick={downloadChangelog}>
-                    <DownloadIcon />
-                  </button>
-                </div>
-              ) : null
-            }
-          >
-            {releaseInfo ? (
-              <div style={{ display: "grid", gap: "0.85rem" }}>
-                <p className="panel-meta dashboard-release-summary" style={{ margin: 0 }}>
-                  {releaseInfoSummary(releaseInfo)}
-                </p>
-                <div className="detail-list dashboard-release-details">
-                  <div>
-                    <span>Version</span>
-                    <strong>{releaseInfo.version ?? "Version unavailable"}</strong>
-                  </div>
-                  <div>
-                    <span>Version source</span>
-                    <strong>{releaseInfo.version_source ?? "No version source."}</strong>
-                  </div>
-                  <div>
-                    <span>Build</span>
-                    <strong>{releaseInfo.build ?? "Build unavailable"}</strong>
-                  </div>
-                  <div>
-                    <span>Build source</span>
-                    <strong>{releaseInfo.build_source ?? "No build source."}</strong>
-                  </div>
-                  <div>
-                    <span>Changelog</span>
-                    <strong>{releaseInfo.changelog ? releaseInfo.changelog.heading ?? "Recent release entries" : "Changelog unavailable"}</strong>
-                  </div>
-                  <div>
-                    <span>Changelog source</span>
-                    <strong>
-                      {releaseInfo.changelog
-                        ? [releaseInfo.changelog.source ?? "CHANGELOG.md", releaseInfo.changelog.path ?? null].filter(Boolean).join(" · ")
-                        : "No changelog source."}
-                    </strong>
-                  </div>
-                </div>
-                {releaseInfo.missing_reasons.length > 0 ? (
-                  <div className="release-missing-list">
-                    <span>Missing details</span>
-                    <strong>{releaseInfo.missing_reasons.join(" · ")}</strong>
-                  </div>
-                ) : null}
-                {releaseInfo.news ? (
-                  <div className="release-news-card">
-                    <div className="release-news-header">
-                      <span>News</span>
-                      <strong>{releaseInfo.news.heading ?? "Latest update"}</strong>
-                    </div>
-                    <div className="release-news-copy">
-                      {releaseInfo.news.paragraphs.map((paragraph, index) => (
-                        <p key={`${releaseInfo.news?.heading ?? "news"}-${index}`}>{paragraph}</p>
-                      ))}
-                    </div>
-                    <p className="panel-meta release-news-source">
-                      {[releaseInfo.news.source ?? "NEWS.md", releaseInfo.news.path ?? null].filter(Boolean).join(" · ")}
-                    </p>
-                    <div className="release-news-pager">
-                      <button
-                        type="button"
-                        className="dashboard-icon-button release-news-page-button"
-                        aria-label="Newer"
-                        title="Show newer news entry"
-                        disabled={!releaseInfo.news.has_previous || state.releaseInfo.loading}
-                        onClick={() => {
-                          if (releaseInfo.news?.previous_index != null) {
-                            void loadNewsEntry(releaseInfo.news.previous_index);
-                          }
-                        }}
-                      >
-                        <DashboardIcon name="newer" />
-                      </button>
-                      <span>
-                        Entry {releaseInfo.news.index + 1}
-                        {releaseInfo.news.index === 0 ? " · Latest" : ""}
-                      </span>
-                      <button
-                        type="button"
-                        className="dashboard-icon-button release-news-page-button"
-                        aria-label="Older"
-                        title="Show older news entry"
-                        disabled={!releaseInfo.news.has_next || state.releaseInfo.loading}
-                        onClick={() => {
-                          if (releaseInfo.news?.next_index != null) {
-                            void loadNewsEntry(releaseInfo.news.next_index);
-                          }
-                        }}
-                      >
-                        <DashboardIcon name="older" />
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-          </DashboardBlock>
         </DashboardPanel>
 
         <DashboardPanel

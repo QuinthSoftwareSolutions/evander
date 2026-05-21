@@ -5,10 +5,22 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-21 - Dashboard Product Context Layout and 0.2.2 Version
+
+- Bumped the project and workflow-editor package metadata to version `0.2.2`.
+- Kept Product context as the dedicated left dashboard column, stacked the other top-level
+  dashboard panels in the right column, and moved News above Release metadata.
+
 ## 2026-05-21 - Runner Image Codex Binary Resolution
 
 - Forced optional Codex platform packages during Azure runner-image preparation and made the
   runner-image build script resolve nested, hoisted, and Node-resolved npm layouts before failing.
+
+## 2026-05-21 - Dashboard Capacity Health
+
+- Wired the existing Admin Web capacity-health endpoint into the operations dashboard so operators
+  can see host disk usage, known storage, session storage, worker telemetry, queue age, and unread
+  prompt pressure from the default landing view.
 
 ## 2026-05-21 - Workflow Tool Policy Editor Fixes
 
