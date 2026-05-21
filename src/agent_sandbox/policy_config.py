@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from agent_sandbox.config import GatewayConfig, load_config
 from agent_sandbox.directory_config import (
     DirectoryConfigResolver,
     DirectoryConfigStore,
+    DirectoryScopeResolver,
     get_domain_base_config,
     validate_effective_domain_payload,
 )
@@ -26,6 +28,8 @@ from agent_sandbox.repositories.session_manifests import (
     SessionManifestRepository,
     as_session_manifest_repository,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class EffectivePolicyConfig(BaseModel):
@@ -122,6 +126,7 @@ class PolicyConfigResolver:
             config.session_store_path
         )
         self.session_store = as_session_manifest_repository(raw_session_store)
+        self.directory_scope_resolver = DirectoryScopeResolver(self.directory_service)
         self.resolver = DirectoryConfigResolver(
             self.directory_service,
             base_gateway_config=config,
@@ -133,7 +138,7 @@ class PolicyConfigResolver:
         return cls(load_config(path))
 
     def resolve_for_directory(self, directory_path: str | None) -> EffectivePolicyConfig:
-        normalized_path = self._normalize_directory_path(directory_path)
+        normalized_path = self.directory_scope_resolver.resolve_directory_path(directory_path)
         resolution = self.resolver.resolve_domain(
             normalized_path,
             domain="policy",
@@ -149,21 +154,28 @@ class PolicyConfigResolver:
         return self.resolve_for_session_manifest(session)
 
     def resolve_for_session_manifest(self, session: SessionManifest) -> EffectivePolicyConfig:
-        return self.resolve_for_directory(session.directory_path)
+        normalized_path = self.directory_scope_resolver.resolve_session_directory_path(
+            context="policy config",
+            session_id=session.session_id,
+            directory_path=session.directory_path,
+        )
+        return self.resolve_for_directory(normalized_path)
 
     def active_session_policies(self) -> list[EffectivePolicyConfig]:
-        now = datetime.now(UTC)
-        directories: set[str] = {"root"}
-        for session in self.session_store.list_active_sessions(now=now):
-            directories.add(self._normalize_directory_path(session.directory_path))
+        directories = self._active_session_directory_paths()
         return [self.resolve_for_directory(path) for path in sorted(directories)]
 
     def allowed_discord_channel_ids_for_active_sessions(self) -> list[str]:
-        now = datetime.now(UTC)
+        resolved_sessions = self._active_sessions_with_resolved_directory_paths()
+        directories = {"root"}
+        for _, directory_path in resolved_sessions:
+            directories.add(directory_path)
+
         channel_ids: set[str] = set()
-        for policy in self.active_session_policies():
+        for directory_path in sorted(directories):
+            policy = self.resolve_for_directory(directory_path)
             channel_ids.update(policy.discord_operator_channel_allowlist)
-        for session in self.session_store.list_active_sessions(now=now):
+        for session, _directory_path in resolved_sessions:
             if ToolName.DISCORD_GET_COMMANDS not in session.allowed_tools:
                 continue
             channel_ids.update(session.discord_channel_allowlist)
@@ -218,10 +230,31 @@ class PolicyConfigResolver:
             and session_id in {str(candidate).strip() for candidate in target_session_ids}
         )
 
-    def _normalize_directory_path(self, directory_path: str | None) -> str:
-        if not directory_path:
-            return "root"
-        try:
-            return self.directory_service.show(directory_path).directory.path
-        except ValueError:
-            return "root"
+    def _active_session_directory_paths(self) -> list[str]:
+        directories = {"root"}
+        for _, directory_path in self._active_sessions_with_resolved_directory_paths():
+            directories.add(directory_path)
+        return sorted(directories)
+
+    def _active_sessions_with_resolved_directory_paths(
+        self,
+    ) -> list[tuple[SessionManifest, str]]:
+        now = datetime.now(UTC)
+        resolved_sessions: list[tuple[SessionManifest, str]] = []
+        for session in self.session_store.list_active_sessions(now=now):
+            try:
+                normalized_path = self.directory_scope_resolver.resolve_session_directory_path(
+                    context="policy config",
+                    session_id=session.session_id,
+                    directory_path=session.directory_path,
+                )
+            except ValueError as exc:
+                logger.warning(
+                    "policy config skipped stale active session %s directory_path %r: %s",
+                    session.session_id,
+                    session.directory_path,
+                    exc,
+                )
+                continue
+            resolved_sessions.append((session, normalized_path))
+        return resolved_sessions

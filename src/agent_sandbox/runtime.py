@@ -664,16 +664,16 @@ def _resolve_allowed_discord_channel_ids(
         return sorted(channel_id.strip() for channel_id in channel_ids if channel_id.strip())
 
     now = datetime.now(UTC)
-    channel_ids: set[str] = set()
     if policy_config is None:
+        channel_ids: set[str] = set()
         channel_ids.update(config.discord_operator_channel_allowlist)
-    else:
-        channel_ids.update(policy_config.allowed_discord_channel_ids_for_active_sessions())
-    for session in session_store.list_active_sessions(now=now):
-        if ToolName.DISCORD_GET_COMMANDS not in session.allowed_tools:
-            continue
-        channel_ids.update(session.discord_channel_allowlist)
-    return sorted({channel_id.strip() for channel_id in channel_ids if channel_id.strip()})
+        for session in session_store.list_active_sessions(now=now):
+            if ToolName.DISCORD_GET_COMMANDS not in session.allowed_tools:
+                continue
+            channel_ids.update(session.discord_channel_allowlist)
+        return sorted({channel_id.strip() for channel_id in channel_ids if channel_id.strip()})
+
+    return policy_config.allowed_discord_channel_ids_for_active_sessions()
 
 
 def _resolve_allowed_teams_channel_targets(

@@ -1,18 +1,21 @@
 from datetime import UTC, datetime, timedelta
+import logging
 from pathlib import Path
 
 import pytest
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directory_config import DirectoryScopeResolver
+from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.directories import DirectoryService, DirectoryStore
+from agent_sandbox.policy_config import PolicyConfigResolver
 from agent_sandbox.provider_config import (
     ProviderConfigResolver,
     ProviderSessionManifest,
 )
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.storage import JsonStore
-from agent_sandbox.models import SessionManifest
 
 
 def make_config(tmp_path: Path) -> GatewayConfig:
@@ -179,3 +182,137 @@ def test_provider_config_resolver_rejects_stale_provider_session_store_directory
         ),
     ):
         resolver.resolve_contacts_for_session_id("session-fallback")
+
+
+def test_policy_config_resolver_resolves_root_for_none_empty_and_rejects_missing_paths(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    resolver = PolicyConfigResolver(config)
+
+    root_config = resolver.resolve_for_directory("root").model_dump(mode="json")
+
+    assert resolver.resolve_for_directory(None).model_dump(mode="json") == root_config
+    assert resolver.resolve_for_directory("").model_dump(mode="json") == root_config
+
+    with pytest.raises(ValueError, match=r"directory path segment 'missing' does not exist"):
+        resolver.resolve_for_directory("root/missing")
+
+
+def test_policy_config_resolver_rejects_stale_session_directory_paths(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    directories = DirectoryService(DirectoryStore(config.directories_store_path))
+    team = directories.create(parent="root", name="team")
+    session_store = JsonSessionManifestRepository(config.session_store_path)
+    session_store.upsert_session(
+        SessionManifest(
+            session_id="session-123",
+            allowed_tools=[],
+            directory_path=team.path,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            vm_id="vm-stale",
+            metadata={"owner": "ops"},
+        )
+    )
+    resolver = PolicyConfigResolver(config, session_store=session_store)
+
+    directories.delete(team.id)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"policy config session 'session-123' references missing directory_path "
+            r"'root/team': directory path segment 'team' does not exist under 'root'"
+        ),
+    ):
+        resolver.resolve_for_session_id("session-123")
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"policy config session 'session-123' references missing directory_path "
+            r"'root/team': directory path segment 'team' does not exist under 'root'"
+        ),
+    ):
+        resolver.resolve_for_session_manifest(
+            SessionManifest(
+                session_id="session-123",
+                allowed_tools=[],
+                directory_path=team.path,
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+        )
+
+
+def test_policy_config_resolver_skips_stale_active_sessions_and_warns_once_per_resolution(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    config = make_config(tmp_path)
+    directory_store = DirectoryStore(config.directories_store_path)
+    directories = DirectoryService(directory_store)
+    team = directories.create(parent="root", name="team")
+    config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
+    config_store.write(
+        "root",
+        domain="policy",
+        payload={
+            "discord_operator_channel_allowlist": ["root-ops"],
+            "discord_operator_user_allowlist": ["root-user"],
+            "discord_poll_operator_dms": False,
+        },
+    )
+    config_store.write(
+        team.path,
+        domain="policy",
+        payload={
+            "discord_operator_channel_allowlist": ["team-ops"],
+            "discord_operator_user_allowlist": ["team-user"],
+            "discord_poll_operator_dms": True,
+        },
+    )
+    session_store = JsonSessionManifestRepository(config.session_store_path)
+    session_store.upsert_session(
+        SessionManifest(
+            session_id="session-root",
+            allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
+            discord_channel_allowlist=["session-root-channel"],
+            directory_path="root",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    session_store.upsert_session(
+        SessionManifest(
+            session_id="session-stale",
+            allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
+            discord_channel_allowlist=["session-stale-channel"],
+            directory_path=team.path,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            vm_id="vm-stale",
+            metadata={"owner": "ops", "notes": "should not leak"},
+        )
+    )
+    resolver = PolicyConfigResolver(config, session_store=session_store)
+
+    directories.delete(team.id)
+
+    with caplog.at_level(logging.WARNING):
+        active_policies = resolver.active_session_policies()
+        operator_user_ids = resolver.operator_user_ids_for_active_sessions()
+        include_operator_dms = resolver.include_operator_dms_for_active_sessions()
+        channel_ids = resolver.allowed_discord_channel_ids_for_active_sessions()
+
+    assert [policy.discord_operator_channel_allowlist for policy in active_policies] == [
+        ["root-ops"]
+    ]
+    assert operator_user_ids == ["root-user"]
+    assert include_operator_dms is False
+    assert channel_ids == ["root-ops", "session-root-channel"]
+    assert any(
+        "session-stale" in record.message and "root/team" in record.message
+        for record in caplog.records
+    )
+    assert not any("vm-stale" in record.message for record in caplog.records)
+    assert not any("should not leak" in record.message for record in caplog.records)
