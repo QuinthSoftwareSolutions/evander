@@ -405,6 +405,11 @@ function sessionPolicyForAgent(agent: AgentRecord | null): AgentSessionPolicy | 
   };
 }
 
+function promptThreadIdForAgent(agent: AgentRecord | null): string {
+  const threadId = sessionPolicyForAgent(agent)?.metadata.agent_thread_id;
+  return typeof threadId === "string" ? threadId.trim() : "";
+}
+
 function policyFormFromAgent(agent: AgentRecord): AgentPolicyFormState {
   const policy = sessionPolicyForAgent(agent);
   const labels = policy?.labels ?? Object.fromEntries(labelsForAgent(agent));
@@ -605,9 +610,9 @@ export function AgentsPage() {
   const [agentLog, setAgentLog] = useState<AgentLogViewState>(() => emptyLogState());
   const [logSearchInput, setLogSearchInput] = useState("");
   const [logReloadNonce, setLogReloadNonce] = useState(0);
-  const [resumePrompt, setResumePrompt] = useState("");
-  const [resumeModel, setResumeModel] = useState("");
-  const [showResumeForm, setShowResumeForm] = useState(false);
+  const [agentPrompt, setAgentPrompt] = useState("");
+  const [agentPromptResumeThreadId, setAgentPromptResumeThreadId] = useState("");
+  const [showPromptForm, setShowPromptForm] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -746,6 +751,12 @@ export function AgentsPage() {
     [filteredItems, hashSelection, selectedKey],
   );
   const selectedAgentKey = selectedAgent ? agentKey(selectedAgent) : null;
+
+  useEffect(() => {
+    if (showPromptForm) return;
+    const nextThreadId = promptThreadIdForAgent(selectedAgent);
+    setAgentPromptResumeThreadId((current) => (current === nextThreadId ? current : nextThreadId));
+  }, [selectedAgent, showPromptForm]);
 
   const refreshAgents = useCallback(async () => {
     const payload = await loadAgentList(selectedDirectoryPath, true, backendFilter);
@@ -940,10 +951,14 @@ export function AgentsPage() {
       setActionLog((current) => [{ at: new Date().toISOString(), message, tone: "info" as const }, ...current].slice(0, 30));
       setStatus(payload.message);
       setError(null);
+      if (action === "prompt-agent") {
+        setAgentPrompt("");
+        setShowPromptForm(false);
+      }
       if (action === "resume-agent") {
-        setResumePrompt("");
-        setResumeModel("");
-        setShowResumeForm(false);
+        setAgentPrompt("");
+        setAgentPromptResumeThreadId("");
+        setShowPromptForm(false);
       }
       await refreshAgents();
       setSelectedKey(agentKey(selectedAgent));
@@ -1063,7 +1078,7 @@ export function AgentsPage() {
     }
     setEditForm(policyFormFromAgent(selectedAgent));
     setShowEditForm(true);
-    setShowResumeForm(false);
+    setShowPromptForm(false);
     setShowSkillInstallForm(false);
     setInlineValidation("");
   }
@@ -1078,7 +1093,17 @@ export function AgentsPage() {
     setSkillInstallForm({ codexSkills: installedCodexSkillsForAgent(selectedAgent) });
     setShowSkillInstallForm(true);
     setShowEditForm(false);
-    setShowResumeForm(false);
+    setShowPromptForm(false);
+    setInlineValidation("");
+  }
+
+  function openPromptForm() {
+    if (!selectedAgent) return;
+    setAgentPromptResumeThreadId(promptThreadIdForAgent(selectedAgent));
+    setShowPromptForm(true);
+    setShowEditForm(false);
+    setShowSkillInstallForm(false);
+    setShowCreateForm(false);
     setInlineValidation("");
   }
 
@@ -1190,7 +1215,7 @@ export function AgentsPage() {
   const showEnable = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.enable_disable && agentState === "disabled";
   const showDisable = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.enable_disable && agentState !== "disabled";
   const showKill = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.kill && agentState === "running" && agentPid != null;
-  const showResume = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.resume && agentState !== "disabled";
+  const canPromptAgent = selectedAgent?.backend === "libvirt_vm" && selectedAgent.capabilities.resume && agentState !== "disabled";
   const showContainerStop = selectedAgent?.backend === "container_worker_vm" && selectedAgent.capabilities.stop;
   const showDestroy = Boolean(selectedAgent?.capabilities.destroy);
   const canEditPolicy = Boolean(selectedAgent && sessionPolicyForAgent(selectedAgent));
@@ -1267,7 +1292,7 @@ export function AgentsPage() {
                     className={`feature-list-item vm-list-item agent-list-item${selectedAgentKey === agentKey(item) ? " selected" : ""}`}
                     onClick={() => {
                       setSelectedKey(agentKey(item));
-                      setShowResumeForm(false);
+                      setShowPromptForm(false);
                       setShowEditForm(false);
                       setShowSkillInstallForm(false);
                     }}
@@ -1407,17 +1432,20 @@ export function AgentsPage() {
                   </button>
                 </Tooltip>
               ) : null}
-              {showResume ? (
-                <Tooltip content={showResumeForm ? "Close the resume form." : "Open the resume form."}>
+              {canPromptAgent ? (
+                <Tooltip content="Prompt agent">
                   <button
                     type="button"
-                    className={showResumeForm ? "primary" : ""}
+                    className={showPromptForm ? "primary" : ""}
                     onClick={() => {
-                      setShowResumeForm((current) => !current);
-                      setShowSkillInstallForm(false);
+                      if (showPromptForm) {
+                        setShowPromptForm(false);
+                        return;
+                      }
+                      openPromptForm();
                     }}
                     disabled={!canMutate}
-                    aria-label="Resume agent"
+                    aria-label="Prompt agent"
                   >
                     <ResumeIcon />
                   </button>
@@ -1806,43 +1834,54 @@ export function AgentsPage() {
           </div>
         ) : null}
 
-        {selectedAgent ? (
-          <>
-            {showResumeForm ? (
-              <article className="panel compact-panel">
-                <div className="panel-header">
-                  <h3>Resume agent</h3>
-                  <span className="panel-meta">{selectedAgent.session_id ?? selectedAgent.agent_id}</span>
+        {showPromptForm && selectedAgent ? (
+          <div className="modal-backdrop" role="presentation">
+            <section className="modal-card agent-crud-modal" role="dialog" aria-modal="true" aria-label="Prompt agent">
+              <div className="modal-header">
+                <div>
+                  <h2>Prompt agent</h2>
                 </div>
+                <button type="button" onClick={() => setShowPromptForm(false)} disabled={busyAction === "prompt-agent"}>
+                  Close
+                </button>
+              </div>
+              <div className="modal-body">
                 <div className="config-field-grid">
                   <label className="field-stack">
                     <span>Prompt</span>
-                    <textarea rows={5} value={resumePrompt} onChange={(event) => setResumePrompt(event.target.value)} />
+                    <textarea rows={5} value={agentPrompt} onChange={(event) => setAgentPrompt(event.target.value)} />
                   </label>
                   <label className="field-stack">
-                    <span>Model override</span>
-                    <input value={resumeModel} onChange={(event) => setResumeModel(event.target.value)} placeholder="Optional" />
+                    <span>Resume thread ID</span>
+                    <input
+                      value={agentPromptResumeThreadId}
+                      onChange={(event) => setAgentPromptResumeThreadId(event.target.value)}
+                      placeholder="Optional"
+                    />
                   </label>
                 </div>
                 <div className="inline-actions compact-actions">
                   <button
                     className="primary"
                     type="button"
-                    disabled={!canMutate || !resumePrompt.trim()}
+                    disabled={!canMutate || !agentPrompt.trim()}
                     onClick={() =>
-                      void runAgentAction("resume-agent", {
-                        prompt: resumePrompt.trim(),
-                        model: resumeModel.trim() || null,
-                        resume_mode: "same_context",
+                      void runAgentAction("prompt-agent", {
+                        prompt: agentPrompt.trim(),
+                        resume_thread_id: agentPromptResumeThreadId.trim() || null,
                       })
                     }
                   >
-                    {busyAction === "resume-agent" ? "Resuming..." : "Resume agent"}
+                    {busyAction === "prompt-agent" ? "Prompting..." : "Prompt agent"}
                   </button>
                 </div>
-              </article>
-            ) : null}
+              </div>
+            </section>
+          </div>
+        ) : null}
 
+        {selectedAgent ? (
+          <>
             <div className="feature-grid">
               <article className="panel">
                 <div className="panel-header">
