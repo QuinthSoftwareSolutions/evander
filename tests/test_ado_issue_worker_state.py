@@ -195,6 +195,8 @@ def test_process_work_item_skips_when_already_processed(
     )
 
     assert processed is False
+    assert not (worker_config.runtime_dir / "local-issues.json").exists()
+    assert not (worker_config.yaml_output_dir / "work-item-456.yaml").exists()
 
 
 def test_process_work_item_upserts_unified_issue_and_refreshes_yaml(
@@ -978,10 +980,24 @@ def test_process_work_item_skips_previously_processed_id_on_subsequent_attempt(
     }
 
     first = process_work_item(item, config=worker_config, store=store)
-    second = process_work_item(item, config=worker_config, store=store)
+    local_issues_store = JsonStore(
+        worker_config.runtime_dir / "local-issues.json", LocalIssueRecord
+    )
+    first_record = next(iter(local_issues_store.read_all().values()))
+    yaml_path = worker_config.yaml_output_dir / "work-item-301.yaml"
+    first_yaml = yaml_path.read_text(encoding="utf-8")
+    second = process_work_item(
+        {**item, "title": "Changed without ADO changed date"},
+        config=worker_config,
+        store=store,
+    )
+    second_record = next(iter(local_issues_store.read_all().values()))
 
     assert first is True
     assert second is False
+    assert second_record.title == "Process once"
+    assert second_record.updated_at == first_record.updated_at
+    assert yaml_path.read_text(encoding="utf-8") == first_yaml
 
 
 def test_process_work_item_writes_yaml_with_required_issue_number_and_metadata(
@@ -1180,6 +1196,70 @@ def test_poll_once_attaches_comments(
     assert items[0]["comments"] == [
         {"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}
     ]
+
+
+def test_poll_once_skips_comments_for_processed_unchanged_items(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+    item = {
+        "id": 10,
+        "title": "Item 10",
+        "description": "desc",
+        "tags": ["truman"],
+        "state": "Committed",
+        "url": "https://example/10",
+        "updated_date": "2026-03-21T00:00:00Z",
+    }
+    assert process_work_item(item, config=worker_config, store=store) is True
+
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.ado_issue_worker.fetch_candidate_ids",
+        lambda **kwargs: [10],
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.ado_issue_worker.fetch_work_item_batch",
+        lambda **kwargs: [
+            {
+                "id": 10,
+                "url": "https://example/10",
+                "fields": {
+                    "System.Title": "Item 10",
+                    "System.Description": "desc",
+                    "System.Tags": "truman",
+                    "System.State": "Committed",
+                    "System.ChangedDate": "2026-03-21T00:00:00Z",
+                    "System.AreaPath": "Root",
+                    "System.IterationPath": "Team",
+                },
+            }
+        ],
+    )
+    comment_calls = 0
+
+    def fake_fetch_comments(**kwargs):
+        nonlocal comment_calls
+        comment_calls += 1
+        return [
+            {"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}
+        ]
+
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.ado_issue_worker.fetch_work_item_comments",
+        fake_fetch_comments,
+    )
+
+    with httpx.Client() as client:
+        items = poll_once(
+            client=client,
+            config=worker_config,
+            auth_header="Basic token",
+            store=store,
+        )
+
+    assert items == []
+    assert comment_calls == 0
 
 
 def test_fetch_work_item_by_id_attaches_comments(
@@ -1395,7 +1475,7 @@ def test_poll_and_process_directory_uses_directory_specific_config(
             }
         )
 
-    def fake_poll_once(*, client, config, auth_header):
+    def fake_poll_once(*, client, config, auth_header, store=None):
         calls.append(("poll", config.directory_path, None))
         return [{"id": 99, "title": config.directory_path}]
 

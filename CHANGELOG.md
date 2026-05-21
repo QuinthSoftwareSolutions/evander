@@ -12,6 +12,9 @@ material. Newer entries are added incrementally as changes land.
   agent/session creation to workflows and effects.
 - Trimmed ADO worker runtime, directory, Admin Web, and migration configuration surfaces to polling
   settings, filters, repo metadata, and PR automation flags.
+- Stopped repeated ADO worker proxy issue/YAML rewrites for already-ingested work items whose
+  Azure DevOps changed date has not advanced, and removed retired bootstrap keys from Ansible
+  worker defaults.
 
 ## 2026-05-21 - Dashboard News and Changelog Download
 

@@ -647,6 +647,21 @@ def test_ansible_restarts_services_after_managed_config_changes() -> None:
     assert "'restarted'" in service_runtime
 
 
+def test_ansible_ado_worker_defaults_omit_retired_setup_keys() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "agent_sandbox_ado_worker_config:" in defaults
+    assert "processed_store_path:" in defaults
+    assert "setup_log_dir:" not in defaults
+    assert "setup_script_path:" not in defaults
+    assert "setup_timeout_seconds:" not in defaults
+    assert "setup_concurrency_limit:" not in defaults
+    assert "setup_lock_path:" not in defaults
+
+
 def test_ansible_manages_proxy_issue_sync_service() -> None:
     repo = Path(__file__).resolve().parents[1]
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(

@@ -58,6 +58,7 @@ from agent_sandbox.workflow.runtime_config import load_trigger_orchestrator_work
 
 _LOG = logging.getLogger(__name__)
 _ADO_WORKER_CONFIG_RELATIVE_PATH = Path("config") / "ado-worker" / "config.json"
+_MIN_ADO_DATETIME = datetime.min.replace(tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -649,7 +650,7 @@ def _combine_description_with_ado_sections(
 
 def _parse_ado_datetime(value: str | None) -> datetime:
     if not value:
-        return datetime.min.replace(tzinfo=timezone.utc)
+        return _MIN_ADO_DATETIME
 
     normalized = value
     if normalized.endswith("Z"):
@@ -657,7 +658,7 @@ def _parse_ado_datetime(value: str | None) -> datetime:
     try:
         parsed = datetime.fromisoformat(normalized)
     except ValueError:
-        return datetime.min.replace(tzinfo=timezone.utc)
+        return _MIN_ADO_DATETIME
 
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
@@ -974,7 +975,13 @@ def gate_and_order_items(
     return matched, skipped
 
 
-def poll_once(client: httpx.Client, config: WorkerConfig, auth_header: str) -> list[dict[str, Any]]:
+def poll_once(
+    client: httpx.Client,
+    config: WorkerConfig,
+    auth_header: str,
+    *,
+    store: ProcessedWorkItemStore | None = None,
+) -> list[dict[str, Any]]:
     candidate_ids = fetch_candidate_ids(client=client, config=config, auth_header=auth_header)
     fetched_items = fetch_work_item_batch(
         client=client,
@@ -983,6 +990,15 @@ def poll_once(client: httpx.Client, config: WorkerConfig, auth_header: str) -> l
         candidate_ids=candidate_ids,
     )
     matched_items, skipped_count = gate_and_order_items(fetched_items, config)
+    processed_skip_count = 0
+    if store is not None:
+        refresh_items: list[dict[str, Any]] = []
+        for item in matched_items:
+            if _work_item_needs_ingest_or_refresh(item, config=config, store=store):
+                refresh_items.append(item)
+            else:
+                processed_skip_count += 1
+        matched_items = refresh_items
     for item in matched_items:
         _attach_comments_to_item(
             client=client,
@@ -992,10 +1008,11 @@ def poll_once(client: httpx.Client, config: WorkerConfig, auth_header: str) -> l
         )
 
     logging.info(
-        "cycle polled=%d matched=%d skipped=%d",
+        "cycle polled=%d matched=%d skipped=%d skipped_processed=%d",
         len(candidate_ids),
         len(matched_items),
         skipped_count,
+        processed_skip_count,
     )
     return matched_items
 
@@ -1081,7 +1098,12 @@ def _poll_and_process_directory(
     attempts = 0
     while True:
         try:
-            items = poll_once(client=client, config=directory_config, auth_header=auth_header)
+            items = poll_once(
+                client=client,
+                config=directory_config,
+                auth_header=auth_header,
+                store=store,
+            )
             break
         except httpx.HTTPError as exc:
             attempts += 1
@@ -1165,19 +1187,14 @@ def _build_proxy_issue_id(config: WorkerConfig, work_item_id: int, directory_pat
     )
 
 
-def _upsert_unified_issue_record(
-    *,
-    config: WorkerConfig,
-    work_item: dict[str, Any],
-    yaml_path: Path,
-) -> LocalIssueRecord:
-    store = JsonStore(config.runtime_dir / "local-issues.json", LocalIssueRecord)
-    work_item_id = int(work_item["id"])
+def _find_unified_issue_record(
+    *, config: WorkerConfig, work_item_id: int
+) -> tuple[str | None, LocalIssueRecord | None]:
+    store_path = config.runtime_dir / "local-issues.json"
+    if not store_path.exists():
+        return None, None
+    store = JsonStore(store_path, LocalIssueRecord)
     normalized_directory_path = DirectoryPath(segments=config.directory_path).as_posix()
-    now = datetime.now(timezone.utc)
-
-    existing_key: str | None = None
-    existing_record: LocalIssueRecord | None = None
     for issue_id, record in store.read_all().items():
         remote = record.remote_reference
         if (
@@ -1188,10 +1205,23 @@ def _upsert_unified_issue_record(
             and (remote.project or "") == config.project
             and (remote.work_item_id or "") == str(work_item_id)
         ):
-            existing_key = issue_id
-            existing_record = record
-            break
+            return issue_id, record
+    return None, None
 
+
+def _upsert_unified_issue_record(
+    *,
+    config: WorkerConfig,
+    work_item: dict[str, Any],
+    yaml_path: Path,
+) -> LocalIssueRecord:
+    store = JsonStore(config.runtime_dir / "local-issues.json", LocalIssueRecord)
+    work_item_id = int(work_item["id"])
+    normalized_directory_path = DirectoryPath(segments=config.directory_path).as_posix()
+    now = datetime.now(timezone.utc)
+    existing_key, existing_record = _find_unified_issue_record(
+        config=config, work_item_id=work_item_id
+    )
     issue_id = existing_key or _build_proxy_issue_id(
         config, work_item_id, normalized_directory_path
     )
@@ -1348,6 +1378,57 @@ def _processed_work_item_key(
     return f"{directory_path}::{work_item_id}"
 
 
+def _normalize_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _processed_work_item_refresh_decision(
+    *, work_item: dict[str, Any], config: WorkerConfig
+) -> tuple[bool, LocalIssueRecord | None]:
+    work_item_id = int(work_item["id"])
+    _existing_key, existing_record = _find_unified_issue_record(
+        config=config, work_item_id=work_item_id
+    )
+    if existing_record is None:
+        return False, None
+
+    incoming_changed_at = _parse_ado_datetime(str(work_item.get("updated_date", "") or ""))
+    remote = existing_record.remote_reference
+    existing_changed_at = remote.last_remote_updated_at if remote is not None else None
+    if existing_changed_at is None:
+        return incoming_changed_at > _MIN_ADO_DATETIME, existing_record
+    return incoming_changed_at > _normalize_datetime(existing_changed_at), existing_record
+
+
+def _work_item_needs_ingest_or_refresh(
+    work_item: dict[str, Any],
+    *,
+    config: WorkerConfig,
+    store: ProcessedWorkItemStore,
+) -> bool:
+    work_item_id = int(work_item["id"])
+    if not store.is_processed(
+        work_item_id,
+        directory_path=config.directory_path,
+        provider="azure_devops",
+        organization=config.organization_url,
+        project=config.project,
+    ):
+        return True
+
+    should_refresh, existing_record = _processed_work_item_refresh_decision(
+        work_item=work_item, config=config
+    )
+    if not should_refresh:
+        issue_id = existing_record.issue_id if existing_record is not None else ""
+        logging.info(
+            "work_item=%s skipped=already_processed issue_id=%s", work_item_id, issue_id
+        )
+    return should_refresh
+
+
 def _worker_runtime_config(config: WorkerConfig) -> GatewayConfig:
     legacy_config_path = config.legacy_config_path or config.gateway_config_path
     return load_runtime_gateway_config(
@@ -1370,19 +1451,31 @@ def process_work_item(
     store: ProcessedWorkItemStore,
 ) -> bool:
     work_item_id = int(work_item["id"])
-    yaml_path = config.yaml_output_dir / f"work-item-{work_item_id}.yaml"
-    record = _upsert_unified_issue_record(config=config, work_item=work_item, yaml_path=yaml_path)
-    _persist_unified_issue_record(config, record, yaml_path)
-
-    if store.is_processed(
+    already_processed = store.is_processed(
         work_item_id,
         directory_path=config.directory_path,
         provider="azure_devops",
         organization=config.organization_url,
         project=config.project,
-    ):
+    )
+    if already_processed:
+        should_refresh, existing_record = _processed_work_item_refresh_decision(
+            work_item=work_item, config=config
+        )
+        if not should_refresh:
+            issue_id = existing_record.issue_id if existing_record is not None else ""
+            logging.info(
+                "work_item=%s skipped=already_processed issue_id=%s", work_item_id, issue_id
+            )
+            return False
+
+    yaml_path = config.yaml_output_dir / f"work-item-{work_item_id}.yaml"
+    record = _upsert_unified_issue_record(config=config, work_item=work_item, yaml_path=yaml_path)
+    _persist_unified_issue_record(config, record, yaml_path)
+
+    if already_processed:
         logging.info(
-            "work_item=%s skipped=already_processed issue_id=%s", work_item_id, record.issue_id
+            "work_item=%s refreshed=remote_changed issue_id=%s", work_item_id, record.issue_id
         )
         return False
 
