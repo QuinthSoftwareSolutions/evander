@@ -63,6 +63,8 @@ from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.repositories.chat_assistant_sessions import JsonChatAssistantSessionRepository
 from agent_sandbox.repositories.session_manifests import as_session_manifest_repository
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
+from agent_sandbox.effects.registry import EffectProviderFactory
+from agent_sandbox.events.provider_models import AgentEnqueuePromptEffectDefinition
 from agent_sandbox.published_artifacts import (
     PublishedArtifact,
     PublishedArtifactMetadata,
@@ -7582,6 +7584,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 if pid in {None, ""}:
                     raise ValueError("kill-agent requires a running agent pid")
                 result = self.kill_agent(agent_id, int(pid))
+            elif action == "prompt-agent":
+                return self._prompt_admin_agent(agent_id, backend=selected_backend, payload=body)
             elif action == "resume-agent":
                 prompt = str(body.get("prompt") or "").strip()
                 if not prompt:
@@ -7625,6 +7629,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     backend="container_worker_vm",
                     skill_names=self._agent_string_list(body, "codex_skills"),
                     vm_user=self._agent_optional_string(body, "vm_user") or "agent",
+                )
+            if action == "prompt-agent":
+                return self._prompt_admin_agent(
+                    agent_id,
+                    backend=selected_backend,
+                    payload=body,
                 )
             session, record = self._resolve_container_agent_session(agent_id, require_session=False)
             is_session_target = session is not None and record is None
@@ -7707,6 +7717,81 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "session_id": session.session_id if session is not None else status.session_id,
             }
         raise ValueError(f"Unknown agent backend: {selected_backend}")
+
+    def _prompt_admin_agent(
+        self,
+        agent_id: str,
+        *,
+        backend: str,
+        payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        prompt = self._agent_optional_string(payload, "prompt")
+        if not prompt:
+            raise ValueError("prompt-agent requires a non-empty prompt")
+        resume_thread_id = self._agent_optional_string(payload, "resume_thread_id")
+        vm_user = self._agent_optional_string(payload, "vm_user") or "agent"
+
+        if backend == "libvirt_vm":
+            session = self._resolve_vm_agent_session(agent_id)
+            session_id = session.session_id
+            target_name = str(session.vm_id or agent_id).strip() or session_id
+            directory_path = str(session.directory_path or "root").strip() or "root"
+            agent_response_id = target_name
+        elif backend == "container_worker_vm":
+            session, record = self._resolve_container_agent_session(agent_id, require_session=True)
+            if session is None:
+                raise ValueError(f"Unknown container worker agent target: {agent_id}")
+            del record
+            session_id = session.session_id
+            target_name = self._container_session_target_name(session)
+            directory_path = str(getattr(session, "directory_path", None) or "root").strip() or "root"
+            agent_response_id = session_id
+        else:
+            raise ValueError(f"Unknown agent backend: {backend}")
+
+        effect_id = f"admin-agent-prompt:{backend}:{session_id}"
+        effect = AgentEnqueuePromptEffectDefinition(
+            id=effect_id,
+            display_name="Admin prompt agent",
+            type="effect:agent:enqueue-prompt",
+            target=session_id,
+            session_id=session_id,
+            vm_name=target_name,
+            prompt=prompt,
+            resume_thread_id=resume_thread_id,
+            vm_user=vm_user,
+            queue_key=effect_id,
+        )
+        result = (
+            EffectProviderFactory(
+                provider_config_resolver=self.runtime.provider_config,
+                admin_service=self,
+            )
+            .build(effect, directory_path=directory_path)
+            .execute()
+        )
+        queued = bool(result.get("queued"))
+        message = str(result.get("message") or "").strip()
+        if not message:
+            message = (
+                f"Queued prompt for {target_name}"
+                if queued
+                else f"Dispatched prompt to {target_name}"
+            )
+        response = dict(result)
+        response.update(
+            {
+                "success": bool(result.get("success", True)),
+                "agent_id": agent_response_id,
+                "backend": backend,
+                "target_name": target_name,
+                "action": "prompt-agent",
+                "message": message,
+                "status": "queued" if queued else "dispatched",
+                "session_id": session_id,
+            }
+        )
+        return response
 
     def list_background_workers(self) -> list[WorkerSummary]:
         return self.operations_admin.list_background_workers()

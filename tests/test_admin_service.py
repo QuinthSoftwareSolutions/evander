@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
-from types import MethodType
+from types import MethodType, SimpleNamespace
 from typing import Any
 
 import agent_sandbox.admin.service as admin_service
@@ -30,6 +30,7 @@ from agent_sandbox.execution.container_worker_client import ContainerWorkerClien
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
 from agent_sandbox.events.internal import InternalEventBus
 from agent_sandbox.events.models import TriggerEvent
+from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
 from agent_sandbox.models import (
     ApprovalNotificationDeliveryRecord,
     ApprovalNotificationDeliveryStatus,
@@ -38,6 +39,7 @@ from agent_sandbox.models import (
     ApprovalStatus,
     SessionManifest,
     ToolName,
+    VmActionResult,
     VmSummary,
 )
 from agent_sandbox.pr_feedback import FeedbackEnvelope, PrFeedbackStore
@@ -816,6 +818,334 @@ def test_install_admin_agent_skills_copies_managed_skill_to_vm_codex_home(
     updated = service.runtime.session_repository.get_session("lab-session")
     assert updated is not None
     assert updated.metadata["codex_skills"] == ["demo.skill"]
+
+
+def test_run_admin_agent_action_prompt_agent_queues_running_vm_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="receptionist-session",
+            vm_id="agent-sandbox-receptionist-vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    monkeypatch.setattr(
+        service,
+        "list_vms",
+        MethodType(
+            lambda self, **kwargs: [
+                VmSummary(
+                    vm_name="agent-sandbox-receptionist-vm",
+                    power_state="running",
+                    agent_state="running",
+                    session_ids=["receptionist-session"],
+                )
+            ],
+            service,
+        ),
+    )
+
+    result = service.run_admin_agent_action(
+        "agent-sandbox-receptionist-vm",
+        "prompt-agent",
+        backend="libvirt_vm",
+        payload={
+            "prompt": "Summarize the latest changes",
+            "resume_thread_id": "thread-keep-1",
+        },
+    )
+
+    queue_key = "admin-agent-prompt:libvirt_vm:receptionist-session"
+    queued = AgentPromptQueueStore(
+        tmp_path / "runtime" / "queued-agent-prompts.json"
+    ).get(queue_key)
+
+    assert result["success"] is True
+    assert result["queued"] is True
+    assert result["backend"] == "libvirt_vm"
+    assert result["agent_id"] == "agent-sandbox-receptionist-vm"
+    assert result["target_name"] == "agent-sandbox-receptionist-vm"
+    assert result["session_id"] == "receptionist-session"
+    assert result["queue_key"] == queue_key
+    assert result["status"] == "queued"
+    assert queued is not None
+    assert queued.queue_key == queue_key
+    assert queued.effect_id == queue_key
+    assert queued.target == "receptionist-session"
+    assert queued.vm_name == "agent-sandbox-receptionist-vm"
+    assert queued.session_id == "receptionist-session"
+    assert queued.prompt == "Summarize the latest changes"
+    assert queued.resume_thread_id == "thread-keep-1"
+
+
+def test_run_admin_agent_action_prompt_agent_dispatches_via_enqueue_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="receptionist-session",
+            vm_id="agent-sandbox-receptionist-vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    monkeypatch.setattr(
+        service,
+        "list_vms",
+        MethodType(
+            lambda self, **kwargs: [
+                VmSummary(
+                    vm_name="agent-sandbox-receptionist-vm",
+                    power_state="shut off",
+                    agent_state="stopped",
+                    session_ids=["receptionist-session"],
+                )
+            ],
+            service,
+        ),
+    )
+
+    build_calls: list[dict[str, object]] = []
+    resume_calls: list[dict[str, object]] = []
+    original_build = admin_service.EffectProviderFactory.build
+
+    def recording_build(self, effect_definition, *, directory_path=None):
+        build_calls.append(
+            {
+                "effect": effect_definition.model_dump(mode="json"),
+                "directory_path": directory_path,
+            }
+        )
+        return original_build(self, effect_definition, directory_path=directory_path)
+
+    def fake_resume_agent(
+        self: AdminService,
+        target: str,
+        prompt: str,
+        *,
+        model: str | None = None,
+        vm_user: str = "agent",
+        dispatch_id: str | None = None,
+        resume_thread_id: str | None = None,
+        resume_mode: str = "new_context",
+        mcp_gateway_url: str | None = None,
+    ) -> VmActionResult:
+        resume_calls.append(
+            {
+                "target": target,
+                "prompt": prompt,
+                "model": model,
+                "vm_user": vm_user,
+                "dispatch_id": dispatch_id,
+                "resume_thread_id": resume_thread_id,
+                "resume_mode": resume_mode,
+                "mcp_gateway_url": mcp_gateway_url,
+            }
+        )
+        return VmActionResult(
+            success=True,
+            vm_name="agent-sandbox-receptionist-vm",
+            action="resume_issue_agent",
+            message="ok",
+            thread_id="thread-new-1",
+        )
+
+    monkeypatch.setattr(admin_service.EffectProviderFactory, "build", recording_build)
+    monkeypatch.setattr(service, "resume_agent", MethodType(fake_resume_agent, service))
+
+    result = service.run_admin_agent_action(
+        "receptionist-session",
+        "prompt-agent",
+        backend="libvirt_vm",
+        payload={
+            "prompt": "Continue the investigation",
+            "resume_thread_id": "thread-keep-2",
+        },
+    )
+
+    assert len(build_calls) == 1
+    assert build_calls[0]["directory_path"] == "root"
+    assert build_calls[0]["effect"]["type"] == "effect:agent:enqueue-prompt"
+    assert build_calls[0]["effect"]["id"] == "admin-agent-prompt:libvirt_vm:receptionist-session"
+    assert build_calls[0]["effect"]["target"] == "receptionist-session"
+    assert build_calls[0]["effect"]["session_id"] == "receptionist-session"
+    assert build_calls[0]["effect"]["vm_name"] == "agent-sandbox-receptionist-vm"
+    assert build_calls[0]["effect"]["prompt"] == "Continue the investigation"
+    assert build_calls[0]["effect"]["resume_thread_id"] == "thread-keep-2"
+    assert len(resume_calls) == 1
+    assert resume_calls[0]["target"] == "receptionist-session"
+    assert resume_calls[0]["prompt"] == "Continue the investigation"
+    assert resume_calls[0]["model"] is None
+    assert resume_calls[0]["vm_user"] == "agent"
+    assert str(resume_calls[0]["dispatch_id"]).startswith(
+        "dispatch-admin-agent-prompt:libvirt_vm:receptionist-session-"
+    )
+    assert resume_calls[0]["resume_thread_id"] == "thread-keep-2"
+    assert resume_calls[0]["resume_mode"] == "new_context"
+    assert resume_calls[0]["mcp_gateway_url"] is None
+    assert result["success"] is True
+    assert result["queued"] is False
+    assert result["backend"] == "libvirt_vm"
+    assert result["agent_id"] == "agent-sandbox-receptionist-vm"
+    assert result["target_name"] == "agent-sandbox-receptionist-vm"
+    assert result["session_id"] == "receptionist-session"
+    assert result["thread_id"] == "thread-new-1"
+    assert result["status"] == "dispatched"
+
+
+def test_run_admin_agent_action_prompt_agent_queues_busy_container_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+            },
+        )
+    )
+
+    class BusyContainerBackend:
+        def __init__(self) -> None:
+            self.repository = SimpleNamespace(
+                read_all=lambda: {
+                    "container-exec-1": SimpleNamespace(
+                        execution_id="container-exec-1",
+                        session_id="container-session",
+                        last_status="running",
+                    )
+                }
+            )
+
+        def inspect(self, execution_id: str) -> SimpleNamespace:
+            assert execution_id == "container-exec-1"
+            return SimpleNamespace(status="running")
+
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
+        lambda context, config: BusyContainerBackend(),
+    )
+
+    result = service.run_admin_agent_action(
+        "container-session",
+        "prompt-agent",
+        backend="container_worker_vm",
+        payload={
+            "prompt": "Re-run the container workflow",
+            "resume_thread_id": "thread-container-1",
+        },
+    )
+
+    queue_key = "admin-agent-prompt:container_worker_vm:container-session"
+    queued = AgentPromptQueueStore(
+        tmp_path / "runtime" / "queued-agent-prompts.json"
+    ).get(queue_key)
+
+    assert result["success"] is True
+    assert result["queued"] is True
+    assert result["backend"] == "container_worker_vm"
+    assert result["agent_id"] == "container-session"
+    assert result["target_name"] == "container-target"
+    assert result["session_id"] == "container-session"
+    assert result["queue_key"] == queue_key
+    assert result["status"] == "queued"
+    assert queued is not None
+    assert queued.queue_key == queue_key
+    assert queued.effect_id == queue_key
+    assert queued.target == "container-session"
+    assert queued.vm_name == "container-target"
+    assert queued.session_id == "container-session"
+    assert queued.prompt == "Re-run the container workflow"
+    assert queued.resume_thread_id == "thread-container-1"
+
+
+def test_run_admin_agent_action_prompt_agent_rejects_blank_prompt(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="receptionist-session",
+            vm_id="agent-sandbox-receptionist-vm",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    with pytest.raises(ValueError, match="prompt-agent requires a non-empty prompt"):
+        service.run_admin_agent_action(
+            "receptionist-session",
+            "prompt-agent",
+            backend="libvirt_vm",
+            payload={"prompt": "   "},
+        )
+
+
+def test_run_admin_agent_action_prompt_agent_requires_resolvable_container_session(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+
+    with pytest.raises(
+        ValueError, match="Unknown container worker agent target: missing-session"
+    ):
+        service.run_admin_agent_action(
+            "missing-session",
+            "prompt-agent",
+            backend="container_worker_vm",
+            payload={"prompt": "hello"},
+        )
+
+
+def test_run_admin_agent_action_prompt_agent_rejects_ambiguous_container_session(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    expires_at = datetime.now(UTC) + timedelta(hours=1)
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session-a",
+            vm_provider="container_worker_vm",
+            vm_provider_id="shared-target",
+            allowed_tools=[],
+            expires_at=expires_at,
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "shared-target",
+            },
+        )
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-session-b",
+            vm_provider="container_worker_vm",
+            vm_provider_id="shared-target",
+            allowed_tools=[],
+            expires_at=expires_at,
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "shared-target",
+            },
+        )
+    )
+
+    with pytest.raises(ValueError, match="multiple sessions"):
+        service.run_admin_agent_action(
+            "shared-target",
+            "prompt-agent",
+            backend="container_worker_vm",
+            payload={"prompt": "hello"},
+        )
 
 
 def test_teams_auth_list_channels_resolves_exact_channel_matches(
