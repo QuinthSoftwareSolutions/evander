@@ -3643,7 +3643,8 @@ export default function App() {
       return;
     }
     setNodeConnectionMenu(null);
-    setProgrammaticSelection([node.id], node.id);
+    const additiveSelection = event.ctrlKey || event.metaKey;
+    setProgrammaticSelection(additiveSelection ? [...selectedNodeIds, node.id] : [node.id], node.id);
     setSelectedEdgeId(null);
     appShellRef.current?.focus();
   }
