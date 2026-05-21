@@ -5,6 +5,18 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-21 - Dashboard News and Changelog Download
+
+- Added a root `NEWS.md` operator news feed, surfaced the latest news entry in
+  the dashboard product context panel, and replaced the previous recent
+  changelog-entry list with prose release guidance.
+- Added an authenticated Admin Web changelog download endpoint and dashboard
+  download button so operators can retrieve the full `CHANGELOG.md` from the
+  Version and changelog panel.
+- Added `news_index` paging for dashboard news so the release-info endpoint
+  returns one `NEWS.md` post with previous/next metadata instead of returning
+  the whole future news archive.
+
 ## 2026-05-19 to 2026-05-21 - Workflow Runtime, Policy, and Admin Hardening
 
 Touched areas: Admin Web workflow APIs, MCP gateway policy enforcement,

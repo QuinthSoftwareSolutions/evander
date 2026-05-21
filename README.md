@@ -242,9 +242,11 @@ age, and unread prompt pressure.
 
 The product context panel also reads live release metadata from `/api/admin/release-info`. That
 endpoint reports the installed package or `pyproject.toml` version when available, a deployed build
-identity when one is configured, and recent entries from the top of `CHANGELOG.md`. When any source
-is missing, the panel surfaces explicit missing reasons instead of inferring or inventing release
-data.
+identity when one is configured, the maintained top section of `CHANGELOG.md`, and the latest prose
+entry from `NEWS.md`. News entries are paged with the `news_index` query parameter so the dashboard
+requests one blog entry at a time as operators move through older posts. The panel includes a
+changelog download button for retrieving the full `CHANGELOG.md`. When any source is missing, the
+panel surfaces explicit missing reasons instead of inferring or inventing release data.
 
 For a task-oriented guide to every Admin UI section, see
 [`docs/admin-ui-user-manual.md`](docs/admin-ui-user-manual.md).

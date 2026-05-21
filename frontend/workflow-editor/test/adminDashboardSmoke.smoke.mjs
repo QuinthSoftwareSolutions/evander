@@ -413,6 +413,20 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
         },
       ],
     },
+    news: {
+      source: "NEWS.md",
+      path: "NEWS.md",
+      index: 0,
+      heading: "Safer workflows, clearer operations",
+      paragraphs: [
+        "The latest dashboard update puts release context next to practical operator guidance.",
+        "Use the changelog download when you need the full deployment record, then scan News for the human-readable story.",
+      ],
+      has_previous: false,
+      has_next: true,
+      previous_index: null,
+      next_index: 1,
+    },
     missing_reasons: [],
   };
 
@@ -808,7 +822,12 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   assert.equal((await toolCallsPanel.getByText("No tool-call audit entries were returned.").first().textContent())?.trim(), "No tool-call audit entries were returned.");
   assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Version 0\.1\.0/);
   assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Build agent-sandbox-build-20260521/);
-  assert.deepEqual(await releasePanel.locator(".release-kind-pill").allTextContents(), ["Feature", "Bugfix"]);
+  await assert.doesNotReject(() => releasePanel.getByRole("button", { name: "Download changelog" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => releasePanel.getByText("News", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => releasePanel.getByText("Safer workflows, clearer operations", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => releasePanel.getByRole("button", { name: "Older" }).waitFor({ state: "visible" }));
+  assert.equal(await releasePanel.getByText("Entry 1 · Latest", { exact: true }).count(), 1);
+  assert.equal(await releasePanel.getByText("Recent entries", { exact: true }).count(), 0);
 
   assert.equal(await page.evaluate(() => window.location.hash), "");
   assert.deepEqual(pageErrors, []);
@@ -838,7 +857,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions/catalog"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions?include_expired=true&directory_path=root&direct_only=true"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions/session-1"));
-  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/release-info?_dashboard=1"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/release-info?_dashboard=1&news_index=0"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/document?_dashboard=1"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/catalog?directory_path=root&_dashboard=1"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/tool-calls?directory_path=root&direct_only=true&limit=5&_dashboard=1"));

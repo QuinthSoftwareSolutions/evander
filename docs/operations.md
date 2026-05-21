@@ -190,10 +190,14 @@ the panel shows an explicit missing or unavailable state rather than inferred or
 
 The product context panel is backed by `/api/admin/release-info`. It reads the installed package
 version or `pyproject.toml` version when present, an explicit deployed build identity when the
-environment provides one, and recent release notes from the maintained top section of
-`CHANGELOG.md`. Operators should update `[project].version` when the package version changes and
-add release notes to the top changelog section before deployment. Missing version/build/changelog
-sources are reported as explicit missing reasons.
+environment provides one, recent release notes from the maintained top section of `CHANGELOG.md`,
+and the latest prose update from `NEWS.md`. Operators should update `[project].version` when the
+package version changes, add release notes to the top changelog section, and write a user-facing
+news entry before deployment. The `/api/admin/release-info` endpoint accepts `news_index` and returns
+one news entry plus previous/next paging data, which keeps old blog history available without
+returning the whole `NEWS.md` archive to the dashboard. The panel also exposes an authenticated
+changelog download button. Missing version/build/changelog/news sources are reported as explicit
+missing reasons.
 
 Dashboard-tagged GET requests use a short-lived backend JSON cache to avoid repeating every
 systemd, VM inventory, workflow, approval, session, and audit read while an operator is moving in
