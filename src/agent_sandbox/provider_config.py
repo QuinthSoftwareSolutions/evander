@@ -9,6 +9,7 @@ from agent_sandbox.directory_config import (
     ContactDirectoryConfig,
     DirectoryConfigResolver,
     DirectoryConfigStore,
+    DirectoryScopeResolver,
     get_domain_base_config,
     validate_effective_domain_payload,
 )
@@ -113,6 +114,7 @@ class ProviderConfigResolver:
         self.provider_session_store = provider_session_store or JsonStore(
             config.session_store_path, ProviderSessionManifest
         )
+        self.directory_scope_resolver = DirectoryScopeResolver(self.directory_service)
         self.resolver = DirectoryConfigResolver(
             self.directory_service,
             base_gateway_config=config,
@@ -124,7 +126,7 @@ class ProviderConfigResolver:
         return cls(load_config(path))
 
     def resolve_for_directory(self, directory_path: str | None) -> GatewayConfig:
-        normalized_path = self._normalize_directory_path(directory_path)
+        normalized_path = self.directory_scope_resolver.resolve_directory_path(directory_path)
         payload = self.config.model_dump(mode="json")
         for domain in ("providers", "email"):
             resolution = self.resolver.resolve_domain(
@@ -141,7 +143,7 @@ class ProviderConfigResolver:
     def resolve_contacts_for_directory(
         self, directory_path: str | None
     ) -> ContactDirectoryConfig:
-        normalized_path = self._normalize_directory_path(directory_path)
+        normalized_path = self.directory_scope_resolver.resolve_directory_path(directory_path)
         resolution = self.resolver.resolve_domain(
             normalized_path,
             domain="contacts",
@@ -166,7 +168,12 @@ class ProviderConfigResolver:
             session = self.provider_session_store.get(session_id)
         if session is None:
             raise ValueError(f"unknown session: {session_id}")
-        return self.resolve_contacts_for_directory(session.directory_path)
+        normalized_path = self.directory_scope_resolver.resolve_session_directory_path(
+            context="contacts config",
+            session_id=session.session_id,
+            directory_path=session.directory_path,
+        )
+        return self.resolve_contacts_for_directory(normalized_path)
 
     def get_session_manifest(self, session_id: str) -> SessionManifest:
         session = self.session_store.get_session(session_id)
@@ -177,7 +184,12 @@ class ProviderConfigResolver:
     def resolve_for_session_manifest(
         self, session: SessionManifest | ProviderSessionManifest
     ) -> GatewayConfig:
-        return self.resolve_for_directory(session.directory_path)
+        normalized_path = self.directory_scope_resolver.resolve_session_directory_path(
+            context="provider config",
+            session_id=session.session_id,
+            directory_path=session.directory_path,
+        )
+        return self.resolve_for_directory(normalized_path)
 
     def resolve_trigger_provider_config(self, directory_path: str | None) -> TriggerProviderConfig:
         resolved = self.resolve_for_directory(directory_path)
@@ -194,11 +206,3 @@ class ProviderConfigResolver:
     def resolve_gate_provider_config(self, directory_path: str | None) -> GateProviderConfig:
         resolved = self.resolve_for_directory(directory_path)
         return GateProviderConfig.model_validate(resolved.model_dump(mode="json"))
-
-    def _normalize_directory_path(self, directory_path: str | None) -> str:
-        if not directory_path:
-            return "root"
-        try:
-            return self.directory_service.show(directory_path).directory.path
-        except ValueError:
-            return "root"
