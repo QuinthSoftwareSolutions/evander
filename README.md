@@ -238,6 +238,12 @@ workflow runs and graph activity, approvals, sessions, tool-call audit entries, 
 document/catalog. Empty or unsupported sources are shown as explicit missing/unavailable states,
 not as sample data.
 
+The product context panel also reads live release metadata from `/api/admin/release-info`. That
+endpoint reports the installed package or `pyproject.toml` version when available, a deployed build
+identity when one is configured, and recent entries from the top of `CHANGELOG.md`. When any source
+is missing, the panel surfaces explicit missing reasons instead of inferring or inventing release
+data.
+
 Existing hash deep links still route directly to the requested section. For example, `/#workflow`,
 `/#sessions`, `/#approvals`, `/#tool-calls`, and `/#configuration` bypass the dashboard and open the
 detail view. The Workflow tab remains a first-level navigation item for editing workflow graphs and
