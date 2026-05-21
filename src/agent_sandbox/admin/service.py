@@ -1991,6 +1991,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Tool-keyed argument policy rules to attach to the created session.",
                 json_value_type="object",
                 default_value={},
+                options=_tool_field_options(),
             ),
             _field(
                 "allowed_script_names",
@@ -2159,6 +2160,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 description="Tool-keyed argument policy rules to attach to the created session.",
                 json_value_type="object",
                 default_value={},
+                options=_tool_field_options(),
             ),
             _field(
                 "allowed_script_names",

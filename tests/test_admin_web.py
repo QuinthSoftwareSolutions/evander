@@ -692,6 +692,18 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "value": ToolName.RUN_SCRIPT.value,
         "label": ToolName.RUN_SCRIPT.value.replace("_", " "),
     } in agent_create_fields["allowed_tools"]["options"]
+    assert vm_create["fields"]
+    vm_create_fields = {field["key"]: field for field in vm_create["fields"]}
+    assert vm_create_fields["tool_argument_policies"]["options"]
+    assert {
+        "value": ToolName.RUN_SCRIPT.value,
+        "label": ToolName.RUN_SCRIPT.value.replace("_", " "),
+    } in vm_create_fields["tool_argument_policies"]["options"]
+    assert agent_create_fields["tool_argument_policies"]["options"]
+    assert {
+        "value": ToolName.RUN_SCRIPT.value,
+        "label": ToolName.RUN_SCRIPT.value.replace("_", " "),
+    } in agent_create_fields["tool_argument_policies"]["options"]
     execution_backend = next(
         field for field in agent_create["fields"] if field["key"] == "execution_backend"
     )
