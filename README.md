@@ -770,7 +770,11 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
 - The `add_message_reaction` gateway tool accepts:
   - `provider`: `teams` or `discord`
   - `message_id`
-  - `emoji` / Teams reaction name
+  - `emoji`
+    - Teams accepts Unicode emoji values directly.
+    - Common ASCII aliases are normalized before Microsoft Graph: `eyes -> 👀`,
+      `like` / `thumbsup` / `thumbs_up` / `thumbs-up -> 👍`, and `heart` / `love -> ❤️`.
+    - Unsupported ASCII aliases are rejected locally before any Graph request.
   - `channel_target` for Teams, or `channel_id` for Discord
   It is explicit only; `teams_get_messages` and Discord unread reads do not automatically react.
 - When the target is a chat, the adapter uses the `chat:<chat-id>` identifier instead of a
