@@ -7,7 +7,7 @@ import uvicorn
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
@@ -265,8 +265,25 @@ def create_app(service: AdminService) -> Starlette:
     async def get_deployment_status(_: Request) -> JSONResponse:
         return JSONResponse(service.read_deployment_status().model_dump(mode="json"))
 
-    async def get_release_info(_: Request) -> JSONResponse:
-        return JSONResponse(service.read_release_info().model_dump(mode="json"))
+    async def get_release_info(request: Request) -> JSONResponse:
+        try:
+            news_index = _non_negative_int_query_param(request, "news_index", default=0)
+        except ValueError as exc:
+            return json_error(str(exc))
+        return JSONResponse(
+            service.read_release_info(news_index=news_index).model_dump(mode="json")
+        )
+
+    async def download_changelog(_: Request) -> FileResponse | JSONResponse:
+        try:
+            changelog_path = service.release_changelog_file()
+        except FileNotFoundError as exc:
+            return json_error(str(exc), status_code=404)
+        return FileResponse(
+            changelog_path,
+            media_type="text/markdown; charset=utf-8",
+            filename="CHANGELOG.md",
+        )
 
     async def unlock_privileged_operations(request: Request) -> JSONResponse:
         auth.require(request)
@@ -316,6 +333,7 @@ def create_app(service: AdminService) -> Starlette:
             dashboard_cache.wrap("admin.release_info", get_release_info),
             methods=["GET"],
         ),
+        Route("/api/admin/release-info/changelog", download_changelog, methods=["GET"]),
         Route("/api/admin/privileged/unlock", unlock_privileged_operations, methods=["POST"]),
         Route("/api/admin/privileged/lock", lock_privileged_operations, methods=["POST"]),
     ]
@@ -347,6 +365,19 @@ def create_app(service: AdminService) -> Starlette:
 
 
 _workflow_run_events = workflow_run_events
+
+
+def _non_negative_int_query_param(request: Request, name: str, *, default: int) -> int:
+    value = request.query_params.get(name)
+    if value is None or not str(value).strip():
+        return default
+    try:
+        parsed = int(str(value).strip())
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer.") from exc
+    if parsed < 0:
+        raise ValueError(f"{name} must be greater than or equal to 0.")
+    return parsed
 
 
 def main() -> None:

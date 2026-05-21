@@ -107,27 +107,6 @@ source_optional_env_file() {
   fi
 }
 
-json_field_in_file() {
-  local file_path="$1"
-  local field_name="$2"
-
-  python3 - "$file_path" "$field_name" <<'PY'
-import json
-import sys
-
-file_path, field_name = sys.argv[1], sys.argv[2]
-with open(file_path, encoding="utf-8") as handle:
-    payload = json.load(handle)
-value = payload.get(field_name, "")
-if isinstance(value, bool):
-    print("true" if value else "false")
-elif value is None:
-    print("")
-else:
-    print(value)
-PY
-}
-
 check_env_var_in_file() {
   local file_path="$1"
   local var_name="$2"
@@ -283,22 +262,6 @@ run_preflight_checks() {
     "warning"
 
   check_env_var_in_file "${ROOT_DIR}/config/firewall.env" "ALLOWED_TCP_PORTS" "Set ALLOWED_TCP_PORTS in config/firewall.env."
-  if [[ -f "${ROOT_DIR}/runtime/directory-config/root/ado-worker.json" ]]; then
-    if [[ "$(json_field_in_file "${ROOT_DIR}/runtime/directory-config/root/ado-worker.json" "ado_bootstrap_mssql")" == "true" ]]; then
-      ado_mssql_env_name="$(json_field_in_file "${ROOT_DIR}/runtime/directory-config/root/ado-worker.json" "ado_mssql_sa_password_env")"
-      if [[ -z "${ado_mssql_env_name}" ]]; then
-        ado_mssql_env_name="MSSQL_SA_PASSWORD"
-      fi
-      if [[ -n "${ADO_MSSQL_SA_PASSWORD:-}" || -n "${MSSQL_SA_PASSWORD:-}" || -n "${!ado_mssql_env_name:-}" ]]; then
-        report_pass "ADO MSSQL password env is available."
-      else
-        report_fail \
-          "Missing ADO MSSQL password env var." \
-          "Set ${ado_mssql_env_name}, ADO_MSSQL_SA_PASSWORD, or MSSQL_SA_PASSWORD in your shell or secrets.env." \
-          "critical"
-      fi
-    fi
-  fi
 
   echo
   echo "Preflight summary: ${PASS_COUNT} passed, ${FAIL_COUNT} failed."

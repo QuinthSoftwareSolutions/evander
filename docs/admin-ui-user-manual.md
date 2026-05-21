@@ -119,15 +119,18 @@ Use it to answer "what needs attention right now?" It combines live reads from t
 - approval queue health
 - session counts
 - tool-call audit status
+- version, changelog, and news context
 - workflow document and catalog availability
 
 Common tasks:
 
 1. Click **Refresh** for a fresh read. Dashboard refreshes bypass the short-lived dashboard cache.
 2. Expand panels to see the live details behind each summary.
-3. Use quick links such as **Open workflow**, **Open approvals**, **Open sessions**,
+3. Download the changelog from the Version and changelog panel when you need the full release log.
+4. Use **Newer** and **Older** in the News card to page through previous blog entries.
+5. Use quick links such as **Open workflow**, **Open approvals**, **Open sessions**,
    **Open tool calls**, and **Open config** to move into the detail tabs.
-4. If a panel is marked missing or unavailable, open the corresponding detail tab to inspect the
+6. If a panel is marked missing or unavailable, open the corresponding detail tab to inspect the
    exact backend error or empty state.
 
 ## Agents

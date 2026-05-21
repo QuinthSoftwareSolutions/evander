@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { ApiError, fetchJson, formatRelativeSeconds, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
+import { DownloadIcon } from "../admin/PageActionIcons";
 import type { AgentBackend } from "../admin/types";
 import { adminHash, type AdminHashParamValue, type AdminTab } from "../../adminRouting";
 import type { WorkflowEditorCatalog, WorkflowEditorDocument, WorkflowRunSnapshot } from "../../types";
@@ -252,12 +253,25 @@ type ReleaseChangelog = {
   entries: ReleaseChangelogEntry[];
 };
 
+type ReleaseNews = {
+  source: string | null;
+  path: string | null;
+  index: number;
+  heading: string | null;
+  paragraphs: string[];
+  has_previous: boolean;
+  has_next: boolean;
+  previous_index: number | null;
+  next_index: number | null;
+};
+
 type ReleaseInfoPayload = {
   version: string | null;
   version_source: string | null;
   build: string | null;
   build_source: string | null;
   changelog: ReleaseChangelog | null;
+  news: ReleaseNews | null;
   missing_reasons: string[];
 };
 
@@ -764,20 +778,6 @@ function workflowCatalogSummary(catalog: WorkflowEditorCatalog): string {
   return `${catalog.nodes.length} catalog node${catalog.nodes.length === 1 ? "" : "s"} from ${catalog.worker_id}.`;
 }
 
-function releaseEntryKindLabel(kind: ReleaseChangelogEntry["kind"]): string | null {
-  if (!kind) return null;
-  if (kind === "feature") return "Feature";
-  if (kind === "bugfix") return "Bugfix";
-  return "Change";
-}
-
-function releaseEntryKindClass(kind: ReleaseChangelogEntry["kind"]): string | null {
-  if (!kind) return null;
-  if (kind === "feature") return "release-kind-feature";
-  if (kind === "bugfix") return "release-kind-bugfix";
-  return "release-kind-change";
-}
-
 function releaseInfoSummary(releaseInfo: ReleaseInfoPayload | null): string | null {
   if (!releaseInfo) {
     return null;
@@ -790,6 +790,9 @@ function releaseInfoSummary(releaseInfo: ReleaseInfoPayload | null): string | nu
     parts.push(releaseInfo.changelog.heading);
   } else if (releaseInfo.missing_reasons.length > 0) {
     parts.push("Recent changelog unavailable");
+  }
+  if (releaseInfo.news?.heading) {
+    parts.push(`News: ${releaseInfo.news.heading}`);
   }
   return parts.join(" · ");
 }
@@ -808,6 +811,10 @@ function releaseInfoStatusLabel(state: RemoteState<ReleaseInfoPayload>): string 
   return statusLabel(state);
 }
 
+function downloadChangelog() {
+  window.location.assign("/api/admin/release-info/changelog");
+}
+
 function statusByCountClass(count: number): DashboardPillTone {
   if (count > 0) return "pass";
   return "missing";
@@ -816,6 +823,7 @@ function statusByCountClass(count: number): DashboardPillTone {
 export function OperationsDashboard() {
   const { selectedDirectoryPath } = useAdminUi();
   const [refreshNonce, setRefreshNonce] = useState(0);
+  const [newsIndex, setNewsIndex] = useState(0);
   const [state, setState] = useState<DashboardState>(() => createDashboardPendingState());
 
   useEffect(() => {
@@ -890,7 +898,10 @@ export function OperationsDashboard() {
             })}`,
             { signal: controller.signal },
           ),
-          fetchJson<ReleaseInfoPayload>(`/api/admin/release-info${makeQuery(dashboardCacheParams)}`, { signal: controller.signal }),
+          fetchJson<ReleaseInfoPayload>(
+            `/api/admin/release-info${makeQuery({ ...dashboardCacheParams, news_index: newsIndex })}`,
+            { signal: controller.signal },
+          ),
           fetchJson<WorkflowEditorDocument>(`/api/workflow-editor/document${makeQuery(dashboardCacheParams)}`, { signal: controller.signal }),
           fetchJson<WorkflowEditorCatalog>(
             `/api/workflow-editor/catalog${makeQuery({ directory_path: selectedDirectoryPath, ...dashboardCacheParams })}`,
@@ -899,6 +910,9 @@ export function OperationsDashboard() {
         ]);
 
       if (cancelled) return;
+      if (releaseInfoResult.status === "fulfilled" && releaseInfoResult.value.news) {
+        setNewsIndex(releaseInfoResult.value.news.index);
+      }
       setState({
         adminState: remoteFromResult(adminStateResult),
         deploymentStatus: remoteFromResult(deploymentStatusResult),
@@ -958,6 +972,55 @@ export function OperationsDashboard() {
       controller.abort();
     };
   }, [selectedDirectoryPath, refreshNonce]);
+
+  async function loadNewsEntry(targetIndex: number) {
+    if (targetIndex < 0) {
+      return;
+    }
+    setNewsIndex(targetIndex);
+    setState((current) => ({
+      ...current,
+      releaseInfo: {
+        ...current.releaseInfo,
+        loading: true,
+        error: null,
+        missing: null,
+      },
+    }));
+
+    try {
+      const releaseInfo = await fetchJson<ReleaseInfoPayload>(
+        `/api/admin/release-info${makeQuery({
+          _dashboard: "1",
+          _dashboard_refresh: refreshNonce > 0 ? refreshNonce : null,
+          news_index: targetIndex,
+        })}`,
+      );
+      setNewsIndex(releaseInfo.news?.index ?? targetIndex);
+      setState((current) => ({
+        ...current,
+        releaseInfo: {
+          loading: false,
+          error: null,
+          missing: null,
+          data: releaseInfo,
+          updatedAt: new Date().toISOString(),
+        },
+      }));
+    } catch (reason) {
+      const failure = classifyFailure(reason);
+      setState((current) => ({
+        ...current,
+        releaseInfo: {
+          loading: false,
+          error: failure.error,
+          missing: failure.error ? null : failure.missing ?? "Release metadata is not available.",
+          data: null,
+          updatedAt: new Date().toISOString(),
+        },
+      }));
+    }
+  }
 
   const adminState = state.adminState.data;
   const deploymentStatus = state.deploymentStatus.data;
@@ -1489,6 +1552,15 @@ export function OperationsDashboard() {
             state={state.releaseInfo}
             missingFallback="Release metadata is not available."
             summary={releaseInfoSummary(releaseInfo)}
+            actions={
+              releaseInfo?.changelog ? (
+                <div className="feature-toolbar-actions icon-actions dashboard-release-actions">
+                  <button type="button" aria-label="Download changelog" title="Download changelog" onClick={downloadChangelog}>
+                    <DownloadIcon />
+                  </button>
+                </div>
+              ) : null
+            }
           >
             {releaseInfo ? (
               <div style={{ display: "grid", gap: "0.85rem" }}>
@@ -1531,29 +1603,48 @@ export function OperationsDashboard() {
                     <strong>{releaseInfo.missing_reasons.join(" · ")}</strong>
                   </div>
                 ) : null}
-                {releaseInfo.changelog ? (
-                  <div className="release-entry-list">
-                    <div className="release-entry-list-header">
-                      <span>Recent entries</span>
-                      <strong>{releaseInfo.changelog.entries.length}</strong>
+                {releaseInfo.news ? (
+                  <div className="release-news-card">
+                    <div className="release-news-header">
+                      <span>News</span>
+                      <strong>{releaseInfo.news.heading ?? "Latest update"}</strong>
                     </div>
-                    {releaseInfo.changelog.entries.slice(0, 3).map((entry, index) => {
-                      const kindLabel = releaseEntryKindLabel(entry.kind);
-                      const kindClass = releaseEntryKindClass(entry.kind);
-                      return (
-                        <div
-                          key={`${releaseInfo.changelog?.heading ?? "release"}-${index}-${entry.text}`}
-                          className="release-entry-item"
-                        >
-                          <div className="release-entry-copy">
-                            <div className="release-entry-meta">
-                              {kindLabel && kindClass ? <span className={`release-kind-pill ${kindClass}`}>{kindLabel}</span> : null}
-                            </div>
-                            <strong>{entry.text}</strong>
-                          </div>
-                        </div>
-                      );
-                    })}
+                    <div className="release-news-copy">
+                      {releaseInfo.news.paragraphs.map((paragraph, index) => (
+                        <p key={`${releaseInfo.news?.heading ?? "news"}-${index}`}>{paragraph}</p>
+                      ))}
+                    </div>
+                    <p className="panel-meta release-news-source">
+                      {[releaseInfo.news.source ?? "NEWS.md", releaseInfo.news.path ?? null].filter(Boolean).join(" · ")}
+                    </p>
+                    <div className="release-news-pager">
+                      <button
+                        type="button"
+                        disabled={!releaseInfo.news.has_previous || state.releaseInfo.loading}
+                        onClick={() => {
+                          if (releaseInfo.news?.previous_index != null) {
+                            void loadNewsEntry(releaseInfo.news.previous_index);
+                          }
+                        }}
+                      >
+                        Newer
+                      </button>
+                      <span>
+                        Entry {releaseInfo.news.index + 1}
+                        {releaseInfo.news.index === 0 ? " · Latest" : ""}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={!releaseInfo.news.has_next || state.releaseInfo.loading}
+                        onClick={() => {
+                          if (releaseInfo.news?.next_index != null) {
+                            void loadNewsEntry(releaseInfo.news.next_index);
+                          }
+                        }}
+                      >
+                        Older
+                      </button>
+                    </div>
                   </div>
                 ) : null}
               </div>
