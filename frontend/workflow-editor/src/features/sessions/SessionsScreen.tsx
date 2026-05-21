@@ -4,7 +4,7 @@ import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { DeleteIcon, ExtendIcon, RevokeIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
-import { hashQueryParam } from "../../adminRouting";
+import { readAdminHashQuery } from "../admin/hash";
 
 type SessionRecord = {
   session_id: string;
@@ -390,10 +390,18 @@ function pickSessionIdForTab(response: SessionListResponse, tab: TabKey, preferr
 }
 
 function sessionIdFromHash(): string {
-  if (typeof window === "undefined") {
-    return "";
+  return readAdminHashQuery().get("session_id")?.trim() ?? "";
+}
+
+function tabForSessionId(response: SessionListResponse | null, sessionId: string): TabKey | null {
+  if (!response || !sessionId) return null;
+  if (response.active_items.some((item) => item.session_id === sessionId)) {
+    return "active";
   }
-  return hashQueryParam(window.location.hash, "session_id") ?? "";
+  if (response.expired_items.some((item) => item.session_id === sessionId)) {
+    return "expired";
+  }
+  return null;
 }
 
 function RenewSessionModal({
@@ -468,10 +476,9 @@ function RenewSessionModal({
 
 export function SessionsScreen() {
   const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
-  const initialSessionId = sessionIdFromHash();
   const [response, setResponse] = useState<SessionListResponse | null>(null);
-  const [selectedSessionId, setSelectedSessionId] = useState(initialSessionId);
-  const [deepLinkedSessionId, setDeepLinkedSessionId] = useState(initialSessionId);
+  const [selectedSessionId, setSelectedSessionId] = useState("");
+  const [deepLinkSessionId, setDeepLinkSessionId] = useState(() => sessionIdFromHash());
   const [detail, setDetail] = useState<SessionDetailResponse | null>(null);
   const [catalog, setCatalog] = useState<SessionCatalogResponse | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>("active");
@@ -515,6 +522,23 @@ export function SessionsScreen() {
   const [policyStatus, setPolicyStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
+  useEffect(() => {
+    const syncDeepLink = () => {
+      const nextSessionId = sessionIdFromHash();
+      setDeepLinkSessionId(nextSessionId);
+      if (nextSessionId) {
+        setSelectedSessionId(nextSessionId);
+        setSessionFilter(nextSessionId);
+      }
+    };
+
+    syncDeepLink();
+    window.addEventListener("hashchange", syncDeepLink);
+    return () => {
+      window.removeEventListener("hashchange", syncDeepLink);
+    };
+  }, []);
+
   async function refreshSessions(): Promise<SessionListResponse> {
     const query = new URLSearchParams({
       include_expired: "true",
@@ -523,12 +547,18 @@ export function SessionsScreen() {
     });
     const payload = await fetchJson<SessionListResponse>(`/api/admin/sessions?${query.toString()}`);
     setResponse(payload);
+    const targetTab = tabForSessionId(payload, deepLinkSessionId);
+    if (targetTab) {
+      setActiveTab((current) => (current === targetTab ? current : targetTab));
+      setSelectedSessionId(deepLinkSessionId);
+      setSessionFilter(deepLinkSessionId);
+    }
     setSelectedSessionId((current) => {
+      if (deepLinkSessionId) {
+        return payload.items.some((item) => item.session_id === deepLinkSessionId) ? deepLinkSessionId : current;
+      }
       if (current && payload.items.some((item) => item.session_id === current)) {
         return current;
-      }
-      if (deepLinkedSessionId && payload.items.some((item) => item.session_id === deepLinkedSessionId)) {
-        return deepLinkedSessionId;
       }
       const nextSelected = pickSessionIdForTab(payload, activeTab, current);
       if (nextSelected) {
@@ -538,22 +568,6 @@ export function SessionsScreen() {
     });
     return payload;
   }
-
-  useEffect(() => {
-    const applyDeepLink = () => {
-      const sessionId = sessionIdFromHash();
-      if (!sessionId) {
-        return;
-      }
-      setDeepLinkedSessionId(sessionId);
-      setSelectedSessionId(sessionId);
-      setSessionFilter("");
-    };
-
-    applyDeepLink();
-    window.addEventListener("hashchange", applyDeepLink);
-    return () => window.removeEventListener("hashchange", applyDeepLink);
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -578,27 +592,18 @@ export function SessionsScreen() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [activeTab, selectedDirectoryPath]);
+  }, [activeTab, deepLinkSessionId, selectedDirectoryPath]);
 
   useEffect(() => {
-    if (!response) {
+    if (deepLinkSessionId) {
       return;
-    }
-    if (deepLinkedSessionId) {
-      const linkedSession = response.items.find((item) => item.session_id === deepLinkedSessionId);
-      if (linkedSession) {
-        setActiveTab(linkedSession.is_expired ? "expired" : "active");
-        setSelectedSessionId(linkedSession.session_id);
-        setDeepLinkedSessionId("");
-        return;
-      }
     }
     const nextItems = activeTab === "active" ? response?.active_items ?? [] : response?.expired_items ?? [];
     if (selectedSessionId && nextItems.some((item) => item.session_id === selectedSessionId)) {
       return;
     }
     setSelectedSessionId(nextItems[0]?.session_id ?? "");
-  }, [activeTab, deepLinkedSessionId, response, selectedSessionId]);
+  }, [activeTab, deepLinkSessionId, response?.active_items, response?.expired_items, selectedSessionId]);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -1073,7 +1078,7 @@ export function SessionsScreen() {
               type="button"
               className={`feature-list-item session-list-item${item.session_id === selectedSessionId ? " selected" : ""}`}
               onClick={() => {
-                setDeepLinkedSessionId("");
+                setDeepLinkSessionId("");
                 setSelectedSessionId(item.session_id);
               }}
             >

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { Tooltip } from "../admin/Tooltip";
+import { readAdminHashQuery } from "../admin/hash";
 
 type AdminSectionTab =
   | "agents"
@@ -340,6 +341,28 @@ function buildQuery(filters: ToolCallFilters, selectedDirectoryPath: string): st
   return queryString ? `?${queryString}` : "";
 }
 
+function toolCallFiltersFromHash(): ToolCallFilters {
+  const params = readAdminHashQuery();
+  const directOnlyParam = params.get("direct_only");
+  const statusParam = (params.get("status") ?? "").trim();
+  return {
+    query: params.get("q")?.trim() ?? "",
+    sessionId: params.get("session_id")?.trim() ?? "",
+    toolName: params.get("tool_name")?.trim() ?? "",
+    status:
+      statusParam === "success" ||
+      statusParam === "pending_approval" ||
+      statusParam === "denied" ||
+      statusParam === "error"
+        ? (statusParam as ToolCallFilters["status"])
+        : "all",
+    directOnly: directOnlyParam == null ? true : directOnlyParam.trim().toLowerCase() !== "false",
+    createdAfter: "",
+    createdBefore: "",
+    limit: String(DEFAULT_LIMIT),
+  };
+}
+
 function relationLinks(item: ToolCallItem): ToolCallRelation[] {
   const links: ToolCallRelation[] = [];
   const pushLink = (tab: AdminSectionTab, label: string, value: string | null | undefined) => {
@@ -402,6 +425,28 @@ function relationButtonLabel(link: ToolCallRelation): string {
   return `${link.label}: ${link.value.length > 24 ? `${link.value.slice(0, 10)}…${link.value.slice(-8)}` : link.value}`;
 }
 
+function toolCallSelectionMatchesQuery(item: ToolCallItem, query: string): boolean {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return [
+    stringField(item, "request_id"),
+    stringField(item, "correlation_id"),
+    stringField(item, "approval_request_id"),
+    stringField(item, "workflow_run_id"),
+    stringField(item, "trace_id"),
+    stringField(item, "session_id"),
+    stringField(item, "tool_name"),
+    stringField(item, "directory_path"),
+    stringField(item, "agent_id", "agent_session_id"),
+    stringField(item, "vm_id", "vm_name"),
+    stringField(item, "event_id", "call_id"),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .some((value) => value.toLowerCase().includes(normalized));
+}
+
 function ToolCallJsonField({ label, value }: { label: string; value: unknown }) {
   return (
     <label className="field-stack tool-call-json-field">
@@ -413,16 +458,7 @@ function ToolCallJsonField({ label, value }: { label: string; value: unknown }) 
 
 export function ToolCallsPage() {
   const { selectedDirectoryPath } = useAdminUi();
-  const [filters, setFilters] = useState<ToolCallFilters>({
-    query: "",
-    sessionId: "",
-    toolName: "",
-    status: "all",
-    directOnly: true,
-    createdAfter: "",
-    createdBefore: "",
-    limit: String(DEFAULT_LIMIT),
-  });
+  const [filters, setFilters] = useState<ToolCallFilters>(() => toolCallFiltersFromHash());
   const [response, setResponse] = useState<ToolCallsResponse | null>(null);
   const [selectedCallKey, setSelectedCallKey] = useState<string>("");
   const [loading, setLoading] = useState(true);
@@ -445,15 +481,22 @@ export function ToolCallsPage() {
   const errorCount = counts?.error ?? statusCounts.error ?? 0;
   const visibleTotal = counts?.matched ?? counts?.total ?? response?.total ?? items.length;
 
+  useEffect(() => {
+    const syncFiltersFromHash = () => {
+      setFilters(toolCallFiltersFromHash());
+      setSelectedCallKey("");
+    };
+
+    syncFiltersFromHash();
+    window.addEventListener("hashchange", syncFiltersFromHash);
+    return () => {
+      window.removeEventListener("hashchange", syncFiltersFromHash);
+    };
+  }, []);
+
   async function loadToolCalls() {
     const payload = await fetchJson<ToolCallsResponse>(`/api/admin/tool-calls${query}`);
     setResponse(payload);
-    setSelectedCallKey((current) => {
-      if (current && payload.items.some((item, index) => toolCallRowKey(item, index) === current)) {
-        return current;
-      }
-      return toolCallRowKey(payload.items[0] ?? null, 0);
-    });
   }
 
   useEffect(() => {
@@ -488,15 +531,23 @@ export function ToolCallsPage() {
   }, [query]);
 
   useEffect(() => {
-    const firstCallKey = toolCallRowKey(items[0] ?? null, 0);
-    if (!selectedCallKey) {
-      setSelectedCallKey(firstCallKey);
+    if (items.length === 0) {
+      setSelectedCallKey("");
       return;
     }
-    if (!items.some((item, index) => toolCallRowKey(item, index) === selectedCallKey)) {
-      setSelectedCallKey(firstCallKey);
-    }
-  }, [items, selectedCallKey]);
+    setSelectedCallKey((current) => {
+      if (current && items.some((item, index) => toolCallRowKey(item, index) === current)) {
+        return current;
+      }
+      if (filters.query.trim()) {
+        const matchedIndex = items.findIndex((item) => toolCallSelectionMatchesQuery(item, filters.query));
+        if (matchedIndex >= 0) {
+          return toolCallRowKey(items[matchedIndex] ?? null, matchedIndex);
+        }
+      }
+      return toolCallRowKey(items[0] ?? null, 0);
+    });
+  }, [filters.query, items, selectedCallKey]);
 
   function navigateToTab(tab: AdminSectionTab) {
     window.location.hash = tab;

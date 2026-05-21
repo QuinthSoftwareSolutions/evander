@@ -76,6 +76,11 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         type: "effect:notify",
       },
       {
+        id: "legacy-gap-1",
+        display_name: "Legacy audit gap",
+        type: "effect:notify",
+      },
+      {
         id: "unrelated-1",
         display_name: "Unrelated effect",
         type: "effect:notify",
@@ -85,6 +90,7 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
     edges: [
       { source_id: "trigger-1", target_id: "agent-1", source_port: "completed" },
       { source_id: "agent-1", target_id: "notify-1", source_port: "completed" },
+      { source_id: "agent-1", target_id: "legacy-gap-1", source_port: "completed" },
       { source_id: "trigger-2", target_id: "unrelated-1", source_port: "completed" },
     ],
   };
@@ -94,7 +100,7 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
     description: null,
     directory_paths: ["root"],
     user_ids: [],
-    node_ids: ["trigger-1", "agent-1", "notify-1"],
+    node_ids: ["trigger-1", "agent-1", "notify-1", "legacy-gap-1"],
   };
   const workflowDocument = {
     config_path: "workflow.json",
@@ -107,6 +113,7 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         "trigger-1": { x: 80, y: 80 },
         "agent-1": { x: 360, y: 80 },
         "notify-1": { x: 640, y: 80 },
+        "legacy-gap-1": { x: 640, y: 220 },
         "trigger-2": { x: 80, y: 320 },
         "unrelated-1": { x: 360, y: 320 },
       },
@@ -194,8 +201,8 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         captured_at: "2026-05-16T12:00:00Z",
         snapshot_type: "run_start",
         source: "runtime",
-        node_count: 3,
-        edge_count: 2,
+        node_count: 4,
+        edge_count: 3,
         triggers: config.triggers,
         gates: [],
         effects: config.effects,
@@ -206,11 +213,32 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         graph_snapshot: "available",
         binding_trace: "available",
         approvals: "available",
-        agent_links: "available",
-        communication_artifacts: "available",
+        agent_links: "missing_legacy_or_unrecorded",
+        communication_artifacts: "missing_legacy_or_unrecorded",
+        tool_calls: "missing_legacy_or_unrecorded",
         trigger_event: "available",
       },
     },
+    tool_call_links: [
+      {
+        tool_name: "prompt_agent",
+        created_at: "2026-05-16T12:00:02Z",
+        status: "success",
+        decision: "approved",
+        request_id: "tool-req-1",
+        correlation_id: "corr-1",
+        approval_request_id: "appr-1",
+        workflow_run_id: "evt-run-1",
+        trace_id: "trace-1",
+        session_id: "session-1",
+        node_id: "agent-1",
+        node_type: "effect:agent",
+        args_summary: "Handle ticket",
+        result_summary: "Queued agent prompt",
+        args: { prompt: "[redacted]" },
+        result: { job_id: "abc123" },
+      },
+    ],
     nodes: [
       {
         node_id: "agent-1",
@@ -239,6 +267,26 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         retry_resume_eligible: true,
         retry_resume_reason: "failed effect can resume",
         missing_fields: [],
+        tool_call_links: [
+          {
+            tool_name: "prompt_agent",
+            created_at: "2026-05-16T12:00:02Z",
+            status: "success",
+            decision: "approved",
+            request_id: "tool-req-1",
+            correlation_id: "corr-1",
+            approval_request_id: "appr-1",
+            workflow_run_id: "evt-run-1",
+            trace_id: "trace-1",
+            session_id: "session-1",
+            node_id: "agent-1",
+            node_type: "effect:agent",
+            args_summary: "Handle ticket",
+            result_summary: "Queued agent prompt",
+            args: { prompt: "[redacted]" },
+            result: { job_id: "abc123" },
+          },
+        ],
         approval_links: [
           {
             request_id: "appr-1",
@@ -261,7 +309,17 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
             node_type: "effect:agent",
             session_id: "session-1",
             vm_name: "vm-1",
+            agent_id: "agent-1",
+            backend: "libvirt_vm",
+            target_name: "vm-1",
+            agent_status: "available",
+            session_status: "available",
+            log_status: "log_available",
+            log_reference_href: "/api/admin/agents/agent-1/log?backend=libvirt_vm",
             prompt: "Handle ticket",
+            prompt_summary: "Handle ticket",
+            result_summary: "Queued agent prompt",
+            result_status: "available",
             dispatch_id: "dispatch-1",
             thread_id: "thread-1",
             execution_id: "exec-1",
@@ -270,6 +328,56 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
             waiting: false,
             completed: true,
             log_reference: { vm_name: "vm-1" },
+          },
+          {
+            node_id: "agent-1",
+            node_type: "effect:agent",
+            session_id: "session-legacy",
+            agent_id: "agent-legacy",
+            backend: "libvirt_vm",
+            agent_status: "missing",
+            session_status: "session_missing",
+            session_missing_reason: "Session record missing",
+            log_status: "log_unavailable",
+            log_missing_reason: "No persisted log reference",
+            prompt_summary: "Prompt summary missing",
+            result_summary: "Empty result",
+            result_status: "recorded_empty",
+            result_empty: true,
+            dispatch_id: "dispatch-legacy",
+            thread_id: "thread-legacy",
+            execution_id: "exec-legacy",
+            artifact_ids: [],
+            status: "pending",
+            waiting: true,
+            completed: false,
+            log_reference: null,
+          },
+          {
+            node_id: "agent-1",
+            node_type: "effect:agent",
+            session_id: "session-2",
+            agent_id: "agent-2",
+            agent_backend: "libvirt_vm",
+            agent_available: false,
+            agent_status: "missing",
+            session_available: false,
+            session_status: "session_missing",
+            session_missing_reason: "Session record missing",
+            log_available: false,
+            log_status: "log_unavailable",
+            log_missing_reason: "No persisted log reference",
+            prompt_summary: "Prompt summary missing",
+            result_status: "missing",
+            result_missing_reason: "Result payload missing",
+            dispatch_id: "dispatch-2",
+            thread_id: "thread-2",
+            execution_id: "exec-2",
+            artifact_ids: [],
+            status: "pending",
+            waiting: true,
+            completed: false,
+            log_reference: null,
           },
         ],
         communication_artifact_links: [
@@ -288,13 +396,47 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         ],
         records: [],
       },
+      {
+        node_id: "legacy-gap-1",
+        node_type: "effect:notify",
+        display_name: "Legacy audit gap",
+        source_kind: "effect",
+        execution_id: "exec-gap-1",
+        event_id: "evt-run-1",
+        trace_id: "trace-1",
+        status: "succeeded",
+        started_at: "2026-05-16T12:00:04Z",
+        finished_at: "2026-05-16T12:00:05Z",
+        duration_ms: 1000,
+        occurred_at: null,
+        delivery_state: null,
+        resolved_config: {},
+        binding_trace: null,
+        binding_error: null,
+        input_payload: {},
+        outputs: {},
+        inputs_by_source: {},
+        error: null,
+        published_event_id: null,
+        completion_event_enqueued_at: null,
+        config_revision: "rev-1",
+        retry_resume_eligible: false,
+        retry_resume_reason: null,
+        missing_fields: ["binding_trace"],
+        tool_call_links: [],
+        approval_links: [],
+        agent_links: [],
+        communication_artifact_links: [],
+        records: [],
+      },
     ],
     data_availability: {
       graph_snapshot: "available",
       binding_trace: "available",
       approvals: "available",
-      agent_links: "available",
-      communication_artifacts: "available",
+      agent_links: "missing_legacy_or_unrecorded",
+      communication_artifacts: "missing_legacy_or_unrecorded",
+      tool_calls: "missing_legacy_or_unrecorded",
       trigger_event: "available",
     },
   };
@@ -383,6 +525,42 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
       });
       return;
     }
+    if (pathname === "/api/admin/tool-calls") {
+      await route.fulfill(jsonResponse({
+        items: [
+          {
+            tool_name: "prompt_agent",
+            created_at: "2026-05-16T12:00:02Z",
+            session_id: "session-1",
+            directory_path: "root",
+            status: "success",
+            decision: "approved",
+            request_id: "tool-req-1",
+            correlation_id: "corr-1",
+            approval_request_id: "appr-1",
+            workflow_run_id: "evt-run-1",
+            trace_id: "trace-1",
+            args: { prompt: "[redacted]" },
+            result: { job_id: "abc123" },
+            redacted_args: { prompt: "[redacted]" },
+            redacted_result: { job_id: "abc123" },
+            related_links: [],
+          },
+        ],
+        counts: {
+          total: 1,
+          matched: 1,
+          returned: 1,
+          success: 1,
+          denied: 0,
+          error: 0,
+          status_counts: { success: 1, denied: 0, error: 0 },
+        },
+        limit: 100,
+        total: 1,
+      }));
+      return;
+    }
     if (pathname === "/api/workflow-editor/run-detail") {
       detailRequests.push(`${pathname}${url.search}`);
       assert.equal(url.searchParams.get("event_id"), "evt-run-1");
@@ -443,10 +621,33 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
   await assert.doesNotReject(() => page.getByText("Boundary root").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Agent session-1").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByText("Artifact comm_1").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("Run-level tool calls").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.locator(".inspect-node-panel").getByRole("button", { name: "Tool call audit" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.locator(".inspect-node-panel").getByRole("button", { name: "Session" }).first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.locator(".inspect-node-panel").getByRole("button", { name: "Agent" }).first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.locator(".inspect-node-panel").getByRole("button", { name: "Logs" }).first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("Session record missing").first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("No persisted log reference").first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("Empty result").first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("Result payload missing").first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText("No communication artifact records").first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText(/Tool calls.*Missing legacy or unrecorded/).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByText(/Communication artifacts.*Missing legacy or unrecorded/).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".run-detail-json > summary").getByText("Binding trace", { exact: true }).waitFor({ state: "visible" }));
 
   await page.locator(".react-flow__node", { hasText: "Notify operator" }).click();
   await assert.doesNotReject(() => page.getByText("Not visited in this run").waitFor({ state: "visible" }));
+
+  await page.locator(".react-flow__node", { hasText: "Legacy audit gap" }).click();
+  const inspectPanel = page.locator(".inspect-node-panel");
+  await assert.doesNotReject(() => inspectPanel.locator(".run-detail-link-group", { hasText: "Tool calls" }).getByText("No tool-call audit records").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => inspectPanel.locator(".run-detail-link-group", { hasText: "Agents" }).getByText("No agent session records").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => inspectPanel.locator(".run-detail-link-group", { hasText: "Communication artifacts" }).getByText("No communication artifact records").waitFor({ state: "visible" }));
+
+  await page.locator(".react-flow__node", { hasText: "Dispatch agent" }).click();
+  await page.locator(".inspect-node-panel").getByRole("button", { name: "Tool call audit" }).click();
+  await assert.doesNotReject(() => page.getByText("Tool call audit log").waitFor({ state: "visible" }));
+  assert.equal(await page.evaluate(() => window.location.hash), "#tool-calls?q=tool-req-1");
 
   assert.deepEqual(detailRequests, ["/api/workflow-editor/run-detail?event_id=evt-run-1"]);
   assert.deepEqual(pageErrors, []);

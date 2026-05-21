@@ -1085,6 +1085,7 @@ export default function AdminRoot() {
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
   const [selectedTab, setSelectedTab] = useState<AdminTab>(() => currentTab(window.location.hash));
+  const [workflowHasUnsavedChanges, setWorkflowHasUnsavedChanges] = useState(false);
   const [adminState, setAdminState] = useState<AdminState | null>(null);
   const [deploymentStatus, setDeploymentStatus] = useState<DeploymentStatus | null>(null);
   const [selectedDirectoryPath, setSelectedDirectoryPath] = useState<string>(() => {
@@ -1100,6 +1101,7 @@ export default function AdminRoot() {
     if (typeof window === "undefined") return true;
     return window.localStorage.getItem(WORKFLOW_SIDEBAR_STORAGE_KEY) !== "false";
   });
+  const suppressNextHashChangeRef = useRef(false);
   const adminExecutionBackend = adminState?.execution_backend ?? null;
 
   useEffect(() => {
@@ -1122,14 +1124,6 @@ export default function AdminRoot() {
     };
     mediaQuery.addEventListener("change", handleChange);
     return () => mediaQuery.removeEventListener("change", handleChange);
-  }, []);
-
-  useEffect(() => {
-    function handleHashChange() {
-      setSelectedTab(currentTab(window.location.hash));
-    }
-    window.addEventListener("hashchange", handleHashChange);
-    return () => window.removeEventListener("hashchange", handleHashChange);
   }, []);
 
   useEffect(() => {
@@ -1218,6 +1212,7 @@ export default function AdminRoot() {
       return;
     }
     const fallbackTab = visibleTabs[0]?.key ?? "workflow";
+    suppressNextHashChangeRef.current = true;
     window.location.hash = fallbackTab;
     setSelectedTab(fallbackTab);
   }, [adminExecutionBackend, selectedTab]);
@@ -1383,6 +1378,88 @@ export default function AdminRoot() {
     }
   }
 
+  const visibleTabs = tabsForExecutionBackend(adminExecutionBackend);
+  const renderedTab = visibleTabs.some((tab) => tab.key === selectedTab)
+    ? selectedTab
+    : visibleTabs[0]?.key ?? "workflow";
+  const activeTab = visibleTabs.find((tab) => tab.key === renderedTab) ?? TABS[TABS.length - 1];
+  const privilegeUnlocked = adminState?.privileged_operations.unlocked ?? session?.privileged_operations.unlocked ?? false;
+  const currentUserRole = adminState?.role ?? session?.role ?? null;
+  const canManageUsers = adminState?.can_manage_users ?? session?.can_manage_users ?? false;
+  const workflowFocus = renderedTab === "workflow";
+  const currentUserId = (
+    session?.username?.trim()
+    || session?.display_name?.trim()
+    || session?.session_id?.trim()
+    || "anonymous"
+  );
+  const currentUserLabel = (
+    session?.display_name?.trim()
+    || session?.username?.trim()
+    || session?.session_id?.trim()
+    || "anonymous"
+  );
+
+  useEffect(() => {
+    function handleHashChange() {
+      if (suppressNextHashChangeRef.current) {
+        suppressNextHashChangeRef.current = false;
+        return;
+      }
+      const nextTab = currentTab(window.location.hash);
+      if (nextTab === selectedTab) {
+        return;
+      }
+      if (renderedTab === "workflow" && nextTab !== "workflow" && workflowHasUnsavedChanges) {
+        if (!window.confirm("Workflow has unsaved changes. Discard them and continue?")) {
+          suppressNextHashChangeRef.current = true;
+          window.location.hash = "workflow";
+          setSelectedTab("workflow");
+          return;
+        }
+      }
+      setSelectedTab(nextTab);
+    }
+    window.addEventListener("hashchange", handleHashChange);
+    return () => window.removeEventListener("hashchange", handleHashChange);
+  }, [renderedTab, selectedTab, workflowHasUnsavedChanges]);
+
+  const adminUiState = {
+    privilegedUnlocked: privilegeUnlocked,
+    authBusy,
+    directoryScopedConfigEnabled: adminState?.directory_scoped_config_enabled ?? false,
+    currentUserId,
+    currentUserLabel,
+    currentUserRole,
+    canManageUsers,
+    selectedDirectoryPath,
+    selectedDirectoryParentPath,
+    directoryTree,
+    directoryStateLoading,
+    directoryStateError,
+    directoryPickerOpen,
+    openDirectoryPicker: () => setDirectoryPickerOpen(true),
+    closeDirectoryPicker: () => setDirectoryPickerOpen(false),
+    setSelectedDirectoryPath: (path: string) => setSelectedDirectoryPath(path || "root"),
+    workflowHasUnsavedChanges,
+    setWorkflowHasUnsavedChanges,
+    refreshDirectoryState: async () => loadDirectoryState(selectedDirectoryPath),
+    refreshAdminState,
+  };
+
+  function navigateToTab(nextTab: AdminTab) {
+    suppressNextHashChangeRef.current = true;
+    window.location.hash = nextTab;
+    setSelectedTab(nextTab);
+  }
+
+  function confirmDiscardWorkflowChanges() {
+    if (!workflowHasUnsavedChanges || renderedTab !== "workflow") {
+      return true;
+    }
+    return window.confirm("Workflow has unsaved changes. Discard them and continue?");
+  }
+
   if (session === null) {
     return (
       <div className="admin-login-shell">
@@ -1412,48 +1489,6 @@ export default function AdminRoot() {
       <LoginScreen session={session} theme={theme} onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))} deploymentStatus={deploymentStatus} error={sessionError} loading={authBusy} onSubmit={signIn} onAzureSignIn={startAzureSignIn} />
     );
   }
-
-  const visibleTabs = tabsForExecutionBackend(adminExecutionBackend);
-  const renderedTab = visibleTabs.some((tab) => tab.key === selectedTab)
-    ? selectedTab
-    : visibleTabs[0]?.key ?? "workflow";
-  const activeTab = visibleTabs.find((tab) => tab.key === renderedTab) ?? TABS[TABS.length - 1];
-  const privilegeUnlocked = adminState?.privileged_operations.unlocked ?? session.privileged_operations.unlocked;
-  const currentUserRole = adminState?.role ?? session.role ?? null;
-  const canManageUsers = adminState?.can_manage_users ?? session.can_manage_users;
-  const workflowFocus = renderedTab === "workflow";
-  const currentUserId = (
-    session.username?.trim()
-    || session.display_name?.trim()
-    || session.session_id?.trim()
-    || "anonymous"
-  );
-  const currentUserLabel = (
-    session.display_name?.trim()
-    || session.username?.trim()
-    || session.session_id?.trim()
-    || "anonymous"
-  );
-  const adminUiState = {
-    privilegedUnlocked: privilegeUnlocked,
-    authBusy,
-    directoryScopedConfigEnabled: adminState?.directory_scoped_config_enabled ?? false,
-    currentUserId,
-    currentUserLabel,
-    currentUserRole,
-    canManageUsers,
-    selectedDirectoryPath,
-    selectedDirectoryParentPath,
-    directoryTree,
-    directoryStateLoading,
-    directoryStateError,
-    directoryPickerOpen,
-    openDirectoryPicker: () => setDirectoryPickerOpen(true),
-    closeDirectoryPicker: () => setDirectoryPickerOpen(false),
-    setSelectedDirectoryPath: (path: string) => setSelectedDirectoryPath(path || "root"),
-    refreshDirectoryState: async () => loadDirectoryState(selectedDirectoryPath),
-    refreshAdminState,
-  };
 
   return (
     <AdminUiContext.Provider value={adminUiState}>
@@ -1544,8 +1579,13 @@ export default function AdminRoot() {
                 key={tab.key}
                 className={`admin-shell-tab ${tab.key === renderedTab ? "active" : ""}`}
                 onClick={() => {
-                  window.location.hash = tab.key;
-                  setSelectedTab(tab.key);
+                  if (tab.key === renderedTab) {
+                    return;
+                  }
+                  if (!confirmDiscardWorkflowChanges()) {
+                    return;
+                  }
+                  navigateToTab(tab.key);
                 }}
               >
                 <span>{workflowSidebarCollapsed ? tab.shortLabel : tab.label}</span>
@@ -1606,6 +1646,11 @@ export default function AdminRoot() {
         onClose={() => setDirectoryPickerOpen(false)}
         onRefreshState={(path) => loadDirectoryState(path ?? selectedDirectoryPath)}
         onSelect={(path) => {
+          if (path !== selectedDirectoryPath && renderedTab === "workflow" && workflowHasUnsavedChanges) {
+            if (!window.confirm("Workflow has unsaved changes. Discard them and continue?")) {
+              return;
+            }
+          }
           setSelectedDirectoryPath(path);
           setDirectoryPickerOpen(false);
         }}

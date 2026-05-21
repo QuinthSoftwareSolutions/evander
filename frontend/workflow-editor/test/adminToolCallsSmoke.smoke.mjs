@@ -229,11 +229,12 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
 
     if (pathname === "/api/admin/tool-calls") {
       assert.equal(url.searchParams.get("directory_path"), "root");
-      assert.equal(url.searchParams.get("direct_only"), "true");
+      assert.equal(url.searchParams.get("direct_only"), "false");
       assert.equal(url.searchParams.get("limit"), "100");
-      assert.equal(url.searchParams.get("session_id"), null);
-      assert.equal(url.searchParams.get("tool_name"), null);
-      assert.equal(url.searchParams.get("status"), null);
+      assert.equal(url.searchParams.get("q"), "request-1");
+      assert.equal(url.searchParams.get("session_id"), "session-1");
+      assert.equal(url.searchParams.get("tool_name"), "email_send_approved");
+      assert.equal(url.searchParams.get("status"), "success");
       toolCallResponses.push(url.search);
       await route.fulfill(jsonResponse(toolCallsResponse));
       return;
@@ -253,16 +254,23 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
     }
   });
 
-  await page.goto(`http://127.0.0.1:${address.port}/#tool-calls`, {
+  await page.goto(`http://127.0.0.1:${address.port}/#tool-calls?q=request-1&session_id=session-1&tool_name=email_send_approved&status=success&direct_only=false`, {
     waitUntil: "domcontentloaded",
   });
 
   const navEntry = page
     .locator('nav[aria-label="Admin sections"] .admin-shell-tab')
     .filter({ hasText: "Tool Calls" });
+  const filterSidebar = page.locator(".feature-sidebar");
   await page.getByRole("button", { name: "Expand sections" }).click();
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Tool Calls" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => filterSidebar.getByLabel("Search").waitFor({ state: "visible" }));
+  assert.equal(await filterSidebar.getByLabel("Search").inputValue(), "request-1");
+  assert.equal(await filterSidebar.getByLabel("Session").inputValue(), "session-1");
+  assert.equal(await filterSidebar.getByLabel("Tool").inputValue(), "email_send_approved");
+  assert.equal(await filterSidebar.getByLabel("Status").inputValue(), "success");
+  assert.equal(await filterSidebar.getByLabel("Direct directory only").isChecked(), false);
   const rows = page.locator(".tool-calls-table tbody tr");
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Audit entries" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => rows.nth(0).waitFor({ state: "visible" }));
@@ -285,7 +293,10 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
   const resultValue = await page.getByLabel("Result").inputValue();
   const bodyText = await page.locator("body").innerText();
 
-  assert.equal(await page.evaluate(() => window.location.hash), "#tool-calls");
+  assert.equal(
+    await page.evaluate(() => window.location.hash),
+    "#tool-calls?q=request-1&session_id=session-1&tool_name=email_send_approved&status=success&direct_only=false",
+  );
   assert.equal(await navEntry.count(), 1);
   assert.equal(await rows.count(), 2);
   assert.ok(toolCallResponses.length >= 1);

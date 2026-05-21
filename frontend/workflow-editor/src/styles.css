@@ -1431,6 +1431,10 @@ select {
     min-height: 28rem;
   }
 
+  .admin-workflow-panel .node-drag-surface {
+    touch-action: none;
+  }
+
   .modal-backdrop {
     padding: 0.9rem;
   }
@@ -2051,13 +2055,15 @@ select {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 0.35rem;
   min-width: 0;
 }
 
 .runtime-run-state,
 .node-runtime-badge,
-.node-diagnostic-badge {
+.node-diagnostic-badge,
+.node-unsaved-badge {
   padding: 0.2rem 0.5rem;
   border-radius: 999px;
   font-family: "Avenir Next Condensed", "Franklin Gothic Medium", sans-serif;
@@ -2072,6 +2078,15 @@ select {
   background: #ffe3dc;
   color: #9a3412;
   border: 1px solid rgba(178, 59, 26, 0.22);
+}
+
+.node-unsaved-badge {
+  white-space: nowrap;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  background: #f7e1ba;
+  color: #7a4a00;
+  border: 1px solid rgba(122, 74, 0, 0.22);
 }
 
 .node-runtime-badge.compact {
@@ -2358,6 +2373,28 @@ select {
   border-radius: 8px;
   background: rgba(231, 220, 201, 0.48);
   overflow-wrap: anywhere;
+}
+
+.run-detail-link-item .missing {
+  color: #8a3b1b;
+  font-weight: 600;
+}
+
+.run-detail-link-group {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.run-detail-link-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.run-detail-link-actions button {
+  min-height: 2rem;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.75rem;
 }
 
 .run-detail-candidates {
@@ -6080,6 +6117,12 @@ select {
 :root[data-theme="dark"] .node-id,
 :root[data-theme="dark"] .runtime-run-event {
   color: #9fb3c0;
+}
+
+:root[data-theme="dark"] .node-unsaved-badge {
+  background: #3d2d12;
+  color: #ffd98f;
+  border-color: rgba(255, 217, 143, 0.22);
 }
 
 :root[data-theme="dark"] .status-failed,
