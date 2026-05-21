@@ -191,6 +191,7 @@ type NodeConnectionMenuState = {
   position: CanvasPoint;
   sourcePoint: CanvasPoint;
   routes: WorkflowConnectionRouteOption[];
+  failedCount: number;
 };
 
 type PendingConnectionRole = "source" | "valid-target" | "invalid-target";
@@ -296,6 +297,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:agent:prompt": "Send a prompt to an agent session.",
   "effect:agent:exec": "Run a shell command in an agent session.",
   "effect:agent:destroy": "Destroy an agent session and its backend target.",
+  "effect:session:approve-mcp-tools-for-run": "Approve MCP tools for one agent session during this run.",
   "effect:semantic:ensure-collection": "Ensure a semantic collection exists with the configured vector schema.",
   "effect:semantic:upsert": "Embed one text string and upsert it as one semantic point.",
   "effect:semantic:delete": "Delete semantic points by explicit point IDs.",
@@ -313,6 +315,8 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:ado:update-work-item": "Update an Azure DevOps work item with an optional state guard.",
   "effect:session:update-metadata": "Patch session metadata on the host.",
   "effect:session:renew-if-expired": "Extend an expired session from the host.",
+  "effect:artifact:stage": "Copy a file or directory from /home/agent into /artifacts.",
+  "effect:artifact:publish-artifacts": "Publish the session /artifacts folder as an immutable tar.gz archive.",
   "effect:git:promote-agent-branch": "Promote an agent branch into a trusted host checkout.",
   "effect:pr:create": "Create a pull request from the host side.",
   "effect:pull-request:update": "Update pull request metadata or tags.",
@@ -397,7 +401,7 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
         nodeData.dominantStatus ? ` runtime-${nodeData.dominantStatus}` : ""
       }${nodeData.hasDiagnostics ? " invalid" : ""}${
         nodeData.pendingConnectionRole ? ` connection-${nodeData.pendingConnectionRole}` : ""
-      }${nodeData.isInspectGhost ? " inspect-ghost" : ""}`}
+      }${nodeData.hasUnsavedChanges ? " unsaved" : ""}${nodeData.isInspectGhost ? " inspect-ghost" : ""}`}
     >
       <Handle type="target" position={Position.Left} className="workflow-handle workflow-technical-handle" />
       {nodeData.inputPorts.map((port) => (
@@ -1370,6 +1374,25 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       type,
       session_id: "session-id",
       extend_by: "1d",
+    };
+  }
+  if (kind === "effect" && type === "effect:artifact:stage") {
+    return {
+      id,
+      display_name: "Stage artifact",
+      type,
+      session_id: "session-id",
+      path: "repos/project/output/report.html",
+      destination_path: "reports/report.html",
+    };
+  }
+  if (kind === "effect" && type === "effect:artifact:publish-artifacts") {
+    return {
+      id,
+      display_name: "Publish artifacts",
+      type,
+      session_id: "session-id",
+      key: "runs/artifact-key",
     };
   }
   if (kind === "effect" && type === "effect:git:promote-agent-branch") {
@@ -2553,6 +2576,7 @@ export default function App() {
   const [inspectorFieldModes, setInspectorFieldModes] = useState<Record<string, "literal" | "bind" | "template">>({});
   const [rawJsonDraft, setRawJsonDraft] = useState("{}");
   const [clearingRunIds, setClearingRunIds] = useState<Record<string, boolean>>({});
+  const [dismissingNodeFailureIds, setDismissingNodeFailureIds] = useState<Record<string, boolean>>({});
   const [resumingRunIds, setResumingRunIds] = useState<Record<string, boolean>>({});
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -2695,6 +2719,17 @@ export default function App() {
   );
   const dirtyNodeIdSet = useMemo(() => new Set(dirtyNodeIds), [dirtyNodeIds]);
   const selectedNodeHasUnsavedChanges = Boolean(selectedNodeId && dirtyNodeIdSet.has(selectedNodeId));
+  const dirtyNodeSummary = useMemo(() => {
+    if (dirtyNodeIds.length === 0) return null;
+    const dirtyNodeLabels = dirtyNodeIds
+      .map((nodeId) => nodeById(config, nodeId)?.display_name || nodeId)
+      .slice(0, 3);
+    const remainingCount = dirtyNodeIds.length - dirtyNodeLabels.length;
+    return `${dirtyNodeIds.length} edited node${dirtyNodeIds.length === 1 ? "" : "s"}: ${dirtyNodeLabels.join(", ")}${
+      remainingCount > 0 ? `, +${remainingCount} more` : ""
+    }`;
+  }, [config, dirtyNodeIds]);
+  const savePanelStatusTone = hasUnsavedWorkflowChanges ? "dirty" : saveState === "saved" ? "saved" : "clean";
   const visibleWorkflowNodes = workflowNodes(config).filter((node) => visibleGraphNodeIds.has(node.id));
   const runSearchScopeOptions: WorkflowRunSearchScopeOption[] = [
     ...visibleWorkflowGraphs.map((graph) => ({
@@ -3001,6 +3036,32 @@ export default function App() {
       setClearingRunIds((current) => {
         const next = { ...current };
         delete next[normalizedEventId];
+        return next;
+      });
+    }
+  }
+
+  async function dismissNodeFailures(nodeId: string, failedCount: number) {
+    const normalizedNodeId = nodeId.trim();
+    if (!normalizedNodeId || dismissingNodeFailureIds[normalizedNodeId] || editLocked) return;
+    const countLabel = failedCount === 1 ? "1 active fail log" : `${failedCount} active fail logs`;
+    if (!window.confirm(`Dismiss all ${countLabel} for node ${normalizedNodeId}?`)) return;
+    setDismissingNodeFailureIds((current) => ({ ...current, [normalizedNodeId]: true }));
+    try {
+      await fetchJson(`/api/workflow-editor/node-failures/${encodeURIComponent(normalizedNodeId)}`, {
+        method: "DELETE",
+      });
+      const nextSnapshot = await fetchJson<WorkflowRunSnapshot>("/api/workflow-editor/runs");
+      setRunSnapshot(nextSnapshot);
+      setNodeConnectionMenu(null);
+      setPendingConnection(null);
+      setError(null);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setDismissingNodeFailureIds((current) => {
+        const next = { ...current };
+        delete next[normalizedNodeId];
         return next;
       });
     }
@@ -3554,6 +3615,7 @@ export default function App() {
       position,
       sourcePoint: nodeCenterCanvasPoint(node),
       routes: workflowConnectionRouteOptions(node.data.outputPorts),
+      failedCount: node.data.statusBadges.find((badge) => badge.status === "failed")?.count ?? 0,
     });
     setPendingConnection(null);
     setError(null);
@@ -4754,15 +4816,15 @@ export default function App() {
                 {groupToolOptions(field.options).map((group) => {
                   const enabledCount = group.items.filter((option) => selectedValues.has(option.value)).length;
                   return (
-                    <section key={group.name} className="option-checkbox-section">
-                      <div className="option-checkbox-section-header">
-                        <span>{group.name}</span>
-                        <span>{enabledCount} of {group.items.length}</span>
-                      </div>
+                    <details key={group.name} className="option-checkbox-section">
+                      <summary className="option-checkbox-section-header">
+                        <span className="option-checkbox-section-title">{group.name}</span>
+                        <span className="option-checkbox-section-count">{enabledCount} of {group.items.length}</span>
+                      </summary>
                       <div className="option-checkbox-list">
                         {renderOptionCheckboxRows(field, group.items, selectedValues, isDisabled)}
                       </div>
-                    </section>
+                    </details>
                   );
                 })}
               </div>
@@ -5763,6 +5825,16 @@ export default function App() {
               <button className="primary" onClick={() => void saveDocument()} disabled={workflowEditLocked}>
                 {saveState === "saving" ? "Saving..." : "Save workflow"}
               </button>
+              <div className={`save-status save-status-${savePanelStatusTone}`} role="status" aria-live="polite">
+                <strong>
+                  {hasUnsavedWorkflowChanges
+                    ? "Unsaved workflow changes"
+                    : saveState === "saved"
+                      ? "Workflow saved"
+                      : "No unsaved workflow changes"}
+                </strong>
+                {hasUnsavedWorkflowChanges && dirtyNodeSummary ? <span>{dirtyNodeSummary}</span> : null}
+              </div>
               {error ? <div className="error-box save-error-box">{error}</div> : null}
               {document ? (
                 <div className="path-note">
@@ -5978,6 +6050,21 @@ export default function App() {
                 }}
                 role="menu"
               >
+                {nodeConnectionMenu.failedCount > 0 ? (
+                  <>
+                    <div className="node-context-menu-heading">Runtime</div>
+                    <button
+                      type="button"
+                      className="node-context-menu-item node-context-menu-danger"
+                      onClick={() => void dismissNodeFailures(nodeConnectionMenu.nodeId, nodeConnectionMenu.failedCount)}
+                      disabled={Boolean(dismissingNodeFailureIds[nodeConnectionMenu.nodeId])}
+                      role="menuitem"
+                    >
+                      {dismissingNodeFailureIds[nodeConnectionMenu.nodeId] ? "Dismissing fail logs..." : "Dismiss all fail logs"}
+                    </button>
+                    <div className="node-context-menu-separator" />
+                  </>
+                ) : null}
                 <div className="node-context-menu-heading">Add connection</div>
                 {nodeConnectionMenu.routes.map((route) => (
                   <button

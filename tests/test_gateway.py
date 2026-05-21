@@ -65,11 +65,19 @@ def _call_tool_with_context(
 
 
 def _make_request_context(
-    *, session_id: str | None = None, transport_session_id: str | None = None
+    *,
+    session_id: str | None = None,
+    transport_session_id: str | None = None,
+    workflow_run_id: str | None = None,
+    mcp_tool_approval_lease_id: str | None = None,
 ) -> object:
     query_params: dict[str, str] = {}
     if session_id is not None:
         query_params["session_id"] = session_id
+    if workflow_run_id is not None:
+        query_params["workflow_run_id"] = workflow_run_id
+    if mcp_tool_approval_lease_id is not None:
+        query_params["mcp_tool_approval_lease_id"] = mcp_tool_approval_lease_id
     headers: dict[str, str] = {}
     if transport_session_id is not None:
         headers["mcp-session-id"] = transport_session_id
@@ -365,6 +373,43 @@ def test_create_server_injects_approval_request_id_into_public_tool_schemas(
             {"type": "null"},
         ]
         assert properties["approval_request_id"]["default"] is None
+
+
+def test_tool_approval_lease_from_request_context_allows_only_matching_run(
+    tmp_path: Path,
+) -> None:
+    context = _build_runtime_with_workflow_config(tmp_path, allowed_tools=[])
+    lease = context.tool_approval_leases.upsert_lease(
+        session_id="session-1",
+        workflow_run_id="workflow-run-1",
+        tools=[ToolName.GET_WORKFLOW_SNAPSHOT],
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+    )
+    server = create_server(context)
+
+    result = _call_tool_with_context(
+        server,
+        "get_workflow_snapshot",
+        {"session_id": "session-1"},
+        _make_request_context(
+            session_id="session-1",
+            workflow_run_id="workflow-run-1",
+            mcp_tool_approval_lease_id=lease.lease_id,
+        ),
+    )
+
+    assert result["worker_id"] == "trigger-orchestrator"
+    with pytest.raises(ToolError, match="not allowed"):
+        _call_tool_with_context(
+            server,
+            "get_workflow_snapshot",
+            {"session_id": "session-1"},
+            _make_request_context(
+                session_id="session-1",
+                workflow_run_id="workflow-run-2",
+                mcp_tool_approval_lease_id=lease.lease_id,
+            ),
+        )
 
 
 def test_approval_required_tool_creates_pending_request_without_execution(

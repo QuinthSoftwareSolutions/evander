@@ -142,7 +142,12 @@ from agent_sandbox.models import (
     ToolName,
     digest_payload,
 )
-from agent_sandbox.policy import PolicyError, ToolArgumentPolicyError
+from agent_sandbox.policy import (
+    PolicyError,
+    ToolArgumentPolicyError,
+    reset_tool_approval_context,
+    set_tool_approval_context,
+)
 from agent_sandbox.retell_phone import (
     RetellWebhookSignatureError,
     retell_api_key_from_config,
@@ -239,6 +244,8 @@ class _ToolCallAuditContext:
     request_id: str | None = None
     correlation_id: str | None = None
     transport_session_id: str | None = None
+    workflow_run_id: str | None = None
+    mcp_tool_approval_lease_id: str | None = None
     audit_emitted: bool = False
 
 
@@ -312,6 +319,20 @@ def _string_from_headers(headers: Any, *names: str) -> str | None:
     for name in names:
         try:
             candidate = headers.get(name)
+        except AttributeError:
+            candidate = None
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _string_from_query_params(query_params: Any, *names: str) -> str | None:
+    if query_params is None:
+        return None
+    for name in names:
+        try:
+            candidate = query_params.get(name)
         except AttributeError:
             candidate = None
         text = str(candidate or "").strip()
@@ -398,6 +419,31 @@ def _tool_call_context_from_request(
         request_id = _first_string_in_payload(args, ("request_id",))
     if correlation_id is None:
         correlation_id = _first_string_in_payload(args, ("correlation_id",))
+    workflow_run_id = _string_from_query_params(query_params, "workflow_run_id")
+    if workflow_run_id is None:
+        workflow_run_id = _string_from_headers(
+            headers,
+            "x-agent-sandbox-workflow-run-id",
+            "x-workflow-run-id",
+        )
+    if workflow_run_id is None:
+        workflow_run_id = _first_string_in_payload(args, ("workflow_run_id",))
+    mcp_tool_approval_lease_id = _string_from_query_params(
+        query_params,
+        "mcp_tool_approval_lease_id",
+        "tool_approval_lease_id",
+    )
+    if mcp_tool_approval_lease_id is None:
+        mcp_tool_approval_lease_id = _string_from_headers(
+            headers,
+            "x-agent-sandbox-mcp-tool-approval-lease-id",
+            "x-mcp-tool-approval-lease-id",
+        )
+    if mcp_tool_approval_lease_id is None:
+        mcp_tool_approval_lease_id = _first_string_in_payload(
+            args,
+            ("mcp_tool_approval_lease_id", "tool_approval_lease_id"),
+        )
     return _ToolCallAuditContext(
         tool_name=tool_name,
         started_at=time.perf_counter(),
@@ -406,6 +452,8 @@ def _tool_call_context_from_request(
         request_id=request_id,
         correlation_id=correlation_id,
         transport_session_id=transport_session_id,
+        workflow_run_id=workflow_run_id,
+        mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
     )
 
 
@@ -452,6 +500,17 @@ def _tool_call_audit_fields(
         approval_request_id = _first_string_in_payload(args, ("request_id",))
         if approval_request_id is None:
             approval_request_id = _first_string_in_payload(result, ("request_id",))
+    mcp_tool_approval_lease_id = _first_string_in_payload(
+        args,
+        ("mcp_tool_approval_lease_id", "tool_approval_lease_id"),
+    )
+    if mcp_tool_approval_lease_id is None:
+        mcp_tool_approval_lease_id = _first_string_in_payload(
+            result,
+            ("mcp_tool_approval_lease_id", "tool_approval_lease_id"),
+        )
+    if mcp_tool_approval_lease_id is None and current is not None:
+        mcp_tool_approval_lease_id = current.mcp_tool_approval_lease_id
     request_id = (
         current.request_id
         if current is not None and current.request_id
@@ -469,6 +528,8 @@ def _tool_call_audit_fields(
     workflow_run_id = _first_string_in_payload(args, ("workflow_run_id",))
     if workflow_run_id is None:
         workflow_run_id = _first_string_in_payload(result, ("workflow_run_id",))
+    if workflow_run_id is None and current is not None:
+        workflow_run_id = current.workflow_run_id
     if workflow_run_id is None:
         workflow_run_id = str(metadata.get("workflow_run_id") or "").strip() or None
     trace_id = _first_string_in_payload(args, ("workflow_trace_id", "trace_id"))
@@ -480,6 +541,7 @@ def _tool_call_audit_fields(
         "request_id": request_id,
         "correlation_id": correlation_id,
         "approval_request_id": approval_request_id,
+        "mcp_tool_approval_lease_id": mcp_tool_approval_lease_id,
         "workflow_run_id": workflow_run_id,
         "trace_id": trace_id,
         "duration_ms": _tool_call_duration_ms(current),
@@ -8437,6 +8499,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
         else:
             dispatch_call_kwargs["arguments"] = sanitized_arguments
         token = _TOOL_CALL_AUDIT_CONTEXT.set(call_context)
+        approval_context_token = set_tool_approval_context(
+            session_id=call_context.session_id,
+            workflow_run_id=call_context.workflow_run_id,
+            lease_id=call_context.mcp_tool_approval_lease_id,
+        )
         try:
             enforce_tool_argument_policy(
                 raw_tool_name=raw_tool_name,
@@ -8496,6 +8563,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 _mark_tool_call_audited()
             raise
         finally:
+            reset_tool_approval_context(approval_context_token)
             _TOOL_CALL_AUDIT_CONTEXT.reset(token)
 
     server._tool_manager.call_tool = audited_call_tool

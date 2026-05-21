@@ -273,6 +273,33 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "extend_by": "8h",
         }
     )
+    session_approve_tools = adapter.validate_python(
+        {
+            "id": "effect-session-approve-tools",
+            "display_name": "Approve tools",
+            "type": "effect:session:approve-mcp-tools-for-run",
+            "session_id": "session-1",
+            "tools": ["run_script"],
+        }
+    )
+    artifact_stage = adapter.validate_python(
+        {
+            "id": "effect-artifact-stage",
+            "display_name": "Stage artifact",
+            "type": "effect:artifact:stage",
+            "session_id": "session-1",
+            "path": "repos/project/report.html",
+        }
+    )
+    artifact_publish = adapter.validate_python(
+        {
+            "id": "effect-artifact-publish",
+            "display_name": "Publish artifacts",
+            "type": "effect:artifact:publish-artifacts",
+            "session_id": "session-1",
+            "key": "runs/session-1/report",
+        }
+    )
 
     assert vm.type == "effect:vm:create"
     assert vm.labels == {"workflow": "issue-worker"}
@@ -303,6 +330,9 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert communication.type == "effect:communication:send-message"
     assert notification.type == "effect:notification:send"
     assert session_renew.type == "effect:session:renew-if-expired"
+    assert session_approve_tools.type == "effect:session:approve-mcp-tools-for-run"
+    assert artifact_stage.type == "effect:artifact:stage"
+    assert artifact_publish.type == "effect:artifact:publish-artifacts"
     assert promote.type == "effect:git:promote-agent-branch"
     assert pr_create.type == "effect:pr:create"
     assert prompt.prompt == "Continue ${{effect_1.session_id}}"

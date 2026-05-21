@@ -130,6 +130,7 @@ class _AgentPromptDispatchPortStub:
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
+        mcp_gateway_url: str | None = None,
     ) -> object:
         self.resume_calls.append(
             {
@@ -139,6 +140,7 @@ class _AgentPromptDispatchPortStub:
                 "vm_user": vm_user,
                 "dispatch_id": dispatch_id,
                 "resume_thread_id": resume_thread_id,
+                "mcp_gateway_url": mcp_gateway_url,
             }
         )
         return self.result
@@ -2888,6 +2890,82 @@ def test_agent_enqueue_prompt_dispatches_queued_prompt_when_target_agent_becomes
     assert waiting_records[0].status == "waiting"
     assert waiting_records[0].effect_type == "effect:agent:enqueue-prompt"
     assert waiting_records[0].outputs["thread_id"] == "thread-queued"
+
+
+def test_agent_enqueue_prompt_dispatch_preserves_mcp_lease_for_queued_libvirt_prompt(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(
+        runtime_dir=runtime_dir,
+        gateway_url="http://gateway.test/mcp",
+    )
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Enqueue",
+                    "type": "effect:agent:enqueue-prompt",
+                    "vm_name": "vm-1",
+                    "prompt": "hello",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    resume_calls: list[dict[str, object]] = []
+    worker.queued_agent_prompt_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="vm-1",
+            target="session-1",
+            vm_name="vm-1",
+            session_id="session-1",
+            prompt="hello",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            effect_id="effect-1",
+            metadata={
+                "workflow_run_id": "run-1",
+                "mcp_tool_approval_lease_id": "lease-1",
+            },
+        )
+    )
+    worker.agent_run_status_port = _AgentRunStatusPortStub(
+        [
+            VmSummary(
+                vm_name="vm-1",
+                libvirt_state="running",
+                agent_state="idle",
+                session_ids=["session-1"],
+            )
+        ]
+    )
+    worker.agent_prompt_dispatch_port = _AgentPromptDispatchPortStub(
+        resume_calls,
+        type("Result", (), {"success": True, "thread_id": "thread-queued"})(),
+    )
+
+    worker._run_post_completion_dispatch_hooks()
+
+    assert len(resume_calls) == 1
+    assert resume_calls[0]["mcp_gateway_url"] == (
+        "http://gateway.test/mcp?"
+        "session_id=session-1&workflow_run_id=run-1&mcp_tool_approval_lease_id=lease-1"
+    )
 
 
 def test_agent_enqueue_prompt_queue_dispatch_skips_and_retries_when_inventory_fails(

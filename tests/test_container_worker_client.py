@@ -288,16 +288,156 @@ def test_container_worker_client_provisions_lists_and_drops_mssql_databases(
     ]
 
 
+@pytest.mark.parametrize("exception_class", [httpx.ConnectError, httpx.ConnectTimeout])
+def test_container_worker_client_retries_connect_failure_before_create_success(
+    monkeypatch: pytest.MonkeyPatch,
+    exception_class: type[httpx.HTTPError],
+) -> None:
+    monkeypatch.setenv("WORKER_TOKEN", "secret-token")
+    monkeypatch.setattr("agent_sandbox.execution.container_worker_client.random.random", lambda: 0.5)
+    requests: list[httpx.Request] = []
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            raise exception_class("connection refused", request=request)
+        return httpx.Response(201, json=_job_payload(), request=request)
+
+    worker = ContainerWorkerClient(
+        base_url="http://worker.test",
+        token_env="WORKER_TOKEN",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=sleeps.append,
+    )
+
+    record = worker.create(
+        WorkerJobRequest(
+            session_id="session-1", job_id="job-1", image="runner:latest", command=["true"]
+        )
+    )
+
+    assert record.job_id == "job-1"
+    assert [request.url.path for request in requests] == ["/v1/jobs", "/v1/jobs"]
+    assert sleeps == [1.0]
+
+
+def test_container_worker_client_exhausts_connect_retries_with_capped_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORKER_TOKEN", "secret-token")
+    monkeypatch.setattr("agent_sandbox.execution.container_worker_client.random.random", lambda: 0.5)
+    requests: list[httpx.Request] = []
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        raise httpx.ConnectError("connection refused", request=request)
+
+    worker = ContainerWorkerClient(
+        base_url="http://worker.test",
+        token_env="WORKER_TOKEN",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=sleeps.append,
+    )
+
+    with pytest.raises(ContainerWorkerClientError) as exc:
+        worker.create(
+            WorkerJobRequest(
+                session_id="session-1",
+                job_id="job-1",
+                image="runner:latest",
+                command=["true"],
+            )
+        )
+
+    assert len(requests) == 5
+    assert sleeps == [1.0, 2.0, 4.0, 8.0]
+    message = str(exc.value)
+    assert "attempts=5/5" in message
+    assert "connection refused" in message
+
+
+def test_container_worker_client_does_not_retry_http_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORKER_TOKEN", "secret-token")
+    requests: list[httpx.Request] = []
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(503, text="worker unavailable", request=request)
+
+    worker = ContainerWorkerClient(
+        base_url="http://worker.test",
+        token_env="WORKER_TOKEN",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=sleeps.append,
+    )
+
+    with pytest.raises(ContainerWorkerClientError, match="HTTP 503"):
+        worker.create(
+            WorkerJobRequest(
+                session_id="session-1",
+                job_id="job-1",
+                image="runner:latest",
+                command=["true"],
+            )
+        )
+
+    assert len(requests) == 1
+    assert sleeps == []
+
+
+def test_container_worker_client_does_not_retry_read_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORKER_TOKEN", "secret-token")
+    requests: list[httpx.Request] = []
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        raise httpx.ReadTimeout("read timed out", request=request)
+
+    worker = ContainerWorkerClient(
+        base_url="http://worker.test",
+        token_env="WORKER_TOKEN",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=sleeps.append,
+    )
+
+    with pytest.raises(ContainerWorkerClientError, match="read timed out"):
+        worker.create(
+            WorkerJobRequest(
+                session_id="session-1",
+                job_id="job-1",
+                image="runner:latest",
+                command=["true"],
+            )
+        )
+
+    assert len(requests) == 1
+    assert sleeps == []
+
+
 def test_container_worker_client_requires_token_without_leaking_secret(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("WORKER_TOKEN", raising=False)
-    worker = ContainerWorkerClient(base_url="http://worker.test", token_env="WORKER_TOKEN")
+    sleeps: list[float] = []
+    worker = ContainerWorkerClient(
+        base_url="http://worker.test",
+        token_env="WORKER_TOKEN",
+        sleep=sleeps.append,
+    )
 
     with pytest.raises(ContainerWorkerClientError, match="WORKER_TOKEN") as exc:
         worker.get("job-1")
 
     assert "secret" not in str(exc.value).lower()
+    assert sleeps == []
 
 
 def test_container_worker_client_redacts_secret_error_payload(

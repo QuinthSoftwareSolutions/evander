@@ -23,7 +23,9 @@ from .agent_prompt import AgentPromptEffectProvider
 from .agent_session import (
     container_backend,
     container_prompt_command,
+    container_worker_guest_gateway_url,
     effective_config_for_session,
+    gateway_url_with_session_context,
     require_container_session_id,
     safe_effect_execution_id,
     selected_execution_backend_for_target,
@@ -75,6 +77,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             "vm_user": effect.vm_user,
             "resume_thread_id": effect.resume_thread_id,
             "queue_key": effect.queue_key,
+            "mcp_tool_approval_lease_id": effect.mcp_tool_approval_lease_id,
         }
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -89,6 +92,11 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         model = self._normalize_optional_string(payload.get("model"))
         resume_thread_id = self._normalize_optional_string(payload.get("resume_thread_id"))
         queue_key = self._normalize_optional_string(payload.get("queue_key"))
+        mcp_tool_approval_lease_id = self._resolve_mcp_tool_approval_lease_id(
+            payload=payload,
+            execution_context=execution_context,
+        )
+        workflow_run_id = self._workflow_run_id(execution_context)
 
         execution_backend, config = selected_execution_backend_for_target(
             context,
@@ -106,6 +114,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 config=config,
                 effect_id=effect.id,
                 workflow_context=workflow_context,
+                workflow_run_id=workflow_run_id,
+                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
             )
         if execution_backend != ExecutionBackendKind.LIBVIRT_VM.value:
             raise ValueError(f"Unsupported execution_backend: {execution_backend}")
@@ -135,6 +145,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 effect_id=effect.id,
                 queue_key=queue_key,
                 workflow_context=workflow_context,
+                workflow_run_id=workflow_run_id,
+                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
             )
             return {
                 "success": True,
@@ -153,6 +165,12 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             vm_user=vm_user,
             dispatch_id=dispatch_id,
             resume_thread_id=resume_thread_id,
+            mcp_gateway_url=self._mcp_gateway_url(
+                config=config,
+                target=target,
+                workflow_run_id=workflow_run_id,
+                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+            ),
         )
         if not bool(getattr(result, "success", False)):
             record = self._queue_prompt(
@@ -166,6 +184,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 effect_id=effect.id,
                 queue_key=queue_key,
                 workflow_context=workflow_context,
+                workflow_run_id=workflow_run_id,
+                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
             )
             message = self._normalize_optional_string(getattr(result, "message", None)) or "<empty>"
             raise RuntimeError(
@@ -205,6 +225,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         config: Any,
         effect_id: str,
         workflow_context: dict[str, dict[str, Any]] | None,
+        workflow_run_id: str | None,
+        mcp_tool_approval_lease_id: str | None,
     ) -> dict[str, Any]:
         context = self._context()
         session_id, session = require_container_session_id(
@@ -237,6 +259,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 effect_id=effect_id,
                 queue_key=queue_key or session_id,
                 workflow_context=workflow_context,
+                workflow_run_id=workflow_run_id,
+                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
             )
             return {
                 "success": True,
@@ -264,6 +288,15 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                             prompt=prompt,
                             model=resolved_model,
                             resume_thread_id=resume_thread_id,
+                            mcp_gateway_url=self._mcp_gateway_url(
+                                config=effective_config,
+                                target=session_id,
+                                workflow_run_id=workflow_run_id,
+                                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                                base_gateway_url=container_worker_guest_gateway_url(
+                                    effective_config
+                                ),
+                            ),
                         ),
                         metadata={
                             "effect_type": self.node_type(),
@@ -284,6 +317,8 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 effect_id=effect_id,
                 queue_key=queue_key or session_id,
                 workflow_context=workflow_context,
+                workflow_run_id=workflow_run_id,
+                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
             )
             message = self._normalize_optional_string(exc) or type(exc).__name__
             raise RuntimeError(
@@ -505,6 +540,57 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             return None
         return session_id
 
+    def _mcp_gateway_url(
+        self,
+        *,
+        config: Any,
+        target: str,
+        workflow_run_id: str | None,
+        mcp_tool_approval_lease_id: str | None,
+        base_gateway_url: str | None = None,
+    ) -> str | None:
+        if not mcp_tool_approval_lease_id:
+            return None
+        return gateway_url_with_session_context(
+            base_gateway_url or config.gateway_url,
+            session_id=self._session_id_from_target(target),
+            workflow_run_id=workflow_run_id,
+            mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+        )
+
+    def _session_id_from_target(self, target: str) -> str:
+        return self._resolve_session_id(target) or target
+
+    def _resolve_mcp_tool_approval_lease_id(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        execution_context: Mapping[str, Any] | None,
+    ) -> str | None:
+        text = self._normalize_optional_string(payload.get("mcp_tool_approval_lease_id"))
+        if text:
+            return text
+        input_payload = (
+            execution_context.get("input_payload")
+            if isinstance(execution_context, Mapping)
+            else None
+        )
+        if isinstance(input_payload, Mapping):
+            for key in ("mcp_tool_approval_lease_id", "lease_id"):
+                text = self._normalize_optional_string(input_payload.get(key))
+                if text:
+                    return text
+        return None
+
+    def _workflow_run_id(self, execution_context: Mapping[str, Any] | None) -> str | None:
+        if not isinstance(execution_context, Mapping):
+            return None
+        for key in ("workflow_run_id", "workflow_trace_id", "trace_id"):
+            text = self._normalize_optional_string(execution_context.get(key))
+            if text:
+                return text
+        return None
+
     def _effect(self) -> AgentEnqueuePromptEffectDefinition:
         if not isinstance(self.effect_definition, AgentEnqueuePromptEffectDefinition):
             raise RuntimeError(
@@ -530,8 +616,20 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         effect_id: str,
         queue_key: str | None = None,
         workflow_context: dict[str, dict[str, Any]] | None = None,
+        workflow_run_id: str | None = None,
+        mcp_tool_approval_lease_id: str | None = None,
     ) -> QueuedAgentPromptRecord:
         context = self._context()
+        metadata = {
+            key: value
+            for key, value in {
+                "workflow_run_id": self._normalize_optional_string(workflow_run_id),
+                "mcp_tool_approval_lease_id": self._normalize_optional_string(
+                    mcp_tool_approval_lease_id
+                ),
+            }.items()
+            if value
+        }
         return enqueue_agent_prompt(
             runtime_dir=context.resolved_config.runtime_dir,
             queue_key=queue_key,
@@ -543,6 +641,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             vm_user=vm_user,
             resume_thread_id=resume_thread_id,
             effect_id=effect_id,
+            metadata=metadata,
             workflow_context=workflow_context,
         )
 

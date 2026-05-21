@@ -172,6 +172,14 @@ def workflow_routes(service: AdminService) -> list[Route]:
             return json_error(str(exc), status_code=status_code)
         return JSONResponse(payload.model_dump(mode="json"))
 
+    async def dismiss_node_failures(request: Request) -> JSONResponse:
+        node_id = request.path_params.get("node_id", "")
+        try:
+            payload = service.dismiss_workflow_node_failures(node_id)
+        except ValueError as exc:
+            return json_error(str(exc))
+        return JSONResponse(payload.model_dump(mode="json"))
+
     async def resume_run(request: Request) -> JSONResponse:
         event_id = request.path_params.get("event_id", "")
         try:
@@ -224,6 +232,7 @@ def workflow_routes(service: AdminService) -> list[Route]:
         Route("/api/workflow-editor/runs", get_runs, methods=["GET"]),
         Route("/api/workflow-editor/run-search", get_run_search, methods=["GET"]),
         Route("/api/workflow-editor/run-detail", get_run_detail, methods=["GET"]),
+        Route("/api/workflow-editor/node-failures/{node_id:path}", dismiss_node_failures, methods=["DELETE"]),
         Route("/api/workflow-editor/runs/{event_id:path}", clear_run, methods=["DELETE"]),
         Route("/api/workflow-editor/runs/{event_id:path}/resume", resume_run, methods=["POST"]),
         Route("/api/workflow-editor/runs/stream", stream_runs, methods=["GET"]),

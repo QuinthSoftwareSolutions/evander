@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.runtime import allowed_tools_for_capability_profile
@@ -535,9 +535,27 @@ def container_session_openai_base_url(config: GatewayConfig, session_id: str) ->
 
 
 def container_session_gateway_url(config: GatewayConfig, session_id: str) -> str:
-    base = container_worker_guest_gateway_url(config)
-    separator = "&" if "?" in base else "?"
-    return f"{base}{separator}session_id={quote(session_id, safe='')}"
+    return gateway_url_with_session_context(
+        container_worker_guest_gateway_url(config),
+        session_id=session_id,
+    )
+
+
+def gateway_url_with_session_context(
+    base_gateway_url: str,
+    *,
+    session_id: str,
+    workflow_run_id: str | None = None,
+    mcp_tool_approval_lease_id: str | None = None,
+) -> str:
+    parts = urlsplit(base_gateway_url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query["session_id"] = session_id
+    if workflow_run_id:
+        query["workflow_run_id"] = workflow_run_id
+    if mcp_tool_approval_lease_id:
+        query["mcp_tool_approval_lease_id"] = mcp_tool_approval_lease_id
+    return urlunsplit(parts._replace(query=urlencode(query)))
 
 
 def build_container_session_files(
@@ -722,6 +740,7 @@ def container_prompt_command(
     prompt: str,
     model: str,
     resume_thread_id: str | None,
+    mcp_gateway_url: str | None = None,
 ) -> str:
     effective_resume_thread_id = _container_resume_thread_id(resume_thread_id)
     common_args = [
@@ -731,6 +750,13 @@ def container_prompt_command(
         "--model",
         model,
     ]
+    if mcp_gateway_url:
+        common_args.extend(
+            [
+                "-c",
+                f"mcp_servers.agent_sandbox.url={_toml_string(mcp_gateway_url)}",
+            ]
+        )
     if effective_resume_thread_id:
         args = ["codex", "exec", "resume", *common_args, effective_resume_thread_id, prompt]
     else:

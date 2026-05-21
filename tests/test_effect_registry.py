@@ -218,6 +218,7 @@ class _AdminServiceStub:
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
+        mcp_gateway_url: str | None = None,
     ):
         self.resume_calls.append(
             {
@@ -227,6 +228,7 @@ class _AdminServiceStub:
                 "vm_user": vm_user,
                 "dispatch_id": dispatch_id,
                 "resume_thread_id": resume_thread_id,
+                "mcp_gateway_url": mcp_gateway_url,
             }
         )
         return VmActionResult(
@@ -268,6 +270,8 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:agent:clone-repo",
         "effect:agent:bootstrap-frontend",
         "effect:agent:copy-files",
+        "effect:artifact:stage",
+        "effect:artifact:publish-artifacts",
         "effect:agent:prompt",
         "effect:agent:enqueue-prompt",
         "effect:chat-assistant:ensure-session",
@@ -286,6 +290,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:communication:send-message",
         "effect:notification:send",
         "effect:session:update-metadata",
+        "effect:session:approve-mcp-tools-for-run",
         "effect:session:renew-if-expired",
         "effect:git:promote-agent-branch",
         "effect:pr:create",

@@ -14,6 +14,8 @@ from agent_sandbox.events.models import (
 from agent_sandbox.events.provider_models import (
     AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
+    ArtifactPublishArtifactsEffectDefinition,
+    ArtifactStageEffectDefinition,
     CommunicationSendMessageEffectDefinition,
     GitPromoteAgentBranchEffectDefinition,
     GitPushTriggerDefinition,
@@ -25,6 +27,7 @@ from agent_sandbox.events.provider_models import (
     ReviewNewRequestTriggerDefinition,
     ScriptRunRequestTriggerDefinition,
     SessionContextQueryDefinition,
+    SessionApproveMcpToolsForRunEffectDefinition,
     SessionRenewIfExpiredEffectDefinition,
     SessionUpdateMetadataEffectDefinition,
 )
@@ -638,6 +641,33 @@ def test_session_update_metadata_effect_and_session_context_query_validate() -> 
     assert query.session_id == "session-1"
 
 
+def test_session_approve_mcp_tools_for_run_effect_validates_target_selector() -> None:
+    effect = SessionApproveMcpToolsForRunEffectDefinition.model_validate(
+        {
+            "id": "effect-session-approve-tools",
+            "display_name": "Approve tools",
+            "type": "effect:session:approve-mcp-tools-for-run",
+            "session_id": "session-1",
+            "tools": ["run_script", "get_agent_status"],
+            "expires_in_seconds": 600,
+        }
+    )
+
+    assert effect.session_id == "session-1"
+    assert effect.tools == ["run_script", "get_agent_status"]
+    assert effect.expires_in_seconds == 600
+
+    with pytest.raises(ValueError, match="target, session_id, or vm_name"):
+        SessionApproveMcpToolsForRunEffectDefinition.model_validate(
+            {
+                "id": "effect-session-approve-tools",
+                "display_name": "Approve tools",
+                "type": "effect:session:approve-mcp-tools-for-run",
+                "tools": ["run_script"],
+            }
+        )
+
+
 def test_session_renew_if_expired_effect_validates_target_selector() -> None:
     effect = SessionRenewIfExpiredEffectDefinition.model_validate(
         {
@@ -658,6 +688,48 @@ def test_session_renew_if_expired_effect_validates_target_selector() -> None:
                 "id": "effect-session-renew",
                 "display_name": "Renew expired session",
                 "type": "effect:session:renew-if-expired",
+            }
+        )
+
+
+def test_artifact_effects_validate_target_selectors() -> None:
+    stage = ArtifactStageEffectDefinition.model_validate(
+        {
+            "id": "effect-artifact-stage",
+            "display_name": "Stage artifact",
+            "type": "effect:artifact:stage",
+            "session_id": "session-1",
+            "path": "repos/project/report.html",
+        }
+    )
+    publish = ArtifactPublishArtifactsEffectDefinition.model_validate(
+        {
+            "id": "effect-artifact-publish",
+            "display_name": "Publish artifacts",
+            "type": "effect:artifact:publish-artifacts",
+            "session_id": "session-1",
+            "key": "runs/session-1/report",
+        }
+    )
+
+    assert stage.path == "repos/project/report.html"
+    assert publish.key == "runs/session-1/report"
+    with pytest.raises(ValueError, match="target, session_id, or vm_name"):
+        ArtifactStageEffectDefinition.model_validate(
+            {
+                "id": "effect-artifact-stage",
+                "display_name": "Stage artifact",
+                "type": "effect:artifact:stage",
+                "path": "report.html",
+            }
+        )
+    with pytest.raises(ValueError, match="target, session_id, or vm_name"):
+        ArtifactPublishArtifactsEffectDefinition.model_validate(
+            {
+                "id": "effect-artifact-publish",
+                "display_name": "Publish artifacts",
+                "type": "effect:artifact:publish-artifacts",
+                "key": "report",
             }
         )
 

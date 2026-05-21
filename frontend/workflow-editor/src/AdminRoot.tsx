@@ -7,6 +7,7 @@ import { fetchJson } from "./features/admin/api";
 import { AdminUiContext } from "./features/admin/AdminContext";
 import type { AdminResult, DirectoryTreeNode } from "./features/admin/AdminContext";
 import { AgentsPage } from "./features/agents/AgentsPage";
+import { ArtifactsPage } from "./features/artifacts/ArtifactsPage";
 import { ConfigurationScreen } from "./features/configuration/ConfigurationScreen";
 import { IssuesPage } from "./features/issues/IssuesPage";
 import { ApprovalsScreen } from "./features/approvals/ApprovalsScreen";
@@ -1622,6 +1623,8 @@ export default function AdminRoot() {
               <SessionsScreen />
             ) : renderedTab === "approvals" ? (
               <ApprovalsScreen />
+            ) : renderedTab === "artifacts" ? (
+              <ArtifactsPage />
             ) : renderedTab === "tool-calls" ? (
               <ToolCallsPage />
             ) : (
