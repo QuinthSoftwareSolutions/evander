@@ -1091,6 +1091,51 @@ def test_run_admin_agent_action_prompt_agent_rejects_blank_prompt(
         )
 
 
+def test_run_admin_agent_action_prompt_agent_supports_vm_without_linked_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.setattr(
+        service,
+        "list_vms",
+        MethodType(
+            lambda self, **kwargs: [
+                VmSummary(
+                    vm_name="standalone-vm",
+                    power_state="running",
+                    agent_state="running",
+                    session_ids=[],
+                )
+            ],
+            service,
+        ),
+    )
+
+    result = service.run_admin_agent_action(
+        "standalone-vm",
+        "prompt-agent",
+        backend="libvirt_vm",
+        payload={"prompt": "Check whether you are idle"},
+    )
+
+    queue_key = "admin-agent-prompt:libvirt_vm:standalone-vm"
+    queued = AgentPromptQueueStore(
+        tmp_path / "runtime" / "queued-agent-prompts.json"
+    ).get(queue_key)
+
+    assert result["success"] is True
+    assert result["queued"] is True
+    assert result["agent_id"] == "standalone-vm"
+    assert result["target_name"] == "standalone-vm"
+    assert result["session_id"] is None
+    assert result["queue_key"] == queue_key
+    assert queued is not None
+    assert queued.target == "standalone-vm"
+    assert queued.vm_name == "standalone-vm"
+    assert queued.session_id is None
+    assert queued.prompt == "Check whether you are idle"
+
+
 def test_run_admin_agent_action_prompt_agent_requires_resolvable_container_session(
     tmp_path: Path,
 ) -> None:

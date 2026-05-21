@@ -7732,10 +7732,16 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         vm_user = self._agent_optional_string(payload, "vm_user") or "agent"
 
         if backend == "libvirt_vm":
-            session = self._resolve_vm_agent_session(agent_id)
-            session_id = session.session_id
-            target_name = str(session.vm_id or agent_id).strip() or session_id
-            directory_path = str(session.directory_path or "root").strip() or "root"
+            session = self._resolve_optional_vm_agent_session(agent_id)
+            session_id = session.session_id if session is not None else None
+            target_name = (
+                str((session.vm_id if session is not None else None) or agent_id).strip()
+                or agent_id
+            )
+            directory_path = (
+                str((session.directory_path if session is not None else None) or "root").strip()
+                or "root"
+            )
             agent_response_id = target_name
         elif backend == "container_worker_vm":
             session, record = self._resolve_container_agent_session(agent_id, require_session=True)
@@ -7749,12 +7755,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         else:
             raise ValueError(f"Unknown agent backend: {backend}")
 
-        effect_id = f"admin-agent-prompt:{backend}:{session_id}"
+        target = session_id or target_name
+        effect_id = f"admin-agent-prompt:{backend}:{target}"
         effect = AgentEnqueuePromptEffectDefinition(
             id=effect_id,
             display_name="Admin prompt agent",
             type="effect:agent:enqueue-prompt",
-            target=session_id,
+            target=target,
             session_id=session_id,
             vm_name=target_name,
             prompt=prompt,
@@ -7792,6 +7799,18 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             }
         )
         return response
+
+    def _resolve_optional_vm_agent_session(self, agent_id: str) -> SessionManifest | None:
+        direct_session = self.runtime.session_repository.get_session(agent_id)
+        if direct_session is not None:
+            return direct_session
+        matches = self.runtime.session_repository.list_sessions_for_vm(agent_id)
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            session_ids = ", ".join(sorted(session.session_id for session in matches))
+            raise ValueError(f"VM {agent_id!r} is associated with multiple sessions: {session_ids}")
+        return None
 
     def list_background_workers(self) -> list[WorkerSummary]:
         return self.operations_admin.list_background_workers()

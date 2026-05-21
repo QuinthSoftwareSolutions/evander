@@ -3042,6 +3042,84 @@ def test_agent_enqueue_prompt_queue_dispatch_skips_and_retries_when_inventory_fa
     assert waiting_records[0].effect_type == "effect:agent:enqueue-prompt"
 
 
+def test_agent_enqueue_prompt_dispatches_admin_prompt_without_graph_effect(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="admin-agent-prompt:libvirt_vm:session-1",
+            target="session-1",
+            vm_name="vm-1",
+            session_id="session-1",
+            prompt="manual admin prompt",
+            model=None,
+            vm_user="agent",
+            resume_thread_id="thread-1",
+            effect_id="admin-agent-prompt:libvirt_vm:session-1",
+        )
+    )
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="orphan-prompt",
+            target="vm-2",
+            vm_name="vm-2",
+            session_id=None,
+            prompt="unknown orphan prompt",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            effect_id="orphan-prompt",
+        )
+    )
+    execution_store = JsonExecutionStore(runtime_dir / "effect-orchestrator-executions.json")
+    resume_calls: list[dict[str, object]] = []
+    worker = SimpleNamespace(
+        queued_agent_prompt_store=queue_store,
+        agent_run_status_port=_AgentRunStatusPortStub(
+            [
+                VmSummary(
+                    vm_name="vm-1",
+                    libvirt_state="running",
+                    agent_state="idle",
+                    session_ids=["session-1"],
+                ),
+                VmSummary(
+                    vm_name="vm-2",
+                    libvirt_state="running",
+                    agent_state="idle",
+                    session_ids=[],
+                ),
+            ]
+        ),
+        agent_prompt_dispatch_port=_AgentPromptDispatchPortStub(
+            resume_calls,
+            type("Result", (), {"success": True, "thread_id": "thread-dispatched"})(),
+        ),
+        execution_store=execution_store,
+        _build_execution_graph=lambda: SimpleNamespace(effects_by_id={}),
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: None,
+        _update_event_delivery_state=lambda event_id: None,
+    )
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
+
+    assert dispatched == 1
+    assert len(resume_calls) == 1
+    assert resume_calls[0]["target"] == "session-1"
+    assert resume_calls[0]["prompt"] == "manual admin prompt"
+    assert resume_calls[0]["resume_thread_id"] == "thread-1"
+    assert queue_store.get("admin-agent-prompt:libvirt_vm:session-1") is None
+    assert queue_store.get("orphan-prompt") is not None
+    waiting_records = list(execution_store.read_all().values())
+    assert len(waiting_records) == 1
+    assert waiting_records[0].status == "waiting"
+    assert waiting_records[0].effect_type == "effect:agent:enqueue-prompt"
+    assert waiting_records[0].outputs["queue_key"] == "admin-agent-prompt:libvirt_vm:session-1"
+    assert waiting_records[0].outputs["thread_id"] == "thread-dispatched"
+
+
 def test_agent_enqueue_prompt_dispatch_does_not_publish_dispatch_id_as_thread_id(
     tmp_path: Path, monkeypatch
 ) -> None:

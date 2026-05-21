@@ -24,6 +24,8 @@ from agent_sandbox.workflow.migrations import AGENT_PROMPT_STARTED_PORT
 
 logger = logging.getLogger(__name__)
 
+_ADMIN_AGENT_PROMPT_EFFECT_ID_PREFIX = "admin-agent-prompt:"
+
 
 class ProviderCompletionLifecycleHook(EffectLifecycleHookBase):
     def __init__(self, provider_class: type[Any]) -> None:
@@ -88,7 +90,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         for queue_key, record in sorted(queued_records.items()):
             graph = worker._build_execution_graph()
             effect = graph.effects_by_id.get(record.effect_id)
-            if effect is None or getattr(effect, "type", "") != "effect:agent:enqueue-prompt":
+            if not self._is_dispatchable_libvirt_record(effect=effect, record=record):
                 continue
             vm_name = str(record.vm_name or "").strip()
             summary = summaries.get(vm_name)
@@ -132,6 +134,16 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 dispatched += 1
 
         return dispatched
+
+    @staticmethod
+    def _is_dispatchable_libvirt_record(*, effect: Any | None, record: Any) -> bool:
+        if effect is not None and getattr(effect, "type", "") == "effect:agent:enqueue-prompt":
+            return True
+        effect_id = str(getattr(record, "effect_id", "") or "").strip()
+        queue_key = str(getattr(record, "queue_key", "") or "").strip()
+        return effect_id.startswith(_ADMIN_AGENT_PROMPT_EFFECT_ID_PREFIX) and queue_key.startswith(
+            _ADMIN_AGENT_PROMPT_EFFECT_ID_PREFIX
+        )
 
     def _persist_chat_assistant_thread_id(
         self,
