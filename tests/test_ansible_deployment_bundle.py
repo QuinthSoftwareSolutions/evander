@@ -80,6 +80,10 @@ def test_ansible_admin_web_caddy_role_serves_static_assets_directly() -> None:
 
     assert "agent_sandbox_admin_web_frontend_dist_dir" in defaults
     assert "agent_sandbox_admin_web_caddy_enabled: false" in defaults
+    assert "agent_sandbox_admin_web_caddy_verification_connect_timeout_seconds: 5" in defaults
+    assert "agent_sandbox_admin_web_caddy_verification_max_time_seconds: 20" in defaults
+    assert "agent_sandbox_admin_web_caddy_verification_retries: 6" in defaults
+    assert "agent_sandbox_admin_web_caddy_verification_delay_seconds: 10" in defaults
     assert "agent_sandbox_admin_web_caddy_enabled: true" in azure
     assert "Install Caddy package" in tasks
     assert "Assert Admin Web frontend assets were built" in tasks
@@ -100,8 +104,14 @@ def test_ansible_admin_web_caddy_role_serves_static_assets_directly() -> None:
     assert "Verify managed Admin Web Caddy is active" in verification
     assert "Verify managed Admin Web Caddy serves frontend and proxies health" in verification
     assert "--resolve" in verification
+    assert "--connect-timeout" in verification
+    assert "agent_sandbox_admin_web_caddy_verification_max_time_seconds" in verification
+    assert "register: agent_sandbox_admin_web_caddy_frontend_probe" in verification
+    assert "retries: \"{{ agent_sandbox_admin_web_caddy_verification_retries | int }}\"" in verification
+    assert "until: agent_sandbox_admin_web_caddy_frontend_probe.rc == 0" in verification
     assert "https://${host}/index.html" in verification
     assert 'find "${dist_dir}/assets"' in verification
+    assert "No built ${extension} asset found" in verification
 
 
 def test_ansible_site_announces_control_plane_deployment_status() -> None:

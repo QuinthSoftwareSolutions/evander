@@ -165,24 +165,39 @@
       --silent
       --show-error
       --insecure
+      --connect-timeout
+      "{{ agent_sandbox_admin_web_caddy_verification_connect_timeout_seconds }}"
       --max-time
-      "10"
+      "{{ agent_sandbox_admin_web_caddy_verification_max_time_seconds }}"
       --resolve
       "${host}:443:127.0.0.1"
     )
 
-    "${curl_common[@]}" -o /dev/null "https://${host}/healthz"
-    "${curl_common[@]}" -o /dev/null "https://${host}/"
-    "${curl_common[@]}" -o /dev/null "https://${host}/index.html"
+    probe_caddy_url() {
+      local url="$1"
+      echo "Probing ${url}"
+      "${curl_common[@]}" -o /dev/null "${url}"
+    }
+
+    probe_caddy_url "https://${host}/healthz"
+    probe_caddy_url "https://${host}/"
+    probe_caddy_url "https://${host}/index.html"
 
     for extension in js css; do
       asset_path="$(find "${dist_dir}/assets" -maxdepth 1 -type f -name "*.${extension}" -print -quit)"
-      test -n "${asset_path}"
+      if [[ -z "${asset_path}" ]]; then
+        echo "No built ${extension} asset found under ${dist_dir}/assets" >&2
+        exit 1
+      fi
       url_path="/${asset_path#"${dist_dir}/"}"
-      "${curl_common[@]}" -o /dev/null "https://${host}${url_path}"
+      probe_caddy_url "https://${host}${url_path}"
     done
   args:
     executable: /bin/bash
+  register: agent_sandbox_admin_web_caddy_frontend_probe
+  retries: "{{ agent_sandbox_admin_web_caddy_verification_retries | int }}"
+  delay: "{{ agent_sandbox_admin_web_caddy_verification_delay_seconds | int }}"
+  until: agent_sandbox_admin_web_caddy_frontend_probe.rc == 0
   changed_when: false
   when:
     - agent_sandbox_admin_web_caddy_enabled | bool
