@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-21 - Runner Image Codex Binary Resolution
+
+- Forced optional Codex platform packages during Azure runner-image preparation and made the
+  runner-image build script resolve nested, hoisted, and Node-resolved npm layouts before failing.
+
 ## 2026-05-21 - Workflow Tool Policy Editor Fixes
 
 - Allowed valid workflow saves to proceed after unrelated workflow-editor UI
