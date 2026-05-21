@@ -11576,11 +11576,16 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         def tool_call_entry_matches_selected_run(entry: ToolCallAuditEntryPayload) -> bool:
             entry_run_id = _coerce_optional_string(entry.workflow_run_id)
-            if entry_run_id is not None:
-                return entry_run_id == selected_event_id
+            if entry_run_id is not None and entry_run_id in {
+                selected_event_id,
+                selected_trace_id,
+            }:
+                return True
             entry_trace_id = _coerce_optional_string(entry.trace_id)
             if entry_trace_id is not None:
                 return selected_trace_id is not None and entry_trace_id == selected_trace_id
+            if entry_run_id is not None:
+                return False
             entry_session_id = _coerce_optional_string(entry.session_id)
             return entry_session_id is not None and entry_session_id in selected_session_ids
 
@@ -11727,6 +11732,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         tool_call_links_by_node: dict[str, list[WorkflowRunToolCallLinkPayload]] = {}
         run_tool_call_links: list[WorkflowRunToolCallLinkPayload] = []
         node_request_ids_by_node: dict[str, set[str]] = {}
+        node_session_ids_by_node: dict[str, set[str]] = {}
 
         def build_approval_link(request: ApprovalRequest) -> WorkflowRunApprovalLinkPayload:
             return WorkflowRunApprovalLinkPayload(
@@ -12062,6 +12068,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                         build_approval_link(request)
                     )
                 session_candidates = collect_keyed_values(record, key_suffix="session_id")
+                if session_candidates:
+                    node_session_ids_by_node.setdefault(node_id, set()).update(
+                        session_candidates
+                    )
                 for session_candidate in session_candidates:
                     for request in approval_requests_by_session.get(session_candidate, []):
                         approval_links_by_node.setdefault(node_id, []).append(
@@ -12097,7 +12107,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             ),
             reverse=True,
         ):
-            node_matches = [
+            request_node_matches = [
                 node_id
                 for node_id in sorted(node_groups)
                 if (
@@ -12112,6 +12122,16 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     )
                 )
             ]
+            node_matches = request_node_matches
+            entry_session_id = _coerce_optional_string(entry.session_id)
+            if not node_matches and entry_session_id is not None:
+                session_node_matches = [
+                    node_id
+                    for node_id in sorted(node_groups)
+                    if entry_session_id in node_session_ids_by_node.get(node_id, set())
+                ]
+                if len(session_node_matches) == 1:
+                    node_matches = session_node_matches
             link_payload = build_tool_call_link(
                 entry,
                 node_id=node_matches[0] if len(node_matches) == 1 else None,

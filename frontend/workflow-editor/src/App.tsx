@@ -396,7 +396,7 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
         nodeData.dominantStatus ? ` runtime-${nodeData.dominantStatus}` : ""
       }${nodeData.hasDiagnostics ? " invalid" : ""}${
         nodeData.pendingConnectionRole ? ` connection-${nodeData.pendingConnectionRole}` : ""
-      }${nodeData.isInspectGhost ? " inspect-ghost" : ""}`}
+      }${nodeData.hasUnsavedChanges ? " unsaved" : ""}${nodeData.isInspectGhost ? " inspect-ghost" : ""}`}
     >
       <Handle type="target" position={Position.Left} className="workflow-handle workflow-technical-handle" />
       {nodeData.inputPorts.map((port) => (
@@ -2671,6 +2671,17 @@ export default function App() {
   );
   const dirtyNodeIdSet = useMemo(() => new Set(dirtyNodeIds), [dirtyNodeIds]);
   const selectedNodeHasUnsavedChanges = Boolean(selectedNodeId && dirtyNodeIdSet.has(selectedNodeId));
+  const dirtyNodeSummary = useMemo(() => {
+    if (dirtyNodeIds.length === 0) return null;
+    const dirtyNodeLabels = dirtyNodeIds
+      .map((nodeId) => nodeById(config, nodeId)?.display_name || nodeId)
+      .slice(0, 3);
+    const remainingCount = dirtyNodeIds.length - dirtyNodeLabels.length;
+    return `${dirtyNodeIds.length} edited node${dirtyNodeIds.length === 1 ? "" : "s"}: ${dirtyNodeLabels.join(", ")}${
+      remainingCount > 0 ? `, +${remainingCount} more` : ""
+    }`;
+  }, [config, dirtyNodeIds]);
+  const savePanelStatusTone = hasUnsavedWorkflowChanges ? "dirty" : saveState === "saved" ? "saved" : "clean";
   const visibleWorkflowNodes = workflowNodes(config).filter((node) => visibleGraphNodeIds.has(node.id));
   const runSearchScopeOptions: WorkflowRunSearchScopeOption[] = [
     ...visibleWorkflowGraphs.map((graph) => ({
@@ -5723,6 +5734,16 @@ export default function App() {
               <button className="primary" onClick={() => void saveDocument()} disabled={workflowEditLocked}>
                 {saveState === "saving" ? "Saving..." : "Save workflow"}
               </button>
+              <div className={`save-status save-status-${savePanelStatusTone}`} role="status" aria-live="polite">
+                <strong>
+                  {hasUnsavedWorkflowChanges
+                    ? "Unsaved workflow changes"
+                    : saveState === "saved"
+                      ? "Workflow saved"
+                      : "No unsaved workflow changes"}
+                </strong>
+                {hasUnsavedWorkflowChanges && dirtyNodeSummary ? <span>{dirtyNodeSummary}</span> : null}
+              </div>
               {error ? <div className="error-box save-error-box">{error}</div> : null}
               {document ? (
                 <div className="path-note">
