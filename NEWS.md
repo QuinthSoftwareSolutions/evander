@@ -1,5 +1,17 @@
 # News
 
+## 2026-05-22 - The Control Plane Starts to Explain Itself
+
+Truman has crossed an important line: it is no longer just a way to send agents into work. It is becoming a control plane that can show operators what happened, what is happening, and where human judgment belongs.
+
+The recent run-inspector and Admin Web work made historical workflow runs more visible: selected runs can now expose node activity, resolved context, outputs, errors, related sessions, and the operational state around them. The dashboard work added a practical landing surface for health, capacity, recent automation, version context, and direct operator action. The workflow editor also started moving away from raw JSON as the default experience, with structured forms and better interaction paths replacing some of the internal machinery operators previously had to understand.
+
+The safety story moved forward as well. MCP tool calls now have stronger audit and policy foundations, including approval-gated invocation and parameter-level constraints. Container-backed sessions gained cleanup and recovery visibility, matching the reality that containers are the practical default execution backend in the current Example environment. Together, these changes make capability boundaries, backend behavior, and recovery state easier to inspect instead of leaving them buried in logs or assumptions.
+
+The remaining lesson is clear: speed is useful only when the system stays reviewable. The next work should keep tightening the path from automation event to explainable run, from agent action to auditable tool call, and from failed execution to operator recovery. That is the product bar Truman has to keep pushing toward: safe automation that is powerful because it is inspectable.
+
+-Truman
+
 ## 2026-05-21 - Safer workflows, clearer operations
 
 We have been tightening the control plane around the moments where operators need the most confidence: seeing what is running, understanding why a workflow moved, and handing useful context back to an agent without opening broad access. This update brings those threads together in the dashboard and in the workflow runtime.
