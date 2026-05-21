@@ -339,6 +339,8 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   await page.waitForSelector(".canvas-shell .react-flow__pane");
   await assert.equal(await page.getByRole("button", { name: "Apply node changes" }).count(), 0);
   await assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 0);
+  const saveStatus = page.locator(".save-status");
+  await assert.equal(await saveStatus.filter({ hasText: "No unsaved workflow changes" }).count(), 1);
 
   const effectNode = page.locator('.react-flow__node[data-id="effect-1"]');
   const effectBox = await effectNode.boundingBox();
@@ -359,6 +361,9 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   assert.equal(await promptInput.inputValue(), "Handle escalations");
   await assert.equal(saveRequests.length, 0);
   await assert.equal(await page.getByLabel("Unsaved changes").count(), 1);
+  await assert.equal(await saveStatus.filter({ hasText: "Unsaved workflow changes" }).count(), 1);
+  await assert.equal(await saveStatus.filter({ hasText: "1 edited node: Dispatch agent v2" }).count(), 1);
+  await assert.equal(await effectNode.locator(".node-card.unsaved").count(), 1);
   await assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 1);
 
   const triggerNode = page.locator('.react-flow__node[data-id="trigger-1"]');
@@ -383,6 +388,8 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   assert.equal(await displayNameInput.inputValue(), "Dispatch agent");
   assert.equal(await promptInput.inputValue(), "Handle ticket");
   await assert.equal(await page.getByLabel("Unsaved changes").count(), 0);
+  await assert.equal(await saveStatus.filter({ hasText: "No unsaved workflow changes" }).count(), 1);
+  await assert.equal(await effectNode.locator(".node-card.unsaved").count(), 0);
   await assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 0);
   await assert.equal(saveRequests.length, 0);
 
@@ -419,6 +426,9 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
 
   assert.equal(saveRequests.length, 1);
   assert.equal(await page.getByLabel("Unsaved changes").count(), 0);
+  assert.equal(await saveStatus.filter({ hasText: "Unsaved workflow changes" }).count(), 0);
+  assert.equal(await saveStatus.filter({ hasText: "Workflow saved" }).count(), 1);
+  assert.equal(await effectNode.locator(".node-card.unsaved").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 0);
   assert.equal(await displayNameInput.inputValue(), "Dispatch agent v2");
   assert.equal(await promptInput.inputValue(), "Handle escalations");

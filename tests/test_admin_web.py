@@ -2054,6 +2054,27 @@ def _write_run_detail_audit_log(path: Path, *, session_id: str, vm_id: str) -> N
             "result": {"status": "success"},
             "created_at": "2026-05-16T08:10:00+00:00",
         },
+        {
+            "event_type": "tool_call",
+            "session_id": "session-session-only",
+            "vm_id": "vm-session-only",
+            "directory_path": "root",
+            "tool_name": "list_files",
+            "workflow_run_id": "trace-session-only",
+            "trace_id": "trace-session-only",
+            "decision": "allowed",
+            "args": {
+                "session_id": "session-session-only",
+                "workflow_run_id": "trace-session-only",
+                "workflow_trace_id": "trace-session-only",
+                "path": ".",
+            },
+            "result": {
+                "status": "success",
+                "items": ["README.md"],
+            },
+            "created_at": "2026-05-16T08:20:00+00:00",
+        },
     ]
     path.write_text(
         "\n".join(json.dumps(entry, sort_keys=True) for entry in audit_entries) + "\n",
@@ -2154,6 +2175,18 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
                 "delivered_at": "2026-05-01T08:00:05Z",
                 "idempotency_key": None,
             },
+            "evt-session-only": {
+                "event_id": "evt-session-only",
+                "trigger_id": "trigger-ticket",
+                "trigger_type": "trigger:ticket:created",
+                "trace_id": "trace-session-only",
+                "occurred_at": "2026-05-01T08:20:00Z",
+                "payload": {"issue_number": "14"},
+                "delivery_state": "delivered",
+                "inflight_at": "2026-05-01T08:20:04Z",
+                "delivered_at": "2026-05-01T08:20:05Z",
+                "idempotency_key": None,
+            },
         },
     )
     _write_json_payload(
@@ -2236,6 +2269,36 @@ def _seed_workflow_run_detail_fixture(tmp_path: Path) -> dict[str, str]:
                 },
                 "outputs": {},
                 "error": "legacy failure",
+            },
+            "exec-session-only": {
+                "execution_id": "exec-session-only",
+                "idempotency_key": "evt-session-only::effect-prompt",
+                "event_id": "evt-session-only",
+                "trace_id": "trace-session-only",
+                "source_node_id": "trigger-ticket",
+                "source_trigger_type": "trigger:ticket:created",
+                "effect_id": "effect-prompt",
+                "effect_type": "effect:agent:prompt",
+                "status": "succeeded",
+                "started_at": "2026-05-01T08:20:06Z",
+                "finished_at": "2026-05-01T08:20:07Z",
+                "resolved_config_hash": "hash-session-only",
+                "resolved_config": {
+                    "session_id": "session-session-only",
+                    "prompt": "Inspect the workspace",
+                },
+                "input_payload": {
+                    "issue_number": "14",
+                    "session_id": "session-session-only",
+                },
+                "outputs": {
+                    "status": "queued",
+                },
+                "binding_trace": {
+                    "consumed_output_keys": ["trigger-ticket.issue_number"],
+                    "entries": [],
+                },
+                "config_revision": rich_revision,
             },
         },
     )
@@ -2529,7 +2592,7 @@ def test_admin_web_run_detail_resolves_identifiers_and_links(tmp_path: Path) -> 
 
 
 def test_admin_web_run_detail_requires_real_audit_identifiers(tmp_path: Path) -> None:
-    fixture = _seed_workflow_run_detail_fixture(tmp_path)
+    _seed_workflow_run_detail_fixture(tmp_path)
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
     response = client.get(
@@ -2542,6 +2605,33 @@ def test_admin_web_run_detail_requires_real_audit_identifiers(tmp_path: Path) ->
     assert payload["trace_id"] is None
     assert [link["tool_name"] for link in payload["tool_call_links"]] == ["read_file"]
     assert payload["tool_call_links"][0]["workflow_run_id"] == "evt-notrace"
+
+
+def test_admin_web_run_detail_attaches_session_scoped_tool_call_to_single_node(
+    tmp_path: Path,
+) -> None:
+    _seed_workflow_run_detail_fixture(tmp_path)
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    response = client.get(
+        "/api/workflow-editor/run-detail", params={"event_id": "evt-session-only"}
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["event_id"] == "evt-session-only"
+    assert payload["trace_id"] == "trace-session-only"
+    assert payload["tool_call_links"] == []
+    effect_node = next(node for node in payload["nodes"] if node["node_id"] == "effect-prompt")
+    assert len(effect_node["tool_call_links"]) == 1
+    tool_call_link = effect_node["tool_call_links"][0]
+    assert tool_call_link["tool_name"] == "list_files"
+    assert tool_call_link["session_id"] == "session-session-only"
+    assert tool_call_link["workflow_run_id"] == "trace-session-only"
+    assert tool_call_link["trace_id"] == "trace-session-only"
+    assert tool_call_link["request_id"] is None
+    assert tool_call_link["approval_request_id"] is None
+    assert tool_call_link["node_id"] == "effect-prompt"
 
 
 def test_admin_web_run_detail_marks_missing_legacy_data(tmp_path: Path) -> None:
