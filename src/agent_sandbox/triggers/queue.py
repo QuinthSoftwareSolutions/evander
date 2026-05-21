@@ -135,6 +135,16 @@ class TriggerEventQueue:
             return pending[:limit]
         return pending
 
+    def list_active_records(self) -> list[TriggerQueueRecord]:
+        with self._lock:
+            active = [
+                record
+                for record in self._store.read_all().values()
+                if record.delivery_state != "delivered"
+            ]
+        active.sort(key=lambda record: (record.occurred_at, record.event_id))
+        return active
+
     def mark_delivered(self, event_id: str, *, delivered_at: datetime | None = None) -> bool:
         normalized_event_id = event_id.strip()
         if not normalized_event_id:
