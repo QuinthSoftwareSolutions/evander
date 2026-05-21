@@ -388,6 +388,29 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
     renew_extension_presets: ["1d"],
   };
 
+  const releaseInfoResponse = {
+    version: "0.1.0",
+    version_source: "pyproject.toml",
+    build: "agent-sandbox-build-20260521",
+    build_source: "AGENT_SANDBOX_REPO_VERSION",
+    changelog: {
+      source: "CHANGELOG.md",
+      path: "CHANGELOG.md",
+      heading: "0.1.0",
+      entries: [
+        {
+          text: "Added release metadata coverage to the dashboard.",
+          kind: "feature",
+        },
+        {
+          text: "Fixed release metadata fallback handling for missing data.",
+          kind: "bugfix",
+        },
+      ],
+    },
+    missing_reasons: [],
+  };
+
   const workflowDocumentResponse = {
     config_path: "workflow.json",
     layout_path: "workflow-layout.json",
@@ -710,6 +733,11 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       return;
     }
 
+    if (pathname === "/api/admin/release-info") {
+      await route.fulfill(jsonResponse(releaseInfoResponse));
+      return;
+    }
+
     assert.fail(`unexpected API request: ${pathname}${url.search}`);
   });
 
@@ -728,12 +756,18 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   const pendingApprovalPill = approvalsPanel.locator(".status-pill").filter({ hasText: "1 pending" }).first();
   await assert.doesNotReject(() => pendingApprovalPill.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => toolCallsPanel.getByText("No tool-call audit entries were returned.").first().waitFor({ state: "visible" }));
+  const releasePanel = page.locator("article.dashboard-release-panel");
+  await assert.doesNotReject(() => releasePanel.getByRole("heading", { name: "Version and changelog" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => releasePanel.locator(".dashboard-release-summary").waitFor({ state: "visible" }));
   assert.equal((await systemHealthPanel.locator(".detail-list strong").first().textContent())?.trim(), "root");
   const erroredRun = workflowPanel.locator(".node-activity-item").filter({ hasText: "evt-2" });
   const erroredRunStateClass = await erroredRun.locator(".status-pill").last().getAttribute("class");
   assert.ok(erroredRunStateClass?.includes("state-fail"), `expected errored run to use failure tone, got ${erroredRunStateClass}`);
   assert.equal((await pendingApprovalPill.textContent())?.trim(), "1 pending");
   assert.equal((await toolCallsPanel.getByText("No tool-call audit entries were returned.").first().textContent())?.trim(), "No tool-call audit entries were returned.");
+  assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Version 0\.1\.0/);
+  assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Build agent-sandbox-build-20260521/);
+  assert.deepEqual(await releasePanel.locator(".release-kind-pill").allTextContents(), ["Feature", "Bugfix"]);
 
   assert.equal(await page.evaluate(() => window.location.hash), "");
   assert.deepEqual(pageErrors, []);
@@ -760,6 +794,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions/catalog"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions?include_expired=true&directory_path=root&direct_only=true"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions/session-1"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/release-info"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/document"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/catalog?directory_path=root"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/tool-calls?directory_path=root&direct_only=true&limit=5"));
