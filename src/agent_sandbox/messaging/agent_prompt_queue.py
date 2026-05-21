@@ -21,6 +21,7 @@ class QueuedAgentPromptRecord(BaseModel):
     model: str | None = None
     vm_user: str = Field(min_length=1, default="agent")
     resume_thread_id: str | None = None
+    resume_thread_metadata_key: str | None = None
     effect_id: str = Field(min_length=1)
     metadata: dict[str, str] = Field(default_factory=dict)
     workflow_context: dict[str, dict[str, Any]] | None = None

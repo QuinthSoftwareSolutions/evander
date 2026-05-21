@@ -577,6 +577,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 pass
         cls._persist_container_session_thread_id(
             worker=worker,
+            record=record,
             session_id=session_id,
             thread_id=normalized_thread_id,
         )
@@ -586,6 +587,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         cls,
         *,
         worker: Any,
+        record: Any,
         session_id: str,
         thread_id: str,
     ) -> None:
@@ -595,10 +597,14 @@ class AgentPromptEffectProvider(EffectProviderBase):
             session_id=session_id,
             thread_id=thread_id,
         )
+        metadata_patch = {"agent_thread_id": thread_id}
+        resume_thread_metadata_key = cls._resume_thread_metadata_key_from_record(record)
+        if resume_thread_metadata_key:
+            metadata_patch[resume_thread_metadata_key] = thread_id
         update_fn = getattr(admin_service, "session_update_metadata", None)
         if callable(update_fn):
             try:
-                update_fn(target=session_id, metadata={"agent_thread_id": thread_id})
+                update_fn(target=session_id, metadata=metadata_patch)
                 return
             except Exception:
                 pass
@@ -616,11 +622,22 @@ class AgentPromptEffectProvider(EffectProviderBase):
             if not isinstance(metadata, Mapping):
                 metadata = {}
             updated = manifest.model_copy(
-                update={"metadata": {**dict(metadata), "agent_thread_id": thread_id}}
+                update={"metadata": {**dict(metadata), **metadata_patch}}
             )
             upsert_session(updated)
         except Exception:
             pass
+
+    @staticmethod
+    def _resume_thread_metadata_key_from_record(record: Any) -> str | None:
+        for source_name in ("resolved_config", "input_payload", "outputs"):
+            source = getattr(record, source_name, None)
+            if not isinstance(source, Mapping):
+                continue
+            text = str(source.get("resume_thread_metadata_key") or "").strip()
+            if text:
+                return text
+        return None
 
     @classmethod
     def _persist_chat_assistant_mapping_thread_id(

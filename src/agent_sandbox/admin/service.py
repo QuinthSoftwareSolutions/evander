@@ -2421,6 +2421,12 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("vm_user", "VM user", "string", bindable=True),
             _field("resume_thread_id", "Resume thread ID", "string", bindable=True),
             _field(
+                "resume_thread_metadata_key",
+                "Resume thread metadata key",
+                "string",
+                bindable=True,
+            ),
+            _field(
                 "mcp_tool_approval_lease_id",
                 "MCP tool approval lease ID",
                 "string",

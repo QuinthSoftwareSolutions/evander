@@ -118,6 +118,12 @@ Admin Web public access:
 - `agent_sandbox_admin_web_caddy_hostname` defaults to the host from
   `AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL`; override it when the public hostname differs from the
   Admin Web base URL.
+- The post-deploy Caddy probe retries the local HTTPS/SNI path. Tune
+  `agent_sandbox_admin_web_caddy_verification_retries`,
+  `agent_sandbox_admin_web_caddy_verification_delay_seconds`,
+  `agent_sandbox_admin_web_caddy_verification_connect_timeout_seconds`, and
+  `agent_sandbox_admin_web_caddy_verification_max_time_seconds` if certificate or listener
+  readiness is slower on a target host.
 - Azure inventory enables this role for `truman-admin.northeurope.cloudapp.azure.com`.
 
 Workflow config ownership:
@@ -313,7 +319,7 @@ The verification role checks:
 - disabled units remain installed but not enabled/started
 - Admin Web responds on the configured host port
 - when enabled, managed Caddy is active and serves `/`, `/index.html`, one built JS asset, one built
-  CSS asset, and proxied `/healthz` through local TLS/SNI resolution
+  CSS asset, and proxied `/healthz` through retried local TLS/SNI resolution
 - for `full`: libvirt network `agent-sandbox` exists
 - for `full` when firewall is enabled: nftables table `inet agent_sandbox` exists
 - for `full`: the Ubuntu 24.04 base cloud image is present under libvirt-accessible storage

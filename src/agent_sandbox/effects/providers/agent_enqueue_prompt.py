@@ -76,6 +76,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             "model": effect.model,
             "vm_user": effect.vm_user,
             "resume_thread_id": effect.resume_thread_id,
+            "resume_thread_metadata_key": effect.resume_thread_metadata_key,
             "queue_key": effect.queue_key,
             "mcp_tool_approval_lease_id": effect.mcp_tool_approval_lease_id,
         }
@@ -91,6 +92,9 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         vm_user = self._normalize_optional_string(payload.get("vm_user")) or "agent"
         model = self._normalize_optional_string(payload.get("model"))
         resume_thread_id = self._normalize_optional_string(payload.get("resume_thread_id"))
+        resume_thread_metadata_key = self._normalize_optional_string(
+            payload.get("resume_thread_metadata_key")
+        )
         queue_key = self._normalize_optional_string(payload.get("queue_key"))
         mcp_tool_approval_lease_id = self._resolve_mcp_tool_approval_lease_id(
             payload=payload,
@@ -110,6 +114,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 model=model,
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
+                resume_thread_metadata_key=resume_thread_metadata_key,
                 queue_key=queue_key,
                 config=config,
                 effect_id=effect.id,
@@ -128,6 +133,13 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
 
         vm_name = self._resolve_vm_name(target)
         session_id = self._resolve_session_id(target)
+        effective_resume_thread_id = self._effective_resume_thread_id(
+            resume_thread_id=resume_thread_id,
+            resume_thread_metadata_key=resume_thread_metadata_key,
+            target=target,
+            session_id=session_id,
+            session=None,
+        )
 
         summary = self._find_vm_summary(vm_name=vm_name, vm_user=vm_user)
         if (
@@ -142,6 +154,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 model=model,
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
+                resume_thread_metadata_key=resume_thread_metadata_key,
                 effect_id=effect.id,
                 queue_key=queue_key,
                 workflow_context=workflow_context,
@@ -164,7 +177,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             model=model,
             vm_user=vm_user,
             dispatch_id=dispatch_id,
-            resume_thread_id=resume_thread_id,
+            resume_thread_id=effective_resume_thread_id,
             mcp_gateway_url=self._mcp_gateway_url(
                 config=config,
                 target=target,
@@ -181,6 +194,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 model=model,
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
+                resume_thread_metadata_key=resume_thread_metadata_key,
                 effect_id=effect.id,
                 queue_key=queue_key,
                 workflow_context=workflow_context,
@@ -204,6 +218,12 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             queue_key=queue_key,
             backend=ExecutionBackendKind.LIBVIRT_VM.value,
         )
+        self._persist_resume_thread_metadata_key(
+            target=target,
+            session_id=session_id,
+            resume_thread_metadata_key=resume_thread_metadata_key,
+            thread_id=thread_id,
+        )
         return {
             "dispatch_id": dispatch_id,
             "thread_id": thread_id,
@@ -221,6 +241,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         model: str | None,
         vm_user: str,
         resume_thread_id: str | None,
+        resume_thread_metadata_key: str | None,
         queue_key: str | None,
         config: Any,
         effect_id: str,
@@ -242,6 +263,13 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         )
         target_name = self._container_target_name(session=session, session_id=session_id)
         target = self._normalize_optional_string(payload.get("target")) or session_id
+        effective_resume_thread_id = self._effective_resume_thread_id(
+            resume_thread_id=resume_thread_id,
+            resume_thread_metadata_key=resume_thread_metadata_key,
+            target=target,
+            session_id=session_id,
+            session=session,
+        )
 
         if self._container_session_is_busy(
             context=context,
@@ -256,6 +284,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 model=model,
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
+                resume_thread_metadata_key=resume_thread_metadata_key,
                 effect_id=effect_id,
                 queue_key=queue_key or session_id,
                 workflow_context=workflow_context,
@@ -287,7 +316,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                         command=container_prompt_command(
                             prompt=prompt,
                             model=resolved_model,
-                            resume_thread_id=resume_thread_id,
+                            resume_thread_id=effective_resume_thread_id,
                             mcp_gateway_url=self._mcp_gateway_url(
                                 config=effective_config,
                                 target=session_id,
@@ -314,6 +343,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 model=model,
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
+                resume_thread_metadata_key=resume_thread_metadata_key,
                 effect_id=effect_id,
                 queue_key=queue_key or session_id,
                 workflow_context=workflow_context,
@@ -328,7 +358,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             ) from exc
         return {
             "dispatch_id": dispatch_id,
-            "thread_id": resume_thread_id or dispatch_id,
+            "thread_id": effective_resume_thread_id or dispatch_id,
             "success": True,
             "queued": False,
             "output_mode": "on_completion",
@@ -490,6 +520,68 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         except Exception:
             pass
 
+    def _effective_resume_thread_id(
+        self,
+        *,
+        resume_thread_id: str | None,
+        resume_thread_metadata_key: str | None,
+        target: str,
+        session_id: str | None,
+        session: Any | None,
+    ) -> str | None:
+        explicit = self._usable_resume_thread_id(resume_thread_id)
+        if explicit:
+            return explicit
+        key = self._normalize_optional_string(resume_thread_metadata_key)
+        if not key:
+            return None
+        if session is None:
+            session = self._session_for_metadata_lookup(target=target, session_id=session_id)
+        if session is None:
+            return None
+        metadata = getattr(session, "metadata", {})
+        if not isinstance(metadata, Mapping):
+            return None
+        return self._usable_resume_thread_id(metadata.get(key))
+
+    def _session_for_metadata_lookup(self, *, target: str, session_id: str | None) -> Any | None:
+        context = self._context()
+        if context.session_lookup is None:
+            return None
+        sessions = context.session_lookup.read_all_sessions()
+        if session_id:
+            session = sessions.get(session_id)
+            if session is not None:
+                return session
+        try:
+            from agent_sandbox.admin.service import _resolve_session_target
+
+            _resolved_session_id, session = _resolve_session_target(target, sessions)
+        except Exception:
+            return None
+        return session
+
+    def _persist_resume_thread_metadata_key(
+        self,
+        *,
+        target: str,
+        session_id: str | None,
+        resume_thread_metadata_key: str | None,
+        thread_id: str | None,
+    ) -> None:
+        key = self._normalize_optional_string(resume_thread_metadata_key)
+        value = self._usable_resume_thread_id(thread_id)
+        if not key or not value:
+            return
+        context = self._context()
+        update_fn = getattr(context.session_metadata_updater, "session_update_metadata", None)
+        if not callable(update_fn):
+            return
+        try:
+            update_fn(target=session_id or target, metadata={key: value})
+        except Exception:
+            pass
+
     def _find_vm_summary(self, *, vm_name: str, vm_user: str) -> Any | None:
         context = self._context()
         if context.vm_inventory is None:
@@ -618,6 +710,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         workflow_context: dict[str, dict[str, Any]] | None = None,
         workflow_run_id: str | None = None,
         mcp_tool_approval_lease_id: str | None = None,
+        resume_thread_metadata_key: str | None = None,
     ) -> QueuedAgentPromptRecord:
         context = self._context()
         metadata = {
@@ -640,6 +733,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             model=model,
             vm_user=vm_user,
             resume_thread_id=resume_thread_id,
+            resume_thread_metadata_key=resume_thread_metadata_key,
             effect_id=effect_id,
             metadata=metadata,
             workflow_context=workflow_context,
@@ -684,6 +778,15 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             if isinstance(copied_payload, dict):
                 workflow_context[node_id] = copied_payload
         return workflow_context or None
+
+    @classmethod
+    def _usable_resume_thread_id(cls, value: Any) -> str | None:
+        text = cls._normalize_optional_string(value)
+        if text is None:
+            return None
+        if text.startswith("dispatch-") or text.startswith("chat-thread-"):
+            return None
+        return text
 
     @staticmethod
     def _container_target_name(*, session: Any | None, session_id: str) -> str:

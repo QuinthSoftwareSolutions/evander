@@ -83,6 +83,12 @@ docs, tests.
   dashboard loads reuse recent workers, agents, workflow, approval, session, and
   audit reads while detail tabs keep live reads and manual dashboard refreshes
   bypass the cache.
+- Made the managed Admin Web Caddy post-deploy verification retry the local
+  HTTPS/SNI probe with configurable timeouts, so transient TLS/listener readiness
+  lag does not fail an otherwise healthy deploy.
+- Added `resume_thread_metadata_key` to `effect:agent:enqueue-prompt` so queued
+  prompts can resolve and persist per-target agent thread IDs without duplicating
+  enqueue nodes in Teams workflow graphs.
 - Added a comprehensive Admin UI user manual with task-oriented procedures and
   screenshots covering the shared shell, dashboard, agents, approvals,
   artifacts, skills, VMs, issues, sessions, tool calls, configuration, reports,

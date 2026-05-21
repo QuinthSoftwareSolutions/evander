@@ -58,6 +58,8 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             record = queued_records.get(queue_key)
             if record is None:
                 continue
+            if self._has_waiting_enqueue_prompt_for_record(worker=worker, record=record):
+                continue
             if self._dispatch_container_record_if_idle(
                 worker=worker,
                 queue_store=queue_store,
@@ -92,6 +94,8 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             effect = graph.effects_by_id.get(record.effect_id)
             if not self._is_dispatchable_libvirt_record(effect=effect, record=record):
                 continue
+            if self._has_waiting_enqueue_prompt_for_record(worker=worker, record=record):
+                continue
             vm_name = str(record.vm_name or "").strip()
             summary = summaries.get(vm_name)
             if (
@@ -103,6 +107,14 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             dispatch_id = (
                 f"dispatch-{record.effect_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
             )
+            _session_id, session = self._session_context_for_libvirt_record(
+                worker=worker,
+                record=record,
+            )
+            effective_resume_thread_id = self._effective_record_resume_thread_id(
+                record=record,
+                session=session,
+            )
             result = dispatch_agent_prompt(
                 worker,
                 target=record.target,
@@ -110,7 +122,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 model=record.model,
                 vm_user=record.vm_user,
                 dispatch_id=dispatch_id,
-                resume_thread_id=record.resume_thread_id,
+                resume_thread_id=effective_resume_thread_id,
                 mcp_gateway_url=self._mcp_gateway_url_for_libvirt_record(
                     worker=worker,
                     record=record,
@@ -123,12 +135,18 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                     result=result,
                     queue_key=queue_key,
                 )
+                self._persist_resume_thread_metadata_key(
+                    worker=worker,
+                    record=record,
+                    thread_id=str(getattr(result, "thread_id", "") or "").strip(),
+                )
                 self._record_libvirt_waiting_execution(
                     worker=worker,
                     record=record,
                     queue_key=queue_key,
                     dispatch_id=dispatch_id,
                     result=result,
+                    effective_resume_thread_id=effective_resume_thread_id,
                 )
                 queue_store.delete(queue_key)
                 dispatched += 1
@@ -226,6 +244,10 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 workflow_run_id=workflow_run_id or None,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
             )
+        effective_resume_thread_id = self._effective_record_resume_thread_id(
+            record=record,
+            session=session,
+        )
         try:
             handle = backend.start(
                 backend.prepare(
@@ -237,7 +259,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                         command=container_prompt_command(
                             prompt=record.prompt,
                             model=model,
-                            resume_thread_id=record.resume_thread_id,
+                            resume_thread_id=effective_resume_thread_id,
                             mcp_gateway_url=mcp_gateway_url,
                         ),
                         metadata={
@@ -259,6 +281,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             dispatch_id=dispatch_id,
             execution_id=handle.execution_id,
             model=model,
+            effective_resume_thread_id=effective_resume_thread_id,
         ):
             try:
                 backend.destroy(handle.execution_id)
@@ -279,6 +302,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         dispatch_id: str,
         execution_id: str,
         model: str,
+        effective_resume_thread_id: str | None,
     ) -> bool:
         execution_store = getattr(worker, "execution_store", None)
         record_execution = getattr(execution_store, "record_execution", None)
@@ -310,14 +334,15 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "prompt": record.prompt,
             "model": model,
             "vm_user": vm_user,
-            "resume_thread_id": record.resume_thread_id,
+            "resume_thread_id": effective_resume_thread_id,
+            "resume_thread_metadata_key": getattr(record, "resume_thread_metadata_key", None),
             "directory_path": directory_path,
             "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
             "queue_key": queue_key,
         }
         outputs = {
             "dispatch_id": dispatch_id,
-            "thread_id": record.resume_thread_id or dispatch_id,
+            "thread_id": effective_resume_thread_id or dispatch_id,
             "success": True,
             "queued": False,
             "dispatched_from_queue": True,
@@ -335,7 +360,8 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "prompt": record.prompt,
             "model": model,
             "vm_user": vm_user,
-            "resume_thread_id": record.resume_thread_id,
+            "resume_thread_id": effective_resume_thread_id,
+            "resume_thread_metadata_key": getattr(record, "resume_thread_metadata_key", None),
             "queue_key": queue_key,
         }
         self._restore_workflow_context(input_payload=input_payload, record=record)
@@ -375,6 +401,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         queue_key: str,
         dispatch_id: str,
         result: Any,
+        effective_resume_thread_id: str | None,
     ) -> bool:
         execution_store = getattr(worker, "execution_store", None)
         record_execution = getattr(execution_store, "record_execution", None)
@@ -400,8 +427,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         vm_user = str(getattr(record, "vm_user", None) or "agent")
         session_id = str(getattr(record, "session_id", None) or "").strip() or None
         thread_id = str(getattr(result, "thread_id", "") or "").strip()
-        resume_thread_id = str(getattr(record, "resume_thread_id", None) or "").strip()
-        effective_thread_id = thread_id or resume_thread_id
+        effective_thread_id = thread_id or str(effective_resume_thread_id or "").strip()
         resolved_config = {
             "target": record.target,
             "vm_name": record.vm_name,
@@ -409,7 +435,8 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "prompt": record.prompt,
             "model": record.model,
             "vm_user": vm_user,
-            "resume_thread_id": record.resume_thread_id,
+            "resume_thread_id": effective_resume_thread_id,
+            "resume_thread_metadata_key": getattr(record, "resume_thread_metadata_key", None),
             "execution_backend": ExecutionBackendKind.LIBVIRT_VM.value,
             "queue_key": queue_key,
         }
@@ -432,7 +459,8 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "prompt": record.prompt,
             "model": record.model,
             "vm_user": vm_user,
-            "resume_thread_id": record.resume_thread_id,
+            "resume_thread_id": effective_resume_thread_id,
+            "resume_thread_metadata_key": getattr(record, "resume_thread_metadata_key", None),
             "queue_key": queue_key,
         }
         self._restore_workflow_context(input_payload=input_payload, record=record)
@@ -491,6 +519,130 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         )
         if workflow_context:
             input_payload[NODE_OUTPUTS_CONTEXT_KEY] = workflow_context
+
+    def _has_waiting_enqueue_prompt_for_record(self, *, worker: Any, record: Any) -> bool:
+        execution_store = getattr(worker, "execution_store", None)
+        read_all = getattr(execution_store, "read_all", None)
+        if not callable(read_all):
+            return False
+        session_id = str(getattr(record, "session_id", "") or "").strip()
+        vm_name = str(getattr(record, "vm_name", "") or "").strip()
+        target = str(getattr(record, "target", "") or "").strip()
+        try:
+            records = read_all().values()
+        except Exception:
+            return False
+        for execution in records:
+            if (
+                str(getattr(execution, "effect_type", "") or "").strip()
+                != "effect:agent:enqueue-prompt"
+            ):
+                continue
+            if str(getattr(execution, "status", "") or "").strip() != "waiting":
+                continue
+            outputs = getattr(execution, "outputs", None)
+            if not isinstance(outputs, dict):
+                outputs = {}
+            resolved_config = getattr(execution, "resolved_config", None)
+            if not isinstance(resolved_config, dict):
+                resolved_config = {}
+            input_payload = getattr(execution, "input_payload", None)
+            if not isinstance(input_payload, dict):
+                input_payload = {}
+            waiting_session_id = str(
+                outputs.get("session_id") or resolved_config.get("session_id") or ""
+            ).strip()
+            waiting_vm_name = str(
+                outputs.get("vm_name") or resolved_config.get("vm_name") or ""
+            ).strip()
+            waiting_target = str(
+                resolved_config.get("target") or input_payload.get("target") or ""
+            ).strip()
+            if session_id and waiting_session_id == session_id:
+                return True
+            if vm_name and waiting_vm_name == vm_name:
+                return True
+            if target and waiting_target == target:
+                return True
+        return False
+
+    def _effective_record_resume_thread_id(
+        self,
+        *,
+        record: Any,
+        session: Any | None,
+    ) -> str | None:
+        explicit = self._usable_resume_thread_id(getattr(record, "resume_thread_id", None))
+        if explicit:
+            return explicit
+        key = self._resume_thread_metadata_key(record)
+        if not key or session is None:
+            return None
+        metadata = getattr(session, "metadata", {})
+        if not isinstance(metadata, dict):
+            return None
+        return self._usable_resume_thread_id(metadata.get(key))
+
+    def _persist_resume_thread_metadata_key(
+        self,
+        *,
+        worker: Any,
+        record: Any,
+        thread_id: str | None,
+    ) -> None:
+        key = self._resume_thread_metadata_key(record)
+        value = self._usable_resume_thread_id(thread_id)
+        session_id = str(getattr(record, "session_id", "") or "").strip()
+        target = str(getattr(record, "target", "") or "").strip()
+        if not key or not value or not (session_id or target):
+            return
+        admin_service = getattr(getattr(worker, "provider_factory", None), "admin_service", None)
+        update_fn = getattr(admin_service, "session_update_metadata", None)
+        if callable(update_fn):
+            try:
+                update_fn(target=session_id or target, metadata={key: value})
+                return
+            except Exception:
+                pass
+        repository = self._session_repository_for_worker(worker)
+        get_session = getattr(repository, "get_session", None)
+        upsert_session = getattr(repository, "upsert_session", None)
+        if not callable(get_session) or not callable(upsert_session):
+            return
+        try:
+            resolved_session_id = session_id
+            if not resolved_session_id:
+                resolved_session_id, _session = self._session_context_for_libvirt_record(
+                    worker=worker,
+                    record=record,
+                )
+            if not resolved_session_id:
+                return
+            session = get_session(resolved_session_id)
+            if session is None:
+                return
+            metadata = getattr(session, "metadata", {})
+            if not isinstance(metadata, dict):
+                metadata = {}
+            upsert_session(
+                session.model_copy(update={"metadata": {**metadata, key: value}})
+            )
+        except Exception:
+            return
+
+    @staticmethod
+    def _resume_thread_metadata_key(record: Any) -> str | None:
+        text = str(getattr(record, "resume_thread_metadata_key", "") or "").strip()
+        return text or None
+
+    @staticmethod
+    def _usable_resume_thread_id(value: Any) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if text.startswith("dispatch-") or text.startswith("chat-thread-"):
+            return None
+        return text
 
     @staticmethod
     def _workflow_context_from_record(record: Any) -> dict[str, dict[str, Any]] | None:

@@ -410,6 +410,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "model",
         "vm_user",
         "resume_thread_id",
+        "resume_thread_metadata_key",
         "mcp_tool_approval_lease_id",
         "queue_key",
     ]
