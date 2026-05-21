@@ -772,8 +772,8 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   - `message_id`
   - `emoji`
     - Teams accepts Unicode emoji values directly.
-    - Common ASCII aliases are normalized before Microsoft Graph: `eyes -> 👀`,
-      `like` / `thumbsup` / `thumbs_up` / `thumbs-up -> 👍`, and `heart` / `love -> ❤️`.
+    - Common ASCII aliases are normalized before Microsoft Graph: `eyes` -> `👀`,
+      `like` / `thumbsup` / `thumbs_up` / `thumbs-up` -> `👍`, and `heart` / `love` -> `❤️`.
     - Unsupported ASCII aliases are rejected locally before any Graph request.
   - `channel_target` for Teams, or `channel_id` for Discord
   It is explicit only; `teams_get_messages` and Discord unread reads do not automatically react.
