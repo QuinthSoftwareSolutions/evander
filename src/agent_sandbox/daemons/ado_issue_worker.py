@@ -1392,7 +1392,7 @@ def _processed_work_item_refresh_decision(
         config=config, work_item_id=work_item_id
     )
     if existing_record is None:
-        return False, None
+        return True, None
 
     incoming_changed_at = _parse_ado_datetime(str(work_item.get("updated_date", "") or ""))
     remote = existing_record.remote_reference
@@ -1475,7 +1475,10 @@ def process_work_item(
 
     if already_processed:
         logging.info(
-            "work_item=%s refreshed=remote_changed issue_id=%s", work_item_id, record.issue_id
+            "work_item=%s refreshed=%s issue_id=%s",
+            work_item_id,
+            "missing_local_issue" if existing_record is None else "remote_changed",
+            record.issue_id,
         )
         return False
 

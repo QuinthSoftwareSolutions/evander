@@ -352,18 +352,13 @@ test("admin shell release panel shows missing metadata without inventing release
     waitUntil: "domcontentloaded",
   });
 
-  const releasePanel = page.locator(".dashboard-panel-grid > .dashboard-release-panel");
+  const releasePanel = page.locator(".dashboard-panel-grid .dashboard-release-panel");
   await assert.doesNotReject(() => releasePanel.getByRole("heading", { name: "Version and changelog" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.locator(".status-pill").filter({ hasText: "Missing" }).waitFor({ state: "visible" }));
   assert.equal(
-    await releasePanel.evaluate((element) => element instanceof HTMLDetailsElement && !element.open),
+    await releasePanel.evaluate((element) => element instanceof HTMLDetailsElement && element.open),
     true,
   );
-  await releasePanel.evaluate((element) => {
-    if (element instanceof HTMLDetailsElement) {
-      element.open = true;
-    }
-  });
   await assert.doesNotReject(() => releasePanel.locator(".release-missing-list strong").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.getByText("Version unavailable", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.getByText("Build unavailable", { exact: true }).waitFor({ state: "visible" }));
@@ -374,7 +369,7 @@ test("admin shell release panel shows missing metadata without inventing release
   assert.equal(await releasePanel.locator(".release-entry-item").count(), 0);
   assert.equal(await releasePanel.locator(".release-kind-pill").count(), 0);
   assert.equal(await releasePanel.getByText("News", { exact: true }).count(), 0);
-  assert.equal(await releasePanel.getByText("0.1.0").count(), 0);
+  assert.equal(await releasePanel.getByText("0.2.1").count(), 0);
   assert.equal(await releasePanel.getByText("agent-sandbox-build-20260521").count(), 0);
 
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/release-info?_dashboard=1&news_index=0"));

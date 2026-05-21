@@ -622,10 +622,108 @@ function DashboardBlock({
   );
 }
 
+type DashboardIconName = AdminTab | "refresh" | "newer" | "older";
+
+function DashboardIcon({ name }: { name: DashboardIconName }) {
+  const icons: Record<string, ReactNode> = {
+    refresh: (
+      <>
+        <path d="M20 6v5h-5" />
+        <path d="M4 18v-5h5" />
+        <path d="M6.8 9.2A7 7 0 0 1 18.5 8L20 11" />
+        <path d="M17.2 14.8A7 7 0 0 1 5.5 16L4 13" />
+      </>
+    ),
+    workflow: (
+      <>
+        <rect x="4" y="5" width="5" height="5" rx="1.2" />
+        <rect x="15" y="5" width="5" height="5" rx="1.2" />
+        <rect x="9.5" y="15" width="5" height="5" rx="1.2" />
+        <path d="M9 7.5h6" />
+        <path d="M12 10v5" />
+      </>
+    ),
+    approvals: (
+      <>
+        <path d="M5 12.5l4 4L19 6.5" />
+        <path d="M5.5 5.5h9" />
+        <path d="M5.5 10h5" />
+        <path d="M5.5 18.5h13" />
+      </>
+    ),
+    sessions: (
+      <>
+        <circle cx="12" cy="8" r="3.5" />
+        <path d="M5.5 19a6.8 6.8 0 0 1 13 0" />
+        <path d="M17 6.5h3.5" />
+        <path d="M18.75 4.75v3.5" />
+      </>
+    ),
+    "tool-calls": (
+      <>
+        <path d="M7 8.5L3.5 12 7 15.5" />
+        <path d="M17 8.5l3.5 3.5L17 15.5" />
+        <path d="M14 5l-4 14" />
+      </>
+    ),
+    configuration: (
+      <>
+        <circle cx="12" cy="12" r="3" />
+        <path d="M12 3.8v2.1" />
+        <path d="M12 18.1v2.1" />
+        <path d="M4.9 7.3l1.8 1" />
+        <path d="M17.3 15.7l1.8 1" />
+        <path d="M4.9 16.7l1.8-1" />
+        <path d="M17.3 8.3l1.8-1" />
+      </>
+    ),
+    workers: (
+      <>
+        <rect x="4.5" y="6" width="15" height="11" rx="2" />
+        <path d="M8 10h3.5" />
+        <path d="M8 13.5h8" />
+        <path d="M6.5 20h11" />
+      </>
+    ),
+    agents: (
+      <>
+        <rect x="5" y="6" width="14" height="10" rx="2" />
+        <path d="M9 20h6" />
+        <path d="M12 16v4" />
+        <path d="M9 10.5h.01" />
+        <path d="M15 10.5h.01" />
+      </>
+    ),
+    reports: (
+      <>
+        <path d="M5 19V5" />
+        <path d="M5 19h14" />
+        <path d="M8.5 15v-3" />
+        <path d="M12 15V8" />
+        <path d="M15.5 15v-5" />
+      </>
+    ),
+    newer: <path d="M14.5 6.5L9 12l5.5 5.5" />,
+    older: <path d="M9.5 6.5L15 12l-5.5 5.5" />,
+  };
+
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+      {icons[name] ?? icons.workflow}
+    </svg>
+  );
+}
+
 function TabButton({ tab, label }: { tab: AdminTab; label: string }) {
   return (
-    <button type="button" className="admin-shell-button admin-shell-button-muted" onClick={() => openTab(tab)}>
-      {label}
+    <button
+      type="button"
+      className="admin-shell-button admin-shell-button-muted dashboard-icon-button"
+      aria-label={label}
+      title={label}
+      onClick={() => openTab(tab)}
+    >
+      <DashboardIcon name={tab} />
     </button>
   );
 }
@@ -636,6 +734,7 @@ function DashboardPanel({
   statusClassName,
   statusLabel,
   className = "",
+  defaultOpen = false,
   children,
 }: {
   eyebrow: string;
@@ -643,10 +742,17 @@ function DashboardPanel({
   statusClassName: string;
   statusLabel: ReactNode;
   className?: string;
+  defaultOpen?: boolean;
   children: ReactNode;
 }) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+
   return (
-    <details className={["admin-panel", "dashboard-panel", className].filter(Boolean).join(" ")}>
+    <details
+      className={["admin-panel", "dashboard-panel", className].filter(Boolean).join(" ")}
+      open={isOpen}
+      onToggle={(event) => setIsOpen(event.currentTarget.open)}
+    >
       <summary className="panel-heading dashboard-panel-summary">
         <div className="dashboard-panel-summary-copy">
           <div className="dashboard-panel-kicker-row">
@@ -1064,8 +1170,14 @@ export function OperationsDashboard() {
           <span className={`status-pill ${stateClassName(statusByCountClass(state.sessions.data?.counts.active ?? 0))}`}>{state.sessions.data ? `${state.sessions.data.counts.active} sessions active` : "Sessions"}</span>
         </div>
         <div className="inline-actions">
-          <button type="button" className="admin-shell-button" onClick={() => setRefreshNonce((current) => current + 1)}>
-            Refresh
+          <button
+            type="button"
+            className="admin-shell-button dashboard-icon-button"
+            aria-label="Refresh dashboard"
+            title="Refresh dashboard"
+            onClick={() => setRefreshNonce((current) => current + 1)}
+          >
+            <DashboardIcon name="refresh" />
           </button>
           <TabButton tab="workflow" label="Open workflow" />
           <TabButton tab="approvals" label="Open approvals" />
@@ -1076,6 +1188,7 @@ export function OperationsDashboard() {
       </div>
 
       <div className="dashboard-panel-grid">
+        <div className="dashboard-panel-column dashboard-panel-column-secondary">
         <DashboardPanel
           eyebrow="System health"
           title="Control-plane status"
@@ -1348,7 +1461,9 @@ export function OperationsDashboard() {
               ) : null}
             </DashboardBlock>
         </DashboardPanel>
+        </div>
 
+        <div className="dashboard-panel-column dashboard-panel-column-primary">
         <DashboardPanel
           eyebrow="Human-control work"
           title="Approvals and sessions"
@@ -1544,6 +1659,7 @@ export function OperationsDashboard() {
           eyebrow="Product context"
           title="Version and changelog"
           className="dashboard-release-panel"
+          defaultOpen
           statusClassName={stateClassName(releaseInfoTone(state.releaseInfo))}
           statusLabel={releaseInfoStatusLabel(state.releaseInfo)}
         >
@@ -1620,6 +1736,9 @@ export function OperationsDashboard() {
                     <div className="release-news-pager">
                       <button
                         type="button"
+                        className="dashboard-icon-button release-news-page-button"
+                        aria-label="Newer"
+                        title="Show newer news entry"
                         disabled={!releaseInfo.news.has_previous || state.releaseInfo.loading}
                         onClick={() => {
                           if (releaseInfo.news?.previous_index != null) {
@@ -1627,7 +1746,7 @@ export function OperationsDashboard() {
                           }
                         }}
                       >
-                        Newer
+                        <DashboardIcon name="newer" />
                       </button>
                       <span>
                         Entry {releaseInfo.news.index + 1}
@@ -1635,6 +1754,9 @@ export function OperationsDashboard() {
                       </span>
                       <button
                         type="button"
+                        className="dashboard-icon-button release-news-page-button"
+                        aria-label="Older"
+                        title="Show older news entry"
                         disabled={!releaseInfo.news.has_next || state.releaseInfo.loading}
                         onClick={() => {
                           if (releaseInfo.news?.next_index != null) {
@@ -1642,7 +1764,7 @@ export function OperationsDashboard() {
                           }
                         }}
                       >
-                        Older
+                        <DashboardIcon name="older" />
                       </button>
                     </div>
                   </div>
@@ -1745,6 +1867,7 @@ export function OperationsDashboard() {
               ) : null}
             </DashboardBlock>
         </DashboardPanel>
+        </div>
       </div>
     </div>
   );

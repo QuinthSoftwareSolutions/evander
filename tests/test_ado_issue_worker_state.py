@@ -166,7 +166,7 @@ def test_processed_store_tracks_directory_scoped_entries_separately(
     )
 
 
-def test_process_work_item_skips_when_already_processed(
+def test_process_work_item_repairs_missing_local_issue_when_already_processed(
     worker_config: WorkerConfig,
 ) -> None:
     store = ProcessedWorkItemStore(worker_config.processed_store_path)
@@ -195,8 +195,14 @@ def test_process_work_item_skips_when_already_processed(
     )
 
     assert processed is False
-    assert not (worker_config.runtime_dir / "local-issues.json").exists()
-    assert not (worker_config.yaml_output_dir / "work-item-456.yaml").exists()
+    local_issues_store = JsonStore(
+        worker_config.runtime_dir / "local-issues.json", LocalIssueRecord
+    )
+    records = list(local_issues_store.read_all().values())
+    assert len(records) == 1
+    assert records[0].remote_reference is not None
+    assert records[0].remote_reference.work_item_id == "456"
+    assert (worker_config.yaml_output_dir / "work-item-456.yaml").exists()
 
 
 def test_process_work_item_upserts_unified_issue_and_refreshes_yaml(
@@ -1260,6 +1266,65 @@ def test_poll_once_skips_comments_for_processed_unchanged_items(
 
     assert items == []
     assert comment_calls == 0
+
+
+def test_poll_once_includes_processed_items_missing_local_issue_record(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ProcessedWorkItemStore(worker_config.processed_store_path)
+    store.mark_processed(
+        work_item_id=10,
+        yaml_path=worker_config.yaml_output_dir / "work-item-10.yaml",
+        script_exit_code=0,
+        output_snippet="old setup record",
+        directory_path=worker_config.directory_path,
+        provider="azure_devops",
+        organization=worker_config.organization_url,
+        project=worker_config.project,
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.ado_issue_worker.fetch_candidate_ids",
+        lambda **kwargs: [10],
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.ado_issue_worker.fetch_work_item_batch",
+        lambda **kwargs: [
+            {
+                "id": 10,
+                "url": "https://example/10",
+                "fields": {
+                    "System.Title": "Item 10",
+                    "System.Description": "desc",
+                    "System.Tags": "truman",
+                    "System.State": "Committed",
+                    "System.ChangedDate": "2026-03-21T00:00:00Z",
+                    "System.AreaPath": "Root",
+                    "System.IterationPath": "Team",
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.ado_issue_worker.fetch_work_item_comments",
+        lambda **kwargs: [
+            {"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}
+        ],
+    )
+
+    with httpx.Client() as client:
+        items = poll_once(
+            client=client,
+            config=worker_config,
+            auth_header="Basic token",
+            store=store,
+        )
+
+    assert len(items) == 1
+    assert items[0]["id"] == 10
+    assert items[0]["comments"] == [
+        {"text": "Needs x", "author": "Ann", "created_date": "", "modified_date": ""}
+    ]
 
 
 def test_fetch_work_item_by_id_attaches_comments(
