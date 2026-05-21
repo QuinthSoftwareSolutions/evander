@@ -13,6 +13,7 @@ from starlette.staticfiles import StaticFiles
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.agents import agent_routes
+from agent_sandbox.admin.web.artifacts import artifact_routes
 from agent_sandbox.admin.web.chat import chat_routes
 from agent_sandbox.admin.web.sessions_approvals import session_approval_routes
 from agent_sandbox.admin.web.shared import (
@@ -315,6 +316,7 @@ def create_app(service: AdminService) -> Starlette:
     routes.extend(teams_auth_routes(service, auth))
     routes.extend(chat_routes(service, auth))
     routes.extend(workflow_event_routes(service, auth))
+    routes.extend(artifact_routes(service))
     if dist_dir.exists():
         routes.append(Mount("/", app=StaticFiles(directory=dist_dir, html=True)))
     else:

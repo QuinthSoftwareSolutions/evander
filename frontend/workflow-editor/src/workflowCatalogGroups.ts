@@ -113,6 +113,12 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       prefixes: ["effect:semantic:"],
     },
     {
+      key: "artifacts",
+      label: "Artifacts",
+      description: "Stage and publish agent artifacts.",
+      prefixes: ["effect:artifact:"],
+    },
+    {
       key: "issues-sessions",
       label: "Issues & sessions",
       description: "Update tracked issues or session metadata.",
@@ -169,6 +175,7 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
 const NAMESPACE_LABELS: Record<string, string> = {
   ado: "ADO",
   agent: "Agent",
+  artifact: "Artifact",
   bash: "Bash",
   cron: "Cron",
   communication: "Communication",

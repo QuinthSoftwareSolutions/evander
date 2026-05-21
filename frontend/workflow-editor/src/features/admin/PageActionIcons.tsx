@@ -27,6 +27,16 @@ export function CopyIcon() {
   );
 }
 
+export function DownloadIcon() {
+  return (
+    <ActionIcon>
+      <path d="M12 4.5v9" />
+      <path d="M8.5 10.5L12 14l3.5-3.5" />
+      <path d="M5.5 18.5h13" />
+    </ActionIcon>
+  );
+}
+
 export function EditIcon() {
   return (
     <ActionIcon>

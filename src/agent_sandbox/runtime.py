@@ -43,6 +43,10 @@ from agent_sandbox.repositories.session_manifests import (
     SessionManifestRepository,
     as_session_manifest_repository,
 )
+from agent_sandbox.repositories.session_tool_approval_leases import (
+    JsonSessionToolApprovalLeaseRepository,
+    SessionToolApprovalLeaseRepository,
+)
 from agent_sandbox.repositories.script_run_requests import (
     ScriptRunRequestRepository,
     ScriptRunRequestStore,
@@ -149,6 +153,7 @@ class RuntimeContext:
     retell_phone_call_store: RetellPhoneCallStore
     teams_meeting_store: TeamsMeetingStore
     teams_meeting_bridge_client: TeamsMeetingBridgeClient
+    tool_approval_leases: SessionToolApprovalLeaseRepository | None = None
 
     def resolve_provider_config_for_session(self, session_id: str) -> GatewayConfig:
         return self.provider_config.resolve_for_session_id(session_id)
@@ -262,6 +267,9 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
     )
     session_repository = JsonSessionManifestRepository(config.session_store_path)
     approvals = JsonStore(config.approval_store_path, ApprovalRequest)
+    tool_approval_leases = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(
+        config.runtime_dir
+    )
     drafts = JsonStore(config.draft_store_path, DraftMessage)
     emails = JsonEmailRecordsRepository(config.email_store_path)
     email_cursors = JsonEmailCursorRepository(config.email_cursor_store_path)
@@ -302,7 +310,13 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         policy_config=policy_config,
         provider_config=provider_config,
         audit=AuditLogger(config.audit_log_path),
-        policy=PolicyEngine(config, session_repository, approvals, policy_config=policy_config),
+        policy=PolicyEngine(
+            config,
+            session_repository,
+            approvals,
+            policy_config=policy_config,
+            tool_approval_leases=tool_approval_leases,
+        ),
         email_service=EmailService(
             _build_email_provider(root_provider_config, emails, drafts, email_cursors)
         ),
@@ -334,6 +348,7 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         retell_phone_call_store=retell_phone_call_store,
         teams_meeting_store=teams_meeting_store,
         teams_meeting_bridge_client=teams_meeting_bridge_client,
+        tool_approval_leases=tool_approval_leases,
     )
     from agent_sandbox.approval_notifications import ApprovalNotificationDispatcher
 

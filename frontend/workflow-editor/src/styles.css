@@ -1724,12 +1724,14 @@ select {
 
 .option-checkbox-groups {
   display: grid;
-  gap: 0.75rem;
+  gap: 0.55rem;
 }
 
 .option-checkbox-section {
-  display: grid;
-  gap: 0.45rem;
+  border: 1px solid rgba(91, 67, 37, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 248, 236, 0.36);
+  overflow: hidden;
 }
 
 .option-checkbox-section-header {
@@ -1737,15 +1739,50 @@ select {
   align-items: center;
   justify-content: space-between;
   gap: 0.8rem;
+  padding: 0.62rem 0.7rem;
+  cursor: pointer;
   font-size: 0.8rem;
   font-weight: 700;
   color: #6b563f;
+  list-style: none;
 }
 
-.option-checkbox-section-header span:last-child {
+.option-checkbox-section-header::-webkit-details-marker {
+  display: none;
+}
+
+.option-checkbox-section-header::before {
+  content: "";
+  width: 0.42rem;
+  height: 0.42rem;
+  flex: 0 0 auto;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 140ms ease;
+}
+
+.option-checkbox-section[open] > .option-checkbox-section-header::before {
+  transform: rotate(45deg);
+}
+
+.option-checkbox-section-title {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.option-checkbox-section-count {
   flex: 0 0 auto;
   color: #8c765c;
   font-weight: 600;
+}
+
+.option-checkbox-section > .option-checkbox-list {
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  border-radius: 0;
+  background: rgba(255, 248, 236, 0.42);
 }
 
 .string-map-editor {
@@ -2482,6 +2519,25 @@ select {
 .node-context-menu-item:hover,
 .node-context-menu-item:focus-visible {
   background: rgba(224, 234, 231, 0.86);
+}
+
+.node-context-menu-item:disabled {
+  cursor: progress;
+  color: #8b989b;
+}
+
+.node-context-menu-item:disabled:hover {
+  background: transparent;
+}
+
+.node-context-menu-item.node-context-menu-danger {
+  color: #9a3418;
+}
+
+.node-context-menu-separator {
+  height: 1px;
+  margin: 0.25rem 0.15rem;
+  background: rgba(45, 63, 68, 0.12);
 }
 
 .node-context-menu-item.route-started {
@@ -4727,6 +4783,43 @@ select {
   white-space: nowrap;
 }
 
+.artifacts-grid {
+  grid-template-columns: minmax(0, 1.25fr) minmax(340px, 0.75fr);
+}
+
+.artifacts-table {
+  min-width: 980px;
+}
+
+.artifacts-download-cell {
+  padding: 0;
+}
+
+.artifact-lookup-actions {
+  justify-content: stretch;
+}
+
+.artifact-lookup-actions button {
+  flex: 1 1 0;
+}
+
+.artifact-detail-stack {
+  display: grid;
+  gap: 1rem;
+}
+
+.artifact-sha {
+  font-family: "SFMono-Regular", "Consolas", monospace;
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.artifact-metadata-field textarea {
+  min-height: 12rem;
+  font-family: "SFMono-Regular", "Consolas", monospace;
+  font-size: 0.82rem;
+}
+
 @media (min-width: 1120px) {
   .tool-calls-page .tool-call-json-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -5620,6 +5713,7 @@ select {
 :root[data-theme="dark"] .create-subgroup,
 :root[data-theme="dark"] .panel,
 :root[data-theme="dark"] .feature-list-item,
+:root[data-theme="dark"] .option-checkbox-section,
 :root[data-theme="dark"] .option-checkbox-list,
 :root[data-theme="dark"] .string-map-row,
 :root[data-theme="dark"] .object-list-item,
@@ -5824,6 +5918,10 @@ select {
 :root[data-theme="dark"] .current-runs-count {
   background: rgba(224, 187, 116, 0.16);
   color: #e8c98f;
+}
+
+:root[data-theme="dark"] .option-checkbox-section-count {
+  color: #b8a386;
 }
 
 :root[data-theme="dark"] .workflow-graph-meta {

@@ -7,6 +7,7 @@ import { fetchJson } from "./features/admin/api";
 import { AdminUiContext } from "./features/admin/AdminContext";
 import type { AdminResult, DirectoryTreeNode } from "./features/admin/AdminContext";
 import { AgentsPage } from "./features/agents/AgentsPage";
+import { ArtifactsPage } from "./features/artifacts/ArtifactsPage";
 import { ConfigurationScreen } from "./features/configuration/ConfigurationScreen";
 import { IssuesPage } from "./features/issues/IssuesPage";
 import { ApprovalsScreen } from "./features/approvals/ApprovalsScreen";
@@ -80,6 +81,7 @@ type DirectoryMutationResult = AdminResult<unknown>;
 type AdminTab =
   | "agents"
   | "approvals"
+  | "artifacts"
   | "skills"
   | "vms"
   | "issues"
@@ -107,6 +109,7 @@ const THEME_STORAGE_KEY = "admin-web:theme";
 const TABS: ReadonlyArray<AdminTabDefinition> = [
   { key: "agents", label: "Agents", shortLabel: "Agents", description: "Active and historical execution targets." },
   { key: "approvals", label: "Approvals", shortLabel: "Approvals", description: "Review guarded approval requests and queued decisions." },
+  { key: "artifacts", label: "Artifacts", shortLabel: "Artifacts", description: "Resolve and download durable agent artifact archives." },
   { key: "skills", label: "Skills", shortLabel: "Skills", description: "Managed Codex skill library." },
   { key: "vms", label: "VMs", shortLabel: "VMs", description: "VM host lifecycle and machine details." },
   { key: "issues", label: "Issues", shortLabel: "Issues", description: "Local issue intake and VM creation." },
@@ -1628,6 +1631,8 @@ export default function AdminRoot() {
               <SessionsScreen />
             ) : renderedTab === "approvals" ? (
               <ApprovalsScreen />
+            ) : renderedTab === "artifacts" ? (
+              <ArtifactsPage />
             ) : renderedTab === "tool-calls" ? (
               <ToolCallsPage />
             ) : (

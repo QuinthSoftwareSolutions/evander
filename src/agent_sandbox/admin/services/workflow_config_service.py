@@ -100,6 +100,9 @@ class WorkflowConfigAdminService:
     def clear_workflow_run(self, event_id: str):
         return self._worker_admin.clear_workflow_run(event_id)
 
+    def dismiss_workflow_node_failures(self, node_id: str):
+        return self._worker_admin.dismiss_workflow_node_failures(node_id)
+
     def resume_workflow_run(self, event_id: str):
         return self._worker_admin.resume_workflow_run(event_id)
 

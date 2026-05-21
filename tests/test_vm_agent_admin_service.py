@@ -832,6 +832,7 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
                 "dispatch_id": "dispatch-1",
                 "resume_thread_id": "thread-1",
                 "resume_mode": "same_context",
+                "mcp_gateway_url": None,
             },
         ),
         CallRecord(

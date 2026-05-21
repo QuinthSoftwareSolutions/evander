@@ -303,6 +303,10 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:agent:clone-repo": provider_models.AgentCloneRepoEffectDefinition,
         "effect:agent:bootstrap-frontend": provider_models.AgentBootstrapFrontendEffectDefinition,
         "effect:agent:copy-files": provider_models.AgentCopyFilesEffectDefinition,
+        "effect:artifact:stage": provider_models.ArtifactStageEffectDefinition,
+        "effect:artifact:publish-artifacts": (
+            provider_models.ArtifactPublishArtifactsEffectDefinition
+        ),
         "effect:agent:prompt": provider_models.AgentPromptEffectDefinition,
         "effect:agent:enqueue-prompt": provider_models.AgentEnqueuePromptEffectDefinition,
         "effect:chat-assistant:ensure-session": (
@@ -326,6 +330,9 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
             provider_models.CommunicationSendMessageEffectDefinition
         ),
         "effect:notification:send": provider_models.NotificationSendEffectDefinition,
+        "effect:session:approve-mcp-tools-for-run": (
+            provider_models.SessionApproveMcpToolsForRunEffectDefinition
+        ),
         "effect:session:update-metadata": provider_models.SessionUpdateMetadataEffectDefinition,
         "effect:session:renew-if-expired": (
             provider_models.SessionRenewIfExpiredEffectDefinition

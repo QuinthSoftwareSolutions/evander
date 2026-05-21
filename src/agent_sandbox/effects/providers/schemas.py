@@ -200,6 +200,7 @@ class AgentPromptEffectDefinition(EffectDefinition):
     model: ConfigValue | None = None
     vm_user: ConfigValue | None = None
     resume_thread_id: ConfigValue | None = None
+    mcp_tool_approval_lease_id: ConfigValue | None = None
 
 
 class AgentEnqueuePromptEffectDefinition(EffectDefinition):
@@ -212,6 +213,7 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     vm_user: ConfigValue | None = None
     resume_thread_id: ConfigValue | None = None
     queue_key: ConfigValue | None = None
+    mcp_tool_approval_lease_id: ConfigValue | None = None
 
 
 class ChatAssistantEnsureSessionEffectDefinition(EffectDefinition):
@@ -337,6 +339,41 @@ class AgentCopyFilesEffectDefinition(EffectDefinition):
     vm_name: ConfigValue | None = None
     vm_user: ConfigValue | None = None
     files: list[VmCopyFilesItemDefinition]
+
+
+class ArtifactStageEffectDefinition(EffectDefinition):
+    type: Literal["effect:artifact:stage"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    path: ConfigValue
+    destination_path: ConfigValue | None = None
+    vm_user: ConfigValue | None = None
+
+    @model_validator(mode="after")
+    def validate_target_selector(self) -> "ArtifactStageEffectDefinition":
+        selectors = [self.target, self.session_id, self.vm_name]
+        if not any(value is not None for value in selectors):
+            raise ValueError("effect:artifact:stage requires target, session_id, or vm_name")
+        return self
+
+
+class ArtifactPublishArtifactsEffectDefinition(EffectDefinition):
+    type: Literal["effect:artifact:publish-artifacts"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    key: ConfigValue
+    vm_user: ConfigValue | None = None
+
+    @model_validator(mode="after")
+    def validate_target_selector(self) -> "ArtifactPublishArtifactsEffectDefinition":
+        selectors = [self.target, self.session_id, self.vm_name]
+        if not any(value is not None for value in selectors):
+            raise ValueError(
+                "effect:artifact:publish-artifacts requires target, session_id, or vm_name"
+            )
+        return self
 
 
 class VmDeleteFilesEffectDefinition(EffectDefinition):
@@ -493,6 +530,31 @@ class SessionUpdateMetadataEffectDefinition(EffectDefinition):
         if not any(value is not None for value in selectors):
             raise ValueError(
                 "effect:session:update-metadata requires target, session_id, or vm_name"
+            )
+        return self
+
+
+class SessionApproveMcpToolsForRunEffectDefinition(EffectDefinition):
+    type: Literal["effect:session:approve-mcp-tools-for-run"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    tools: ConfigValue
+    expires_in_seconds: ConfigValue | None = None
+
+    @field_validator("tools")
+    @classmethod
+    def validate_tools_shape(cls, value: ConfigValue) -> ConfigValue:
+        if not isinstance(value, (list, str)):
+            raise ValueError("effect:session:approve-mcp-tools-for-run tools must be a list")
+        return value
+
+    @model_validator(mode="after")
+    def validate_target_selector(self) -> "SessionApproveMcpToolsForRunEffectDefinition":
+        selectors = [self.target, self.session_id, self.vm_name]
+        if not any(value is not None for value in selectors):
+            raise ValueError(
+                "effect:session:approve-mcp-tools-for-run requires target, session_id, or vm_name"
             )
         return self
 

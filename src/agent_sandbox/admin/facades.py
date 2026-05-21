@@ -78,6 +78,7 @@ class WorkerAdminDependencies:
     read_workflow_run_detail: Any | None = None
     read_workflow_run_search: Any | None = None
     clear_workflow_run: Any | None = None
+    dismiss_workflow_node_failures: Any | None = None
     resume_workflow_run: Any | None = None
 
 
@@ -1007,6 +1008,13 @@ class WorkerAdminFacade:
                 "clear_workflow_run is not configured for this worker admin facade."
             )
         return self._deps.clear_workflow_run(event_id)
+
+    def dismiss_workflow_node_failures(self, node_id: str):
+        if self._deps.dismiss_workflow_node_failures is None:
+            raise NotImplementedError(
+                "dismiss_workflow_node_failures is not configured for this worker admin facade."
+            )
+        return self._deps.dismiss_workflow_node_failures(node_id)
 
     def resume_workflow_run(self, event_id: str):
         if self._deps.resume_workflow_run is None:

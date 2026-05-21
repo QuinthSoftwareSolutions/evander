@@ -28,7 +28,9 @@ from .agent_session import (
     container_backend,
     container_prompt_command,
     container_thread_id_from_logs,
+    container_worker_guest_gateway_url,
     effective_config_for_session,
+    gateway_url_with_session_context,
     require_container_session_id,
     safe_effect_execution_id,
     selected_execution_backend_for_target,
@@ -55,7 +57,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
         ),
     )
 
-    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    def execute(
+        self,
+        *,
+        resolved_config: Mapping[str, Any] | None = None,
+        execution_context: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         effect = self._effect()
         context = self._context()
 
@@ -67,6 +74,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             "model": effect.model,
             "vm_user": effect.vm_user,
             "resume_thread_id": effect.resume_thread_id,
+            "mcp_tool_approval_lease_id": effect.mcp_tool_approval_lease_id,
         }
         if resolved_config:
             payload.update(dict(resolved_config))
@@ -78,6 +86,11 @@ class AgentPromptEffectProvider(EffectProviderBase):
 
         dispatch_id = self._make_dispatch_id(effect_id=effect.id)
         resume_thread_id = self._normalize_optional_string(payload.get("resume_thread_id"))
+        mcp_tool_approval_lease_id = self._resolve_mcp_tool_approval_lease_id(
+            payload=payload,
+            execution_context=execution_context,
+        )
+        workflow_run_id = self._workflow_run_id(execution_context)
 
         execution_backend, config = self._resolve_execution_backend(payload, target=target)
         if execution_backend == ExecutionBackendKind.CONTAINER_WORKER_VM.value:
@@ -88,6 +101,8 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 dispatch_id=dispatch_id,
                 resume_thread_id=resume_thread_id,
                 config=config,
+                workflow_run_id=workflow_run_id,
+                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
             )
         if execution_backend != ExecutionBackendKind.LIBVIRT_VM.value:
             raise ValueError(f"Unsupported execution_backend: {execution_backend}")
@@ -101,6 +116,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
             vm_user=vm_user,
             dispatch_id=dispatch_id,
             resume_thread_id=resume_thread_id,
+            mcp_gateway_url=self._mcp_gateway_url(
+                config=config,
+                target=target,
+                workflow_run_id=workflow_run_id,
+                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+            ),
         )
         if not bool(getattr(result, "success", False)):
             result_message = (
@@ -131,6 +152,8 @@ class AgentPromptEffectProvider(EffectProviderBase):
         dispatch_id: str,
         resume_thread_id: str | None,
         config: GatewayConfig,
+        workflow_run_id: str | None,
+        mcp_tool_approval_lease_id: str | None,
     ) -> dict[str, Any]:
         context = self._context()
         session_id, session = require_container_session_id(
@@ -151,6 +174,13 @@ class AgentPromptEffectProvider(EffectProviderBase):
             prompt=prompt,
             model=resolved_model,
             resume_thread_id=resume_thread_id,
+            mcp_gateway_url=self._mcp_gateway_url(
+                config=effective_config,
+                target=session_id,
+                workflow_run_id=workflow_run_id,
+                mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+                base_gateway_url=container_worker_guest_gateway_url(effective_config),
+            ),
         )
         handle = backend.start(
             backend.prepare(
@@ -872,6 +902,77 @@ class AgentPromptEffectProvider(EffectProviderBase):
             directory_path=str(context.metadata.get("directory_path") or "root"),
         )
 
+    def _mcp_gateway_url(
+        self,
+        *,
+        config: GatewayConfig,
+        target: str,
+        workflow_run_id: str | None,
+        mcp_tool_approval_lease_id: str | None,
+        base_gateway_url: str | None = None,
+    ) -> str | None:
+        if not mcp_tool_approval_lease_id:
+            return None
+        session_id = self._session_id_from_target(target)
+        return gateway_url_with_session_context(
+            base_gateway_url or config.gateway_url,
+            session_id=session_id,
+            workflow_run_id=workflow_run_id,
+            mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
+        )
+
+    def _session_id_from_target(self, target: str) -> str:
+        sessions = self._read_all_sessions_safe()
+        if target in sessions:
+            return target
+        matches = [
+            session_id
+            for session_id, session in sessions.items()
+            if self._normalize_optional_string(getattr(session, "vm_id", None)) == target
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        return target
+
+    def _resolve_mcp_tool_approval_lease_id(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        execution_context: Mapping[str, Any] | None,
+    ) -> str | None:
+        text = self._normalize_optional_string(payload.get("mcp_tool_approval_lease_id"))
+        if text:
+            return text
+        input_payload = (
+            execution_context.get("input_payload")
+            if isinstance(execution_context, Mapping)
+            else None
+        )
+        if isinstance(input_payload, Mapping):
+            for key in ("mcp_tool_approval_lease_id", "lease_id"):
+                text = self._normalize_optional_string(input_payload.get(key))
+                if text:
+                    return text
+        return None
+
+    def _workflow_run_id(self, execution_context: Mapping[str, Any] | None) -> str | None:
+        if not isinstance(execution_context, Mapping):
+            return None
+        for key in ("workflow_run_id", "workflow_trace_id", "trace_id"):
+            text = self._normalize_optional_string(execution_context.get(key))
+            if text:
+                return text
+        return None
+
+    def _read_all_sessions_safe(self) -> Mapping[str, Any]:
+        context = self._context()
+        if context.session_lookup is None:
+            return {}
+        try:
+            return context.session_lookup.read_all_sessions()
+        except Exception:
+            return {}
+
     def _effect(self) -> AgentPromptEffectDefinition:
         if not isinstance(self.effect_definition, AgentPromptEffectDefinition):
             raise RuntimeError(
@@ -908,11 +1009,13 @@ class AgentPromptEffectProvider(EffectProviderBase):
         prompt: str,
         model: str,
         resume_thread_id: str | None,
+        mcp_gateway_url: str | None = None,
     ) -> str:
         return container_prompt_command(
             prompt=prompt,
             model=model,
             resume_thread_id=resume_thread_id,
+            mcp_gateway_url=mcp_gateway_url,
         )
 
     @classmethod
