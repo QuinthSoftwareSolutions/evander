@@ -14,6 +14,7 @@ from starlette.staticfiles import StaticFiles
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.agents import agent_routes
+from agent_sandbox.admin.web.capacity import capacity_routes
 from agent_sandbox.admin.web.artifacts import artifact_routes
 from agent_sandbox.admin.web.chat import chat_routes
 from agent_sandbox.admin.web.sessions_approvals import session_approval_routes
@@ -264,6 +265,9 @@ def create_app(service: AdminService) -> Starlette:
     async def get_deployment_status(_: Request) -> JSONResponse:
         return JSONResponse(service.read_deployment_status().model_dump(mode="json"))
 
+    async def get_release_info(_: Request) -> JSONResponse:
+        return JSONResponse(service.read_release_info().model_dump(mode="json"))
+
     async def unlock_privileged_operations(request: Request) -> JSONResponse:
         auth.require(request)
         try:
@@ -307,11 +311,17 @@ def create_app(service: AdminService) -> Starlette:
             dashboard_cache.wrap("admin.deployment_status", get_deployment_status),
             methods=["GET"],
         ),
+        Route(
+            "/api/admin/release-info",
+            dashboard_cache.wrap("admin.release_info", get_release_info),
+            methods=["GET"],
+        ),
         Route("/api/admin/privileged/unlock", unlock_privileged_operations, methods=["POST"]),
         Route("/api/admin/privileged/lock", lock_privileged_operations, methods=["POST"]),
     ]
     routes.extend(workflow_routes(service, dashboard_cache))
     routes.extend(agent_routes(service, auth, dashboard_cache))
+    routes.extend(capacity_routes(service, auth))
     routes.extend(skill_routes(service, auth))
     routes.extend(vm_issue_routes(service, auth))
     routes.extend(session_approval_routes(service, auth, dashboard_cache))

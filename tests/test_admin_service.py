@@ -14,6 +14,7 @@ from typing import Any
 import agent_sandbox.admin.service as admin_service
 import httpx
 import pytest
+from agent_sandbox.capacity_health import HealthState, TelemetryStatus
 from agent_sandbox.admin.facades import WorkerAdminDependencies, WorkerAdminFacade
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.config import (
@@ -27,6 +28,7 @@ from agent_sandbox.execution.container_worker_repository import (
     ContainerWorkerExecutionRepository,
 )
 from agent_sandbox.execution.container_worker_client import ContainerWorkerClient
+from agent_sandbox.execution.container_worker_client import ContainerWorkerClientError
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
 from agent_sandbox.events.internal import InternalEventBus
 from agent_sandbox.events.models import TriggerEvent
@@ -36,12 +38,15 @@ from agent_sandbox.models import (
     ApprovalNotificationStatus,
     ApprovalRequest,
     ApprovalStatus,
+    AgentRecord,
     SessionManifest,
     ToolName,
     VmSummary,
 )
 from agent_sandbox.pr_feedback import FeedbackEnvelope, PrFeedbackStore
+from agent_sandbox.messaging.agent_prompt_store import AgentPromptRecord
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
+from agent_sandbox.triggers.queue import TriggerEventQueue
 from agent_sandbox.daemons.effect_orchestrator import (
     GateExecutionRecord,
     EffectExecutionRecord,
@@ -55,6 +60,7 @@ from agent_sandbox.worker.models import (
     WorkerFileWriteRequest,
     WorkerSessionPrepareRequest,
     WorkerSessionRecord,
+    WorkerTelemetryPayload,
 )
 
 UTC = timezone.utc
@@ -467,6 +473,376 @@ def test_list_agents_surfaces_stale_vm_session_when_inventory_missing(
     assert agents[0].host["inventory_status"] == "missing"
     assert agents[0].host["inventory_error"] == "virsh: command not found"
     assert agents[0].host["session_policy"]["session_id"] == "assistant-shared"
+
+
+def test_read_capacity_health_aggregates_sessions_workers_queue_and_prompts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "team")
+    assert created.ok is True and created.data is not None
+    team_path = created.data.details.directory.path
+    now = datetime(2026, 5, 21, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(admin_service, "_utc_now", lambda: now)
+
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="vm-active",
+            vm_id="vm-active",
+            directory_path="root",
+            allowed_tools=[],
+            created_at=now - timedelta(hours=2),
+            expires_at=now + timedelta(hours=2),
+        )
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="vm-retained",
+            vm_id="vm-retained",
+            directory_path="root",
+            allowed_tools=[],
+            created_at=now - timedelta(hours=4),
+            expires_at=now - timedelta(hours=1),
+        )
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-active",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-target",
+            directory_path="root",
+            allowed_tools=[],
+            created_at=now - timedelta(hours=1),
+            expires_at=now + timedelta(hours=4),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-target",
+                "worker_url": "http://worker-ok.test",
+            },
+        )
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="vm-stale",
+            vm_id="vm-stale",
+            directory_path=team_path,
+            allowed_tools=[],
+            created_at=now - timedelta(hours=6),
+            expires_at=now - timedelta(hours=2),
+        )
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="container-missing",
+            vm_provider="container_worker_vm",
+            vm_provider_id="container-missing-target",
+            directory_path=team_path,
+            allowed_tools=[],
+            created_at=now - timedelta(minutes=30),
+            expires_at=now + timedelta(hours=3),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "container-missing-target",
+                "worker_url": "http://worker-missing.test",
+            },
+        )
+    )
+
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-ok",
+            session_id="container-active",
+            worker_job_id="job-ok",
+            worker_url="http://worker-ok.test",
+            target_name="container-target",
+            started_at=now - timedelta(minutes=45),
+            last_status="running",
+            directory_path="root",
+            metadata={"image": "runner:latest"},
+        )
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-missing",
+            session_id="container-missing",
+            worker_job_id="job-missing",
+            worker_url="http://worker-missing.test",
+            target_name="container-missing-target",
+            started_at=now - timedelta(minutes=15),
+            last_status="failed",
+            directory_path=team_path,
+            metadata={"image": "runner:latest"},
+        )
+    )
+
+    service.runtime.agent_prompt_store.create_prompt_message(
+        AgentPromptRecord(
+            message_id="prompt-1",
+            sender_session_id="vm-active",
+            sender_vm_id="vm-active",
+            target_session_id="container-active",
+            target_vm_id="container-target",
+            prompt_payload={"prompt": "check-in"},
+            issued_token_hash="prompt-1-token",
+            issued_token_claims={"aud": "container-active"},
+            status="unread",
+            created_at=now - timedelta(hours=5),
+            updated_at=now - timedelta(hours=5),
+        )
+    )
+
+    queue_path = service.config.runtime_dir / "workflow-events.json"
+    queue = TriggerEventQueue(queue_path)
+    queue.publish(
+        TriggerEvent(
+            event_id="evt-old",
+            trigger_id="trigger-1",
+            trigger_type="trigger:test",
+            occurred_at=now - timedelta(hours=3),
+            payload={"name": "old"},
+        )
+    )
+    queue.publish(
+        TriggerEvent(
+            event_id="evt-new",
+            trigger_id="trigger-2",
+            trigger_type="trigger:test",
+            occurred_at=now - timedelta(minutes=10),
+            payload={"name": "new"},
+        )
+    )
+    queue.mark_inflight("evt-new")
+
+    workflow_paths = {
+        "orchestration_store_backend": "json",
+        "orchestration_store_path": service.config.runtime_dir / "orchestration.db",
+        "event_queue_store_path": queue_path,
+        "effect_execution_store_path": service.config.runtime_dir / "effect-executions.json",
+        "gate_execution_store_path": service.config.runtime_dir / "gate-executions.json",
+        "workflow_config_snapshot_store_path": service.config.runtime_dir
+        / "workflow-config-snapshots.json",
+        "await_agent_store_path": service.config.runtime_dir / "await-agent.json",
+        "legacy_await_agent_store_path": service.config.runtime_dir / "legacy-await-agent.json",
+    }
+    monkeypatch.setattr(
+        service,
+        "_workflow_run_store_paths",
+        MethodType(lambda self: workflow_paths, service),
+    )
+
+    class FakeContainerWorkerClient:
+        def __init__(
+            self,
+            *,
+            base_url: str,
+            token_env: str = "AGENT_SANDBOX_WORKER_TOKEN",
+            timeout_seconds: float = 30.0,
+            **_kwargs: object,
+        ) -> None:
+            self.base_url = base_url.rstrip("/")
+            self.token_env = token_env
+            self.timeout_seconds = timeout_seconds
+
+        def health(self) -> dict[str, object]:
+            return {"status": "ok", "worker_url": self.base_url}
+
+        def telemetry(self) -> WorkerTelemetryPayload:
+            if self.base_url == "http://worker-missing.test":
+                raise ContainerWorkerClientError(
+                    "container worker bearer token is not configured in env var "
+                    "AGENT_SANDBOX_WORKER_TOKEN"
+                )
+            return WorkerTelemetryPayload.model_validate(
+                {
+                    "generated_at": "2026-05-21T12:00:00Z",
+                    "disk": {
+                        "worker_root": {
+                            "scope": "worker_root",
+                            "status": "available",
+                            "health": "ok",
+                            "total_bytes": 100,
+                            "used_bytes": 40,
+                            "free_bytes": 60,
+                            "used_percent": 40.0,
+                            "free_percent": 60.0,
+                            "error_count": 0,
+                            "errors": [],
+                        }
+                    },
+                    "session_storage": {
+                        "total": {
+                            "scope": "worker_sessions",
+                            "status": "available",
+                            "health": "ok",
+                            "size_bytes": 2048,
+                            "file_count": 2,
+                            "directory_count": 1,
+                            "symlink_count": 0,
+                            "error_count": 0,
+                            "errors": [],
+                        },
+                        "session_count": 1,
+                        "largest_sessions": [
+                            {
+                                "session_id": "container-active",
+                                "directory_path": "sessions/container-active",
+                                "backend": "container_worker_vm",
+                                "size_bytes": 2048,
+                                "created_at": "2026-05-21T11:00:00Z",
+                                "updated_at": "2026-05-21T11:30:00Z",
+                            }
+                        ],
+                        "oldest_sessions": [
+                            {
+                                "session_id": "container-active",
+                                "directory_path": "sessions/container-active",
+                                "backend": "container_worker_vm",
+                                "size_bytes": 2048,
+                                "created_at": "2026-05-21T11:00:00Z",
+                                "updated_at": "2026-05-21T11:30:00Z",
+                            }
+                        ],
+                    },
+                    "jobs": {
+                        "status": "available",
+                        "health": "ok",
+                        "total_jobs": 1,
+                        "counts_by_status": {"running": 1},
+                        "running_job_count": 1,
+                        "failed_start_count": 0,
+                        "cleanup_failure_status": "unsupported",
+                        "cleanup_failure_message": "cleanup failures are not currently persisted",
+                        "error_count": 0,
+                        "errors": [],
+                    },
+                }
+            )
+
+    monkeypatch.setattr("agent_sandbox.admin.service.ContainerWorkerClient", FakeContainerWorkerClient)
+
+    def fake_list_agents(self: AdminService, **_kwargs: object) -> list[AgentRecord]:
+        return [
+            AgentRecord(
+                agent_id="vm-active",
+                backend="libvirt_vm",
+                target_name="vm-active",
+                session_id="vm-active",
+                directory_path="root",
+                status="running",
+                host={"kind": "vm"},
+            ),
+            AgentRecord(
+                agent_id="vm-retained",
+                backend="libvirt_vm",
+                target_name="vm-retained",
+                session_id="vm-retained",
+                directory_path="root",
+                status="stopped",
+                host={"kind": "vm_session"},
+            ),
+            AgentRecord(
+                agent_id="container-active",
+                backend="container_worker_vm",
+                target_name="container-target",
+                session_id="container-active",
+                directory_path="root",
+                status="running",
+                host={"kind": "container_worker_session"},
+            ),
+            AgentRecord(
+                agent_id="vm-stale",
+                backend="libvirt_vm",
+                target_name="vm-stale",
+                session_id="vm-stale",
+                directory_path=team_path,
+                status="stale",
+                host={"kind": "vm_session"},
+            ),
+            AgentRecord(
+                agent_id="container-missing",
+                backend="container_worker_vm",
+                target_name="container-missing-target",
+                session_id="container-missing",
+                directory_path=team_path,
+                status="prepared",
+                host={"kind": "container_worker_session"},
+            ),
+        ]
+
+    monkeypatch.setattr(service, "list_agents", MethodType(fake_list_agents, service))
+
+    health = service.read_capacity_health()
+    worker_entries = {entry.worker_url: entry for entry in health.workers.entries}
+    missing_scopes = {entry.scope for entry in health.sessions.storage.missing_telemetry}
+    payload = json.dumps(health.model_dump(mode="json"))
+
+    assert health.control_plane.disk.status is TelemetryStatus.AVAILABLE
+    assert health.control_plane.storage.total.status is TelemetryStatus.AVAILABLE
+    assert health.sessions.total_sessions == 5
+    assert health.sessions.total_agents == 5
+    assert health.sessions.backend_counts == {
+        "container_worker_vm": 2,
+        "libvirt_vm": 3,
+    }
+    assert health.sessions.directory_counts == {"root": 3, team_path: 2}
+    assert health.sessions.directory_breakdowns["root"]["total_sessions"] == 3
+    assert health.sessions.directory_breakdowns["root"]["lifecycle_counts"] == {
+        "active": 2,
+        "retained": 1,
+    }
+    assert health.sessions.directory_breakdowns[team_path]["total_sessions"] == 2
+    assert health.sessions.directory_breakdowns[team_path]["lifecycle_counts"] == {
+        "failed_stale": 1,
+        "waiting": 1,
+    }
+    assert health.sessions.lifecycle_counts == {
+        "active": 2,
+        "failed_stale": 1,
+        "retained": 1,
+        "waiting": 1,
+    }
+    assert health.sessions.status_counts == {
+        "running": 2,
+        "stopped": 1,
+        "stale": 1,
+        "prepared": 1,
+    }
+    assert health.sessions.storage.measured_total.status is TelemetryStatus.AVAILABLE
+    assert health.sessions.storage.measured_total.size_bytes == 2048
+    assert health.sessions.storage.measured_session_count == 1
+    assert health.sessions.storage.largest_sessions[0].session_id == "container-active"
+    assert health.sessions.storage.oldest_sessions[0].session_id == "container-active"
+    assert "session_storage:libvirt_vm" in missing_scopes
+    assert "session_storage:worker:http://worker-missing.test" in missing_scopes
+    assert health.workers.total_workers == 2
+    assert health.workers.reachable_workers == 2
+    assert health.workers.telemetry_available_workers == 1
+    assert worker_entries["http://worker-ok.test"].reachable is True
+    assert worker_entries["http://worker-ok.test"].telemetry_status is TelemetryStatus.AVAILABLE
+    assert worker_entries["http://worker-ok.test"].telemetry is not None
+    assert worker_entries["http://worker-ok.test"].last_heartbeat_source == (
+        "worker_telemetry_live_probe"
+    )
+    assert worker_entries["http://worker-missing.test"].reachable is True
+    assert worker_entries["http://worker-missing.test"].telemetry_status is TelemetryStatus.PERMISSION_DENIED
+    assert worker_entries["http://worker-missing.test"].healthz_status is TelemetryStatus.AVAILABLE
+    assert worker_entries["http://worker-missing.test"].last_heartbeat_source == (
+        "healthz_live_probe"
+    )
+    assert health.queue.status is TelemetryStatus.AVAILABLE
+    assert health.queue.backend == "json"
+    assert health.queue.pending_count == 1
+    assert health.queue.inflight_count == 1
+    assert health.queue.oldest_event_id == "evt-old"
+    assert health.queue.oldest_age_seconds is not None and health.queue.oldest_age_seconds > 10000
+    assert health.prompts.status is TelemetryStatus.AVAILABLE
+    assert health.prompts.unread_count == 1
+    assert health.prompts.oldest_message_id == "prompt-1"
+    assert health.prompts.health is HealthState.WARNING
+    assert str(tmp_path) not in payload
 
 
 def test_list_agents_all_directories_includes_vm_and_container_targets(

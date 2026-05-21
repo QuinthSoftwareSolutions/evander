@@ -17,6 +17,15 @@ from urllib.parse import unquote, urlparse
 from starlette.applications import Starlette
 
 from agent_sandbox.session_artifacts import resolve_artifact_file
+from agent_sandbox.capacity_health import (
+    HealthState,
+    SessionStorageSample,
+    TelemetryError,
+    TelemetryStatus,
+    collect_disk_usage,
+    collect_recursive_directory_size,
+    top_session_storage,
+)
 
 from .docker_runtime import DockerContainerRuntime
 from .models import (
@@ -25,6 +34,8 @@ from .models import (
     WorkerFileWriteRecord,
     WorkerJobRecord,
     WorkerJobRequest,
+    WorkerDiskTelemetry,
+    WorkerJobTelemetry,
     WorkerMssqlDatabaseDeleteRecord,
     WorkerMssqlDatabaseListRecord,
     WorkerMssqlDatabaseRecord,
@@ -36,6 +47,8 @@ from .models import (
     WorkerSessionPrepareRequest,
     WorkerSessionPaths,
     WorkerSessionRecord,
+    WorkerSessionStorageTelemetry,
+    WorkerTelemetryPayload,
     now_utc,
 )
 from .mssql import WorkerMssqlProvisioner, WorkerMssqlStore
@@ -511,8 +524,160 @@ class WorkerDaemon:
         )
         return removed_any
 
+    def read_telemetry(self) -> WorkerTelemetryPayload:
+        worker_root_disk = collect_disk_usage(self.worker_root, scope="worker_root")
+        sessions_root = self.worker_root / "sessions"
+        session_storage_total = collect_recursive_directory_size(
+            sessions_root,
+            scope="worker_sessions",
+        )
+        session_samples = self._session_storage_samples(sessions_root)
+        return WorkerTelemetryPayload(
+            disk=WorkerDiskTelemetry(worker_root=worker_root_disk),
+            session_storage=WorkerSessionStorageTelemetry(
+                total=session_storage_total,
+                session_count=len(session_samples),
+                largest_sessions=top_session_storage(session_samples, limit=5, order="largest"),
+                oldest_sessions=top_session_storage(session_samples, limit=5, order="oldest"),
+            ),
+            jobs=self._job_telemetry(),
+        )
+
     def _log_path(self, record: WorkerJobRecord) -> Path:
         return Path(record.logs_path) / f"{record.job_id}.log"
+
+    def _session_storage_samples(self, sessions_root: Path) -> list[SessionStorageSample]:
+        try:
+            entries = list(os.scandir(sessions_root))
+        except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+            return []
+
+        samples: list[SessionStorageSample] = []
+        for entry in entries:
+            try:
+                if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                    continue
+            except OSError:
+                continue
+            session_id = str(entry.name or "").strip()
+            if not session_id or not SAFE_ID_PATTERN.fullmatch(session_id):
+                continue
+            sample = self._session_storage_sample(Path(entry.path), session_id=session_id)
+            if sample is not None:
+                samples.append(sample)
+        return samples
+
+    def _session_storage_sample(
+        self,
+        session_root: Path,
+        *,
+        session_id: str,
+    ) -> SessionStorageSample | None:
+        telemetry = collect_recursive_directory_size(
+            session_root,
+            scope=f"session_storage:{session_id}",
+        )
+        if telemetry.status is not TelemetryStatus.AVAILABLE:
+            return None
+        created_at, updated_at = self._session_storage_timestamps(session_root)
+        return SessionStorageSample(
+            session_id=session_id,
+            directory_path=f"sessions/{session_id}",
+            backend="container_worker_vm",
+            size_bytes=telemetry.size_bytes,
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+
+    def _session_storage_timestamps(
+        self,
+        session_root: Path,
+    ) -> tuple[datetime | None, datetime | None]:
+        metadata_path = session_root / "metadata.json"
+        created_at = self._read_datetime_value(self._read_json_object(metadata_path), "created_at")
+        try:
+            root_stat = session_root.stat()
+        except OSError:
+            return created_at, None
+        updated_at = datetime.fromtimestamp(root_stat.st_mtime, tz=UTC)
+        if created_at is None:
+            created_at = updated_at
+        try:
+            metadata_stat = metadata_path.stat()
+        except OSError:
+            return created_at, updated_at
+        metadata_updated_at = datetime.fromtimestamp(metadata_stat.st_mtime, tz=UTC)
+        if metadata_updated_at > updated_at:
+            updated_at = metadata_updated_at
+        return created_at, updated_at
+
+    def _read_json_object(self, path: Path) -> dict[str, object]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    @staticmethod
+    def _read_datetime_value(payload: dict[str, object], key: str) -> datetime | None:
+        value = payload.get(key)
+        if not isinstance(value, str):
+            return None
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    def _job_telemetry(self) -> WorkerJobTelemetry:
+        try:
+            records = list(self.store.read_all().values())
+        except FileNotFoundError:
+            return self._job_telemetry_failure(
+                TelemetryStatus.MISSING,
+                "job store is missing",
+            )
+        except PermissionError:
+            return self._job_telemetry_failure(
+                TelemetryStatus.PERMISSION_DENIED,
+                "permission denied",
+            )
+        except (OSError, ValueError):
+            return self._job_telemetry_failure(
+                TelemetryStatus.UNSUPPORTED,
+                "job store is unavailable",
+            )
+
+        counts_by_status: dict[str, int] = {}
+        running_job_count = 0
+        failed_start_count = 0
+        for record in records:
+            counts_by_status[record.status] = counts_by_status.get(record.status, 0) + 1
+            if record.status == "running":
+                running_job_count += 1
+            if record.status == "failed":
+                failed_start_count += 1
+
+        return WorkerJobTelemetry(
+            total_jobs=len(records),
+            counts_by_status=counts_by_status,
+            running_job_count=running_job_count,
+            failed_start_count=failed_start_count,
+        )
+
+    @staticmethod
+    def _job_telemetry_failure(
+        status: TelemetryStatus,
+        message: str,
+    ) -> WorkerJobTelemetry:
+        return WorkerJobTelemetry(
+            status=status,
+            health=HealthState.UNKNOWN,
+            error_count=1,
+            errors=[TelemetryError(status=status, message=message)],
+        )
 
     def _clone_repo_if_requested(
         self,
