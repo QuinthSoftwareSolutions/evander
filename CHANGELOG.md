@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-21 - Container Git Mirror Concurrency
+
+- Serialized container-worker Git mirror creation and refresh through the same per-mirror
+  `agent-sandbox-sync.lock` used by the restricted SSH upload-pack wrapper, preventing concurrent
+  `effect:agent:clone-repo` executions from mutating a shared mirror while another worker clone is
+  reading it.
+
 ## 2026-05-21 - Dashboard Layout and 0.2.1 Version
 
 - Bumped the project and workflow-editor package metadata to version `0.2.1`.
