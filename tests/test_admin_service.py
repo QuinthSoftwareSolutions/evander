@@ -7574,6 +7574,76 @@ def test_create_issue_vm_accepts_unified_proxy_identifier(tmp_path: Path, monkey
     assert captured["cmd"][-1] == "agent"
 
 
+def test_create_issue_vm_from_local_issue_accepts_unified_proxy_identifier(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.create_local_issue(
+        yaml_path=str(
+            _write_proxy_issue_yaml(
+                tmp_path,
+                issue_number=77,
+                title="Proxy setup",
+                description="from ado",
+                state="Active",
+            )
+        )
+    )
+    captured: dict[str, Any] = {}
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+
+    result = service.create_issue_vm_from_local_issue("proxy:ado/77", model="gpt-5.2-codex")
+
+    assert result.success is True
+    assert any(str(part).endswith("setup_vm.sh") for part in captured["cmd"])
+    assert "vm-77" in captured["cmd"]
+    assert captured["cmd"][-1] == "agent"
+
+
+def test_create_issue_vm_from_local_issue_rejects_ambiguous_proxy_identifier(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.create_local_issue(
+        yaml_path=str(
+            _write_proxy_issue_yaml(
+                tmp_path,
+                issue_number=42,
+                title="Project A issue",
+                description="from project a",
+                project="project-a",
+            )
+        )
+    )
+    service.create_local_issue(
+        yaml_path=str(
+            _write_proxy_issue_yaml(
+                tmp_path,
+                issue_number=42,
+                title="Project B issue",
+                description="from project b",
+                project="project-b",
+            )
+        )
+    )
+
+    def _fail_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("create_issue_vm_from_local_issue should reject ambiguous identifiers before setup")
+
+    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fail_run)
+
+    result = service.create_issue_vm_from_local_issue("proxy:ado/42")
+
+    assert result.success is False
+    assert result.message.startswith("Ambiguous proxy issue identifier: proxy:ado/42.")
+
+
 def test_create_vm_launches_generic_vm_and_bootstraps_selected_toolchains(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
