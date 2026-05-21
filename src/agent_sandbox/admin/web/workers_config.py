@@ -16,6 +16,7 @@ from agent_sandbox.admin.service import (
     AdminRevisionConflict,
     AdminService,
 )
+from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.config_tooltips import CONFIG_FIELD_TOOLTIPS
 from agent_sandbox.admin.web.shared import AdminWebAuth, request_has_privileged_operations
 from agent_sandbox.config import (
@@ -1154,7 +1155,11 @@ def _tab_fields_by_source_domain(tab_key: str) -> dict[str, set[str]]:
     return fields_by_source
 
 
-def worker_config_routes(service: AdminService, auth: AdminWebAuth) -> list[BaseRoute]:
+def worker_config_routes(
+    service: AdminService,
+    auth: AdminWebAuth,
+    cache: AdminWebJsonResponseCache | None = None,
+) -> list[BaseRoute]:
     async def list_workers(_: Request) -> JSONResponse:
         workers = [
             _normalize_worker_summary(summary) for summary in service.list_background_workers()
@@ -1425,7 +1430,11 @@ def worker_config_routes(service: AdminService, auth: AdminWebAuth) -> list[Base
             return JSONResponse(response_payload, status_code=status_code)
 
     routes = [
-        Route("/api/workers", list_workers, methods=["GET"]),
+        Route(
+            "/api/workers",
+            cache.wrap("workers.list", list_workers) if cache else list_workers,
+            methods=["GET"],
+        ),
         Route("/api/workers/{worker_id:str}", get_worker, methods=["GET"]),
         Route("/api/workers/{worker_id:str}/log", get_worker_log, methods=["GET"]),
         Route("/api/workers/{worker_id:str}/config", write_worker_config, methods=["PUT"]),

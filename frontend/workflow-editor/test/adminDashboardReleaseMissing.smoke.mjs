@@ -322,6 +322,8 @@ test("admin shell release panel shows missing metadata without inventing release
     }
 
     if (pathname === "/api/admin/release-info") {
+      assert.equal(url.searchParams.get("_dashboard"), "1");
+      assert.equal(url.searchParams.has("_dashboard_refresh"), false);
       await route.fulfill(jsonResponse(releaseInfoResponse));
       return;
     }
@@ -349,9 +351,18 @@ test("admin shell release panel shows missing metadata without inventing release
     waitUntil: "domcontentloaded",
   });
 
-  const releasePanel = page.locator("article.dashboard-release-panel");
+  const releasePanel = page.locator(".dashboard-panel-grid > .dashboard-release-panel");
   await assert.doesNotReject(() => releasePanel.getByRole("heading", { name: "Version and changelog" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.locator(".status-pill").filter({ hasText: "Missing" }).waitFor({ state: "visible" }));
+  assert.equal(
+    await releasePanel.evaluate((element) => element instanceof HTMLDetailsElement && !element.open),
+    true,
+  );
+  await releasePanel.evaluate((element) => {
+    if (element instanceof HTMLDetailsElement) {
+      element.open = true;
+    }
+  });
   await assert.doesNotReject(() => releasePanel.locator(".release-missing-list strong").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.getByText("Version unavailable", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.getByText("Build unavailable", { exact: true }).waitFor({ state: "visible" }));
@@ -363,7 +374,7 @@ test("admin shell release panel shows missing metadata without inventing release
   assert.equal(await releasePanel.getByText("0.1.0").count(), 0);
   assert.equal(await releasePanel.getByText("agent-sandbox-build-20260521").count(), 0);
 
-  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/release-info"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/release-info?_dashboard=1"));
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
 });

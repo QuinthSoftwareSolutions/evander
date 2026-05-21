@@ -11,6 +11,7 @@ from agent_sandbox.admin.service import (
     COMMUNICATION_FILE_SESSION_POLICY_FIELDS,
     AdminService,
 )
+from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.shared import AdminWebAuth, json_error
 from agent_sandbox.models import ApprovalRequest, ApprovalStatus, SessionSummary, ToolName
 
@@ -182,7 +183,11 @@ def _wake_schedule_payload(item: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def session_approval_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRoute]:
+def session_approval_routes(
+    service: AdminService,
+    _auth: AdminWebAuth,
+    cache: AdminWebJsonResponseCache | None = None,
+) -> list[BaseRoute]:
     async def approvals_index(request: Request) -> JSONResponse:
         params = request.query_params
         try:
@@ -502,11 +507,19 @@ def session_approval_routes(service: AdminService, _auth: AdminWebAuth) -> list[
         return JSONResponse({"ok": True, "request_id": request_id})
 
     return [
-        Route("/api/admin/approvals", approvals_index, methods=["GET"]),
+        Route(
+            "/api/admin/approvals",
+            cache.wrap("admin.approvals.list", approvals_index) if cache else approvals_index,
+            methods=["GET"],
+        ),
         Route("/api/admin/approvals/{request_id:str}", get_approval_detail, methods=["GET"]),
         Route("/api/admin/approvals/{request_id:str}/decision", decide_approval, methods=["POST"]),
         Route("/api/admin/sessions/catalog", sessions_catalog, methods=["GET"]),
-        Route("/api/admin/sessions", list_sessions, methods=["GET"]),
+        Route(
+            "/api/admin/sessions",
+            cache.wrap("admin.sessions.list", list_sessions) if cache else list_sessions,
+            methods=["GET"],
+        ),
         Route("/api/admin/sessions/{session_id:str}", get_session_detail, methods=["GET"]),
         Route("/api/admin/sessions/{session_id:str}", update_session_policy, methods=["PATCH"]),
         Route("/api/admin/sessions/{session_id:str}/renew", renew_session, methods=["POST"]),

@@ -246,6 +246,13 @@ identity when one is configured, and recent entries from the top of `CHANGELOG.m
 is missing, the panel surfaces explicit missing reasons instead of inferring or inventing release
 data.
 
+For a task-oriented guide to every Admin UI section, see
+[`docs/admin-ui-user-manual.md`](docs/admin-ui-user-manual.md).
+
+Dashboard-tagged read requests use a short-lived backend JSON cache so repeated opens do not
+re-run every systemd, VM inventory, workflow, approval, session, and audit read immediately. The
+detail tabs keep their normal live reads, and the dashboard Refresh button bypasses the cache.
+
 Existing hash deep links still route directly to the requested section. For example, `/#workflow`,
 `/#sessions`, `/#approvals`, `/#tool-calls`, and `/#configuration` bypass the dashboard and open the
 detail view. The Workflow tab remains a first-level navigation item for editing workflow graphs and

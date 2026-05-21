@@ -11,6 +11,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Route
 
 from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.shared import AdminWebAuth, json_error
 
 
@@ -58,7 +59,11 @@ def _int_query(request: Request, name: str, *, default: int) -> int:
     return int(value.strip())
 
 
-def agent_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRoute]:
+def agent_routes(
+    service: AdminService,
+    _auth: AdminWebAuth,
+    cache: AdminWebJsonResponseCache | None = None,
+) -> list[BaseRoute]:
     async def list_agents(request: Request) -> JSONResponse:
         directory_path = _string_query(request, "directory_path")
         direct_only = _bool_query(request, "direct_only", default=True)
@@ -206,7 +211,11 @@ def agent_routes(service: AdminService, _auth: AdminWebAuth) -> list[BaseRoute]:
         return JSONResponse(_jsonable(result), status_code=status_code)
 
     return [
-        Route("/api/admin/agents", list_agents, methods=["GET"]),
+        Route(
+            "/api/admin/agents",
+            cache.wrap("admin.agents.list", list_agents) if cache else list_agents,
+            methods=["GET"],
+        ),
         Route("/api/admin/agents", create_agent, methods=["POST"]),
         Route("/api/admin/agents/{agent_id:str}", patch_agent, methods=["PATCH"]),
         Route("/api/admin/agents/{agent_id:str}", delete_agent, methods=["DELETE"]),

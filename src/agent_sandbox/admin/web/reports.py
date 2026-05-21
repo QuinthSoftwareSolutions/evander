@@ -8,6 +8,7 @@ from starlette.routing import Route
 from starlette.concurrency import run_in_threadpool
 
 from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.shared import json_error
 
 
@@ -36,7 +37,10 @@ def _parse_optional_limit(value: str | None) -> int | None:
     return parsed
 
 
-def report_routes(service: AdminService) -> list[Route]:
+def report_routes(
+    service: AdminService,
+    cache: AdminWebJsonResponseCache | None = None,
+) -> list[Route]:
     async def workflow_graph_activity(request: Request) -> JSONResponse:
         try:
             payload = service.read_workflow_graph_activity_report(
@@ -71,7 +75,9 @@ def report_routes(service: AdminService) -> list[Route]:
     return [
         Route(
             "/api/admin/reports/workflow-graph-activity",
-            workflow_graph_activity,
+            cache.wrap("admin.reports.workflow_graph_activity", workflow_graph_activity)
+            if cache
+            else workflow_graph_activity,
             methods=["GET"],
         ),
         Route("/api/admin/reports/conformance", conformance, methods=["GET"]),

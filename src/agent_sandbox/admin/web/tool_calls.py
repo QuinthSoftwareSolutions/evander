@@ -8,6 +8,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from agent_sandbox.admin.service import AdminService
+from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.shared import json_error
 
 
@@ -50,7 +51,10 @@ def _optional_text(value: Any) -> str | None:
     return text or None
 
 
-def tool_call_routes(service: AdminService) -> list[Route]:
+def tool_call_routes(
+    service: AdminService,
+    cache: AdminWebJsonResponseCache | None = None,
+) -> list[Route]:
     async def list_tool_calls(request: Request) -> JSONResponse:
         params = request.query_params
         try:
@@ -69,4 +73,10 @@ def tool_call_routes(service: AdminService) -> list[Route]:
             return json_error(str(exc))
         return JSONResponse(entries.model_dump(mode="json"))
 
-    return [Route("/api/admin/tool-calls", list_tool_calls, methods=["GET"])]
+    return [
+        Route(
+            "/api/admin/tool-calls",
+            cache.wrap("admin.tool_calls.list", list_tool_calls) if cache else list_tool_calls,
+            methods=["GET"],
+        )
+    ]
