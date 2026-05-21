@@ -174,6 +174,9 @@ and surfaces:
   approval before selected allowed tools execute
 - a configuration tab that inspects inherited per-domain directory config
 
+For detailed operator procedures and screenshots for every Admin UI section, see
+[`admin-ui-user-manual.md`](admin-ui-user-manual.md).
+
 The dashboard is the default landing view for `/` and normal post-login redirects. Existing hash
 deep links remain direct: for example `/#workflow`, `/#sessions`, `/#approvals`, `/#tool-calls`,
 and `/#configuration` still open those sections instead of the dashboard. Dashboard panels use the

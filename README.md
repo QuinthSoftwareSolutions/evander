@@ -238,6 +238,9 @@ workflow runs and graph activity, approvals, sessions, tool-call audit entries, 
 document/catalog. Empty or unsupported sources are shown as explicit missing/unavailable states,
 not as sample data.
 
+For a task-oriented guide to every Admin UI section, see
+[`docs/admin-ui-user-manual.md`](docs/admin-ui-user-manual.md).
+
 Dashboard-tagged read requests use a short-lived backend JSON cache so repeated opens do not
 re-run every systemd, VM inventory, workflow, approval, session, and audit read immediately. The
 detail tabs keep their normal live reads, and the dashboard Refresh button bypasses the cache.

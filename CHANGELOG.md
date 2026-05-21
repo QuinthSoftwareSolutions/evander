@@ -83,6 +83,10 @@ docs, tests.
   dashboard loads reuse recent workers, agents, workflow, approval, session, and
   audit reads while detail tabs keep live reads and manual dashboard refreshes
   bypass the cache.
+- Added a comprehensive Admin UI user manual with task-oriented procedures and
+  screenshots covering the shared shell, dashboard, agents, approvals,
+  artifacts, skills, VMs, issues, sessions, tool calls, configuration, reports,
+  users, workers, workflow editing, and common operator workflows.
 
 ## 2026-05-18 - Pull Request Workflow Nodes
 
