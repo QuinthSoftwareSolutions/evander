@@ -12,7 +12,7 @@ import pytest
 from pydantic import ValidationError
 from starlette.testclient import TestClient
 
-from agent_sandbox.capacity_health import TelemetryStatus
+from agent_sandbox.capacity_health import HealthState, TelemetryStatus
 from agent_sandbox.worker.service import WorkerDaemon
 from agent_sandbox.worker_daemon import (
     WorkerJobRecord,
@@ -39,7 +39,7 @@ class FakeContainerRuntime:
         return f"container-{record.job_id}"
 
     def inspect_job(self, record: WorkerJobRecord) -> dict[str, Any]:
-        return {"status": "running"}
+        return {"status": record.status}
 
     def stop_job(self, record: WorkerJobRecord) -> None:
         self.stopped.append(record.job_id)
@@ -199,7 +199,48 @@ def test_worker_daemon_read_telemetry_reports_disk_sessions_and_jobs_without_lea
     assert telemetry.jobs.queued_job_status is TelemetryStatus.UNSUPPORTED
     assert telemetry.jobs.failed_start_count == 1
     assert telemetry.jobs.cleanup_failure_status is TelemetryStatus.UNSUPPORTED
+    assert telemetry.jobs.cleanup_failure_count == 0
     assert str(tmp_path) not in payload
+
+
+def test_worker_daemon_read_telemetry_reports_cleanup_failures_as_available(
+    tmp_path: Path,
+) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(daemon.worker_root, "session-cleanup-failed")
+    daemon.store.put(
+        WorkerJobRecord(
+            job_id="job-cleanup-failed",
+            session_id="session-cleanup-failed",
+            image="runner:latest",
+            command=["true"],
+            container_name="agent-worker-job-cleanup-failed",
+            status="cleanup_failed",
+            started_at=datetime(2026, 5, 21, 10, 0, tzinfo=UTC),
+            finished_at=datetime(2026, 5, 21, 10, 5, tzinfo=UTC),
+            agent_home_path=str(paths.agent_home),
+            repo_root_path=str(paths.repo_root),
+            artifacts_path=str(paths.artifacts),
+            logs_path=str(paths.logs),
+            cleanup_status="cleanup_failed",
+            cleanup_attempted_at=datetime(2026, 5, 21, 10, 4, tzinfo=UTC),
+            cleanup_completed_at=datetime(2026, 5, 21, 10, 5, tzinfo=UTC),
+            cleanup_error="session cleanup failed",
+        )
+    )
+
+    telemetry = daemon.read_telemetry()
+
+    assert telemetry.jobs.cleanup_failure_status is TelemetryStatus.AVAILABLE
+    assert telemetry.jobs.cleanup_failure_count == 1
+    assert telemetry.jobs.cleanup_failure_message == "1 cleanup failure recorded"
+    assert telemetry.jobs.health is HealthState.WARNING
+    assert telemetry.jobs.error_count == 1
 
 
 def test_worker_job_request_rejects_egress_policy_fields() -> None:
@@ -371,7 +412,13 @@ def test_session_delete_removes_durable_paths_and_worker_jobs(tmp_path: Path) ->
     assert deleted.json() == {"deleted": True, "session_id": "session-1"}
     assert runtime.removed == ["job-1"]
     assert not root.exists()
-    assert client.get("/v1/jobs/job-1", headers=_auth()).status_code == 404
+    job_response = client.get("/v1/jobs/job-1", headers=_auth())
+    assert job_response.status_code == 200
+    assert job_response.json()["status"] == "removed"
+    assert job_response.json()["cleanup_status"] == "cleanup_succeeded"
+    store = json.loads((tmp_path / "runtime" / "worker-jobs.json").read_text(encoding="utf-8"))
+    assert store["job-1"]["status"] == "removed"
+    assert store["job-1"]["cleanup_status"] == "cleanup_succeeded"
 
 
 def test_session_delete_removes_stopped_worker_jobs(tmp_path: Path) -> None:
@@ -395,7 +442,48 @@ def test_session_delete_removes_stopped_worker_jobs(tmp_path: Path) -> None:
 
     assert deleted.status_code == 200
     assert runtime.removed == ["job-1"]
-    assert client.get("/v1/jobs/job-1", headers=_auth()).status_code == 404
+    job_response = client.get("/v1/jobs/job-1", headers=_auth())
+    assert job_response.status_code == 200
+    assert job_response.json()["status"] == "removed"
+    assert job_response.json()["cleanup_status"] == "cleanup_succeeded"
+
+
+def test_session_delete_marks_cleanup_failed_when_session_root_removal_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = FakeContainerRuntime()
+    client = _client(tmp_path, runtime)
+    created = client.post(
+        "/v1/jobs",
+        headers=_auth(),
+        json={
+            "session_id": "session-1",
+            "job_id": "job-1",
+            "image": "codex:latest",
+            "command": ["true"],
+        },
+    )
+    assert created.status_code == 201
+    root = tmp_path / "worker-root" / "sessions" / "session-1"
+
+    def _raise(*_args: object, **_kwargs: object) -> None:
+        raise OSError("permission denied")
+
+    monkeypatch.setattr("agent_sandbox.worker.service.shutil.rmtree", _raise)
+
+    deleted = client.delete("/v1/sessions/session-1", headers=_auth())
+
+    assert deleted.status_code == 502
+    assert runtime.removed == ["job-1"]
+    assert root.exists()
+    job_response = client.get("/v1/jobs/job-1", headers=_auth())
+    assert job_response.status_code == 200
+    assert job_response.json()["status"] == "removed"
+    assert job_response.json()["cleanup_status"] == "cleanup_failed"
+    assert "permission denied" in job_response.json()["cleanup_error"]
+    store = json.loads((tmp_path / "runtime" / "worker-jobs.json").read_text(encoding="utf-8"))
+    assert store["job-1"]["status"] == "removed"
+    assert store["job-1"]["cleanup_status"] == "cleanup_failed"
 
 
 def test_mssql_database_endpoints_are_session_scoped_and_cleanup_on_delete(
