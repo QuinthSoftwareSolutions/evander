@@ -4204,6 +4204,7 @@ def _build_issue_session_manifest(
     directory_path: str,
     ttl_hours: int | None,
     extra_allowed_tools: list[str | ToolName] | None = None,
+    tool_argument_policies: dict[str, list[Any]] | None = None,
     allowed_script_names: list[str] | None = None,
     discord_channels: list[str],
     teams_channel_allowlist: list[str] | None = None,
@@ -4270,6 +4271,7 @@ def _build_issue_session_manifest(
         directory_path=directory_path,
         allowed_tools=list(dict.fromkeys(resolved_allowed_tools)),
         approval_required_tools=list(policy.approval_required_tools),
+        tool_argument_policies=tool_argument_policies or {},
         allowed_script_names=_normalize_allowed_script_names(allowed_script_names or []),
         discord_channel_allowlist=discord_channels,
         teams_channel_allowlist=_normalize_teams_channel_allowlist(
@@ -4341,6 +4343,23 @@ def _normalize_allowed_tools(value: list[str | ToolName]) -> list[ToolName]:
         seen.add(normalized_tool)
         normalized_tools.append(normalized_tool)
     return normalized_tools
+
+
+def _session_tool_argument_policies_from_payload(
+    session: SessionManifest, value: object
+) -> dict[str, list[Any]]:
+    try:
+        validated = SessionManifest.model_validate(
+            {
+                "session_id": session.session_id,
+                "allowed_tools": list(session.allowed_tools),
+                "expires_at": session.expires_at,
+                "tool_argument_policies": value,
+            }
+        )
+    except ValidationError as exc:
+        raise ValueError(str(exc)) from exc
+    return validated.tool_argument_policies
 
 
 def _normalize_allowed_script_names(value: list[str]) -> list[str]:
@@ -4465,6 +4484,7 @@ def _session_policy_update_from_payload(
 ) -> dict[str, Any]:
     allowed_fields = {
         "approval_required_tools",
+        "tool_argument_policies",
         "allowed_script_names",
         "discord_channel_allowlist",
         "discord_channels",
@@ -4492,6 +4512,11 @@ def _session_policy_update_from_payload(
                 payload.get("approval_required_tools"),
                 field_name="approval_required_tools",
             )
+        )
+    if "tool_argument_policies" in payload:
+        update["tool_argument_policies"] = _session_tool_argument_policies_from_payload(
+            session,
+            payload.get("tool_argument_policies"),
         )
 
     discord_field = (
@@ -5928,6 +5953,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 tool.value if isinstance(tool, ToolName) else str(tool)
                 for tool in session.approval_required_tools
             ],
+            "tool_argument_policies": {
+                tool_name: [rule.model_dump(mode="json") for rule in rules]
+                for tool_name, rules in session.tool_argument_policies.items()
+            },
             "allowed_script_names": list(session.allowed_script_names),
             "discord_channels": list(session.discord_channel_allowlist),
             "discord_channel_allowlist": list(session.discord_channel_allowlist),
@@ -5955,15 +5984,52 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "labels": labels,
         }
 
+    def effective_tool_policy_payload(
+        self, session: SessionManifest | None
+    ) -> dict[str, Any] | None:
+        if session is None:
+            return None
+        effective_policy = self.runtime.policy_config.resolve_for_session_manifest(session)
+        approval_required_tools: list[str] = []
+        seen_tools: set[str] = set()
+        for tool in effective_policy.approval_required_tools:
+            value = tool.value if isinstance(tool, ToolName) else str(tool)
+            if value in seen_tools:
+                continue
+            seen_tools.add(value)
+            approval_required_tools.append(value)
+        for tool in session.approval_required_tools:
+            value = tool.value if isinstance(tool, ToolName) else str(tool)
+            if value in seen_tools:
+                continue
+            seen_tools.add(value)
+            approval_required_tools.append(value)
+
+        tool_argument_policies: dict[str, list[dict[str, Any]]] = {}
+        for source in (effective_policy.tool_argument_policies, session.tool_argument_policies):
+            for tool_name, rules in source.items():
+                tool_rules = tool_argument_policies.setdefault(tool_name, [])
+                tool_rules.extend(rule.model_dump(mode="json") for rule in rules)
+
+        return {
+            "allowed_tools": [
+                tool.value if isinstance(tool, ToolName) else str(tool)
+                for tool in session.allowed_tools
+            ],
+            "approval_required_tools": approval_required_tools,
+            "tool_argument_policies": tool_argument_policies,
+        }
+
     def _agent_record_from_vm(self, summary: VmSummary) -> AgentRecord:
         power_state = str(summary.power_state or summary.libvirt_state or "unknown").strip()
         status = "running" if power_state == "running" else "stopped"
         directory_path = summary.directory_paths[0] if len(summary.directory_paths) == 1 else "root"
         session_policy = None
+        effective_tool_policy = None
         if len(summary.session_ids) == 1:
-            session_policy = self._agent_session_policy_payload(
-                self.runtime.session_repository.get_session(summary.session_ids[0])
-            )
+            session = self.runtime.session_repository.get_session(summary.session_ids[0])
+            session_policy = self._agent_session_policy_payload(session)
+            effective_tool_policy = self.effective_tool_policy_payload(session)
         return AgentRecord(
             agent_id=summary.vm_name,
             backend="libvirt_vm",
@@ -5972,6 +6038,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             directory_path=directory_path,
             status=status,
             updated_at=summary.last_state_update_at,
+            effective_tool_policy=effective_tool_policy,
             host={
                 "kind": "vm",
                 "vm_name": summary.vm_name,
@@ -6038,6 +6105,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             directory_path=directory_path,
             status="stale",
             updated_at=session.created_at,
+            effective_tool_policy=self.effective_tool_policy_payload(session),
             host=host,
             capabilities={
                 "start": False,
@@ -6099,6 +6167,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     ) -> AgentRecord:
         status = self._container_agent_status(record.last_status)
         message: str | None = None
+        session = self.runtime.session_repository.get_session(record.session_id)
         if reconcile:
             try:
                 self._container_worker_backend(
@@ -6116,9 +6185,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "worker_url": record.worker_url,
             "last_status": record.last_status,
             "metadata": dict(record.metadata),
-            "session_policy": self._agent_session_policy_payload(
-                self.runtime.session_repository.get_session(record.session_id)
-            ),
+            "session_policy": self._agent_session_policy_payload(session),
         }
         if message:
             host["reconcile_error"] = message
@@ -6135,6 +6202,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             started_at=record.started_at,
             finished_at=record.finished_at,
             updated_at=record.updated_at,
+            effective_tool_policy=self.effective_tool_policy_payload(session),
             host=host,
             capabilities={
                 "start": False,
@@ -6218,6 +6286,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             updated_at=(
                 latest_execution.updated_at if latest_execution is not None else session.created_at
             ),
+            effective_tool_policy=self.effective_tool_policy_payload(session),
             host=host,
             capabilities={
                 "start": False,
@@ -6348,6 +6417,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 vm_user=self._agent_optional_string(payload, "vm_user") or "agent",
                 ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
                 allowed_tools=self._agent_string_list(payload, "allowed_tools"),
+                **(
+                    {"tool_argument_policies": payload["tool_argument_policies"]}
+                    if "tool_argument_policies" in payload
+                    else {}
+                ),
                 allowed_script_names=self._agent_string_list(payload, "allowed_script_names"),
                 discord_channels=self._agent_string_list(payload, "discord_channels"),
                 teams_channel_allowlist=self._agent_string_list(
@@ -6406,6 +6480,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 directory_path=self._agent_optional_string(payload, "directory_path") or "root",
             )
             session_id = self._agent_optional_string(payload, "session_id")
+            session = self.runtime.session_repository.get_session(session_id) if session_id else None
             return {
                 "success": result.success,
                 "agent_id": result.vm_name or vm_name,
@@ -6417,6 +6492,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "session_id": session_id,
                 "provider": result.provider,
                 "provider_operation_id": result.provider_operation_id,
+                "effective_tool_policy": self.effective_tool_policy_payload(session),
             }
 
         session_id = self._agent_optional_string(payload, "session_id")
@@ -6460,6 +6536,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             directory_path=directory_path,
             ttl_hours=self._agent_int_or_none(payload, "ttl_hours"),
             extra_allowed_tools=self._agent_string_list(payload, "allowed_tools"),
+            **(
+                {"tool_argument_policies": payload["tool_argument_policies"]}
+                if "tool_argument_policies" in payload
+                else {}
+            ),
             allowed_script_names=self._agent_string_list(payload, "allowed_script_names"),
             discord_channels=self._agent_string_list(payload, "discord_channels") or [],
             teams_channel_allowlist=self._agent_string_list(payload, "teams_channel_allowlist")
@@ -6538,6 +6619,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             ],
         )
         session_repository.upsert_session(manifest)
+        session = session_repository.get_session(session_id)
         return {
             "success": True,
             "agent_id": session_id,
@@ -6549,6 +6631,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "session_id": session_id,
             "agent_home": session_record.agent_home_container_path,
             "repo_root": session_record.repo_root_container_path,
+            "effective_tool_policy": self.effective_tool_policy_payload(session),
         }
 
     def _resolve_container_agent_session(
@@ -6840,6 +6923,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "ttl_hours",
             "allowed_tools",
             "approval_required_tools",
+            "tool_argument_policies",
             "allowed_script_names",
             "discord_channels",
             "discord_channel_allowlist",
@@ -6881,6 +6965,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             key: body[key]
             for key in (
                 "approval_required_tools",
+                "tool_argument_policies",
                 "allowed_script_names",
                 "discord_channels",
                 "discord_channel_allowlist",
@@ -6921,6 +7006,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "message": f"Updated policy for session {updated.session_id}",
             "status": "updated",
             "session_id": updated.session_id,
+            "effective_tool_policy": self.effective_tool_policy_payload(updated),
         }
 
     def delete_admin_agent(
@@ -13095,6 +13181,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         vm_user: str = "agent",
         ttl_hours: int | None = None,
         allowed_tools: list[str | ToolName] | None = None,
+        tool_argument_policies: dict[str, list[Any]] | None = None,
         allowed_script_names: list[str] | None = None,
         discord_channels: list[str] | None = None,
         teams_channel_allowlist: list[str] | None = None,
@@ -13142,6 +13229,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             vm_user=vm_user,
             ttl_hours=ttl_hours,
             allowed_tools=allowed_tools,
+            tool_argument_policies=tool_argument_policies,
             allowed_script_names=allowed_script_names,
             discord_channels=discord_channels,
             email_mailboxes=email_mailboxes,

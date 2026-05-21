@@ -607,7 +607,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     agent_create = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:agent:create"
     )
-    assert [field["key"] for field in agent_create["fields"]] == [
+    assert {field["key"] for field in agent_create["fields"]} == {
         "provider",
         "execution_backend",
         "vm_name",
@@ -636,7 +636,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "playwright",
         "codex_skills",
         "directory_path",
-    ]
+    }
     agent_create_fields = {field["key"]: field for field in agent_create["fields"]}
     assert agent_create_fields["labels"]["kind"] == "string_map"
     assert agent_create_fields["labels"]["description"]
@@ -751,7 +751,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "install_roots",
         "vm_user",
     ]
-    assert [field["key"] for field in vm_create["fields"]] == [
+    assert {field["key"] for field in vm_create["fields"]} == {
         "vm_name",
         "session_id",
         "labels",
@@ -770,7 +770,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "playwright",
         "codex_skills",
         "directory_path",
-    ]
+    }
 
 
 def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
@@ -4171,6 +4171,19 @@ def test_admin_web_configuration_state_exposes_grouped_tabs(tmp_path: Path) -> N
     communication_file_fields = {field["field_name"] for field in communication_files["fields"]}
     assert "communication_file_receive_enabled" in communication_file_fields
     assert "communication_file_require_approval_for_send" in communication_file_fields
+    tool_argument_policy = next(
+        section
+        for section in access_policy["sections"]
+        if section["title"] == "Tool argument policy"
+    )
+    tool_argument_policy_fields = {
+        field["field_name"]: field for field in tool_argument_policy["fields"]
+    }
+    assert tool_argument_policy_fields["tool_argument_policies"]["kind"] == "json"
+    assert tool_argument_policy_fields["tool_argument_policies"]["label"] == (
+        "Tool argument policy"
+    )
+    assert "MCP tool name" in tool_argument_policy_fields["tool_argument_policies"]["tooltip"]
     providers = next(tab for tab in payload["tabs"] if tab["key"] == "providers")
     agent_execution = next(
         section for section in providers["sections"] if section["title"] == "Agent execution"
@@ -5390,6 +5403,21 @@ def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
             model="old-model",
             directory_path="root",
             allowed_tools=[ToolName.APPROVAL_SUBMIT],
+            tool_argument_policies={
+                "create_ado_backlog_item": [
+                    {
+                        "id": "policy",
+                        "constraints": [
+                            {
+                                "id": "project",
+                                "path": "project",
+                                "operator": "fixed",
+                                "value": "Example Project",
+                            }
+                        ],
+                    }
+                ]
+            },
             allowed_script_names=["old-script"],
             discord_channel_allowlist=["old-channel"],
             teams_channel_allowlist=["old-team/channel"],
@@ -5407,6 +5435,21 @@ def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
             "model": "new-model",
             "ttl_hours": 4,
             "allowed_tools": ["run_script"],
+            "tool_argument_policies": {
+                "create_ado_backlog_item": [
+                    {
+                        "id": "policy",
+                        "constraints": [
+                            {
+                                "id": "project",
+                                "path": "project",
+                                "operator": "fixed",
+                                "value": "Example Project",
+                            }
+                        ],
+                    }
+                ]
+            },
             "allowed_script_names": ["new-script"],
             "discord_channels": ["new-channel"],
             "teams_channel_allowlist": ["team-a/channel-1", "chat:chat-1"],
@@ -5430,10 +5473,15 @@ def test_admin_web_agents_patch_updates_session_policy_and_rejects_renames(
 
     assert response.status_code == 200
     assert rename_response.status_code == 400
+    assert response.json()["effective_tool_policy"]["allowed_tools"] == ["run_script"]
+    assert response.json()["effective_tool_policy"]["tool_argument_policies"][
+        "create_ado_backlog_item"
+    ][0]["id"] == "policy"
     updated = service.runtime.session_repository.get_session("lab-session")
     assert updated is not None
     assert updated.model == "new-model"
     assert updated.allowed_tools == [ToolName.RUN_SCRIPT]
+    assert updated.tool_argument_policies["create_ado_backlog_item"][0].id == "policy"
     assert updated.allowed_script_names == ["new-script"]
     assert updated.discord_channel_allowlist == ["new-channel"]
     assert updated.teams_channel_allowlist == ["team-a/channel-1", "chat:chat-1"]

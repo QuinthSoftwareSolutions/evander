@@ -187,9 +187,14 @@ class ToolArgumentConstraint(BaseModel):
     @field_validator("operator", mode="before")
     @classmethod
     def normalize_operator(cls, value: object) -> object:
-        text = str(value or "").strip().lower()
+        if isinstance(value, ToolArgumentConstraintOperator):
+            return value.value
+        candidate = getattr(value, "value", value)
+        text = str(candidate or "").strip().lower()
         if not text:
             raise ValueError("operator must be a non-empty string")
+        if text.startswith("toolargumentconstraintoperator."):
+            text = text.split(".", 1)[1]
         return text
 
     @field_validator("values", mode="before")
@@ -695,6 +700,7 @@ class AgentRecord(BaseModel):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     updated_at: datetime | None = None
+    effective_tool_policy: dict[str, Any] | None = None
     host: dict[str, Any] = Field(default_factory=dict)
     capabilities: dict[str, bool] = Field(default_factory=dict)
 

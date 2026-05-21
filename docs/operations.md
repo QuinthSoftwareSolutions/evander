@@ -940,6 +940,75 @@ expired, and matches the original payload digest. Denied, expired, wrong-tool, w
 changed-payload retries are blocked and audited with the approval request id for review in Admin Web
 -> Tool Calls.
 
+### Tool Argument Policies
+
+Directory policy overlays and per-session policy can also set `tool_argument_policies` to narrow the
+arguments accepted by already-allowed MCP tools. These rules are additive across directory and
+session sources; they do not replace inherited rules, and they do not create approval requests when
+they deny a call.
+
+This is a separate gate from `approval_required_tools`. A tool still must be listed in
+`allowed_tools`, and a policy denial happens before approval gating, so rejected calls never produce
+an approval request.
+
+Supported operators are `required`, `allowlist`, `denylist`, `fixed`, `pattern`, and `enum`. Paths
+use dotted object access with `[]` for list flattening, such as `tags[]` or
+`metadata.labels[].name`. Missing optional paths pass for every operator except `required` and
+`fixed`. Set `case_sensitive: false` when you need case-insensitive comparisons or regex matching.
+
+Example policy that constrains `create_ado_backlog_item`:
+
+```json
+{
+  "tool_argument_policies": {
+    "create_ado_backlog_item": [
+      {
+        "id": "app-ado-work-item-constraints",
+        "name": "APP backlog item constraints",
+        "constraints": [
+          {
+            "id": "project-fixed",
+            "path": "project",
+            "operator": "fixed",
+            "value": "Example Industry APP"
+          },
+          {
+            "id": "type-allowed",
+            "path": "type",
+            "operator": "enum",
+            "values": ["Task", "Product Backlog Item"]
+          },
+          {
+            "id": "title-required",
+            "path": "title",
+            "operator": "required"
+          },
+          {
+            "id": "iteration-required",
+            "path": "iteration",
+            "operator": "required"
+          },
+          {
+            "id": "tags-denylist",
+            "path": "tags[]",
+            "operator": "denylist",
+            "values": ["auto-dev-forbidden"]
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+This policy still requires `allowed_tools` to include `create_ado_backlog_item`; argument policies
+only narrow calls that are already allowed.
+
+When a call violates argument policy, the gateway writes a `tool_call` audit event with
+`decision: denied`, `error_class: tool_argument_policy_violation`, the policy rule id/name and
+constraint id/path, and a redacted argument summary. The agent receives a clear `ToolError`, and the
+denial is visible in Admin Web -> Tool Calls. Approval requests are not created for these denials.
+
 ## Communication File Transfer Runbook
 
 Use this runbook only for dedicated operator channels/mailboxes that are already covered by the

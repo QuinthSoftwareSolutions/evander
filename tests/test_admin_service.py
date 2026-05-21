@@ -5107,6 +5107,20 @@ def test_update_session_policy_updates_allowlists_and_metadata(
             allowed_tools=[ToolName.CLAIM_NEXT_ISSUE],
             allowed_script_names=["old-script"],
             approval_required_tools=[ToolName.COMPLETE_ISSUE],
+            tool_argument_policies={
+                "create_ado_backlog_item": [
+                    {
+                        "id": "session-policy",
+                        "constraints": [
+                            {
+                                "id": "title",
+                                "path": "title",
+                                "operator": "required",
+                            }
+                        ],
+                    }
+                ]
+            },
             discord_channel_allowlist=["old-discord"],
             teams_channel_allowlist=["team-a/channel-1"],
             teams_chat_allowlist=["chat:chat-old"],
@@ -5119,6 +5133,25 @@ def test_update_session_policy_updates_allowlists_and_metadata(
         "13302",
         {
             "approval_required_tools": [" complete_issue ", "approval_submit"],
+            "tool_argument_policies": {
+                "create_ado_backlog_item": [
+                    {
+                        "id": "session-policy",
+                        "constraints": [
+                            {
+                                "id": "title",
+                                "path": "title",
+                                "operator": "required",
+                            },
+                            {
+                                "id": "iteration",
+                                "path": "iteration",
+                                "operator": "required",
+                            },
+                        ],
+                    }
+                ]
+            },
             "allowed_script_names": [" deploy-review ", "deploy-review", "collect-logs"],
             "discord_channel_allowlist": [" chan-a ", "chan-a", "chan-b"],
             "teams_channel_allowlist": [" team-b/channel-2 ", "chat:chat-1"],
@@ -5142,6 +5175,7 @@ def test_update_session_policy_updates_allowlists_and_metadata(
         ToolName.COMPLETE_ISSUE,
         ToolName.APPROVAL_SUBMIT,
     ]
+    assert updated.tool_argument_policies["create_ado_backlog_item"][0].id == "session-policy"
     assert updated.allowed_script_names == ["deploy-review", "collect-logs"]
     assert updated.discord_channel_allowlist == ["chan-a", "chan-b"]
     assert updated.teams_channel_allowlist == ["team-b/channel-2", "chat:chat-1"]
@@ -5154,6 +5188,72 @@ def test_update_session_policy_updates_allowlists_and_metadata(
     assert updated.communication_file_blocked_extensions == [".exe", "exe"]
     assert updated.communication_file_require_approval_for_send is True
     assert updated.metadata == {"keep": "new-value"}
+
+
+def test_effective_tool_policy_payload_combines_directory_and_session_rules(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.write_directory_domain_config(
+        "root",
+        "policy",
+        {
+            "approval_required_tools": ["approval_check"],
+            "tool_argument_policies": {
+                "create_ado_backlog_item": [
+                    {
+                        "id": "directory-policy",
+                        "constraints": [
+                            {
+                                "id": "project",
+                                "path": "project",
+                                "operator": "fixed",
+                                "value": "Example Project",
+                            }
+                        ],
+                    }
+                ]
+            },
+        },
+    )
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-13302-session",
+            vm_id="vm-13302",
+            allowed_tools=[ToolName.CLAIM_NEXT_ISSUE, ToolName.APPROVAL_CHECK],
+            approval_required_tools=[ToolName.COMPLETE_ISSUE],
+            tool_argument_policies={
+                "create_ado_backlog_item": [
+                    {
+                        "id": "session-policy",
+                        "constraints": [
+                            {
+                                "id": "title",
+                                "path": "title",
+                                "operator": "required",
+                            }
+                        ],
+                    }
+                ]
+            },
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+
+    effective = service.effective_tool_policy_payload(
+        service.runtime.session_repository.get_session("issue-13302-session")
+    )
+
+    assert effective is not None
+    assert effective["allowed_tools"] == ["claim_next_issue", "approval_check"]
+    assert effective["approval_required_tools"] == [
+        "approval_check",
+        "complete_issue",
+    ]
+    assert [item["id"] for item in effective["tool_argument_policies"]["create_ado_backlog_item"]] == [
+        "directory-policy",
+        "session-policy",
+    ]
 
 
 def test_update_admin_agent_updates_chat_allowlist(tmp_path: Path) -> None:
@@ -6558,6 +6658,16 @@ def test_create_vm_merges_additional_allowed_tools_into_session_manifest(
         vm_name="lab-vm",
         session_id="lab-session",
         allowed_tools=["list_unread_feedback", "post_pr_feedback_reply"],
+        tool_argument_policies={
+            "create_ado_backlog_item": [
+                {
+                    "id": "create-policy",
+                    "constraints": [
+                        {"id": "title", "path": "title", "operator": "required"}
+                    ],
+                }
+            ]
+        },
     )
 
     assert result.success is True
@@ -6567,6 +6677,7 @@ def test_create_vm_merges_additional_allowed_tools_into_session_manifest(
     assert ToolName.APPROVAL_CHECK in manifest.allowed_tools
     assert ToolName.LIST_UNREAD_FEEDBACK in manifest.allowed_tools
     assert ToolName.POST_PR_FEEDBACK_REPLY in manifest.allowed_tools
+    assert manifest.tool_argument_policies["create_ado_backlog_item"][0].id == "create-policy"
 
 
 def test_create_vm_sets_teams_chat_allowlist_on_session_manifest(
