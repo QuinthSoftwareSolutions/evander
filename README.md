@@ -238,6 +238,10 @@ workflow runs and graph activity, approvals, sessions, tool-call audit entries, 
 document/catalog. Empty or unsupported sources are shown as explicit missing/unavailable states,
 not as sample data.
 
+Dashboard-tagged read requests use a short-lived backend JSON cache so repeated opens do not
+re-run every systemd, VM inventory, workflow, approval, session, and audit read immediately. The
+detail tabs keep their normal live reads, and the dashboard Refresh button bypasses the cache.
+
 Existing hash deep links still route directly to the requested section. For example, `/#workflow`,
 `/#sessions`, `/#approvals`, `/#tool-calls`, and `/#configuration` bypass the dashboard and open the
 detail view. The Workflow tab remains a first-level navigation item for editing workflow graphs and

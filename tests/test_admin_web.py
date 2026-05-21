@@ -42,6 +42,7 @@ from agent_sandbox.models import (
     ToolName,
     VmActionResult,
     VmSummary,
+    WorkerSummary,
 )
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
 from agent_sandbox.worker.models import WorkerSessionRecord
@@ -4305,6 +4306,49 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(
     assert isinstance(responses["reports"].json()["graphs"], list)
     assert responses["conformance_reports"].status_code == 200
     assert len(responses["conformance_reports"].json()["reports"]) == 2
+
+
+def test_admin_web_dashboard_requests_use_opt_in_backend_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    calls = 0
+
+    def list_background_workers() -> list[WorkerSummary]:
+        nonlocal calls
+        calls += 1
+        return [
+            WorkerSummary(
+                worker_id="trigger",
+                name="Trigger",
+                unit="agent-sandbox-trigger-orchestrator.service",
+                active_state=f"active-{calls}",
+                running=True,
+                failed=False,
+            )
+        ]
+
+    monkeypatch.setattr(service, "list_background_workers", list_background_workers)
+    client = TestClient(create_app(service))
+
+    first = client.get("/api/workers?_dashboard=1")
+    second = client.get("/api/workers?_dashboard=1")
+    live = client.get("/api/workers")
+    refreshed = client.get("/api/workers?_dashboard=1&_dashboard_refresh=1")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert live.status_code == 200
+    assert refreshed.status_code == 200
+    assert first.headers["x-admin-web-cache"] == "miss"
+    assert second.headers["x-admin-web-cache"] == "hit"
+    assert "x-admin-web-cache" not in live.headers
+    assert refreshed.headers["x-admin-web-cache"] == "refresh"
+    assert first.json() == second.json()
+    assert first.json()["workers"][0]["active_state"] == "active-1"
+    assert live.json()["workers"][0]["active_state"] == "active-2"
+    assert refreshed.json()["workers"][0]["active_state"] == "active-3"
+    assert calls == 3
 
 
 def test_admin_web_conformance_report_endpoint_returns_invalid_records(

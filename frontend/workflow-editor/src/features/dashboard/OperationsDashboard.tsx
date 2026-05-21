@@ -722,23 +722,28 @@ export function OperationsDashboard() {
 
     async function load() {
       const directoryQuery = makeQuery({ directory_path: selectedDirectoryPath });
+      const dashboardCacheParams = {
+        _dashboard: "1",
+        _dashboard_refresh: refreshNonce > 0 ? refreshNonce : null,
+      };
       const [adminStateResult, deploymentStatusResult, workersResult, agentsResult, workflowRunsResult, workflowActivityResult, approvalsResult, sessionsResult, toolCallsResult, workflowDocumentResult, workflowCatalogResult] =
         await Promise.allSettled([
           fetchJson<DashboardAdminState>(`/api/admin/state${directoryQuery}`, { credentials: "same-origin", signal: controller.signal }),
-          fetchJson<DeploymentStatus>("/api/admin/deployment-status", { signal: controller.signal }),
-          fetchJson<WorkerListResponse>("/api/workers", { signal: controller.signal }),
+          fetchJson<DeploymentStatus>(`/api/admin/deployment-status${makeQuery(dashboardCacheParams)}`, { signal: controller.signal }),
+          fetchJson<WorkerListResponse>(`/api/workers${makeQuery(dashboardCacheParams)}`, { signal: controller.signal }),
           fetchJson<AgentListResponse>(
             `/api/admin/agents${makeQuery({
               directory_path: selectedDirectoryPath,
               direct_only: true,
               include_inactive: true,
               backend: "all",
+              ...dashboardCacheParams,
             })}`,
             { signal: controller.signal },
           ),
-          fetchJson<WorkflowRunSnapshot>("/api/workflow-editor/runs", { signal: controller.signal }),
+          fetchJson<WorkflowRunSnapshot>(`/api/workflow-editor/runs${makeQuery(dashboardCacheParams)}`, { signal: controller.signal }),
           fetchJson<WorkflowGraphActivityReport>(
-            `/api/admin/reports/workflow-graph-activity${makeQuery({ limit: 5 })}`,
+            `/api/admin/reports/workflow-graph-activity${makeQuery({ limit: 5, ...dashboardCacheParams })}`,
             { signal: controller.signal },
           ),
           fetchJson<ApprovalIndexResponse>(
@@ -746,6 +751,7 @@ export function OperationsDashboard() {
               statuses: "pending",
               directory_path: selectedDirectoryPath,
               direct_only: true,
+              ...dashboardCacheParams,
             })}`,
             { signal: controller.signal },
           ),
@@ -754,6 +760,7 @@ export function OperationsDashboard() {
               include_expired: true,
               directory_path: selectedDirectoryPath,
               direct_only: true,
+              ...dashboardCacheParams,
             })}`,
             { signal: controller.signal },
           ),
@@ -762,12 +769,13 @@ export function OperationsDashboard() {
               directory_path: selectedDirectoryPath,
               direct_only: true,
               limit: 5,
+              ...dashboardCacheParams,
             })}`,
             { signal: controller.signal },
           ),
-          fetchJson<WorkflowEditorDocument>("/api/workflow-editor/document", { signal: controller.signal }),
+          fetchJson<WorkflowEditorDocument>(`/api/workflow-editor/document${makeQuery(dashboardCacheParams)}`, { signal: controller.signal }),
           fetchJson<WorkflowEditorCatalog>(
-            `/api/workflow-editor/catalog${makeQuery({ directory_path: selectedDirectoryPath })}`,
+            `/api/workflow-editor/catalog${makeQuery({ directory_path: selectedDirectoryPath, ...dashboardCacheParams })}`,
             { signal: controller.signal },
           ),
         ]);

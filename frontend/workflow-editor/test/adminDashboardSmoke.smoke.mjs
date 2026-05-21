@@ -38,6 +38,11 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   const pageErrors = [];
   const consoleErrors = [];
 
+  function assertDashboardCacheParams(url) {
+    assert.equal(url.searchParams.get("_dashboard"), "1");
+    assert.equal(url.searchParams.has("_dashboard_refresh"), false);
+  }
+
   const sessionRecord = {
     session_id: "session-1",
     vm_id: "vm-1",
@@ -588,6 +593,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
     }
 
     if (pathname === "/api/admin/deployment-status") {
+      assertDashboardCacheParams(url);
       await route.fulfill(jsonResponse(deploymentStatusResponse));
       return;
     }
@@ -605,6 +611,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
     }
 
     if (pathname === "/api/workers") {
+      assertDashboardCacheParams(url);
       await route.fulfill(jsonResponse(workersResponse));
       return;
     }
@@ -614,11 +621,15 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       assert.equal(url.searchParams.get("direct_only"), "true");
       assert.equal(url.searchParams.get("include_inactive"), "true");
       assert.equal(url.searchParams.get("backend"), "all");
+      assertDashboardCacheParams(url);
       await route.fulfill(jsonResponse(agentsResponse));
       return;
     }
 
     if (pathname === "/api/workflow-editor/runs") {
+      if (url.searchParams.has("_dashboard")) {
+        assertDashboardCacheParams(url);
+      }
       await route.fulfill(jsonResponse(workflowRunsResponse));
       return;
     }
@@ -644,6 +655,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
 
     if (pathname === "/api/admin/reports/workflow-graph-activity") {
       assert.equal(url.searchParams.get("limit"), "5");
+      assertDashboardCacheParams(url);
       await route.fulfill(jsonResponse(workflowActivityResponse));
       return;
     }
@@ -652,6 +664,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       assert.equal(url.searchParams.get("statuses"), "pending");
       assert.equal(url.searchParams.get("directory_path"), "root");
       assert.equal(url.searchParams.get("direct_only"), "true");
+      assertDashboardCacheParams(url);
       await route.fulfill(jsonResponse(approvalsResponse));
       return;
     }
@@ -665,6 +678,9 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       assert.equal(url.searchParams.get("include_expired"), "true");
       assert.equal(url.searchParams.get("directory_path"), "root");
       assert.equal(url.searchParams.get("direct_only"), "true");
+      if (url.searchParams.has("_dashboard")) {
+        assertDashboardCacheParams(url);
+      }
       await route.fulfill(jsonResponse(sessionsResponse));
       return;
     }
@@ -675,12 +691,18 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
     }
 
     if (pathname === "/api/workflow-editor/document") {
+      if (url.searchParams.has("_dashboard")) {
+        assertDashboardCacheParams(url);
+      }
       await route.fulfill(jsonResponse(workflowDocumentResponse));
       return;
     }
 
     if (pathname === "/api/workflow-editor/catalog") {
       assert.equal(url.searchParams.get("directory_path"), "root");
+      if (url.searchParams.has("_dashboard")) {
+        assertDashboardCacheParams(url);
+      }
       await route.fulfill(
         jsonResponse({
           worker_id: "trigger-orchestrator",
@@ -694,6 +716,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       assert.equal(url.searchParams.get("directory_path"), "root");
       assert.equal(url.searchParams.get("direct_only"), "true");
       assert.equal(url.searchParams.get("limit"), "5");
+      assertDashboardCacheParams(url);
       await route.fulfill(
         jsonResponse({
           items: [],
@@ -719,10 +742,17 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
 
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Control-plane status" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Live execution targets" }).waitFor({ state: "visible" }));
-  const systemHealthPanel = page.locator("article.admin-panel").first();
-  const workflowPanel = page.locator('article.admin-panel').filter({ hasText: "Automation activity" });
-  const approvalsPanel = page.locator('article.admin-panel').filter({ hasText: "Human-control work" });
-  const toolCallsPanel = page.locator('article.admin-panel').filter({ hasText: "Explainability shortcuts" });
+  const systemHealthPanel = page.locator(".admin-panel").first();
+  const workflowPanel = page.locator(".admin-panel").filter({ hasText: "Automation activity" });
+  const approvalsPanel = page.locator(".admin-panel").filter({ hasText: "Human-control work" });
+  const toolCallsPanel = page.locator(".admin-panel").filter({ hasText: "Explainability shortcuts" });
+  for (const panel of [systemHealthPanel, workflowPanel, approvalsPanel, toolCallsPanel]) {
+    await panel.evaluate((element) => {
+      if (element instanceof HTMLDetailsElement) {
+        element.open = true;
+      }
+    });
+  }
   await assert.doesNotReject(() => systemHealthPanel.locator(".detail-list strong").first().waitFor({ state: "visible" }));
   await assert.doesNotReject(() => workflowPanel.getByText("2 runs, 1 active, 1 failed, 1 resumable.").waitFor({ state: "visible" }));
   const pendingApprovalPill = approvalsPanel.locator(".status-pill").filter({ hasText: "1 pending" }).first();
@@ -755,14 +785,14 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
 
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/state?directory_path=root"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/configuration/state?directory_path=root"));
-  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/agents?directory_path=root&direct_only=true&include_inactive=true&backend=all"));
-  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/approvals?statuses=pending&directory_path=root&direct_only=true"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/agents?directory_path=root&direct_only=true&include_inactive=true&backend=all&_dashboard=1"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/approvals?statuses=pending&directory_path=root&direct_only=true&_dashboard=1"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions/catalog"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions?include_expired=true&directory_path=root&direct_only=true"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions/session-1"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/document"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/catalog?directory_path=root"));
-  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/tool-calls?directory_path=root&direct_only=true&limit=5"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/tool-calls?directory_path=root&direct_only=true&limit=5&_dashboard=1"));
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
 });
