@@ -978,6 +978,67 @@ def test_admin_web_deployment_status_is_public_when_auth_required(
     assert protected_response.status_code == 401
 
 
+def test_admin_web_release_info_is_authenticated_and_returns_project_metadata(
+    monkeypatch, tmp_path: Path
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    monkeypatch.setenv("AGENT_SANDBOX_REPO_VERSION", "build-abc123")
+    monkeypatch.setattr(
+        release_metadata_module.importlib_metadata,
+        "version",
+        lambda name: (_ for _ in ()).throw(
+            release_metadata_module.importlib_metadata.PackageNotFoundError(name)
+        ),
+    )
+    (service.project_dir / "pyproject.toml").write_text(
+        "[project]\nname = \"agent-sandbox\"\nversion = \"9.8.7\"\n",
+        encoding="utf-8",
+    )
+    (service.project_dir / "CHANGELOG.md").write_text(
+        "# Changelog\n\n"
+        "## 2026-05-21 - Release Metadata\n\n"
+        "- Added release metadata reader.\n"
+        "- Fixed missing build identity fallback.\n",
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(service))
+
+    response = client.get("/api/admin/release-info")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "version": "9.8.7",
+        "version_source": str(service.project_dir / "pyproject.toml"),
+        "build": "build-abc123",
+        "build_source": "env:AGENT_SANDBOX_REPO_VERSION",
+        "changelog": {
+            "source": "CHANGELOG.md",
+            "path": str(service.project_dir / "CHANGELOG.md"),
+            "heading": "2026-05-21 - Release Metadata",
+            "entries": [
+                {"text": "Added release metadata reader.", "kind": "feature"},
+                {"text": "Fixed missing build identity fallback.", "kind": "bugfix"},
+            ],
+        },
+        "missing_reasons": [],
+    }
+
+
+def test_admin_web_release_info_is_protected_when_auth_required(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "secret")
+    service = AdminService(write_config(tmp_path))
+    client = TestClient(create_app(service))
+
+    protected_response = client.get("/api/admin/release-info")
+    state_response = client.get("/api/admin/state")
+
+    assert protected_response.status_code == 401
+    assert state_response.status_code == 401
+
+
 def test_admin_web_ignores_stale_deployment_status(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     stale_started_at = datetime.now(timezone.utc) - timedelta(minutes=10)
@@ -1075,7 +1136,6 @@ def test_admin_web_release_info_uses_project_metadata(
         "bugfix",
     ]
 
-
 def test_admin_web_release_info_reports_missing_sources(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -1102,7 +1162,6 @@ def test_admin_web_release_info_reports_missing_sources(
     assert any("Version not found" in reason for reason in release_info.missing_reasons)
     assert any("Build identity not found" in reason for reason in release_info.missing_reasons)
     assert any("CHANGELOG.md is missing" in reason for reason in release_info.missing_reasons)
-
 
 def test_admin_web_skills_api_and_catalog_options(tmp_path: Path) -> None:
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
