@@ -465,13 +465,19 @@ stages:
                     mkdir -p "$codex_prefix"
 
                     npm install --prefix "$codex_prefix" --include=optional --no-audit --no-fund "$HOST_CODEX_NPM_PACKAGE"
+                    codex_platform_version="$(
+                      node -e 'const pkg = require(process.argv[1]); const platformPackage = process.env.HOST_CODEX_PLATFORM_PACKAGE; process.stdout.write((pkg.optionalDependencies && pkg.optionalDependencies[platformPackage]) || pkg.version);' "$codex_prefix/node_modules/@openai/codex/package.json"
+                    )"
+                    npm install --prefix "$codex_prefix" --include=optional --no-audit --no-fund "${HOST_CODEX_PLATFORM_PACKAGE}@${codex_platform_version}"
 
                     export HOST_CODEX_ROOT="$codex_prefix/node_modules/@openai/codex"
+                    export HOST_CODEX_PLATFORM_PACKAGE
                     ./scripts/build_agent_sandbox_runner_image.sh
                     test -s dist/agent-sandbox-runner.tar
                   displayName: Build container runner image archive
                   env:
                     HOST_CODEX_NPM_PACKAGE: ${{ parameters.hostCodexNpmPackage }}
+                    HOST_CODEX_PLATFORM_PACKAGE: "@openai/codex-linux-x64"
                     PIPELINE_WORKSPACE: $(Pipeline.Workspace)
 
                 - task: UseDotNet@2

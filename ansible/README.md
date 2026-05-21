@@ -260,10 +260,11 @@ worker access.
 
 The worker stage installs Node.js 24.14.0 before building `dist/agent-sandbox-runner.tar` from a
 host-seeded Codex binary. On hosted agents the pipeline installs the npm package named by
-`hostCodexNpmPackage` with optional platform packages into
-`$(Pipeline.Workspace)/host-codex`, exports that directory as `HOST_CODEX_ROOT`, installs the
-workflow-editor npm dependencies, and downloads Chromium into `$(Pipeline.Workspace)/ms-playwright`.
-It then runs `scripts/build_agent_sandbox_runner_image.sh`.
+`hostCodexNpmPackage`, then explicitly installs `@openai/codex-linux-x64` at the version declared by
+the installed Codex package into `$(Pipeline.Workspace)/host-codex`. It exports that directory as
+`HOST_CODEX_ROOT`, installs the workflow-editor npm dependencies, and downloads Chromium into
+`$(Pipeline.Workspace)/ms-playwright`. It then runs
+`scripts/build_agent_sandbox_runner_image.sh`.
 Before `ansible/worker.yml`, the pipeline resolves `HOST_NODE_ROOT` from the installed Node runtime
 and exports `HOST_PLAYWRIGHT_NODE_MODULES` plus `HOST_PLAYWRIGHT_BROWSERS` so the worker toolchain
 roles do not depend on nvm-style or home-cache hosted-agent paths. The default package spec is

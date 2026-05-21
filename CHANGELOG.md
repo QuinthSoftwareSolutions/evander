@@ -27,6 +27,9 @@ material. Newer entries are added incrementally as changes land.
 
 - Forced optional Codex platform packages during Azure runner-image preparation and made the
   runner-image build script resolve nested, hoisted, and Node-resolved npm layouts before failing.
+- Installed the Linux Codex platform package explicitly in the Azure worker archive step using the
+  version declared by the installed Codex package, so hosted agents do not depend on npm optional
+  dependency behavior to provide the executable.
 
 ## 2026-05-21 - Dashboard Capacity Health
 
