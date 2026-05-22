@@ -35,6 +35,31 @@ class SessionContextQueryDefinition(QueryDefinition):
         return self
 
 
+class SessionListQueryDefinition(QueryDefinition):
+    type: Literal["query:session:list"]
+    directory_path: ConfigValue | None = None
+    metadata_equals: ConfigValue | None = None
+    metadata_exists: ConfigValue | None = None
+    metadata_prefix: ConfigValue | None = None
+    state: ConfigValue | None = None
+    active_only: ConfigValue | None = None
+    limit: ConfigValue | None = None
+
+    @field_validator("metadata_equals", "metadata_prefix")
+    @classmethod
+    def validate_metadata_map(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (dict, str)):
+            return value
+        raise ValueError("query:session:list metadata filters must be JSON objects")
+
+    @field_validator("metadata_exists")
+    @classmethod
+    def validate_metadata_exists(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (str, list, dict)):
+            return value
+        raise ValueError("query:session:list metadata_exists must be a string, array, or object")
+
+
 class AgentArtifactTextQueryDefinition(QueryDefinition):
     type: Literal["query:agent:artifact-text"]
     session_id: ConfigValue
@@ -103,6 +128,26 @@ class PullRequestListQueryDefinition(QueryDefinition):
         if value is None or isinstance(value, str):
             return value
         raise ValueError("query:pull-request:list tags must be a string")
+
+
+class PullRequestFeedbackQueryDefinition(QueryDefinition):
+    type: Literal["query:pull-request:feedback"]
+    provider: ConfigValue
+    repo: ConfigValue
+    pr_id: ConfigValue
+    directory_path: ConfigValue | None = None
+    organization_url: ConfigValue | None = None
+    project: ConfigValue | None = None
+    cursor: ConfigValue | None = None
+
+    @field_validator("provider")
+    @classmethod
+    def normalize_static_provider(cls, value: ConfigValue) -> ConfigValue:
+        if isinstance(value, str) and "${{" not in value:
+            normalized = value.strip()
+            if normalized in {"ado", "azure-devops", "azure_devops"}:
+                return "azure_devops"
+        return value
 
 
 class SemanticStoreStatusQueryDefinition(QueryDefinition):

@@ -663,6 +663,32 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "skip",
         "cursor",
     ]
+    session_list = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "query:session:list"
+    )
+    assert [field["key"] for field in session_list["fields"]] == [
+        "directory_path",
+        "metadata_equals",
+        "metadata_exists",
+        "metadata_prefix",
+        "state",
+        "active_only",
+        "limit",
+    ]
+    pr_feedback = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "query:pull-request:feedback"
+    )
+    assert [field["key"] for field in pr_feedback["fields"]] == [
+        "provider",
+        "repo",
+        "pr_id",
+        "directory_path",
+        "organization_url",
+        "project",
+        "cursor",
+    ]
     vm_create = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:create"
     )

@@ -69,11 +69,15 @@ from agent_sandbox.queries.providers.agent_artifact_text import AgentArtifactTex
 from agent_sandbox.queries.providers.ado_work_items import AdoWorkItemsQueryProvider
 from agent_sandbox.queries.providers.git_pr_note import GitPrNoteQueryProvider
 from agent_sandbox.queries.providers.issue_get import IssueGetQueryProvider
+from agent_sandbox.queries.providers.pull_request_feedback import (
+    PullRequestFeedbackQueryProvider,
+)
 from agent_sandbox.queries.providers.pull_request_list import PullRequestListQueryProvider
 from agent_sandbox.queries.providers.semantic_get import SemanticGetQueryProvider
 from agent_sandbox.queries.providers.semantic_search import SemanticSearchQueryProvider
 from agent_sandbox.queries.providers.semantic_store_status import SemanticStoreStatusQueryProvider
 from agent_sandbox.queries.providers.session_context import SessionContextQueryProvider
+from agent_sandbox.queries.providers.session_list import SessionListQueryProvider
 from agent_sandbox.queries.providers.vm_run_state import VmRunStateQueryProvider
 from agent_sandbox.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
 from agent_sandbox.triggers.providers.agent_run_completed import AgentRunCompletedTriggerProvider
@@ -175,10 +179,12 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:vm:run-state": VmRunStateQueryProvider,
             "query:git:pr-note": GitPrNoteQueryProvider,
             "query:session-context": SessionContextQueryProvider,
+            "query:session:list": SessionListQueryProvider,
             "query:agent:artifact-text": AgentArtifactTextQueryProvider,
             "query:issue:get": IssueGetQueryProvider,
             "query:ado:work-items": AdoWorkItemsQueryProvider,
             "query:pull-request:list": PullRequestListQueryProvider,
+            "query:pull-request:feedback": PullRequestFeedbackQueryProvider,
             "query:semantic:store-status": SemanticStoreStatusQueryProvider,
             "query:semantic:search": SemanticSearchQueryProvider,
             "query:semantic:get": SemanticGetQueryProvider,

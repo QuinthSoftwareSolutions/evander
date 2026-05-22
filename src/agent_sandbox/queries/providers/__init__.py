@@ -6,6 +6,7 @@ from typing import Any
 __all__ = [
     "AdoWorkItemsQueryProvider",
     "IssueGetQueryProvider",
+    "PullRequestFeedbackQueryProvider",
     "PullRequestListQueryProvider",
     "QueryProviderBase",
     "QueryRuntimeContext",
@@ -13,11 +14,13 @@ __all__ = [
     "SemanticSearchQueryProvider",
     "SemanticStoreStatusQueryProvider",
     "VmRunStateQueryProvider",
+    "SessionListQueryProvider",
 ]
 
 _EXPORT_MODULES = {
     "AdoWorkItemsQueryProvider": ".ado_work_items",
     "IssueGetQueryProvider": ".issue_get",
+    "PullRequestFeedbackQueryProvider": ".pull_request_feedback",
     "PullRequestListQueryProvider": ".pull_request_list",
     "QueryProviderBase": ".base",
     "QueryRuntimeContext": ".base",
@@ -25,6 +28,7 @@ _EXPORT_MODULES = {
     "SemanticSearchQueryProvider": ".semantic_search",
     "SemanticStoreStatusQueryProvider": ".semantic_store_status",
     "VmRunStateQueryProvider": ".vm_run_state",
+    "SessionListQueryProvider": ".session_list",
 }
 
 

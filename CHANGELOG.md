@@ -5,6 +5,15 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-22 - Generic Session Metadata PR Routing
+
+- Added `query:session:list` for generic session metadata matching, directory
+  scoping, active/expired filtering, and bounded session-list outputs.
+- Added `query:pull-request:feedback` so workflows can poll provider PR
+  feedback and own cursor storage outside the ADO worker.
+- Documented the incremental migration path from PR-map-driven ADO worker
+  feedback routing toward workflow-owned session metadata conventions.
+
 ## 2026-05-22 - Dashboard Worker Disk Visibility
 
 - Added worker-root disk usage to the Admin Web dashboard Capacity card using existing

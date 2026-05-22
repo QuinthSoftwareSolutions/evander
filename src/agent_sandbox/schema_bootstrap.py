@@ -751,6 +751,10 @@ _QUERY_OUTPUT_SCHEMAS = {
         "expires_at": {"type": "string"},
         "model": {"type": "string"},
     },
+    "query:session:list": {
+        "sessions": {"type": "array"},
+        "count": {"type": "integer"},
+    },
     "query:agent:artifact-text": {
         "session_id": {"type": "string"},
         "path": {"type": "string"},
@@ -792,6 +796,15 @@ _QUERY_OUTPUT_SCHEMAS = {
         "pull_requests": {"type": "array"},
         "count": {"type": "integer"},
         "paging": {"type": "object"},
+        "next_cursor": {"type": ["string", "null"]},
+    },
+    "query:pull-request:feedback": {
+        "provider": {"type": "string"},
+        "repo": {"type": "string"},
+        "pr_id": {"type": "string"},
+        "project": {"type": ["string", "null"]},
+        "feedback": {"type": "array"},
+        "count": {"type": "integer"},
         "next_cursor": {"type": ["string", "null"]},
     },
     "query:semantic:store-status": {

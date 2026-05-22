@@ -1232,14 +1232,28 @@ names with case-insensitive `and`, `or`, `not`, and parentheses, for example
 with an operator. Keep polling bounded with `status`, `source_ref_name`,
 `target_ref_name`, `min_time`/`max_time`, `top`, `skip`, or `cursor`.
 
+Use `query:session:list` when the workflow should route by pack-owned session
+metadata instead of a platform-specific PR binding. For PR collaboration packs,
+common metadata conventions are keys such as `owns_pr`, `reviewing_pr`,
+`pr_provider`, `pr_repo`, and `pr_project`, but those names are not special to
+the platform. A cron workflow can list active sessions by generic metadata,
+poll one stream with `query:pull-request:feedback`, store its cursor in
+workflow-owned state, and enqueue prompts to every matched owner or reviewer
+session. Existing guest tools still require `metadata.pr_feedback_streams` on
+sessions that should call `list_unread_feedback`, `list_all_feedback`, or
+`post_pr_feedback_reply`.
+
 ### Wake workers
 
 - `agent-sandbox-cli discord-wake` owns Discord inbox wakeups and resumes.
 - `agent-sandbox-cli scheduled-wake` owns scheduled resume dispatch.
-- Azure DevOps PR feedback ingestion and PR completion polling are owned by
-  `agent-sandbox-ado-worker`. It writes `runtime/pr-feedback-store.json`, updates
-  `runtime/pr-map.json` PR status fields, and publishes `trigger:pull-request:new-feedback` and
-  `trigger:pull-request:completed` events directly.
+- Existing Azure DevOps PR feedback ingestion and PR completion polling are
+  still owned by `agent-sandbox-ado-worker`. It writes
+  `runtime/pr-feedback-store.json`, updates `runtime/pr-map.json` PR status
+  fields, and publishes `trigger:pull-request:new-feedback` plus
+  `trigger:pull-request:completed` events directly. New workflow-owned polling
+  paths should use `query:session:list` and `query:pull-request:feedback`; keep
+  `pr-map.json` compatibility until a later cleanup removes the older path.
 - Recommended service lifecycle commands:
   - `sudo systemctl start agent-sandbox-discord-wake.service`
   - `sudo systemctl stop agent-sandbox-discord-wake.service`

@@ -13,6 +13,7 @@ from agent_sandbox.provider_runtime.contracts import (
     GitPrNoteReader,
     IssueReader,
     ProviderRuntimeBase,
+    SessionLookup,
     SessionArtifactReader,
     SessionContextReader,
     VmInventory,
@@ -27,6 +28,7 @@ class QueryRuntimeContext(ProviderRuntimeBase):
     vm_inventory: VmInventory | None = None
     git_pr_note_reader: GitPrNoteReader | None = None
     issue_reader: IssueReader | None = None
+    session_lookup: SessionLookup | None = None
     session_context_reader: SessionContextReader | None = None
     session_artifact_reader: SessionArtifactReader | None = None
 
