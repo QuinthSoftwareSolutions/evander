@@ -1700,6 +1700,19 @@ sudo systemctl status agent-sandbox-effect-orchestrator.service
 sudo systemctl status agent-sandbox-trigger-orchestrator.service
 ```
 
+The Discord wake and scheduled wake units must run as the same operator user as the
+gateway and orchestrator services so they can read the operator user's SSH keys and
+write operator-owned wake state. After installing units, verify the rendered service
+users:
+
+```bash
+systemctl show -p User agent-sandbox-discord-wake.service
+systemctl show -p User agent-sandbox-scheduled-wake.service
+```
+
+Both commands should report the operator account used for deployment, not an empty
+root/default user.
+
 ## Local Git Remote Flow
 
 For the common issue workflow, create the VM first:
