@@ -17,6 +17,7 @@ from agent_sandbox.effects.providers.schemas import (
     BashScriptEffectDefinition,
     CommunicationSendMessageEffectDefinition,
     GitPromoteAgentBranchEffectDefinition,
+    IssueUpsertAdoProxyEffectDefinition,
     IssueUpdateMetadataEffectDefinition,
     IssueUpdateStateEffectDefinition,
     NotificationSendEffectDefinition,
@@ -60,6 +61,7 @@ from agent_sandbox.queries.providers.schemas import (
     VmRunStateQueryDefinition,
 )
 from agent_sandbox.triggers.providers.schemas import (
+    AdoWorkItemMatchingTriggerDefinition,
     AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
     CronTriggerDefinition,
@@ -84,6 +86,7 @@ from agent_sandbox.triggers.providers.schemas import (
 
 __all__ = [
     "AdoUpdateWorkItemEffectDefinition",
+    "AdoWorkItemMatchingTriggerDefinition",
     "AdoWorkItemsQueryDefinition",
     "AgentArtifactTextQueryDefinition",
     "AgentBootstrapFrontendEffectDefinition",
@@ -112,6 +115,7 @@ __all__ = [
     "GitPushTriggerDefinition",
     "IssueCommentCreatedTriggerDefinition",
     "IssueGetQueryDefinition",
+    "IssueUpsertAdoProxyEffectDefinition",
     "IssueUpdateMetadataEffectDefinition",
     "IssueUpdateStateEffectDefinition",
     "NotificationSendEffectDefinition",

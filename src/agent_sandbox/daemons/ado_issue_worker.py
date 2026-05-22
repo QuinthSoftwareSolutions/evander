@@ -2005,9 +2005,6 @@ def run_worker(config: WorkerConfig) -> None:
             logging.info("cycle skipped=no_directories")
             time.sleep(config.poll_interval_seconds)
 
-    pat = _require_env(config.pat_env_var_name)
-    auth_header = _build_auth_header(pat)
-    store = _processed_store_for_config(config)
     runtime_gateway_config = _worker_runtime_config(config)
 
     timeout = httpx.Timeout(connect=5.0, write=10.0, read=20.0, pool=5.0)
@@ -2026,14 +2023,6 @@ def run_worker(config: WorkerConfig) -> None:
                         _publish_directory_pr_completion_events(
                             client=client,
                             config=config,
-                            runtime_gateway_config=runtime_gateway_config,
-                            directory_path=directory_path,
-                        )
-                        _poll_and_process_directory(
-                            client=client,
-                            config=config,
-                            auth_header=auth_header,
-                            store=store,
                             runtime_gateway_config=runtime_gateway_config,
                             directory_path=directory_path,
                         )
@@ -2072,55 +2061,31 @@ def run_worker_command(
         return
 
     config = WorkerConfig.load_from_env()
-    store = _processed_store_for_config(config)
 
     if reprocess is not None:
-        _forget_work_item_for_worker(store, config, reprocess)
-        pat = _require_env(config.pat_env_var_name)
-        auth_header = _build_auth_header(pat)
-        timeout = httpx.Timeout(connect=5.0, write=10.0, read=20.0, pool=5.0)
-        with httpx.Client(timeout=timeout) as client:
-            item = fetch_work_item_by_id(
-                client=client,
-                config=config,
-                auth_header=auth_header,
-                work_item_id=reprocess,
-            )
-            if item is None:
-                logging.warning("reprocess work_item=%s not_found_or_not_eligible", reprocess)
-                return
-            process_work_item(item, config=config, store=store)
-        return
+        raise SystemExit(
+            "--reprocess is deprecated because ADO work-item intake now belongs to workflows; "
+            "use query:ado:work-items with effect:issue:upsert-ado-proxy instead."
+        )
 
     if list_unprocessed:
-        pat = _require_env(config.pat_env_var_name)
-        auth_header = _build_auth_header(pat)
-        timeout = httpx.Timeout(connect=5.0, write=10.0, read=20.0, pool=5.0)
-        runtime_gateway_config = _worker_runtime_config(config)
-        with httpx.Client(timeout=timeout) as client:
-            items = _unprocessed_items_for_worker(
-                client=client,
-                config=config,
-                auth_header=auth_header,
-                store=store,
-                runtime_gateway_config=runtime_gateway_config,
-            )
-        for item in items:
-            print(format_work_item_listing(item))
-        return
+        raise SystemExit(
+            "--list-unprocessed is deprecated because ADO work-item intake now belongs to "
+            "workflows; use trigger:ado:work-item-matching or query:ado:work-items instead."
+        )
 
     run_worker(config)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Poll Azure DevOps work items for truman-tagged candidates."
+        description="Publish Azure DevOps PR feedback/completion events."
     )
     parser.add_argument("--log-level", default="INFO", help="Python logging level.")
     parser.add_argument(
         "--reprocess",
         type=int,
-        help="Force reprocess a specific work item ID by forgetting previous state first.",
+        help="Deprecated; use workflow ADO work-item query/upsert nodes instead.",
     )
     parser.add_argument(
         "--forget",
@@ -2130,7 +2095,7 @@ def main() -> None:
     parser.add_argument(
         "--list-unprocessed",
         action="store_true",
-        help="List eligible work items that match the worker query but are not yet in the processed store.",
+        help="Deprecated; use workflow ADO work-item trigger/query nodes instead.",
     )
     args = parser.parse_args()
 

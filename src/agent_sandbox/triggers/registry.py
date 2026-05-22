@@ -94,6 +94,7 @@ class TriggerProviderFactory:
         )
         runtime_context = TriggerRuntimeContext(
             provider_config=trigger_provider_config_blob(resolved_config),
+            provider_config_resolver=self.provider_config_resolver,
             env=self.env,
             secret_resolver=self.secret_resolver,
             metadata={

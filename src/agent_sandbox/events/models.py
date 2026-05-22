@@ -269,6 +269,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "trigger:ticket:changed": provider_models.TicketChangedTriggerDefinition,
         "trigger:issue:comment-created": provider_models.IssueCommentCreatedTriggerDefinition,
         "trigger:issue:new-comment": provider_models.IssueCommentCreatedTriggerDefinition,
+        "trigger:ado:work-item-matching": provider_models.AdoWorkItemMatchingTriggerDefinition,
         "trigger:script-run-request": provider_models.ScriptRunRequestTriggerDefinition,
         "trigger:discord:new-message": provider_models.DiscordNewMessageTriggerDefinition,
         "trigger:teams:new-message": provider_models.TeamsNewMessageTriggerDefinition,
@@ -324,6 +325,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:vm:delete-files": provider_models.VmDeleteFilesEffectDefinition,
         "effect:issue:update-state": provider_models.IssueUpdateStateEffectDefinition,
         "effect:issue:update-metadata": provider_models.IssueUpdateMetadataEffectDefinition,
+        "effect:issue:upsert-ado-proxy": provider_models.IssueUpsertAdoProxyEffectDefinition,
         "effect:ado:update-work-item": provider_models.AdoUpdateWorkItemEffectDefinition,
         "effect:pull-request:update": provider_models.PullRequestUpdateEffectDefinition,
         "effect:communication:send-message": (

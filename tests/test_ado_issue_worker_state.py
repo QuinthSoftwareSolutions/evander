@@ -442,6 +442,41 @@ def test_run_worker_idles_without_directories_or_pat(
         run_worker(idle_config)
 
 
+def test_run_worker_publishes_pr_events_without_work_item_pat(
+    monkeypatch: pytest.MonkeyPatch,
+    worker_config: WorkerConfig,
+) -> None:
+    configured = WorkerConfig(**{**worker_config.__dict__, "directories": ("root/team-a",)})
+    monkeypatch.delenv(configured.pat_env_var_name, raising=False)
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.ado_issue_worker._require_env",
+        lambda _name: pytest.fail("work-item PAT should not be required"),
+    )
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.ado_issue_worker._publish_directory_pr_feedback_events",
+        lambda **kwargs: calls.append(("feedback", kwargs["directory_path"])) or 0,
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.ado_issue_worker._publish_directory_pr_completion_events",
+        lambda **kwargs: calls.append(("completion", kwargs["directory_path"])) or 0,
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.daemons.ado_issue_worker._poll_and_process_directory",
+        lambda **_kwargs: pytest.fail("work-item polling should not run"),
+    )
+
+    def stop_after_first_cycle(_seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker.time.sleep", stop_after_first_cycle)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_worker(configured)
+
+    assert calls == [("feedback", "root/team-a"), ("completion", "root/team-a")]
+
+
 def test_process_work_item_ingests_without_vm_setup(worker_config: WorkerConfig) -> None:
     item = {
         "id": 123,
@@ -2484,27 +2519,13 @@ def test_format_work_item_listing_uses_tab_separated_fields() -> None:
     assert line == "42\t2026-03-21T00:01:00Z\tCommitted\tStill pending"
 
 
-def test_run_worker_command_lists_unprocessed_items(
+def test_run_worker_command_list_unprocessed_is_deprecated(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(
         "agent_sandbox.daemons.ado_issue_worker.WorkerConfig.load_from_env", lambda: worker_config
     )
-    monkeypatch.setattr("agent_sandbox.daemons.ado_issue_worker._require_env", lambda _name: "pat")
-    monkeypatch.setattr(
-        "agent_sandbox.daemons.ado_issue_worker._unprocessed_items_for_worker",
-        lambda **kwargs: [
-            {
-                "id": 42,
-                "updated_date": "2026-03-21T00:01:00Z",
-                "state": "Committed",
-                "title": "Still pending",
-            }
-        ],
-    )
 
-    run_worker_command(list_unprocessed=True)
-
-    assert capsys.readouterr().out == "42\t2026-03-21T00:01:00Z\tCommitted\tStill pending\n"
+    with pytest.raises(SystemExit, match="deprecated"):
+        run_worker_command(list_unprocessed=True)
