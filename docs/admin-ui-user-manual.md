@@ -466,11 +466,12 @@ Common editing tasks:
 
 Common runtime inspection tasks:
 
-1. Use **Guided sample** to launch the in-memory first-run walkthrough. It creates a simulated
+1. Use **Tutorial** to open the guided sample when you want the in-memory first-run walkthrough,
+   or **Skip** to mark it complete without launching anything. The walkthrough creates a simulated
    run with a trigger, agent/tool step, approval boundary, inspectable outputs, and a safe stop
    without writing runtime files or starting an agent.
 2. Use **Inspect sample** to open the sample in the same run inspector used for real workflow
-   runs, then **Reset sample** to return it to a clean idle state.
+   runs, then **Reset sample** to return it to a clean idle state and clear the tutorial highlight.
 3. Use **Current runs** to inspect active workflow events and node activity.
 4. Enter an event ID, trace ID, session ID, or artifact ID when you need an exact run.
 5. Use **Inspect** to enter inspect mode for the selected run.

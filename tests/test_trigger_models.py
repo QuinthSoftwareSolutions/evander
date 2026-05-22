@@ -758,12 +758,14 @@ def test_agent_enqueue_prompt_accepts_resume_thread_metadata_key() -> None:
             "session_id": "session-1",
             "prompt": "continue",
             "resume_thread_metadata_key": "teams:${{trigger-teams.channel_target}}:agent_thread_id",
+            "resume_thread_metadata_collection": "agent_thread_ids",
         }
     )
 
     assert effect.resume_thread_metadata_key == (
         "teams:${{trigger-teams.channel_target}}:agent_thread_id"
     )
+    assert effect.resume_thread_metadata_collection == "agent_thread_ids"
 
 
 def test_vm_copy_files_effect_rejects_mixed_source_kinds() -> None:

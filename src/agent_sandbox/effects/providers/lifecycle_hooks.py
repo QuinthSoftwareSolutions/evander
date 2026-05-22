@@ -14,6 +14,12 @@ from agent_sandbox.effects.providers.agent_session import (
     gateway_url_with_session_context,
     safe_effect_execution_id,
 )
+from agent_sandbox.effects.providers.resume_thread_metadata import (
+    normalize_resume_thread_metadata_collection,
+    resume_thread_id_from_metadata,
+    resume_thread_metadata_key as normalize_resume_thread_metadata_key,
+    resume_thread_metadata_patch,
+)
 from agent_sandbox.orchestration.effect_extensions import (
     dispatch_agent_prompt,
     list_vm_summaries_for_agent_reconciliation,
@@ -123,6 +129,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                 vm_user=record.vm_user,
                 dispatch_id=dispatch_id,
                 resume_thread_id=effective_resume_thread_id,
+                persist_thread_id=self._resume_thread_metadata_key(record) is None,
                 mcp_gateway_url=self._mcp_gateway_url_for_libvirt_record(
                     worker=worker,
                     record=record,
@@ -336,6 +343,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "vm_user": vm_user,
             "resume_thread_id": effective_resume_thread_id,
             "resume_thread_metadata_key": getattr(record, "resume_thread_metadata_key", None),
+            "resume_thread_metadata_collection": self._resume_thread_metadata_collection(record),
             "directory_path": directory_path,
             "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
             "queue_key": queue_key,
@@ -362,6 +370,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "vm_user": vm_user,
             "resume_thread_id": effective_resume_thread_id,
             "resume_thread_metadata_key": getattr(record, "resume_thread_metadata_key", None),
+            "resume_thread_metadata_collection": self._resume_thread_metadata_collection(record),
             "queue_key": queue_key,
         }
         self._restore_workflow_context(input_payload=input_payload, record=record)
@@ -437,6 +446,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "vm_user": vm_user,
             "resume_thread_id": effective_resume_thread_id,
             "resume_thread_metadata_key": getattr(record, "resume_thread_metadata_key", None),
+            "resume_thread_metadata_collection": self._resume_thread_metadata_collection(record),
             "execution_backend": ExecutionBackendKind.LIBVIRT_VM.value,
             "queue_key": queue_key,
         }
@@ -461,6 +471,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "vm_user": vm_user,
             "resume_thread_id": effective_resume_thread_id,
             "resume_thread_metadata_key": getattr(record, "resume_thread_metadata_key", None),
+            "resume_thread_metadata_collection": self._resume_thread_metadata_collection(record),
             "queue_key": queue_key,
         }
         self._restore_workflow_context(input_payload=input_payload, record=record)
@@ -581,7 +592,13 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         metadata = getattr(session, "metadata", {})
         if not isinstance(metadata, dict):
             return None
-        return self._usable_resume_thread_id(metadata.get(key))
+        return self._usable_resume_thread_id(
+            resume_thread_id_from_metadata(
+                metadata,
+                collection=self._resume_thread_metadata_collection(record),
+                key=key,
+            )
+        )
 
     def _persist_resume_thread_metadata_key(
         self,
@@ -596,11 +613,18 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         target = str(getattr(record, "target", "") or "").strip()
         if not key or not value or not (session_id or target):
             return
+        metadata_patch = resume_thread_metadata_patch(
+            collection=self._resume_thread_metadata_collection(record),
+            key=key,
+            thread_id=value,
+        )
+        if not metadata_patch:
+            return
         admin_service = getattr(getattr(worker, "provider_factory", None), "admin_service", None)
         update_fn = getattr(admin_service, "session_update_metadata", None)
         if callable(update_fn):
             try:
-                update_fn(target=session_id or target, metadata={key: value})
+                update_fn(target=session_id or target, metadata=metadata_patch)
                 return
             except Exception:
                 pass
@@ -624,16 +648,37 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             metadata = getattr(session, "metadata", {})
             if not isinstance(metadata, dict):
                 metadata = {}
+            merged_metadata = self._deep_merge_metadata(metadata, metadata_patch)
             upsert_session(
-                session.model_copy(update={"metadata": {**metadata, key: value}})
+                session.model_copy(update={"metadata": merged_metadata})
             )
         except Exception:
             return
 
     @staticmethod
     def _resume_thread_metadata_key(record: Any) -> str | None:
-        text = str(getattr(record, "resume_thread_metadata_key", "") or "").strip()
-        return text or None
+        return normalize_resume_thread_metadata_key(
+            getattr(record, "resume_thread_metadata_key", None)
+        )
+
+    @staticmethod
+    def _resume_thread_metadata_collection(record: Any) -> str:
+        return normalize_resume_thread_metadata_collection(
+            getattr(record, "resume_thread_metadata_collection", None)
+        )
+
+    @classmethod
+    def _deep_merge_metadata(
+        cls, base: dict[str, Any], update: dict[str, Any]
+    ) -> dict[str, Any]:
+        merged = dict(base)
+        for key, value in update.items():
+            existing = merged.get(key)
+            if isinstance(existing, dict) and isinstance(value, dict):
+                merged[key] = cls._deep_merge_metadata(existing, value)
+                continue
+            merged[key] = value
+        return merged
 
     @staticmethod
     def _usable_resume_thread_id(value: Any) -> str | None:

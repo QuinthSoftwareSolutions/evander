@@ -58,6 +58,14 @@ _TRIGGER_OUTPUT_SCHEMAS = {
     "trigger:ticket:changed": _TICKET_OUTPUT_SCHEMA,
     "trigger:issue:comment-created": _ISSUE_COMMENT_OUTPUT_SCHEMA,
     "trigger:issue:new-comment": _ISSUE_COMMENT_OUTPUT_SCHEMA,
+    "trigger:ado:work-item-matching": {
+        "provider": {"type": "string"},
+        "directory_path": {"type": "string"},
+        "project": {"type": "string"},
+        "work_item_id": {"type": "string"},
+        "changed_at": {"type": "string"},
+        "work_item": {"type": "object"},
+    },
     "trigger:script-run-request": {
         "request_id": {"type": "string"},
         "session_id": {"type": "string"},
@@ -570,6 +578,16 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "metadata_paths": {"type": "array"},
         "patch_kind": {"type": "string"},
     },
+    "effect:issue:upsert-ado-proxy": {
+        "success": {"type": "boolean"},
+        "created": {"type": "integer"},
+        "updated": {"type": "integer"},
+        "skipped": {"type": "integer"},
+        "count": {"type": "integer"},
+        "tickets": {"type": "array"},
+        "ticket": {"type": "object"},
+        "errors": {"type": "array"},
+    },
     "effect:ado:update-work-item": {
         "success": {"type": "boolean"},
         "updated": {"type": "boolean"},
@@ -751,6 +769,10 @@ _QUERY_OUTPUT_SCHEMAS = {
         "expires_at": {"type": "string"},
         "model": {"type": "string"},
     },
+    "query:session:list": {
+        "sessions": {"type": "array"},
+        "count": {"type": "integer"},
+    },
     "query:agent:artifact-text": {
         "session_id": {"type": "string"},
         "path": {"type": "string"},
@@ -792,6 +814,15 @@ _QUERY_OUTPUT_SCHEMAS = {
         "pull_requests": {"type": "array"},
         "count": {"type": "integer"},
         "paging": {"type": "object"},
+        "next_cursor": {"type": ["string", "null"]},
+    },
+    "query:pull-request:feedback": {
+        "provider": {"type": "string"},
+        "repo": {"type": "string"},
+        "pr_id": {"type": "string"},
+        "project": {"type": ["string", "null"]},
+        "feedback": {"type": "array"},
+        "count": {"type": "integer"},
         "next_cursor": {"type": ["string", "null"]},
     },
     "query:semantic:store-status": {

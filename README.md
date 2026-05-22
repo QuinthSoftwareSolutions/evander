@@ -7,7 +7,7 @@
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
 - A host-side OpenAI relay that keeps the API key on the host and exposes an OpenAI-compatible endpoint to guests
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
-- A host-side Azure DevOps backlog worker that polls tagged work items into local proxy issue state
+- A host-side Azure DevOps PR feedback/completion worker plus workflow ADO work-item intake nodes
 - A host-side workflow orchestrator that polls provider triggers, evaluates gates, and persists durable queue events for downstream workers/hooks
 - A host-side Teams ingest worker that polls Microsoft Graph and feeds `trigger:teams:new-message` orchestration
 - A host-side shared NuGet cache that can be mounted read-only into guests for faster cold restores
@@ -348,9 +348,10 @@ For private PR feedback polling, the service environment must provide `GITHUB_TO
 `AZURE_DEVOPS_PR_PAT` as needed, and the effective `root` config must set the correct
 `azure_devops_organization_url`, `azure_devops_project`, and wake timing settings.
 
-### Azure DevOps backlog worker
+### Azure DevOps worker and work-item workflows
 
-For foreground/backfill operation, run:
+`agent-sandbox-ado-worker` now owns Azure DevOps PR feedback and completion polling only. For
+foreground operation, run:
 
 ```bash
 set -a; source secrets.env; set +a
@@ -358,38 +359,25 @@ agent-sandbox-cli poll-ado-backlog --log-level INFO
 ```
 
 The ADO worker reads `azure_devops_organization_url` and `azure_devops_project` from the
-effective `root` provider config. Its work-item PAT env-var name now comes from
-`config/ado-worker/config.json` via `ado_work_items_azure_devops_pat_env` (default
-`ADO_WORK_ITEMS_AZURE_DEVOPS_PAT`). The root `ado_worker` directory config is the primary source
-for filter and repo metadata, while `config/ado-worker/config.json` carries the canonical
-directory list that the singleton worker polls on each cycle.
+effective provider config and uses `AZURE_DEVOPS_PR_PAT` or the configured
+`azure_devops_pr_pat_env` when Azure DevOps PR polling is enabled. It no longer polls backlog work
+items or requires `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT` to run PR feedback/completion paths.
 
-For one-off recovery actions:
-
-```bash
-# Forget prior state for an item so the next poll can process it again.
-set -a; source secrets.env; set +a
-agent-sandbox-cli poll-ado-backlog --forget 12345
-
-# Immediately reprocess one item now (fetch + proxy issue/YAML refresh), then exit.
-set -a; source secrets.env; set +a
-agent-sandbox-cli poll-ado-backlog --reprocess 12345
-
-# List matching work items that have not yet been picked up by agents.
-set -a; source secrets.env; set +a
-./scripts/list_unassigned_ado_work_items.sh
-```
+Azure DevOps work-item intake is workflow-owned. Use `trigger:ado:work-item-matching` to emit raw
+work-item payloads on first match and when `System.ChangedDate` advances, or use
+`query:ado:work-items` for an explicit query. Wire either output into
+`effect:issue:upsert-ado-proxy` to create or refresh local proxy issues and
+`runtime/ado-work-items/work-item-*.yaml`.
 
 The dedicated worker entry point is also available as `agent-sandbox-ado-worker` for systemd.
 `agent-sandbox-proxy-issue-sync` is the companion freshness worker for local Azure DevOps proxy
 issues. It runs every five minutes by default, batches remote summary reads, skips comments, and
 refreshes `runtime/local-issues.json` so ticket triggers and UI screens continue to read local
 state.
-The ADO worker does not create sessions, create VMs, run issue setup scripts, or bootstrap guest
-toolchains. It only ingests Azure DevOps work items into local proxy issues/YAML, tracks processed
-state, and handles Azure DevOps PR feedback/completion polling. Directory-scoped `ado_worker`
-config can set `ado_repo_source` so the proxy issue records the relevant host repo path or remote
-URL per directory.
+The ADO worker does not create sessions, create VMs, run issue setup scripts, bootstrap guest
+toolchains, or ingest Azure DevOps work items. Directory-scoped `ado_worker` config still controls
+PR automation flags and can provide `ado_repo_source` for workflows that choose to bind it into
+`effect:issue:upsert-ado-proxy.repo_source`.
 
 ## Admin Web And CLI
 

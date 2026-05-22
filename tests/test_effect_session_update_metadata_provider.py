@@ -96,3 +96,12 @@ def test_deep_merge_mapping_merges_nested_session_metadata() -> None:
             }
         }
     }
+
+
+def test_deep_merge_mapping_replaces_nested_metadata_with_null() -> None:
+    merged = _deep_merge_mapping(
+        {"agent_thread_ids": {"teams:chat-1": "thread-1"}, "keep": "value"},
+        {"agent_thread_ids": None},
+    )
+
+    assert merged == {"agent_thread_ids": None, "keep": "value"}

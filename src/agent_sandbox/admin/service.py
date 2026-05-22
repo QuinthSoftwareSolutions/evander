@@ -1423,6 +1423,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:ticket:changed": "Start when a tracked ticket changes state or metadata.",
     "trigger:issue:comment-created": "Start when a tracked issue receives a new comment.",
     "trigger:issue:new-comment": "Start when a tracked issue receives a new comment.",
+    "trigger:ado:work-item-matching": (
+        "Start when an Azure DevOps work item first matches or advances its changed date."
+    ),
     "trigger:script-run-request": "Start from an approved run_script request submitted by a session.",
     "trigger:discord:new-message": (
         "Start from new Discord messages that match the configured filters."
@@ -1478,6 +1481,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:vm:delete-files": "Delete files from a VM-backed agent target.",
     "effect:issue:update-state": "Update the workflow state for a tracked issue.",
     "effect:issue:update-metadata": "Patch metadata on a tracked issue.",
+    "effect:issue:upsert-ado-proxy": (
+        "Create or refresh local proxy tickets from Azure DevOps work items."
+    ),
     "effect:ado:update-work-item": (
         "Update an Azure DevOps work item with an optional expected-state guard."
     ),
@@ -1507,7 +1513,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "query:vm:run-state": "Read the current run state for a VM-backed agent target.",
     "query:git:pr-note": "Read pull-request note context from a host checkout.",
     "query:pull-request:list": "List provider pull requests with optional status, branch, time, or tag filters.",
+    "query:pull-request:feedback": "Fetch provider pull-request feedback without owning cursor state.",
     "query:session-context": "Read session context and metadata.",
+    "query:session:list": "List sessions by generic manifest metadata.",
     "query:agent:artifact-text": "Read a UTF-8 text file from an agent session artifacts folder.",
     "query:issue:get": "Read a local issue record by id.",
     "query:ado:work-items": "Query Azure DevOps work items.",
@@ -1619,6 +1627,36 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("organization_url", "Organization URL", "string"),
             _field("project", "Project", "string"),
             _field("directories", "Directories", "string_list", placeholder="root"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:ado:work-item-matching",
+        label="ADO work item matching",
+        fields=[
+            _field("directory_path", "Directory path", "string"),
+            _field("project", "Project", "string"),
+            _field(
+                "wiql",
+                "WIQL",
+                "string",
+                multiline=True,
+                description="Explicit WIQL query. When set, filter fields are not applied.",
+            ),
+            _field(
+                "current_iteration",
+                "Current iteration",
+                "boolean",
+                description="Resolve the team's current iteration before querying.",
+            ),
+            _field("team", "Team", "string"),
+            _field("iteration", "Iteration path", "string"),
+            _field("area_path", "Area path", "string"),
+            _field("states", "States", "string_list"),
+            _field("types", "Types", "string_list"),
+            _field("tags_any", "Tags any", "string_list"),
+            _field("text_search", "Text search", "string"),
+            _field("top", "Top", "number"),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -2567,6 +2605,19 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("vm_user", "VM user", "string", bindable=True),
             _field("resume_thread_id", "Resume thread ID", "string", bindable=True),
             _field(
+                "resume_thread_metadata_key",
+                "Resume thread metadata key",
+                "string",
+                bindable=True,
+            ),
+            _field(
+                "resume_thread_metadata_collection",
+                "Resume thread metadata collection",
+                "string",
+                bindable=True,
+                placeholder="agent_thread_ids",
+            ),
+            _field(
                 "mcp_tool_approval_lease_id",
                 "MCP tool approval lease ID",
                 "string",
@@ -2607,6 +2658,13 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Resume thread metadata key",
                 "string",
                 bindable=True,
+            ),
+            _field(
+                "resume_thread_metadata_collection",
+                "Resume thread metadata collection",
+                "string",
+                bindable=True,
+                placeholder="agent_thread_ids",
             ),
             _field(
                 "mcp_tool_approval_lease_id",
@@ -2853,6 +2911,20 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="effect",
+        type="effect:issue:upsert-ado-proxy",
+        label="Issue upsert ADO proxy",
+        fields=[
+            _field("directory_path", "Directory path", "string", bindable=True),
+            _field("organization_url", "Organization URL", "string", bindable=True),
+            _field("project", "Project", "string", bindable=True),
+            _field("repo_source", "Repo source", "string", bindable=True),
+            _field("yaml_output_dir", "YAML output dir", "string", bindable=True),
+            _field("item", "Item", "json", bindable=True),
+            _field("items", "Items", "json", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
         type="effect:ado:update-work-item",
         label="ADO update work item",
         fields=[
@@ -3063,6 +3135,20 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="query",
+        type="query:session:list",
+        label="Session list",
+        fields=[
+            _field("directory_path", "Directory path", "string", bindable=True),
+            _field("metadata_equals", "Metadata equals", "json", bindable=True),
+            _field("metadata_exists", "Metadata exists", "json", bindable=True),
+            _field("metadata_prefix", "Metadata prefix", "json", bindable=True),
+            _field("state", "State", "string", bindable=True),
+            _field("active_only", "Active only", "boolean", bindable=True),
+            _field("limit", "Limit", "number", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
         type="query:agent:artifact-text",
         label="Agent artifact text",
         fields=[
@@ -3129,6 +3215,31 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             ),
             _field("top", "Top", "number", bindable=True),
             _field("skip", "Skip", "number", bindable=True),
+            _field("cursor", "Cursor", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:pull-request:feedback",
+        label="Pull request feedback",
+        fields=[
+            _field(
+                "provider",
+                "Provider",
+                "enum",
+                required=True,
+                bindable=True,
+                options=[
+                    _field_option("azure_devops", "Azure DevOps"),
+                    _field_option("ado", "ADO alias"),
+                    _field_option("github", "GitHub"),
+                ],
+            ),
+            _field("repo", "Repo", "string", required=True, bindable=True),
+            _field("pr_id", "PR ID", "string", required=True, bindable=True),
+            _field("directory_path", "Directory path", "string", bindable=True),
+            _field("organization_url", "Organization URL", "string", bindable=True),
+            _field("project", "Project", "string", bindable=True),
             _field("cursor", "Cursor", "string", bindable=True),
         ],
     ),
@@ -9335,6 +9446,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
         resume_mode: str = "new_context",
+        persist_thread_id: bool = True,
         mcp_gateway_url: str | None = None,
     ) -> VmActionResult:
         return self.vm_agent_admin.resume_agent(
@@ -9345,6 +9457,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             dispatch_id=dispatch_id,
             resume_thread_id=resume_thread_id,
             resume_mode=resume_mode,
+            persist_thread_id=persist_thread_id,
             mcp_gateway_url=mcp_gateway_url,
         )
 

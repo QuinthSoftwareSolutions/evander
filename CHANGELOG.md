@@ -5,6 +5,50 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-22 - Unobtrusive Workflow Tutorial
+
+- Collapsed the workflow editor guided sample into a small tutorial launcher by
+  default, with a skip/mark-complete path that removes the first-run highlight
+  without launching the sample.
+
+## 2026-05-22 - Explicit Agent Resume Threads
+
+- Stopped agent resume calls from implicitly falling back to stored
+  `agent_thread_id` metadata, and made PR-feedback queries prefer configured
+  Azure DevOps projects over repo-slug inference.
+
+## 2026-05-22 - Ansible Service Lock Ownership Repair
+
+- Made the control-plane Ansible runtime bootstrap repair ownership of managed
+  service lock files before service startup, so stale root-owned wake locks do
+  not keep Discord or scheduled wake workers in restart loops.
+
+## 2026-05-22 - Workflow-Owned ADO Work-Item Intake
+
+- Added `trigger:ado:work-item-matching` for side-effect-free Azure DevOps
+  work-item polling on first match and remote changed-date advances.
+- Added `effect:issue:upsert-ado-proxy` to materialize single or batched ADO
+  work items into local proxy issues and `runtime/ado-work-items` YAML.
+- Removed ADO work-item/backlog polling from the live ADO worker loop; it now
+  remains responsible for Azure DevOps PR feedback and completion events.
+
+## 2026-05-22 - Prompt Thread Metadata Collections
+
+- Added keyed agent prompt resume-thread storage under session metadata
+  collections, defaulting to `agent_thread_ids`, with per-effect collection
+  overrides for `effect:agent:prompt` and `effect:agent:enqueue-prompt`.
+- Stopped keyed prompt resume metadata from writing dynamic thread keys at the
+  top level of session metadata.
+
+## 2026-05-22 - Generic Session Metadata PR Routing
+
+- Added `query:session:list` for generic session metadata matching, directory
+  scoping, active/expired filtering, and bounded session-list outputs.
+- Added `query:pull-request:feedback` so workflows can poll provider PR
+  feedback and own cursor storage outside the ADO worker.
+- Documented the incremental migration path from PR-map-driven ADO worker
+  feedback routing toward workflow-owned session metadata conventions.
+
 ## 2026-05-22 - Dashboard Worker Disk Visibility
 
 - Added worker-root disk usage to the Admin Web dashboard Capacity card using existing

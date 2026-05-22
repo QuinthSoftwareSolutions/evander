@@ -93,6 +93,7 @@ class QueryProviderFactory:
             or self._provider_runtime_ports.gate_vm_inventory,
             git_pr_note_reader=self._provider_runtime_ports.git_pr_note_reader,
             issue_reader=self._provider_runtime_ports.issue_reader,
+            session_lookup=self._provider_runtime_ports.session_lookup,
             session_context_reader=self._provider_runtime_ports.session_context_reader,
             session_artifact_reader=self._provider_runtime_ports.session_artifact_reader,
             env=self.env,

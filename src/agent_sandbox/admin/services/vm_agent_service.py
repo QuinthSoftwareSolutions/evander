@@ -1568,6 +1568,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
         resume_mode: str = "new_context",
+        persist_thread_id: bool = True,
         mcp_gateway_url: str | None = None,
     ) -> VmActionResult:
         vm_name = self._resolve_vm_name_from_target(target)
@@ -1581,12 +1582,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                 manifest
             )
             directory_path = manifest.directory_path
-            stored_resume_thread_id = (
-                str(manifest.metadata.get("agent_thread_id") or "").strip() or None
-            )
-            effective_resume_thread_id = (
-                str(resume_thread_id or "").strip() or stored_resume_thread_id
-            )
+            effective_resume_thread_id = str(resume_thread_id or "").strip() or None
             if _is_synthetic_chat_assistant_thread_id(effective_resume_thread_id):
                 effective_resume_thread_id = None
         except ValueError as exc:
@@ -1660,7 +1656,13 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             "\n".join(line for line in message_lines if line.strip()).strip() or stderr.strip()
         )
         resolved_thread_id = thread_id or effective_resume_thread_id
-        if completed.returncode == 0 and session_id and manifest is not None and resolved_thread_id:
+        if (
+            completed.returncode == 0
+            and persist_thread_id
+            and session_id
+            and manifest is not None
+            and resolved_thread_id
+        ):
             updated_metadata = dict(manifest.metadata)
             updated_metadata["agent_thread_id"] = resolved_thread_id
             self._persist_session(

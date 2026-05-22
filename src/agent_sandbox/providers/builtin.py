@@ -30,6 +30,9 @@ from agent_sandbox.effects.providers.git_promote_agent_branch import (
 )
 from agent_sandbox.effects.providers.issue_update_metadata import IssueUpdateMetadataEffectProvider
 from agent_sandbox.effects.providers.issue_update_state import IssueUpdateStateEffectProvider
+from agent_sandbox.effects.providers.issue_upsert_ado_proxy import (
+    IssueUpsertAdoProxyEffectProvider,
+)
 from agent_sandbox.effects.providers.notification_send import NotificationSendEffectProvider
 from agent_sandbox.effects.providers.pr_create import PrCreateEffectProvider
 from agent_sandbox.effects.providers.pull_request_update import PullRequestUpdateEffectProvider
@@ -69,14 +72,21 @@ from agent_sandbox.queries.providers.agent_artifact_text import AgentArtifactTex
 from agent_sandbox.queries.providers.ado_work_items import AdoWorkItemsQueryProvider
 from agent_sandbox.queries.providers.git_pr_note import GitPrNoteQueryProvider
 from agent_sandbox.queries.providers.issue_get import IssueGetQueryProvider
+from agent_sandbox.queries.providers.pull_request_feedback import (
+    PullRequestFeedbackQueryProvider,
+)
 from agent_sandbox.queries.providers.pull_request_list import PullRequestListQueryProvider
 from agent_sandbox.queries.providers.semantic_get import SemanticGetQueryProvider
 from agent_sandbox.queries.providers.semantic_search import SemanticSearchQueryProvider
 from agent_sandbox.queries.providers.semantic_store_status import SemanticStoreStatusQueryProvider
 from agent_sandbox.queries.providers.session_context import SessionContextQueryProvider
+from agent_sandbox.queries.providers.session_list import SessionListQueryProvider
 from agent_sandbox.queries.providers.vm_run_state import VmRunStateQueryProvider
 from agent_sandbox.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
 from agent_sandbox.triggers.providers.agent_run_completed import AgentRunCompletedTriggerProvider
+from agent_sandbox.triggers.providers.ado_work_item_matching import (
+    AdoWorkItemMatchingTriggerProvider,
+)
 from agent_sandbox.triggers.providers.cron import CronTriggerProvider
 from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
@@ -108,6 +118,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "trigger:ticket:changed": TicketChangedTriggerProvider,
             "trigger:issue:comment-created": IssueCommentCreatedTriggerProvider,
             "trigger:issue:new-comment": IssueCommentCreatedTriggerProvider,
+            "trigger:ado:work-item-matching": AdoWorkItemMatchingTriggerProvider,
             "trigger:script-run-request": ScriptRunRequestTriggerProvider,
             "trigger:discord:new-message": DiscordNewMessageTriggerProvider,
             "trigger:teams:new-message": TeamsNewMessageTriggerProvider,
@@ -156,6 +167,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:vm:delete-files": VmDeleteFilesEffectProvider,
             "effect:issue:update-state": IssueUpdateStateEffectProvider,
             "effect:issue:update-metadata": IssueUpdateMetadataEffectProvider,
+            "effect:issue:upsert-ado-proxy": IssueUpsertAdoProxyEffectProvider,
             "effect:ado:update-work-item": AdoUpdateWorkItemEffectProvider,
             "effect:communication:send-message": CommunicationSendMessageEffectProvider,
             "effect:notification:send": NotificationSendEffectProvider,
@@ -175,10 +187,12 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:vm:run-state": VmRunStateQueryProvider,
             "query:git:pr-note": GitPrNoteQueryProvider,
             "query:session-context": SessionContextQueryProvider,
+            "query:session:list": SessionListQueryProvider,
             "query:agent:artifact-text": AgentArtifactTextQueryProvider,
             "query:issue:get": IssueGetQueryProvider,
             "query:ado:work-items": AdoWorkItemsQueryProvider,
             "query:pull-request:list": PullRequestListQueryProvider,
+            "query:pull-request:feedback": PullRequestFeedbackQueryProvider,
             "query:semantic:store-status": SemanticStoreStatusQueryProvider,
             "query:semantic:search": SemanticSearchQueryProvider,
             "query:semantic:get": SemanticGetQueryProvider,

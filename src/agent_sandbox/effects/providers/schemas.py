@@ -202,6 +202,8 @@ class AgentPromptEffectDefinition(EffectDefinition):
     model: ConfigValue | None = None
     vm_user: ConfigValue | None = None
     resume_thread_id: ConfigValue | None = None
+    resume_thread_metadata_key: ConfigValue | None = None
+    resume_thread_metadata_collection: ConfigValue | None = None
     mcp_tool_approval_lease_id: ConfigValue | None = None
 
 
@@ -215,6 +217,7 @@ class AgentEnqueuePromptEffectDefinition(EffectDefinition):
     vm_user: ConfigValue | None = None
     resume_thread_id: ConfigValue | None = None
     resume_thread_metadata_key: ConfigValue | None = None
+    resume_thread_metadata_collection: ConfigValue | None = None
     queue_key: ConfigValue | None = None
     mcp_tool_approval_lease_id: ConfigValue | None = None
 
@@ -423,6 +426,27 @@ class IssueUpdateMetadataEffectDefinition(EffectDefinition):
         if self.patch is not None and self.merge_patch is not None:
             raise ValueError(
                 "effect:issue:update-metadata patch and merge_patch are mutually exclusive"
+            )
+        return self
+
+
+class IssueUpsertAdoProxyEffectDefinition(EffectDefinition):
+    type: Literal["effect:issue:upsert-ado-proxy"]
+    directory_path: ConfigValue | None = None
+    organization_url: ConfigValue | None = None
+    project: ConfigValue | None = None
+    repo_source: ConfigValue | None = None
+    yaml_output_dir: ConfigValue | None = None
+    item: ConfigValue | None = None
+    items: ConfigValue | None = None
+
+    @model_validator(mode="after")
+    def validate_item_selector(self) -> "IssueUpsertAdoProxyEffectDefinition":
+        if self.item is None and self.items is None:
+            raise ValueError("effect:issue:upsert-ado-proxy requires item or items")
+        if self.item is not None and self.items is not None:
+            raise ValueError(
+                "effect:issue:upsert-ado-proxy item and items are mutually exclusive"
             )
         return self
 

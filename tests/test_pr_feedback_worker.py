@@ -532,6 +532,56 @@ def test_ado_mapping_thread_edge_cases() -> None:
     assert envelope.line == 12
 
 
+def test_ado_mapping_filters_comments_at_or_before_cursor_and_keeps_next_cursor() -> None:
+    adapter = AzureDevOpsFeedbackAdapter("https://dev.azure.com/example", "proj", pat="test-pat")
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "value": [
+                    {
+                        "id": 44,
+                        "status": "active",
+                        "comments": [
+                            {
+                                "id": 90,
+                                "author": {"displayName": "Dev Zero"},
+                                "content": "old",
+                                "publishedDate": "2026-03-21T00:00:00Z",
+                                "isDeleted": False,
+                            },
+                            {
+                                "id": 91,
+                                "author": {"displayName": "Dev One"},
+                                "content": "new",
+                                "publishedDate": "2026-03-21T00:00:01Z",
+                                "isDeleted": False,
+                            },
+                        ],
+                    }
+                ]
+            }
+
+    class FakeClient:
+        def get(self, *args: object, **kwargs: object) -> FakeResponse:
+            return FakeResponse()
+
+    result = adapter.poll(
+        client=FakeClient(),
+        repo="repo-1",
+        pr_id="101",
+        cursor="2026-03-21T00:00:00Z",
+    )
+
+    assert [item.feedback_id for item in result.feedback] == [
+        "azure_devops:thread_comment:44:91"
+    ]
+    assert result.next_cursor == "2026-03-21T00:00:01Z"
+
+
 def test_ado_mapping_skips_system_review_state_change_comments_and_advances_cursor() -> None:
     adapter = AzureDevOpsFeedbackAdapter("https://dev.azure.com/example", "proj", pat="test-pat")
 

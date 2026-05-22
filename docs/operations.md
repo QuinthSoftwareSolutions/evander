@@ -794,7 +794,7 @@ Audit/result behavior:
   - `azure_devops_organization_url` (for example: `https://dev.azure.com/example-org`)
   - `azure_devops_project` (default project when per-call/project-level values are not overridden)
   - `azure_devops_pat_env` (environment variable name that stores the PAT)
-- Export the PAT only on the host (for example `export ADO_WORK_ITEMS_AZURE_DEVOPS_PAT=...`) and
+- Export the PAT only on the host (for example `export AZURE_DEVOPS_PAT=...`) and
   never in guest images or session manifests.
 
 ### Directory-scoped overrides
@@ -1232,14 +1232,28 @@ names with case-insensitive `and`, `or`, `not`, and parentheses, for example
 with an operator. Keep polling bounded with `status`, `source_ref_name`,
 `target_ref_name`, `min_time`/`max_time`, `top`, `skip`, or `cursor`.
 
+Use `query:session:list` when the workflow should route by pack-owned session
+metadata instead of a platform-specific PR binding. For PR collaboration packs,
+common metadata conventions are keys such as `owns_pr`, `reviewing_pr`,
+`pr_provider`, `pr_repo`, and `pr_project`, but those names are not special to
+the platform. A cron workflow can list active sessions by generic metadata,
+poll one stream with `query:pull-request:feedback`, store its cursor in
+workflow-owned state, and enqueue prompts to every matched owner or reviewer
+session. Existing guest tools still require `metadata.pr_feedback_streams` on
+sessions that should call `list_unread_feedback`, `list_all_feedback`, or
+`post_pr_feedback_reply`.
+
 ### Wake workers
 
 - `agent-sandbox-cli discord-wake` owns Discord inbox wakeups and resumes.
 - `agent-sandbox-cli scheduled-wake` owns scheduled resume dispatch.
-- Azure DevOps PR feedback ingestion and PR completion polling are owned by
-  `agent-sandbox-ado-worker`. It writes `runtime/pr-feedback-store.json`, updates
-  `runtime/pr-map.json` PR status fields, and publishes `trigger:pull-request:new-feedback` and
-  `trigger:pull-request:completed` events directly.
+- Existing Azure DevOps PR feedback ingestion and PR completion polling are
+  still owned by `agent-sandbox-ado-worker`. It writes
+  `runtime/pr-feedback-store.json`, updates `runtime/pr-map.json` PR status
+  fields, and publishes `trigger:pull-request:new-feedback` plus
+  `trigger:pull-request:completed` events directly. New workflow-owned polling
+  paths should use `query:session:list` and `query:pull-request:feedback`; keep
+  `pr-map.json` compatibility until a later cleanup removes the older path.
 - Recommended service lifecycle commands:
   - `sudo systemctl start agent-sandbox-discord-wake.service`
   - `sudo systemctl stop agent-sandbox-discord-wake.service`
@@ -1442,42 +1456,42 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
 - Configure the relay environment in `config/nuget-relay.env`.
 - After installing units, run `./scripts/bootstrap_nuget_vm.sh <vm-name>` so guest restores target relay URLs on `http://192.168.250.1:11666`.
 
-## Host-Side Azure DevOps Backlog Worker
+## Host-Side Azure DevOps PR Worker And Work-Item Workflow Intake
 
 - The scaffold includes `agent-sandbox-ado-worker` and the equivalent foreground CLI command
   `agent-sandbox-cli poll-ado-backlog`.
-- The worker polls Azure DevOps work items in `Committed` state tagged `truman`, writes YAML
-  payloads under `ADO_YAML_OUTPUT_DIR`, and refreshes local proxy issue records. It does not
-  create sessions, create VMs, invoke issue setup scripts, or bootstrap guest toolchains.
-- The same worker now owns Azure DevOps PR feedback ingestion and PR completion polling for
-  configured PR streams; it updates `runtime/pr-feedback-store.json`, records PR status in
-  `runtime/pr-map.json`, and publishes `trigger:pull-request:new-feedback` plus
-  `trigger:pull-request:completed` events.
+- The worker owns Azure DevOps PR feedback ingestion and PR completion polling for configured PR
+  streams. It updates `runtime/pr-feedback-store.json`, records PR status in `runtime/pr-map.json`,
+  and publishes `trigger:pull-request:new-feedback` plus `trigger:pull-request:completed` events.
+- The worker no longer polls Azure DevOps work items, writes backlog YAML, checks processed work
+  item state, or requires the work-item PAT just to run PR feedback/completion paths.
+- Azure DevOps work-item intake is now workflow-owned. Use `trigger:ado:work-item-matching` for
+  cursor-backed polling that emits raw work-item payloads on first match and when
+  `System.ChangedDate` advances, or use `query:ado:work-items` for explicit one-shot queries.
+  Wire either output into `effect:issue:upsert-ado-proxy` to write or refresh
+  `runtime/local-issues.json` and `runtime/ado-work-items/work-item-*.yaml`.
 - For terminal-PR cleanup workflows, wire `trigger:pull-request:completed.session_id` into
   `effect:agent:destroy.session_id`.
-- A polled ADO work item is represented in the unified local issue store as a proxy issue
+- A workflow-upserted ADO work item is represented in the unified local issue store as a proxy issue
   (`source: proxy_azure_devops`) keyed by local issue number with remote linkage in
   `metadata.remote` and a last-seen cache in `metadata.proxy_cache`.
 - Re-polling the same remote issue updates the existing local proxy record/cache instead of
-  creating duplicates, so Desktop and CLI views remain stable across worker cycles.
+  creating duplicates, so Desktop and CLI views remain stable across workflow runs.
 - `agent-sandbox-proxy-issue-sync` keeps all Azure DevOps proxy issues fresh independently of the
-  backlog worker. It defaults to a five-minute interval/freshness window, uses batched
+  intake workflow. It defaults to a five-minute interval/freshness window, uses batched
   `workitemsbatch` summary reads, leaves comments to on-demand detail reads, and writes missing or
   inaccessible item diagnostics into `metadata.proxy_sync` without deleting local issues.
 - Directory-scoped `ado_worker` config can set `ado_repo_source` to control the repo source path
-  or remote URL recorded on proxy issue records for each directory.
+  or remote URL recorded on proxy issue records when workflow packs bind it into
+  `effect:issue:upsert-ado-proxy.repo_source`.
 - Preferred configuration now lives in directory domain `ado_worker` (`ado-worker.json`) so values
   inherit through directory ancestry and appear in the Admin GUI automatically.
 - Global worker settings now live in `config/ado-worker/config.json` and are edited from the
-  Admin GUI's Workers tab when the `ado` worker is selected. That file now also carries the
-  dedicated host env-var name for the work-item Azure DevOps PAT and the list of directories
-  the worker should poll each cycle.
+  Admin GUI's Workers tab when the `ado` worker is selected.
 - `ADO_*` env vars continue to work as compatibility fallbacks for one release and log deprecation
   warnings.
 - Materialize `root/ado-worker.json` with `agent-sandbox-cli migrate-ado-worker-env-to-root` or
-  `migrate-global-config-to-root`, then export the PAT value in the host shell or `secrets.env`
-  named by `ado_work_items_azure_devops_pat_env` in `config/ado-worker/config.json` (default
-  `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT`).
+  `migrate-global-config-to-root` when you still use directory-scoped PR automation settings.
 
 Foreground runbook:
 
@@ -1488,10 +1502,11 @@ agent-sandbox-cli poll-ado-backlog --log-level INFO
 
 Systemd runbook:
 
-1. Ensure `runtime/directory-config/root/ado-worker.json` exists and is populated.
+1. Ensure `runtime/directory-config/root/ado-worker.json` exists if you use directory-scoped PR
+   automation settings.
 2. Ensure `config/ado-worker/config.json` exists if you want to override the worker defaults.
-3. Ensure the PAT variable named by `ado_work_items_azure_devops_pat_env` in
-   `config/ado-worker/config.json` is available to the service user.
+3. Ensure `AZURE_DEVOPS_PR_PAT` or the configured `azure_devops_pr_pat_env` is available to the
+   service user when Azure DevOps PR feedback/completion polling is enabled.
 4. Source `secrets.env` or another secret env file if that is how you manage host secrets.
 5. Start/inspect:
 
@@ -1503,30 +1518,37 @@ sudo systemctl status agent-sandbox-proxy-issue-sync.service
 sudo journalctl -u agent-sandbox-ado-worker.service -f
 ```
 
+Workflow work-item intake example:
+
+```json
+{
+  "type": "trigger:ado:work-item-matching",
+  "config": {
+    "directory_path": "root/team-a",
+    "states": ["Committed"],
+    "tags_any": ["truman"],
+    "top": 50
+  }
+}
+```
+
+```json
+{
+  "type": "effect:issue:upsert-ado-proxy",
+  "config": {
+    "directory_path": "root/team-a",
+    "item": "${{trigger.work_item}}",
+    "repo_source": "/srv/repos/example"
+  }
+}
+```
+
 Failure recovery:
 
-- Re-run a specific work item once:
-  Source `secrets.env` first if you keep secrets there.
-
-  ```bash
-  set -a; source secrets.env; set +a
-  agent-sandbox-cli poll-ado-backlog --reprocess 12345
-  ```
-
-- Clear processed state for a specific work item so the next normal poll can pick it up again:
-  Source `secrets.env` first if you keep secrets there.
-
-  ```bash
-  set -a; source secrets.env; set +a
-  agent-sandbox-cli poll-ado-backlog --forget 12345
-  ```
-
-- List work items that match the worker query but are not yet in the processed store:
-
-  ```bash
-  export ADO_WORK_ITEMS_AZURE_DEVOPS_PAT=...
-  ./scripts/list_unassigned_ado_work_items.sh
-  ```
+- `--reprocess` and `--list-unprocessed` are deprecated with workflow-owned work-item intake.
+- `--forget` remains available only for removing legacy processed-store entries during migration.
+- To backfill, run `query:ado:work-items` and feed its `items` array into
+  `effect:issue:upsert-ado-proxy.items`.
 
 - If the service is crash-looping, validate config and PAT availability with a foreground run,
   then restart the unit:
@@ -1652,9 +1674,8 @@ This creates:
 Before running install mode, ensure preflight is clean (or only warning-only), then:
 
 1. Copy `config/firewall.env.example` to `config/firewall.env` if needed.
-2. Ensure `runtime/directory-config/root/ado-worker.json` exists and the PAT variable named by
-   `ado_work_items_azure_devops_pat_env` in `config/ado-worker/config.json` is exported for the
-   service user.
+2. Ensure `runtime/directory-config/root/ado-worker.json` exists if you use directory-scoped PR
+   automation settings.
 3. Ensure the needed service env vars are available. The rendered units will load optional
    per-service `config/*.env` files and optional repo-root `secrets.env`.
 4. Ensure `OPENAI_API_KEY` is available for the OpenAI relay and `AZURE_ARTIFACTS_PAT` when the

@@ -50,31 +50,30 @@ secret value in repo-root `secrets.env` or the service manager environment rathe
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
-| `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT` | `config/ado-worker.env.example` | `src/agent_sandbox/daemons/ado_issue_worker.py` using `ado_work_items_azure_devops_pat_env` from `config/ado-worker/config.json`. |
+| `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT` | `config/ado-worker.env.example` | Legacy work-item helper commands only. Workflow ADO work-item queries use the normal Azure DevOps provider config/PAT path. |
 
 ## `config/ado-worker/config.json`
 
 This JSON file stores the ADO worker's global settings. The admin GUI's Workers tab edits this
-file directly for the `ado` worker.
+file directly for the `ado` worker. The worker now owns Azure DevOps PR feedback/completion
+polling only; work-item intake should be modeled with workflow nodes.
 
 | Parameter | Found in | Consumed by |
 |---|---|---|
 | `runtime_dir` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py` and runtime path defaults. |
 | `poll_interval_seconds` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
-| `directories` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py` (canonical directories to poll once per cycle; empty list means process nothing). |
-| `yaml_output_dir` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
-| `processed_store_path` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
-| `ado_work_items_azure_devops_pat_env` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py` (name of the host env var that holds the ADO work-item PAT). |
-| `fetch_retry_count` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
-| `fetch_retry_backoff_seconds` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
-| `include_comments` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
-| `comments_max_count` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
-| `comment_text_max_chars` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py`. |
+| `directories` | `config/ado-worker/config.json` | `src/agent_sandbox/daemons/ado_issue_worker.py` (canonical directories to inspect for PR feedback/completion streams; empty list means process nothing). |
+| `yaml_output_dir` | `config/ado-worker/config.json` | Legacy work-item helper path; workflow `effect:issue:upsert-ado-proxy` defaults to `runtime/ado-work-items`. |
+| `processed_store_path` | `config/ado-worker/config.json` | Legacy processed-store cleanup path for `poll-ado-backlog --forget`. |
+| `ado_work_items_azure_devops_pat_env` | `config/ado-worker/config.json` | Legacy work-item helper env-var name. The running ADO worker does not require it. |
+| `fetch_retry_count` | `config/ado-worker/config.json` | Legacy work-item helper retry setting. |
+| `fetch_retry_backoff_seconds` | `config/ado-worker/config.json` | Legacy work-item helper retry setting. |
+| `include_comments` | `config/ado-worker/config.json` | Legacy work-item helper comment setting. |
+| `comments_max_count` | `config/ado-worker/config.json` | Legacy work-item helper comment setting. |
+| `comment_text_max_chars` | `config/ado-worker/config.json` | Legacy work-item helper comment setting. |
 
-`ADO_*` environment variables for polling/runtime settings still work as compatibility fallbacks
-for one release, but the new persisted source of truth is `config/ado-worker/config.json`. The
-work-item Azure DevOps PAT value is read from the host env var named by
-`ado_work_items_azure_devops_pat_env`, defaulting to `ADO_WORK_ITEMS_AZURE_DEVOPS_PAT`.
+`ADO_*` environment variables for worker runtime settings still work as compatibility fallbacks
+for one release, but the new persisted source of truth is `config/ado-worker/config.json`.
 
 ## `config/trigger-orchestrator/config.json`
 
@@ -145,6 +144,7 @@ Type-specific keys:
 | `trigger:ticket:created` | `directories` | — |
 | `trigger:ticket:changed` | `directories` | — |
 | `trigger:issue:comment-created` / `trigger:issue:new-comment` | — | `provider`, `organization_url`, `project`, `directories` |
+| `trigger:ado:work-item-matching` | — | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top` |
 | `trigger:script-run-request` | — | — |
 | `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |
 | `trigger:email:new-message` | `provider`, `account_identifier`, `mailbox_ids` | `auth_secret_refs` |
@@ -164,6 +164,11 @@ trigger to a higher frequency still does not replay historical runs.
 normalized `pr` object when the tracked PR reaches a terminal state such as merged, completed,
 closed, or abandoned. Wire `session_id` into `effect:agent:destroy.session_id` when a workflow
 should delete the agent after the tracked PR is terminal.
+
+`trigger:ado:work-item-matching` uses the same filter/query surface as `query:ado:work-items`
+without writing local issue state. It emits `work_item` on first match and again when the remote
+changed date advances. Use `effect:issue:upsert-ado-proxy` downstream when the workflow should
+materialize or refresh a local proxy issue.
 
 `trigger:event` consumes durable internal workflow events. The Admin Web HTTP ingress publishes
 caller-supplied event names under the reserved `external.` prefix, so a POST with
@@ -298,8 +303,8 @@ Type-specific keys:
 | `effect:vm:start` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `outputs` |
 | `effect:vm:stop` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `timeout_seconds`, `outputs` |
 | `effect:agent:create` | _none beyond envelope_ | `provider`, `execution_backend`, `vm_name`, `session_id`, `existing_agent_behavior`, `labels`, `model`, `vm_user`, `ttl_hours`, `allowed_tools`, `allowed_script_names`, `discord_channels`, `teams_channel_allowlist`, `teams_chat_allowlist`, `teams_user_allowlist`, `email_mailboxes`, `email_folders`, `communication_file_receive_enabled`, `communication_file_send_enabled`, `communication_file_require_approval_for_send`, `communication_file_max_bytes`, `dotnet`, `nuget`, `mssql`, `mssql_init_root`, `playwright`, `codex_skills`, `directory_path`, `outputs` |
-| `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `mcp_tool_approval_lease_id`, `outputs` |
-| `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `vm_user`, `resume_thread_id`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
+| `effect:agent:prompt` | `prompt` | `target`, `session_id`, `vm_name`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `outputs` |
+| `effect:agent:enqueue-prompt` | `prompt` | `target`, `session_id`, `vm_name`, `model`, `vm_user`, `resume_thread_id`, `resume_thread_metadata_key`, `resume_thread_metadata_collection`, `mcp_tool_approval_lease_id`, `queue_key`, `outputs` |
 | `effect:agent:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:artifact:stage` | one of `target`, `session_id`, `vm_name`; `path` | `destination_path`, `vm_user`, `outputs` |
 | `effect:artifact:publish-artifacts` | one of `target`, `session_id`, `vm_name`; `key` | `vm_user`, `outputs` |
@@ -311,6 +316,7 @@ Type-specific keys:
 | `effect:vm:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:issue:update-state` | `issue_id`, `state` | `sync_proxy_cache`, `outputs` |
+| `effect:issue:upsert-ado-proxy` | one of `item`, `items` | `directory_path`, `organization_url`, `project`, `repo_source`, `yaml_output_dir`, `outputs` |
 | `effect:pull-request:update` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `title`, `description`, `status`, `add_tags`, `remove_tags`, `expected_statuses`, `outputs` |
 | `effect:communication:send-message` | `communication_target_id`, `message` | `thread_id`, `outputs` |
 | `effect:notification:send` | `communication_target_id`, `message` | `severity`, `subject`, `thread_id`, `outputs` |
@@ -327,6 +333,21 @@ should be prompted to fetch and merge the destination branch.
 `effect:agent:prompt` and `effect:agent:enqueue-prompt` have two named outgoing
 ports: `started` emits after the prompt is dispatched, and `completed` emits
 after the agent run completes.
+
+When `resume_thread_metadata_key` is set on either prompt effect, the effect
+resumes from and persists the Codex thread ID under a session metadata object.
+The object name defaults to `agent_thread_ids` and can be overridden per effect
+with `resume_thread_metadata_collection`. For example, key
+`teams:channel:thread:agent_thread_id` writes
+`metadata.agent_thread_ids["teams:channel:thread:agent_thread_id"]`. To clear all
+keyed resume contexts for the default collection, update session metadata with
+`{"agent_thread_ids": null}`.
+
+`effect:issue:upsert-ado-proxy` accepts either one raw Azure DevOps work item
+(`item`) or an array/batch (`items`). It writes or refreshes the local proxy
+ticket in `runtime/local-issues.json`, writes YAML under
+`runtime/ado-work-items/work-item-*.yaml` by default, and returns `ticket` for a
+single item or `tickets` plus created/updated/skipped counts for batches.
 
 `effect:session:renew-if-expired` resolves a host-side session by `target`,
 `session_id`, or `vm_name`. If the session has already expired, it sets
@@ -357,23 +378,38 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:ado:work-items` | _none beyond envelope_ | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top`, `skip`, `outputs` |
 | `query:git:pr-note` | `host_repo_path`, `local_branch` | `remote_name`, `notes_ref`, `outputs` |
 | `query:issue:get` | `issue_id` | `outputs` |
+| `query:pull-request:feedback` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `cursor`, `outputs` |
 | `query:pull-request:list` | `provider`, `repo` | `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `outputs` |
 | `query:semantic:store-status` | _none beyond envelope_ | `collection_name`, `directory_path`, `outputs` |
 | `query:semantic:search` | `collection_name`, `query_text` | `filter`, `limit`, `score_threshold`, `directory_path`, `outputs` |
 | `query:semantic:get` | `collection_name`, `point_ids` | `directory_path`, `outputs` |
 | `query:session-context` | one of `target`, `session_id`, `vm_name` | `outputs` |
+| `query:session:list` | _none beyond envelope_ | `directory_path`, `metadata_equals`, `metadata_exists`, `metadata_prefix`, `state`, `active_only`, `limit`, `outputs` |
 | `query:vm:run-state` | one of `session_id`, `vm_name` | `outputs` |
 
 `query:agent:artifact-text` reads a UTF-8 text file from the resolved session's
 artifacts folder. The `path` value must be relative and stay inside that folder.
 
-`query:pull-request:list` and `effect:pull-request:update` accept `provider` as
-`azure_devops`, `azure-devops`, or `ado`. Azure DevOps PR tag filters are applied
-client-side after the PR list call. The `tags` filter accepts tag names with
-case-insensitive `and`, `or`, `not`, and parentheses, for example
-`(TagA or TagB) and not TagC`. Quote tag names that contain spaces or collide
-with an operator. Cron polling workflows should bound the candidate set with
-`status`, branch/time filters, `top`, `skip`, or `cursor`.
+`query:session:list` reads host-side session manifests and filters by generic
+session metadata. `metadata_equals` and `metadata_prefix` are JSON objects keyed
+by metadata key or dotted metadata path. `metadata_exists` may be a string, array,
+or object of key -> boolean. `directory_path` scopes to that directory and its
+descendants. `active_only=true` or `state=active` excludes expired sessions.
+
+`query:pull-request:list`, `query:pull-request:feedback`, and
+`effect:pull-request:update` accept Azure DevOps `provider` as `azure_devops`,
+`azure-devops`, or `ado`. `query:pull-request:feedback` fetches normalized
+feedback for one provider/repo/PR stream and returns `feedback` plus
+`next_cursor`; workflows own where that cursor is stored. For Azure DevOps,
+`project` can be explicit, read from directory provider config, or derived from
+a composite repo slug such as `organization/project/repo`.
+
+Azure DevOps PR tag filters are applied client-side after the PR list call. The
+`tags` filter accepts tag names with case-insensitive `and`, `or`, `not`, and
+parentheses, for example `(TagA or TagB) and not TagC`. Quote tag names that
+contain spaces or collide with an operator. Cron polling workflows should bound
+the candidate set with `status`, branch/time filters, `top`, `skip`, or
+`cursor`.
 
 `effect:communication:send-message` sends a plain message through a declared
 directory-scoped communication target managed from Admin Web Configuration ->
@@ -791,7 +827,7 @@ Supported directory config domains:
 | `contacts.json` | Directory contact list and admin-user contact attachments | `contacts`, `user_contact_links` |
 | `email.json` | Mailbox provider definitions and email provider runtime settings | `email_mailboxes`, `email_provider_timeout_seconds` |
 | `wake.json` | Directory-scoped wake prompt behavior | `pr_feedback_resume_prompt`, `discord_resume_prompt` |
-| `ado-worker.json` | Azure DevOps backlog worker filters, repo metadata, and PR automation flags | `ado_area_filters`, `ado_team_filters`, `ado_repo_source`, `create_prs_automatically`, `create_prs_as_draft` |
+| `ado-worker.json` | Azure DevOps PR automation metadata and optional workflow repo metadata | `ado_area_filters`, `ado_team_filters`, `ado_repo_source`, `create_prs_automatically`, `create_prs_as_draft` |
 | `issue-setup.json` | VM issue setup/git hand-off defaults | `git_root`, `git_host`, `git_user`, `git_ssh_alias`, optional `default_model`, `post_exec_verification_prompt`, `enable_guest_heartbeat`, `guest_heartbeat_prompt`, optional `issue_setup_azure_devops_pr_pat_env` |
 | `pr-template.json` | Directory-scoped markdown boilerplate prepended to automated PR bodies | `pr_template_markdown` |
 | `vm.json` | Guest-facing relay/network defaults | `bind_network_cidr`, `gateway_url`, OpenAI relay host/port, NuGet relay host/port, HTTP target relay host/port |

@@ -223,6 +223,7 @@ class _AdminServiceStub:
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
+        persist_thread_id: bool = True,
         mcp_gateway_url: str | None = None,
     ):
         self.resume_calls.append(
@@ -233,6 +234,7 @@ class _AdminServiceStub:
                 "vm_user": vm_user,
                 "dispatch_id": dispatch_id,
                 "resume_thread_id": resume_thread_id,
+                "persist_thread_id": persist_thread_id,
                 "mcp_gateway_url": mcp_gateway_url,
             }
         )
@@ -246,9 +248,22 @@ class _AdminServiceStub:
 
     def session_update_metadata(self, *, target: str, metadata: dict[str, object]):
         session = self._sessions[target]
-        updated = session.model_copy(update={"metadata": {**session.metadata, **metadata}})
+        updated = session.model_copy(
+            update={"metadata": _deep_merge_metadata(session.metadata, metadata)}
+        )
         self._sessions[target] = updated
         return {"success": True, "session_id": target, "metadata": updated.metadata}
+
+
+def _deep_merge_metadata(base: dict[str, object], update: dict[str, object]) -> dict[str, object]:
+    merged = dict(base)
+    for key, value in update.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_metadata(existing, value)
+            continue
+        merged[key] = value
+    return merged
 
 
 class _RecordingProvider(EffectProviderBase):
@@ -297,6 +312,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:vm:delete-files",
         "effect:issue:update-state",
         "effect:issue:update-metadata",
+        "effect:issue:upsert-ado-proxy",
         "effect:ado:update-work-item",
         "effect:communication:send-message",
         "effect:notification:send",
@@ -832,6 +848,48 @@ def test_agent_prompt_provider_emits_thread_id() -> None:
     assert admin_service.resume_calls[0]["resume_thread_id"] == "thread-123"
 
 
+def test_agent_prompt_provider_uses_resume_thread_metadata_key() -> None:
+    effect = AgentPromptEffectDefinition(
+        id="effect-prompt",
+        display_name="Prompt",
+        type="effect:agent:prompt",
+        prompt="continue",
+        session_id="session-42",
+        resume_thread_metadata_key="teams:chat-1:agent_thread_id",
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    session = admin_service._sessions["session-42"]
+    admin_service._sessions["session-42"] = session.model_copy(
+        update={
+            "metadata": {
+                "agent_thread_ids": {
+                    "teams:chat-1:agent_thread_id": "thread-existing"
+                }
+            }
+        }
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+
+    output = factory.build(effect).execute()
+
+    assert output["thread_id"] == "thread-existing"
+    assert admin_service.resume_calls[0]["resume_thread_id"] == "thread-existing"
+    assert admin_service.resume_calls[0]["persist_thread_id"] is False
+    updated = admin_service._sessions["session-42"]
+    assert updated.metadata["agent_thread_ids"]["teams:chat-1:agent_thread_id"] == (
+        "thread-existing"
+    )
+    assert "teams:chat-1:agent_thread_id" not in updated.metadata
+
+
 def test_factory_supports_new_provider_types_without_events_model_edit() -> None:
     effect = WorkflowNodeEnvelope(
         id="custom-1",
@@ -922,7 +980,13 @@ def test_agent_enqueue_prompt_provider_uses_resume_thread_metadata_key() -> None
     )
     session = admin_service._sessions["session-42"]
     admin_service._sessions["session-42"] = session.model_copy(
-        update={"metadata": {"teams:chat-1:agent_thread_id": "thread-existing"}}
+        update={
+            "metadata": {
+                "agent_thread_ids": {
+                    "teams:chat-1:agent_thread_id": "thread-existing"
+                }
+            }
+        }
     )
     admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
     factory = EffectProviderFactory(
@@ -933,8 +997,12 @@ def test_agent_enqueue_prompt_provider_uses_resume_thread_metadata_key() -> None
 
     assert output["thread_id"] == "thread-existing"
     assert admin_service.resume_calls[0]["resume_thread_id"] == "thread-existing"
+    assert admin_service.resume_calls[0]["persist_thread_id"] is False
     updated = admin_service._sessions["session-42"]
-    assert updated.metadata["teams:chat-1:agent_thread_id"] == "thread-existing"
+    assert updated.metadata["agent_thread_ids"]["teams:chat-1:agent_thread_id"] == (
+        "thread-existing"
+    )
+    assert "teams:chat-1:agent_thread_id" not in updated.metadata
 
 
 def test_agent_enqueue_prompt_provider_explicit_resume_thread_overrides_metadata_key() -> None:
@@ -956,7 +1024,13 @@ def test_agent_enqueue_prompt_provider_explicit_resume_thread_overrides_metadata
     )
     session = admin_service._sessions["session-42"]
     admin_service._sessions["session-42"] = session.model_copy(
-        update={"metadata": {"teams:chat-1:agent_thread_id": "thread-existing"}}
+        update={
+            "metadata": {
+                "agent_thread_ids": {
+                    "teams:chat-1:agent_thread_id": "thread-existing"
+                }
+            }
+        }
     )
     admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
     factory = EffectProviderFactory(
@@ -967,8 +1041,96 @@ def test_agent_enqueue_prompt_provider_explicit_resume_thread_overrides_metadata
 
     assert output["thread_id"] == "thread-explicit"
     assert admin_service.resume_calls[0]["resume_thread_id"] == "thread-explicit"
+    assert admin_service.resume_calls[0]["persist_thread_id"] is False
     updated = admin_service._sessions["session-42"]
-    assert updated.metadata["teams:chat-1:agent_thread_id"] == "thread-explicit"
+    assert updated.metadata["agent_thread_ids"]["teams:chat-1:agent_thread_id"] == (
+        "thread-explicit"
+    )
+    assert "teams:chat-1:agent_thread_id" not in updated.metadata
+
+
+def test_agent_enqueue_prompt_provider_uses_resume_thread_metadata_collection_override() -> None:
+    effect = AgentEnqueuePromptEffectDefinition(
+        id="effect-prompt",
+        display_name="Prompt",
+        type="effect:agent:enqueue-prompt",
+        prompt="continue",
+        session_id="session-42",
+        resume_thread_metadata_key="teams:chat-1:agent_thread_id",
+        resume_thread_metadata_collection="team_threads",
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    session = admin_service._sessions["session-42"]
+    admin_service._sessions["session-42"] = session.model_copy(
+        update={
+            "metadata": {
+                "agent_thread_ids": {
+                    "teams:chat-1:agent_thread_id": "thread-default"
+                },
+                "team_threads": {
+                    "teams:chat-1:agent_thread_id": "thread-override"
+                },
+            }
+        }
+    )
+    admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+
+    output = factory.build(effect).execute()
+
+    assert output["thread_id"] == "thread-override"
+    assert admin_service.resume_calls[0]["resume_thread_id"] == "thread-override"
+    updated = admin_service._sessions["session-42"]
+    assert updated.metadata["team_threads"]["teams:chat-1:agent_thread_id"] == (
+        "thread-override"
+    )
+    assert updated.metadata["agent_thread_ids"]["teams:chat-1:agent_thread_id"] == (
+        "thread-default"
+    )
+
+
+def test_agent_enqueue_prompt_provider_ignores_legacy_top_level_metadata_key() -> None:
+    effect = AgentEnqueuePromptEffectDefinition(
+        id="effect-prompt",
+        display_name="Prompt",
+        type="effect:agent:enqueue-prompt",
+        prompt="continue",
+        session_id="session-42",
+        resume_thread_metadata_key="teams:chat-1:agent_thread_id",
+    )
+    admin_service = _AdminServiceStub(
+        create_vm_calls=[],
+        clone_repo_into_vm_calls=[],
+        bootstrap_python_in_vm_calls=[],
+        bootstrap_frontend_in_vm_calls=[],
+        resume_calls=[],
+    )
+    session = admin_service._sessions["session-42"]
+    admin_service._sessions["session-42"] = session.model_copy(
+        update={"metadata": {"teams:chat-1:agent_thread_id": "thread-legacy"}}
+    )
+    admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+
+    output = factory.build(effect).execute()
+
+    assert output["thread_id"] == "thread-new-123"
+    assert admin_service.resume_calls[0]["resume_thread_id"] is None
+    updated = admin_service._sessions["session-42"]
+    assert updated.metadata["teams:chat-1:agent_thread_id"] == "thread-legacy"
+    assert updated.metadata["agent_thread_ids"]["teams:chat-1:agent_thread_id"] == (
+        "thread-new-123"
+    )
 
 
 def test_agent_enqueue_prompt_provider_uses_container_backend_for_container_session(

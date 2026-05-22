@@ -1660,6 +1660,7 @@ class AzureDevOpsIssueAdapter:
         select_fields = [
             "System.Id",
             "System.Title",
+            "System.Description",
             "System.State",
             "System.WorkItemType",
             "System.IterationPath",
@@ -1667,6 +1668,9 @@ class AzureDevOpsIssueAdapter:
             "System.AssignedTo",
             "System.Tags",
             "System.ChangedDate",
+            "Microsoft.VSTS.TCM.ReproSteps",
+            "Microsoft.VSTS.TCM.SystemInfo",
+            "Microsoft.VSTS.Common.AcceptanceCriteria",
             *DEFAULT_EFFORT_FIELDS,
         ]
         wiql_response = client.post(

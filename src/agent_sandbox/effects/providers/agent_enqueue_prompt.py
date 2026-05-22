@@ -32,6 +32,12 @@ from .agent_session import (
 )
 from .base import EffectProviderBase
 from .lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
+from .resume_thread_metadata import (
+    normalize_resume_thread_metadata_collection,
+    resume_thread_id_from_metadata,
+    resume_thread_metadata_key as normalize_resume_thread_metadata_key,
+    resume_thread_metadata_patch,
+)
 
 _ACTIVE_CONTAINER_STATUSES = {
     ExecutionStatusKind.PREPARING.value,
@@ -77,6 +83,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             "vm_user": effect.vm_user,
             "resume_thread_id": effect.resume_thread_id,
             "resume_thread_metadata_key": effect.resume_thread_metadata_key,
+            "resume_thread_metadata_collection": effect.resume_thread_metadata_collection,
             "queue_key": effect.queue_key,
             "mcp_tool_approval_lease_id": effect.mcp_tool_approval_lease_id,
         }
@@ -94,6 +101,9 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         resume_thread_id = self._normalize_optional_string(payload.get("resume_thread_id"))
         resume_thread_metadata_key = self._normalize_optional_string(
             payload.get("resume_thread_metadata_key")
+        )
+        resume_thread_metadata_collection = normalize_resume_thread_metadata_collection(
+            payload.get("resume_thread_metadata_collection")
         )
         queue_key = self._normalize_optional_string(payload.get("queue_key"))
         mcp_tool_approval_lease_id = self._resolve_mcp_tool_approval_lease_id(
@@ -115,6 +125,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
                 resume_thread_metadata_key=resume_thread_metadata_key,
+                resume_thread_metadata_collection=resume_thread_metadata_collection,
                 queue_key=queue_key,
                 config=config,
                 effect_id=effect.id,
@@ -136,6 +147,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         effective_resume_thread_id = self._effective_resume_thread_id(
             resume_thread_id=resume_thread_id,
             resume_thread_metadata_key=resume_thread_metadata_key,
+            resume_thread_metadata_collection=resume_thread_metadata_collection,
             target=target,
             session_id=session_id,
             session=None,
@@ -155,6 +167,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
                 resume_thread_metadata_key=resume_thread_metadata_key,
+                resume_thread_metadata_collection=resume_thread_metadata_collection,
                 effect_id=effect.id,
                 queue_key=queue_key,
                 workflow_context=workflow_context,
@@ -178,6 +191,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             vm_user=vm_user,
             dispatch_id=dispatch_id,
             resume_thread_id=effective_resume_thread_id,
+            persist_thread_id=resume_thread_metadata_key is None,
             mcp_gateway_url=self._mcp_gateway_url(
                 config=config,
                 target=target,
@@ -195,6 +209,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
                 resume_thread_metadata_key=resume_thread_metadata_key,
+                resume_thread_metadata_collection=resume_thread_metadata_collection,
                 effect_id=effect.id,
                 queue_key=queue_key,
                 workflow_context=workflow_context,
@@ -222,6 +237,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             target=target,
             session_id=session_id,
             resume_thread_metadata_key=resume_thread_metadata_key,
+            resume_thread_metadata_collection=resume_thread_metadata_collection,
             thread_id=thread_id,
         )
         return {
@@ -242,6 +258,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         vm_user: str,
         resume_thread_id: str | None,
         resume_thread_metadata_key: str | None,
+        resume_thread_metadata_collection: str,
         queue_key: str | None,
         config: Any,
         effect_id: str,
@@ -266,6 +283,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         effective_resume_thread_id = self._effective_resume_thread_id(
             resume_thread_id=resume_thread_id,
             resume_thread_metadata_key=resume_thread_metadata_key,
+            resume_thread_metadata_collection=resume_thread_metadata_collection,
             target=target,
             session_id=session_id,
             session=session,
@@ -285,6 +303,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
                 resume_thread_metadata_key=resume_thread_metadata_key,
+                resume_thread_metadata_collection=resume_thread_metadata_collection,
                 effect_id=effect_id,
                 queue_key=queue_key or session_id,
                 workflow_context=workflow_context,
@@ -344,6 +363,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
                 vm_user=vm_user,
                 resume_thread_id=resume_thread_id,
                 resume_thread_metadata_key=resume_thread_metadata_key,
+                resume_thread_metadata_collection=resume_thread_metadata_collection,
                 effect_id=effect_id,
                 queue_key=queue_key or session_id,
                 workflow_context=workflow_context,
@@ -525,6 +545,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         *,
         resume_thread_id: str | None,
         resume_thread_metadata_key: str | None,
+        resume_thread_metadata_collection: str,
         target: str,
         session_id: str | None,
         session: Any | None,
@@ -532,7 +553,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         explicit = self._usable_resume_thread_id(resume_thread_id)
         if explicit:
             return explicit
-        key = self._normalize_optional_string(resume_thread_metadata_key)
+        key = normalize_resume_thread_metadata_key(resume_thread_metadata_key)
         if not key:
             return None
         if session is None:
@@ -542,7 +563,13 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         metadata = getattr(session, "metadata", {})
         if not isinstance(metadata, Mapping):
             return None
-        return self._usable_resume_thread_id(metadata.get(key))
+        return self._usable_resume_thread_id(
+            resume_thread_id_from_metadata(
+                metadata,
+                collection=resume_thread_metadata_collection,
+                key=key,
+            )
+        )
 
     def _session_for_metadata_lookup(self, *, target: str, session_id: str | None) -> Any | None:
         context = self._context()
@@ -567,9 +594,10 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         target: str,
         session_id: str | None,
         resume_thread_metadata_key: str | None,
+        resume_thread_metadata_collection: str,
         thread_id: str | None,
     ) -> None:
-        key = self._normalize_optional_string(resume_thread_metadata_key)
+        key = normalize_resume_thread_metadata_key(resume_thread_metadata_key)
         value = self._usable_resume_thread_id(thread_id)
         if not key or not value:
             return
@@ -577,8 +605,15 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         update_fn = getattr(context.session_metadata_updater, "session_update_metadata", None)
         if not callable(update_fn):
             return
+        metadata = resume_thread_metadata_patch(
+            collection=resume_thread_metadata_collection,
+            key=key,
+            thread_id=value,
+        )
+        if not metadata:
+            return
         try:
-            update_fn(target=session_id or target, metadata={key: value})
+            update_fn(target=session_id or target, metadata=metadata)
         except Exception:
             pass
 
@@ -711,6 +746,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         workflow_run_id: str | None = None,
         mcp_tool_approval_lease_id: str | None = None,
         resume_thread_metadata_key: str | None = None,
+        resume_thread_metadata_collection: str | None = None,
     ) -> QueuedAgentPromptRecord:
         context = self._context()
         metadata = {
@@ -734,6 +770,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             vm_user=vm_user,
             resume_thread_id=resume_thread_id,
             resume_thread_metadata_key=resume_thread_metadata_key,
+            resume_thread_metadata_collection=resume_thread_metadata_collection,
             effect_id=effect_id,
             metadata=metadata,
             workflow_context=workflow_context,

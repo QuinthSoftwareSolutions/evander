@@ -1421,6 +1421,7 @@ def test_run_admin_agent_action_prompt_agent_dispatches_via_enqueue_provider(
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
         resume_mode: str = "new_context",
+        persist_thread_id: bool = True,
         mcp_gateway_url: str | None = None,
     ) -> VmActionResult:
         resume_calls.append(
@@ -1432,6 +1433,7 @@ def test_run_admin_agent_action_prompt_agent_dispatches_via_enqueue_provider(
                 "dispatch_id": dispatch_id,
                 "resume_thread_id": resume_thread_id,
                 "resume_mode": resume_mode,
+                "persist_thread_id": persist_thread_id,
                 "mcp_gateway_url": mcp_gateway_url,
             }
         )
@@ -1524,10 +1526,11 @@ def test_run_admin_agent_action_prompt_agent_returns_queued_when_dispatch_fails_
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
         resume_mode: str = "new_context",
+        persist_thread_id: bool = True,
         mcp_gateway_url: str | None = None,
     ) -> VmActionResult:
         del self, target, prompt, model, vm_user, dispatch_id, resume_thread_id
-        del resume_mode, mcp_gateway_url
+        del resume_mode, persist_thread_id, mcp_gateway_url
         return VmActionResult(
             success=False,
             vm_name="agent-sandbox-receptionist-vm",
@@ -2442,7 +2445,9 @@ def test_resume_agent_passes_mcp_gateway_url(tmp_path: Path, monkeypatch) -> Non
     )
 
 
-def test_resume_agent_reuses_stored_session_thread_id(tmp_path: Path, monkeypatch) -> None:
+def test_resume_agent_does_not_reuse_stored_session_thread_id(
+    tmp_path: Path, monkeypatch
+) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(
         SessionManifest(
@@ -2466,10 +2471,10 @@ def test_resume_agent_reuses_stored_session_thread_id(tmp_path: Path, monkeypatc
     result = service.resume_agent("agent-sandbox-receptionist-vm", "Resume now")
 
     assert result.success is True
-    assert result.thread_id == "thread-stored-1"
-    assert "--resume-thread-id" in captured["cmd"]
-    assert "thread-stored-1" in captured["cmd"]
-    assert "--resume-mode" not in captured["cmd"]
+    assert result.thread_id is None
+    assert "--resume-thread-id" not in captured["cmd"]
+    assert "--resume-mode" in captured["cmd"]
+    assert "new_context" in captured["cmd"]
 
 
 def test_resume_agent_ignores_synthetic_chat_thread_id(tmp_path: Path, monkeypatch) -> None:

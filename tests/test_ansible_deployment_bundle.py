@@ -135,6 +135,40 @@ def test_ansible_site_announces_control_plane_deployment_status() -> None:
     )
 
 
+def test_ansible_runtime_bootstrap_repairs_managed_service_lock_ownership() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
+        encoding="utf-8"
+    )
+    runtime_bootstrap = (
+        repo / "ansible" / "roles" / "runtime_bootstrap" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "agent_sandbox_runtime_service_lock_files:" in defaults
+    for lock_name in [
+        "discord-ingest.lock",
+        "discord-wake.lock",
+        "scheduled-wake.lock",
+        "teams-ingest.lock",
+        "teams-meeting-ingest.lock",
+        "trigger-orchestrator.lock",
+        "effect-orchestrator.lock",
+    ]:
+        assert lock_name in defaults
+
+    assert "Ensure managed runtime service lock files are owned by the run user" in runtime_bootstrap
+    assert 'path: "{{ agent_sandbox_runtime_dir }}/{{ item }}"' in runtime_bootstrap
+    assert 'owner: "{{ agent_sandbox_run_user }}"' in runtime_bootstrap
+    assert 'group: "{{ agent_sandbox_run_user }}"' in runtime_bootstrap
+    assert 'mode: "0644"' in runtime_bootstrap
+    assert "access_time: preserve" in runtime_bootstrap
+    assert "modification_time: preserve" in runtime_bootstrap
+    assert 'loop: "{{ agent_sandbox_runtime_service_lock_files }}"' in runtime_bootstrap
+    assert runtime_bootstrap.index("Ensure managed runtime service lock files") < (
+        runtime_bootstrap.index("Initialize repo runtime state")
+    )
+
+
 def test_ansible_nexus_package_cache_role_is_control_plane_only() -> None:
     repo = Path(__file__).resolve().parents[1]
     site = (repo / "ansible" / "site.yml").read_text(encoding="utf-8")

@@ -425,6 +425,10 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         field["key"] == "mcp_tool_approval_lease_id" and field["bindable"]
         for field in agent_prompt["fields"]
     )
+    assert any(
+        field["key"] == "resume_thread_metadata_collection" and field["bindable"]
+        for field in agent_prompt["fields"]
+    )
     assert all(field["key"] != "output_mode" for field in agent_prompt["fields"])
     assert agent_prompt["output_ports"] == [
         {
@@ -450,6 +454,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "vm_user",
         "resume_thread_id",
         "resume_thread_metadata_key",
+        "resume_thread_metadata_collection",
         "mcp_tool_approval_lease_id",
         "queue_key",
     ]
@@ -661,6 +666,32 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "tags",
         "top",
         "skip",
+        "cursor",
+    ]
+    session_list = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "query:session:list"
+    )
+    assert [field["key"] for field in session_list["fields"]] == [
+        "directory_path",
+        "metadata_equals",
+        "metadata_exists",
+        "metadata_prefix",
+        "state",
+        "active_only",
+        "limit",
+    ]
+    pr_feedback = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "query:pull-request:feedback"
+    )
+    assert [field["key"] for field in pr_feedback["fields"]] == [
+        "provider",
+        "repo",
+        "pr_id",
+        "directory_path",
+        "organization_url",
+        "project",
         "cursor",
     ]
     vm_create = next(

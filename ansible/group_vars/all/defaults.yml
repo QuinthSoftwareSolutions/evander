@@ -52,6 +52,14 @@ agent_sandbox_repo_managed_untracked_config_paths: >-
   }}
 agent_sandbox_deploy_path: "/opt/agent-sandbox"
 agent_sandbox_runtime_dir: "{{ agent_sandbox_deploy_path }}/runtime"
+agent_sandbox_runtime_service_lock_files:
+  - discord-ingest.lock
+  - discord-wake.lock
+  - scheduled-wake.lock
+  - teams-ingest.lock
+  - teams-meeting-ingest.lock
+  - trigger-orchestrator.lock
+  - effect-orchestrator.lock
 agent_sandbox_deployment_status_path: "{{ agent_sandbox_runtime_dir }}/deployment-status.json"
 agent_sandbox_deployment_status_message: "Control plane update in progress."
 agent_sandbox_deployment_status_ttl_seconds: 21600

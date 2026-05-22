@@ -185,6 +185,9 @@ def upsert_ado_proxy_issue_from_remote_payload(
     remote_payload: dict[str, Any],
     project: str | None = None,
     organization_url: str | None = None,
+    yaml_output_dir: Path | None = None,
+    repo_source: str | None = None,
+    source: str = "proxy_azure_devops",
     now: datetime | None = None,
 ) -> LocalIssueRecord:
     """Create or refresh one local Azure DevOps proxy issue from a remote payload."""
@@ -198,6 +201,8 @@ def upsert_ado_proxy_issue_from_remote_payload(
         remote_payload.get("organization_url")
     )
     now = _utc(now) or datetime.now(UTC)
+    normalized_repo_source = _optional_text(repo_source)
+    normalized_source = _optional_text(source) or "proxy_azure_devops"
     store = JsonStore(runtime_dir / "local-issues.json", LocalIssueRecord)
     deleted_proxy_yaml_paths: list[Path] = []
 
@@ -218,22 +223,23 @@ def upsert_ado_proxy_issue_from_remote_payload(
                 organization_url=normalized_organization_url,
                 project=normalized_project,
             )
+            yaml_path = _proxy_issue_yaml_path(
+                runtime_dir=runtime_dir,
+                issue_id=issue_id,
+                work_item_id=work_item_id,
+                yaml_output_dir=yaml_output_dir,
+            )
             issue = LocalIssueRecord(
                 issue_id=issue_id,
                 issue_number=work_item_id,
                 title=str(remote_payload.get("title") or f"ADO work item {work_item_id}"),
                 body=str(remote_payload.get("description") or ""),
                 description=str(remote_payload.get("description") or ""),
-                yaml_path=str(
-                    _proxy_issue_yaml_path(
-                        runtime_dir=runtime_dir,
-                        issue_id=issue_id,
-                        work_item_id=work_item_id,
-                    )
-                ),
+                yaml_path=str(yaml_path),
                 directory_path=normalized_directory_path,
+                repo_source=normalized_repo_source,
                 source_type="remote_proxy",
-                source="proxy_azure_devops",
+                source=normalized_source,
                 state=_optional_text(remote_payload.get("state")),
                 url=_optional_text(remote_payload.get("url")),
                 created_at=now,
@@ -243,9 +249,20 @@ def upsert_ado_proxy_issue_from_remote_payload(
         else:
             issue.directory_path = normalized_directory_path
 
-        if issue.source_type == "remote_proxy" or issue.source == "proxy_azure_devops":
+        if _is_generated_ado_proxy_issue(issue):
             issue.source_type = "remote_proxy"
-            issue.source = "proxy_azure_devops"
+            issue.source = normalized_source
+            if yaml_output_dir is not None:
+                issue.yaml_path = str(
+                    _proxy_issue_yaml_path(
+                        runtime_dir=runtime_dir,
+                        issue_id=issue.issue_id,
+                        work_item_id=work_item_id,
+                        yaml_output_dir=yaml_output_dir,
+                    )
+                )
+        if normalized_repo_source is not None:
+            issue.repo_source = normalized_repo_source
         issue.remote_reference = _updated_remote_reference(
             issue.remote_reference,
             work_item_id=work_item_id,
@@ -255,6 +272,7 @@ def upsert_ado_proxy_issue_from_remote_payload(
             now=now,
         )
         issue.metadata = dict(issue.metadata)
+        _preserve_proxy_yaml_metadata(issue)
         issue.metadata["remote"] = {
             "provider": "azure_devops",
             "organization": normalized_organization_url or "",
@@ -513,7 +531,15 @@ def _scoped_proxy_issue_id(
     return "::".join(parts)
 
 
-def _proxy_issue_yaml_path(*, runtime_dir: Path, issue_id: str, work_item_id: str) -> Path:
+def _proxy_issue_yaml_path(
+    *,
+    runtime_dir: Path,
+    issue_id: str,
+    work_item_id: str,
+    yaml_output_dir: Path | None = None,
+) -> Path:
+    if yaml_output_dir is not None:
+        return yaml_output_dir / f"work-item-{work_item_id}.yaml"
     digest = sha256(issue_id.encode("utf-8")).hexdigest()[:12]
     return runtime_dir / "issues" / f"proxy-azure-devops-{work_item_id}-{digest}.yaml"
 
@@ -527,7 +553,11 @@ def _updated_remote_reference(
     remote_payload: dict[str, Any],
     now: datetime,
 ) -> RemoteIssueReference:
-    updated_at = _parse_dt(remote_payload.get("updated_at") or remote_payload.get("changed_at"))
+    updated_at = _parse_dt(
+        remote_payload.get("updated_at")
+        or remote_payload.get("changed_at")
+        or remote_payload.get("updated_date")
+    )
     state = _optional_text(remote_payload.get("state"))
     url = _optional_text(remote_payload.get("url"))
     if existing is None:
@@ -603,7 +633,11 @@ def _refresh_issue_from_summary(
             issue.comments = comments
             changed = True
 
-    updated_at = _parse_dt(remote_payload.get("updated_at") or remote_payload.get("changed_at"))
+    updated_at = _parse_dt(
+        remote_payload.get("updated_at")
+        or remote_payload.get("changed_at")
+        or remote_payload.get("updated_date")
+    )
     remote = issue.remote_reference
     if remote is not None:
         remote.last_synced_at = now
@@ -659,6 +693,32 @@ def _normalize_tags(value: object) -> list[str]:
     return [str(tag).strip() for tag in raw_items if str(tag).strip()]
 
 
+def _preserve_proxy_yaml_metadata(issue: LocalIssueRecord) -> None:
+    yaml_path = Path(issue.yaml_path)
+    if not yaml_path.exists():
+        return
+    try:
+        loaded = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if not isinstance(loaded, dict):
+        return
+    yaml_steps = loaded.get("steps")
+    if (
+        "steps" not in issue.metadata
+        and isinstance(yaml_steps, list)
+        and all(isinstance(step, str) for step in yaml_steps)
+    ):
+        issue.metadata["steps"] = list(yaml_steps)
+    yaml_plan_summary = loaded.get("plan_summary")
+    if (
+        "plan_summary" not in issue.metadata
+        and isinstance(yaml_plan_summary, str)
+        and yaml_plan_summary.strip()
+    ):
+        issue.metadata["plan_summary"] = yaml_plan_summary
+
+
 def _write_proxy_issue_yaml(issue: LocalIssueRecord) -> None:
     path = Path(issue.yaml_path)
     _atomic_write_yaml(path, _build_proxy_issue_yaml_payload(issue))
@@ -696,6 +756,7 @@ def _build_proxy_issue_yaml_payload(issue: LocalIssueRecord) -> dict[str, Any]:
         "url": work_item_url,
         "comments": [dict(comment) for comment in issue.comments],
         "directory_path": issue.directory_path,
+        "repo_source": issue.repo_source,
         "remote_reference": remote.model_dump(mode="json") if remote is not None else None,
         "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
