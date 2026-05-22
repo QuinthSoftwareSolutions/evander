@@ -690,6 +690,88 @@ def test_list_issues_exposes_rejection_reason_from_metadata(
     ]
 
 
+def test_list_issues_treats_rejected_closed_and_completed_as_union(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.LIST_ISSUES],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    class StubAdminService:
+        def __init__(self, _runtime_dir: Path) -> None:
+            pass
+
+        def list_local_issues(
+            self,
+            *,
+            directory_path: str | None = None,
+            direct_only: bool = False,
+        ) -> list[LocalIssueRecord]:
+            return [
+                LocalIssueRecord(
+                    issue_number="1",
+                    issue_id="local-1",
+                    title="Rejected issue",
+                    body="",
+                    yaml_path="runtime/issues/issue-1.yaml",
+                    directory_path=directory_path or "root/team-a",
+                    state="Closed",
+                    metadata={"fields": {"Reason": "Out of scope"}},
+                ),
+                LocalIssueRecord(
+                    issue_number="2",
+                    issue_id="local-2",
+                    title="Closed issue",
+                    body="",
+                    yaml_path="runtime/issues/issue-2.yaml",
+                    directory_path=directory_path or "root/team-a",
+                    state="Closed",
+                ),
+                LocalIssueRecord(
+                    issue_number="3",
+                    issue_id="local-3",
+                    title="Completed issue",
+                    body="",
+                    yaml_path="runtime/issues/issue-3.yaml",
+                    directory_path=directory_path or "root/team-a",
+                    state="Completed",
+                ),
+                LocalIssueRecord(
+                    issue_number="4",
+                    issue_id="local-4",
+                    title="In progress issue",
+                    body="",
+                    yaml_path="runtime/issues/issue-4.yaml",
+                    directory_path=directory_path or "root/team-a",
+                    state="In Progress",
+                ),
+            ]
+
+    monkeypatch.setattr("agent_sandbox.gateway.AdminService", StubAdminService)
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "list_issues",
+        {
+            "session_id": "session-1",
+            "status": [" Rejected ", "Closed", "Completed"],
+        },
+    )
+
+    issue_numbers = [entry["issue_number"] for entry in result["issues"]]
+    assert issue_numbers == ["1", "2", "3"]
+    assert issue_numbers.count("1") == 1
+    assert "4" not in issue_numbers
+
+
 def test_get_issue_passes_through_backend_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

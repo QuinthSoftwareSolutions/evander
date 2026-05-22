@@ -123,6 +123,7 @@ from agent_sandbox.models import (
     ListUnreadFeedbackRequest,
     MakePhoneCallRequest,
     MakePhoneCallResponse,
+    LocalIssueRecord,
     PendingAgentPrompt,
     PostPrCommentRequest,
     PostPrFeedbackReplyRequest,
@@ -555,6 +556,17 @@ def _normalize_issue_status_filters(statuses: list[str] | None) -> set[str]:
     if not normalized:
         return {"closed", "completed"}
     return normalized
+
+
+def _issue_has_rejection_reason(issue: LocalIssueRecord) -> bool:
+    return bool(str(issue.rejection_reason or "").strip())
+
+
+def _issue_matches_requested_status(issue: LocalIssueRecord, status_filter: set[str]) -> bool:
+    issue_state = str(issue.state or "").strip().lower()
+    if issue_state in status_filter:
+        return True
+    return "rejected" in status_filter and _issue_has_rejection_reason(issue)
 
 
 def _issue_kind_for_role(role: str | None) -> str | None:
@@ -3494,9 +3506,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
             if status:
                 filtered = [
-                    issue
-                    for issue in issues
-                    if str(issue.state or "").strip().lower() in status_filter
+                    issue for issue in issues if _issue_matches_requested_status(issue, status_filter)
                 ]
             else:
                 filtered = [

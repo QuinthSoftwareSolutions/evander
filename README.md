@@ -790,6 +790,8 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
 ## Issue Tooling
 
 - Use `list_issues` to browse issues in the current directory scope and avoid duplicating work.
+- Pass `status=["Rejected"]` to `list_issues` when duplicate checks need rejected local issues;
+  this virtual status returns closed local issues that expose a non-empty `rejection_reason`.
 - Use `get_issue` once you already know an issue number or canonical issue ID. It returns the
   current issue record directly, regardless of state, and is the preferred MCP path for agents to
   inspect rejected, approved, committed, or completed issues without depending on list filters.
