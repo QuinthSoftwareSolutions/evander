@@ -216,6 +216,7 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
         assert.equal(body.communication_file_receive_enabled, false);
         assert.equal(body.communication_file_send_enabled, false);
         assert.equal(body.communication_file_require_approval_for_send, false);
+        assert.deepEqual(body.metadata, {});
         sessionRecord.approval_required_tools = body.approval_required_tools;
         await route.fulfill(jsonResponse({ action: "updated", message: "Updated session policy.", session: sessionRecord }));
         return;
@@ -251,6 +252,8 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
     waitUntil: "domcontentloaded",
   });
 
+  const fieldDescription = (labelText) => page.locator("label.field-stack").filter({ hasText: labelText });
+
   const navEntry = page
     .locator('nav[aria-label="Admin sections"] .admin-shell-tab')
     .filter({ hasText: "Sessions" });
@@ -262,6 +265,60 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   assert.equal(await page.getByRole("combobox", { name: "State" }).inputValue(), "active");
   await assert.doesNotReject(() => page.locator(".session-list-item.selected").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".session-list-item.selected").getByText("session-1").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() =>
+    fieldDescription("Allowed scripts")
+      .getByText("One script name per line or comma-separated values.")
+      .waitFor({ state: "visible" }),
+  );
+  await assert.doesNotReject(() =>
+    fieldDescription("Allowed scripts")
+      .getByText("duplicates are ignored.")
+      .waitFor({ state: "visible" }),
+  );
+  await assert.doesNotReject(() =>
+    fieldDescription("Communication file max bytes")
+      .getByText("Size in bytes. Enter a non-negative whole number; blank keeps no explicit session value and")
+      .waitFor({ state: "visible" }),
+  );
+  await assert.doesNotReject(() =>
+    fieldDescription("Communication file max bytes")
+      .getByText("falls back to the effective policy. 0 allows only zero-byte files.")
+      .waitFor({ state: "visible" }),
+  );
+  await assert.doesNotReject(() =>
+    fieldDescription("Allowed MIME types")
+      .getByText("One MIME type per line or comma-separated values, for example")
+      .waitFor({ state: "visible" }),
+  );
+  await assert.doesNotReject(() => fieldDescription("Allowed MIME types").getByText("text/plain").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => fieldDescription("Allowed MIME types").getByText("application/pdf").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() =>
+    fieldDescription("Allowed extensions")
+      .getByText("One suffix per line or comma-separated values, for example")
+      .waitFor({ state: "visible" }),
+  );
+  await assert.doesNotReject(() => fieldDescription("Allowed extensions").getByText(".txt").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => fieldDescription("Allowed extensions").getByText(".pdf").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() =>
+    fieldDescription("Blocked extensions")
+      .getByText("always denied, even if an allowlist is broader.")
+      .waitFor({ state: "visible" }),
+  );
+  await assert.doesNotReject(() =>
+    fieldDescription("Metadata JSON")
+      .getByText("Must be a JSON object, for example")
+      .waitFor({ state: "visible" }),
+  );
+  await assert.doesNotReject(() => fieldDescription("Metadata JSON").getByText('{ "ticket": "INC-123" }').waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => fieldDescription("Metadata JSON").getByText("Blank saves").waitFor({ state: "visible" }));
+  await assert.doesNotReject(() =>
+    fieldDescription("Metadata JSON").locator("p.field-description").getByText("{}").waitFor({ state: "visible" }),
+  );
+  await assert.doesNotReject(() =>
+    fieldDescription("Metadata JSON")
+      .getByText("Arrays, strings, numbers, and malformed JSON are rejected before the API call.")
+      .waitFor({ state: "visible" }),
+  );
   await page.locator(".session-tool-group-summary").filter({ hasText: "Agent control" }).click();
   const promptAgentGroup = page.locator("details.session-tool-group[open]").filter({ hasText: "Agent control" });
   const promptAgentRow = promptAgentGroup.locator(".session-tool-row").filter({ hasText: "Prompt agent" });
@@ -274,6 +331,16 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   assert.equal(await allowedTool.isChecked(), true);
   assert.equal(await approvalGate.isChecked(), true);
   assert.equal(await approvalGate.isDisabled(), false);
+
+  const metadataJson = page.getByLabel("Metadata JSON");
+  const policyBodiesBeforeInvalidSave = policyBodies.length;
+  await metadataJson.fill("{bad");
+  await saveButton.evaluate((button) => button.click());
+  await assert.doesNotReject(() =>
+    page.locator(".callout.error-callout").filter({ hasText: "Metadata must be valid JSON." }).waitFor({ state: "visible" }),
+  );
+  assert.equal(policyBodies.length, policyBodiesBeforeInvalidSave);
+  await metadataJson.fill("{}");
 
   await allowedTool.uncheck();
   await page.waitForFunction(() => {
@@ -289,7 +356,7 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
   assert.equal(await approvalGate.isChecked(), false);
   assert.equal(await approvalGate.isDisabled(), true);
 
-  await saveButton.click();
+  await saveButton.evaluate((button) => button.click());
   await assert.doesNotReject(() => page.locator(".session-tools-panel .success-box").first().waitFor({ state: "visible" }));
 
   assert.equal(await page.evaluate(() => window.location.hash), "#sessions?session_id=session-1");
