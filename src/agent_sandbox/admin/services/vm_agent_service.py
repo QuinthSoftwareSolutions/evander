@@ -1582,12 +1582,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                 manifest
             )
             directory_path = manifest.directory_path
-            stored_resume_thread_id = (
-                str(manifest.metadata.get("agent_thread_id") or "").strip() or None
-            )
-            effective_resume_thread_id = (
-                str(resume_thread_id or "").strip() or stored_resume_thread_id
-            )
+            effective_resume_thread_id = str(resume_thread_id or "").strip() or None
             if _is_synthetic_chat_assistant_thread_id(effective_resume_thread_id):
                 effective_resume_thread_id = None
         except ValueError as exc:

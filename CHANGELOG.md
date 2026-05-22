@@ -11,6 +11,12 @@ material. Newer entries are added incrementally as changes land.
   default, with a skip/mark-complete path that removes the first-run highlight
   without launching the sample.
 
+## 2026-05-22 - Explicit Agent Resume Threads
+
+- Stopped agent resume calls from implicitly falling back to stored
+  `agent_thread_id` metadata, and made PR-feedback queries prefer configured
+  Azure DevOps projects over repo-slug inference.
+
 ## 2026-05-22 - Ansible Service Lock Ownership Repair
 
 - Made the control-plane Ansible runtime bootstrap repair ownership of managed

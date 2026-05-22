@@ -95,10 +95,11 @@ class PullRequestFeedbackQueryProvider(QueryProviderBase):
         resolved_organization_url = organization_url or self._normalize_optional_string(
             getattr(config, "azure_devops_organization_url", None)
         )
+        configured_project = self._normalize_optional_string(
+            getattr(config, "azure_devops_project", None)
+        )
         resolved_project = (
-            project
-            or self._project_from_composite_repo(repo)
-            or self._normalize_optional_string(getattr(config, "azure_devops_project", None))
+            project or configured_project or self._project_from_composite_repo(repo)
         )
         if not resolved_organization_url:
             raise ValueError(f"{self.NODE_TYPE} requires organization_url for Azure DevOps")
@@ -157,8 +158,10 @@ class PullRequestFeedbackQueryProvider(QueryProviderBase):
 
     @staticmethod
     def _project_from_composite_repo(repo: str) -> str | None:
+        if "://" in repo or repo.startswith("git@"):
+            return None
         parts = [part.strip() for part in repo.split("/") if part.strip()]
-        if len(parts) >= 3:
+        if len(parts) == 3:
             return parts[-2]
         return None
 

@@ -3057,6 +3057,88 @@ def test_agent_enqueue_prompt_dispatch_reads_and_updates_resume_thread_metadata_
     )
 
 
+def test_agent_enqueue_prompt_dispatch_does_not_fallback_to_default_thread_for_new_key(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-1",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(timezone.utc),
+            metadata={
+                "agent_thread_id": "thread-default",
+                "agent_thread_ids": {
+                    "teams:chat-1:agent_thread_id": "thread-existing",
+                },
+            },
+        )
+    )
+    queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="teams:chat-2:msg-1",
+            target="session-1",
+            vm_name="vm-1",
+            session_id="session-1",
+            prompt="hello",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            resume_thread_metadata_key="teams:chat-2:agent_thread_id",
+            effect_id="effect-1",
+        )
+    )
+    execution_store = JsonExecutionStore(runtime_dir / "effect-orchestrator-executions.json")
+    resume_calls: list[dict[str, object]] = []
+    worker = SimpleNamespace(
+        queued_agent_prompt_store=queue_store,
+        agent_run_status_port=_AgentRunStatusPortStub(
+            [
+                VmSummary(
+                    vm_name="vm-1",
+                    libvirt_state="running",
+                    agent_state="idle",
+                    session_ids=["session-1"],
+                )
+            ]
+        ),
+        agent_prompt_dispatch_port=_AgentPromptDispatchPortStub(
+            resume_calls,
+            type("Result", (), {"success": True, "thread_id": "thread-new-key"})(),
+        ),
+        execution_store=execution_store,
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+        _build_execution_graph=lambda: SimpleNamespace(
+            effects_by_id={
+                "effect-1": SimpleNamespace(type="effect:agent:enqueue-prompt"),
+            }
+        ),
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: None,
+        _update_event_delivery_state=lambda event_id: None,
+    )
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
+
+    assert dispatched == 1
+    assert resume_calls[0]["resume_thread_id"] is None
+    assert resume_calls[0]["persist_thread_id"] is False
+    updated = session_repository.get_session("session-1")
+    assert updated is not None
+    assert updated.metadata["agent_thread_id"] == "thread-default"
+    assert updated.metadata["agent_thread_ids"] == {
+        "teams:chat-1:agent_thread_id": "thread-existing",
+        "teams:chat-2:agent_thread_id": "thread-new-key",
+    }
+
+
 def test_agent_enqueue_prompt_dispatch_serializes_distinct_queue_keys_for_same_session(
     tmp_path: Path,
 ) -> None:

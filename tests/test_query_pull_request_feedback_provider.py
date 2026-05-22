@@ -111,7 +111,7 @@ def test_pull_request_feedback_query_fetches_ado_feedback_with_cursor(
 
     assert captured["init"] == {
         "organization_url": "https://dev.azure.com/example",
-        "project": "project",
+        "project": "Default Project",
         "pat": "secret",
         "pat_env_name": "TEAM_ADO_PAT",
     }
@@ -119,7 +119,7 @@ def test_pull_request_feedback_query_fetches_ado_feedback_with_cursor(
     assert captured["poll"]["pr_id"] == "17"
     assert captured["poll"]["cursor"] == "2026-05-22T08:00:00Z"
     assert output["provider"] == "azure_devops"
-    assert output["project"] == "project"
+    assert output["project"] == "Default Project"
     assert output["count"] == 1
     assert output["feedback"][0]["feedback_id"] == "azure_devops:thread_comment:10:1"
     assert output["next_cursor"] == "2026-05-22T09:00:00Z"
@@ -168,6 +168,90 @@ def test_pull_request_feedback_query_uses_explicit_ado_project(
     assert captured["init"]["project"] == "Explicit Project"
     assert output["project"] == "Explicit Project"
     assert output["next_cursor"] == "2026-05-22T08:00:00Z"
+
+
+def test_pull_request_feedback_query_prefers_configured_project_for_ado_clone_url(
+    tmp_path: Path, monkeypatch
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class StubAdapter:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["init"] = kwargs
+
+        def poll(self, **kwargs: Any) -> ProviderPollResult:
+            return ProviderPollResult(feedback=[], next_cursor=None)
+
+    monkeypatch.setattr(
+        "agent_sandbox.queries.providers.pull_request_feedback.AzureDevOpsFeedbackAdapter",
+        StubAdapter,
+    )
+    resolver = _Resolver(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            azure_devops_organization_url="https://dev.azure.com/example",
+            azure_devops_project="Configured Project",
+            azure_devops_pr_pat_env="TEAM_ADO_PAT",
+        )
+    )
+
+    output = _execute(
+        PullRequestFeedbackQueryDefinition(
+            id="query-feedback-clone-url",
+            display_name="Feedback",
+            type="query:pull-request:feedback",
+            provider="azure_devops",
+            repo="https://dev.azure.com/org/Project/_git/Repo",
+            pr_id="18",
+        ),
+        resolver=resolver,
+        env={"TEAM_ADO_PAT": "secret"},
+    )
+
+    assert captured["init"]["project"] == "Configured Project"
+    assert output["project"] == "Configured Project"
+
+
+def test_pull_request_feedback_query_infers_ado_project_from_shorthand_without_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class StubAdapter:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["init"] = kwargs
+
+        def poll(self, **kwargs: Any) -> ProviderPollResult:
+            return ProviderPollResult(feedback=[], next_cursor=None)
+
+    monkeypatch.setattr(
+        "agent_sandbox.queries.providers.pull_request_feedback.AzureDevOpsFeedbackAdapter",
+        StubAdapter,
+    )
+    resolver = _Resolver(
+        GatewayConfig(
+            runtime_dir=tmp_path,
+            azure_devops_organization_url="https://dev.azure.com/example",
+            azure_devops_project="",
+            azure_devops_pr_pat_env="TEAM_ADO_PAT",
+        )
+    )
+
+    output = _execute(
+        PullRequestFeedbackQueryDefinition(
+            id="query-feedback-shorthand",
+            display_name="Feedback",
+            type="query:pull-request:feedback",
+            provider="azure_devops",
+            repo="org/Shorthand Project/Repo",
+            pr_id="18",
+        ),
+        resolver=resolver,
+        env={"TEAM_ADO_PAT": "secret"},
+    )
+
+    assert captured["init"]["project"] == "Shorthand Project"
+    assert output["project"] == "Shorthand Project"
 
 
 def test_pull_request_feedback_query_resolves_github_token(tmp_path: Path, monkeypatch) -> None:

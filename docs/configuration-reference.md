@@ -401,8 +401,8 @@ descendants. `active_only=true` or `state=active` excludes expired sessions.
 `azure-devops`, or `ado`. `query:pull-request:feedback` fetches normalized
 feedback for one provider/repo/PR stream and returns `feedback` plus
 `next_cursor`; workflows own where that cursor is stored. For Azure DevOps,
-`project` can be explicit, derived from a composite repo slug such as
-`organization/project/repo`, or read from directory provider config.
+`project` can be explicit, read from directory provider config, or derived from
+a composite repo slug such as `organization/project/repo`.
 
 Azure DevOps PR tag filters are applied client-side after the PR list call. The
 `tags` filter accepts tag names with case-insensitive `and`, `or`, `not`, and
