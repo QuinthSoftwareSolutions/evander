@@ -200,7 +200,7 @@ def build_effect_worker_store_wiring(
         )
     lock_path = _resolve_worker_path(
         worker_config,
-        "gate_lock_path",
+        "effect_lock_path",
         fallback=worker_config.effect_lock_path
         or (worker_config.runtime_dir / "effect-orchestrator.lock"),
     )
