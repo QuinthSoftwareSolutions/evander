@@ -93,6 +93,7 @@ from agent_sandbox.session_artifacts import (
     DEFAULT_AGENT_ARTIFACTS_DIR,
     normalize_artifact_relative_path,
 )
+from agent_sandbox.services import parse_teams_target
 from agent_sandbox.repositories.skills_library import (
     SkillLibraryEntry,
     SkillLibraryMetadata,
@@ -1148,6 +1149,8 @@ class WorkflowRunResumePayload(BaseModel):
 class WorkflowEditorFieldOption(BaseModel):
     value: str
     label: str
+    description: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    metadata: dict[str, Any] = Field(default_factory=dict, exclude_if=lambda value: not value)
 
 
 class WorkflowEditorFieldDefinition(BaseModel):
@@ -1366,8 +1369,129 @@ def _is_system_managed_workflow_node_id(node_id: str) -> bool:
     return str(node_id or "").strip() in _SYSTEM_MANAGED_WORKFLOW_NODE_IDS
 
 
-def _field_option(value: str, label: str | None = None) -> WorkflowEditorFieldOption:
-    return WorkflowEditorFieldOption(value=value, label=label or value)
+def _field_option(
+    value: str,
+    label: str | None = None,
+    *,
+    description: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> WorkflowEditorFieldOption:
+    return WorkflowEditorFieldOption(
+        value=value,
+        label=label or value,
+        description=description,
+        metadata=metadata or {},
+    )
+
+
+def _communication_target_capabilities(target: dict[str, Any]) -> list[str]:
+    policy = target.get("policy")
+    raw_capabilities = policy.get("capabilities") if isinstance(policy, dict) else []
+    if not isinstance(raw_capabilities, list):
+        return []
+    capabilities = {
+        str(capability).strip()
+        for capability in raw_capabilities
+        if str(capability).strip()
+    }
+    return sorted(capabilities)
+
+
+def _communication_target_shape(target: dict[str, Any]) -> str | None:
+    provider = str(target.get("provider") or "").strip()
+    address = str(target.get("address") or "").strip()
+    if provider == "teams" and address:
+        parsed_target = parse_teams_target(address)
+        return f"teams_{parsed_target.kind}"
+    if provider == "discord" and address:
+        return "discord_channel"
+    if provider == "email" and address:
+        return "email_recipient"
+    return None
+
+
+def _communication_target_option_metadata(
+    target: dict[str, Any], *, purpose: str
+) -> dict[str, Any] | None:
+    target_id = str(target.get("id") or "").strip()
+    provider = str(target.get("provider") or "").strip()
+    address = str(target.get("address") or "").strip()
+    if not target_id or not provider or not address:
+        return None
+
+    capabilities = _communication_target_capabilities(target)
+    target_shape = _communication_target_shape(target)
+    if target_shape is None:
+        return None
+
+    metadata: dict[str, Any] = {
+        "provider": provider,
+        "address": address,
+        "target_shape": target_shape,
+        "policy_capabilities": capabilities,
+    }
+    if provider == "teams":
+        parsed_target = parse_teams_target(address)
+        metadata["teams_target_kind"] = parsed_target.kind
+        metadata["teams_target_normalized"] = parsed_target.normalized
+    if purpose == "send-message":
+        metadata["thread_id"] = {
+            "top_level": {
+                "supported": "write" in capabilities,
+                "requires_capability": "write",
+            },
+            "reply": {
+                "supported": provider == "teams"
+                and target_shape == "teams_channel"
+                and "reply" in capabilities,
+                "requires_capability": "reply",
+                "supported_target_shapes": ["teams_channel"],
+                "unsupported_target_shapes": [
+                    "teams_chat",
+                    "teams_user",
+                    "discord_channel",
+                    "email_recipient",
+                ],
+            },
+        }
+    elif purpose == "notification":
+        metadata["thread_id"] = {
+            "top_level": {
+                "supported": "notify" in capabilities,
+                "requires_capability": "notify",
+            },
+            "reply_hint": {
+                "supported": provider == "teams" and target_shape == "teams_channel",
+                "supported_target_shapes": ["teams_channel"],
+                "unsupported_target_shapes": [
+                    "teams_chat",
+                    "teams_user",
+                    "discord_channel",
+                    "email_recipient",
+                ],
+            },
+        }
+    else:
+        return None
+    return metadata
+
+
+def _communication_target_option(
+    target: dict[str, Any], *, purpose: str
+) -> WorkflowEditorFieldOption | None:
+    target_id = str(target.get("id") or "").strip()
+    provider = str(target.get("provider") or "").strip()
+    metadata = _communication_target_option_metadata(target, purpose=purpose)
+    if not target_id or not provider or metadata is None:
+        return None
+
+    capabilities = metadata["policy_capabilities"]
+    capability_suffix = f", {', '.join(capabilities)}" if capabilities else ""
+    return _field_option(
+        target_id,
+        f"{target_id} ({provider}{capability_suffix})",
+        metadata=metadata,
+    )
 
 
 def _tool_field_options() -> list[WorkflowEditorFieldOption]:
@@ -1492,9 +1616,11 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     ),
     "effect:event:emit": "Emit an internal workflow event for other graphs.",
     "effect:communication:send-message": (
-        "Send a message through a configured communication target."
+        "Send a message through a directory-scoped communication target."
     ),
-    "effect:notification:send": "Send a notification through a configured communication target.",
+    "effect:notification:send": (
+        "Send a notification through a directory-scoped communication target."
+    ),
     "effect:session:update-metadata": "Patch metadata on a host-side session record.",
     "effect:session:approve-mcp-tools-for-run": (
         "Approve MCP tools for one agent session during the current workflow run."
@@ -2952,9 +3078,29 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="effect:communication:send-message",
         label="Send message",
         fields=[
-            _field("communication_target_id", "Communication target", "enum", required=True),
+            _field(
+                "communication_target_id",
+                "Communication target",
+                "enum",
+                required=True,
+                description=(
+                    "Directory-scoped target used to send a message. Teams channel, chat, "
+                    "or user targets need write or reply capability; Discord targets need "
+                    "write capability."
+                ),
+            ),
             _field("message", "Message", "string", required=True, bindable=True, multiline=True),
-            _field("thread_id", "Thread ID", "string", bindable=True),
+            _field(
+                "thread_id",
+                "Thread ID",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional Teams channel reply ID. Leave blank for a top-level send. "
+                    "Teams chat and user targets, and Discord targets, do not support "
+                    "thread replies."
+                ),
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -2962,7 +3108,16 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="effect:notification:send",
         label="Send notification",
         fields=[
-            _field("communication_target_id", "Communication target ID", "string", required=True),
+            _field(
+                "communication_target_id",
+                "Communication target ID",
+                "string",
+                required=True,
+                description=(
+                    "Directory-scoped target used to send a notification. Teams, Discord, "
+                    "and email targets need notify capability."
+                ),
+            ),
             _field("message", "Message", "string", required=True, bindable=True, multiline=True),
             _field(
                 "severity",
@@ -2976,7 +3131,17 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 ],
             ),
             _field("subject", "Subject", "string", bindable=True),
-            _field("thread_id", "Thread ID", "string", bindable=True),
+            _field(
+                "thread_id",
+                "Thread ID",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional Teams channel reply hint. Leave blank for a top-level "
+                    "notification. Teams chat and user targets reject thread replies at "
+                    "runtime, and Discord or email targets are not thread destinations."
+                ),
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -11144,8 +11309,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             revision=revision,
         )
 
-    def _communication_send_target_options(
-        self, directory_path: str | None
+    def _communication_target_options(
+        self, directory_path: str | None, *, purpose: str
     ) -> list[WorkflowEditorFieldOption]:
         normalized_directory = self._normalize_directory_reference(directory_path)
         result = self.directory_admin.compute_effective_config(
@@ -11166,27 +11331,36 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         for target in targets:
             if not isinstance(target, dict):
                 continue
-            target_id = str(target.get("id") or "").strip()
             provider = str(target.get("provider") or "").strip()
-            policy = target.get("policy")
-            raw_capabilities = policy.get("capabilities") if isinstance(policy, dict) else []
-            capabilities = {
-                str(capability).strip()
-                for capability in raw_capabilities
-                if str(capability).strip()
-            } if isinstance(raw_capabilities, list) else set()
-            send_capabilities = sorted(capabilities.intersection({"write", "reply"}))
-            if not target_id or provider not in {"teams", "discord"}:
+            capabilities = set(_communication_target_capabilities(target))
+            if purpose == "send-message":
+                if provider == "teams" and not capabilities.intersection({"write", "reply"}):
+                    continue
+                if provider == "discord" and "write" not in capabilities:
+                    continue
+                if provider not in {"teams", "discord"}:
+                    continue
+            elif purpose == "notification":
+                if provider not in {"teams", "discord", "email"}:
+                    continue
+                if "notify" not in capabilities:
+                    continue
+            else:
                 continue
-            if provider == "discord" and "write" not in capabilities:
-                continue
-            if provider == "teams" and not send_capabilities:
-                continue
-            capability_suffix = f", {', '.join(send_capabilities)}" if send_capabilities else ""
-            options.append(
-                _field_option(target_id, f"{target_id} ({provider}{capability_suffix})")
-            )
+            option = _communication_target_option(target, purpose=purpose)
+            if option is not None:
+                options.append(option)
         return options
+
+    def _communication_send_target_options(
+        self, directory_path: str | None
+    ) -> list[WorkflowEditorFieldOption]:
+        return self._communication_target_options(directory_path, purpose="send-message")
+
+    def _communication_notification_target_options(
+        self, directory_path: str | None
+    ) -> list[WorkflowEditorFieldOption]:
+        return self._communication_target_options(directory_path, purpose="notification")
 
     def _read_workflow_editor_catalog(
         self, directory_path: str | None = None
@@ -11195,6 +11369,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         tool_options = _tool_field_options()
         communication_send_target_options = self._communication_send_target_options(
             directory_path
+        )
+        communication_notification_target_options = (
+            self._communication_notification_target_options(directory_path)
         )
         nodes: list[WorkflowEditorNodeCatalogEntry] = []
         for entry in _WORKFLOW_EDITOR_NODE_CATALOG:
@@ -11218,6 +11395,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if node.type == "effect:communication:send-message":
                 node.fields = [
                     field.model_copy(update={"options": communication_send_target_options})
+                    if field.key == "communication_target_id"
+                    else field
+                    for field in node.fields
+                ]
+            if node.type == "effect:notification:send":
+                node.fields = [
+                    field.model_copy(update={"options": communication_notification_target_options})
                     if field.key == "communication_target_id"
                     else field
                     for field in node.fields
