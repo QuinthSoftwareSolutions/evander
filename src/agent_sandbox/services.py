@@ -58,23 +58,24 @@ from agent_sandbox.pr_feedback.store import PrFeedbackRepository, PrFeedbackStor
 _LOGGER = logging.getLogger(__name__)
 _IGNORED_FEEDBACK_RETENTION = timedelta(days=90)
 _GRAPH_TEAMS_REACTION_TYPE_BY_VALUE = {
-    "like": "like",
-    "thumbsup": "like",
-    "thumbs_up": "like",
-    "thumbs-up": "like",
-    "heart": "heart",
-    "love": "heart",
-    "laugh": "laugh",
-    "haha": "laugh",
-    "joy": "laugh",
-    "surprised": "surprised",
-    "wow": "surprised",
-    "eyes": "surprised",
-    "sad": "sad",
-    "cry": "sad",
-    "angry": "angry",
-    "mad": "angry",
+    "like": "👍",
+    "thumbsup": "👍",
+    "thumbs_up": "👍",
+    "thumbs-up": "👍",
+    "heart": "❤️",
+    "love": "❤️",
+    "laugh": "😆",
+    "haha": "😆",
+    "joy": "😆",
+    "surprised": "😮",
+    "wow": "😮",
+    "eyes": "👀",
+    "sad": "😢",
+    "cry": "😢",
+    "angry": "😡",
+    "mad": "😡",
 }
+_GRAPH_TEAMS_SUPPORTED_REACTION_ALIASES = ", ".join(_GRAPH_TEAMS_REACTION_TYPE_BY_VALUE)
 _ATTACHMENT_SECRET_KEYS = {
     "authorization",
     "token",
@@ -132,7 +133,13 @@ def _normalize_graph_teams_reaction_type(reaction: str) -> str:
         raise ValueError("Teams reaction must be a non-empty string.")
     if not normalized.isascii():
         return normalized
-    return _GRAPH_TEAMS_REACTION_TYPE_BY_VALUE.get(normalized.casefold(), normalized)
+    graph_reaction_type = _GRAPH_TEAMS_REACTION_TYPE_BY_VALUE.get(normalized.casefold())
+    if graph_reaction_type is not None:
+        return graph_reaction_type
+    raise ValueError(
+        f"Unsupported Teams reaction: {normalized}. Supported aliases include "
+        f"{_GRAPH_TEAMS_SUPPORTED_REACTION_ALIASES}."
+    )
 
 
 def _message_sort_value(value: str) -> tuple[int, int | str]:
