@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-22 - Agent Branch Promotion FETCH_HEAD Fix
+
+- Updated agent branch promotion to fetch into a stable local ref, resolve that
+  ref to a commit, and update the review branch from the resolved SHA so
+  `FETCH_HEAD` no longer causes refresh failures.
+
 ## 2026-05-22 - Unobtrusive Workflow Tutorial
 
 - Collapsed the workflow editor guided sample into a small tutorial launcher by
