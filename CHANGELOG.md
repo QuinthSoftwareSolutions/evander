@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-22 - Ansible Service Lock Ownership Repair
+
+- Made the control-plane Ansible runtime bootstrap repair ownership of managed
+  service lock files before service startup, so stale root-owned wake locks do
+  not keep Discord or scheduled wake workers in restart loops.
+
 ## 2026-05-22 - Workflow-Owned ADO Work-Item Intake
 
 - Added `trigger:ado:work-item-matching` for side-effect-free Azure DevOps

@@ -17,6 +17,17 @@
     - "{{ agent_sandbox_deploy_path }}/config/trigger-orchestrator"
     - "{{ agent_sandbox_runtime_dir }}"
 
+- name: Ensure managed runtime service lock files are owned by the run user
+  ansible.builtin.file:
+    path: "{{ agent_sandbox_runtime_dir }}/{{ item }}"
+    state: touch
+    owner: "{{ agent_sandbox_run_user }}"
+    group: "{{ agent_sandbox_run_user }}"
+    mode: "0644"
+    access_time: preserve
+    modification_time: preserve
+  loop: "{{ agent_sandbox_runtime_service_lock_files }}"
+
 - name: Initialize repo runtime state
   ansible.builtin.command:
     cmd: "./.venv/bin/agent-sandbox-cli init-state --runtime-dir runtime"
