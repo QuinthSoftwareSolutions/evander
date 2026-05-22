@@ -5,6 +5,23 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-22 - Workflow-Owned ADO Work-Item Intake
+
+- Added `trigger:ado:work-item-matching` for side-effect-free Azure DevOps
+  work-item polling on first match and remote changed-date advances.
+- Added `effect:issue:upsert-ado-proxy` to materialize single or batched ADO
+  work items into local proxy issues and `runtime/ado-work-items` YAML.
+- Removed ADO work-item/backlog polling from the live ADO worker loop; it now
+  remains responsible for Azure DevOps PR feedback and completion events.
+
+## 2026-05-22 - Prompt Thread Metadata Collections
+
+- Added keyed agent prompt resume-thread storage under session metadata
+  collections, defaulting to `agent_thread_ids`, with per-effect collection
+  overrides for `effect:agent:prompt` and `effect:agent:enqueue-prompt`.
+- Stopped keyed prompt resume metadata from writing dynamic thread keys at the
+  top level of session metadata.
+
 ## 2026-05-22 - Generic Session Metadata PR Routing
 
 - Added `query:session:list` for generic session metadata matching, directory

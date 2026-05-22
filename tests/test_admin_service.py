@@ -1421,6 +1421,7 @@ def test_run_admin_agent_action_prompt_agent_dispatches_via_enqueue_provider(
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
         resume_mode: str = "new_context",
+        persist_thread_id: bool = True,
         mcp_gateway_url: str | None = None,
     ) -> VmActionResult:
         resume_calls.append(
@@ -1432,6 +1433,7 @@ def test_run_admin_agent_action_prompt_agent_dispatches_via_enqueue_provider(
                 "dispatch_id": dispatch_id,
                 "resume_thread_id": resume_thread_id,
                 "resume_mode": resume_mode,
+                "persist_thread_id": persist_thread_id,
                 "mcp_gateway_url": mcp_gateway_url,
             }
         )
@@ -1524,10 +1526,11 @@ def test_run_admin_agent_action_prompt_agent_returns_queued_when_dispatch_fails_
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
         resume_mode: str = "new_context",
+        persist_thread_id: bool = True,
         mcp_gateway_url: str | None = None,
     ) -> VmActionResult:
         del self, target, prompt, model, vm_user, dispatch_id, resume_thread_id
-        del resume_mode, mcp_gateway_url
+        del resume_mode, persist_thread_id, mcp_gateway_url
         return VmActionResult(
             success=False,
             vm_name="agent-sandbox-receptionist-vm",

@@ -130,6 +130,7 @@ class _AgentPromptDispatchPortStub:
         vm_user: str = "agent",
         dispatch_id: str | None = None,
         resume_thread_id: str | None = None,
+        persist_thread_id: bool = True,
         mcp_gateway_url: str | None = None,
     ) -> object:
         self.resume_calls.append(
@@ -140,6 +141,7 @@ class _AgentPromptDispatchPortStub:
                 "vm_user": vm_user,
                 "dispatch_id": dispatch_id,
                 "resume_thread_id": resume_thread_id,
+                "persist_thread_id": persist_thread_id,
                 "mcp_gateway_url": mcp_gateway_url,
             }
         )
@@ -2980,7 +2982,11 @@ def test_agent_enqueue_prompt_dispatch_reads_and_updates_resume_thread_metadata_
             vm_id="vm-1",
             allowed_tools=[ToolName.GET_AGENT_STATUS],
             expires_at=datetime.now(timezone.utc),
-            metadata={"teams:chat-1:agent_thread_id": "thread-existing"},
+            metadata={
+                "agent_thread_ids": {
+                    "teams:chat-1:agent_thread_id": "thread-existing"
+                }
+            },
         )
     )
     queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
@@ -3035,12 +3041,19 @@ def test_agent_enqueue_prompt_dispatch_reads_and_updates_resume_thread_metadata_
 
     assert dispatched == 1
     assert resume_calls[0]["resume_thread_id"] == "thread-existing"
+    assert resume_calls[0]["persist_thread_id"] is False
     updated = session_repository.get_session("session-1")
     assert updated is not None
-    assert updated.metadata["teams:chat-1:agent_thread_id"] == "thread-updated"
+    assert updated.metadata["agent_thread_ids"]["teams:chat-1:agent_thread_id"] == (
+        "thread-updated"
+    )
+    assert "teams:chat-1:agent_thread_id" not in updated.metadata
     waiting_record = next(iter(execution_store.read_all().values()))
     assert waiting_record.resolved_config["resume_thread_metadata_key"] == (
         "teams:chat-1:agent_thread_id"
+    )
+    assert waiting_record.resolved_config["resume_thread_metadata_collection"] == (
+        "agent_thread_ids"
     )
 
 
@@ -3056,7 +3069,11 @@ def test_agent_enqueue_prompt_dispatch_serializes_distinct_queue_keys_for_same_s
             vm_id="vm-1",
             allowed_tools=[ToolName.GET_AGENT_STATUS],
             expires_at=datetime.now(timezone.utc),
-            metadata={"teams:chat-1:agent_thread_id": "thread-existing"},
+            metadata={
+                "agent_thread_ids": {
+                    "teams:chat-1:agent_thread_id": "thread-existing"
+                }
+            },
         )
     )
     queue_store = AgentPromptQueueStore(runtime_dir / "queued-agent-prompts.json")
@@ -3361,7 +3378,9 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
             metadata={
                 "execution_backend": "container_worker_vm",
                 "target_name": "truman",
-                "teams:chat-1:agent_thread_id": "thread-existing",
+                "agent_thread_ids": {
+                    "teams:chat-1:agent_thread_id": "thread-existing"
+                },
             },
         )
     )
@@ -3437,7 +3456,10 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     assert running_record.outputs["thread_id"] == "thread-existing"
     refreshed_session = session_repository.get_session("session-1")
     assert refreshed_session is not None
-    assert refreshed_session.metadata["teams:chat-1:agent_thread_id"] == "thread-existing"
+    assert refreshed_session.metadata["agent_thread_ids"]["teams:chat-1:agent_thread_id"] == (
+        "thread-existing"
+    )
+    assert "teams:chat-1:agent_thread_id" not in refreshed_session.metadata
 
     backend.status = SimpleNamespace(
         status=ExecutionStatusKind.STOPPED,
@@ -3455,14 +3477,12 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     assert published_events[-1][1]["thread_id"] == "019de31a-8393-71d2-8990-e5f4fb0a4df2"
     refreshed_session = session_repository.get_session("session-1")
     assert refreshed_session is not None
+    assert "agent_thread_id" not in refreshed_session.metadata
     assert (
-        refreshed_session.metadata["agent_thread_id"]
+        refreshed_session.metadata["agent_thread_ids"]["teams:chat-1:agent_thread_id"]
         == "019de31a-8393-71d2-8990-e5f4fb0a4df2"
     )
-    assert (
-        refreshed_session.metadata["teams:chat-1:agent_thread_id"]
-        == "019de31a-8393-71d2-8990-e5f4fb0a4df2"
-    )
+    assert "teams:chat-1:agent_thread_id" not in refreshed_session.metadata
 
 
 def test_agent_prompt_container_reconciliation_times_out_running_job(

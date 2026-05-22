@@ -837,6 +837,7 @@ def test_admin_service_delegates_vm_methods_to_vm_agent_service() -> None:
                 "dispatch_id": "dispatch-1",
                 "resume_thread_id": "thread-1",
                 "resume_mode": "same_context",
+                "persist_thread_id": True,
                 "mcp_gateway_url": None,
             },
         ),
@@ -1131,6 +1132,43 @@ def test_vm_agent_admin_service_resume_agent_updates_session_and_spawns_watcher(
             "directory_path": "root/team",
         }
     ]
+
+
+def test_vm_agent_admin_service_resume_agent_can_skip_thread_id_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = FakeManifest(
+        directory_path="root/team", metadata={"agent_thread_id": "previous-thread"}
+    )
+    sessions = FakeSessionsStore({"session-1": manifest})
+    admin = FakeAdmin(sessions=sessions)
+    service = VmAgentAdminService(_vm_agent_dependencies(admin))
+    service._spawn_agent_completion_watcher = lambda **kwargs: None  # type: ignore[method-assign]
+
+    class Completed:
+        returncode = 0
+        stdout = "thread_id=thread-123\nresume ok\n"
+        stderr = ""
+
+    monkeypatch.setattr(
+        admin_service_module, "_resolve_vm_name_from_target", lambda target, sessions: "vm-1"
+    )
+    monkeypatch.setattr(
+        admin_service_module,
+        "_resolve_session_target",
+        lambda target, sessions: ("session-1", manifest),
+    )
+    monkeypatch.setattr(
+        admin_service_module, "_run_subprocess", lambda *args, **kwargs: Completed()
+    )
+
+    result = service.resume_agent(
+        "target", "Resume now", dispatch_id="dispatch-1", persist_thread_id=False
+    )
+
+    assert result.success is True
+    assert result.thread_id == "thread-123"
+    assert sessions.put_records == []
 
 
 def test_vm_agent_admin_service_create_issue_vm_uses_admin_helpers(

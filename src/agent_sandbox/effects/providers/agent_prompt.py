@@ -36,6 +36,12 @@ from .agent_session import (
     selected_execution_backend_for_target,
 )
 from .base import EffectProviderBase
+from .resume_thread_metadata import (
+    normalize_resume_thread_metadata_collection,
+    resume_thread_id_from_metadata,
+    resume_thread_metadata_key as normalize_resume_thread_metadata_key,
+    resume_thread_metadata_patch,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +80,8 @@ class AgentPromptEffectProvider(EffectProviderBase):
             "model": effect.model,
             "vm_user": effect.vm_user,
             "resume_thread_id": effect.resume_thread_id,
+            "resume_thread_metadata_key": effect.resume_thread_metadata_key,
+            "resume_thread_metadata_collection": effect.resume_thread_metadata_collection,
             "mcp_tool_approval_lease_id": effect.mcp_tool_approval_lease_id,
         }
         if resolved_config:
@@ -86,6 +94,12 @@ class AgentPromptEffectProvider(EffectProviderBase):
 
         dispatch_id = self._make_dispatch_id(effect_id=effect.id)
         resume_thread_id = self._normalize_optional_string(payload.get("resume_thread_id"))
+        resume_thread_metadata_key = self._normalize_optional_string(
+            payload.get("resume_thread_metadata_key")
+        )
+        resume_thread_metadata_collection = normalize_resume_thread_metadata_collection(
+            payload.get("resume_thread_metadata_collection")
+        )
         mcp_tool_approval_lease_id = self._resolve_mcp_tool_approval_lease_id(
             payload=payload,
             execution_context=execution_context,
@@ -100,6 +114,8 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 model=model,
                 dispatch_id=dispatch_id,
                 resume_thread_id=resume_thread_id,
+                resume_thread_metadata_key=resume_thread_metadata_key,
+                resume_thread_metadata_collection=resume_thread_metadata_collection,
                 config=config,
                 workflow_run_id=workflow_run_id,
                 mcp_tool_approval_lease_id=mcp_tool_approval_lease_id,
@@ -109,13 +125,22 @@ class AgentPromptEffectProvider(EffectProviderBase):
 
         if context.agent_resumer is None:
             raise RuntimeError("effect:agent:prompt agent_resumer is not available")
+        effective_resume_thread_id = self._effective_resume_thread_id(
+            resume_thread_id=resume_thread_id,
+            resume_thread_metadata_key=resume_thread_metadata_key,
+            resume_thread_metadata_collection=resume_thread_metadata_collection,
+            target=target,
+            session_id=self._resolve_session_id_if_available(target),
+            session=None,
+        )
         result = context.agent_resumer.resume_agent(
             target=target,
             prompt=prompt,
             model=model,
             vm_user=vm_user,
             dispatch_id=dispatch_id,
-            resume_thread_id=resume_thread_id,
+            resume_thread_id=effective_resume_thread_id,
+            persist_thread_id=resume_thread_metadata_key is None,
             mcp_gateway_url=self._mcp_gateway_url(
                 config=config,
                 target=target,
@@ -137,6 +162,13 @@ class AgentPromptEffectProvider(EffectProviderBase):
                 "effect:agent:prompt did not receive a thread_id from resume_agent "
                 "(success=True, message=<empty-or-missing-thread-id>)"
             )
+        self._persist_resume_thread_metadata_key(
+            target=target,
+            session_id=self._resolve_session_id_if_available(target),
+            resume_thread_metadata_key=resume_thread_metadata_key,
+            resume_thread_metadata_collection=resume_thread_metadata_collection,
+            thread_id=thread_id,
+        )
         return {
             "dispatch_id": dispatch_id,
             "thread_id": thread_id,
@@ -151,6 +183,8 @@ class AgentPromptEffectProvider(EffectProviderBase):
         model: str | None,
         dispatch_id: str,
         resume_thread_id: str | None,
+        resume_thread_metadata_key: str | None,
+        resume_thread_metadata_collection: str,
         config: GatewayConfig,
         workflow_run_id: str | None,
         mcp_tool_approval_lease_id: str | None,
@@ -168,12 +202,20 @@ class AgentPromptEffectProvider(EffectProviderBase):
             fallback_directory_path=session.directory_path if session is not None else None,
         )
         resolved_model = model or getattr(session, "model", None) or "gpt-5.4"
+        effective_resume_thread_id = self._effective_resume_thread_id(
+            resume_thread_id=resume_thread_id,
+            resume_thread_metadata_key=resume_thread_metadata_key,
+            resume_thread_metadata_collection=resume_thread_metadata_collection,
+            target=self._normalize_optional_string(payload.get("target")) or session_id,
+            session_id=session_id,
+            session=session,
+        )
         backend = container_backend(context, effective_config)
         execution_id = safe_effect_execution_id("agent", session_id)
         command = self._container_prompt_command(
             prompt=prompt,
             model=resolved_model,
-            resume_thread_id=resume_thread_id,
+            resume_thread_id=effective_resume_thread_id,
             mcp_gateway_url=self._mcp_gateway_url(
                 config=effective_config,
                 target=session_id,
@@ -199,7 +241,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         )
         return {
             "dispatch_id": dispatch_id,
-            "thread_id": resume_thread_id or dispatch_id,
+            "thread_id": effective_resume_thread_id or dispatch_id,
             "success": True,
             "execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
             "execution_id": handle.execution_id,
@@ -597,10 +639,17 @@ class AgentPromptEffectProvider(EffectProviderBase):
             session_id=session_id,
             thread_id=thread_id,
         )
-        metadata_patch = {"agent_thread_id": thread_id}
         resume_thread_metadata_key = cls._resume_thread_metadata_key_from_record(record)
-        if resume_thread_metadata_key:
-            metadata_patch[resume_thread_metadata_key] = thread_id
+        resume_thread_metadata_collection = (
+            cls._resume_thread_metadata_collection_from_record(record)
+        )
+        metadata_patch = resume_thread_metadata_patch(
+            collection=resume_thread_metadata_collection,
+            key=resume_thread_metadata_key,
+            thread_id=thread_id,
+        )
+        if not metadata_patch:
+            return
         update_fn = getattr(admin_service, "session_update_metadata", None)
         if callable(update_fn):
             try:
@@ -621,9 +670,8 @@ class AgentPromptEffectProvider(EffectProviderBase):
             metadata = getattr(manifest, "metadata", {})
             if not isinstance(metadata, Mapping):
                 metadata = {}
-            updated = manifest.model_copy(
-                update={"metadata": {**dict(metadata), **metadata_patch}}
-            )
+            merged_metadata = cls._deep_merge_metadata(dict(metadata), metadata_patch)
+            updated = manifest.model_copy(update={"metadata": merged_metadata})
             upsert_session(updated)
         except Exception:
             pass
@@ -638,6 +686,30 @@ class AgentPromptEffectProvider(EffectProviderBase):
             if text:
                 return text
         return None
+
+    @staticmethod
+    def _resume_thread_metadata_collection_from_record(record: Any) -> str:
+        for source_name in ("resolved_config", "input_payload", "outputs"):
+            source = getattr(record, source_name, None)
+            if not isinstance(source, Mapping):
+                continue
+            text = str(source.get("resume_thread_metadata_collection") or "").strip()
+            if text:
+                return text
+        return normalize_resume_thread_metadata_collection(None)
+
+    @classmethod
+    def _deep_merge_metadata(
+        cls, base: Mapping[str, Any], update: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        merged = dict(base)
+        for key, value in update.items():
+            existing = merged.get(key)
+            if isinstance(existing, Mapping) and isinstance(value, Mapping):
+                merged[key] = cls._deep_merge_metadata(existing, value)
+                continue
+            merged[key] = value
+        return merged
 
     @classmethod
     def _persist_chat_assistant_mapping_thread_id(
@@ -990,6 +1062,90 @@ class AgentPromptEffectProvider(EffectProviderBase):
         except Exception:
             return {}
 
+    def _resolve_session_id_if_available(self, target: str) -> str | None:
+        sessions = self._read_all_sessions_safe()
+        if target in sessions:
+            return target
+        try:
+            from agent_sandbox.admin.service import _resolve_session_target
+
+            session_id, _session = _resolve_session_target(target, sessions)
+        except Exception:
+            return None
+        return session_id
+
+    def _session_for_metadata_lookup(self, *, target: str, session_id: str | None) -> Any | None:
+        sessions = self._read_all_sessions_safe()
+        if session_id:
+            session = sessions.get(session_id)
+            if session is not None:
+                return session
+        try:
+            from agent_sandbox.admin.service import _resolve_session_target
+
+            _resolved_session_id, session = _resolve_session_target(target, sessions)
+        except Exception:
+            return None
+        return session
+
+    def _effective_resume_thread_id(
+        self,
+        *,
+        resume_thread_id: str | None,
+        resume_thread_metadata_key: str | None,
+        resume_thread_metadata_collection: str,
+        target: str,
+        session_id: str | None,
+        session: Any | None,
+    ) -> str | None:
+        explicit = self._usable_resume_thread_id(resume_thread_id)
+        if explicit:
+            return explicit
+        key = normalize_resume_thread_metadata_key(resume_thread_metadata_key)
+        if not key:
+            return None
+        if session is None:
+            session = self._session_for_metadata_lookup(target=target, session_id=session_id)
+        if session is None:
+            return None
+        metadata = getattr(session, "metadata", {})
+        return self._usable_resume_thread_id(
+            resume_thread_id_from_metadata(
+                metadata,
+                collection=resume_thread_metadata_collection,
+                key=key,
+            )
+        )
+
+    def _persist_resume_thread_metadata_key(
+        self,
+        *,
+        target: str,
+        session_id: str | None,
+        resume_thread_metadata_key: str | None,
+        resume_thread_metadata_collection: str,
+        thread_id: str | None,
+    ) -> None:
+        key = normalize_resume_thread_metadata_key(resume_thread_metadata_key)
+        value = self._usable_resume_thread_id(thread_id)
+        if not key or not value:
+            return
+        context = self._context()
+        update_fn = getattr(context.session_metadata_updater, "session_update_metadata", None)
+        if not callable(update_fn):
+            return
+        metadata = resume_thread_metadata_patch(
+            collection=resume_thread_metadata_collection,
+            key=key,
+            thread_id=value,
+        )
+        if not metadata:
+            return
+        try:
+            update_fn(target=session_id or target, metadata=metadata)
+        except Exception:
+            pass
+
     def _effect(self) -> AgentPromptEffectDefinition:
         if not isinstance(self.effect_definition, AgentPromptEffectDefinition):
             raise RuntimeError(
@@ -1008,6 +1164,15 @@ class AgentPromptEffectProvider(EffectProviderBase):
             return None
         text = str(value).strip()
         return text or None
+
+    @classmethod
+    def _usable_resume_thread_id(cls, value: Any) -> str | None:
+        text = cls._normalize_optional_string(value)
+        if not text:
+            return None
+        if text.startswith("dispatch-") or text.startswith("chat-thread-"):
+            return None
+        return text
 
     @classmethod
     def _require_string(cls, value: Any, *, field_name: str) -> str:

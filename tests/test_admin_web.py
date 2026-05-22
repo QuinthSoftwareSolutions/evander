@@ -425,6 +425,10 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         field["key"] == "mcp_tool_approval_lease_id" and field["bindable"]
         for field in agent_prompt["fields"]
     )
+    assert any(
+        field["key"] == "resume_thread_metadata_collection" and field["bindable"]
+        for field in agent_prompt["fields"]
+    )
     assert all(field["key"] != "output_mode" for field in agent_prompt["fields"])
     assert agent_prompt["output_ports"] == [
         {
@@ -450,6 +454,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "vm_user",
         "resume_thread_id",
         "resume_thread_metadata_key",
+        "resume_thread_metadata_collection",
         "mcp_tool_approval_lease_id",
         "queue_key",
     ]
