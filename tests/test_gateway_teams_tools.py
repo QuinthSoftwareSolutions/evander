@@ -180,6 +180,17 @@ def read_audit_events(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in lines]
 
 
+def patch_httpx_client(
+    monkeypatch: pytest.MonkeyPatch,
+    transport: httpx.BaseTransport,
+) -> None:
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        "agent_sandbox.services.httpx.Client",
+        lambda timeout: real_client(timeout=timeout, transport=transport),
+    )
+
+
 def test_teams_get_messages_passes_since_cursor_and_filters_unallowlisted_sources(
     tmp_path: Path,
 ) -> None:
@@ -704,6 +715,133 @@ def test_add_message_reaction_allows_chat_allowlist_entries(tmp_path: Path) -> N
         ("chat:chat-1", "msg-3", "heart", "session-1")
     ]
     assert result["status"] == "reacted"
+
+
+@pytest.mark.parametrize(
+    ("channel_target", "message_id", "emoji", "expected_graph_reaction_type"),
+    [
+        ("team-a/channel-1", "msg-3", "eyes", "👀"),
+        ("chat:chat-1", "msg-4", "thumbsup", "👍"),
+        ("team-a/channel-1", "msg-5", "like", "👍"),
+        ("chat:chat-1", "msg-6", "heart", "❤️"),
+    ],
+)
+def test_add_message_reaction_uses_graph_unicode_aliases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    channel_target: str,
+    message_id: str,
+    emoji: str,
+    expected_graph_reaction_type: str,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(204, request=request)
+
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    context = make_context(tmp_path, teams_backend="graph_api")
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.ADD_MESSAGE_REACTION],
+            teams_channel_allowlist=["team-a/channel-1"],
+            teams_chat_allowlist=["chat:chat-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "add_message_reaction",
+        {
+            "session_id": "session-1",
+            "provider": "teams",
+            "channel_target": channel_target,
+            "message_id": message_id,
+            "emoji": emoji,
+        },
+    )
+
+    assert len(requests) == 1
+    if channel_target.startswith("chat:"):
+        assert requests[0].url.path.endswith(
+            f"/chats/{channel_target.removeprefix('chat:')}/messages/{message_id}/setReaction"
+        )
+    else:
+        assert requests[0].url.path.endswith(
+            f"/teams/team-a/channels/channel-1/messages/{message_id}/setReaction"
+        )
+    assert json.loads(requests[0].content.decode("utf-8")) == {
+        "reactionType": expected_graph_reaction_type
+    }
+    assert result["status"] == "reacted"
+    assert result["channel_target"] == channel_target
+    assert result["message_id"] == message_id
+    assert result["reaction"] == emoji
+    assert result["emoji"] == emoji
+    assert result["graph_reaction_type"] == expected_graph_reaction_type
+
+    events = read_audit_events(context.config.audit_log_path)
+    assert not any(
+        event["tool_name"] == ToolName.ADD_MESSAGE_REACTION.value
+        and event["result"].get("error_class") == "adapter_http_error"
+        for event in events
+    )
+
+
+def test_add_message_reaction_rejects_unsupported_graph_alias_before_http(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        pytest.fail(f"Unexpected request: {request.url}")
+
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    context = make_context(tmp_path, teams_backend="graph_api")
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.ADD_MESSAGE_REACTION],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    with pytest.raises(ToolError, match="Unsupported Teams reaction: shrug"):
+        call_tool(
+            server,
+            "add_message_reaction",
+            {
+                "session_id": "session-1",
+                "provider": "teams",
+                "channel_target": "team-a/channel-1",
+                "message_id": "msg-3",
+                "emoji": "shrug",
+            },
+        )
+
+    assert requests == []
+    events = read_audit_events(context.config.audit_log_path)
+    assert any(
+        event["tool_name"] == ToolName.ADD_MESSAGE_REACTION.value
+        and event["decision"] == "error"
+        and event["result"].get("error_class") == "validation_error"
+        for event in events
+    )
+    assert not any(
+        event["tool_name"] == ToolName.ADD_MESSAGE_REACTION.value
+        and event["result"].get("error_class") == "adapter_http_error"
+        for event in events
+    )
 
 
 def test_teams_get_messages_includes_status_messages_from_other_sessions_in_same_channel(

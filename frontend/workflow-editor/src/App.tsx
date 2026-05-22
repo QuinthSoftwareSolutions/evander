@@ -53,6 +53,8 @@ import {
   type WorkflowRunToolCallLink,
   type WorkflowRunSnapshot,
   type WorkflowRunSummary,
+  type WorkflowSampleState,
+  type WorkflowSampleTutorialStep,
   type WorkflowValidationDiagnostic,
 } from "./types";
 import { ApiError } from "./features/admin/api";
@@ -2612,6 +2614,35 @@ function renderToolArgumentPolicyErrorMessages(messages: string[]) {
   );
 }
 
+function workflowSampleStepStatusClass(status: string): string {
+  return status.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-") || "unknown";
+}
+
+function workflowSampleStepLabel(step: WorkflowSampleTutorialStep, index: number): string {
+  return step.title.trim() || step.step_id.trim() || `Step ${index + 1}`;
+}
+
+function workflowSampleStepBody(step: WorkflowSampleTutorialStep): string {
+  return step.body.trim();
+}
+
+function workflowSampleStepStatus(
+  step: WorkflowSampleTutorialStep,
+  index: number,
+  currentStepId: string | null,
+  currentStepIndex: number,
+): string {
+  if (step.status.trim()) return step.status.trim();
+  if (!currentStepId) return index === 0 ? "active" : "pending";
+  if (step.step_id === currentStepId) return "active";
+  if (currentStepIndex >= 0) return index < currentStepIndex ? "completed" : "pending";
+  return index === 0 ? "active" : "pending";
+}
+
+function workflowSampleStepKey(step: WorkflowSampleTutorialStep, index: number): string {
+  return step.step_id.trim() || `step-${index}`;
+}
+
 export default function App() {
   const { privilegedUnlocked, selectedDirectoryPath, directoryTree, setWorkflowHasUnsavedChanges } = useAdminUi();
   const initialWorkflowRunLookup = workflowRunLookupFromHash();
@@ -2625,6 +2656,10 @@ export default function App() {
   const [savedDocument, setSavedDocument] = useState<WorkflowEditorDocument | null>(null);
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
+  const [sampleWorkflow, setSampleWorkflow] = useState<WorkflowSampleState | null>(null);
+  const [sampleWorkflowLoading, setSampleWorkflowLoading] = useState(true);
+  const [sampleWorkflowError, setSampleWorkflowError] = useState<string | null>(null);
+  const [sampleWorkflowAction, setSampleWorkflowAction] = useState<"launch" | "reset" | null>(null);
   const [runDetail, setRunDetail] = useState<WorkflowRunDetail | null>(null);
   const [runDetailLookup, setRunDetailLookup] = useState(initialWorkflowRunLookup?.value ?? "");
   const [runDetailLookupKind, setRunDetailLookupKind] = useState<WorkflowRunDetailLookupKind>(
@@ -3051,6 +3086,28 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    setSampleWorkflowLoading(true);
+    fetchJson<WorkflowSampleState>("/api/workflow-editor/sample-workflow")
+      .then((payload) => {
+        if (cancelled) return;
+        setSampleWorkflow(payload);
+        setSampleWorkflowError(null);
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        setSampleWorkflowError(reason instanceof Error ? reason.message : String(reason));
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setSampleWorkflowLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const documentLoaded = document !== null;
 
   useEffect(() => {
@@ -3133,6 +3190,44 @@ export default function App() {
         delete next[normalizedEventId];
         return next;
       });
+    }
+  }
+
+  async function launchWorkflowSample() {
+    if (sampleWorkflowAction !== null) return;
+    setSampleWorkflowAction("launch");
+    setSampleWorkflowError(null);
+    try {
+      const payload = await fetchJson<WorkflowSampleState>("/api/workflow-editor/sample-workflow/launch", {
+        method: "POST",
+      });
+      setSampleWorkflow(payload);
+    } catch (reason: unknown) {
+      setSampleWorkflowError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSampleWorkflowAction(null);
+    }
+  }
+
+  async function resetWorkflowSample() {
+    if (sampleWorkflowAction !== null) return;
+    const inspectedSampleEventId = sampleWorkflow?.detail?.event_id ?? sampleWorkflow?.run?.event_id ?? null;
+    setSampleWorkflowAction("reset");
+    setSampleWorkflowError(null);
+    try {
+      const payload = await fetchJson<WorkflowSampleState>("/api/workflow-editor/sample-workflow", {
+        method: "DELETE",
+      });
+      setSampleWorkflow(payload);
+      if (inspectedSampleEventId && runDetail?.event_id === inspectedSampleEventId) {
+        exitInspectMode();
+        setRunDetailLookup("");
+        setRunDetailError(null);
+      }
+    } catch (reason: unknown) {
+      setSampleWorkflowError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSampleWorkflowAction(null);
     }
   }
 
@@ -6075,6 +6170,99 @@ export default function App() {
     );
   }
 
+  function renderWorkflowSamplePanel() {
+    const tutorialSteps = sampleWorkflow?.tutorial_steps ?? [];
+    const currentStepId = sampleWorkflow?.current_step?.step_id ?? null;
+    const currentStepIndex = currentStepId ? tutorialSteps.findIndex((step) => step.step_id === currentStepId) : -1;
+    const sampleRun = sampleWorkflow?.run ?? null;
+    const sampleEventId = sampleWorkflow?.detail?.event_id ?? sampleRun?.event_id ?? null;
+    const isBusy = sampleWorkflowLoading || sampleWorkflowAction !== null;
+    return (
+      <div className="sidebar-section guided-sample-section">
+        <div className="guided-sample-header">
+          <div>
+            <div className="section-label">Guided sample</div>
+            <h2>First run walkthrough</h2>
+            <p>Launch an in-memory run, inspect the simulated graph, and reset it without touching runtime stores.</p>
+          </div>
+          <span className={`sample-state-pill state-${sampleWorkflow?.active ? "active" : "idle"}`}>
+            {sampleWorkflowLoading ? "Loading" : sampleWorkflow?.active ? "Active" : "Idle"}
+          </span>
+        </div>
+        {sampleWorkflowError ? <div className="runtime-run-error">{sampleWorkflowError}</div> : null}
+        <div className="guided-sample-actions">
+          <button type="button" className="primary" onClick={() => void launchWorkflowSample()} disabled={isBusy}>
+            {sampleWorkflowAction === "launch" ? "Launching..." : "Launch sample"}
+          </button>
+          <button type="button" className="subtle-button" onClick={() => void resetWorkflowSample()} disabled={isBusy}>
+            {sampleWorkflowAction === "reset" ? "Resetting..." : "Reset sample"}
+          </button>
+        </div>
+        {sampleWorkflow?.current_step ? (
+          <div className="guided-sample-current-step">
+            <div className="section-label">Current step</div>
+            <strong>{sampleWorkflow.current_step.title}</strong>
+            <p>{sampleWorkflow.current_step.body}</p>
+          </div>
+        ) : null}
+        <div className="guided-sample-steps" aria-label="Sample tutorial steps">
+          {tutorialSteps.map((step, index) => {
+            const status = workflowSampleStepStatus(step, index, currentStepId, currentStepIndex);
+            const isCurrent = step.step_id === currentStepId;
+            return (
+              <div
+                key={workflowSampleStepKey(step, index)}
+                className={`guided-sample-step status-${workflowSampleStepStatusClass(status)}${isCurrent ? " is-current" : ""}`}
+              >
+                <div className="guided-sample-step-heading">
+                  <strong>{workflowSampleStepLabel(step, index)}</strong>
+                  <span>{status}</span>
+                </div>
+                <p>{workflowSampleStepBody(step)}</p>
+                {step.node_id ? <div className="guided-sample-step-node">Node {step.node_id}</div> : null}
+              </div>
+            );
+          })}
+        </div>
+        {sampleWorkflowLoading && tutorialSteps.length === 0 ? (
+          <p className="runtime-summary">Loading sample state...</p>
+        ) : null}
+        {sampleWorkflowError ? null : sampleRun ? (
+          <div className="runtime-run-card guided-sample-run-card">
+            <div className="runtime-run-header">
+              <div className="runtime-run-event">{sampleRun.event_id}</div>
+              <div
+                className={`runtime-run-state state-${sampleRun.run_state === "errored" ? "failed" : sampleRun.delivery_state ?? "active"}`}
+              >
+                {sampleRun.run_state === "errored" ? "errored" : sampleRun.delivery_state ?? "active"}
+              </div>
+            </div>
+            <div className="runtime-run-meta">Launched {formatRuntimeTimestamp(sampleWorkflow?.launched_at)}</div>
+            <div className="runtime-run-meta">Trace {sampleRun.trace_id ?? "missing"}</div>
+            <div className="runtime-run-meta">
+              {sampleWorkflow?.current_step ? `Current step ${sampleWorkflow.current_step.title}` : "Current step missing"}
+            </div>
+            {sampleWorkflow?.detail?.error ? <div className="runtime-run-error">{sampleWorkflow.detail.error}</div> : null}
+            <div className="runtime-run-actions">
+              <button
+                type="button"
+                className="subtle-button"
+                onClick={() => inspectWorkflowRun(sampleEventId ?? "")}
+                disabled={runDetailLoading || !sampleEventId}
+              >
+                Inspect sample
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="callout warning-callout guided-sample-empty">
+            Idle sample. Launch it to create the in-memory walkthrough.
+          </div>
+        )}
+      </div>
+    );
+  }
+
   function renderInspectedRunPanel() {
     if (!runDetail) return null;
     const availabilityItems = [
@@ -6321,6 +6509,7 @@ export default function App() {
         onKeyDown={handleAppShellKeyDown}
       >
         <aside className="sidebar">
+          {renderWorkflowSamplePanel()}
           {isInspectMode ? (
             <>
               {renderInspectedRunPanel()}

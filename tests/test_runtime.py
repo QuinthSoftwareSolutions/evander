@@ -698,6 +698,54 @@ def test_resolve_allowed_discord_channel_ids_uses_effective_directory_policy(
     assert channel_ids == ["chan-root", "chan-session", "chan-team"]
 
 
+def test_resolve_allowed_discord_channel_ids_uses_effective_directory_policy_without_stale_session_leak(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    runtime = build_runtime(config)
+    directory_store = DirectoryStore(config.directories_store_path)
+    directories = DirectoryService(directory_store)
+    team = directories.create(parent="root", name="team")
+    config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
+    config_store.write(
+        "root",
+        domain="policy",
+        payload={"discord_operator_channel_allowlist": ["chan-root"]},
+    )
+    config_store.write(
+        team.path,
+        domain="policy",
+        payload={"discord_operator_channel_allowlist": ["chan-team"]},
+    )
+    runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-active",
+            directory_path="root",
+            allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
+            discord_channel_allowlist=["chan-session-root"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-stale",
+            directory_path=team.path,
+            allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
+            discord_channel_allowlist=["chan-stale"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    directories.delete(team.id)
+
+    channel_ids = _resolve_allowed_discord_channel_ids(
+        runtime.session_repository,
+        config,
+        policy_config=runtime.policy_config,
+    )
+
+    assert channel_ids == ["chan-root", "chan-session-root"]
+
+
 @pytest.mark.parametrize("provider", ["gmail", "graph"])
 def test_build_runtime_requires_access_token_secret_ref_for_non_json_mailboxes(
     tmp_path: Path, provider: str

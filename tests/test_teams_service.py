@@ -910,15 +910,75 @@ def test_graph_teams_service_add_reaction_for_channel_message(
         "message_id": "msg-root",
         "reaction": "like",
         "emoji": "like",
+        "graph_reaction_type": "👍",
     }
     assert requests[0].method == "POST"
     assert requests[0].url.path.endswith(
         "/teams/team-a/channels/channel-1/messages/msg-root/setReaction"
     )
-    assert requests[0].content == b'{"reactionType":"like"}'
+    assert json.loads(requests[0].content.decode("utf-8")) == {"reactionType": "👍"}
 
 
-def test_graph_teams_service_preserves_unicode_eyes_reaction(
+@pytest.mark.parametrize(
+    ("channel_target", "message_id", "reaction", "expected_graph_reaction_type"),
+    [
+        ("team-a/channel-1", "msg-root", "eyes", "👀"),
+        ("chat:chat-1", "msg-chat", "thumbsup", "👍"),
+        ("team-a/channel-1", "msg-root", "like", "👍"),
+        ("chat:chat-1", "msg-chat", "heart", "❤️"),
+    ],
+)
+def test_graph_teams_service_normalizes_deployed_reaction_aliases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    channel_target: str,
+    message_id: str,
+    reaction: str,
+    expected_graph_reaction_type: str,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(204, request=request)
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1", "chat:chat-1"],
+    )
+
+    result = service.add_reaction(channel_target, message_id, reaction, "session-1")
+
+    expected_result = {
+        "status": "reacted",
+        "channel_target": channel_target,
+        "session_id": "session-1",
+        "message_id": message_id,
+        "reaction": reaction,
+        "emoji": reaction,
+        "graph_reaction_type": expected_graph_reaction_type,
+    }
+    if channel_target.startswith("chat:"):
+        expected_result["chat_id"] = channel_target.removeprefix("chat:")
+    else:
+        expected_result["team_id"] = "team-a"
+        expected_result["channel_id"] = "channel-1"
+
+    assert result == expected_result
+    assert len(requests) == 1
+    assert json.loads(requests[0].content.decode("utf-8")) == {
+        "reactionType": expected_graph_reaction_type
+    }
+
+
+def test_graph_teams_service_preserves_direct_unicode_reaction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -952,7 +1012,8 @@ def test_graph_teams_service_preserves_unicode_eyes_reaction(
         "reaction": "👀",
         "emoji": "👀",
     }
-    assert requests[0].content == b'{"reactionType":"\xf0\x9f\x91\x80"}'
+    assert "graph_reaction_type" not in result
+    assert json.loads(requests[0].content.decode("utf-8")) == {"reactionType": "👀"}
 
 
 def test_graph_teams_service_add_reaction_for_chat_message(
@@ -987,8 +1048,38 @@ def test_graph_teams_service_add_reaction_for_chat_message(
         "message_id": "msg-chat",
         "reaction": "heart",
         "emoji": "heart",
+        "graph_reaction_type": "❤️",
     }
     assert requests[0].url.path.endswith("/chats/chat-1/messages/msg-chat/setReaction")
+    assert json.loads(requests[0].content.decode("utf-8")) == {"reactionType": "❤️"}
+
+
+def test_graph_teams_service_rejects_unsupported_ascii_reaction_before_http(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        pytest.fail(f"Unexpected request: {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    with pytest.raises(ValueError, match="Unsupported Teams reaction: shrug"):
+        service.add_reaction("team-a/channel-1", "msg-root", "shrug", "session-1")
+
+    assert requests == []
 
 
 def test_stub_teams_add_reaction_returns_deterministic_success_payload(tmp_path: Path) -> None:

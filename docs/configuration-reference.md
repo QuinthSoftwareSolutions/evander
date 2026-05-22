@@ -810,6 +810,16 @@ Inheritance path:
 - `runtime/directory-config/root/*.json` is the top of the directory-scoped inheritance chain
 - provenance metadata records which directory last set each effective value
 
+Resolution behavior:
+
+- An omitted or empty directory path resolves to `root` for backward compatibility.
+- A non-empty directory path must exist in `runtime/directories.json`; missing path segments are
+  treated as configuration errors rather than aliases for `root`.
+- Session-scoped provider, contacts, policy, and VM defaults resolution use the session manifest's
+  `directory_path`. If that path is stale, mistyped, or deleted, the session-specific call is
+  rejected with the session id and missing directory path in the error. Active-session policy and
+  Discord allowlist aggregation skip stale sessions and log the same limited identifiers.
+
 Approval notification policy:
 
 - `approval_notification_target_ids` is a list of host-owned communication target IDs. The targets

@@ -8,8 +8,21 @@ import httpx
 import pytest
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.directories import DirectoryService
 from agent_sandbox.models import SessionManifest, TeamsMessageEnvelope, ToolName
 from agent_sandbox.messaging.teams_ingest import build_teams_ingest_worker
+
+
+def ensure_directory(worker, directory_path: str) -> None:
+    service = DirectoryService(worker.runtime.directories)
+    current = "root"
+    for segment in [part for part in directory_path.split("/")[1:] if part]:
+        next_path = f"{current}/{segment}"
+        try:
+            service.show(next_path)
+        except ValueError:
+            service.create(parent=current, name=segment)
+        current = next_path
 
 
 def patch_worker_httpx_client(
@@ -43,6 +56,8 @@ def test_build_teams_ingest_worker_uses_worker_config_and_normalizes_directories
 
     config = GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")})
     worker = build_teams_ingest_worker(config, project_dir=project_dir)
+    ensure_directory(worker, "root/team-a")
+    ensure_directory(worker, "root/team-b")
 
     assert worker.worker_config.directories == ["root/team-a", "root/team-b"]
     assert str(worker.worker_config.lock_path) == str(tmp_path / "runtime" / "teams-ingest.lock")
@@ -111,6 +126,7 @@ def test_teams_ingest_worker_persists_inbound_messages_and_ignores_status_store_
         }
     )
     worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    ensure_directory(worker, "root/team-a")
     worker.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
@@ -191,6 +207,7 @@ def test_teams_ingest_worker_polls_chat_targets_from_chat_allowlist(
         }
     )
     worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    ensure_directory(worker, "root/team-a")
     worker.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
@@ -259,6 +276,7 @@ def test_teams_ingest_worker_uses_history_page_budget_per_target(
         }
     )
     worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    ensure_directory(worker, "root/team-a")
     worker.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
@@ -304,6 +322,7 @@ def test_teams_ingest_worker_uses_delegated_token_provider(
         }
     )
     worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    ensure_directory(worker, "root/team-a")
     worker.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",
@@ -355,6 +374,7 @@ def test_teams_ingest_worker_ignores_graph_echo_of_agent_status_post(
         }
     )
     worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    ensure_directory(worker, "root/team-a")
     worker.session_repository.upsert_session(
         SessionManifest(
             session_id="session-1",

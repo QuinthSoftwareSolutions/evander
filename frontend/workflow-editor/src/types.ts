@@ -422,3 +422,20 @@ export type WorkflowRunDetail = WorkflowRunSummary & {
   nodes: WorkflowRunNodeDetail[];
   data_availability: WorkflowRunDataAvailability;
 };
+
+export type WorkflowSampleTutorialStep = {
+  step_id: string;
+  title: string;
+  body: string;
+  status: string;
+  node_id?: string | null;
+};
+
+export type WorkflowSampleState = {
+  active: boolean;
+  launched_at: string | null;
+  run: WorkflowRunSummary | null;
+  detail: WorkflowRunDetail | null;
+  tutorial_steps: WorkflowSampleTutorialStep[];
+  current_step: WorkflowSampleTutorialStep | null;
+};

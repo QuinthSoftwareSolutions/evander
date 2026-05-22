@@ -107,6 +107,27 @@ def workflow_routes(
     service: AdminService,
     cache: AdminWebJsonResponseCache | None = None,
 ) -> list[Route]:
+    async def get_sample_workflow(_: Request) -> JSONResponse:
+        try:
+            payload = service.read_workflow_sample_state()
+        except ValueError as exc:
+            return json_error(str(exc))
+        return JSONResponse(payload.model_dump(mode="json"))
+
+    async def launch_sample_workflow(_: Request) -> JSONResponse:
+        try:
+            payload = service.launch_workflow_sample()
+        except ValueError as exc:
+            return json_error(str(exc))
+        return JSONResponse(payload.model_dump(mode="json"))
+
+    async def reset_sample_workflow(_: Request) -> JSONResponse:
+        try:
+            payload = service.reset_workflow_sample()
+        except ValueError as exc:
+            return json_error(str(exc))
+        return JSONResponse(payload.model_dump(mode="json"))
+
     async def get_document(_: Request) -> JSONResponse:
         try:
             document = service.read_workflow_editor_document()
@@ -245,6 +266,17 @@ def workflow_routes(
             "/api/workflow-editor/runs",
             cache.wrap("workflow.runs", get_runs) if cache else get_runs,
             methods=["GET"],
+        ),
+        Route("/api/workflow-editor/sample-workflow", get_sample_workflow, methods=["GET"]),
+        Route(
+            "/api/workflow-editor/sample-workflow/launch",
+            launch_sample_workflow,
+            methods=["POST"],
+        ),
+        Route(
+            "/api/workflow-editor/sample-workflow",
+            reset_sample_workflow,
+            methods=["DELETE"],
         ),
         Route("/api/workflow-editor/run-search", get_run_search, methods=["GET"]),
         Route("/api/workflow-editor/run-detail", get_run_detail, methods=["GET"]),

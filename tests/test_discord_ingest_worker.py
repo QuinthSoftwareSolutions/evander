@@ -7,8 +7,21 @@ from pathlib import Path
 import pytest
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.directories import DirectoryService
 from agent_sandbox.messaging.discord_ingest import build_discord_ingest_worker
 from agent_sandbox.models import SessionManifest, ToolName
+
+
+def ensure_directory(worker, directory_path: str) -> None:
+    service = DirectoryService(worker.runtime.directories)
+    current = "root"
+    for segment in [part for part in directory_path.split("/")[1:] if part]:
+        next_path = f"{current}/{segment}"
+        try:
+            service.show(next_path)
+        except ValueError:
+            service.create(parent=current, name=segment)
+        current = next_path
 
 
 def test_build_discord_ingest_worker_uses_worker_config_and_normalizes_directories(
@@ -31,6 +44,8 @@ def test_build_discord_ingest_worker_uses_worker_config_and_normalizes_directori
 
     config = GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")})
     worker = build_discord_ingest_worker(config, project_dir=project_dir)
+    ensure_directory(worker, "root/team-a")
+    ensure_directory(worker, "root/team-b")
 
     assert worker.worker_config.directories == ["root/team-a", "root/team-b"]
     assert str(worker.worker_config.lock_path) == str(tmp_path / "runtime" / "discord-ingest.lock")
@@ -57,6 +72,8 @@ def test_discord_ingest_worker_counts_active_sessions_in_configured_scope(tmp_pa
 
     config = GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")})
     worker = build_discord_ingest_worker(config, project_dir=project_dir)
+    ensure_directory(worker, "root/team-a")
+    ensure_directory(worker, "root/team-b")
     worker.session_repository.upsert_session(
         SessionManifest(
             session_id="session-a",

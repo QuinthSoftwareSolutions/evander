@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from agent_sandbox.admin import service as _admin_service
+from agent_sandbox.admin.services.local_issue_identity import LocalIssueIdentityResolver
 from agent_sandbox.git_pr_notes import agent_pr_notes_ref_for_session
 from agent_sandbox.models import SessionManifest, ToolName, VmActionResult, VmSummary
 from agent_sandbox.repositories.chat_assistant_sessions import JsonChatAssistantSessionRepository
@@ -152,6 +153,7 @@ class VmAgentAdminSupport:
     runtime: Any
     project_dir: Path
     local_issue_store: Any
+    local_issue_identity_resolver: LocalIssueIdentityResolver
     worker_admin: Any
     workflow_config_admin: Any
     directory_admin: Any
@@ -205,93 +207,13 @@ class VmAgentAdminSupport:
         return _admin_service.resolve_agent_model_for_manifest(session, issue_setup=issue_setup)
 
     def resolve_local_issue_record(self, issue_identifier: str) -> Any:
-        candidate = Path(issue_identifier)
-        if candidate.is_file():
-            candidate_path = candidate.resolve()
-            for issue in self.local_issue_store.read_all().values():
-                if issue.yaml_path and Path(issue.yaml_path).resolve() == candidate_path:
-                    return issue
-            issue_number = _admin_service._read_issue_number_from_yaml(candidate)
-            raise ValueError(f"Unknown local issue: {issue_number}")
-
-        issue_key = self.resolve_local_issue_key(issue_identifier)
-        if issue_key is not None:
-            issue = self.local_issue_store.get(issue_key)
-            if issue is not None:
-                return issue
-
-        by_remote_identifier = self.find_local_issue_by_remote_identifier(issue_identifier)
-        if by_remote_identifier is not None:
-            return by_remote_identifier
-
-        raise ValueError(f"Unknown local issue identifier: {issue_identifier}")
+        return self.local_issue_identity_resolver.resolve_record(issue_identifier)
 
     def resolve_local_issue_key(self, identifier: str) -> str | None:
-        normalized = str(identifier or "").strip()
-        if not normalized:
-            return None
-        issues = self.local_issue_store.read_all()
-        if normalized in issues:
-            return normalized
-        matches = [
-            issue_id for issue_id, issue in issues.items() if issue.issue_number == normalized
-        ]
-        if not matches:
-            return None
-        if len(matches) == 1:
-            return matches[0]
-        sorted_matches = sorted(matches)
-        raise ValueError(
-            "Ambiguous local issue identifier: "
-            f"{normalized}. Matches: {', '.join(sorted_matches)}. "
-            "Use a scoped issue identifier."
-        )
-        return None
+        return self.local_issue_identity_resolver.resolve_key(identifier)
 
     def find_local_issue_by_remote_identifier(self, issue_identifier: str) -> Any | None:
-        normalized = issue_identifier.strip()
-        if not normalized:
-            return None
-        provider = ""
-        remote_issue_id = ""
-        prefixed_match = _admin_service.re.match(
-            r"^(?:(?:proxy:)?(azure_devops|ado)[:/])([0-9]+)$",
-            normalized,
-            flags=_admin_service.re.IGNORECASE,
-        )
-        if prefixed_match:
-            provider = "azure_devops"
-            remote_issue_id = prefixed_match.group(2)
-        if not remote_issue_id:
-            return None
-        matches: list[Any] = []
-        for issue in self.local_issue_store.read_all().values():
-            remote = issue.remote_reference
-            if remote is not None:
-                issue_provider = str(remote.provider or "").strip()
-                issue_remote_id = str(remote.work_item_id or "").strip()
-            else:
-                legacy_remote = (
-                    issue.metadata.get("remote")
-                    if isinstance(issue.metadata.get("remote"), dict)
-                    else {}
-                )
-                issue_provider = str(legacy_remote.get("provider") or "").strip()
-                issue_remote_id = str(legacy_remote.get("issue_id") or "").strip()
-            if issue_provider != provider:
-                continue
-            if issue_remote_id == remote_issue_id:
-                matches.append(issue)
-        if not matches:
-            return None
-        if len(matches) == 1:
-            return matches[0]
-        sorted_matches = sorted(issue.issue_id for issue in matches)
-        raise ValueError(
-            "Ambiguous proxy issue identifier: "
-            f"{normalized}. Matches: {', '.join(sorted_matches)}. "
-            "Use a canonical proxy issue identifier."
-        )
+        return self.local_issue_identity_resolver.find_by_remote_identifier(issue_identifier)
 
     def resolve_repo_source(self, repo_source: str) -> tuple[str, str]:
         resolve_script = self.project_dir / "scripts" / "resolve_repo_source.sh"
@@ -2160,7 +2082,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         codex_skills: list[str] | None = None,
     ) -> VmActionResult:
         try:
-            issue_key = self._deps.resolve_local_issue_key(issue_identifier)
+            issue = self._deps.resolve_local_issue_record(issue_identifier)
         except ValueError as exc:
             return VmActionResult(
                 success=False,
@@ -2168,16 +2090,8 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
                 action="create_issue_vm",
                 message=str(exc),
             )
-        issue = self._deps.local_issue_store.get(issue_key) if issue_key is not None else None
-        if issue is None:
-            return VmActionResult(
-                success=False,
-                vm_name=f"vm-{issue_identifier}",
-                action="create_issue_vm",
-                message=f"Unknown local issue: {issue_identifier}",
-            )
         return self.create_issue_vm(
-            issue=issue.yaml_path,
+            issue=issue.issue_id,
             model=model,
             vm_user=vm_user,
             dotnet=dotnet,

@@ -12,7 +12,7 @@ from agent_sandbox.admin.service import AdminService
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.gateway import create_server
-from agent_sandbox.directories import DirectoryStore
+from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.runtime import build_runtime
 
@@ -27,7 +27,22 @@ def make_context(tmp_path: Path):
         email_store_path=tmp_path / "emails.json",
         discord_command_store_path=tmp_path / "discord.json",
     )
-    return build_runtime(config)
+    context = build_runtime(config)
+    ensure_directories(context, "root/team-a")
+    return context
+
+
+def ensure_directories(context, *directory_paths: str) -> None:
+    service = DirectoryService(context.directories)
+    for directory_path in directory_paths:
+        current = "root"
+        for segment in [part for part in directory_path.split("/")[1:] if part]:
+            next_path = f"{current}/{segment}"
+            try:
+                service.show(next_path)
+            except ValueError:
+                service.create(parent=current, name=segment)
+            current = next_path
 
 
 def call_tool(server, name: str, arguments: dict[str, object]):
@@ -85,6 +100,40 @@ def test_get_issue_reads_closed_issue_without_list_filters(tmp_path: Path) -> No
     assert result["issue_number"] == created.issue_number
     assert result["state"] == "Closed"
     assert result["rejection_reason"] == "Out of scope"
+
+
+def test_list_issues_returns_rejected_closed_local_issue(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.LIST_ISSUES],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+    admin = AdminService(context.config.runtime_dir)
+    created = admin.create_local_issue(
+        title="Rejected issue",
+        body="x",
+        directory_path="root/team-a",
+    )
+    admin.update_issue(created.issue_number, state="Closed", fields={"Reason": "Out of scope"})
+
+    result = call_tool(
+        server,
+        "list_issues",
+        {
+            "session_id": "session-1",
+            "status": ["Rejected"],
+        },
+    )
+
+    assert [entry["issue_number"] for entry in result["issues"]] == [created.issue_number]
+    assert result["issues"][0]["state"] == "Closed"
+    assert result["issues"][0]["reason"] == "Out of scope"
+    assert result["issues"][0]["rejection_reason"] == "Out of scope"
 
 
 def test_get_issue_requires_permission_in_gateway_issue_tools(tmp_path: Path) -> None:

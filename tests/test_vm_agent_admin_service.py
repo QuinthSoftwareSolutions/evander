@@ -11,6 +11,7 @@ import pytest
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin import service as admin_service_module
 from agent_sandbox.admin.services import VmAgentAdminDependencies, VmAgentAdminService
+from agent_sandbox.admin.services.local_issue_identity import LocalIssueIdentityResolver
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.models import SessionManifest, ToolName, VmActionResult
 
@@ -121,6 +122,8 @@ class FakeWorkerAdmin:
 @dataclass
 class FakeManifest:
     directory_path: str
+    issue_id: str = "local-1"
+    issue_number: str = "1"
     metadata: dict[str, Any] = field(default_factory=dict)
     model: str | None = None
     yaml_path: str = "/tmp/local-issue.yaml"
@@ -129,6 +132,8 @@ class FakeManifest:
     def model_copy(self, update: dict[str, Any] | None = None) -> "FakeManifest":
         payload = {
             "directory_path": self.directory_path,
+            "issue_id": self.issue_id,
+            "issue_number": self.issue_number,
             "metadata": dict(self.metadata),
             "model": self.model,
             "yaml_path": self.yaml_path,
@@ -1159,3 +1164,99 @@ def test_vm_agent_admin_service_create_issue_vm_uses_admin_helpers(
     assert result.message == "setup ok"
     assert sessions.put_records[0][0] == "session-1"
     assert sessions.put_records[0][1].model == "gpt-5"
+
+
+def test_vm_agent_admin_service_create_issue_vm_from_local_issue_uses_record_resolution_for_proxy_identifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sessions = FakeSessionsStore()
+    admin = FakeAdmin(sessions=sessions)
+    service = VmAgentAdminService(_vm_agent_dependencies(admin))
+    resolved = FakeManifest(
+        directory_path="root/team",
+        issue_id="root/team::azure_devops::77",
+        issue_number="77",
+        yaml_path="/tmp/proxy-issue-77.yaml",
+    )
+    resolve_calls: list[str] = []
+
+    def fake_resolve_local_issue_record(issue_identifier: str) -> FakeManifest:
+        resolve_calls.append(issue_identifier)
+        if issue_identifier != "proxy:ado/77":
+            raise AssertionError(f"unexpected issue identifier: {issue_identifier}")
+        return resolved
+
+    def fake_resolve_local_issue_key(identifier: str) -> str | None:
+        raise AssertionError("resolve_local_issue_key should not be used for proxy identifiers")
+
+    captured: dict[str, Any] = {}
+
+    def fake_create_issue_vm(self: VmAgentAdminService, **kwargs: Any) -> VmActionResult:
+        captured.update(kwargs)
+        return VmActionResult(
+            success=True,
+            vm_name="vm-77",
+            action="create_issue_vm",
+            message="setup ok",
+        )
+
+    monkeypatch.setattr(admin, "_resolve_local_issue_record", fake_resolve_local_issue_record)
+    monkeypatch.setattr(admin, "_resolve_local_issue_key", fake_resolve_local_issue_key)
+    monkeypatch.setattr(VmAgentAdminService, "create_issue_vm", fake_create_issue_vm)
+
+    result = service.create_issue_vm_from_local_issue("proxy:ado/77", model="gpt-5")
+
+    assert result.success is True
+    assert resolve_calls == ["proxy:ado/77"]
+    assert captured["issue"] == resolved.issue_id
+    assert captured["directory_path"] == resolved.directory_path
+    assert captured["model"] == "gpt-5"
+
+
+def test_vm_agent_admin_service_create_issue_vm_from_local_issue_rejects_ambiguous_proxy_identifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sessions = FakeSessionsStore()
+    admin = FakeAdmin(sessions=sessions)
+    service = VmAgentAdminService(_vm_agent_dependencies(admin))
+
+    def fake_resolve_local_issue_record(issue_identifier: str) -> FakeManifest:
+        raise ValueError(
+            "Ambiguous proxy issue identifier: proxy:ado/42. "
+            "Matches: root::azure_devops::42, team::azure_devops::42. "
+            "Use a canonical proxy issue identifier."
+        )
+
+    def fail_create_issue_vm(self: VmAgentAdminService, **kwargs: Any) -> VmActionResult:
+        raise AssertionError("create_issue_vm should not be called for ambiguous identifiers")
+
+    monkeypatch.setattr(admin, "_resolve_local_issue_record", fake_resolve_local_issue_record)
+    monkeypatch.setattr(VmAgentAdminService, "create_issue_vm", fail_create_issue_vm)
+
+    result = service.create_issue_vm_from_local_issue("proxy:ado/42")
+
+    assert result.success is False
+    assert result.message.startswith("Ambiguous proxy issue identifier: proxy:ado/42.")
+
+
+def test_vm_agent_admin_service_create_issue_vm_from_local_issue_rejects_unknown_proxy_identifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sessions = FakeSessionsStore()
+    admin = FakeAdmin(sessions=sessions)
+    admin.local_issue_store = SimpleNamespace(read_all=lambda: {}, get=lambda key: None)
+    admin._resolve_local_issue_record = LocalIssueIdentityResolver(
+        local_issue_store=admin.local_issue_store,
+        read_issue_number_from_yaml=admin_service_module._read_issue_number_from_yaml,
+    ).resolve_record
+    service = VmAgentAdminService(_vm_agent_dependencies(admin))
+
+    def fail_create_issue_vm(self: VmAgentAdminService, **kwargs: Any) -> VmActionResult:
+        raise AssertionError("create_issue_vm should not be called for unknown identifiers")
+
+    monkeypatch.setattr(VmAgentAdminService, "create_issue_vm", fail_create_issue_vm)
+
+    result = service.create_issue_vm_from_local_issue("proxy:ado/999")
+
+    assert result.success is False
+    assert result.message == "Unknown local issue identifier: proxy:ado/999"
