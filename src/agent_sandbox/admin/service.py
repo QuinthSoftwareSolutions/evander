@@ -58,6 +58,7 @@ from agent_sandbox.config import (
 from agent_sandbox.cron import cron_min_interval_seconds, validate_cron_expression
 from agent_sandbox.admin.directory import DirectoryAdminService
 from agent_sandbox.admin.release_metadata import read_release_metadata
+from agent_sandbox.admin.services.local_issue_identity import LocalIssueIdentityResolver
 from agent_sandbox.directory_config import (
     DirectoryConfigResolver,
     DirectoryConfigStore,
@@ -5043,6 +5044,10 @@ class AdminService:
         self.local_issue_store = JsonStore(
             self.config.runtime_dir / "local-issues.json", LocalIssueRecord
         )
+        self.local_issue_identity_resolver = LocalIssueIdentityResolver(
+            local_issue_store=self.local_issue_store,
+            read_issue_number_from_yaml=_read_issue_number_from_yaml,
+        )
         self.local_issue_counter_path = self.config.runtime_dir / "local-issue-counter.txt"
         self.local_issue_create_lock_path = self.config.runtime_dir / "local-issue-create.lock"
         self.admin_config_mutation_lock_path = (
@@ -5123,6 +5128,7 @@ class AdminService:
             runtime=self.runtime,
             config=self.config,
             local_issue_store=self.local_issue_store,
+            local_issue_identity_resolver=self.local_issue_identity_resolver,
             local_issue_counter_path=self.local_issue_counter_path,
             local_issue_create_lock_path=self.local_issue_create_lock_path,
             local_issue_yaml_dir=self.local_issue_yaml_dir,
@@ -5135,6 +5141,7 @@ class AdminService:
             runtime=self.runtime,
             project_dir=self.project_dir,
             local_issue_store=self.local_issue_store,
+            local_issue_identity_resolver=self.local_issue_identity_resolver,
             worker_admin=self.worker_admin,
             workflow_config_admin=self.workflow_config_admin,
             directory_admin=self.directory_admin,
@@ -5153,8 +5160,8 @@ class AdminService:
                 local_issue_creation_lock=self.issue_git_support.local_issue_creation_lock,
                 next_local_issue_number=self.issue_git_support.next_local_issue_number,
                 canonical_local_issue_id=self.issue_git_support.canonical_local_issue_id,
-                resolve_local_issue_record=self.issue_git_support.resolve_local_issue_record,
-                resolve_local_issue_key=self.issue_git_support.resolve_local_issue_key,
+                resolve_local_issue_record=self.local_issue_identity_resolver.resolve_record,
+                resolve_local_issue_key=self.local_issue_identity_resolver.resolve_key,
                 proxy_target_for_issue=self.issue_git_support.proxy_target_for_issue,
                 refresh_proxy_cache_from_remote=self.issue_git_support.refresh_proxy_cache_from_remote,
                 write_local_issue_yaml=self.issue_git_support.write_local_issue_yaml,
@@ -5175,8 +5182,8 @@ class AdminService:
                 resolve_agent_model_for_session=self.vm_agent_support.resolve_agent_model_for_session,
                 resolve_vm_defaults=self.vm_agent_support.resolve_vm_defaults,
                 resolve_issue_setup=self.vm_agent_support.resolve_issue_setup,
-                resolve_local_issue_record=self.vm_agent_support.resolve_local_issue_record,
-                resolve_local_issue_key=self.vm_agent_support.resolve_local_issue_key,
+                resolve_local_issue_record=self.local_issue_identity_resolver.resolve_record,
+                resolve_local_issue_key=self.local_issue_identity_resolver.resolve_key,
                 resolve_repo_source=self.vm_agent_support.resolve_repo_source,
                 sync_repo_into_bare_remote=self.vm_agent_support.sync_repo_into_bare_remote,
                 clone_repo_into_vm=self.vm_agent_support.clone_repo_into_vm,
@@ -9664,72 +9671,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def _find_local_issue_by_remote_identifier(
         self, issue_identifier: str
     ) -> LocalIssueRecord | None:
-        normalized = issue_identifier.strip()
-        if not normalized:
-            return None
-        provider = ""
-        remote_issue_id = ""
-        prefixed_match = re.match(
-            r"^(?:(?:proxy:)?(azure_devops|ado)[:/])([0-9]+)$",
-            normalized,
-            flags=re.IGNORECASE,
-        )
-        if prefixed_match:
-            provider = "azure_devops"
-            remote_issue_id = prefixed_match.group(2)
-        if not remote_issue_id:
-            return None
-        matches: list[LocalIssueRecord] = []
-        for issue in self.local_issue_store.read_all().values():
-            remote = issue.remote_reference
-            if remote is not None:
-                issue_provider = str(remote.provider or "").strip()
-                issue_remote_id = str(remote.work_item_id or "").strip()
-            else:
-                legacy_remote = (
-                    issue.metadata.get("remote")
-                    if isinstance(issue.metadata.get("remote"), dict)
-                    else {}
-                )
-                issue_provider = str(legacy_remote.get("provider") or "").strip()
-                issue_remote_id = str(legacy_remote.get("issue_id") or "").strip()
-            if issue_provider != provider:
-                continue
-            if issue_remote_id == remote_issue_id:
-                matches.append(issue)
-        if not matches:
-            return None
-        if len(matches) == 1:
-            return matches[0]
-        sorted_matches = sorted(issue.issue_id for issue in matches)
-        raise ValueError(
-            "Ambiguous proxy issue identifier: "
-            f"{normalized}. Matches: {', '.join(sorted_matches)}. "
-            "Use a canonical proxy issue identifier."
-        )
-        return None
+        return self.local_issue_identity_resolver.find_by_remote_identifier(issue_identifier)
 
     def _resolve_local_issue_record(self, issue_identifier: str) -> LocalIssueRecord:
-        candidate = Path(issue_identifier)
-        if candidate.is_file():
-            candidate_path = candidate.resolve()
-            for issue in self.local_issue_store.read_all().values():
-                if issue.yaml_path and Path(issue.yaml_path).resolve() == candidate_path:
-                    return issue
-            issue_number = _read_issue_number_from_yaml(candidate)
-            raise ValueError(f"Unknown local issue: {issue_number}")
-
-        issue_key = self._resolve_local_issue_key(issue_identifier)
-        if issue_key is not None:
-            issue = self.local_issue_store.get(issue_key)
-            if issue is not None:
-                return issue
-
-        by_remote_identifier = self._find_local_issue_by_remote_identifier(issue_identifier)
-        if by_remote_identifier is not None:
-            return by_remote_identifier
-
-        raise ValueError(f"Unknown local issue identifier: {issue_identifier}")
+        return self.local_issue_identity_resolver.resolve_record(issue_identifier)
 
     def list_issues(
         self,
@@ -10084,25 +10029,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
 
     def _resolve_local_issue_key(self, identifier: str) -> str | None:
-        normalized = identifier.strip()
-        if not normalized:
-            return None
-        issues = self.local_issue_store.read_all()
-        if normalized in issues:
-            return normalized
-        matches = [
-            issue_id for issue_id, issue in issues.items() if issue.issue_number == normalized
-        ]
-        if not matches:
-            return None
-        if len(matches) == 1:
-            return matches[0]
-        sorted_matches = sorted(matches)
-        raise ValueError(
-            "Ambiguous local issue identifier: "
-            f"{normalized}. Matches: {', '.join(sorted_matches)}. "
-            "Use a scoped issue identifier."
-        )
+        return self.local_issue_identity_resolver.resolve_key(identifier)
 
     def list_direct_owned_entity_ids(self, directory_path: str, *, kind: str) -> list[str]:
         return self.issue_git_admin.list_direct_owned_entity_ids(directory_path, kind=kind)
