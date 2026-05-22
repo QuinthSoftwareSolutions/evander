@@ -305,6 +305,11 @@ test("admin shell sessions page clears approval gates when the allowed tool is r
       .waitFor({ state: "visible" }),
   );
   await assert.doesNotReject(() =>
+    fieldDescription("Blocked extensions")
+      .getByText("Blank lines and extra spaces are trimmed, and duplicates are ignored.")
+      .waitFor({ state: "visible" }),
+  );
+  await assert.doesNotReject(() =>
     fieldDescription("Metadata JSON")
       .getByText("Must be a JSON object, for example")
       .waitFor({ state: "visible" }),

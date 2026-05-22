@@ -1462,7 +1462,8 @@ export function SessionsScreen() {
                     <span>Blocked extensions</span>
                     <p className="field-description">
                       One suffix per line or comma-separated values. Entries such as <code>.exe</code> or{" "}
-                      <code>.sh</code> are always denied, even if an allowlist is broader.
+                      <code>.sh</code> are always denied, even if an allowlist is broader. Blank lines and extra
+                      spaces are trimmed, and duplicates are ignored.
                     </p>
                     <textarea
                       rows={3}
