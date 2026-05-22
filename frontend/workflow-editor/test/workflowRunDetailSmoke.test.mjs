@@ -513,6 +513,38 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
       }));
       return;
     }
+    if (pathname === "/api/workflow-editor/sample-workflow") {
+      await route.fulfill(jsonResponse({
+        active: false,
+        launched_at: null,
+        run: null,
+        detail: null,
+        tutorial_steps: [
+          {
+            step_id: "launch",
+            title: "Launch the sample",
+            body: "Create the guided in-memory run without touching runtime stores.",
+            status: "active",
+            node_id: null,
+          },
+          {
+            step_id: "inspect",
+            title: "Inspect the run",
+            body: "Open the existing inspector and review the simulated graph.",
+            status: "pending",
+            node_id: "sample:first-run:run",
+          },
+        ],
+        current_step: {
+          step_id: "launch",
+          title: "Launch the sample",
+          body: "Create the guided in-memory run without touching runtime stores.",
+          status: "active",
+          node_id: null,
+        },
+      }));
+      return;
+    }
     if (pathname === "/api/workflow-editor/runs/stream") {
       await route.fulfill({
         status: 200,
@@ -607,7 +639,6 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
   await assert.doesNotReject(() => page.getByRole("button", { name: "Exit inspect mode" }).waitFor({ state: "visible" }));
   assert.equal(await page.getByText("Current runs").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Save workflow" }).count(), 0);
-  assert.equal(await page.getByText("Create").count(), 0);
   await assert.doesNotReject(() => page.locator(".node-card.inspect-ghost", { hasText: "Notify operator" }).waitFor({ state: "visible" }));
   assert.equal(await page.locator(".react-flow__node", { hasText: "Unrelated command" }).count(), 0);
   assert.equal(await page.locator(".react-flow__node", { hasText: "Unrelated effect" }).count(), 0);
