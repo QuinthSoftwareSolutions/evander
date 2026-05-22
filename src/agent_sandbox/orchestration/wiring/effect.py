@@ -50,6 +50,19 @@ class EffectProviderRuntimeWiring:
     completion_dispatch_hooks: tuple[CompletionDispatchHook, ...]
 
 
+@dataclass(frozen=True)
+class EffectWorkerStoreWiring:
+    workflow_event_journal: WorkflowEventJournal | SqliteWorkflowEventJournal
+    event_queue: TriggerEventQueue | SqliteTriggerEventQueue
+    lock_path: Path
+    cursor_path: Path
+    effect_cursor_repository: object
+    execution_store: object
+    gate_execution_store: object
+    workflow_config_snapshot_store: object
+    queued_agent_prompt_store: AgentPromptQueueStore
+
+
 def build_effect_provider_runtime_wiring(
     *,
     config: GatewayConfig,
@@ -121,6 +134,99 @@ def build_effect_provider_runtime_wiring(
     )
 
 
+def build_effect_worker_store_wiring(
+    *,
+    config: GatewayConfig,
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+    runtime: RuntimeContext,
+) -> EffectWorkerStoreWiring:
+    from agent_sandbox.daemons.effect_orchestrator import (
+        JsonExecutionStore,
+        JsonGateExecutionStore,
+        SqliteExecutionStore,
+        SqliteGateExecutionStore,
+        _resolve_worker_path,
+        build_effect_cursor_repository,
+    )
+
+    retention_days = int(worker_config.orchestration_retention_days)
+    if _sqlite_orchestration_store_enabled(worker_config):
+        workflow_event_journal = SqliteWorkflowEventJournal(
+            worker_config.orchestration_store_path,
+            retention_days=retention_days,
+        )
+        event_queue = SqliteTriggerEventQueue(
+            worker_config.orchestration_store_path,
+            journal=workflow_event_journal,
+            retention_days=retention_days,
+        )
+        execution_store = SqliteExecutionStore(
+            worker_config.orchestration_store_path,
+            journal=workflow_event_journal,
+            retention_days=retention_days,
+        )
+        gate_execution_store = SqliteGateExecutionStore(
+            worker_config.orchestration_store_path,
+            journal=workflow_event_journal,
+            retention_days=retention_days,
+        )
+        workflow_config_snapshot_store = SqliteWorkflowConfigSnapshotRepository(
+            worker_config.orchestration_store_path
+        )
+    else:
+        workflow_event_journal = WorkflowEventJournal(worker_config.workflow_event_journal_path)
+        event_queue = TriggerEventQueue(
+            worker_config.event_queue_store_path,
+            journal_path=worker_config.workflow_event_journal_path,
+        )
+        execution_store = JsonExecutionStore(
+            worker_config.effect_execution_store_path,
+            journal_path=worker_config.workflow_event_journal_path,
+        )
+        gate_execution_store = JsonGateExecutionStore(
+            _resolve_worker_path(
+                worker_config,
+                "gate_execution_store_path",
+                fallback=worker_config.runtime_dir / "gate-orchestrator-executions.json",
+            ),
+            journal_path=worker_config.workflow_event_journal_path,
+        )
+        workflow_config_snapshot_store = JsonWorkflowConfigSnapshotRepository(
+            _resolve_worker_path(
+                worker_config,
+                "workflow_config_snapshot_store_path",
+                fallback=worker_config.runtime_dir / "workflow-config-snapshots.json",
+            )
+        )
+    lock_path = _resolve_worker_path(
+        worker_config,
+        "gate_lock_path",
+        fallback=worker_config.effect_lock_path
+        or (worker_config.runtime_dir / "effect-orchestrator.lock"),
+    )
+    cursor_path = _resolve_worker_path(
+        worker_config,
+        "effect_cursor_store_path",
+        fallback=worker_config.effect_cursor_store_path
+        or (worker_config.runtime_dir / "effect-orchestrator-cursors.json"),
+    )
+    effect_cursor_repository = build_effect_cursor_repository(cursor_path)
+    queued_agent_prompt_store = AgentPromptQueueStore(
+        worker_config.runtime_dir / "queued-agent-prompts.json"
+    )
+    return EffectWorkerStoreWiring(
+        workflow_event_journal=workflow_event_journal,
+        event_queue=event_queue,
+        lock_path=lock_path,
+        cursor_path=cursor_path,
+        effect_cursor_repository=effect_cursor_repository,
+        execution_store=execution_store,
+        gate_execution_store=gate_execution_store,
+        workflow_config_snapshot_store=workflow_config_snapshot_store,
+        queued_agent_prompt_store=queued_agent_prompt_store,
+    )
+
+
 @dataclass(frozen=True)
 class EffectWorkerWiring:
     provider_config_resolver: ProviderConfigResolver
@@ -152,84 +258,10 @@ def build_effect_worker_wiring(
     provider_config_resolver: ProviderConfigResolver | None = None,
     include_default_domain_handlers: bool = True,
 ) -> EffectWorkerWiring:
-    from agent_sandbox.daemons.effect_orchestrator import (
-        JsonExecutionStore,
-        JsonGateExecutionStore,
-        _resolve_worker_path,
-        build_effect_cursor_repository,
-    )
-
-    retention_days = int(worker_config.orchestration_retention_days)
-    if _sqlite_orchestration_store_enabled(worker_config):
-        workflow_event_journal = SqliteWorkflowEventJournal(
-            worker_config.orchestration_store_path,
-            retention_days=retention_days,
-        )
-        event_queue = SqliteTriggerEventQueue(
-            worker_config.orchestration_store_path,
-            journal=workflow_event_journal,
-            retention_days=retention_days,
-        )
-    else:
-        workflow_event_journal = WorkflowEventJournal(worker_config.workflow_event_journal_path)
-        event_queue = TriggerEventQueue(
-            worker_config.event_queue_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
-        )
-    lock_path = _resolve_worker_path(
-        worker_config,
-        "gate_lock_path",
-        fallback=worker_config.effect_lock_path
-        or (worker_config.runtime_dir / "effect-orchestrator.lock"),
-    )
-    cursor_path = _resolve_worker_path(
-        worker_config,
-        "effect_cursor_store_path",
-        fallback=worker_config.effect_cursor_store_path
-        or (worker_config.runtime_dir / "effect-orchestrator-cursors.json"),
-    )
-    effect_cursor_repository = build_effect_cursor_repository(cursor_path)
-    if _sqlite_orchestration_store_enabled(worker_config):
-        from agent_sandbox.daemons.effect_orchestrator import (
-            SqliteExecutionStore,
-            SqliteGateExecutionStore,
-        )
-
-        execution_store = SqliteExecutionStore(
-            worker_config.orchestration_store_path,
-            journal=workflow_event_journal,
-            retention_days=retention_days,
-        )
-        gate_execution_store = SqliteGateExecutionStore(
-            worker_config.orchestration_store_path,
-            journal=workflow_event_journal,
-            retention_days=retention_days,
-        )
-        workflow_config_snapshot_store = SqliteWorkflowConfigSnapshotRepository(
-            worker_config.orchestration_store_path
-        )
-    else:
-        execution_store = JsonExecutionStore(
-            worker_config.effect_execution_store_path,
-            journal_path=worker_config.workflow_event_journal_path,
-        )
-        gate_execution_store = JsonGateExecutionStore(
-            _resolve_worker_path(
-                worker_config,
-                "gate_execution_store_path",
-                fallback=worker_config.runtime_dir / "gate-orchestrator-executions.json",
-            ),
-            journal_path=worker_config.workflow_event_journal_path,
-        )
-        workflow_config_snapshot_store = JsonWorkflowConfigSnapshotRepository(
-            _resolve_worker_path(
-                worker_config,
-                "workflow_config_snapshot_store_path",
-                fallback=worker_config.runtime_dir / "workflow-config-snapshots.json",
-            )
-        )
-    queued_agent_prompt_store = AgentPromptQueueStore(
-        worker_config.runtime_dir / "queued-agent-prompts.json"
+    store_wiring = build_effect_worker_store_wiring(
+        config=config,
+        worker_config=worker_config,
+        runtime=runtime,
     )
     executor = ThreadPoolExecutor(
         max_workers=max(1, min(32, max(1, (os.cpu_count() or 1) * 4))),
@@ -244,15 +276,15 @@ def build_effect_worker_wiring(
     )
     return EffectWorkerWiring(
         provider_config_resolver=runtime_wiring.provider_config_resolver,
-        workflow_event_journal=workflow_event_journal,
-        event_queue=event_queue,
-        lock_path=lock_path,
-        cursor_path=cursor_path,
-        effect_cursor_repository=effect_cursor_repository,
-        execution_store=execution_store,
-        gate_execution_store=gate_execution_store,
-        workflow_config_snapshot_store=workflow_config_snapshot_store,
-        queued_agent_prompt_store=queued_agent_prompt_store,
+        workflow_event_journal=store_wiring.workflow_event_journal,
+        event_queue=store_wiring.event_queue,
+        lock_path=store_wiring.lock_path,
+        cursor_path=store_wiring.cursor_path,
+        effect_cursor_repository=store_wiring.effect_cursor_repository,
+        execution_store=store_wiring.execution_store,
+        gate_execution_store=store_wiring.gate_execution_store,
+        workflow_config_snapshot_store=store_wiring.workflow_config_snapshot_store,
+        queued_agent_prompt_store=store_wiring.queued_agent_prompt_store,
         executor=executor,
         provider_factory=runtime_wiring.provider_factory,
         query_provider_factory=runtime_wiring.query_provider_factory,
