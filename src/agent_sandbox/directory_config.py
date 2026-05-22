@@ -962,6 +962,31 @@ class DirectoryConfigResolver:
         provenance[key] = source
 
 
+class DirectoryScopeResolver:
+    def __init__(self, service: DirectoryService) -> None:
+        self._service = service
+
+    def resolve_directory_path(self, directory_path: str | None) -> str:
+        if not directory_path:
+            return "root"
+        return self._service.show(directory_path).directory.path
+
+    def resolve_session_directory_path(
+        self,
+        *,
+        context: str,
+        session_id: str,
+        directory_path: str | None,
+    ) -> str:
+        try:
+            return self.resolve_directory_path(directory_path)
+        except ValueError as exc:
+            raise ValueError(
+                f"{context} session {session_id!r} references missing directory_path "
+                f"{directory_path!r}: {exc}"
+            ) from exc
+
+
 def load_root_gateway_config(
     directory_store: DirectoryStore,
     *,
