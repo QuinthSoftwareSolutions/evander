@@ -349,6 +349,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
 const RUNTIME_POLL_INTERVAL_MS = 5000;
 const NODE_STATUS_ORDER = ["failed", "running", "waiting", "inflight", "pending", "completed", "succeeded", "skipped"] as const;
 const WORKFLOW_SIDEBAR_WIDTH_STORAGE_KEY = "workflow-editor:sidebar-width";
+const WORKFLOW_SAMPLE_TUTORIAL_COMPLETED_STORAGE_KEY = "workflow-editor:sample-tutorial-completed";
 const WORKFLOW_SIDEBAR_DEFAULT_WIDTH = 320;
 const WORKFLOW_SIDEBAR_MIN_WIDTH = 320;
 const WORKFLOW_SIDEBAR_MAX_WIDTH = 760;
@@ -375,6 +376,11 @@ function readStoredWorkflowSidebarWidth(): number {
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed)) return WORKFLOW_SIDEBAR_DEFAULT_WIDTH;
   return Math.min(Math.max(parsed, WORKFLOW_SIDEBAR_MIN_WIDTH), WORKFLOW_SIDEBAR_MAX_WIDTH);
+}
+
+function readStoredWorkflowSampleTutorialCompleted(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(WORKFLOW_SAMPLE_TUTORIAL_COMPLETED_STORAGE_KEY) === "true";
 }
 
 function maxWorkflowSidebarWidth(containerWidth: number): number {
@@ -2660,6 +2666,10 @@ export default function App() {
   const [sampleWorkflowLoading, setSampleWorkflowLoading] = useState(true);
   const [sampleWorkflowError, setSampleWorkflowError] = useState<string | null>(null);
   const [sampleWorkflowAction, setSampleWorkflowAction] = useState<"launch" | "reset" | null>(null);
+  const [sampleWorkflowTutorialOpen, setSampleWorkflowTutorialOpen] = useState(false);
+  const [sampleWorkflowTutorialCompleted, setSampleWorkflowTutorialCompleted] = useState(
+    () => readStoredWorkflowSampleTutorialCompleted(),
+  );
   const [runDetail, setRunDetail] = useState<WorkflowRunDetail | null>(null);
   const [runDetailLookup, setRunDetailLookup] = useState(initialWorkflowRunLookup?.value ?? "");
   const [runDetailLookupKind, setRunDetailLookupKind] = useState<WorkflowRunDetailLookupKind>(
@@ -3209,9 +3219,18 @@ export default function App() {
     }
   }
 
+  function markWorkflowSampleTutorialCompleted() {
+    setSampleWorkflowTutorialCompleted(true);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(WORKFLOW_SAMPLE_TUTORIAL_COMPLETED_STORAGE_KEY, "true");
+    }
+    setSampleWorkflowTutorialOpen(false);
+  }
+
   async function resetWorkflowSample() {
     if (sampleWorkflowAction !== null) return;
     const inspectedSampleEventId = sampleWorkflow?.detail?.event_id ?? sampleWorkflow?.run?.event_id ?? null;
+    const shouldCompleteTutorial = Boolean(sampleWorkflow?.active || inspectedSampleEventId);
     setSampleWorkflowAction("reset");
     setSampleWorkflowError(null);
     try {
@@ -3223,6 +3242,9 @@ export default function App() {
         exitInspectMode();
         setRunDetailLookup("");
         setRunDetailError(null);
+      }
+      if (shouldCompleteTutorial) {
+        markWorkflowSampleTutorialCompleted();
       }
     } catch (reason: unknown) {
       setSampleWorkflowError(reason instanceof Error ? reason.message : String(reason));
@@ -6177,6 +6199,25 @@ export default function App() {
     const sampleRun = sampleWorkflow?.run ?? null;
     const sampleEventId = sampleWorkflow?.detail?.event_id ?? sampleRun?.event_id ?? null;
     const isBusy = sampleWorkflowLoading || sampleWorkflowAction !== null;
+    if (!sampleWorkflowTutorialOpen) {
+      return (
+        <div className={`guided-sample-launcher${sampleWorkflowTutorialCompleted ? " is-complete" : " needs-attention"}`}>
+          <button
+            type="button"
+            className={`guided-sample-launcher-button${sampleWorkflowTutorialCompleted ? " is-complete" : " needs-attention"}`}
+            onClick={() => setSampleWorkflowTutorialOpen(true)}
+            aria-expanded="false"
+          >
+            Tutorial
+          </button>
+          {!sampleWorkflowTutorialCompleted ? (
+            <button type="button" className="guided-sample-skip-button" onClick={markWorkflowSampleTutorialCompleted}>
+              Skip
+            </button>
+          ) : null}
+        </div>
+      );
+    }
     return (
       <div className="sidebar-section guided-sample-section">
         <div className="guided-sample-header">
@@ -6185,9 +6226,14 @@ export default function App() {
             <h2>First run walkthrough</h2>
             <p>Launch an in-memory run, inspect the simulated graph, and reset it without touching runtime stores.</p>
           </div>
-          <span className={`sample-state-pill state-${sampleWorkflow?.active ? "active" : "idle"}`}>
-            {sampleWorkflowLoading ? "Loading" : sampleWorkflow?.active ? "Active" : "Idle"}
-          </span>
+          <div className="guided-sample-header-actions">
+            <span className={`sample-state-pill state-${sampleWorkflow?.active ? "active" : "idle"}`}>
+              {sampleWorkflowLoading ? "Loading" : sampleWorkflow?.active ? "Active" : "Idle"}
+            </span>
+            <button type="button" className="subtle-button guided-sample-hide-button" onClick={() => setSampleWorkflowTutorialOpen(false)}>
+              Hide
+            </button>
+          </div>
         </div>
         {sampleWorkflowError ? <div className="runtime-run-error">{sampleWorkflowError}</div> : null}
         <div className="guided-sample-actions">
@@ -6197,6 +6243,11 @@ export default function App() {
           <button type="button" className="subtle-button" onClick={() => void resetWorkflowSample()} disabled={isBusy}>
             {sampleWorkflowAction === "reset" ? "Resetting..." : "Reset sample"}
           </button>
+          {!sampleWorkflowTutorialCompleted ? (
+            <button type="button" className="subtle-button" onClick={markWorkflowSampleTutorialCompleted}>
+              Mark complete
+            </button>
+          ) : null}
         </div>
         {sampleWorkflow?.current_step ? (
           <div className="guided-sample-current-step">

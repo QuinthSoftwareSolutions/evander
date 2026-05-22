@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-22 - Unobtrusive Workflow Tutorial
+
+- Collapsed the workflow editor guided sample into a small tutorial launcher by
+  default, with a skip/mark-complete path that removes the first-run highlight
+  without launching the sample.
+
 ## 2026-05-22 - Ansible Service Lock Ownership Repair
 
 - Made the control-plane Ansible runtime bootstrap repair ownership of managed

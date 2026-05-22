@@ -2040,6 +2040,50 @@ select {
   overflow: hidden;
 }
 
+.guided-sample-launcher {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0 0 0.65rem;
+  min-height: 2rem;
+}
+
+.sidebar .guided-sample-launcher-button,
+.sidebar .guided-sample-skip-button {
+  width: auto;
+  margin: 0;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
+.sidebar .guided-sample-launcher-button {
+  padding: 0.38rem 0.55rem;
+  border: 1px solid rgba(91, 67, 37, 0.14);
+  background: rgba(247, 242, 235, 0.36);
+  color: #6a5740;
+}
+
+.sidebar .guided-sample-launcher-button.needs-attention {
+  border-color: rgba(143, 93, 21, 0.42);
+  background: rgba(250, 230, 184, 0.72);
+  color: #65440f;
+  box-shadow: 0 0 0 2px rgba(201, 151, 52, 0.14);
+}
+
+.sidebar .guided-sample-launcher-button.is-complete {
+  padding-inline: 0.25rem;
+  border-color: transparent;
+  background: transparent;
+  color: rgba(106, 87, 64, 0.62);
+}
+
+.sidebar .guided-sample-skip-button {
+  padding: 0.35rem 0.45rem;
+  background: transparent;
+  color: #8b7459;
+}
+
 .guided-sample-section {
   display: grid;
   gap: 0.85rem;
@@ -2064,6 +2108,19 @@ select {
   margin-top: 0.28rem;
   color: #594a3a;
   font-size: 0.9rem;
+}
+
+.guided-sample-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.35rem;
+}
+
+.sidebar .guided-sample-hide-button {
+  padding: 0.32rem 0.5rem;
+  font-size: 0.76rem;
 }
 
 .sample-state-pill {
@@ -6414,6 +6471,30 @@ select {
 
 :root[data-theme="dark"] .guided-sample-header h2 {
   color: #e2efe9;
+}
+
+:root[data-theme="dark"] .sidebar .guided-sample-launcher-button {
+  border-color: rgba(128, 106, 66, 0.16);
+  background: rgba(29, 26, 21, 0.28);
+  color: #aebdb5;
+}
+
+:root[data-theme="dark"] .sidebar .guided-sample-launcher-button.needs-attention {
+  border-color: rgba(163, 128, 49, 0.42);
+  background: rgba(82, 63, 28, 0.52);
+  color: #f0d183;
+  box-shadow: 0 0 0 2px rgba(163, 128, 49, 0.12);
+}
+
+:root[data-theme="dark"] .sidebar .guided-sample-launcher-button.is-complete {
+  border-color: transparent;
+  background: transparent;
+  color: rgba(174, 189, 181, 0.56);
+}
+
+:root[data-theme="dark"] .sidebar .guided-sample-skip-button {
+  background: transparent;
+  color: #9f907d;
 }
 
 :root[data-theme="dark"] .guided-sample-header p,
