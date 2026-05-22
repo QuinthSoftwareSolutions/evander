@@ -11,6 +11,7 @@ from pydantic import TypeAdapter
 
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from agent_sandbox.daemons.effect_orchestrator import EffectOrchestratorWorker
+from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.effects.providers.base import EffectProviderBase
 from agent_sandbox.effects.registry import EffectProviderFactory, EffectProviderRegistry
 from agent_sandbox.events.models import EffectDefinitionDiscriminated, TriggerEvent
@@ -375,6 +376,10 @@ def test_effect_provider_registration_and_factory_build(
         pass
 
     config = GatewayConfig(runtime_dir=tmp_path / "runtime")
+    DirectoryService(DirectoryStore(config.directories_store_path)).create(
+        parent="root",
+        name="team-a",
+    )
     effect = _effect_adapter().validate_python(
         {
             "id": "effect-provider",

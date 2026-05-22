@@ -12,7 +12,7 @@ from agent_sandbox.admin.service import AdminService
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.gateway import create_server
-from agent_sandbox.directories import DirectoryStore
+from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.runtime import build_runtime
 
@@ -27,7 +27,22 @@ def make_context(tmp_path: Path):
         email_store_path=tmp_path / "emails.json",
         discord_command_store_path=tmp_path / "discord.json",
     )
-    return build_runtime(config)
+    context = build_runtime(config)
+    ensure_directories(context, "root/team-a")
+    return context
+
+
+def ensure_directories(context, *directory_paths: str) -> None:
+    service = DirectoryService(context.directories)
+    for directory_path in directory_paths:
+        current = "root"
+        for segment in [part for part in directory_path.split("/")[1:] if part]:
+            next_path = f"{current}/{segment}"
+            try:
+                service.show(next_path)
+            except ValueError:
+                service.create(parent=current, name=segment)
+            current = next_path
 
 
 def call_tool(server, name: str, arguments: dict[str, object]):

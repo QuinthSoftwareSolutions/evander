@@ -297,6 +297,12 @@ type DiskUsageTelemetry = {
   errors: TelemetryError[];
 };
 
+type AvailableDiskUsageTelemetry = DiskUsageTelemetry & {
+  total_bytes: number;
+  used_bytes: number;
+  free_bytes: number;
+};
+
 type DirectorySizeTelemetry = {
   scope: string;
   status: TelemetryStatus;
@@ -307,6 +313,15 @@ type DirectorySizeTelemetry = {
   symlink_count: number;
   error_count: number;
   errors: TelemetryError[];
+};
+
+type WorkerTelemetryPayload = {
+  generated_at?: string;
+  disk?: {
+    worker_root?: DiskUsageTelemetry | null;
+  } | null;
+  session_storage?: Record<string, unknown> | null;
+  jobs?: Record<string, unknown> | null;
 };
 
 type SessionStorageSample = {
@@ -359,7 +374,7 @@ type CapacityHealthPayload = {
       healthz_status: TelemetryStatus;
       telemetry_status: TelemetryStatus;
       healthz: Record<string, unknown> | null;
-      telemetry: Record<string, unknown> | null;
+      telemetry: WorkerTelemetryPayload | null;
       errors: TelemetryError[];
     }>;
   };
@@ -661,6 +676,39 @@ function capacityWorkerTone(workers: CapacityHealthPayload["workers"]): Dashboar
   if (workers.reachable_workers < workers.total_workers) return "fail";
   if (workers.telemetry_available_workers < workers.total_workers) return "running";
   return "pass";
+}
+
+function workerRootDisks(workers: CapacityHealthPayload["workers"]): AvailableDiskUsageTelemetry[] {
+  return workers.entries
+    .map((entry) => entry.telemetry?.disk?.worker_root ?? null)
+    .filter(
+      (disk): disk is AvailableDiskUsageTelemetry =>
+        disk !== null &&
+        disk.status === "available" &&
+        disk.total_bytes !== null &&
+        disk.used_bytes !== null &&
+        disk.free_bytes !== null,
+    );
+}
+
+function workerDiskSummary(workers: CapacityHealthPayload["workers"]): string {
+  const disks = workerRootDisks(workers);
+  if (workers.total_workers === 0) return "No configured workers.";
+  if (disks.length === 0) return "Worker telemetry unavailable.";
+  const totalBytes = disks.reduce((total, disk) => total + disk.total_bytes, 0);
+  const usedBytes = disks.reduce((total, disk) => total + disk.used_bytes, 0);
+  const usedPercent = totalBytes > 0 ? (usedBytes / totalBytes) * 100 : null;
+  const workerCount = `${disks.length}/${workers.total_workers} worker${workers.total_workers === 1 ? "" : "s"}`;
+  return `${formatPercent(usedPercent)} (${formatBytes(usedBytes)} / ${formatBytes(totalBytes)}) across ${workerCount}`;
+}
+
+function workerDiskHealth(workers: CapacityHealthPayload["workers"]): HealthState {
+  const disks = workerRootDisks(workers);
+  if (disks.length === 0) return "unknown";
+  if (disks.some((disk) => disk.health === "critical")) return "critical";
+  if (disks.some((disk) => disk.health === "warning")) return "warning";
+  if (disks.length < workers.total_workers) return "unknown";
+  return "ok";
 }
 
 function capacitySummary(payload: CapacityHealthPayload): string {
@@ -1658,6 +1706,10 @@ export function OperationsDashboard() {
                       </strong>
                     </div>
                     <div>
+                      <span>Worker disk</span>
+                      <strong>{workerDiskSummary(capacityHealth.workers)}</strong>
+                    </div>
+                    <div>
                       <span>Queue</span>
                       <strong>
                         {capacityHealth.queue.pending_count} pending, {capacityHealth.queue.inflight_count} in-flight
@@ -1681,6 +1733,9 @@ export function OperationsDashboard() {
                     </span>
                     <span className={`status-pill ${stateClassName(capacityWorkerTone(capacityHealth.workers))}`}>
                       Workers {capacityHealth.workers.telemetry_available_workers}/{capacityHealth.workers.total_workers} telemetry
+                    </span>
+                    <span className={`status-pill ${stateClassName(healthStateTone(workerDiskHealth(capacityHealth.workers)))}`}>
+                      Worker disk {workerDiskHealth(capacityHealth.workers)}
                     </span>
                     <span className={`status-pill ${stateClassName(healthStateTone(capacityHealth.queue.health))}`}>
                       Queue {capacityHealth.queue.health}

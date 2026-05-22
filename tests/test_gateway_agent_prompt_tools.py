@@ -29,7 +29,22 @@ def make_context(tmp_path: Path):
         agent_prompt_token_secret_env="TEST_AGENT_PROMPT_TOKEN_SECRET",
         agent_prompt_token_ttl_seconds=60,
     )
-    return build_runtime(config)
+    context = build_runtime(config)
+    ensure_directories(context, "root/alpha", "root/beta")
+    return context
+
+
+def ensure_directories(context, *directory_paths: str) -> None:
+    service = DirectoryService(context.directories)
+    for directory_path in directory_paths:
+        current = "root"
+        for segment in [part for part in directory_path.split("/")[1:] if part]:
+            next_path = f"{current}/{segment}"
+            try:
+                service.show(next_path)
+            except ValueError:
+                service.create(parent=current, name=segment)
+            current = next_path
 
 
 def call_tool(server, name: str, arguments: dict[str, object]):
@@ -569,6 +584,7 @@ def test_respond_to_agent_rejects_expired_token(tmp_path: Path) -> None:
         agent_prompt_token_ttl_seconds=1,
     )
     context = build_runtime(config)
+    ensure_directories(context, "root/alpha")
     context.session_repository.upsert_session(
         SessionManifest(
             session_id="sender",

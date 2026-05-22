@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-22 - Dashboard Worker Disk Visibility
+
+- Added worker-root disk usage to the Admin Web dashboard Capacity card using existing
+  container-worker telemetry, including a worker-disk health pill when telemetry is available.
+
 ## 2026-05-21 - Rejected Issue Listing Filter
 
 - MCP `list_issues(status=["Rejected"])` now returns closed local issues with a
