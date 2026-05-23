@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -254,6 +255,7 @@ _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
     "trigger-orchestrator": TriggerOrchestratorWorkerGlobalConfig,
 }
 _ADMIN_CONFIG_MUTATION_THREAD_LOCK = threading.RLock()
+_WORKFLOW_GENERATION_COOLDOWN_SECONDS = 10.0
 ISSUE_STATES: tuple[str, ...] = (
     "New",
     "Approved",
@@ -5381,6 +5383,9 @@ class AdminService:
         self._workflow_sample_lock = threading.RLock()
         self._workflow_sample_active = False
         self._workflow_sample_launched_at: datetime | None = None
+        self._workflow_generation_lock = threading.Lock()
+        self._workflow_generation_in_flight = False
+        self._workflow_generation_last_finished_at_monotonic: float | None = None
         self.workflow_generation_transport: httpx.AsyncBaseTransport | None = None
         self.use_privileged_helper = False
         self._privileged_helper: PrivilegedHelperSession | None = None
@@ -10469,6 +10474,31 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             include_current_packs=include_current_packs,
         )
 
+    def _begin_workflow_generation_request(self) -> None:
+        now = time.monotonic()
+        with self._workflow_generation_lock:
+            if self._workflow_generation_in_flight:
+                raise ValueError(
+                    "Workflow generation is already in progress. Wait for it to finish "
+                    "before generating another draft."
+                )
+            last_finished = self._workflow_generation_last_finished_at_monotonic
+            if last_finished is not None:
+                remaining_seconds = _WORKFLOW_GENERATION_COOLDOWN_SECONDS - (
+                    now - last_finished
+                )
+                if remaining_seconds > 0:
+                    raise ValueError(
+                        "Workflow generation is cooling down. Try again in "
+                        f"{math.ceil(remaining_seconds)} seconds."
+                    )
+            self._workflow_generation_in_flight = True
+
+    def _finish_workflow_generation_request(self) -> None:
+        with self._workflow_generation_lock:
+            self._workflow_generation_in_flight = False
+            self._workflow_generation_last_finished_at_monotonic = time.monotonic()
+
     def save_workflow_editor_document(
         self,
         *,
@@ -11323,11 +11353,15 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "Content-Type": "application/json",
         }
         url = f"{provider_config.openai_api_base_url.rstrip('/')}/responses"
-        async with httpx.AsyncClient(
-            timeout=provider_config.openai_relay_timeout_seconds,
-            transport=self.workflow_generation_transport,
-        ) as client:
-            response = await client.post(url, headers=headers, json=request_payload)
+        self._begin_workflow_generation_request()
+        try:
+            async with httpx.AsyncClient(
+                timeout=provider_config.openai_relay_timeout_seconds,
+                transport=self.workflow_generation_transport,
+            ) as client:
+                response = await client.post(url, headers=headers, json=request_payload)
+        finally:
+            self._finish_workflow_generation_request()
         if response.status_code >= 400:
             detail = response.text.strip()
             raise ValueError(

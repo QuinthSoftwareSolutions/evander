@@ -5117,6 +5117,119 @@ def test_workflow_generator_returns_validated_draft_without_writing_files(
     assert not (tmp_path / "config" / "trigger-orchestrator" / "layout.json").exists()
 
 
+def _workflow_generator_success_response() -> dict[str, object]:
+    generated = {
+        "graph": {
+            "id": "generated-cadence",
+            "name": "Generated cadence",
+            "description": "Drafted from natural language.",
+        },
+        "nodes": [
+            {
+                "id": "schedule",
+                "kind": "trigger",
+                "type": "trigger:cron",
+                "display_name": "Nightly schedule",
+                "config_json": json.dumps({"expression": "0 2 * * *"}),
+            },
+            {
+                "id": "emit-summary",
+                "kind": "effect",
+                "type": "effect:event:emit",
+                "display_name": "Emit summary event",
+                "config_json": json.dumps(
+                    {"event_type": "generated.summary", "payload": {"source": "workflow-generator"}}
+                ),
+            },
+        ],
+        "edges": [{"source_id": "schedule", "target_id": "emit-summary"}],
+    }
+    return {
+        "output": [
+            {
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": json.dumps(generated),
+                    }
+                ]
+            }
+        ]
+    }
+
+
+def test_workflow_generator_rejects_back_to_back_model_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    model_request_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal model_request_count
+        model_request_count += 1
+        return httpx.Response(200, json=_workflow_generator_success_response())
+
+    service.workflow_generation_transport = httpx.MockTransport(handler)
+    client = TestClient(create_app(service))
+
+    first_response = client.post(
+        "/api/workflow-editor/generate-draft",
+        json={"description": "Every night, emit a generated summary event."},
+    )
+    second_response = client.post(
+        "/api/workflow-editor/generate-draft",
+        json={"description": "Every morning, emit a generated summary event."},
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 400
+    assert "cooling down" in second_response.json()["error"]
+    assert model_request_count == 1
+
+
+def test_workflow_generator_rejects_concurrent_model_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    model_request_count = 0
+
+    async def run_case() -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal model_request_count
+            model_request_count += 1
+            started.set()
+            await release.wait()
+            return httpx.Response(200, json=_workflow_generator_success_response())
+
+        service.workflow_generation_transport = httpx.MockTransport(handler)
+        first_task = asyncio.create_task(
+            service.generate_workflow_editor_draft(
+                description="Every night, emit a generated summary event.",
+                directory_path="root",
+            )
+        )
+        try:
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+            with pytest.raises(ValueError, match="already in progress"):
+                await service.generate_workflow_editor_draft(
+                    description="Every morning, emit a generated summary event.",
+                    directory_path="root",
+                )
+        finally:
+            release.set()
+        await first_task
+
+    asyncio.run(run_case())
+    assert model_request_count == 1
+
+
 def test_workflow_generator_requires_configured_model(tmp_path: Path) -> None:
     service = AdminService(write_config(tmp_path))
     client = TestClient(create_app(service))

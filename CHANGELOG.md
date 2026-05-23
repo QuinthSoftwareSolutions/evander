@@ -5,6 +5,19 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-23 - Workflow Generator Draft Safety Fixes
+
+- Restricted workflow generator draft acceptance to ready generated drafts so
+  stale previews cannot be accepted after prompt changes or generation failures.
+- Replaced pause-driven workflow generation with an explicit **Generate draft**
+  action and a longer minimum description before model requests are allowed.
+- Added a backend in-flight guard and cooldown around workflow generator OpenAI
+  calls so browser request timing is not the only rate-control layer.
+- Remapped generated draft output schemas when imported node ids collide with
+  existing workflow nodes.
+- Kept the guided sample controls visible while inspecting a sample run so the
+  first-run walkthrough can reset and complete from inspect mode.
+
 ## 2026-05-23 - Retry-Safe Workflow Completion Publication
 
 - Added durable `completion_pending` effect and gate execution state so

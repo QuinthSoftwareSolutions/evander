@@ -2271,7 +2271,7 @@ select {
 }
 
 .workflow-generator-status.state-generating,
-.workflow-generator-status.state-waiting {
+.workflow-generator-status.state-draftable {
   border-color: rgba(151, 103, 28, 0.22);
   background: rgba(151, 103, 28, 0.1);
   color: #7d5517;
@@ -2298,7 +2298,7 @@ select {
 
 .workflow-generator-actions {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.55rem;
 }
 
