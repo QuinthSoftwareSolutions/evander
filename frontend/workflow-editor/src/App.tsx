@@ -6925,6 +6925,9 @@ export default function App() {
                   </label>
                   <label className="inspector-label">
                     <span>Directories</span>
+                    <p className="field-description">
+                      One directory path per line. If the graph has no saved directories, the editor shows the selected directory/root default. Applying edits still requires at least one directory line.
+                    </p>
                     <textarea
                       value={graphDirectoriesDraft}
                       rows={3}
@@ -6935,6 +6938,9 @@ export default function App() {
                   </label>
                   <label className="inspector-label">
                     <span>User IDs</span>
+                    <p className="field-description">
+                      Ownership and audit metadata only. These IDs do not grant visibility or change who can run the graph.
+                    </p>
                     <textarea
                       value={graphUsersDraft}
                       rows={3}
