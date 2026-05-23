@@ -5117,6 +5117,60 @@ def test_workflow_generator_returns_validated_draft_without_writing_files(
     assert not (tmp_path / "config" / "trigger-orchestrator" / "layout.json").exists()
 
 
+def test_workflow_generator_rejects_cyclic_generated_graph_without_hanging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    generated = {
+        "graph": {
+            "id": "generated-cycle",
+            "name": "Generated cycle",
+            "description": "Drafted from natural language.",
+        },
+        "nodes": [
+            {
+                "id": "schedule",
+                "kind": "trigger",
+                "type": "trigger:cron",
+                "display_name": "Nightly schedule",
+                "config_json": json.dumps({"expression": "0 2 * * *"}),
+            }
+        ],
+        "edges": [{"source_id": "schedule", "target_id": "schedule"}],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(generated),
+                            }
+                        ]
+                    }
+                ]
+            },
+        )
+
+    service.workflow_generation_transport = httpx.MockTransport(handler)
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        "/api/workflow-editor/generate-draft",
+        json={"description": "Create a cyclic generated workflow.", "directory_path": "root"},
+    )
+
+    assert response.status_code == 400
+    assert response.headers["content-type"].startswith("application/json")
+    assert "schedule" in response.json()["error"]
+
+
 def _workflow_generator_success_response() -> dict[str, object]:
     generated = {
         "graph": {
@@ -5156,6 +5210,30 @@ def _workflow_generator_success_response() -> dict[str, object]:
             }
         ]
     }
+
+
+def test_workflow_generator_returns_json_error_for_transport_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    service.workflow_generation_transport = httpx.MockTransport(handler)
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        "/api/workflow-editor/generate-draft",
+        json={"description": "Every night, emit a generated summary event."},
+    )
+
+    assert response.status_code == 400
+    assert response.headers["content-type"].startswith("application/json")
+    assert "OpenAI workflow generation request failed" in response.json()["error"]
+    assert "connection refused" in response.json()["error"]
 
 
 def test_workflow_generator_rejects_back_to_back_model_requests(

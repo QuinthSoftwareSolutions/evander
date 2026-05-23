@@ -7,6 +7,10 @@ material. Newer entries are added incrementally as changes land.
 
 ## 2026-05-23 - Workflow Generator Draft Safety Fixes
 
+- Guarded generated workflow draft layout against cyclic graphs so invalid
+  model output reaches validation instead of re-enqueueing nodes forever.
+- Returned JSON generator errors when upstream OpenAI Responses API transport
+  requests fail before an HTTP response is available.
 - Restricted workflow generator draft acceptance to ready generated drafts so
   stale previews cannot be accepted after prompt changes or generation failures.
 - Replaced pause-driven workflow generation with an explicit **Generate draft**

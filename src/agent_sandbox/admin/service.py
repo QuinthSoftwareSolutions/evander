@@ -11359,7 +11359,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 timeout=provider_config.openai_relay_timeout_seconds,
                 transport=self.workflow_generation_transport,
             ) as client:
-                response = await client.post(url, headers=headers, json=request_payload)
+                try:
+                    response = await client.post(url, headers=headers, json=request_payload)
+                except httpx.HTTPError as exc:
+                    raise ValueError(
+                        f"OpenAI workflow generation request failed: {exc}"
+                    ) from exc
         finally:
             self._finish_workflow_generation_request()
         if response.status_code >= 400:
@@ -11834,20 +11839,43 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     continue
                 outbound[source_id].append(target_id)
                 inbound_count[target_id] += 1
-        queue = [
+        initial_queue = [
             node_id
             for node_id in ordered_node_ids
             if inbound_count[node_id] == 0
         ] or ordered_node_ids[:1]
+        queue = deque(initial_queue)
+        queued_node_ids = set(initial_queue)
+        processed_node_ids: set[str] = set()
         levels: dict[str, int] = {}
-        while queue:
-            node_id = queue.pop(0)
+        while len(processed_node_ids) < len(ordered_node_ids):
+            if not queue:
+                next_node_id = next(
+                    (
+                        node_id
+                        for node_id in ordered_node_ids
+                        if node_id not in processed_node_ids
+                    ),
+                    None,
+                )
+                if next_node_id is None:
+                    break
+                queue.append(next_node_id)
+                queued_node_ids.add(next_node_id)
+            node_id = queue.popleft()
+            queued_node_ids.discard(node_id)
+            if node_id in processed_node_ids:
+                continue
+            processed_node_ids.add(node_id)
             level = levels.get(node_id, 0)
             for target_id in outbound.get(node_id, []):
+                if target_id in processed_node_ids:
+                    continue
                 levels[target_id] = max(levels.get(target_id, 0), level + 1)
                 inbound_count[target_id] -= 1
-                if inbound_count[target_id] <= 0:
+                if inbound_count[target_id] <= 0 and target_id not in queued_node_ids:
                     queue.append(target_id)
+                    queued_node_ids.add(target_id)
         for node_id in ordered_node_ids:
             levels.setdefault(node_id, 0)
         rows_by_level: dict[int, int] = {}
