@@ -4771,6 +4771,7 @@ def test_workflow_graph_activity_report_initializes_fresh_sqlite_backend(
 
 def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = AdminService(write_config(tmp_path))
     runtime_dir = tmp_path / "runtime"
@@ -4963,10 +4964,28 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
         session_id="session-sqlite",
         vm_id="target-sqlite",
     )
+    monkeypatch.setattr(
+        SqliteTriggerEventQueue,
+        "read_all",
+        lambda self: pytest.fail("run detail should not scan every trigger event"),
+    )
+    monkeypatch.setattr(
+        SqliteExecutionStore,
+        "read_all",
+        lambda self: pytest.fail("run detail should not scan every effect execution"),
+    )
+    monkeypatch.setattr(
+        SqliteGateExecutionStore,
+        "read_all",
+        lambda self: pytest.fail("run detail should not scan every gate execution"),
+    )
 
     detail = service.read_workflow_run_detail(event_id="evt-sqlite")
+    detail_by_trace = service.read_workflow_run_detail(trace_id="trace-sqlite")
 
     assert detail.event_id == "evt-sqlite"
+    assert detail_by_trace.event_id == "evt-sqlite"
+    assert detail_by_trace.trace_id == "trace-sqlite"
     assert detail.graph.config_revision == "rev-sqlite"
     assert detail.graph.snapshot is not None
     assert detail.graph.snapshot.revision == "rev-sqlite"

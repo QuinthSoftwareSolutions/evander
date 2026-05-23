@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-23 - Workflow Run Detail Lookup Guardrail
+
+- Changed SQLite-backed workflow run detail lookups by event or trace id to
+  query indexed orchestration rows directly instead of loading the full
+  trigger/effect/gate execution history, and bounded tool-call audit scanning
+  for the detail view.
+
 ## 2026-05-22 - Unobtrusive Workflow Tutorial
 
 - Collapsed the workflow editor guided sample into a small tutorial launcher by
