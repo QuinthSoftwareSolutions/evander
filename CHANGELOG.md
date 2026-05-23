@@ -10,6 +10,8 @@ material. Newer entries are added incrementally as changes land.
 - Added durable `completion_pending` effect and gate execution state so
   completion-event enqueue failures can be retried without rerunning completed
   providers or gate logic.
+- Kept deterministic completion-event payload validation failures as failed
+  executions instead of retrying them as transient publish failures.
 - Preserved pending `started` branch publication for waiting agent effects so a
   transient enqueue failure does not mark the source event delivered before the
   branch activation is queued.
