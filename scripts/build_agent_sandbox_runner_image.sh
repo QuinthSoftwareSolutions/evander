@@ -237,8 +237,12 @@ if ! command -v "${DOCKER}" >/dev/null 2>&1; then
 fi
 
 BUILD_CONTEXT=""
+RUNNER_ARCHIVE_TMP_PATH=""
 MANIFEST_TMP_PATH=""
 cleanup() {
+  if [[ -n "${RUNNER_ARCHIVE_TMP_PATH}" && -e "${RUNNER_ARCHIVE_TMP_PATH}" ]]; then
+    rm -f "${RUNNER_ARCHIVE_TMP_PATH}"
+  fi
   if [[ -n "${MANIFEST_TMP_PATH}" && -e "${MANIFEST_TMP_PATH}" ]]; then
     rm -f "${MANIFEST_TMP_PATH}"
   fi
@@ -257,11 +261,17 @@ build_args=(build -t "${RUNNER_IMAGE_NAME}")
 if [[ -n "${RUNNER_BUILD_NETWORK}" ]]; then
   build_args+=(--network "${RUNNER_BUILD_NETWORK}")
 fi
+if [[ "${FORCE_REBUILD}" -eq 1 ]]; then
+  build_args+=(--pull)
+fi
 build_args+=("${BUILD_CONTEXT}")
 
 "${DOCKER}" "${build_args[@]}"
 mkdir -p "$(dirname "${RUNNER_ARCHIVE_PATH}")"
-"${DOCKER}" save -o "${RUNNER_ARCHIVE_PATH}" "${RUNNER_IMAGE_NAME}"
+RUNNER_ARCHIVE_TMP_PATH="$(mktemp "$(dirname "${RUNNER_ARCHIVE_PATH}")/.runner-archive.XXXXXX.tar")"
+"${DOCKER}" save -o "${RUNNER_ARCHIVE_TMP_PATH}" "${RUNNER_IMAGE_NAME}"
+mv -f "${RUNNER_ARCHIVE_TMP_PATH}" "${RUNNER_ARCHIVE_PATH}"
+RUNNER_ARCHIVE_TMP_PATH=""
 
 mkdir -p "$(dirname "${RUNNER_MANIFEST_PATH}")"
 MANIFEST_TMP_PATH="$(mktemp "$(dirname "${RUNNER_MANIFEST_PATH}")/.runner-manifest.XXXXXX")"

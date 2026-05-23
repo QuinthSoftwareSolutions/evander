@@ -73,6 +73,9 @@ def _write_fake_docker(tmp_path: Path) -> tuple[Path, Path]:
         """#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\\n' "${1:-}" >> "${FAKE_DOCKER_LOG:?}"
+if [[ -n "${FAKE_DOCKER_COMMAND_LOG:-}" ]]; then
+  printf '%s\\n' "$*" >> "${FAKE_DOCKER_COMMAND_LOG}"
+fi
 case "${1:-}" in
   build)
     exit 0
@@ -87,6 +90,10 @@ case "${1:-}" in
       shift
     done
     mkdir -p "$(dirname "$archive_path")"
+    if [[ "${FAKE_DOCKER_FAIL_SAVE_AFTER_WRITE:-}" == "1" ]]; then
+      printf 'partial image\\n' > "$archive_path"
+      exit 42
+    fi
     printf 'fake image\\n' > "$archive_path"
     exit 0
     ;;
@@ -116,6 +123,23 @@ def _run_runner_script(
     )
     assert completed.returncode == 0, completed.stderr
     return completed
+
+
+def _run_runner_script_raw(
+    script_path: Path,
+    repo_root: Path,
+    env: dict[str, str],
+    *,
+    args: list[str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(script_path), *(args or [])],
+        cwd=repo_root,
+        env={**os.environ, **env},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
 
 
 def _docker_invocations(log_path: Path) -> list[str]:
@@ -166,7 +190,10 @@ def test_runner_build_script_builds_tag_and_saves_tarball() -> None:
     assert "dist/agent-sandbox-runner.tar" in script
     assert 'build_args=(build -t "${RUNNER_IMAGE_NAME}")' in script
     assert 'build_args+=(--network "${RUNNER_BUILD_NETWORK}")' in script
-    assert '"${DOCKER}" save -o "${RUNNER_ARCHIVE_PATH}" "${RUNNER_IMAGE_NAME}"' in script
+    assert 'build_args+=(--pull)' in script
+    assert 'RUNNER_ARCHIVE_TMP_PATH="$(mktemp "$(dirname "${RUNNER_ARCHIVE_PATH}")/.runner-archive.XXXXXX.tar")"' in script
+    assert '"${DOCKER}" save -o "${RUNNER_ARCHIVE_TMP_PATH}" "${RUNNER_IMAGE_NAME}"' in script
+    assert 'mv -f "${RUNNER_ARCHIVE_TMP_PATH}" "${RUNNER_ARCHIVE_PATH}"' in script
     assert "Reused cached ${RUNNER_IMAGE_NAME} archive at ${RUNNER_ARCHIVE_PATH}" in script
 
 
@@ -420,4 +447,75 @@ def test_runner_build_script_forces_rebuild_even_with_matching_manifest(
     assert "Reused cached" not in result.stdout
     assert archive_path.read_text(encoding="utf-8") == "fake image\n"
     assert manifest_path.read_text(encoding="utf-8") == first_manifest
+    assert _docker_invocations(docker_log_path) == ["build", "save", "build", "save"]
+
+
+def test_runner_build_script_pulls_base_image_on_forced_rebuild(
+    tmp_path: Path,
+) -> None:
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
+    codex_root, _, _ = _create_codex_fixture(tmp_path, layout="current")
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
+    docker_command_log_path = tmp_path / "docker-command.log"
+
+    env = {
+        "DOCKER": str(fake_docker),
+        "FAKE_DOCKER_LOG": str(docker_log_path),
+        "FAKE_DOCKER_COMMAND_LOG": str(docker_command_log_path),
+        "HOST_CODEX_ROOT": str(codex_root),
+        "HOST_CODEX_PLATFORM_PACKAGE": RUNNER_PLATFORM_PACKAGE,
+        "CODEX_TARGET_TRIPLE": RUNNER_TARGET_TRIPLE,
+    }
+
+    _run_runner_script(script_path, repo_root, env)
+    _run_runner_script(script_path, repo_root, env, args=["--force"])
+
+    build_commands = [
+        line
+        for line in docker_command_log_path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("build ")
+    ]
+    assert len(build_commands) == 2
+    assert " --pull " not in f" {build_commands[0]} "
+    assert " --pull " in f" {build_commands[1]} "
+
+
+def test_runner_build_script_preserves_cache_after_failed_save(
+    tmp_path: Path,
+) -> None:
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
+    archive_path = repo_root / "dist" / "agent-sandbox-runner.tar"
+    manifest_path = Path(f"{archive_path}.manifest")
+    codex_root, _, _ = _create_codex_fixture(tmp_path, layout="current")
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
+
+    env = {
+        "DOCKER": str(fake_docker),
+        "FAKE_DOCKER_LOG": str(docker_log_path),
+        "HOST_CODEX_ROOT": str(codex_root),
+        "HOST_CODEX_PLATFORM_PACKAGE": RUNNER_PLATFORM_PACKAGE,
+        "CODEX_TARGET_TRIPLE": RUNNER_TARGET_TRIPLE,
+    }
+
+    _run_runner_script(script_path, repo_root, env)
+    first_manifest = manifest_path.read_text(encoding="utf-8")
+
+    failed = _run_runner_script_raw(
+        script_path,
+        repo_root,
+        {**env, "FAKE_DOCKER_FAIL_SAVE_AFTER_WRITE": "1"},
+        args=["--force"],
+    )
+
+    assert failed.returncode == 42
+    assert archive_path.read_text(encoding="utf-8") == "fake image\n"
+    assert manifest_path.read_text(encoding="utf-8") == first_manifest
+    assert list(archive_path.parent.glob(".runner-archive.*.tar")) == []
+
+    reused = _run_runner_script(script_path, repo_root, env)
+
+    assert reused.stdout.strip() == f"Reused cached agent-sandbox-runner:latest archive at {archive_path}"
+    assert archive_path.read_text(encoding="utf-8") == "fake image\n"
     assert _docker_invocations(docker_log_path) == ["build", "save", "build", "save"]

@@ -5,6 +5,17 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-23 - Runner Cache and Workflow Tutorial Fixes
+
+- Pulled moving Docker base-image tags during forced runner-image rebuilds and
+  saved runner archives through a temporary tarball before publishing the
+  manifest.
+- Kept the workflow editor first-steps tutorial isolated from the live graph
+  state, preserved the target-node selection after tutorial connections, and
+  stabilized tutorial camera effects.
+- Opened the tutorial create controls against the tutorial catalog when the
+  walkthrough asks the operator to add a node.
+
 ## 2026-05-23 - Cached Runner Archive Reuse
 
 - Added a sidecar manifest contract for `dist/agent-sandbox-runner.tar` so

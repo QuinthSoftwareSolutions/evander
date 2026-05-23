@@ -855,6 +855,25 @@ function createSampleState(active) {
   };
 }
 
+async function dispatchWorkflowNodeMouseEvent(page, nodeId, eventType) {
+  await page.locator(`.react-flow__node[data-id="${nodeId}"]`).evaluate((element, type) => {
+    const canvas = element.closest(".canvas-shell") ?? document.body;
+    const rect = canvas.getBoundingClientRect();
+    const clientX = Math.max(rect.left + 24, Math.min(rect.right - 24, rect.left + rect.width / 2));
+    const clientY = Math.max(rect.top + 24, Math.min(rect.bottom - 24, rect.top + rect.height / 2));
+    const button = type === "contextmenu" ? 2 : 0;
+    element.dispatchEvent(new MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      button,
+      buttons: button === 2 ? 2 : 1,
+      clientX,
+      clientY,
+      view: window,
+    }));
+  }, eventType);
+}
+
 test("workflow editor guides, inspects, and resets the guided sample workflow", async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
@@ -1152,6 +1171,30 @@ test("workflow editor guides, inspects, and resets the guided sample workflow", 
   });
   await page.getByRole("button", { name: "Exit" }).click();
   await page.waitForFunction(() => !document.querySelector(".workflow-tutorial-bubble"));
+
+  await page.getByRole("button", { name: "First steps" }).click();
+  await page.getByRole("dialog", { name: "Welcome" }).waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Next" }).click();
+  await page.getByRole("dialog", { name: "Select the trigger" }).waitFor({ state: "visible" });
+  await dispatchWorkflowNodeMouseEvent(page, "tutorial-trigger", "click");
+  await page.getByRole("dialog", { name: "Trigger entrypoints" }).waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Next" }).click();
+  await page.getByRole("dialog", { name: "Add a downstream node" }).waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Prompt agent" }).click();
+  await page.getByRole("dialog", { name: "Connect the nodes" }).waitFor({ state: "visible" });
+  await dispatchWorkflowNodeMouseEvent(page, "tutorial-trigger", "contextmenu");
+  await page.getByRole("menuitem", { name: "Completed" }).click();
+  await dispatchWorkflowNodeMouseEvent(page, "tutorial-effect", "click");
+  await page.getByRole("dialog", { name: "Bind the prompt" }).waitFor({ state: "visible" });
+  const tutorialInspector = page.locator(".sidebar-section.inspector").filter({ hasText: "tutorial-effect" });
+  await tutorialInspector.getByText("Prompt", { exact: true }).waitFor({ state: "visible" });
+  assert.equal(await tutorialInspector.locator("textarea").first().isEnabled(), true);
+  await page.getByRole("button", { name: "Exit" }).click();
+  await page.waitForFunction(() => !document.querySelector(".workflow-tutorial-bubble"));
+  await page.locator('.react-flow__node[data-id="trigger-1"]').waitFor({ state: "visible" });
+  await page.locator('.react-flow__node[data-id="effect-1"]').waitFor({ state: "visible" });
+  assert.equal(await page.locator('.react-flow__node[data-id="tutorial-trigger"]').count(), 0);
+  assert.equal(await page.locator('.react-flow__node[data-id="tutorial-effect"]').count(), 0);
 
   await page.getByRole("button", { name: "Sample run" }).click();
   await page.waitForSelector(".guided-sample-section");

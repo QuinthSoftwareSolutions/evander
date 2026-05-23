@@ -3106,6 +3106,15 @@ export default function App() {
     : flowEdges.filter((edge) => visibleGraphNodeIds.has(edge.source) && visibleGraphNodeIds.has(edge.target));
   const displayedFlowNodes = isInspectMode ? inspectFlowNodes : normalDisplayedFlowNodes;
   const displayedFlowEdges = isInspectMode ? inspectFlowEdges : normalDisplayedFlowEdges;
+  const tutorialCameraTargetNodeId = isTutorialMode && activeWorkflowTutorialStep
+    ? workflowTutorialTargetNodeId(activeWorkflowTutorialStep.target)
+    : null;
+  const tutorialCameraTargetNode = tutorialCameraTargetNodeId
+    ? displayedFlowNodes.find((node) => node.id === tutorialCameraTargetNodeId)
+    : undefined;
+  const tutorialCameraTargetKey = tutorialCameraTargetNode
+    ? `${tutorialCameraTargetNode.id}:${tutorialCameraTargetNode.position.x}:${tutorialCameraTargetNode.position.y}`
+    : "";
   const selectedInspectGraphNode = isInspectMode && selectedNodeId
     ? runDetailGraphNodes.find((node) => node.id === selectedNodeId)
     : undefined;
@@ -3822,6 +3831,24 @@ export default function App() {
     if (!snapshot) {
       return;
     }
+    if (document) {
+      const validNodeIds = new Set(workflowNodeIds(document.config));
+      const restoredSelectedNodeIds = snapshot.selectedNodeIds.filter((nodeId) => validNodeIds.has(nodeId));
+      const restoredDirtyNodeIds = dirtyWorkflowNodeIds(document, savedDocument, nodeEditOrigins);
+      setFlowNodes((currentNodes) =>
+        buildNodes(
+          document.config,
+          document.layout,
+          catalog,
+          workflowGeneratorOpen ? {} : runSnapshot?.node_activity ?? {},
+          validationDiagnostics,
+          currentPositionsFromNodes(currentNodes),
+          restoredSelectedNodeIds,
+          new Set(restoredDirtyNodeIds),
+        ),
+      );
+      setFlowEdges(buildEdges(document.config, catalog));
+    }
     setProgrammaticSelection(snapshot.selectedNodeIds, snapshot.selectedNodeId);
     setSelectedEdgeId(snapshot.selectedEdgeId);
     setSelectedGraphId(snapshot.selectedGraphId);
@@ -4107,8 +4134,7 @@ export default function App() {
   useEffect(() => {
     if (!isTutorialMode || !activeWorkflowTutorialStep || !flowInstance) return;
     if (activeWorkflowTutorialStep.camera === "none") return;
-    const targetNodeId = workflowTutorialTargetNodeId(activeWorkflowTutorialStep.target);
-    const targetNode = targetNodeId ? displayedFlowNodes.find((node) => node.id === targetNodeId) : undefined;
+    const targetNode = tutorialCameraTargetNode;
     if (!targetNode) return;
 
     let cancelled = false;
@@ -4140,7 +4166,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeWorkflowTutorialStep?.id, flowInstance, isTutorialMode, displayedFlowNodes]);
+  }, [activeWorkflowTutorialStep?.camera, activeWorkflowTutorialStep?.id, flowInstance, isTutorialMode, tutorialCameraTargetKey]);
 
   useEffect(() => {
     if (!selectedGraph) {
@@ -4383,25 +4409,19 @@ export default function App() {
         nextDocument.config,
         nextDocument.output_schemas,
       );
+      const nextTutorialDocument = {
+        ...nextDocument,
+        validation_diagnostics: nextDiagnostics,
+      };
       setActiveWorkflowTutorial((current) => (
         current ? {
           ...current,
-          document: nextDocument,
+          document: nextTutorialDocument,
         } : current
       ));
-      setFlowNodes((currentNodes) =>
-        buildNodes(
-          nextDocument.config,
-          nextLayout,
-          activeWorkflowCatalog,
-          {},
-          nextDiagnostics,
-          currentPositionsFromNodes(currentNodes),
-          selectedNodeIdsAfterPatch ?? currentNodes.filter((node) => node.selected).map((node) => node.id),
-          new Set<string>(),
-        ),
-      );
-      setFlowEdges(buildEdges(nextDocument.config, activeWorkflowCatalog));
+      if (selectedNodeIdsAfterPatch) {
+        setProgrammaticSelection(selectedNodeIdsAfterPatch, selectedNodeIdsAfterPatch[0] ?? null);
+      }
       setSaveState("idle");
       return;
     }
@@ -4726,6 +4746,9 @@ export default function App() {
           event.stopPropagation();
           if (addWorkflowEdge(pendingConnection.sourceId, node.id, pendingConnection.sourcePort)) {
             setPendingConnection(null);
+            setProgrammaticSelection([node.id], node.id);
+            setSelectedEdgeId(null);
+            setSnapGuides([]);
             completeTutorialAction(connectAction);
           }
           appShellRef.current?.focus();
@@ -7791,7 +7814,7 @@ export default function App() {
   }
 
   const createEntriesByKind = NODE_GROUPS.map((group) => {
-    const entries = catalog.nodes
+    const entries = activeWorkflowCatalog.nodes
       .filter((entry) => entry.kind === group.kind)
       .sort(compareWorkflowNodeCatalogEntries);
     return {
@@ -8186,51 +8209,63 @@ export default function App() {
               ) : null}
             </details>
 
-            <details className="sidebar-section collapsible-sidebar-section">
+            <details
+              className="sidebar-section collapsible-sidebar-section"
+              open={isTutorialMode && tutorialCurrentRequiredAction()?.kind === "add-node"}
+            >
               <summary className="collapsible-sidebar-summary">
                 <span className="section-label">Create</span>
                 <span className="collapsible-sidebar-meta">
                   {createEntryCount} {createEntryCount === 1 ? "node" : "nodes"}
                 </span>
               </summary>
-              {createEntriesByKind.map((group) => (
-                <details key={group.kind} className="create-group" open={group.kind === "trigger"}>
-                  <summary className="create-group-summary">
-                    <Tooltip content={group.description}>
-                      <span>{group.label}</span>
-                    </Tooltip>
-                    <span className="create-group-count">{group.entries.length}</span>
-                  </summary>
-                  <p className="create-group-description">{group.description}</p>
-                  <div className="create-subgroups">
-                    {group.subgroups.map((subgroup) => (
-                      <details key={subgroup.key} className="create-subgroup" open>
-                        <summary className="create-subgroup-summary">
-                          <Tooltip content={subgroup.description}>
-                            <span>{subgroup.label}</span>
-                          </Tooltip>
-                          <span className="create-subgroup-count">{subgroup.entries.length}</span>
-                        </summary>
-                        <div className="create-group-actions create-subgroup-actions">
-                          {subgroup.entries.map((entry) => (
-                            <Tooltip key={entry.type} content={nodeTypeDescription(entry)} inline={false}>
-                              <button
-                                type="button"
-                                draggable={!workflowEditLocked || tutorialAllowsNodeType(entry.kind, entry.type)}
-                                onDragStart={(event) => startNodeTypeDrag(event, entry)}
-                                onClick={() => addNode(entry.kind, entry.type)}
-                                disabled={workflowEditLocked && !tutorialAllowsNodeType(entry.kind, entry.type)}
-                              >
-                                {entry.label}
-                              </button>
+              {createEntriesByKind.map((group) => {
+                const hasTutorialAllowedNodeType = group.entries.some((entry) =>
+                  tutorialAllowsNodeType(entry.kind, entry.type),
+                );
+                return (
+                  <details
+                    key={group.kind}
+                    className="create-group"
+                    open={group.kind === "trigger" || hasTutorialAllowedNodeType}
+                  >
+                    <summary className="create-group-summary">
+                      <Tooltip content={group.description}>
+                        <span>{group.label}</span>
+                      </Tooltip>
+                      <span className="create-group-count">{group.entries.length}</span>
+                    </summary>
+                    <p className="create-group-description">{group.description}</p>
+                    <div className="create-subgroups">
+                      {group.subgroups.map((subgroup) => (
+                        <details key={subgroup.key} className="create-subgroup" open>
+                          <summary className="create-subgroup-summary">
+                            <Tooltip content={subgroup.description}>
+                              <span>{subgroup.label}</span>
                             </Tooltip>
-                          ))}
-                        </div>
-                      </details>
-                    ))}
-                  </div>
-                </details>
-              ))}
+                            <span className="create-subgroup-count">{subgroup.entries.length}</span>
+                          </summary>
+                          <div className="create-group-actions create-subgroup-actions">
+                            {subgroup.entries.map((entry) => (
+                              <Tooltip key={entry.type} content={nodeTypeDescription(entry)} inline={false}>
+                                <button
+                                  type="button"
+                                  draggable={!workflowEditLocked || tutorialAllowsNodeType(entry.kind, entry.type)}
+                                  onDragStart={(event) => startNodeTypeDrag(event, entry)}
+                                  onClick={() => addNode(entry.kind, entry.type)}
+                                  disabled={workflowEditLocked && !tutorialAllowsNodeType(entry.kind, entry.type)}
+                                >
+                                  {entry.label}
+                                </button>
+                              </Tooltip>
+                            ))}
+                          </div>
+                        </details>
+                      ))}
+                    </div>
+                  </details>
+                );
+              })}
             </details>
 
             <div className="sidebar-section">
