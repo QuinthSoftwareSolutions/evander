@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  rewriteWorkflowConfigBindingReferences,
   rewriteWorkflowBindingReferences,
   rewriteWorkflowNodeConfigBindings,
 } from "../src/workflowBindings.ts";
@@ -82,4 +83,143 @@ test("rewrites nested node config values without changing node identity fields",
       },
     ],
   });
+});
+
+test("rewrites workflow config binding references across all node collections", () => {
+  const config = {
+    runtime_dir: "/tmp/workflow",
+    poll_interval_seconds: 30,
+    lock_path: "/tmp/workflow.lock",
+    triggers: [
+      {
+        id: "trigger-old",
+        display_name: "Trigger old",
+        type: "trigger:test",
+        prompt: "Start ${{trigger-old.ticket.title}}",
+        metadata: {
+          title: "Ticket ${{trigger-old.ticket.title}}",
+          list: [
+            "${{trigger-old.ticket.title}}",
+            "${{effect-old.result.path}}",
+            "${{workflow.run.id}}",
+          ],
+        },
+      },
+    ],
+    gates: [
+      {
+        id: "gate-old",
+        display_name: "Gate old",
+        type: "gate:test",
+        decision: "${{trigger-old.ticket.title ?? fallback-old.ticket.title}}",
+        malformed: "Review ${{trigger-old.ticket ?? {bad}}}",
+      },
+    ],
+    effects: [
+      {
+        id: "effect-old",
+        display_name: "Effect old",
+        type: "effect:test",
+        prompt: "Review ${{trigger-old.ticket.title}} and ${{outside-node.ticket.title}}",
+        payload: [
+          {
+            body: "Object ${{trigger-old.ticket.title}}",
+            nested: {
+              note: "Again ${{effect-old.result.path}}",
+            },
+          },
+        ],
+      },
+    ],
+    queries: [
+      {
+        id: "query-old",
+        display_name: "Query old",
+        type: "query:test",
+        filter: "${{trigger-old.ticket.title ?? fallback-old.ticket.title}}",
+      },
+    ],
+    edges: [
+      {
+        source_id: "trigger-old",
+        target_id: "gate-old",
+      },
+    ],
+  };
+  const nodeIdMap = new Map([
+    ["trigger-old", "trigger-new"],
+    ["gate-old", "gate-new"],
+    ["effect-old", "effect-new"],
+    ["fallback-old", "fallback-new"],
+  ]);
+
+  const rewritten = rewriteWorkflowConfigBindingReferences(config, nodeIdMap);
+
+  assert.notStrictEqual(rewritten, config);
+  assert.strictEqual(rewritten.edges, config.edges);
+  assert.strictEqual(rewritten.runtime_dir, config.runtime_dir);
+  assert.strictEqual(rewritten.poll_interval_seconds, config.poll_interval_seconds);
+  assert.strictEqual(rewritten.lock_path, config.lock_path);
+  assert.notStrictEqual(rewritten.triggers, config.triggers);
+  assert.notStrictEqual(rewritten.gates, config.gates);
+  assert.notStrictEqual(rewritten.effects, config.effects);
+  assert.notStrictEqual(rewritten.queries, config.queries);
+  assert.deepEqual(rewritten.triggers[0], {
+    id: "trigger-old",
+    display_name: "Trigger old",
+    type: "trigger:test",
+    prompt: "Start ${{trigger-new.ticket.title}}",
+    metadata: {
+      title: "Ticket ${{trigger-new.ticket.title}}",
+      list: [
+        "${{trigger-new.ticket.title}}",
+        "${{effect-new.result.path}}",
+        "${{workflow.run.id}}",
+      ],
+    },
+  });
+  assert.deepEqual(rewritten.gates[0], {
+    id: "gate-old",
+    display_name: "Gate old",
+    type: "gate:test",
+    decision: "${{trigger-new.ticket.title ?? fallback-new.ticket.title}}",
+    malformed: "Review ${{trigger-old.ticket ?? {bad}}}",
+  });
+  assert.deepEqual(rewritten.effects[0], {
+    id: "effect-old",
+    display_name: "Effect old",
+    type: "effect:test",
+    prompt: "Review ${{trigger-new.ticket.title}} and ${{outside-node.ticket.title}}",
+    payload: [
+      {
+        body: "Object ${{trigger-new.ticket.title}}",
+        nested: {
+          note: "Again ${{effect-new.result.path}}",
+        },
+      },
+    ],
+  });
+  assert.deepEqual(rewritten.queries[0], {
+    id: "query-old",
+    display_name: "Query old",
+    type: "query:test",
+    filter: "${{trigger-new.ticket.title ?? fallback-new.ticket.title}}",
+  });
+  assert.equal(config.triggers[0].prompt, "Start ${{trigger-old.ticket.title}}");
+  assert.equal(config.gates[0].decision, "${{trigger-old.ticket.title ?? fallback-old.ticket.title}}");
+  assert.equal(config.effects[0].prompt, "Review ${{trigger-old.ticket.title}} and ${{outside-node.ticket.title}}");
+  assert.equal(config.queries[0].filter, "${{trigger-old.ticket.title ?? fallback-old.ticket.title}}");
+});
+
+test("returns the original workflow config when no node ids are mapped", () => {
+  const config = {
+    triggers: [],
+    gates: [],
+    effects: [],
+    queries: [],
+    edges: [],
+    runtime_dir: "/tmp/workflow",
+  };
+
+  assert.strictEqual(rewriteWorkflowConfigBindingReferences(config, new Map()), config);
 });
