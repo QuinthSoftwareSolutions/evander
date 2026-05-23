@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import time
@@ -28,11 +29,13 @@ class AdminWebJsonResponseCache:
     def __init__(self, *, default_ttl_seconds: float = DEFAULT_DASHBOARD_CACHE_TTL_SECONDS):
         self.default_ttl_seconds = max(0.0, float(default_ttl_seconds))
         self._entries: dict[tuple[Any, ...], _CacheEntry] = {}
+        self._inflight: dict[tuple[Any, ...], asyncio.Future[_CacheEntry | None]] = {}
         self._lock = threading.Lock()
 
     def clear(self) -> None:
         with self._lock:
             self._entries.clear()
+            self._inflight.clear()
 
     def wrap(
         self,
@@ -72,24 +75,58 @@ class AdminWebJsonResponseCache:
                 if entry is not None and entry.expires_at > now:
                     return _cached_json_response(entry, hit=True)
 
-        response = await factory()
-        if not isinstance(response, JSONResponse) or response.status_code != 200:
-            return response
+                future = self._inflight.get(key)
+                if future is None:
+                    future = asyncio.get_running_loop().create_future()
+                    self._inflight[key] = future
+                    owns_refresh = True
+                else:
+                    owns_refresh = False
+
+            if not owns_refresh:
+                entry = await future
+                if entry is not None and entry.expires_at > time.monotonic():
+                    return _cached_json_response(entry, hit=True)
+                return await factory()
+        else:
+            future = None
+            owns_refresh = False
 
         try:
-            payload = json.loads(response.body.decode("utf-8"))
-        except Exception:
-            return response
+            response = await factory()
+            if not isinstance(response, JSONResponse) or response.status_code != 200:
+                if future is not None and not future.done():
+                    future.set_result(None)
+                return response
 
-        with self._lock:
-            self._entries[key] = _CacheEntry(
+            try:
+                payload = json.loads(response.body.decode("utf-8"))
+            except Exception:
+                if future is not None and not future.done():
+                    future.set_result(None)
+                return response
+
+            entry = _CacheEntry(
                 payload=payload,
                 status_code=response.status_code,
                 expires_at=time.monotonic() + ttl,
             )
-        response.headers["X-Admin-Web-Cache"] = "refresh" if bypass else "miss"
-        response.headers.setdefault("Cache-Control", "no-store")
-        return response
+            with self._lock:
+                self._entries[key] = entry
+            if future is not None and not future.done():
+                future.set_result(entry)
+            response.headers["X-Admin-Web-Cache"] = "refresh" if bypass else "miss"
+            response.headers.setdefault("Cache-Control", "no-store")
+            return response
+        except Exception:
+            if future is not None and not future.done():
+                future.set_result(None)
+            raise
+        finally:
+            if owns_refresh:
+                with self._lock:
+                    if self._inflight.get(key) is future:
+                        self._inflight.pop(key, None)
 
 
 def _cached_json_response(entry: _CacheEntry, *, hit: bool) -> JSONResponse:

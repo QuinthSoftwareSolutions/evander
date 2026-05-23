@@ -35,6 +35,7 @@ import {
   type WorkflowEditorCatalog,
   type WorkflowEditorDocument,
   type WorkflowEditorFieldDefinition,
+  type WorkflowEditorGeneratedDraft,
   type WorkflowEditorNodeCatalogEntry,
   type WorkflowEditorNodePortDefinition,
   type WorkflowEditorSave,
@@ -154,6 +155,7 @@ type GraphNodeStatusBadge = {
 };
 
 type SaveState = "idle" | "saving" | "saved";
+type WorkflowGeneratorState = "idle" | "draftable" | "generating" | "ready" | "error";
 
 type WorkflowRunDetailLookupKind =
   | "auto"
@@ -396,6 +398,7 @@ const WORKFLOW_SIDEBAR_MAX_WIDTH = 760;
 const WORKFLOW_SIDEBAR_CANVAS_MIN_WIDTH = 420;
 const WORKFLOW_SIDEBAR_RESIZE_STEP = 32;
 const WORKFLOW_COMPACT_BREAKPOINT = 980;
+const WORKFLOW_GENERATOR_MIN_DESCRIPTION_LENGTH = 24;
 const NODE_TYPE_DRAG_DATA_MIME = "application/x-agent-sandbox-workflow-node-type";
 
 type SidebarResizeState = {
@@ -1147,6 +1150,157 @@ function normalizeWorkflowEditorDocument<T extends WorkflowDocumentLike>(
     graphs: normalizedGraphs,
     output_schemas: outputSchemas,
   } as T;
+}
+
+function blankWorkflowGeneratorDocument(
+  baseDocument: WorkflowEditorDocument | null,
+  defaultDirectoryPath: string,
+): WorkflowEditorDocument {
+  return normalizeWorkflowEditorDocument(
+    {
+      config_path: baseDocument?.config_path ?? "",
+      layout_path: baseDocument?.layout_path ?? "",
+      config_exists: Boolean(baseDocument?.config_exists),
+      layout_exists: Boolean(baseDocument?.layout_exists),
+      config: emptyConfig(),
+      layout: { nodes: {} },
+      graphs: [],
+      output_schemas: {},
+      validation_diagnostics: [],
+      revision: baseDocument?.revision ?? "generator-draft",
+    },
+    defaultDirectoryPath,
+  );
+}
+
+function uniqueWorkflowNodeId(existingIds: ReadonlySet<string>, requestedId: string): string {
+  const base = slugifyGraphId(requestedId || "generated-node");
+  let candidate = base;
+  let index = 2;
+  while (existingIds.has(candidate)) {
+    candidate = `${base}-${index}`;
+    index += 1;
+  }
+  return candidate;
+}
+
+function uniqueWorkflowGraphId(existingIds: ReadonlySet<string>, requestedId: string): string {
+  const base = slugifyGraphId(requestedId || "generated-workflow");
+  let candidate = base;
+  let index = 2;
+  while (existingIds.has(candidate)) {
+    candidate = `${base}-${index}`;
+    index += 1;
+  }
+  return candidate;
+}
+
+function mergeGeneratedDraftIntoWorkflow(
+  baseDocument: WorkflowEditorDocument,
+  draftDocument: WorkflowEditorDocument,
+  defaultDirectoryPath: string,
+): { document: WorkflowEditorDocument; importedNodeIds: string[] } {
+  const nextConfig = cloneConfig(baseDocument.config);
+  nextConfig.triggers ??= [];
+  nextConfig.gates ??= [];
+  nextConfig.effects ??= [];
+  nextConfig.queries ??= [];
+  nextConfig.edges ??= [];
+
+  const existingNodeIds = new Set(workflowNodeIds(nextConfig));
+  const idMap = new Map<string, string>();
+  const generatedNodes = workflowNodes(draftDocument.config);
+  for (const node of generatedNodes) {
+    const nextId = uniqueWorkflowNodeId(existingNodeIds, node.id);
+    existingNodeIds.add(nextId);
+    idMap.set(node.id, nextId);
+  }
+
+  const importedNodeIds: string[] = [];
+  for (const node of generatedNodes) {
+    const kind = nodeKindFromType(node.type);
+    const nextId = idMap.get(node.id) ?? node.id;
+    const nextNode = rewriteWorkflowNodeConfigBindings(
+      {
+        ...cloneNodeConfig(node),
+        id: nextId,
+      },
+      idMap,
+    );
+    nextConfig[kindCollectionKey(kind)].push(nextNode);
+    importedNodeIds.push(nextId);
+  }
+
+  const nextLayout = cloneLayout(baseDocument.layout);
+  const draftPositions = generatedNodes
+    .map((node, index) => draftDocument.layout.nodes[node.id] ?? fallbackPosition(index));
+  const basePositions = Object.values(nextLayout.nodes);
+  const draftMinX = draftPositions.length > 0 ? Math.min(...draftPositions.map((position) => position.x)) : 0;
+  const draftMinY = draftPositions.length > 0 ? Math.min(...draftPositions.map((position) => position.y)) : 0;
+  const baseMaxX = basePositions.length > 0 ? Math.max(...basePositions.map((position) => position.x)) : null;
+  const xOffset = baseMaxX === null ? 0 : baseMaxX + 360 - draftMinX;
+  const yOffset = baseMaxX === null ? 0 : 100 - draftMinY;
+  generatedNodes.forEach((node, index) => {
+    const nextId = idMap.get(node.id);
+    if (!nextId) return;
+    const position = draftDocument.layout.nodes[node.id] ?? fallbackPosition(index);
+    nextLayout.nodes[nextId] = {
+      x: position.x + xOffset,
+      y: position.y + yOffset,
+    };
+  });
+
+  const existingEdgeIds = new Set(nextConfig.edges.map(edgeId));
+  for (const edge of draftDocument.config.edges ?? []) {
+    const sourceId = idMap.get(edge.source_id);
+    const targetId = idMap.get(edge.target_id);
+    if (!sourceId || !targetId) continue;
+    const nextEdge: WorkflowEdge = {
+      ...edge,
+      source_id: sourceId,
+      target_id: targetId,
+    };
+    const nextEdgeId = edgeId(nextEdge);
+    if (existingEdgeIds.has(nextEdgeId)) continue;
+    existingEdgeIds.add(nextEdgeId);
+    nextConfig.edges.push(nextEdge);
+  }
+
+  const existingGraphIds = new Set((baseDocument.graphs ?? []).map((graph) => graph.id));
+  const generatedGraphs = (draftDocument.graphs.length > 0
+    ? draftDocument.graphs
+    : normalizeWorkflowGraphs(draftDocument.config, [], defaultDirectoryPath)
+  ).map((graph, index) => {
+    const nextId = uniqueWorkflowGraphId(existingGraphIds, graph.id || `generated-workflow-${index + 1}`);
+    existingGraphIds.add(nextId);
+    return {
+      ...graph,
+      id: nextId,
+      directory_paths: graph.directory_paths.length > 0 ? graph.directory_paths : [defaultDirectoryPath],
+      node_ids: graph.node_ids.map((nodeId) => idMap.get(nodeId)).filter((nodeId): nodeId is string => Boolean(nodeId)),
+    };
+  }).filter((graph) => graph.node_ids.length > 0);
+  const remappedDraftOutputSchemas = remapGeneratedDraftOutputSchemas(
+    draftDocument.output_schemas ?? {},
+    idMap,
+  );
+
+  const nextDocument = normalizeWorkflowEditorDocument(
+    {
+      ...baseDocument,
+      config: nextConfig,
+      layout: nextLayout,
+      graphs: [...(baseDocument.graphs ?? []), ...generatedGraphs],
+      output_schemas: {
+        ...(baseDocument.output_schemas ?? {}),
+        ...remappedDraftOutputSchemas,
+      },
+      validation_diagnostics: [],
+      revision: baseDocument.revision,
+    },
+    defaultDirectoryPath,
+  );
+  return { document: nextDocument, importedNodeIds };
 }
 
 function workflowEditableDocumentsEqual(left: WorkflowDocumentSurface, right: WorkflowDocumentSurface): boolean {
@@ -2278,6 +2432,20 @@ function rewriteWorkflowOutputSchemaNodeIds(
   return nextSchemas;
 }
 
+function remapGeneratedDraftOutputSchemas(
+  outputSchemas: WorkflowOutputSchemas = {},
+  nodeIdMap: ReadonlyMap<string, string>,
+): WorkflowOutputSchemas {
+  const nextSchemas: WorkflowOutputSchemas = {};
+  for (const [draftNodeId, importedNodeId] of nodeIdMap.entries()) {
+    const schema = outputSchemas[draftNodeId];
+    if (isRecord(schema)) {
+      nextSchemas[importedNodeId] = copyOutputSchema(schema);
+    }
+  }
+  return nextSchemas;
+}
+
 function normalizeDerivedNodeFields(
   config: WorkflowConfig,
   baseOutputSchemas: WorkflowOutputSchemas = {},
@@ -2743,9 +2911,18 @@ export default function App() {
   const initialGraphDirectoryPathRef = useRef(selectedDirectoryPath);
   const copiedSelectionRef = useRef<CopiedWorkflowSelection | null>(null);
   const sidebarResizeRef = useRef<SidebarResizeState | null>(null);
+  const workflowGeneratorAbortRef = useRef<AbortController | null>(null);
+  const workflowGeneratorRequestIdRef = useRef(0);
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
   const [savedDocument, setSavedDocument] = useState<WorkflowEditorDocument | null>(null);
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
+  const [workflowGeneratorOpen, setWorkflowGeneratorOpen] = useState(false);
+  const [workflowGeneratorDescription, setWorkflowGeneratorDescription] = useState("");
+  const [workflowGeneratorState, setWorkflowGeneratorState] = useState<WorkflowGeneratorState>("idle");
+  const [workflowGeneratorError, setWorkflowGeneratorError] = useState<string | null>(null);
+  const [workflowGeneratorWarnings, setWorkflowGeneratorWarnings] = useState<string[]>([]);
+  const [workflowGeneratorModel, setWorkflowGeneratorModel] = useState<string | null>(null);
+  const [workflowGeneratorReadyDescription, setWorkflowGeneratorReadyDescription] = useState<string | null>(null);
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
   const [sampleWorkflow, setSampleWorkflow] = useState<WorkflowSampleState | null>(null);
   const [sampleWorkflowLoading, setSampleWorkflowLoading] = useState(true);
@@ -3282,7 +3459,7 @@ export default function App() {
             document.config,
             document.layout,
             catalogPayload,
-            runSnapshot?.node_activity ?? {},
+            workflowGeneratorOpen ? {} : runSnapshot?.node_activity ?? {},
             validationDiagnostics,
             currentPositionsFromNodes(currentNodes),
             currentNodes.filter((node) => node.selected).map((node) => node.id),
@@ -3298,7 +3475,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [documentLoaded, selectedDirectoryPath]);
+  }, [documentLoaded, selectedDirectoryPath, workflowGeneratorOpen]);
 
   useEffect(() => {
     const stream = new EventSource("/api/workflow-editor/runs/stream");
@@ -3666,6 +3843,183 @@ export default function App() {
     hasAutoFitRef.current = false;
   }
 
+  function openWorkflowGenerator() {
+    if (hasUnsavedWorkflowChanges) {
+      const confirmed = window.confirm(
+        "Opening the workflow generator will discard unsaved workflow edits. Continue?",
+      );
+      if (!confirmed) return;
+    }
+    workflowGeneratorAbortRef.current?.abort();
+    workflowGeneratorRequestIdRef.current += 1;
+    setWorkflowGeneratorOpen(true);
+    setWorkflowGeneratorDescription("");
+    setWorkflowGeneratorState("idle");
+    setWorkflowGeneratorError(null);
+    setWorkflowGeneratorWarnings([]);
+    setWorkflowGeneratorModel(null);
+    setWorkflowGeneratorReadyDescription(null);
+    setRunDetail(null);
+    setNodeConnectionMenu(null);
+    setPendingConnection(null);
+    setSelectedEdgeId(null);
+    setSelectedGraphId(null);
+    setNodeEditOrigins({});
+    applyWorkflowDocumentState(
+      blankWorkflowGeneratorDocument(savedDocument, selectedDirectoryPath),
+      [],
+      [],
+    );
+  }
+
+  function cancelWorkflowGenerator() {
+    workflowGeneratorAbortRef.current?.abort();
+    workflowGeneratorRequestIdRef.current += 1;
+    setWorkflowGeneratorOpen(false);
+    setWorkflowGeneratorDescription("");
+    setWorkflowGeneratorState("idle");
+    setWorkflowGeneratorError(null);
+    setWorkflowGeneratorWarnings([]);
+    setWorkflowGeneratorModel(null);
+    setWorkflowGeneratorReadyDescription(null);
+    setSelectedEdgeId(null);
+    setSelectedGraphId(null);
+    setNodeEditOrigins({});
+    if (savedDocument) {
+      applyWorkflowDocumentState(
+        savedDocument,
+        [],
+        validateWorkflowBindingDiagnostics(savedDocument.config, savedDocument.output_schemas ?? {}),
+      );
+    }
+  }
+
+  function acceptWorkflowGeneratorDraft() {
+    if (!workflowGeneratorOpen || !document || !savedDocument) return;
+    if (workflowGeneratorState !== "ready") {
+      setWorkflowGeneratorError("Generate a ready draft before accepting it.");
+      return;
+    }
+    if (workflowGeneratorReadyDescription !== workflowGeneratorDescription.trim()) {
+      setWorkflowGeneratorError("Generate a ready draft for the current description before accepting it.");
+      return;
+    }
+    const generatedNodeIds = workflowNodeIds(document.config);
+    if (generatedNodeIds.length === 0) {
+      setWorkflowGeneratorError("Generate a workflow before accepting the draft.");
+      return;
+    }
+    const merged = mergeGeneratedDraftIntoWorkflow(savedDocument, document, selectedDirectoryPath);
+    workflowGeneratorAbortRef.current?.abort();
+    workflowGeneratorRequestIdRef.current += 1;
+    setWorkflowGeneratorOpen(false);
+    setWorkflowGeneratorDescription("");
+    setWorkflowGeneratorState("idle");
+    setWorkflowGeneratorError(null);
+    setWorkflowGeneratorWarnings([]);
+    setWorkflowGeneratorModel(null);
+    setWorkflowGeneratorReadyDescription(null);
+    setNodeEditOrigins({});
+    applyWorkflowDocumentState(merged.document, merged.importedNodeIds);
+    const selectedGeneratedGraph = merged.document.graphs.find((graph) =>
+      graph.node_ids.some((nodeId) => merged.importedNodeIds.includes(nodeId)),
+    );
+    setSelectedGraphId(selectedGeneratedGraph?.id ?? null);
+  }
+
+  function resetWorkflowGeneratorPreview(nextDescription: string) {
+    workflowGeneratorAbortRef.current?.abort();
+    workflowGeneratorRequestIdRef.current += 1;
+    setWorkflowGeneratorState(nextDescription.trim() ? "draftable" : "idle");
+    setWorkflowGeneratorError(null);
+    setWorkflowGeneratorWarnings([]);
+    setWorkflowGeneratorModel(null);
+    setWorkflowGeneratorReadyDescription(null);
+    applyWorkflowDocumentState(
+      blankWorkflowGeneratorDocument(savedDocument, selectedDirectoryPath),
+      [],
+      [],
+    );
+  }
+
+  function handleWorkflowGeneratorDescriptionChange(value: string) {
+    setWorkflowGeneratorDescription(value);
+    resetWorkflowGeneratorPreview(value);
+  }
+
+  async function generateWorkflowGeneratorDraft() {
+    if (!workflowGeneratorOpen) return;
+    const description = workflowGeneratorDescription.trim();
+    workflowGeneratorAbortRef.current?.abort();
+    workflowGeneratorRequestIdRef.current += 1;
+    setWorkflowGeneratorReadyDescription(null);
+    if (!description) {
+      resetWorkflowGeneratorPreview(description);
+      return;
+    }
+    if (description.length < WORKFLOW_GENERATOR_MIN_DESCRIPTION_LENGTH) {
+      setWorkflowGeneratorState("draftable");
+      setWorkflowGeneratorError(
+        `Describe the workflow in at least ${WORKFLOW_GENERATOR_MIN_DESCRIPTION_LENGTH} characters before generating.`,
+      );
+      return;
+    }
+
+    const requestId = workflowGeneratorRequestIdRef.current;
+    const controller = new AbortController();
+    workflowGeneratorAbortRef.current = controller;
+    setWorkflowGeneratorState("generating");
+    setWorkflowGeneratorError(null);
+    setWorkflowGeneratorWarnings([]);
+    setWorkflowGeneratorModel(null);
+    try {
+      const draft = await fetchJson<WorkflowEditorGeneratedDraft>("/api/workflow-editor/generate-draft", {
+        method: "POST",
+        signal: controller.signal,
+        body: JSON.stringify({
+          description,
+          directory_path: selectedDirectoryPath,
+          include_current_packs: true,
+        }),
+      });
+      if (requestId !== workflowGeneratorRequestIdRef.current) return;
+      const draftDocument = normalizeWorkflowEditorDocument(
+        {
+          config_path: savedDocument?.config_path ?? "",
+          layout_path: savedDocument?.layout_path ?? "",
+          config_exists: Boolean(savedDocument?.config_exists),
+          layout_exists: Boolean(savedDocument?.layout_exists),
+          config: draft.config,
+          layout: draft.layout,
+          graphs: draft.graphs,
+          output_schemas: draft.output_schemas,
+          validation_diagnostics: draft.validation_diagnostics,
+          revision: savedDocument?.revision ?? "generator-draft",
+        },
+        selectedDirectoryPath,
+      );
+      applyWorkflowDocumentState(
+        draftDocument,
+        workflowNodeIds(draftDocument.config),
+        draft.validation_diagnostics,
+      );
+      setWorkflowGeneratorWarnings(draft.warnings ?? []);
+      setWorkflowGeneratorModel(draft.model);
+      setWorkflowGeneratorReadyDescription(description);
+      setWorkflowGeneratorState("ready");
+      setWorkflowGeneratorError(null);
+    } catch (reason: unknown) {
+      if (requestId !== workflowGeneratorRequestIdRef.current) return;
+      if (reason instanceof DOMException && reason.name === "AbortError") return;
+      setWorkflowGeneratorState("error");
+      setWorkflowGeneratorError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      if (workflowGeneratorAbortRef.current === controller) {
+        workflowGeneratorAbortRef.current = null;
+      }
+    }
+  }
+
   function startSidebarResize(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0 || typeof window === "undefined" || window.innerWidth <= WORKFLOW_COMPACT_BREAKPOINT) return;
     sidebarResizeRef.current = {
@@ -3708,7 +4062,7 @@ export default function App() {
         document.config,
         document.layout,
         catalog,
-        runSnapshot?.node_activity ?? {},
+        workflowGeneratorOpen ? {} : runSnapshot?.node_activity ?? {},
         validationDiagnostics,
         currentPositionsFromNodes(currentNodes),
         currentNodes.filter((node) => node.selected).map((node) => node.id),
@@ -3716,7 +4070,7 @@ export default function App() {
       );
     });
     setFlowEdges(buildEdges(document.config, catalog));
-  }, [catalog, document, dirtyNodeIds, runSnapshot, validationDiagnostics]);
+  }, [catalog, document, dirtyNodeIds, runSnapshot, validationDiagnostics, workflowGeneratorOpen]);
 
   useEffect(() => {
     hasAutoFitRef.current = false;
@@ -3932,6 +4286,48 @@ export default function App() {
     });
   }, [flowNodes, visibleGraphNodeIdKey, isInspectMode, isTutorialMode]);
 
+  function applyWorkflowDocumentState(
+    nextDocument: WorkflowEditorDocument,
+    selectedNodeIdsAfterPatch: string[] = [],
+    diagnosticsOverride?: WorkflowValidationDiagnostic[],
+  ) {
+    const normalizedDocument = normalizeWorkflowEditorDocument(nextDocument, selectedDirectoryPath);
+    const validNodeIds = new Set(workflowNodeIds(normalizedDocument.config));
+    const nextSelectedNodeIds = Array.from(new Set(selectedNodeIdsAfterPatch)).filter((nodeId) =>
+      validNodeIds.has(nodeId),
+    );
+    const nextDiagnostics = diagnosticsOverride ?? validateWorkflowBindingDiagnostics(
+      normalizedDocument.config,
+      normalizedDocument.output_schemas,
+    );
+    const nextDirtyNodeIds = dirtyWorkflowNodeIds(normalizedDocument, savedDocument, nodeEditOrigins);
+    setDocument(normalizedDocument);
+    setValidationDiagnostics(nextDiagnostics);
+    setSelectedNodeIds(nextSelectedNodeIds);
+    setSelectedNodeId((currentSelectedNodeId) => {
+      if (nextSelectedNodeIds.length === 0) return null;
+      if (currentSelectedNodeId && nextSelectedNodeIds.includes(currentSelectedNodeId)) {
+        return currentSelectedNodeId;
+      }
+      return nextSelectedNodeIds[0] ?? null;
+    });
+    setFlowNodes((currentNodes) =>
+      buildNodes(
+        normalizedDocument.config,
+        normalizedDocument.layout,
+        catalog,
+        workflowGeneratorOpen ? {} : runSnapshot?.node_activity ?? {},
+        nextDiagnostics,
+        currentPositionsFromNodes(currentNodes),
+        nextSelectedNodeIds,
+        new Set(nextDirtyNodeIds),
+      ),
+    );
+    setFlowEdges(buildEdges(normalizedDocument.config, catalog));
+    setSaveState("idle");
+    hasAutoFitRef.current = false;
+  }
+
   function patchDocument(
     nextConfig: WorkflowConfig,
     nextLayout: WorkflowLayout,
@@ -3953,27 +4349,11 @@ export default function App() {
       },
       selectedDirectoryPath,
     );
-    const nextDiagnostics = diagnosticsOverride ?? validateWorkflowBindingDiagnostics(
-      nextDocument.config,
-      nextDocument.output_schemas,
+    applyWorkflowDocumentState(
+      nextDocument,
+      selectedNodeIdsAfterPatch ?? flowNodes.filter((node) => node.selected).map((node) => node.id),
+      diagnosticsOverride,
     );
-    const nextDirtyNodeIds = dirtyWorkflowNodeIds(nextDocument, savedDocument, nodeEditOrigins);
-    setDocument(nextDocument);
-    setValidationDiagnostics(nextDiagnostics);
-    setFlowNodes((currentNodes) =>
-      buildNodes(
-        nextDocument.config,
-        nextLayout,
-        catalog,
-        runSnapshot?.node_activity ?? {},
-        nextDiagnostics,
-        currentPositionsFromNodes(currentNodes),
-        selectedNodeIdsAfterPatch ?? currentNodes.filter((node) => node.selected).map((node) => node.id),
-        new Set(nextDirtyNodeIds),
-      ),
-    );
-    setFlowEdges(buildEdges(nextDocument.config, catalog));
-    setSaveState("idle");
   }
 
   function patchWorkflowDocument(
@@ -6994,6 +7374,84 @@ export default function App() {
     );
   }
 
+  function renderWorkflowGeneratorPanel() {
+    const generatedNodeCount = workflowNodeIds(config).length;
+    const generatorDescription = workflowGeneratorDescription.trim();
+    const canGenerateDraft =
+      workflowGeneratorOpen &&
+      workflowGeneratorState !== "generating" &&
+      generatorDescription.length >= WORKFLOW_GENERATOR_MIN_DESCRIPTION_LENGTH;
+    const generatedDraftMatchesDescription =
+      workflowGeneratorState === "ready" &&
+      workflowGeneratorReadyDescription === generatorDescription;
+    const canAcceptGeneratedDraft =
+      workflowGeneratorOpen && generatedNodeCount > 0 && generatedDraftMatchesDescription;
+    const generatorStatus =
+      workflowGeneratorState === "idle"
+        ? "Blank draft"
+        : workflowGeneratorState === "draftable"
+          ? generatorDescription.length >= WORKFLOW_GENERATOR_MIN_DESCRIPTION_LENGTH
+            ? "Ready to generate"
+            : "Add detail"
+          : workflowGeneratorState === "generating"
+            ? "Generating"
+            : generatedDraftMatchesDescription
+              ? `Generated${workflowGeneratorModel ? ` with ${workflowGeneratorModel}` : ""}`
+              : workflowGeneratorState === "ready"
+                ? "Draft out of date"
+                : "Generation failed";
+    return (
+      <div className="sidebar-section workflow-generator-section">
+        <div className="workflow-generator-header">
+          <div>
+            <div className="section-label">Generate</div>
+            <p className="runtime-summary">Draft workflow canvas</p>
+          </div>
+          <span className={`workflow-generator-status state-${workflowGeneratorState}`}>
+            {generatorStatus}
+          </span>
+        </div>
+        <label className="inspector-label workflow-generator-prompt">
+          <span>Description</span>
+          <textarea
+            value={workflowGeneratorDescription}
+            rows={7}
+            placeholder="Describe the workflow to draft."
+            onChange={(event) => handleWorkflowGeneratorDescriptionChange(event.target.value)}
+          />
+        </label>
+        {workflowGeneratorError ? <div className="runtime-run-error">{workflowGeneratorError}</div> : null}
+        {workflowGeneratorWarnings.length > 0 ? (
+          <div className="workflow-generator-warnings">
+            {workflowGeneratorWarnings.slice(0, 4).map((warning, index) => (
+              <div key={`${warning}-${index}`}>{warning}</div>
+            ))}
+          </div>
+        ) : null}
+        <div className="workflow-generator-actions">
+          <button
+            type="button"
+            className="primary"
+            onClick={generateWorkflowGeneratorDraft}
+            disabled={!canGenerateDraft}
+          >
+            Generate draft
+          </button>
+          <button
+            type="button"
+            onClick={acceptWorkflowGeneratorDraft}
+            disabled={!canAcceptGeneratedDraft || workflowEditLocked}
+          >
+            Accept draft
+          </button>
+          <button type="button" className="subtle-button" onClick={cancelWorkflowGenerator}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   function renderWorkflowSamplePanel() {
     const tutorialSteps = sampleWorkflow?.tutorial_steps ?? [];
     const currentStepId = sampleWorkflow?.current_step?.step_id ?? null;
@@ -7362,6 +7820,8 @@ export default function App() {
         top: `${tutorialBubblePositionValue.top}px`,
       }
     : undefined;
+  const inspectorConfigurationFields = inspectorFields.filter((field) => field.key !== "outputs");
+  const inspectorOutputFields = inspectorFields.filter((field) => field.key === "outputs");
 
   return (
     <div className="admin-page workflow-embedded-page">
@@ -7373,9 +7833,84 @@ export default function App() {
         onKeyDown={handleAppShellKeyDown}
       >
         <aside className="sidebar">
-          {renderWorkflowSamplePanel()}
-          {isInspectMode ? (
+          {workflowGeneratorOpen ? (
             <>
+              {renderWorkflowGeneratorPanel()}
+              {selectedNode ? (
+                <div className="sidebar-section inspector">
+                  <div className="section-label">Inspector</div>
+                  <div className="inspector-summary">
+                    <div>{selectedNode.type}</div>
+                    <div>{selectedNode.id}</div>
+                  </div>
+                  {selectedNodeDiagnostics.length > 0 ? (
+                    <div className="problems-panel">
+                      <div className="problems-heading">
+                        <span>Problems</span>
+                        <span>{selectedNodeDiagnostics.length}</span>
+                      </div>
+                      <div className="problems-list">
+                        {selectedNodeDiagnostics.map((diagnostic, index) => (
+                          <div className="problem-item" key={`${diagnostic.code}-${diagnostic.field_path ?? ""}-${diagnostic.reference ?? ""}-${index}`}>
+                            <div className="problem-message">{diagnostic.message}</div>
+                            <div className="problem-meta">
+                              {diagnostic.field_path ? <span>{diagnostic.field_path}</span> : null}
+                              {diagnostic.reference ? <span>{diagnostic.reference}</span> : null}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  <button onClick={selectDownstreamBranch}>Select downstream branch</button>
+                  <label className="inspector-label">
+                    <span>Node id</span>
+                    <input
+                      value={inspectorNodeId}
+                      onChange={(event) => {
+                        const nextValue = event.target.value;
+                        setInspectorNodeId(nextValue);
+                        stageInspectorDraft({ nodeId: nextValue });
+                      }}
+                    />
+                  </label>
+                  <label className="inspector-label">
+                    <span>Display name</span>
+                    <input
+                      value={inspectorDisplayName}
+                      onChange={(event) => {
+                        const nextValue = event.target.value;
+                        setInspectorDisplayName(nextValue);
+                        stageInspectorDraft({ displayName: nextValue });
+                      }}
+                    />
+                  </label>
+                  {renderEffectTargetField()}
+                  {inspectorConfigurationFields.map((field) => renderField(field))}
+                  {inspectorOutputFields.map((field) => renderField(field))}
+                  <button className="danger" onClick={deleteSelectedNode} disabled={workflowEditLocked}>
+                    Delete node
+                  </button>
+                </div>
+              ) : null}
+              {selectedEdge ? (
+                <div className="sidebar-section inspector">
+                  <div className="section-label">Edge</div>
+                  <div className="inspector-summary">
+                    <div>{selectedEdge.source_id}</div>
+                    <div>Route: {selectedEdgeRouteLabel}</div>
+                    <div>{selectedEdge.target_id}</div>
+                    {selectedEdge.allow_cycle ? <div>Cycle return</div> : null}
+                  </div>
+                  <button className="danger" onClick={deleteSelectedEdge} disabled={workflowEditLocked}>
+                    Delete edge
+                  </button>
+                </div>
+              ) : null}
+            </>
+          ) : isInspectMode ? (
+            <>
+              {renderWorkflowSamplePanel()}
               {renderInspectedRunPanel()}
               {renderInspectedNodePanel()}
               {runDetailError ? <div className="runtime-run-error">{runDetailError}</div> : null}
@@ -7383,7 +7918,14 @@ export default function App() {
             </>
           ) : (
             <>
+              {renderWorkflowSamplePanel()}
               {editLocked ? <div className="callout warning-callout workflow-lock-callout">Unlock privileged operations to modify workflow state or clear runtime runs.</div> : null}
+
+              <div className="workflow-generator-launcher">
+                <button type="button" className="subtle-button" onClick={openWorkflowGenerator}>
+                  Generate workflow
+                </button>
+              </div>
 
               <details className="sidebar-section current-runs-section">
                 <summary className="current-runs-summary">
@@ -7792,7 +8334,7 @@ export default function App() {
                 </label>
 
                 {renderEffectTargetField()}
-                {inspectorFields.map((field) => renderField(field))}
+                {inspectorConfigurationFields.map((field) => renderField(field))}
 
                 {Object.keys(inspectorUnknownValues).length > 0 ? (
                   <details className="raw-json-panel">
@@ -7801,6 +8343,8 @@ export default function App() {
                     <textarea value={rawJsonDraft} rows={8} readOnly />
                   </details>
                 ) : null}
+
+                {inspectorOutputFields.map((field) => renderField(field))}
 
                 {selectedNodeHasUnsavedChanges ? (
                   <button className="primary" onClick={resetSelectedNodeChanges} disabled={workflowEditLocked}>

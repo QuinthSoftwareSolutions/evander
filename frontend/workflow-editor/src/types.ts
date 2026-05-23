@@ -79,6 +79,17 @@ export type WorkflowEditorSave = {
   revision: string;
 };
 
+export type WorkflowEditorGeneratedDraft = {
+  worker_id: string;
+  model: string;
+  config: WorkflowConfig;
+  layout: WorkflowLayout;
+  graphs: WorkflowGraphMetadata[];
+  output_schemas?: WorkflowOutputSchemas;
+  validation_diagnostics: WorkflowValidationDiagnostic[];
+  warnings: string[];
+};
+
 export type WorkflowValidationDiagnostic = {
   code: string;
   message: string;

@@ -8,7 +8,10 @@ from pathlib import Path
 from types import MethodType
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
 from agent_sandbox.admin.service import (
@@ -32,6 +35,7 @@ from agent_sandbox.admin.service import (
     CapacityWorkerTelemetrySummaryPayload,
 )
 from agent_sandbox.admin import release_metadata as release_metadata_module
+from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.app import _workflow_run_events, create_app
 from agent_sandbox.admin.web.shared import AdminWebConfig
 from agent_sandbox.admin.web.user_store import AdminWebUserStore
@@ -5019,6 +5023,307 @@ def test_admin_web_exposes_admin_domain_smoke_endpoints(
     assert len(responses["conformance_reports"].json()["reports"]) == 2
 
 
+def test_workflow_generator_returns_validated_draft_without_writing_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    captured_requests: list[dict[str, object]] = []
+
+    generated = {
+        "graph": {
+            "id": "generated-maintenance",
+            "name": "Generated maintenance",
+            "description": "Drafted from natural language.",
+            "directory_paths": [],
+            "user_ids": [],
+        },
+        "nodes": [
+            {
+                "id": "schedule",
+                "kind": "trigger",
+                "type": "trigger:cron",
+                "display_name": "Nightly schedule",
+                "config_json": json.dumps({"expression": "0 2 * * *"}),
+            },
+            {
+                "id": "emit-summary",
+                "kind": "effect",
+                "type": "effect:event:emit",
+                "display_name": "Emit summary event",
+                "config_json": json.dumps(
+                    {"event_type": "generated.summary", "payload": {"source": "workflow-generator"}}
+                ),
+            },
+        ],
+        "edges": [
+            {
+                "source_id": "schedule",
+                "source_port": None,
+                "target_id": "emit-summary",
+                "allow_cycle": False,
+            }
+        ],
+        "warnings": ["Review placeholder payload values before saving."],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_requests.append(
+            {
+                "url": str(request.url),
+                "headers": dict(request.headers),
+                "payload": json.loads(request.content.decode("utf-8")),
+            }
+        )
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(generated),
+                            }
+                        ]
+                    }
+                ]
+            },
+        )
+
+    service.workflow_generation_transport = httpx.MockTransport(handler)
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        "/api/workflow-editor/generate-draft",
+        json={"description": "Every night, emit a summary event.", "directory_path": "root"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["model"] == "gpt-workflow-test"
+    assert payload["graphs"][0]["directory_paths"] == ["root"]
+    assert [node["id"] for node in payload["config"]["triggers"]] == ["schedule"]
+    assert [node["id"] for node in payload["config"]["effects"]] == ["emit-summary"]
+    assert payload["config"]["edges"] == [
+        {"source_id": "schedule", "target_id": "emit-summary"}
+    ]
+    assert payload["warnings"] == ["Review placeholder payload values before saving."]
+    assert captured_requests
+    request_payload = captured_requests[0]["payload"]
+    assert request_payload["model"] == "gpt-workflow-test"
+    assert request_payload["text"]["format"]["type"] == "json_schema"
+    assert request_payload["text"]["format"]["strict"] is True
+    assert captured_requests[0]["headers"]["authorization"] == "Bearer sk-test"
+    assert not (tmp_path / "config" / "trigger-orchestrator" / "config.json").exists()
+    assert not (tmp_path / "config" / "trigger-orchestrator" / "layout.json").exists()
+
+
+def test_workflow_generator_rejects_cyclic_generated_graph_without_hanging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    generated = {
+        "graph": {
+            "id": "generated-cycle",
+            "name": "Generated cycle",
+            "description": "Drafted from natural language.",
+        },
+        "nodes": [
+            {
+                "id": "schedule",
+                "kind": "trigger",
+                "type": "trigger:cron",
+                "display_name": "Nightly schedule",
+                "config_json": json.dumps({"expression": "0 2 * * *"}),
+            }
+        ],
+        "edges": [{"source_id": "schedule", "target_id": "schedule"}],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(generated),
+                            }
+                        ]
+                    }
+                ]
+            },
+        )
+
+    service.workflow_generation_transport = httpx.MockTransport(handler)
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        "/api/workflow-editor/generate-draft",
+        json={"description": "Create a cyclic generated workflow.", "directory_path": "root"},
+    )
+
+    assert response.status_code == 400
+    assert response.headers["content-type"].startswith("application/json")
+    assert "schedule" in response.json()["error"]
+
+
+def _workflow_generator_success_response() -> dict[str, object]:
+    generated = {
+        "graph": {
+            "id": "generated-cadence",
+            "name": "Generated cadence",
+            "description": "Drafted from natural language.",
+        },
+        "nodes": [
+            {
+                "id": "schedule",
+                "kind": "trigger",
+                "type": "trigger:cron",
+                "display_name": "Nightly schedule",
+                "config_json": json.dumps({"expression": "0 2 * * *"}),
+            },
+            {
+                "id": "emit-summary",
+                "kind": "effect",
+                "type": "effect:event:emit",
+                "display_name": "Emit summary event",
+                "config_json": json.dumps(
+                    {"event_type": "generated.summary", "payload": {"source": "workflow-generator"}}
+                ),
+            },
+        ],
+        "edges": [{"source_id": "schedule", "target_id": "emit-summary"}],
+    }
+    return {
+        "output": [
+            {
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": json.dumps(generated),
+                    }
+                ]
+            }
+        ]
+    }
+
+
+def test_workflow_generator_returns_json_error_for_transport_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    service.workflow_generation_transport = httpx.MockTransport(handler)
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        "/api/workflow-editor/generate-draft",
+        json={"description": "Every night, emit a generated summary event."},
+    )
+
+    assert response.status_code == 400
+    assert response.headers["content-type"].startswith("application/json")
+    assert "OpenAI workflow generation request failed" in response.json()["error"]
+    assert "connection refused" in response.json()["error"]
+
+
+def test_workflow_generator_rejects_back_to_back_model_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    model_request_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal model_request_count
+        model_request_count += 1
+        return httpx.Response(200, json=_workflow_generator_success_response())
+
+    service.workflow_generation_transport = httpx.MockTransport(handler)
+    client = TestClient(create_app(service))
+
+    first_response = client.post(
+        "/api/workflow-editor/generate-draft",
+        json={"description": "Every night, emit a generated summary event."},
+    )
+    second_response = client.post(
+        "/api/workflow-editor/generate-draft",
+        json={"description": "Every morning, emit a generated summary event."},
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 400
+    assert "cooling down" in second_response.json()["error"]
+    assert model_request_count == 1
+
+
+def test_workflow_generator_rejects_concurrent_model_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.write_assistant_settings({"workflow_generation_model": "gpt-workflow-test"})
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    model_request_count = 0
+
+    async def run_case() -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal model_request_count
+            model_request_count += 1
+            started.set()
+            await release.wait()
+            return httpx.Response(200, json=_workflow_generator_success_response())
+
+        service.workflow_generation_transport = httpx.MockTransport(handler)
+        first_task = asyncio.create_task(
+            service.generate_workflow_editor_draft(
+                description="Every night, emit a generated summary event.",
+                directory_path="root",
+            )
+        )
+        try:
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+            with pytest.raises(ValueError, match="already in progress"):
+                await service.generate_workflow_editor_draft(
+                    description="Every morning, emit a generated summary event.",
+                    directory_path="root",
+                )
+        finally:
+            release.set()
+        await first_task
+
+    asyncio.run(run_case())
+    assert model_request_count == 1
+
+
+def test_workflow_generator_requires_configured_model(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    client = TestClient(create_app(service))
+
+    response = client.post(
+        "/api/workflow-editor/generate-draft",
+        json={"description": "Draft a workflow from this text."},
+    )
+
+    assert response.status_code == 400
+    assert "workflow_generation_model" in response.json()["error"]
+
+
 def test_admin_web_dashboard_requests_use_opt_in_backend_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5089,6 +5394,66 @@ def test_admin_web_dashboard_requests_use_opt_in_backend_cache(
     assert capacity_refreshed.json()["workers"]["total_workers"] == 3
     assert calls == 3
     assert capacity_calls == 3
+
+
+def _dashboard_cache_request(
+    path: str = "/api/admin/agents",
+    query_string: str = "_dashboard=1&directory_path=root&direct_only=false",
+) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": path,
+            "root_path": "",
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "headers": [],
+            "query_string": query_string.encode("utf-8"),
+        }
+    )
+
+
+def test_admin_web_dashboard_cache_coalesces_concurrent_json_misses() -> None:
+    async def run_case() -> None:
+        cache = AdminWebJsonResponseCache(default_ttl_seconds=30.0)
+        calls = 0
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def factory() -> JSONResponse:
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return JSONResponse({"items": [{"agent_id": f"agent-{calls}"}]})
+
+        first_task = asyncio.create_task(
+            cache.get_or_set_json(
+                _dashboard_cache_request(),
+                "admin.agents.list",
+                factory,
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        second_task = asyncio.create_task(
+            cache.get_or_set_json(
+                _dashboard_cache_request(),
+                "admin.agents.list",
+                factory,
+            )
+        )
+        await asyncio.sleep(0)
+        release.set()
+        first, second = await asyncio.gather(first_task, second_task)
+
+        assert calls == 1
+        assert first.headers["x-admin-web-cache"] == "miss"
+        assert second.headers["x-admin-web-cache"] == "hit"
+        assert json.loads(first.body) == {"items": [{"agent_id": "agent-1"}]}
+        assert json.loads(second.body) == {"items": [{"agent_id": "agent-1"}]}
+
+    asyncio.run(run_case())
 
 
 def test_admin_web_conformance_report_endpoint_returns_invalid_records(

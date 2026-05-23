@@ -233,6 +233,18 @@ def workflow_routes(
             return json_error(str(exc))
         return JSONResponse(validation.model_dump(mode="json"))
 
+    async def generate_draft(request: Request) -> JSONResponse:
+        try:
+            payload = await json_body(request)
+            draft = await service.generate_workflow_editor_draft(
+                description=str(payload.get("description") or ""),
+                directory_path=str(payload.get("directory_path") or ""),
+                include_current_packs=bool(payload.get("include_current_packs", True)),
+            )
+        except ValueError as exc:
+            return json_error(str(exc))
+        return JSONResponse(draft.model_dump(mode="json"))
+
     async def save_document(request: Request) -> JSONResponse:
         try:
             payload = await json_body(request)
@@ -285,5 +297,6 @@ def workflow_routes(
         Route("/api/workflow-editor/runs/{event_id:path}/resume", resume_run, methods=["POST"]),
         Route("/api/workflow-editor/runs/stream", stream_runs, methods=["GET"]),
         Route("/api/workflow-editor/validate", validate_document, methods=["POST"]),
+        Route("/api/workflow-editor/generate-draft", generate_draft, methods=["POST"]),
         Route("/api/workflow-editor/document", save_document, methods=["PUT"]),
     ]

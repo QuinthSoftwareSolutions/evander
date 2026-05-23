@@ -16,6 +16,30 @@ material. Newer entries are added incrementally as changes land.
 - Kept the worker deployment model as a tarball copy/load flow and deferred
   worker-side remote manifest comparison to a later slice.
 
+## 2026-05-23 - Dashboard Agent Inventory Polling
+
+- Added a dashboard-scoped Agent Inventory poll that refreshes visible agent
+  data about every 10 seconds while the dashboard is mounted.
+- Coalesced concurrent dashboard JSON cache misses for the same request so
+  shared polling clients do not start duplicate backend reads.
+
+## 2026-05-23 - Workflow Generator Draft Safety Fixes
+
+- Guarded generated workflow draft layout against cyclic graphs so invalid
+  model output reaches validation instead of re-enqueueing nodes forever.
+- Returned JSON generator errors when upstream OpenAI Responses API transport
+  requests fail before an HTTP response is available.
+- Restricted workflow generator draft acceptance to ready generated drafts so
+  stale previews cannot be accepted after prompt changes or generation failures.
+- Replaced pause-driven workflow generation with an explicit **Generate draft**
+  action and a longer minimum description before model requests are allowed.
+- Added a backend in-flight guard and cooldown around workflow generator OpenAI
+  calls so browser request timing is not the only rate-control layer.
+- Remapped generated draft output schemas when imported node ids collide with
+  existing workflow nodes.
+- Kept the guided sample controls visible while inspecting a sample run so the
+  first-run walkthrough can reset and complete from inspect mode.
+
 ## 2026-05-23 - Retry-Safe Workflow Completion Publication
 
 - Added durable `completion_pending` effect and gate execution state so
@@ -36,6 +60,30 @@ material. Newer entries are added incrementally as changes land.
 - Deferred effect-worker store hot reloads while the current queue still has
   pending events, so completion events published during a JSON-to-SQLite rebind
   are processed before the worker swaps to the new store.
+
+## 2026-05-23 - Workflow Inspector Outputs Placement
+
+- Moved the workflow editor node `Outputs` field to the bottom of the selected-node
+  inspector so node configuration stays grouped ahead of derived output schemas.
+
+## 2026-05-23 - Workflow Graph Generator Draft Mode
+
+- Added an experimental Admin Web workflow generator mode that opens as a small
+  Workflow-tab control, drafts a blank-canvas graph from natural language through
+  the host-side OpenAI Responses API, validates the generated graph, and imports
+  accepted drafts as unsaved workflow edits.
+- Added `assistant_settings.workflow_generation_model` as an optional model
+  override for generator calls, falling back to `assistant_settings.default_model`.
+
+## 2026-05-23 - Progressive Dashboard Loading
+
+- Changed the Admin Web dashboard to update panels as their own requests settle, and kept
+  release metadata, version, news, and changelog reads out of directory-change reloads.
+
+## 2026-05-23 - Dashboard System Health Cleanup
+
+- Moved dashboard capacity, descendant-scoped agent inventory, and collapsible full worker
+  coverage into the System Health panel, with disk dials for control-plane and worker hosts.
 
 ## 2026-05-23 - Workflow Run Detail Lookup Guardrail
 

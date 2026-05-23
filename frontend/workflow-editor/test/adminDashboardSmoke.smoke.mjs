@@ -27,10 +27,13 @@ async function assertDashboardFitsViewport(page, label) {
           ".dashboard-page .dashboard-row-item",
           ".dashboard-page .dashboard-row-item > .status-pill",
           ".dashboard-page .dashboard-link-chip",
+          ".dashboard-page .dashboard-disk-card",
+          ".dashboard-page .dashboard-agent-icon",
         ].join(", "),
       ),
     );
     const zeroSized = measuredElements
+      .filter((element) => element.getClientRects().length > 0)
       .filter((element) => {
         const rect = element.getBoundingClientRect();
         return rect.width <= 0 || rect.height <= 0;
@@ -215,6 +218,34 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
         failed: true,
         detail: "Exited with status 1",
       },
+      {
+        worker_id: "worker-3",
+        name: "Scheduled wake worker",
+        unit: "agent-sandbox-scheduled-wake.service",
+        active_state: "active",
+        sub_state: "running",
+        result: null,
+        unit_file_state: "enabled",
+        description: "Scheduled wake worker",
+        main_pid: 2222,
+        running: true,
+        failed: false,
+        detail: null,
+      },
+      {
+        worker_id: "worker-4",
+        name: "Teams ingest worker",
+        unit: "agent-sandbox-teams-ingest.service",
+        active_state: "inactive",
+        sub_state: "dead",
+        result: null,
+        unit_file_state: "enabled",
+        description: "Teams ingest worker",
+        main_pid: null,
+        running: false,
+        failed: false,
+        detail: "Waiting for timer",
+      },
     ],
   };
 
@@ -264,9 +295,31 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
           destroy: true,
         },
       },
+      {
+        agent_id: "agent-3",
+        backend: "container_worker_vm",
+        target_name: "child-runner",
+        session_id: "session-3",
+        directory_path: "root/team",
+        status: "stopped",
+        started_at: "2026-05-18T08:00:00Z",
+        finished_at: "2026-05-18T08:20:00Z",
+        updated_at: "2026-05-18T08:20:00Z",
+        host: {},
+        capabilities: {
+          start: true,
+          shutdown: true,
+          resume: true,
+          enable_disable: true,
+          kill: true,
+          logs: true,
+          stop: true,
+          destroy: true,
+        },
+      },
     ],
     directory_path: "root",
-    direct_only: true,
+    direct_only: false,
   };
 
   const workflowRunsResponse = {
@@ -512,7 +565,66 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       total_workers: 2,
       reachable_workers: 1,
       telemetry_available_workers: 1,
-      entries: [],
+      entries: [
+        {
+          worker_url: "http://worker-a.test:11888",
+          directory_paths: ["root"],
+          discovered_from: ["config:root"],
+          reachable: true,
+          last_checked_at: "2026-05-18T10:05:00Z",
+          last_heartbeat_at: "2026-05-18T10:05:00Z",
+          last_heartbeat_source: "worker_telemetry_live_probe",
+          healthz_status: "available",
+          telemetry_status: "available",
+          healthz: {},
+          telemetry: {
+            disk: {
+              worker_root: {
+                scope: "worker_root",
+                status: "available",
+                health: "warning",
+                total_bytes: 107374182400,
+                used_bytes: 64424509440,
+                free_bytes: 42949672960,
+                used_percent: 60,
+                free_percent: 40,
+                error_count: 0,
+                errors: [],
+              },
+            },
+          },
+          errors: [],
+        },
+        {
+          worker_url: "http://worker-b.test:11888",
+          directory_paths: ["root/team"],
+          discovered_from: ["config:root/team"],
+          reachable: true,
+          last_checked_at: "2026-05-18T10:05:00Z",
+          last_heartbeat_at: "2026-05-18T10:05:00Z",
+          last_heartbeat_source: "worker_telemetry_live_probe",
+          healthz_status: "available",
+          telemetry_status: "available",
+          healthz: {},
+          telemetry: {
+            disk: {
+              worker_root: {
+                scope: "worker_root",
+                status: "available",
+                health: "critical",
+                total_bytes: 107374182400,
+                used_bytes: 91268055040,
+                free_bytes: 16106127360,
+                used_percent: 85,
+                free_percent: 15,
+                error_count: 0,
+                errors: [],
+              },
+            },
+          },
+          errors: [],
+        },
+      ],
     },
     queue: {
       status: "available",
@@ -800,12 +912,46 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
     }
 
     if (pathname === "/api/admin/agents") {
-      assert.equal(url.searchParams.get("directory_path"), "root");
-      assert.equal(url.searchParams.get("direct_only"), "true");
+      const directoryPath = url.searchParams.get("directory_path");
       assert.equal(url.searchParams.get("include_inactive"), "true");
       assert.equal(url.searchParams.get("backend"), "all");
-      assertDashboardCacheParams(url);
-      await route.fulfill(jsonResponse(agentsResponse));
+      if (url.searchParams.has("_dashboard")) {
+        assert.equal(directoryPath, "root");
+        assert.equal(url.searchParams.get("direct_only"), "false");
+        assertDashboardCacheParams(url);
+        await route.fulfill(jsonResponse(agentsResponse));
+      } else {
+        assert.equal(directoryPath, "root/team");
+        assert.equal(url.searchParams.get("direct_only"), "true");
+        await route.fulfill(
+          jsonResponse({
+            ...agentsResponse,
+            items: agentsResponse.items.filter((agent) => agent.directory_path === "root/team"),
+            directory_path: "root/team",
+            direct_only: true,
+          }),
+        );
+      }
+      return;
+    }
+
+    if (pathname === "/api/admin/agents/agent-3/log") {
+      await route.fulfill(
+        jsonResponse({
+          agent_id: "agent-3",
+          backend: "container_worker_vm",
+          lines: 200,
+          text: "child agent log\n",
+          returned_lines: 1,
+          total_lines: 1,
+          has_more_before: false,
+        }),
+      );
+      return;
+    }
+
+    if (pathname === "/api/admin/skills") {
+      await route.fulfill(jsonResponse({ items: [] }));
       return;
     }
 
@@ -985,16 +1131,14 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
     waitUntil: "domcontentloaded",
   });
 
-  await assert.doesNotReject(() => page.getByRole("heading", { name: "Control-plane status" }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => page.getByRole("heading", { name: "Live execution targets" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByRole("heading", { name: "Capacity and execution" }).waitFor({ state: "visible" }));
   const topLevelPanels = page.locator(".dashboard-panel-grid .dashboard-panel");
-  assert.equal(await topLevelPanels.count(), 7);
+  assert.equal(await topLevelPanels.count(), 6);
   const systemHealthPanel = topLevelPanels.filter({ hasText: "System health" });
   const workflowPanel = topLevelPanels.filter({ hasText: "Automation activity" });
   const approvalsPanel = topLevelPanels.filter({ hasText: "Human-control work" });
   const toolCallsPanel = topLevelPanels.filter({ hasText: "Explainability shortcuts" });
   const releasePanel = topLevelPanels.filter({ hasText: "Product context" });
-  const agentPanel = topLevelPanels.filter({ hasText: "Agent inventory" });
   const onboardingPanel = topLevelPanels.filter({ hasText: "Onboarding / workflow actions" });
   assert.equal(
     await topLevelPanels.evaluateAll((elements) =>
@@ -1008,7 +1152,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
     ),
     true,
   );
-  for (const panel of [systemHealthPanel, agentPanel, workflowPanel, approvalsPanel, toolCallsPanel, onboardingPanel]) {
+  for (const panel of [systemHealthPanel, workflowPanel, approvalsPanel, toolCallsPanel, onboardingPanel]) {
     await panel.evaluate((element) => {
       if (element instanceof HTMLDetailsElement) {
         element.open = true;
@@ -1022,7 +1166,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   await assertDashboardFitsViewport(page, "desktop");
   const onboardingWorkflowButton = onboardingPanel.getByRole("button", { name: "Open workflow" });
   let previousRightColumnY = -Infinity;
-  for (const panel of [systemHealthPanel, agentPanel, workflowPanel, approvalsPanel, toolCallsPanel, onboardingPanel]) {
+  for (const panel of [systemHealthPanel, workflowPanel, approvalsPanel, toolCallsPanel, onboardingPanel]) {
     const panelBox = await panel.boundingBox();
     assert.ok(panelBox, "expected right-column dashboard panel to have a layout box");
     assert.ok(Math.abs(panelBox.x - systemHealthBox.x) < 2, `expected right-column panels to share x=${systemHealthBox.x}, got ${panelBox.x}`);
@@ -1035,22 +1179,51 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   await assert.doesNotReject(() => workflowPanel.getByText("2 runs, 1 active, 1 failed, 1 resumable.").waitFor({ state: "visible" }));
   assert.equal(await systemHealthPanel.locator(".detail-list").count(), 0);
   assert.equal(await systemHealthPanel.locator(".node-activity-item").count(), 0);
-  await assert.doesNotReject(() => agentPanel.locator(".dashboard-metric-row").first().waitFor({ state: "visible" }));
   await assert.doesNotReject(() => workflowPanel.locator(".dashboard-metric-row").first().waitFor({ state: "visible" }));
   await assert.doesNotReject(() => approvalsPanel.locator(".dashboard-metric-row").first().waitFor({ state: "visible" }));
   await assert.doesNotReject(() => toolCallsPanel.locator(".dashboard-metric-row").first().waitFor({ state: "visible" }));
   await assert.doesNotReject(() => onboardingPanel.locator(".dashboard-metric-row").first().waitFor({ state: "visible" }));
-  assert.equal(await agentPanel.locator(".detail-list").count(), 0);
   assert.equal(await workflowPanel.locator(".detail-list").count(), 0);
   assert.equal(await approvalsPanel.locator(".detail-list").count(), 0);
   assert.equal(await toolCallsPanel.locator(".detail-list").count(), 0);
   assert.equal(await onboardingPanel.locator(".detail-list").count(), 0);
-  assert.equal(await agentPanel.locator(".node-activity-item").count(), 0);
   assert.equal(await workflowPanel.locator(".node-activity-item").count(), 0);
   assert.equal(await approvalsPanel.locator(".node-activity-item").count(), 0);
   assert.equal(await toolCallsPanel.locator(".node-activity-item").count(), 0);
   assert.equal(await onboardingPanel.locator(".node-activity-item").count(), 0);
-  await assert.doesNotReject(() => agentPanel.getByText("prod-runner", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => systemHealthPanel.locator(".dashboard-agent-icon").first().waitFor({ state: "visible" }));
+  assert.equal(await systemHealthPanel.getByText("Admin state", { exact: true }).count(), 0);
+  assert.equal(await systemHealthPanel.getByText("Deployment", { exact: true }).count(), 0);
+  const capacityBlock = systemHealthPanel.locator(".dashboard-block-capacity");
+  const agentInventoryBlock = systemHealthPanel.locator(".dashboard-block-agent-inventory");
+  const workersBlock = systemHealthPanel.locator(".dashboard-block-workers");
+  const capacityBox = await capacityBlock.boundingBox();
+  const agentInventoryBox = await agentInventoryBlock.boundingBox();
+  const workersBox = await workersBlock.boundingBox();
+  assert.ok(capacityBox && agentInventoryBox && workersBox, "expected System Health blocks to have layout boxes");
+  assert.ok(capacityBox.y < agentInventoryBox.y, "expected Capacity above Agent inventory");
+  assert.ok(agentInventoryBox.y < workersBox.y, "expected Agent inventory above Workers");
+  assert.equal(await workersBlock.evaluate((element) => element instanceof HTMLDetailsElement && element.open), false);
+  assert.equal(await workersBlock.getByText("Workflow worker", { exact: true }).isVisible().catch(() => false), false);
+  assert.equal(await systemHealthPanel.locator(".dashboard-disk-dial").count(), 3);
+  await assert.doesNotReject(() => systemHealthPanel.locator(".dashboard-disk-dial").filter({ hasText: "40%" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => systemHealthPanel.locator(".dashboard-disk-dial.state-running").filter({ hasText: "60%" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => systemHealthPanel.locator(".dashboard-disk-dial.state-fail").filter({ hasText: "85%" }).waitFor({ state: "visible" }));
+  assert.equal(await systemHealthPanel.locator(".dashboard-agent-icon").count(), 3);
+  await assert.doesNotReject(() => systemHealthPanel.getByText("Total 3", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => systemHealthPanel.getByText("Active 1", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => systemHealthPanel.getByText("Inactive 2", { exact: true }).waitFor({ state: "visible" }));
+  const childAgentButton = systemHealthPanel.getByRole("button", { name: "Open agent child-runner" });
+  await childAgentButton.hover();
+  await assert.doesNotReject(() => page.getByText("Directory: root/team", { exact: true }).waitFor({ state: "visible" }));
+  await workersBlock.evaluate((element) => {
+    if (element instanceof HTMLDetailsElement) {
+      element.open = true;
+    }
+  });
+  for (const workerName of ["Workflow worker", "Approval worker", "Scheduled wake worker", "Teams ingest worker"]) {
+    await assert.doesNotReject(() => workersBlock.getByText(workerName, { exact: true }).waitFor({ state: "visible" }));
+  }
   await assert.doesNotReject(() => workflowPanel.getByText("evt-2", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => approvalsPanel.getByText("Dispatch agent, root", { exact: true }).waitFor({ state: "visible" }));
   const approvalsRow = approvalsPanel.locator(".dashboard-row-item").filter({ hasText: "Dispatch agent, root" }).first();
@@ -1125,14 +1298,29 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
 
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Sessions", level: 1 }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".session-tools-panel").waitFor({ state: "visible" }));
-  assert.equal(await page.getByRole("heading", { name: "Control-plane status" }).count(), 0);
+  assert.equal(await page.getByRole("heading", { name: "Capacity and execution" }).count(), 0);
   assert.equal(await page.evaluate(() => window.location.hash), "#sessions");
 
+  await page.goto(`http://127.0.0.1:${address.port}/`, {
+    waitUntil: "domcontentloaded",
+  });
+  const reloadedSystemHealthPanel = page.locator(".dashboard-panel-grid .dashboard-panel").filter({ hasText: "System health" });
+  await reloadedSystemHealthPanel.evaluate((element) => {
+    if (element instanceof HTMLDetailsElement) {
+      element.open = true;
+    }
+  });
+  await reloadedSystemHealthPanel.getByRole("button", { name: "Open agent child-runner" }).click();
+  await assert.doesNotReject(() => page.getByRole("heading", { name: "Agents", level: 1 }).waitFor({ state: "visible" }));
+  assert.equal(await page.evaluate(() => window.location.hash), "#agents?agent_id=agent-3&session_id=session-3");
+  await assert.doesNotReject(() => page.getByText("child-runner", { exact: true }).waitFor({ state: "visible" }));
+
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/state?directory_path=root"));
-  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/deployment-status?_dashboard=1"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/deployment-status"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workers?_dashboard=1"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/configuration/state?directory_path=root"));
-  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/agents?directory_path=root&direct_only=true&include_inactive=true&backend=all&_dashboard=1"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/agents?directory_path=root&direct_only=false&include_inactive=true&backend=all&_dashboard=1"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/agents?directory_path=root%2Fteam&direct_only=true&include_inactive=true&backend=all"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/approvals?statuses=pending&directory_path=root&direct_only=true&_dashboard=1"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions/catalog"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/sessions?include_expired=true&directory_path=root&direct_only=true"));

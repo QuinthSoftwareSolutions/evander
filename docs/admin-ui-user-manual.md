@@ -466,6 +466,14 @@ Common editing tasks:
     version.
 12. Use **Save workflow** to persist the workflow document after all diagnostics are acceptable.
 
+The experimental **Generate workflow** control opens a separate blank draft canvas. If the current
+editor has unsaved changes, opening the generator asks for confirmation and discards those edits.
+Enter a natural-language description, then choose **Generate draft** to request a preview from the
+host-side OpenAI Responses API integration; the draft is not saved and cannot run. **Cancel**
+returns to the regular saved workflow view. **Accept draft** imports the generated graph into the
+normal editor as unsaved changes, where graph directory metadata and node fields can be reviewed
+before **Save workflow**.
+
 Common runtime inspection tasks:
 
 1. Use **Tutorial** to open the guided sample when you want the in-memory first-run walkthrough,
