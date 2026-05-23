@@ -986,6 +986,27 @@ type DashboardLink = {
   params?: Record<string, AdminHashParamValue>;
 };
 
+type DashboardMetricRowItem = {
+  label: string;
+  value: ReactNode;
+  detail?: ReactNode;
+};
+
+type DashboardMetricChipItem = {
+  label: string;
+  value: ReactNode;
+  tone?: DashboardPillTone;
+};
+
+type DashboardCompactRowProps = {
+  title: ReactNode;
+  meta?: ReactNode;
+  detail?: ReactNode;
+  links?: DashboardLink[];
+  statusText?: ReactNode;
+  statusTone?: DashboardPillTone;
+};
+
 function DashboardLinkRow({ links }: { links: DashboardLink[] }) {
   if (links.length === 0) {
     return null;
@@ -1012,6 +1033,67 @@ function DashboardLinkRow({ links }: { links: DashboardLink[] }) {
           </span>
         ),
       )}
+    </div>
+  );
+}
+
+function DashboardMetricRow({ label, value, detail }: DashboardMetricRowItem) {
+  return (
+    <div className="dashboard-metric-row">
+      <div className="dashboard-metric-label">{label}</div>
+      <div className="dashboard-metric-copy">
+        <strong className="dashboard-metric-value">{value}</strong>
+        {detail ? <div className="dashboard-metric-detail">{detail}</div> : null}
+      </div>
+    </div>
+  );
+}
+
+function DashboardMetricRows({ items, className = "" }: { items: DashboardMetricRowItem[]; className?: string }) {
+  return (
+    <div className={["dashboard-metric-list", className].filter(Boolean).join(" ")}>
+      {items.map((item, index) => (
+        <DashboardMetricRow key={`${item.label}-${index}`} {...item} />
+      ))}
+    </div>
+  );
+}
+
+function DashboardMetricChips({ items, className = "" }: { items: DashboardMetricChipItem[]; className?: string }) {
+  if (items.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className={["dashboard-chip-row", className].filter(Boolean).join(" ")}>
+      {items.map((item, index) => (
+        <span
+          key={`${item.label}-${index}`}
+          className={`status-pill ${stateClassName(item.tone ?? "idle")}`}
+          title={typeof item.value === "string" || typeof item.value === "number" ? `${item.label}: ${item.value}` : item.label}
+        >
+          <span>{item.label}</span>
+          <strong>{item.value}</strong>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function DashboardCompactRows({ children, className = "" }: { children: ReactNode; className?: string }) {
+  return <div className={["dashboard-row-list", className].filter(Boolean).join(" ")}>{children}</div>;
+}
+
+function DashboardCompactRow({ title, meta, detail, links, statusText, statusTone = "idle" }: DashboardCompactRowProps) {
+  return (
+    <div className="dashboard-row-item">
+      <div className="dashboard-row-copy">
+        <strong className="dashboard-row-title">{title}</strong>
+        {meta ? <span className="dashboard-row-meta">{meta}</span> : null}
+        {detail ? <span className="dashboard-row-detail">{detail}</span> : null}
+        {links ? <DashboardLinkRow links={links} /> : null}
+      </div>
+      {statusText ? <span className={`status-pill ${stateClassName(statusTone)}`}>{statusText}</span> : null}
     </div>
   );
 }
