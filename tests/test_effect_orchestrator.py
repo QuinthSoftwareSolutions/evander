@@ -1549,7 +1549,9 @@ def test_for_gate_restarts_iteration_for_each_fresh_invocation_in_same_trace(
     assert sum(1 for item in for_records if item["outputs"].get("is_done") is True) == 2
 
 
-def test_effect_orchestrator_rejects_reserved_runtime_output_name(tmp_path: Path) -> None:
+def test_effect_orchestrator_marks_reserved_runtime_output_name_publish_failure_pending(
+    tmp_path: Path,
+) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
     worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
@@ -1600,7 +1602,9 @@ def test_effect_orchestrator_rejects_reserved_runtime_output_name(tmp_path: Path
         (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
     )
     record = next(iter(effect_payload.values()))
-    assert record["status"] == "failed"
+    assert record["status"] == "completion_pending"
+    assert record["completion_pending_status"] == "succeeded"
+    assert record["outputs"] == {"__node_outputs": "forbidden"}
     assert "reserved output name" in record["error"]
 
     queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
