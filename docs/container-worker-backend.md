@@ -44,12 +44,25 @@ For a reproducible worker VM deployment, use the dedicated Ansible playbook:
 ansible-playbook -i ansible/inventory/prod.yml ansible/worker.yml
 ```
 
-The build script creates `agent-sandbox-runner:latest` locally and saves
-`dist/agent-sandbox-runner.tar`. The worker playbook copies that archive to the worker VM, runs
-`docker load`, verifies the image tag exists, installs Docker, deploys the repo package, renders
-`config/worker-daemon.env`, installs `agent-sandbox-worker-daemon.service`, creates
-`/var/lib/agent-worker`, and verifies the local `/healthz` endpoint. It intentionally does not
-install the control-plane services.
+The build script writes a sidecar manifest at `dist/agent-sandbox-runner.tar.manifest` next to
+`dist/agent-sandbox-runner.tar`. If that manifest still matches the tarball inputs, rerunning the
+script reuses the cached archive, prints that the cached archive was reused, and skips Docker
+build/save entirely. The cache key includes the Dockerfile text, the build script text,
+`RUNNER_IMAGE_NAME`, the resolved Codex binary path and SHA-256, the relevant Codex platform
+package identity, and the Dockerfile base-image policy from the `FROM` line. Use
+`RUNNER_FORCE_REBUILD=1 ./scripts/build_agent_sandbox_runner_image.sh` or
+`./scripts/build_agent_sandbox_runner_image.sh --force` to force a rebuild. Moving tags such as
+`ubuntu:24.04` require a force rebuild when you want a base-image refresh, because the Dockerfile
+text can stay the same while the upstream image changes.
+
+The worker playbook copies that archive to the worker VM, runs `docker load`, verifies the image
+tag exists, installs Docker, deploys the repo package, renders `config/worker-daemon.env`,
+installs `agent-sandbox-worker-daemon.service`, creates `/var/lib/agent-worker`, and verifies the
+local `/healthz` endpoint. This slice keeps the existing tar-copy/load deployment model and does
+not do worker-side remote manifest comparison yet. That remote skip path is deferred because it
+needs a separate trusted manifest storage/read path on the worker, while the host-side cache
+already avoids the expensive local `docker build`/`docker save` path when inputs are unchanged. It
+intentionally does not install the control-plane services.
 
 ## Cleanup Visibility
 

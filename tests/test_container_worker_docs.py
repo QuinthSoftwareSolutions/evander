@@ -51,6 +51,13 @@ def test_container_worker_docs_describe_codex_home_preservation() -> None:
     assert "one configured worker" in docs
     assert "explicit egress policy" in docs
     assert "The worker VM only covers this bounded first slice" in docs
+    assert "dist/agent-sandbox-runner.tar.manifest" in docs
+    assert "RUNNER_FORCE_REBUILD=1 ./scripts/build_agent_sandbox_runner_image.sh" in docs
+    assert "./scripts/build_agent_sandbox_runner_image.sh --force" in docs
+    assert "ubuntu:24.04" in docs
+    assert "cached archive was reused" in docs
+    assert "worker-side remote manifest comparison" in docs
+    assert "tar-copy/load deployment model" in docs
 
 
 def test_execution_backend_docs_distinguish_daemon_from_gateway_integration() -> None:

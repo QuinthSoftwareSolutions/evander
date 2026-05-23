@@ -5,6 +5,17 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-23 - Cached Runner Archive Reuse
+
+- Added a sidecar manifest contract for `dist/agent-sandbox-runner.tar` so
+  unchanged runner-image inputs reuse the cached archive instead of rebuilding
+  Docker output.
+- Documented the `RUNNER_FORCE_REBUILD=1` and `--force` refresh paths for
+  operators who need to invalidate the cache, including moving base-image tags
+  such as `ubuntu:24.04`.
+- Kept the worker deployment model as a tarball copy/load flow and deferred
+  worker-side remote manifest comparison to a later slice.
+
 ## 2026-05-23 - Retry-Safe Workflow Completion Publication
 
 - Added durable `completion_pending` effect and gate execution state so
