@@ -1141,21 +1141,19 @@ test("workflow editor guides, inspects, and resets the guided sample workflow", 
 
   await page.waitForSelector(".guided-sample-launcher");
   await assert.equal(await page.locator(".guided-sample-section").count(), 0);
+  await assert.equal(await page.getByRole("button", { name: "First steps" }).count(), 1);
+  await assert.equal(await page.getByRole("button", { name: "Sample run" }).count(), 1);
   await assert.equal(await page.getByRole("button", { name: "Launch sample" }).count(), 0);
-  await assert.equal(await page.locator(".guided-sample-launcher-button.needs-attention").count(), 1);
-  await assert.equal(await page.getByRole("button", { name: "Skip" }).count(), 1);
 
-  await page.getByRole("button", { name: "Skip" }).click();
-  await assert.equal(sampleLaunchRequests, 0);
-  await assert.equal(
-    await page.evaluate(() => window.localStorage.getItem("workflow-editor:sample-tutorial-completed")),
-    "true",
-  );
-  await assert.equal(await page.locator(".guided-sample-launcher-button.needs-attention").count(), 0);
-  await assert.equal(await page.locator(".guided-sample-launcher-button.is-complete").count(), 1);
-  await assert.equal(await page.getByRole("button", { name: "Skip" }).count(), 0);
+  await page.getByRole("button", { name: "First steps" }).click();
+  await page.getByRole("dialog", { name: "Welcome" }).waitFor({ state: "visible" });
+  await page.getByText("This walkthrough covers the basics of configuring workflows.", { exact: true }).waitFor({
+    state: "visible",
+  });
+  await page.getByRole("button", { name: "Exit" }).click();
+  await page.waitForFunction(() => !document.querySelector(".workflow-tutorial-bubble"));
 
-  await page.getByRole("button", { name: "Tutorial" }).click();
+  await page.getByRole("button", { name: "Sample run" }).click();
   await page.waitForSelector(".guided-sample-section");
   await assert.equal(await page.getByRole("button", { name: "Launch sample" }).count(), 1);
   await page.locator(".guided-sample-current-step").getByText("Launch the sample", { exact: true }).waitFor({ state: "visible" });
@@ -1191,11 +1189,12 @@ test("workflow editor guides, inspects, and resets the guided sample workflow", 
   await page.getByText("Approval sample:first-run:approval", { exact: false }).first().waitFor({ state: "visible" });
 
   await page.getByRole("button", { name: "Reset sample" }).click();
-  await page.waitForFunction(() => !document.querySelector(".guided-sample-section"));
-  await assert.equal(await page.locator(".guided-sample-launcher-button.is-complete").count(), 1);
   await page.waitForFunction(() => !document.querySelector(".sidebar-section.inspected-run-panel"));
   await assert.equal(await page.getByText("Inspected run", { exact: true }).count(), 0);
   await assert.equal(await page.getByText("sample:first-run:run", { exact: true }).count(), 0);
+  await assert.equal(await page.getByRole("button", { name: "Launch sample" }).count(), 1);
+  await page.getByRole("button", { name: "Hide" }).click();
+  await page.waitForFunction(() => !document.querySelector(".guided-sample-section"));
   await assert.equal(await page.getByRole("button", { name: "Launch sample" }).count(), 0);
 
   assert.deepEqual(pageErrors, []);

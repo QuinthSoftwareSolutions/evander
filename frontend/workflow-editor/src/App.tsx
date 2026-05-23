@@ -115,6 +115,15 @@ import {
   workflowNodeBounds as nodeBounds,
   type SnapGuide,
 } from "./workflowNodeSnap";
+import {
+  createWorkflowTutorialSession,
+  workflowTutorialDefinitionById,
+  workflowTutorialTargetNodeId,
+  workflowTutorialRequiredActionMatches,
+  type WorkflowTutorialRequiredAction,
+  type WorkflowTutorialSession,
+  type WorkflowTutorialStep,
+} from "./workflowTutorials";
 
 type GraphNodeData = {
   id: string;
@@ -131,6 +140,9 @@ type GraphNodeData = {
   hasUnsavedChanges: boolean;
   isInspectGhost?: boolean;
   pendingConnectionRole?: PendingConnectionRole | null;
+  tutorialHighlight?: boolean;
+  tutorialBlocked?: boolean;
+  tutorialHighlightMode?: WorkflowTutorialStep["highlightMode"] | null;
 };
 
 type GraphNodeStatusBadge = {
@@ -200,6 +212,21 @@ type WorkflowGraphLabel = {
 type CanvasPoint = {
   x: number;
   y: number;
+};
+
+type TutorialEditorSnapshot = {
+  selectedNodeIds: string[];
+  selectedNodeId: string | null;
+  selectedEdgeId: string | null;
+  selectedGraphId: string | null;
+  runDetail: WorkflowRunDetail | null;
+  canvasViewport: Viewport;
+  viewportWasMeaningful: boolean;
+};
+
+type TutorialBubbleSize = {
+  width: number;
+  height: number;
 };
 
 type PendingConnectionState = {
@@ -363,7 +390,6 @@ const NODE_STATUS_ORDER = [
   "skipped",
 ] as const;
 const WORKFLOW_SIDEBAR_WIDTH_STORAGE_KEY = "workflow-editor:sidebar-width";
-const WORKFLOW_SAMPLE_TUTORIAL_COMPLETED_STORAGE_KEY = "workflow-editor:sample-tutorial-completed";
 const WORKFLOW_SIDEBAR_DEFAULT_WIDTH = 320;
 const WORKFLOW_SIDEBAR_MIN_WIDTH = 320;
 const WORKFLOW_SIDEBAR_MAX_WIDTH = 760;
@@ -390,11 +416,6 @@ function readStoredWorkflowSidebarWidth(): number {
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed)) return WORKFLOW_SIDEBAR_DEFAULT_WIDTH;
   return Math.min(Math.max(parsed, WORKFLOW_SIDEBAR_MIN_WIDTH), WORKFLOW_SIDEBAR_MAX_WIDTH);
-}
-
-function readStoredWorkflowSampleTutorialCompleted(): boolean {
-  if (typeof window === "undefined") return false;
-  return window.localStorage.getItem(WORKFLOW_SAMPLE_TUTORIAL_COMPLETED_STORAGE_KEY) === "true";
 }
 
 function maxWorkflowSidebarWidth(containerWidth: number): number {
@@ -435,7 +456,9 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
         nodeData.dominantStatus ? ` runtime-${nodeData.dominantStatus}` : ""
       }${nodeData.hasDiagnostics ? " invalid" : ""}${
         nodeData.pendingConnectionRole ? ` connection-${nodeData.pendingConnectionRole}` : ""
-      }${nodeData.hasUnsavedChanges ? " unsaved" : ""}${nodeData.isInspectGhost ? " inspect-ghost" : ""}`}
+      }${nodeData.hasUnsavedChanges ? " unsaved" : ""}${nodeData.isInspectGhost ? " inspect-ghost" : ""}${
+        nodeData.tutorialHighlight ? ` tutorial-highlight tutorial-highlight-${nodeData.tutorialHighlightMode ?? "pulse"}` : ""
+      }${nodeData.tutorialBlocked ? " tutorial-blocked" : ""}`}
     >
       <Handle type="target" position={Position.Left} className="workflow-handle workflow-technical-handle" />
       {nodeData.inputPorts.map((port) => (
@@ -1679,6 +1702,156 @@ function workflowGraphLabels(
   });
 }
 
+function decorateWorkflowTutorialNodes(
+  nodes: Node<GraphNodeData>[],
+  step: WorkflowTutorialStep | null,
+): Node<GraphNodeData>[] {
+  if (!step) return nodes;
+  const targetNodeId = workflowTutorialTargetNodeId(step.target);
+  return nodes.map((node) => {
+    const isTarget = targetNodeId !== null && node.id === targetNodeId;
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        tutorialHighlight: isTarget && step.highlightMode !== "none",
+        tutorialBlocked: targetNodeId !== null ? !isTarget : false,
+        tutorialHighlightMode: step.highlightMode,
+      },
+    };
+  });
+}
+
+function tutorialRequiredActionLabel(action: WorkflowTutorialRequiredAction): string {
+  switch (action.kind) {
+    case "next":
+      return "Next";
+    case "select-node":
+      return `Select ${action.nodeId}`;
+    case "add-node":
+      return `Add ${action.nodeType}`;
+    case "connect":
+      return `Connect ${action.sourceNodeId} to ${action.targetNodeId}`;
+    case "bind-field":
+      return `Bind ${action.nodeId}.${action.fieldKey}`;
+    case "reset":
+      return "Reset";
+    default:
+      return "Continue";
+  }
+}
+
+function tutorialRequiredActionDescription(action: WorkflowTutorialRequiredAction): string {
+  switch (action.kind) {
+    case "next":
+      return "Press Next to continue.";
+    case "select-node":
+      return `Click node ${action.nodeId} to continue.`;
+    case "add-node":
+      return `Add ${action.nodeType} at the tutorial position.`;
+    case "connect":
+      return `Connect ${action.sourceNodeId} via ${action.sourcePort ?? "default"} to ${action.targetNodeId}.`;
+    case "bind-field":
+      return `Bind ${action.nodeId}.${action.fieldKey} to ${action.bindingExpression}.`;
+    case "reset":
+      return "Reset the tutorial to practice again.";
+    default:
+      return "Follow the tutorial prompt to continue.";
+  }
+}
+
+function isMeaningfulViewport(viewport: Viewport): boolean {
+  return Math.abs(viewport.x) > 0.5 || Math.abs(viewport.y) > 0.5 || Math.abs(viewport.zoom - 1) > 0.01;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function clampTutorialBubblePosition(
+  preferred: { left: number; top: number },
+  size: TutorialBubbleSize,
+  canvasSize: { width: number; height: number },
+  padding = 16,
+): { left: number; top: number } {
+  const maxLeft = Math.max(padding, canvasSize.width - size.width - padding);
+  const maxTop = Math.max(padding, canvasSize.height - size.height - padding);
+  return {
+    left: clamp(preferred.left, padding, maxLeft),
+    top: clamp(preferred.top, padding, maxTop),
+  };
+}
+
+function tutorialBubblePosition(
+  step: WorkflowTutorialStep,
+  nodes: ReadonlyArray<Node<GraphNodeData>>,
+  viewport: Viewport,
+  bubbleSize: TutorialBubbleSize,
+  canvasSize: { width: number; height: number },
+): { left: number; top: number } {
+  const padding = 16;
+  const gap = 20;
+  if (step.target.kind === "canvas") {
+    return clampTutorialBubblePosition(
+      {
+        left: (canvasSize.width - bubbleSize.width) / 2,
+        top: (canvasSize.height - bubbleSize.height) / 2,
+      },
+      bubbleSize,
+      canvasSize,
+      padding,
+    );
+  }
+  const targetNode = nodes.find((node) => node.id === step.target.nodeId);
+  if (!targetNode) {
+    return clampTutorialBubblePosition(
+      {
+        left: (canvasSize.width - bubbleSize.width) / 2,
+        top: (canvasSize.height - bubbleSize.height) / 2,
+      },
+      bubbleSize,
+      canvasSize,
+      padding,
+    );
+  }
+  const bounds = nodeBounds(targetNode);
+  const left = bounds.left * viewport.zoom + viewport.x;
+  const top = bounds.top * viewport.zoom + viewport.y;
+  const right = bounds.right * viewport.zoom + viewport.x;
+  const bottom = bounds.bottom * viewport.zoom + viewport.y;
+  const centerX = (left + right) / 2;
+  const centerY = (top + bottom) / 2;
+  let preferredLeft = centerX - bubbleSize.width / 2;
+  let preferredTop = centerY - bubbleSize.height / 2;
+  switch (step.bubblePlacement) {
+    case "left":
+      preferredLeft = left - bubbleSize.width - gap;
+      break;
+    case "right":
+      preferredLeft = right + gap;
+      break;
+    case "top":
+      preferredTop = top - bubbleSize.height - gap;
+      break;
+    case "bottom":
+      preferredTop = bottom + gap;
+      break;
+    case "center":
+      preferredLeft = (canvasSize.width - bubbleSize.width) / 2;
+      preferredTop = (canvasSize.height - bubbleSize.height) / 2;
+      break;
+    default:
+      break;
+  }
+  if (step.bubblePlacement === "left" || step.bubblePlacement === "right") {
+    preferredTop = centerY - bubbleSize.height / 2;
+  }
+  if (step.bubblePlacement === "top" || step.bubblePlacement === "bottom") {
+    preferredLeft = centerX - bubbleSize.width / 2;
+  }
+  return clampTutorialBubblePosition({ left: preferredLeft, top: preferredTop }, bubbleSize, canvasSize, padding);
+}
+
 function formatRuntimeTimestamp(value: string | null | undefined): string {
   if (!value) return "Unknown time";
   const date = new Date(value);
@@ -2564,6 +2737,8 @@ export default function App() {
   const initialWorkflowRunLookup = workflowRunLookupFromHash();
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const canvasShellRef = useRef<HTMLElement | null>(null);
+  const tutorialBubbleRef = useRef<HTMLDivElement | null>(null);
+  const tutorialSnapshotRef = useRef<TutorialEditorSnapshot | null>(null);
   const hasAutoFitRef = useRef(false);
   const initialGraphDirectoryPathRef = useRef(selectedDirectoryPath);
   const copiedSelectionRef = useRef<CopiedWorkflowSelection | null>(null);
@@ -2576,10 +2751,9 @@ export default function App() {
   const [sampleWorkflowLoading, setSampleWorkflowLoading] = useState(true);
   const [sampleWorkflowError, setSampleWorkflowError] = useState<string | null>(null);
   const [sampleWorkflowAction, setSampleWorkflowAction] = useState<"launch" | "reset" | null>(null);
-  const [sampleWorkflowTutorialOpen, setSampleWorkflowTutorialOpen] = useState(false);
-  const [sampleWorkflowTutorialCompleted, setSampleWorkflowTutorialCompleted] = useState(
-    () => readStoredWorkflowSampleTutorialCompleted(),
-  );
+  const [sampleWorkflowPanelOpen, setSampleWorkflowPanelOpen] = useState(false);
+  const [activeWorkflowTutorial, setActiveWorkflowTutorial] = useState<WorkflowTutorialSession | null>(null);
+  const [workflowTutorialHint, setWorkflowTutorialHint] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<WorkflowRunDetail | null>(null);
   const [runDetailLookup, setRunDetailLookup] = useState(initialWorkflowRunLookup?.value ?? "");
   const [runDetailLookupKind, setRunDetailLookupKind] = useState<WorkflowRunDetailLookupKind>(
@@ -2600,6 +2774,7 @@ export default function App() {
   const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<Node<GraphNodeData>, Edge> | null>(null);
   const [canvasViewport, setCanvasViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
+  const [tutorialBubbleSize, setTutorialBubbleSize] = useState<TutorialBubbleSize>({ width: 0, height: 0 });
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -2637,7 +2812,18 @@ export default function App() {
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const editLocked = !privilegedUnlocked;
   const isInspectMode = runDetail !== null;
-  const workflowEditLocked = editLocked || isInspectMode;
+  const activeWorkflowTutorialDefinition = activeWorkflowTutorial
+    ? workflowTutorialDefinitionById(activeWorkflowTutorial.tutorialId) ?? null
+    : null;
+  const activeWorkflowTutorialStep = activeWorkflowTutorialDefinition
+    ? activeWorkflowTutorialDefinition.steps[activeWorkflowTutorial?.stepIndex ?? 0] ?? null
+    : null;
+  const isTutorialMode = Boolean(activeWorkflowTutorialDefinition && activeWorkflowTutorialStep);
+  const workflowEditLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial);
+  const activeWorkflowDocument = isTutorialMode && activeWorkflowTutorial ? activeWorkflowTutorial.document : document;
+  const activeWorkflowConfig = activeWorkflowDocument?.config ?? emptyConfig();
+  const activeWorkflowOutputSchemas = activeWorkflowDocument?.output_schemas ?? EMPTY_OUTPUT_SCHEMAS;
+  const activeWorkflowCatalog = activeWorkflowTutorialDefinition?.catalog ?? catalog;
   const config = document?.config ?? emptyConfig();
   const workflowGraphs = document?.graphs ?? [];
   const visibleWorkflowGraphs = workflowGraphs.filter((graph) =>
@@ -2682,8 +2868,38 @@ export default function App() {
         };
       })
     : [];
-  const baseDisplayedFlowNodes = flowNodes.filter((node) => visibleGraphNodeIds.has(node.id));
-  const normalDisplayedFlowNodes = pendingConnection && document
+  const canvasDocument = isTutorialMode && activeWorkflowTutorial ? activeWorkflowTutorial.document : document;
+  const canvasCatalog = activeWorkflowTutorialDefinition?.catalog ?? catalog;
+  const canvasWorkflowGraphs = canvasDocument?.graphs ?? workflowGraphs;
+  const canvasVisibleWorkflowGraphs = isTutorialMode
+    ? canvasWorkflowGraphs
+    : canvasWorkflowGraphs.filter((graph) => graphVisibleInDirectory(graph, selectedDirectoryPath));
+  const canvasVisibleGraphNodeIds = new Set(canvasVisibleWorkflowGraphs.flatMap((graph) => graph.node_ids));
+  const tutorialDisplayedFlowNodes = isTutorialMode && canvasDocument
+    ? decorateWorkflowTutorialNodes(
+        buildNodes(
+          canvasDocument.config,
+          canvasDocument.layout,
+          canvasCatalog,
+          {},
+          [],
+          {},
+          selectedNodeIds,
+          new Set<string>(),
+          new Set<string>(),
+        ),
+        activeWorkflowTutorialStep,
+      )
+    : [];
+  const tutorialDisplayedFlowEdges = isTutorialMode && canvasDocument
+    ? buildEdges(canvasDocument.config, canvasCatalog).filter(
+        (edge) => canvasVisibleGraphNodeIds.has(edge.source) && canvasVisibleGraphNodeIds.has(edge.target),
+      )
+    : [];
+  const baseDisplayedFlowNodes = isTutorialMode
+    ? tutorialDisplayedFlowNodes
+    : flowNodes.filter((node) => visibleGraphNodeIds.has(node.id));
+  const normalDisplayedFlowNodes = !isTutorialMode && pendingConnection && document
     ? baseDisplayedFlowNodes.map((node) => {
         let pendingConnectionRole: PendingConnectionRole;
         if (node.id === pendingConnection.sourceId) {
@@ -2708,9 +2924,9 @@ export default function App() {
         };
       })
     : baseDisplayedFlowNodes;
-  const normalDisplayedFlowEdges = flowEdges.filter(
-    (edge) => visibleGraphNodeIds.has(edge.source) && visibleGraphNodeIds.has(edge.target),
-  );
+  const normalDisplayedFlowEdges = isTutorialMode
+    ? tutorialDisplayedFlowEdges
+    : flowEdges.filter((edge) => visibleGraphNodeIds.has(edge.source) && visibleGraphNodeIds.has(edge.target));
   const displayedFlowNodes = isInspectMode ? inspectFlowNodes : normalDisplayedFlowNodes;
   const displayedFlowEdges = isInspectMode ? inspectFlowEdges : normalDisplayedFlowEdges;
   const selectedInspectGraphNode = isInspectMode && selectedNodeId
@@ -2722,30 +2938,35 @@ export default function App() {
   const selectedInspectCatalogEntry = selectedInspectGraphNode
     ? getCatalogEntry(catalog, selectedInspectGraphNode.type)
     : undefined;
-  const selectedNode = !isInspectMode && selectedNodeIds.length === 1 && selectedNodeId ? nodeById(config, selectedNodeId) : undefined;
-  const selectedCatalogEntry = selectedNode ? getCatalogEntry(catalog, selectedNode.type) : undefined;
+  const selectedNode = !isInspectMode && selectedNodeIds.length === 1 && selectedNodeId
+    ? nodeById(activeWorkflowConfig, selectedNodeId)
+    : undefined;
+  const selectedCatalogEntry = selectedNode ? getCatalogEntry(activeWorkflowCatalog, selectedNode.type) : undefined;
   const selectedNodeDiagnostics = selectedNode
-    ? validationDiagnostics.filter((diagnostic) => diagnostic.node_id === selectedNode.id)
+    ? (isTutorialMode
+        ? (activeWorkflowDocument?.validation_diagnostics ?? [])
+        : validationDiagnostics
+      ).filter((diagnostic) => diagnostic.node_id === selectedNode.id)
     : [];
   const selectedNodeOutputContract = useMemo(
     () => (
       selectedNode
-        ? workflowNodeOutputContract(config, selectedNode.id, document?.output_schemas ?? EMPTY_OUTPUT_SCHEMAS)
+        ? workflowNodeOutputContract(activeWorkflowConfig, selectedNode.id, activeWorkflowOutputSchemas)
         : null
     ),
-    [config, document?.output_schemas, selectedNode?.id],
+    [activeWorkflowConfig, activeWorkflowOutputSchemas, selectedNode?.id],
   );
   const selectedEdge = selectedEdgeId
-    ? config.edges.find(
+    ? activeWorkflowConfig.edges.find(
         (edge) =>
           edgeId(edge) === selectedEdgeId &&
           visibleGraphNodeIds.has(edge.source_id) &&
           visibleGraphNodeIds.has(edge.target_id),
       )
     : undefined;
-  const selectedEdgeSourceNode = selectedEdge ? nodeById(config, selectedEdge.source_id) : undefined;
+  const selectedEdgeSourceNode = selectedEdge ? nodeById(activeWorkflowConfig, selectedEdge.source_id) : undefined;
   const selectedEdgeSourceCatalogEntry = selectedEdgeSourceNode
-    ? getCatalogEntry(catalog, selectedEdgeSourceNode.type)
+    ? getCatalogEntry(activeWorkflowCatalog, selectedEdgeSourceNode.type)
     : undefined;
   const selectedEdgeRouteLabel = selectedEdge
     ? workflowEdgeRouteLabel(selectedEdge.source_port, selectedEdgeSourceCatalogEntry?.output_ports ?? [])
@@ -2807,7 +3028,9 @@ export default function App() {
   ];
   const runSearchScopeOptionValues = runSearchScopeOptions.map((option) => option.value).join("\u0000");
   const selectedRunSearchScope = runSearchScopeOptions.find((option) => option.value === runSearchScope);
-  const graphLabels = isInspectMode ? [] : workflowGraphLabels(visibleWorkflowGraphs, displayedFlowNodes, canvasViewport);
+  const graphLabels = isInspectMode
+    ? []
+    : workflowGraphLabels(isTutorialMode ? canvasVisibleWorkflowGraphs : visibleWorkflowGraphs, displayedFlowNodes, canvasViewport);
   const graphViewContext = `Directory: ${selectedDirectoryPath}`;
   const directoryPathOptions = useMemo(() => {
     const treeOptions = directoryTree?.ok && directoryTree.data
@@ -2817,7 +3040,7 @@ export default function App() {
     return ensureDirectorySelectOption(withRoot, selectedDirectoryPath, selectedDirectoryPath);
   }, [directoryTree, selectedDirectoryPath]);
   const selectedNodeBindingOptions = selectedNode
-    ? upstreamBindingOptions(config, selectedNode.id, document?.output_schemas ?? EMPTY_OUTPUT_SCHEMAS)
+    ? upstreamBindingOptions(activeWorkflowConfig, selectedNode.id, activeWorkflowOutputSchemas)
     : [];
   const hasCollapsedTargetUi =
     selectedNode?.type === "effect:vm:copy-files" ||
@@ -3099,7 +3322,8 @@ export default function App() {
 
   async function clearWorkflowRun(eventId: string, runState?: string) {
     const normalizedEventId = eventId.trim();
-    if (!normalizedEventId || clearingRunIds[normalizedEventId] || editLocked) return;
+    if (!normalizedEventId || clearingRunIds[normalizedEventId] || workflowEditLocked) return;
+    const inspectedRunEventId = (runDetail as WorkflowRunDetail | null)?.event_id ?? null;
     const verb = runState === "errored" ? "Dismiss" : "Clear";
     if (!window.confirm(`${verb} workflow run ${normalizedEventId}?`)) return;
     setClearingRunIds((current) => ({ ...current, [normalizedEventId]: true }));
@@ -3114,7 +3338,7 @@ export default function App() {
           runs: current.runs.filter((run) => run.event_id !== normalizedEventId),
         };
       });
-      if (runDetail?.event_id === normalizedEventId) {
+      if (inspectedRunEventId === normalizedEventId) {
         exitInspectMode();
       }
       setError(null);
@@ -3145,18 +3369,9 @@ export default function App() {
     }
   }
 
-  function markWorkflowSampleTutorialCompleted() {
-    setSampleWorkflowTutorialCompleted(true);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(WORKFLOW_SAMPLE_TUTORIAL_COMPLETED_STORAGE_KEY, "true");
-    }
-    setSampleWorkflowTutorialOpen(false);
-  }
-
   async function resetWorkflowSample() {
     if (sampleWorkflowAction !== null) return;
     const inspectedSampleEventId = sampleWorkflow?.detail?.event_id ?? sampleWorkflow?.run?.event_id ?? null;
-    const shouldCompleteTutorial = Boolean(sampleWorkflow?.active || inspectedSampleEventId);
     setSampleWorkflowAction("reset");
     setSampleWorkflowError(null);
     try {
@@ -3169,9 +3384,6 @@ export default function App() {
         setRunDetailLookup("");
         setRunDetailError(null);
       }
-      if (shouldCompleteTutorial) {
-        markWorkflowSampleTutorialCompleted();
-      }
     } catch (reason: unknown) {
       setSampleWorkflowError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -3181,7 +3393,7 @@ export default function App() {
 
   async function dismissNodeFailures(nodeId: string, failedCount: number) {
     const normalizedNodeId = nodeId.trim();
-    if (!normalizedNodeId || dismissingNodeFailureIds[normalizedNodeId] || editLocked) return;
+    if (!normalizedNodeId || dismissingNodeFailureIds[normalizedNodeId] || workflowEditLocked) return;
     const countLabel = failedCount === 1 ? "1 active fail log" : `${failedCount} active fail logs`;
     if (!window.confirm(`Dismiss all ${countLabel} for node ${normalizedNodeId}?`)) return;
     setDismissingNodeFailureIds((current) => ({ ...current, [normalizedNodeId]: true }));
@@ -3207,13 +3419,14 @@ export default function App() {
 
   async function resumeWorkflowRun(eventId: string) {
     const normalizedEventId = eventId.trim();
-    if (!normalizedEventId || resumingRunIds[normalizedEventId] || editLocked) return;
+    if (!normalizedEventId || resumingRunIds[normalizedEventId] || workflowEditLocked) return;
+    const inspectedRunEventId = (runDetail as WorkflowRunDetail | null)?.event_id ?? null;
     setResumingRunIds((current) => ({ ...current, [normalizedEventId]: true }));
     try {
       await fetchJson(`/api/workflow-editor/runs/${encodeURIComponent(normalizedEventId)}/resume`, {
         method: "POST",
       });
-      if (runDetail?.event_id === normalizedEventId) {
+      if (inspectedRunEventId === normalizedEventId) {
         await loadWorkflowRunDetail(new URLSearchParams({ event_id: normalizedEventId }), normalizedEventId);
       }
       setError(null);
@@ -3268,6 +3481,7 @@ export default function App() {
   }
 
   function inspectWorkflowRun(eventId: string) {
+    if (activeWorkflowTutorial) return;
     const normalizedEventId = eventId.trim();
     if (!normalizedEventId) return;
     void loadWorkflowRunDetail(new URLSearchParams({ event_id: normalizedEventId }), normalizedEventId);
@@ -3305,6 +3519,141 @@ export default function App() {
     });
     if (!query) return;
     void loadWorkflowRunSearch(query);
+  }
+
+  function tutorialCurrentRequiredAction(): WorkflowTutorialRequiredAction | null {
+    return activeWorkflowTutorialStep?.requiredAction ?? null;
+  }
+
+  function tutorialActionMatchesCurrentStep(action: WorkflowTutorialRequiredAction): boolean {
+    const requiredAction = tutorialCurrentRequiredAction();
+    return requiredAction ? workflowTutorialRequiredActionMatches(requiredAction, action) : false;
+  }
+
+  function tutorialActionHintFor(requiredAction: WorkflowTutorialRequiredAction | null): string {
+    if (!requiredAction) return "";
+    return `Follow this step: ${tutorialRequiredActionDescription(requiredAction)}`;
+  }
+
+  function tutorialAllowsAction(action: WorkflowTutorialRequiredAction): boolean {
+    if (!isTutorialMode) return true;
+    return tutorialActionMatchesCurrentStep(action);
+  }
+
+  function tutorialAllowsNodeType(kind: WorkflowNodeKind, type: string): boolean {
+    const requiredAction = tutorialCurrentRequiredAction();
+    return Boolean(
+      isTutorialMode &&
+      requiredAction?.kind === "add-node" &&
+      requiredAction.nodeKind === kind &&
+      requiredAction.nodeType === type,
+    );
+  }
+
+  function tutorialAllowsInspectorFieldEdit(fieldKey: string): boolean {
+    const requiredAction = tutorialCurrentRequiredAction();
+    return Boolean(
+      isTutorialMode &&
+      requiredAction?.kind === "bind-field" &&
+      selectedNode?.id === requiredAction.nodeId &&
+      requiredAction.fieldKey === fieldKey,
+    );
+  }
+
+  function completeTutorialAction(action: WorkflowTutorialRequiredAction): boolean {
+    if (!isTutorialMode) return true;
+    const requiredAction = tutorialCurrentRequiredAction();
+    if (!requiredAction || !workflowTutorialRequiredActionMatches(requiredAction, action)) {
+      setWorkflowTutorialHint(tutorialActionHintFor(requiredAction));
+      return false;
+    }
+    setWorkflowTutorialHint(null);
+    if (requiredAction.kind === "reset") {
+      resetWorkflowTutorial();
+      return true;
+    }
+    advanceWorkflowTutorial();
+    return true;
+  }
+
+  function startWorkflowTutorial(tutorialId = "first-steps") {
+    if (activeWorkflowTutorial) return;
+    const definition = workflowTutorialDefinitionById(tutorialId);
+    if (!definition) return;
+    tutorialSnapshotRef.current = {
+      selectedNodeIds,
+      selectedNodeId,
+      selectedEdgeId,
+      selectedGraphId,
+      runDetail,
+      canvasViewport,
+      viewportWasMeaningful: isMeaningfulViewport(canvasViewport),
+    };
+    setWorkflowTutorialHint(null);
+    setActiveWorkflowTutorial(createWorkflowTutorialSession(definition.id));
+    setRunDetail(null);
+    setProgrammaticSelection([]);
+    setSelectedEdgeId(null);
+    setSelectedGraphId(null);
+    setNodeConnectionMenu(null);
+    setPendingConnection(null);
+    setSnapGuides([]);
+    hasAutoFitRef.current = false;
+    setError(null);
+  }
+
+  function advanceWorkflowTutorial() {
+    setActiveWorkflowTutorial((current) => {
+      if (!current) return current;
+      const definition = workflowTutorialDefinitionById(current.tutorialId);
+      if (!definition) return current;
+      const nextStepIndex = Math.min(current.stepIndex + 1, definition.steps.length - 1);
+      if (nextStepIndex === current.stepIndex) return current;
+      hasAutoFitRef.current = false;
+      setWorkflowTutorialHint(null);
+      return {
+        ...current,
+        stepIndex: nextStepIndex,
+      };
+    });
+  }
+
+  function resetWorkflowTutorial() {
+    setActiveWorkflowTutorial((current) => {
+      if (!current) return current;
+      const definition = workflowTutorialDefinitionById(current.tutorialId);
+      if (!definition) return current;
+      hasAutoFitRef.current = false;
+      setWorkflowTutorialHint(null);
+      return createWorkflowTutorialSession(definition.id);
+    });
+    setProgrammaticSelection([]);
+    setSelectedEdgeId(null);
+    setSelectedGraphId(null);
+    setNodeConnectionMenu(null);
+    setPendingConnection(null);
+    setSnapGuides([]);
+  }
+
+  function exitWorkflowTutorial() {
+    const snapshot = tutorialSnapshotRef.current;
+    setActiveWorkflowTutorial(null);
+    setWorkflowTutorialHint(null);
+    setNodeConnectionMenu(null);
+    setPendingConnection(null);
+    setSnapGuides([]);
+    if (!snapshot) {
+      return;
+    }
+    setProgrammaticSelection(snapshot.selectedNodeIds, snapshot.selectedNodeId);
+    setSelectedEdgeId(snapshot.selectedEdgeId);
+    setSelectedGraphId(snapshot.selectedGraphId);
+    setRunDetail(snapshot.runDetail);
+    setCanvasViewport(snapshot.canvasViewport);
+    if (flowInstance) {
+      void flowInstance.setViewport(snapshot.canvasViewport);
+    }
+    hasAutoFitRef.current = snapshot.viewportWasMeaningful;
   }
 
   function exitInspectMode() {
@@ -3382,6 +3731,62 @@ export default function App() {
       hasAutoFitRef.current = true;
     });
   }, [flowInstance, displayedFlowNodes, displayedFlowEdges]);
+
+  useEffect(() => {
+    if (!isTutorialMode || !activeWorkflowTutorialStep) {
+      setTutorialBubbleSize({ width: 0, height: 0 });
+      return;
+    }
+    const bubble = tutorialBubbleRef.current;
+    if (!bubble) return;
+    const updateBubbleSize = () => {
+      const rect = bubble.getBoundingClientRect();
+      setTutorialBubbleSize({ width: rect.width, height: rect.height });
+    };
+    updateBubbleSize();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(updateBubbleSize);
+    observer.observe(bubble);
+    return () => observer.disconnect();
+  }, [activeWorkflowTutorialStep?.id, isTutorialMode]);
+
+  useEffect(() => {
+    if (!isTutorialMode || !activeWorkflowTutorialStep || !flowInstance) return;
+    if (activeWorkflowTutorialStep.camera === "none") return;
+    const targetNodeId = workflowTutorialTargetNodeId(activeWorkflowTutorialStep.target);
+    const targetNode = targetNodeId ? displayedFlowNodes.find((node) => node.id === targetNodeId) : undefined;
+    if (!targetNode) return;
+
+    let cancelled = false;
+    const applyCamera = async () => {
+      if (activeWorkflowTutorialStep.camera === "fit-node") {
+        try {
+          await flowInstance.fitView({ nodes: [{ id: targetNode.id }], padding: 0.28, duration: 350 });
+        } catch {
+          const bounds = nodeBounds(targetNode);
+          flowInstance.setCenter(bounds.centerX, bounds.centerY, {
+            zoom: flowInstance.getViewport().zoom || 1,
+            duration: 350,
+          });
+        }
+      } else if (activeWorkflowTutorialStep.camera === "center-node") {
+        const bounds = nodeBounds(targetNode);
+        flowInstance.setCenter(bounds.centerX, bounds.centerY, {
+          zoom: flowInstance.getViewport().zoom || 1,
+          duration: 300,
+        });
+      }
+      if (!cancelled) {
+        setCanvasViewport(flowInstance.getViewport());
+      }
+    };
+    queueMicrotask(() => {
+      void applyCamera();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeWorkflowTutorialStep?.id, flowInstance, isTutorialMode, displayedFlowNodes]);
 
   useEffect(() => {
     if (!selectedGraph) {
@@ -3515,7 +3920,7 @@ export default function App() {
   }, [selectedEdgeId]);
 
   useEffect(() => {
-    if (isInspectMode) return;
+    if (isInspectMode || isTutorialMode) return;
     const nextSelectedNodeIds = flowNodes
       .filter((node) => node.selected && visibleGraphNodeIds.has(node.id))
       .map((node) => node.id);
@@ -3525,7 +3930,7 @@ export default function App() {
       if (currentSelectedNodeId && nextSelectedNodeIds.includes(currentSelectedNodeId)) return currentSelectedNodeId;
       return nextSelectedNodeIds[nextSelectedNodeIds.length - 1] ?? null;
     });
-  }, [flowNodes, visibleGraphNodeIdKey, isInspectMode]);
+  }, [flowNodes, visibleGraphNodeIdKey, isInspectMode, isTutorialMode]);
 
   function patchDocument(
     nextConfig: WorkflowConfig,
@@ -3569,6 +3974,66 @@ export default function App() {
     );
     setFlowEdges(buildEdges(nextDocument.config, catalog));
     setSaveState("idle");
+  }
+
+  function patchWorkflowDocument(
+    nextConfig: WorkflowConfig,
+    nextLayout: WorkflowLayout,
+    nextGraphs?: WorkflowGraphMetadata[],
+    selectedNodeIdsAfterPatch?: string[],
+    diagnosticsOverride?: WorkflowValidationDiagnostic[],
+    outputSchemasOverride?: WorkflowOutputSchemas,
+    revisionOverride?: string,
+  ) {
+    if (isTutorialMode && activeWorkflowTutorial) {
+      const baseDocument = activeWorkflowTutorial.document;
+      const nextDocument = normalizeWorkflowEditorDocument(
+        {
+          ...baseDocument,
+          config: nextConfig,
+          layout: nextLayout,
+          graphs: nextGraphs ?? baseDocument.graphs ?? [],
+          output_schemas: outputSchemasOverride ?? baseDocument.output_schemas ?? {},
+          validation_diagnostics: diagnosticsOverride ?? baseDocument.validation_diagnostics ?? [],
+          revision: revisionOverride ?? baseDocument.revision,
+        },
+        selectedDirectoryPath,
+      );
+      const nextDiagnostics = diagnosticsOverride ?? validateWorkflowBindingDiagnostics(
+        nextDocument.config,
+        nextDocument.output_schemas,
+      );
+      setActiveWorkflowTutorial((current) => (
+        current ? {
+          ...current,
+          document: nextDocument,
+        } : current
+      ));
+      setFlowNodes((currentNodes) =>
+        buildNodes(
+          nextDocument.config,
+          nextLayout,
+          activeWorkflowCatalog,
+          {},
+          nextDiagnostics,
+          currentPositionsFromNodes(currentNodes),
+          selectedNodeIdsAfterPatch ?? currentNodes.filter((node) => node.selected).map((node) => node.id),
+          new Set<string>(),
+        ),
+      );
+      setFlowEdges(buildEdges(nextDocument.config, activeWorkflowCatalog));
+      setSaveState("idle");
+      return;
+    }
+    patchDocument(
+      nextConfig,
+      nextLayout,
+      nextGraphs,
+      selectedNodeIdsAfterPatch,
+      diagnosticsOverride,
+      outputSchemasOverride,
+      revisionOverride,
+    );
   }
 
   function setProgrammaticSelection(nextNodeIds: string[], preferredNodeId: string | null = null) {
@@ -3682,7 +4147,22 @@ export default function App() {
   }
 
   function startPendingConnection(route: WorkflowConnectionRouteOption) {
-    if (!nodeConnectionMenu || workflowEditLocked) return;
+    const expectedAction = tutorialCurrentRequiredAction();
+    const canStartConnection = Boolean(
+      isTutorialMode &&
+      expectedAction?.kind === "connect" &&
+      nodeConnectionMenu &&
+      expectedAction.sourceNodeId === nodeConnectionMenu.nodeId &&
+      expectedAction.sourcePort === route.sourcePort,
+    );
+    if (isTutorialMode && expectedAction?.kind === "connect" && !canStartConnection) {
+      setWorkflowTutorialHint(tutorialActionHintFor(expectedAction));
+      return;
+    }
+    if (workflowEditLocked && !canStartConnection) {
+      return;
+    }
+    if (!nodeConnectionMenu) return;
     setPendingConnection({
       sourceId: nodeConnectionMenu.nodeId,
       sourcePort: route.sourcePort,
@@ -3693,6 +4173,7 @@ export default function App() {
     });
     setNodeConnectionMenu(null);
     setSelectedEdgeId(null);
+    setWorkflowTutorialHint(null);
     setError(null);
     appShellRef.current?.focus();
   }
@@ -3704,11 +4185,12 @@ export default function App() {
   }
 
   function addWorkflowEdge(sourceId: string, targetId: string, sourcePort?: string | null): boolean {
-    if (!document || workflowEditLocked) return false;
+    const workflowDocument = activeWorkflowDocument;
+    if (!workflowDocument) return false;
     const normalizedSourcePort = normalizeWorkflowSourcePort(sourcePort);
     const validationError = validateConnection(
-      document.config,
-      catalog,
+      workflowDocument.config,
+      activeWorkflowCatalog,
       sourceId,
       targetId,
       normalizedSourcePort,
@@ -3717,9 +4199,9 @@ export default function App() {
       setError(validationError);
       return false;
     }
-    const targetNode = nodeById(document.config, targetId);
-    const allowCycle = targetNode?.type === "gate:for" && wouldCreateCycle(document.config, sourceId, targetId);
-    const nextConfig = cloneConfig(document.config);
+    const targetNode = nodeById(workflowDocument.config, targetId);
+    const allowCycle = targetNode?.type === "gate:for" && wouldCreateCycle(workflowDocument.config, sourceId, targetId);
+    const nextConfig = cloneConfig(workflowDocument.config);
     const nextEdge: WorkflowEdge = {
       source_id: sourceId,
       target_id: targetId,
@@ -3734,7 +4216,7 @@ export default function App() {
       ...nextConfig.edges,
       nextEdge,
     ];
-    patchDocument(nextConfig, cloneLayout(document.layout));
+    patchWorkflowDocument(nextConfig, cloneLayout(workflowDocument.layout));
     setSelectedEdgeId(null);
     setError(null);
     return true;
@@ -3744,7 +4226,19 @@ export default function App() {
     event: ReactDragEvent<HTMLButtonElement>,
     entry: WorkflowEditorNodeCatalogEntry,
   ) {
-    if (workflowEditLocked) {
+    const expectedAction = tutorialCurrentRequiredAction();
+    const canDrag = Boolean(
+      isTutorialMode &&
+      expectedAction?.kind === "add-node" &&
+      expectedAction.nodeKind === entry.kind &&
+      expectedAction.nodeType === entry.type,
+    );
+    if (isTutorialMode && expectedAction?.kind === "add-node" && !canDrag) {
+      event.preventDefault();
+      setWorkflowTutorialHint(tutorialActionHintFor(expectedAction));
+      return;
+    }
+    if (workflowEditLocked && !canDrag) {
       event.preventDefault();
       return;
     }
@@ -3757,15 +4251,38 @@ export default function App() {
   }
 
   function handleNodeTypeDragOver(event: ReactDragEvent<HTMLElement>) {
-    if (workflowEditLocked || !Array.from(event.dataTransfer.types).includes(NODE_TYPE_DRAG_DATA_MIME)) return;
+    const expectedAction = tutorialCurrentRequiredAction();
+    if (
+      workflowEditLocked &&
+      !(
+        isTutorialMode &&
+        expectedAction?.kind === "add-node"
+      )
+    ) return;
+    if (!Array.from(event.dataTransfer.types).includes(NODE_TYPE_DRAG_DATA_MIME)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
   }
 
   function handleNodeTypeDrop(event: ReactDragEvent<HTMLElement>) {
-    if (workflowEditLocked) return;
+    const expectedAction = tutorialCurrentRequiredAction();
+    if (
+      workflowEditLocked &&
+      !(
+        isTutorialMode &&
+        expectedAction?.kind === "add-node"
+      )
+    ) return;
     const payload = parseNodeTypeDragPayload(event.dataTransfer);
     if (!payload) return;
+    if (
+      isTutorialMode &&
+      expectedAction?.kind === "add-node" &&
+      (expectedAction.nodeKind !== payload.kind || expectedAction.nodeType !== payload.type)
+    ) {
+      setWorkflowTutorialHint(tutorialActionHintFor(expectedAction));
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
     addNode(payload.kind, payload.type, nodePositionFromScreenPoint(event.clientX, event.clientY));
@@ -3774,7 +4291,19 @@ export default function App() {
   function handleNodeContextMenu(event: React.MouseEvent, node: Node<GraphNodeData>) {
     event.preventDefault();
     event.stopPropagation();
-    if (workflowEditLocked) return;
+    const expectedAction = tutorialCurrentRequiredAction();
+    if (
+      workflowEditLocked &&
+      !(
+        isTutorialMode &&
+        expectedAction?.kind === "connect" &&
+        expectedAction.sourceNodeId === node.id
+      )
+    ) return;
+    if (isTutorialMode && expectedAction?.kind === "connect" && expectedAction.sourceNodeId !== node.id) {
+      setWorkflowTutorialHint(tutorialActionHintFor(expectedAction));
+      return;
+    }
     const position = canvasPointFromScreenPoint(event.clientX, event.clientY);
     if (!position) return;
     setProgrammaticSelection([node.id], node.id);
@@ -3788,6 +4317,7 @@ export default function App() {
     });
     setPendingConnection(null);
     setError(null);
+    setWorkflowTutorialHint(null);
     appShellRef.current?.focus();
   }
 
@@ -3800,6 +4330,54 @@ export default function App() {
       setSelectedNodeId(node.id);
       setSelectedEdgeId(null);
       setSnapGuides([]);
+      appShellRef.current?.focus();
+      return;
+    }
+    if (isTutorialMode) {
+      const expectedAction = tutorialCurrentRequiredAction();
+      if (pendingConnection) {
+        const connectAction: WorkflowTutorialRequiredAction = {
+          kind: "connect",
+          sourceNodeId: pendingConnection.sourceId,
+          sourcePort: pendingConnection.sourcePort,
+          targetNodeId: node.id,
+        };
+        if (tutorialAllowsAction(connectAction)) {
+          event.stopPropagation();
+          if (addWorkflowEdge(pendingConnection.sourceId, node.id, pendingConnection.sourcePort)) {
+            setPendingConnection(null);
+            completeTutorialAction(connectAction);
+          }
+          appShellRef.current?.focus();
+          return;
+        }
+        setWorkflowTutorialHint(tutorialActionHintFor(expectedAction));
+        event.stopPropagation();
+        appShellRef.current?.focus();
+        return;
+      }
+      if (expectedAction?.kind === "select-node" && expectedAction.nodeId === node.id) {
+        event.stopPropagation();
+        setNodeConnectionMenu(null);
+        setPendingConnection(null);
+        setProgrammaticSelection([node.id], node.id);
+        setSelectedEdgeId(null);
+        setSnapGuides([]);
+        setWorkflowTutorialHint(null);
+        completeTutorialAction({ kind: "select-node", nodeId: node.id });
+        appShellRef.current?.focus();
+        return;
+      }
+      if (expectedAction?.kind === "connect" && expectedAction.sourceNodeId === node.id) {
+        event.stopPropagation();
+        setProgrammaticSelection([node.id], node.id);
+        setSelectedEdgeId(null);
+        setWorkflowTutorialHint(null);
+        appShellRef.current?.focus();
+        return;
+      }
+      event.stopPropagation();
+      setWorkflowTutorialHint(tutorialActionHintFor(expectedAction));
       appShellRef.current?.focus();
       return;
     }
@@ -3885,6 +4463,12 @@ export default function App() {
   }
 
   function handlePaneClick() {
+    if (isTutorialMode) {
+      if (pendingConnection || nodeConnectionMenu) {
+        closeConnectionUi();
+      }
+      return;
+    }
     if (pendingConnection || nodeConnectionMenu) {
       closeConnectionUi();
     }
@@ -4035,6 +4619,13 @@ export default function App() {
 
   function handleAppShellKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
     if (isEditableEventTarget(event.target)) return;
+    if (isTutorialMode) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        exitWorkflowTutorial();
+      }
+      return;
+    }
     if (isInspectMode) {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -4086,15 +4677,29 @@ export default function App() {
   }
 
   function addNode(kind: WorkflowNodeKind, type: string, requestedPosition?: { x: number; y: number } | null) {
-    if (!document || workflowEditLocked) return;
-    const nextConfig = cloneConfig(document.config);
+    const workflowDocument = activeWorkflowDocument;
+    if (!workflowDocument) return;
+    const expectedAction = tutorialCurrentRequiredAction();
+    const isTutorialAddNode =
+      isTutorialMode &&
+      expectedAction?.kind === "add-node" &&
+      expectedAction.nodeKind === kind &&
+      expectedAction.nodeType === type;
+    const tutorialAddNodeAction = isTutorialAddNode ? expectedAction : null;
+    if (workflowEditLocked && !isTutorialAddNode) return;
+    if (isTutorialMode && expectedAction?.kind === "add-node" && !isTutorialAddNode) {
+      setWorkflowTutorialHint(tutorialActionHintFor(expectedAction));
+      return;
+    }
+    const nextConfig = cloneConfig(workflowDocument.config);
     nextConfig.triggers ??= [];
     nextConfig.gates ??= [];
     nextConfig.effects ??= [];
     nextConfig.queries ??= [];
-    const node = createDefaultNode(kind, type, generateNodeId(nextConfig, kind, type));
+    const nodeId = tutorialAddNodeAction ? tutorialAddNodeAction.nodeId : generateNodeId(nextConfig, kind, type);
+    const node = createDefaultNode(kind, type, nodeId);
     nextConfig[kindCollectionKey(kind)].push(node);
-    const nextLayout = cloneLayout(document.layout);
+    const nextLayout = cloneLayout(workflowDocument.layout);
     const nextNodeIndex =
       nextConfig.triggers.length +
         nextConfig.gates.length +
@@ -4102,11 +4707,20 @@ export default function App() {
         nextConfig.queries.length -
         1;
     nextLayout.nodes[node.id] =
-      requestedPosition ?? nodePositionAtCanvasCenter() ?? fallbackPosition(nextNodeIndex);
-    patchDocument(nextConfig, nextLayout, undefined, [node.id]);
+      (tutorialAddNodeAction ? tutorialAddNodeAction.position : requestedPosition) ?? nodePositionAtCanvasCenter() ?? fallbackPosition(nextNodeIndex);
+    patchWorkflowDocument(nextConfig, nextLayout, undefined, [node.id]);
     setProgrammaticSelection([node.id], node.id);
     setSelectedEdgeId(null);
     setInspectorDraftError(null);
+    if (tutorialAddNodeAction) {
+      completeTutorialAction({
+        kind: "add-node",
+        nodeKind: tutorialAddNodeAction.nodeKind,
+        nodeType: tutorialAddNodeAction.nodeType,
+        nodeId: tutorialAddNodeAction.nodeId,
+        position: tutorialAddNodeAction.position,
+      });
+    }
     setError(null);
   }
 
@@ -4115,7 +4729,7 @@ export default function App() {
   }
 
   function selectDownstreamBranch() {
-    if (!document || !selectedNodeId) return;
+    if (!document || !selectedNodeId || workflowEditLocked) return;
     const queuedNodeIds = [selectedNodeId];
     const selectedNodeSet = new Set<string>();
     while (queuedNodeIds.length > 0) {
@@ -4133,6 +4747,7 @@ export default function App() {
   }
 
   function selectWorkflowGraph(graph: WorkflowGraphMetadata) {
+    if (workflowEditLocked) return;
     setSelectedGraphId(graph.id);
     setProgrammaticSelection(graph.node_ids, graph.node_ids[0] ?? null);
     setSelectedEdgeId(null);
@@ -4290,7 +4905,39 @@ export default function App() {
   }
 
   function replaceSelectedNode(nextNode: WorkflowNodeConfig, originalNodeId: string) {
-    if (!document || !selectedNode || workflowEditLocked) return;
+    if (!document || !selectedNode) return;
+    if (workflowEditLocked && !(isTutorialMode && tutorialCurrentRequiredAction()?.kind === "bind-field")) return;
+    if (isTutorialMode && activeWorkflowTutorial && activeWorkflowDocument) {
+      const nextConfig = cloneConfig(activeWorkflowDocument.config);
+      const collectionName = kindCollectionKey(nodeKindFromType(selectedNode.type));
+      nextConfig[collectionName] = nextConfig[collectionName].map((node) =>
+        node.id === originalNodeId ? nextNode : node,
+      );
+      nextConfig.edges = nextConfig.edges.map((edge) => ({
+        ...edge,
+        source_id: edge.source_id === originalNodeId ? nextNode.id : edge.source_id,
+        target_id: edge.target_id === originalNodeId ? nextNode.id : edge.target_id,
+      }));
+      const nextLayout = cloneLayout(activeWorkflowDocument.layout);
+      if (nextNode.id !== originalNodeId) {
+        nextLayout.nodes[nextNode.id] = nextLayout.nodes[originalNodeId] ?? fallbackPosition(0);
+        delete nextLayout.nodes[originalNodeId];
+      }
+      patchWorkflowDocument(
+        nextConfig,
+        nextLayout,
+        activeWorkflowDocument.graphs,
+        [nextNode.id],
+        undefined,
+        activeWorkflowDocument.output_schemas,
+        activeWorkflowDocument.revision,
+      );
+      setProgrammaticSelection([nextNode.id], nextNode.id);
+      setSelectedEdgeId(null);
+      setInspectorDraftError(null);
+      setError(null);
+      return;
+    }
     const currentDocument = document;
     const nextConfig = cloneConfig(document.config);
     const collectionName = kindCollectionKey(nodeKindFromType(selectedNode.type));
@@ -4320,7 +4967,7 @@ export default function App() {
       nextLayout.nodes[nextNode.id] = nextLayout.nodes[originalNodeId] ?? fallbackPosition(0);
       delete nextLayout.nodes[originalNodeId];
     }
-    patchDocument(
+    patchWorkflowDocument(
       nextConfig,
       nextLayout,
       nextGraphs,
@@ -4344,7 +4991,9 @@ export default function App() {
   }
 
   function resetSelectedNodeChanges() {
-    if (!document || !selectedNode || workflowEditLocked) return;
+    if (!document || !selectedNode) return;
+    if (isTutorialMode) return;
+    if (workflowEditLocked && !(isTutorialMode && tutorialCurrentRequiredAction()?.kind === "bind-field")) return;
     const originalNodeId = nodeEditOrigins[selectedNode.id] ?? selectedNode.id;
     const savedWorkflowDocument = savedDocument;
     if (!savedWorkflowDocument) {
@@ -4402,7 +5051,7 @@ export default function App() {
       );
       delete nextLayout.nodes[selectedNode.id];
     }
-    patchDocument(
+    patchWorkflowDocument(
       nextConfig,
       nextLayout,
       nextGraphs,
@@ -4427,7 +5076,8 @@ export default function App() {
   }
 
   function stageInspectorDraft(nextDraft: Partial<InspectorDraftSnapshot> = {}) {
-    if (!document || !selectedNode || workflowEditLocked) return;
+    if (!document || !selectedNode) return;
+    if (workflowEditLocked && !(isTutorialMode && tutorialCurrentRequiredAction()?.kind === "bind-field")) return;
     try {
       const nextNode = materializeInspectorNodeFromDraft({
         nodeId: nextDraft.nodeId ?? inspectorNodeId,
@@ -4449,7 +5099,8 @@ export default function App() {
   }
 
   function onConnect(connection: Connection) {
-    if (!document || !connection.source || !connection.target || workflowEditLocked) return;
+    if (!document || !connection.source || !connection.target) return;
+    if (workflowEditLocked && !(isTutorialMode && tutorialCurrentRequiredAction()?.kind === "connect")) return;
     addWorkflowEdge(connection.source, connection.target, connection.sourceHandle);
   }
 
@@ -4470,7 +5121,7 @@ export default function App() {
   }
 
   async function validateDocument() {
-    if (!document) return;
+    if (!document || workflowEditLocked) return;
     const validation = await fetchJson<WorkflowEditorValidation>(
       "/api/workflow-editor/validate",
       {
@@ -4559,6 +5210,22 @@ export default function App() {
       setInspectorJsonDrafts(nextJsonDrafts);
     }
     stageInspectorDraft({ knownValues: next, jsonDrafts: nextJsonDrafts });
+    const expectedAction = tutorialCurrentRequiredAction();
+    if (
+      isTutorialMode &&
+      expectedAction?.kind === "bind-field" &&
+      selectedNode &&
+      expectedAction.nodeId === selectedNode.id &&
+      expectedAction.fieldKey === key &&
+      String(value) === expectedAction.bindingExpression
+    ) {
+      completeTutorialAction({
+        kind: "bind-field",
+        nodeId: selectedNode.id,
+        fieldKey: key,
+        bindingExpression: expectedAction.bindingExpression,
+      });
+    }
   }
 
   function updateToolArgumentPolicyDraftRows(fieldKey: string, nextRows: ToolArgumentPolicyDraftRow[]) {
@@ -4673,7 +5340,7 @@ export default function App() {
     if (!hasCollapsedTargetUi || !effectTargetField) return null;
     const value = inspectorKnownValues[effectTargetKey];
     const mode = inspectorFieldModes[effectTargetKey] ?? fieldValueMode(effectTargetField, value);
-    const isDisabled = effectTargetField.read_only || workflowEditLocked;
+    const isDisabled = effectTargetField.read_only || (workflowEditLocked && !tutorialAllowsInspectorFieldEdit(effectTargetKey));
     const targetTypeLabel = selectedNode?.type === "effect:agent:prompt" ? "Prompt target type" : "Target type";
     const targetPlaceholder =
       effectTargetKey === "session_id"
@@ -4804,6 +5471,7 @@ export default function App() {
                       className="subtle-button output-contract-copy"
                       onClick={() => void copyBindingExpression(row.bindingExpression)}
                       aria-label={`Copy binding expression for ${row.bindingPath}`}
+                      disabled={workflowEditLocked}
                     >
                       <CopyIcon />
                     </button>
@@ -5631,7 +6299,7 @@ export default function App() {
   function renderField(field: WorkflowEditorFieldDefinition) {
     const value = inspectorKnownValues[field.key];
     const mode = inspectorFieldModes[field.key] ?? fieldValueMode(field, value);
-    const isDisabled = field.read_only || workflowEditLocked;
+    const isDisabled = field.read_only || (workflowEditLocked && !tutorialAllowsInspectorFieldEdit(field.key));
     const selectedNodeType = selectedNode?.type;
 
     if (field.kind === "string") {
@@ -6333,22 +7001,22 @@ export default function App() {
     const sampleRun = sampleWorkflow?.run ?? null;
     const sampleEventId = sampleWorkflow?.detail?.event_id ?? sampleRun?.event_id ?? null;
     const isBusy = sampleWorkflowLoading || sampleWorkflowAction !== null;
-    if (!sampleWorkflowTutorialOpen) {
+    if (!sampleWorkflowPanelOpen) {
       return (
-        <div className={`guided-sample-launcher${sampleWorkflowTutorialCompleted ? " is-complete" : " needs-attention"}`}>
+        <div className="guided-sample-launcher">
           <button
             type="button"
-            className={`guided-sample-launcher-button${sampleWorkflowTutorialCompleted ? " is-complete" : " needs-attention"}`}
-            onClick={() => setSampleWorkflowTutorialOpen(true)}
-            aria-expanded="false"
+            className="primary"
+            onClick={() => {
+              setSampleWorkflowPanelOpen(false);
+              startWorkflowTutorial();
+            }}
           >
-            Tutorial
+            First steps
           </button>
-          {!sampleWorkflowTutorialCompleted ? (
-            <button type="button" className="guided-sample-skip-button" onClick={markWorkflowSampleTutorialCompleted}>
-              Skip
-            </button>
-          ) : null}
+          <button type="button" className="subtle-button" onClick={() => setSampleWorkflowPanelOpen(true)}>
+            Sample run
+          </button>
         </div>
       );
     }
@@ -6356,15 +7024,15 @@ export default function App() {
       <div className="sidebar-section guided-sample-section">
         <div className="guided-sample-header">
           <div>
-            <div className="section-label">Guided sample</div>
-            <h2>First run walkthrough</h2>
+            <div className="section-label">Sample run</div>
+            <h2>In-memory walkthrough</h2>
             <p>Launch an in-memory run, inspect the simulated graph, and reset it without touching runtime stores.</p>
           </div>
           <div className="guided-sample-header-actions">
             <span className={`sample-state-pill state-${sampleWorkflow?.active ? "active" : "idle"}`}>
               {sampleWorkflowLoading ? "Loading" : sampleWorkflow?.active ? "Active" : "Idle"}
             </span>
-            <button type="button" className="subtle-button guided-sample-hide-button" onClick={() => setSampleWorkflowTutorialOpen(false)}>
+            <button type="button" className="subtle-button guided-sample-hide-button" onClick={() => setSampleWorkflowPanelOpen(false)}>
               Hide
             </button>
           </div>
@@ -6377,11 +7045,6 @@ export default function App() {
           <button type="button" className="subtle-button" onClick={() => void resetWorkflowSample()} disabled={isBusy}>
             {sampleWorkflowAction === "reset" ? "Resetting..." : "Reset sample"}
           </button>
-          {!sampleWorkflowTutorialCompleted ? (
-            <button type="button" className="subtle-button" onClick={markWorkflowSampleTutorialCompleted}>
-              Mark complete
-            </button>
-          ) : null}
         </div>
         {sampleWorkflow?.current_step ? (
           <div className="guided-sample-current-step">
@@ -6433,7 +7096,7 @@ export default function App() {
                 type="button"
                 className="subtle-button"
                 onClick={() => inspectWorkflowRun(sampleEventId ?? "")}
-                disabled={runDetailLoading || !sampleEventId}
+                disabled={runDetailLoading || !sampleEventId || workflowEditLocked}
               >
                 Inspect sample
               </button>
@@ -6660,7 +7323,7 @@ export default function App() {
             type="button"
             className="subtle-button"
             onClick={() => inspectWorkflowRun(run.event_id)}
-            disabled={runDetailLoading}
+            disabled={runDetailLoading || workflowEditLocked}
           >
             Inspect
           </button>
@@ -6683,6 +7346,22 @@ export default function App() {
   const appShellStyle = {
     "--workflow-sidebar-width": `${sidebarWidth}px`,
   } as CSSProperties;
+  const canvasRect = canvasShellRef.current?.getBoundingClientRect();
+  const tutorialBubblePositionValue = isTutorialMode && activeWorkflowTutorialStep && canvasRect
+    ? tutorialBubblePosition(
+        activeWorkflowTutorialStep,
+        displayedFlowNodes,
+        canvasViewport,
+        tutorialBubbleSize,
+        { width: canvasRect.width, height: canvasRect.height },
+      )
+    : null;
+  const tutorialBubbleStyle: CSSProperties | undefined = tutorialBubblePositionValue
+    ? {
+        left: `${tutorialBubblePositionValue.left}px`,
+        top: `${tutorialBubblePositionValue.top}px`,
+      }
+    : undefined;
 
   return (
     <div className="admin-page workflow-embedded-page">
@@ -6736,7 +7415,11 @@ export default function App() {
                     placeholder="Lookup id"
                     aria-label="Workflow run lookup id"
                   />
-                  <button type="submit" className="subtle-button" disabled={runDetailLoading || !runDetailLookup.trim()}>
+                  <button
+                    type="submit"
+                    className="subtle-button"
+                    disabled={runDetailLoading || !runDetailLookup.trim() || workflowEditLocked}
+                  >
                     {runDetailLoading ? "Loading..." : "Inspect"}
                   </button>
                 </form>
@@ -6792,7 +7475,7 @@ export default function App() {
                     <button
                       type="submit"
                       className="subtle-button"
-                      disabled={runSearchLoading || !selectedRunSearchScope}
+                      disabled={runSearchLoading || !selectedRunSearchScope || workflowEditLocked}
                     >
                       {runSearchLoading ? "Loading..." : "Find"}
                     </button>
@@ -6843,7 +7526,7 @@ export default function App() {
                           type="button"
                           className="subtle-button"
                           onClick={() => inspectWorkflowRun(run.event_id)}
-                          disabled={runDetailLoading}
+                          disabled={runDetailLoading || workflowEditLocked}
                         >
                           Inspect
                         </button>
@@ -6852,7 +7535,7 @@ export default function App() {
                             type="button"
                             className="subtle-button"
                             onClick={() => void resumeWorkflowRun(run.event_id)}
-                            disabled={Boolean(resumingRunIds[run.event_id]) || editLocked}
+                            disabled={Boolean(resumingRunIds[run.event_id]) || workflowEditLocked}
                           >
                             {resumingRunIds[run.event_id] ? "Resuming..." : "Resume from failure"}
                           </button>
@@ -6861,7 +7544,7 @@ export default function App() {
                           type="button"
                           className="subtle-button runtime-run-clear"
                           onClick={() => void clearWorkflowRun(run.event_id, run.run_state)}
-                          disabled={Boolean(clearingRunIds[run.event_id]) || editLocked}
+                          disabled={Boolean(clearingRunIds[run.event_id]) || workflowEditLocked}
                         >
                           {clearingRunIds[run.event_id]
                             ? run.run_state === "errored"
@@ -6895,6 +7578,7 @@ export default function App() {
                       key={graph.id}
                       className={`workflow-graph-item${selectedGraphId === graph.id ? " selected" : ""}`}
                       onClick={() => selectWorkflowGraph(graph)}
+                      disabled={workflowEditLocked}
                     >
                       <span className="workflow-graph-name">{graph.name}</span>
                       <span className="workflow-graph-meta">
@@ -6990,10 +7674,10 @@ export default function App() {
                             <Tooltip key={entry.type} content={nodeTypeDescription(entry)} inline={false}>
                               <button
                                 type="button"
-                                draggable={!workflowEditLocked}
+                                draggable={!workflowEditLocked || tutorialAllowsNodeType(entry.kind, entry.type)}
                                 onDragStart={(event) => startNodeTypeDrag(event, entry)}
                                 onClick={() => addNode(entry.kind, entry.type)}
-                                disabled={workflowEditLocked}
+                                disabled={workflowEditLocked && !tutorialAllowsNodeType(entry.kind, entry.type)}
                               >
                                 {entry.label}
                               </button>
@@ -7009,7 +7693,9 @@ export default function App() {
 
             <div className="sidebar-section">
               <div className="section-label">Save</div>
-              <button onClick={() => void validateDocument()}>Validate</button>
+              <button onClick={() => void validateDocument()} disabled={workflowEditLocked}>
+                Validate
+              </button>
               <button className="primary" onClick={() => void saveDocument()} disabled={workflowEditLocked}>
                 {saveState === "saving" ? "Saving..." : "Save workflow"}
               </button>
@@ -7038,8 +7724,10 @@ export default function App() {
                 <div className="inspector-summary">
                   <div>{selectedNodeIds.length} nodes selected</div>
                 </div>
-                <button onClick={() => setProgrammaticSelection([])}>Clear selection</button>
-                <button onClick={selectDownstreamBranch} disabled={!selectedNodeId}>
+                <button onClick={() => setProgrammaticSelection([])} disabled={workflowEditLocked}>
+                  Clear selection
+                </button>
+                <button onClick={selectDownstreamBranch} disabled={workflowEditLocked || !selectedNodeId}>
                   Select downstream branch
                 </button>
                 <button className="danger" onClick={deleteSelectedNode} disabled={workflowEditLocked}>
@@ -7075,7 +7763,9 @@ export default function App() {
                   </div>
                 ) : null}
                 {renderSelectedNodeOutputContract()}
-                <button onClick={selectDownstreamBranch}>Select downstream branch</button>
+                <button onClick={selectDownstreamBranch} disabled={workflowEditLocked}>
+                  Select downstream branch
+                </button>
                 <label className="inspector-label">
                   <span>Node id</span>
                   <input
@@ -7085,6 +7775,7 @@ export default function App() {
                       setInspectorNodeId(nextValue);
                       stageInspectorDraft({ nodeId: nextValue });
                     }}
+                    disabled={workflowEditLocked}
                   />
                 </label>
                 <label className="inspector-label">
@@ -7096,6 +7787,7 @@ export default function App() {
                       setInspectorDisplayName(nextValue);
                       stageInspectorDraft({ displayName: nextValue });
                     }}
+                    disabled={workflowEditLocked}
                   />
                 </label>
 
@@ -7184,7 +7876,7 @@ export default function App() {
               onNodeClick={handleWorkflowNodeClick}
               onNodeContextMenu={handleNodeContextMenu}
               onEdgeClick={(_, edge) => {
-                if (isInspectMode) return;
+                if (isInspectMode || isTutorialMode) return;
                 setNodeConnectionMenu(null);
                 setPendingConnection(null);
                 setProgrammaticSelection([]);
@@ -7203,13 +7895,54 @@ export default function App() {
               onNodesDelete={onNodesDelete}
               nodesDraggable={!workflowEditLocked}
               nodesConnectable={!workflowEditLocked}
-              elementsSelectable
+              elementsSelectable={!workflowEditLocked}
               fitView
               deleteKeyCode={isInspectMode ? null : ["Backspace", "Delete"]}
               multiSelectionKeyCode={["Control", "Meta"]}
             >
               <Background gap={20} size={1} />
             </ReactFlow>
+            {isTutorialMode && activeWorkflowTutorialStep ? (
+              <div className="workflow-tutorial-overlay" aria-hidden="false">
+                <div
+                  className={`workflow-tutorial-bubble placement-${activeWorkflowTutorialStep.bubblePlacement}`}
+                  ref={tutorialBubbleRef}
+                  style={tutorialBubbleStyle}
+                  role="dialog"
+                  aria-label={activeWorkflowTutorialStep.title}
+                >
+                  <div className="workflow-tutorial-bubble-header">
+                    <div className="section-label">First steps</div>
+                    <div className="workflow-tutorial-progress">
+                      Step {(activeWorkflowTutorial?.stepIndex ?? 0) + 1} of {activeWorkflowTutorialDefinition?.steps.length ?? 0}
+                    </div>
+                  </div>
+                  <h2>{activeWorkflowTutorialStep.title}</h2>
+                  <p>{activeWorkflowTutorialStep.body}</p>
+                  {workflowTutorialHint ? (
+                    <div className="workflow-tutorial-action-hint workflow-tutorial-action-hint-message">
+                      {workflowTutorialHint}
+                    </div>
+                  ) : null}
+                  <div className="workflow-tutorial-action-hint">
+                    Required: {tutorialRequiredActionDescription(activeWorkflowTutorialStep.requiredAction)}
+                  </div>
+                  <div className="workflow-tutorial-actions">
+                    {activeWorkflowTutorialStep.requiredAction.kind === "next" ? (
+                      <button type="button" className="primary" onClick={advanceWorkflowTutorial}>
+                        Next
+                      </button>
+                    ) : null}
+                    <button type="button" className="subtle-button" onClick={resetWorkflowTutorial}>
+                      Reset
+                    </button>
+                    <button type="button" className="subtle-button" onClick={exitWorkflowTutorial}>
+                      Exit
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
             {pendingConnection ? (
               <svg className="pending-connection-layer" aria-hidden="true">
                 <line
@@ -7246,7 +7979,7 @@ export default function App() {
                       type="button"
                       className="node-context-menu-item node-context-menu-danger"
                       onClick={() => void dismissNodeFailures(nodeConnectionMenu.nodeId, nodeConnectionMenu.failedCount)}
-                      disabled={Boolean(dismissingNodeFailureIds[nodeConnectionMenu.nodeId])}
+                      disabled={Boolean(dismissingNodeFailureIds[nodeConnectionMenu.nodeId]) || workflowEditLocked}
                       role="menuitem"
                     >
                       {dismissingNodeFailureIds[nodeConnectionMenu.nodeId] ? "Dismissing fail logs..." : "Dismiss all fail logs"}
