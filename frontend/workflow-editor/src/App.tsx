@@ -59,6 +59,7 @@ import {
 } from "./types";
 import { ApiError } from "./features/admin/api";
 import { useAdminUi, type DirectoryTreeNode } from "./features/admin/AdminContext";
+import { CopyIcon } from "./features/admin/PageActionIcons";
 import { Tooltip } from "./features/admin/Tooltip";
 import { hashQueryParam } from "./adminRouting";
 import {
@@ -90,6 +91,12 @@ import {
   workflowJsonFieldDraftFallback,
   workflowJsonFieldFallbackValue,
 } from "./workflowFieldDefaults";
+import {
+  declaredOutputsForNode,
+  deriveWorkflowOutputSchemas,
+  selectedNodeOutputContract as workflowNodeOutputContract,
+  upstreamBindingOptions,
+} from "./workflowNodeOutputs";
 import {
   workflowCommunicationTargetInspectorState,
 } from "./workflowCommunicationTargets";
@@ -234,19 +241,8 @@ type WorkflowDocumentLike = {
   output_schemas?: WorkflowOutputSchemas;
 };
 
-const SYSTEM_BINDING_OPTIONS: ReadonlyArray<BindingOption> = [
-  { value: "${{system.now.utc_timestamp}}", label: "[System] now.utc_timestamp" },
-  { value: "${{system.now.utc_timestamp_compact}}", label: "[System] now.utc_timestamp_compact" },
-  { value: "${{system.now.unix_seconds}}", label: "[System] now.unix_seconds" },
-  { value: "${{system.execution.trace_id}}", label: "[System] execution.trace_id" },
-  { value: "${{system.execution.event_id}}", label: "[System] execution.event_id" },
-  { value: "${{system.execution.node_id}}", label: "[System] execution.node_id" },
-  { value: "${{system.execution.started_at}}", label: "[System] execution.started_at" },
-  { value: "${{system.execution.started_at_compact}}", label: "[System] execution.started_at_compact" },
-  { value: "${{system.unique.compact}}", label: "[System] unique.compact" },
-];
-
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+const EMPTY_OUTPUT_SCHEMAS: WorkflowOutputSchemas = {};
 const BINDING_EXACT_RE = /^\$\{\{([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}$/;
 const EFFECT_TARGET_KEYS = ["target", "session_id", "vm_name"] as const;
 const COMMUNICATION_EFFECT_NODE_TYPES = new Set([
@@ -2060,10 +2056,6 @@ function nodeTypeDescription(entry: WorkflowEditorNodeCatalogEntry): string {
   return description || NODE_TYPE_DESCRIPTIONS[entry.type] || NODE_KIND_DESCRIPTIONS[entry.kind];
 }
 
-function directUpstreamNodeIds(config: WorkflowConfig, targetId: string): string[] {
-  return config.edges.filter((edge) => edge.target_id === targetId).map((edge) => edge.source_id);
-}
-
 function copyOutputSchema(schema: Record<string, unknown> | undefined): Record<string, unknown> {
   return { ...(schema ?? {}) };
 }
@@ -2103,101 +2095,6 @@ function rewriteWorkflowOutputSchemaNodeIds(
   return nextSchemas;
 }
 
-function deriveWorkflowOutputSchemas(
-  config: WorkflowConfig,
-  baseOutputSchemas: WorkflowOutputSchemas = {},
-): WorkflowOutputSchemas {
-  const nodesById = new Map(workflowNodes(config).map((node) => [node.id, node]));
-  const cache = new Map<string, Record<string, unknown>>();
-  const visiting = new Set<string>();
-
-  function resolve(nodeId: string): Record<string, unknown> {
-    const cached = cache.get(nodeId);
-    if (cached) return cached;
-    const node = nodesById.get(nodeId);
-    if (!node) return {};
-    if (visiting.has(nodeId)) {
-      const fallback = isRecord(baseOutputSchemas[nodeId]) ? baseOutputSchemas[nodeId] : undefined;
-      return copyOutputSchema(fallback);
-    }
-
-    visiting.add(nodeId);
-    let schema: Record<string, unknown>;
-    if (node.type === "gate:filter" || node.type === "gate:dedupe") {
-      schema = copyOutputSchema(resolve(directUpstreamNodeIds(config, node.id)[0] ?? ""));
-    } else if (node.type === "gate:merge") {
-      schema = mergeDeclaredOutputIntersection(
-        directUpstreamNodeIds(config, node.id).map((upstreamNodeId) => resolve(upstreamNodeId)),
-      );
-    } else if (node.type === "gate:map" && isRecord(node.template)) {
-      schema = mapTemplateOutputSchema(node.template);
-    } else {
-      const backendSchema = isRecord(baseOutputSchemas[node.id]) ? baseOutputSchemas[node.id] : undefined;
-      schema = copyOutputSchema(backendSchema ?? (isRecord(node.outputs) ? node.outputs : undefined));
-    }
-    visiting.delete(nodeId);
-    cache.set(nodeId, schema);
-    return schema;
-  }
-
-  const outputSchemas: WorkflowOutputSchemas = {};
-  for (const node of workflowNodes(config)) {
-    outputSchemas[node.id] = copyOutputSchema(resolve(node.id));
-  }
-  return outputSchemas;
-}
-
-function declaredOutputsForNode(
-  node: WorkflowNodeConfig | undefined,
-  outputSchemas: WorkflowOutputSchemas = {},
-): Record<string, unknown> {
-  if (!node) return {};
-  const schema = isRecord(outputSchemas[node.id]) ? outputSchemas[node.id] : undefined;
-  if (schema) return copyOutputSchema(schema);
-  return copyOutputSchema(isRecord(node.outputs) ? node.outputs : undefined);
-}
-
-function mapTemplateOutputSchema(template: Record<string, unknown>): Record<string, unknown> {
-  const schema: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(template)) {
-    const outputName = key.trim();
-    if (!outputName) continue;
-    schema[outputName] = inferSchemaFromTemplateValue(value);
-  }
-  return schema;
-}
-
-function inferSchemaFromTemplateValue(value: unknown): Record<string, unknown> {
-  if (typeof value === "boolean") return { type: "boolean" };
-  if (typeof value === "number") return { type: Number.isInteger(value) ? "integer" : "number" };
-  if (value === null) return { type: "null" };
-  if (typeof value === "string") return { type: "string" };
-  if (Array.isArray(value)) return { type: "array" };
-  if (isRecord(value)) return { type: "object" };
-  return { type: "object" };
-}
-
-function mergeDeclaredOutputIntersection(outputs: Record<string, unknown>[]): Record<string, unknown> {
-  if (outputs.length === 0) return {};
-  const sharedKeys = new Set(Object.keys(outputs[0]));
-  for (const current of outputs.slice(1)) {
-    for (const key of [...sharedKeys]) {
-      if (!(key in current)) {
-        sharedKeys.delete(key);
-        continue;
-      }
-      if (JSON.stringify(outputs[0][key]) !== JSON.stringify(current[key])) {
-        sharedKeys.delete(key);
-      }
-    }
-  }
-  const merged: Record<string, unknown> = {};
-  for (const key of Object.keys(outputs[0])) {
-    if (sharedKeys.has(key)) merged[key] = outputs[0][key];
-  }
-  return merged;
-}
-
 function normalizeDerivedNodeFields(
   config: WorkflowConfig,
   baseOutputSchemas: WorkflowOutputSchemas = {},
@@ -2205,7 +2102,7 @@ function normalizeDerivedNodeFields(
   const nextConfig = cloneConfig(config);
   const outputSchemas = deriveWorkflowOutputSchemas(nextConfig, baseOutputSchemas);
   for (const gate of nextConfig.gates ?? []) {
-    if (gate.type === "gate:filter") {
+    if (gate.type === "gate:filter" || gate.type === "gate:debounce") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:map") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
@@ -2225,72 +2122,6 @@ function normalizeDerivedNodeFields(
     }
   }
   return nextConfig;
-}
-
-function collectAncestorNodeIds(config: WorkflowConfig, nodeId: string): string[] {
-  const inboundByTarget = new Map<string, string[]>();
-  for (const edge of config.edges) {
-    const current = inboundByTarget.get(edge.target_id) ?? [];
-    current.push(edge.source_id);
-    inboundByTarget.set(edge.target_id, current);
-  }
-  const ordered: string[] = [];
-  const queue = [...(inboundByTarget.get(nodeId) ?? [])];
-  const seen = new Set<string>();
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    if (seen.has(current)) continue;
-    seen.add(current);
-    ordered.push(current);
-    queue.push(...(inboundByTarget.get(current) ?? []));
-  }
-  return ordered;
-}
-
-function upstreamBindingOptions(
-  config: WorkflowConfig,
-  nodeId: string,
-  outputSchemas: WorkflowOutputSchemas = deriveWorkflowOutputSchemas(config),
-): BindingOption[] {
-  const options: BindingOption[] = [...SYSTEM_BINDING_OPTIONS];
-  const seen = new Set<string>();
-  for (const option of SYSTEM_BINDING_OPTIONS) {
-    seen.add(option.label.replace(/^\[System\] /, ""));
-    seen.add(option.value);
-  }
-  for (const upstreamNodeId of collectAncestorNodeIds(config, nodeId)) {
-    const outputs = declaredOutputsForNode(nodeById(config, upstreamNodeId), outputSchemas);
-    for (const outputName of Object.keys(outputs)) {
-      for (const outputPath of flattenOutputPaths(outputName, outputs[outputName])) {
-        const ref = `${upstreamNodeId}.${outputPath}`;
-        if (seen.has(`\${{${ref}}}`)) continue;
-        seen.add(`\${{${ref}}}`);
-        options.push({ value: `\${{${ref}}}`, label: ref });
-      }
-    }
-  }
-  return options;
-}
-
-function flattenOutputPaths(prefix: string, schema: unknown): string[] {
-  const paths = [prefix];
-  if (!isRecord(schema)) return paths;
-  const schemaType = typeof schema.type === "string" ? schema.type : "";
-  if (schemaType === "object" && isRecord(schema.properties)) {
-    for (const [key, childSchema] of Object.entries(schema.properties)) {
-      const childKey = key.trim();
-      if (!childKey) continue;
-      for (const childPath of flattenOutputPaths(`${prefix}.${childKey}`, childSchema)) {
-        paths.push(childPath);
-      }
-    }
-  }
-  if (schemaType === "array" && schema.items !== undefined) {
-    for (const childPath of flattenOutputPaths(`${prefix}.0`, schema.items)) {
-      paths.push(childPath);
-    }
-  }
-  return paths;
 }
 
 function validateWorkflowBindingDiagnostics(
@@ -2320,6 +2151,26 @@ function validateWorkflowBindingDiagnostics(
     }
   }
   return diagnostics;
+}
+
+function collectAncestorNodeIds(config: WorkflowConfig, nodeId: string): string[] {
+  const inboundByTarget = new Map<string, string[]>();
+  for (const edge of config.edges) {
+    const current = inboundByTarget.get(edge.target_id) ?? [];
+    current.push(edge.source_id);
+    inboundByTarget.set(edge.target_id, current);
+  }
+  const ordered: string[] = [];
+  const queue = [...(inboundByTarget.get(nodeId) ?? [])];
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    ordered.push(current);
+    queue.push(...(inboundByTarget.get(current) ?? []));
+  }
+  return ordered;
 }
 
 function walkEditableNodeConfigValues(node: WorkflowNodeConfig): Array<[string, unknown]> {
@@ -2763,6 +2614,8 @@ export default function App() {
   const [inspectorStringMapDrafts, setInspectorStringMapDrafts] = useState<Record<string, StringMapDraftRow[]>>({});
   const [inspectorFieldModes, setInspectorFieldModes] = useState<Record<string, "literal" | "bind" | "template">>({});
   const [rawJsonDraft, setRawJsonDraft] = useState("{}");
+  const [copiedBindingExpression, setCopiedBindingExpression] = useState<string | null>(null);
+  const [outputCopyError, setOutputCopyError] = useState<string | null>(null);
   const [clearingRunIds, setClearingRunIds] = useState<Record<string, boolean>>({});
   const [dismissingNodeFailureIds, setDismissingNodeFailureIds] = useState<Record<string, boolean>>({});
   const [resumingRunIds, setResumingRunIds] = useState<Record<string, boolean>>({});
@@ -2864,6 +2717,14 @@ export default function App() {
   const selectedNodeDiagnostics = selectedNode
     ? validationDiagnostics.filter((diagnostic) => diagnostic.node_id === selectedNode.id)
     : [];
+  const selectedNodeOutputContract = useMemo(
+    () => (
+      selectedNode
+        ? workflowNodeOutputContract(config, selectedNode.id, document?.output_schemas ?? EMPTY_OUTPUT_SCHEMAS)
+        : null
+    ),
+    [config, document?.output_schemas, selectedNode?.id],
+  );
   const selectedEdge = selectedEdgeId
     ? config.edges.find(
         (edge) =>
@@ -2946,7 +2807,7 @@ export default function App() {
     return ensureDirectorySelectOption(withRoot, selectedDirectoryPath, selectedDirectoryPath);
   }, [directoryTree, selectedDirectoryPath]);
   const selectedNodeBindingOptions = selectedNode
-    ? upstreamBindingOptions(config, selectedNode.id, document?.output_schemas ?? {})
+    ? upstreamBindingOptions(config, selectedNode.id, document?.output_schemas ?? EMPTY_OUTPUT_SCHEMAS)
     : [];
   const hasCollapsedTargetUi =
     selectedNode?.type === "effect:vm:copy-files" ||
@@ -2998,6 +2859,11 @@ export default function App() {
     setRunSearchResult(null);
     setRunSearchError(null);
   }, [runSearchScope, runSearchWithoutSession, runSearchIncludeCompleted]);
+
+  useEffect(() => {
+    setCopiedBindingExpression(null);
+    setOutputCopyError(null);
+  }, [selectedNode?.id]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -4757,6 +4623,20 @@ export default function App() {
     setInspectorFieldModes((current) => ({ ...current, [key]: mode }));
   }
 
+  async function copyBindingExpression(bindingExpression: string) {
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Clipboard API is not available in this browser.");
+      }
+      await navigator.clipboard.writeText(bindingExpression);
+      setCopiedBindingExpression(bindingExpression);
+      setOutputCopyError(null);
+    } catch (reason) {
+      setCopiedBindingExpression(null);
+      setOutputCopyError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
   function updateEffectTargetKey(nextKey: EffectTargetKey) {
     const currentKey = activeEffectTargetKey(inspectorKnownValues);
     const currentValue = inspectorKnownValues[currentKey];
@@ -4865,6 +4745,74 @@ export default function App() {
               disabled={isDisabled}
             />
           )}
+      </div>
+    );
+  }
+
+  function renderSelectedNodeOutputContract() {
+    if (!selectedNodeOutputContract) return null;
+    const contract = selectedNodeOutputContract;
+    const stateLabel =
+      contract.state === "declared"
+        ? "Declared outputs"
+        : contract.state === "derived"
+          ? "Derived outputs"
+          : contract.state === "empty"
+            ? "No known outputs"
+            : "Unknown outputs";
+
+    return (
+      <div className="output-contract-panel">
+        <div className="field-toolbar">
+          <div className="field-header">
+            <span>Outputs</span>
+          </div>
+          <span className={`output-contract-state output-contract-state-${contract.state}`}>{stateLabel}</span>
+        </div>
+        {contract.rows.length === 0 ? (
+          <p className="output-contract-empty">{contract.note}</p>
+        ) : (
+          <>
+            <p className="field-description">{contract.note}</p>
+            <div className="output-contract-list">
+              {contract.rows.map((row) => (
+                <div key={row.bindingExpression} className={`output-contract-row output-contract-row-${row.state}`}>
+                  <div className="output-contract-row-main">
+                    <div className="output-contract-path-line">
+                      <span className="output-contract-path">{row.bindingPath}</span>
+                    </div>
+                    <div className="output-contract-type-line">
+                      <span className="output-contract-type">{row.typeLabel}</span>
+                      {row.details.length > 0 ? (
+                        <span className="output-contract-details">{row.details.join(" • ")}</span>
+                      ) : null}
+                    </div>
+                  </div>
+                  <Tooltip content={`Copy ${row.bindingExpression}`}>
+                    <button
+                      type="button"
+                      className="subtle-button output-contract-copy"
+                      onClick={() => void copyBindingExpression(row.bindingExpression)}
+                      aria-label={`Copy binding expression for ${row.bindingPath}`}
+                    >
+                      <CopyIcon />
+                    </button>
+                  </Tooltip>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+        {copiedBindingExpression ? (
+          <p className="output-copy-status" role="status" aria-live="polite">
+            Copied {copiedBindingExpression}.
+          </p>
+        ) : null}
+        {outputCopyError ? (
+          <p className="output-copy-status output-copy-error" role="status" aria-live="polite">
+            {outputCopyError}
+          </p>
+        ) : null}
       </div>
     );
   }
@@ -7110,6 +7058,7 @@ export default function App() {
                     </div>
                   </div>
                 ) : null}
+                {renderSelectedNodeOutputContract()}
                 <button onClick={selectDownstreamBranch}>Select downstream branch</button>
                 <label className="inspector-label">
                   <span>Node id</span>
