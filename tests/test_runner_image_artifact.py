@@ -1,17 +1,131 @@
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
+RUNNER_SCRIPT = ROOT / "scripts" / "build_agent_sandbox_runner_image.sh"
+RUNNER_DOCKERFILE = ROOT / "docker" / "agent-sandbox-runner" / "Dockerfile"
+HOST_CODEX_PACKAGE = "@openai/codex"
+RUNNER_PLATFORM_PACKAGE = "@openai/codex-linux-x64"
+RUNNER_TARGET_TRIPLE = "x86_64-unknown-linux-musl"
+
+
+def _copy_runner_repo(tmp_path: Path) -> Path:
+    repo_root = tmp_path / "runner-repo"
+    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
+    dockerfile_path = repo_root / "docker" / "agent-sandbox-runner" / "Dockerfile"
+
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    dockerfile_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(RUNNER_SCRIPT, script_path)
+    shutil.copy2(RUNNER_DOCKERFILE, dockerfile_path)
+    return repo_root
+
+
+def _write_package_json(path: Path, *, name: str, version: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"name": name, "version": version}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _create_codex_fixture(
+    tmp_path: Path,
+    *,
+    layout: str = "current",
+    version: str = "1.0.0",
+    binary_text: str = "#!/usr/bin/env bash\nexit 0\n",
+) -> tuple[Path, Path, Path]:
+    host_codex_root = tmp_path.joinpath("host-codex", "node_modules", *HOST_CODEX_PACKAGE.split("/"))
+    platform_root = tmp_path.joinpath(
+        "host-codex", "node_modules", *RUNNER_PLATFORM_PACKAGE.split("/")
+    )
+
+    if layout == "current":
+        binary_path = platform_root / "vendor" / RUNNER_TARGET_TRIPLE / "bin" / "codex"
+    elif layout == "legacy":
+        binary_path = platform_root / "vendor" / RUNNER_TARGET_TRIPLE / "codex" / "codex"
+    else:
+        raise ValueError(f"Unknown layout: {layout}")
+
+    binary_path.parent.mkdir(parents=True, exist_ok=True)
+    binary_path.write_text(binary_text, encoding="utf-8")
+    binary_path.chmod(0o755)
+    _write_package_json(host_codex_root / "package.json", name=HOST_CODEX_PACKAGE, version=version)
+    _write_package_json(
+        platform_root / "package.json", name=RUNNER_PLATFORM_PACKAGE, version=version
+    )
+    return host_codex_root, binary_path, platform_root
+
+
+def _write_fake_docker(tmp_path: Path) -> tuple[Path, Path]:
+    docker_log_path = tmp_path / "docker.log"
+    fake_docker_path = tmp_path / "docker"
+    fake_docker_path.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "${1:-}" >> "${FAKE_DOCKER_LOG:?}"
+case "${1:-}" in
+  build)
+    exit 0
+    ;;
+  save)
+    archive_path=""
+    while [[ "$#" -gt 0 ]]; do
+      if [[ "$1" == "-o" ]]; then
+        shift
+        archive_path="$1"
+      fi
+      shift
+    done
+    mkdir -p "$(dirname "$archive_path")"
+    printf 'fake image\\n' > "$archive_path"
+    exit 0
+    ;;
+esac
+exit 0
+""",
+        encoding="utf-8",
+    )
+    fake_docker_path.chmod(0o755)
+    return fake_docker_path, docker_log_path
+
+
+def _run_runner_script(
+    script_path: Path,
+    repo_root: Path,
+    env: dict[str, str],
+    *,
+    args: list[str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    completed = subprocess.run(
+        [str(script_path), *(args or [])],
+        cwd=repo_root,
+        env={**os.environ, **env},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return completed
+
+
+def _docker_invocations(log_path: Path) -> list[str]:
+    if not log_path.exists():
+        return []
+    return [line.strip() for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def test_runner_dockerfile_contains_minimal_runtime_contract() -> None:
-    dockerfile = (ROOT / "docker" / "agent-sandbox-runner" / "Dockerfile").read_text(
-        encoding="utf-8"
-    )
+    dockerfile = RUNNER_DOCKERFILE.read_text(encoding="utf-8")
 
     assert "FROM ubuntu:24.04" in dockerfile
     assert "COPY codex /usr/local/bin/codex" in dockerfile
@@ -35,9 +149,7 @@ def test_runner_dockerfile_contains_minimal_runtime_contract() -> None:
 
 
 def test_runner_build_script_builds_tag_and_saves_tarball() -> None:
-    script = (ROOT / "scripts" / "build_agent_sandbox_runner_image.sh").read_text(
-        encoding="utf-8"
-    )
+    script = RUNNER_SCRIPT.read_text(encoding="utf-8")
 
     assert "HOST_CODEX_BINARY_PATH" in script
     assert "HOST_CODEX_PLATFORM_PACKAGE" in script
@@ -45,135 +157,267 @@ def test_runner_build_script_builds_tag_and_saves_tarball() -> None:
     assert "CODEX_LEGACY_BINARY_RELATIVE_PATH" in script
     assert "add_codex_binary_candidates" in script
     assert "HOISTED_CODEX_BINARY_ROOT" in script
-    assert 'HOST_CODEX_NODE_MODULES="$(cd "${HOST_CODEX_ROOT}/../.."' in script
+    assert 'HOST_CODEX_NODE_MODULES="$(cd "${HOST_CODEX_ROOT}/../.." 2>/dev/null && pwd || true)"' in script
     assert "NODE_RESOLVED_CODEX_BINARY_ROOT" in script
     assert "RUNNER_BUILD_NETWORK" in script
+    assert "RUNNER_MANIFEST_PATH" in script
+    assert "RUNNER_FORCE_REBUILD" in script
     assert "agent-sandbox-runner:latest" in script
     assert "dist/agent-sandbox-runner.tar" in script
     assert 'build_args=(build -t "${RUNNER_IMAGE_NAME}")' in script
     assert 'build_args+=(--network "${RUNNER_BUILD_NETWORK}")' in script
     assert '"${DOCKER}" save -o "${RUNNER_ARCHIVE_PATH}" "${RUNNER_IMAGE_NAME}"' in script
+    assert "Reused cached ${RUNNER_IMAGE_NAME} archive at ${RUNNER_ARCHIVE_PATH}" in script
+
+
+def test_runner_build_script_writes_manifest_and_reuses_cached_archive(
+    tmp_path: Path,
+) -> None:
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
+    archive_path = repo_root / "dist" / "agent-sandbox-runner.tar"
+    manifest_path = Path(f"{archive_path}.manifest")
+    codex_root, _, _ = _create_codex_fixture(tmp_path, layout="current")
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
+
+    env = {
+        "DOCKER": str(fake_docker),
+        "FAKE_DOCKER_LOG": str(docker_log_path),
+        "HOST_CODEX_ROOT": str(codex_root),
+        "HOST_CODEX_PLATFORM_PACKAGE": RUNNER_PLATFORM_PACKAGE,
+        "CODEX_TARGET_TRIPLE": RUNNER_TARGET_TRIPLE,
+    }
+
+    first = _run_runner_script(script_path, repo_root, env)
+    first_manifest = manifest_path.read_text(encoding="utf-8")
+
+    assert archive_path.read_text(encoding="utf-8") == "fake image\n"
+    assert manifest_path.is_file()
+    assert first.stdout.splitlines() == [
+        f"Built agent-sandbox-runner:latest",
+        f"Saved {archive_path}",
+    ]
+    assert _docker_invocations(docker_log_path) == ["build", "save"]
+
+    second = _run_runner_script(script_path, repo_root, env)
+
+    assert second.stdout.strip() == f"Reused cached agent-sandbox-runner:latest archive at {archive_path}"
+    assert manifest_path.read_text(encoding="utf-8") == first_manifest
+    assert _docker_invocations(docker_log_path) == ["build", "save"]
 
 
 def test_runner_build_script_resolves_hoisted_codex_binary_current_layout(
     tmp_path: Path,
 ) -> None:
-    codex_root = tmp_path / "host-codex" / "node_modules" / "@openai" / "codex"
-    hoisted_binary = (
-        tmp_path
-        / "host-codex"
-        / "node_modules"
-        / "@openai"
-        / "codex-linux-x64"
-        / "vendor"
-        / "x86_64-unknown-linux-musl"
-        / "bin"
-        / "codex"
-    )
-    archive_path = tmp_path / "dist" / "agent-sandbox-runner.tar"
-    fake_docker = tmp_path / "docker"
-
-    codex_root.mkdir(parents=True)
-    hoisted_binary.parent.mkdir(parents=True)
-    hoisted_binary.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
-    hoisted_binary.chmod(0o755)
-
-    fake_docker.write_text(
-        """#!/usr/bin/env bash
-set -euo pipefail
-if [[ "${1:-}" == "save" ]]; then
-  while [[ "$#" -gt 0 ]]; do
-    if [[ "$1" == "-o" ]]; then
-      shift
-      mkdir -p "$(dirname "$1")"
-      printf 'fake image' > "$1"
-      exit 0
-    fi
-    shift
-  done
-fi
-exit 0
-""",
-        encoding="utf-8",
-    )
-    fake_docker.chmod(0o755)
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
+    archive_path = repo_root / "dist" / "agent-sandbox-runner.tar"
+    codex_root, _, _ = _create_codex_fixture(tmp_path, layout="current")
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
 
     env = {
-        **os.environ,
         "DOCKER": str(fake_docker),
+        "FAKE_DOCKER_LOG": str(docker_log_path),
         "HOST_CODEX_ROOT": str(codex_root),
-        "RUNNER_ARCHIVE_PATH": str(archive_path),
+        "HOST_CODEX_PLATFORM_PACKAGE": RUNNER_PLATFORM_PACKAGE,
+        "CODEX_TARGET_TRIPLE": RUNNER_TARGET_TRIPLE,
     }
-    result = subprocess.run(
-        [str(ROOT / "scripts" / "build_agent_sandbox_runner_image.sh")],
-        cwd=ROOT,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
 
-    assert result.returncode == 0, result.stderr
-    assert archive_path.read_text(encoding="utf-8") == "fake image"
+    result = _run_runner_script(script_path, repo_root, env)
+
+    assert result.returncode == 0
+    assert archive_path.read_text(encoding="utf-8") == "fake image\n"
+    assert _docker_invocations(docker_log_path) == ["build", "save"]
 
 
 def test_runner_build_script_resolves_hoisted_codex_binary_legacy_layout(
     tmp_path: Path,
 ) -> None:
-    codex_root = tmp_path / "host-codex" / "node_modules" / "@openai" / "codex"
-    hoisted_binary = (
-        tmp_path
-        / "host-codex"
-        / "node_modules"
-        / "@openai"
-        / "codex-linux-x64"
-        / "vendor"
-        / "x86_64-unknown-linux-musl"
-        / "codex"
-        / "codex"
-    )
-    archive_path = tmp_path / "dist" / "agent-sandbox-runner.tar"
-    fake_docker = tmp_path / "docker"
-
-    codex_root.mkdir(parents=True)
-    hoisted_binary.parent.mkdir(parents=True)
-    hoisted_binary.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
-    hoisted_binary.chmod(0o755)
-
-    fake_docker.write_text(
-        """#!/usr/bin/env bash
-set -euo pipefail
-if [[ "${1:-}" == "save" ]]; then
-  while [[ "$#" -gt 0 ]]; do
-    if [[ "$1" == "-o" ]]; then
-      shift
-      mkdir -p "$(dirname "$1")"
-      printf 'fake image' > "$1"
-      exit 0
-    fi
-    shift
-  done
-fi
-exit 0
-""",
-        encoding="utf-8",
-    )
-    fake_docker.chmod(0o755)
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
+    archive_path = repo_root / "dist" / "agent-sandbox-runner.tar"
+    codex_root, _, _ = _create_codex_fixture(tmp_path, layout="legacy")
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
 
     env = {
-        **os.environ,
         "DOCKER": str(fake_docker),
+        "FAKE_DOCKER_LOG": str(docker_log_path),
         "HOST_CODEX_ROOT": str(codex_root),
-        "RUNNER_ARCHIVE_PATH": str(archive_path),
+        "HOST_CODEX_PLATFORM_PACKAGE": RUNNER_PLATFORM_PACKAGE,
+        "CODEX_TARGET_TRIPLE": RUNNER_TARGET_TRIPLE,
     }
-    result = subprocess.run(
-        [str(ROOT / "scripts" / "build_agent_sandbox_runner_image.sh")],
-        cwd=ROOT,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
+
+    result = _run_runner_script(script_path, repo_root, env)
+
+    assert result.returncode == 0
+    assert archive_path.read_text(encoding="utf-8") == "fake image\n"
+    assert _docker_invocations(docker_log_path) == ["build", "save"]
+
+
+def test_runner_build_script_rebuilds_when_copied_dockerfile_changes(
+    tmp_path: Path,
+) -> None:
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
+    dockerfile_path = repo_root / "docker" / "agent-sandbox-runner" / "Dockerfile"
+    manifest_path = repo_root / "dist" / "agent-sandbox-runner.tar.manifest"
+    codex_root, _, _ = _create_codex_fixture(tmp_path, layout="current")
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
+
+    env = {
+        "DOCKER": str(fake_docker),
+        "FAKE_DOCKER_LOG": str(docker_log_path),
+        "HOST_CODEX_ROOT": str(codex_root),
+        "HOST_CODEX_PLATFORM_PACKAGE": RUNNER_PLATFORM_PACKAGE,
+        "CODEX_TARGET_TRIPLE": RUNNER_TARGET_TRIPLE,
+    }
+
+    _run_runner_script(script_path, repo_root, env)
+    first_manifest = manifest_path.read_text(encoding="utf-8")
+
+    dockerfile_path.write_text(
+        dockerfile_path.read_text(encoding="utf-8") + "\n# cache-bust\n",
+        encoding="utf-8",
     )
 
-    assert result.returncode == 0, result.stderr
-    assert archive_path.read_text(encoding="utf-8") == "fake image"
+    _run_runner_script(script_path, repo_root, env)
+
+    assert _docker_invocations(docker_log_path) == ["build", "save", "build", "save"]
+    assert manifest_path.read_text(encoding="utf-8") != first_manifest
+
+
+@pytest.mark.parametrize("mutation", ["package_json", "binary"])
+def test_runner_build_script_rebuilds_when_codex_identity_changes(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
+    manifest_path = repo_root / "dist" / "agent-sandbox-runner.tar.manifest"
+    codex_root, binary_path, platform_root = _create_codex_fixture(tmp_path, layout="current")
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
+
+    env = {
+        "DOCKER": str(fake_docker),
+        "FAKE_DOCKER_LOG": str(docker_log_path),
+        "HOST_CODEX_ROOT": str(codex_root),
+        "HOST_CODEX_PLATFORM_PACKAGE": RUNNER_PLATFORM_PACKAGE,
+        "CODEX_TARGET_TRIPLE": RUNNER_TARGET_TRIPLE,
+    }
+
+    _run_runner_script(script_path, repo_root, env)
+    first_manifest = manifest_path.read_text(encoding="utf-8")
+
+    if mutation == "package_json":
+        _write_package_json(
+            platform_root / "package.json",
+            name=RUNNER_PLATFORM_PACKAGE,
+            version="2.0.0",
+        )
+    else:
+        binary_path.write_text(
+            "#!/usr/bin/env bash\nprintf 'changed binary\\n'\n",
+            encoding="utf-8",
+        )
+        binary_path.chmod(0o755)
+
+    _run_runner_script(script_path, repo_root, env)
+
+    assert _docker_invocations(docker_log_path) == ["build", "save", "build", "save"]
+    assert manifest_path.read_text(encoding="utf-8") != first_manifest
+
+
+def test_runner_build_script_rebuilds_when_archive_is_deleted(tmp_path: Path) -> None:
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
+    archive_path = repo_root / "dist" / "agent-sandbox-runner.tar"
+    manifest_path = Path(f"{archive_path}.manifest")
+    codex_root, _, _ = _create_codex_fixture(tmp_path, layout="current")
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
+
+    env = {
+        "DOCKER": str(fake_docker),
+        "FAKE_DOCKER_LOG": str(docker_log_path),
+        "HOST_CODEX_ROOT": str(codex_root),
+        "HOST_CODEX_PLATFORM_PACKAGE": RUNNER_PLATFORM_PACKAGE,
+        "CODEX_TARGET_TRIPLE": RUNNER_TARGET_TRIPLE,
+    }
+
+    _run_runner_script(script_path, repo_root, env)
+    archive_path.unlink()
+    assert manifest_path.exists()
+
+    _run_runner_script(script_path, repo_root, env)
+
+    assert archive_path.read_text(encoding="utf-8") == "fake image\n"
+    assert _docker_invocations(docker_log_path) == ["build", "save", "build", "save"]
+
+
+def test_runner_build_script_rebuilds_when_manifest_is_deleted(tmp_path: Path) -> None:
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
+    archive_path = repo_root / "dist" / "agent-sandbox-runner.tar"
+    manifest_path = Path(f"{archive_path}.manifest")
+    codex_root, _, _ = _create_codex_fixture(tmp_path, layout="current")
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
+
+    env = {
+        "DOCKER": str(fake_docker),
+        "FAKE_DOCKER_LOG": str(docker_log_path),
+        "HOST_CODEX_ROOT": str(codex_root),
+        "HOST_CODEX_PLATFORM_PACKAGE": RUNNER_PLATFORM_PACKAGE,
+        "CODEX_TARGET_TRIPLE": RUNNER_TARGET_TRIPLE,
+    }
+
+    _run_runner_script(script_path, repo_root, env)
+    manifest_path.unlink()
+
+    _run_runner_script(script_path, repo_root, env)
+
+    assert archive_path.read_text(encoding="utf-8") == "fake image\n"
+    assert manifest_path.exists()
+    assert _docker_invocations(docker_log_path) == ["build", "save", "build", "save"]
+
+
+@pytest.mark.parametrize(
+    "force_mode",
+    [
+        "env",
+        "flag",
+    ],
+)
+def test_runner_build_script_forces_rebuild_even_with_matching_manifest(
+    tmp_path: Path,
+    force_mode: str,
+) -> None:
+    repo_root = _copy_runner_repo(tmp_path)
+    script_path = repo_root / "scripts" / "build_agent_sandbox_runner_image.sh"
+    archive_path = repo_root / "dist" / "agent-sandbox-runner.tar"
+    manifest_path = Path(f"{archive_path}.manifest")
+    codex_root, _, _ = _create_codex_fixture(tmp_path, layout="current")
+    fake_docker, docker_log_path = _write_fake_docker(tmp_path)
+
+    env = {
+        "DOCKER": str(fake_docker),
+        "FAKE_DOCKER_LOG": str(docker_log_path),
+        "HOST_CODEX_ROOT": str(codex_root),
+        "HOST_CODEX_PLATFORM_PACKAGE": RUNNER_PLATFORM_PACKAGE,
+        "CODEX_TARGET_TRIPLE": RUNNER_TARGET_TRIPLE,
+    }
+
+    _run_runner_script(script_path, repo_root, env)
+    first_manifest = manifest_path.read_text(encoding="utf-8")
+
+    force_env = dict(env)
+    force_args: list[str] = []
+    if force_mode == "env":
+        force_env["RUNNER_FORCE_REBUILD"] = "1"
+    else:
+        force_args = ["--force"]
+
+    result = _run_runner_script(script_path, repo_root, force_env, args=force_args)
+
+    assert "Reused cached" not in result.stdout
+    assert archive_path.read_text(encoding="utf-8") == "fake image\n"
+    assert manifest_path.read_text(encoding="utf-8") == first_manifest
+    assert _docker_invocations(docker_log_path) == ["build", "save", "build", "save"]
