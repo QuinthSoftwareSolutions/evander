@@ -2061,6 +2061,41 @@ function copyOutputSchema(schema: Record<string, unknown> | undefined): Record<s
   return { ...(schema ?? {}) };
 }
 
+function rewriteWorkflowGraphNodeIds(
+  graphs: ReadonlyArray<WorkflowGraphMetadata>,
+  nodeIdMap: ReadonlyMap<string, string>,
+): WorkflowGraphMetadata[] {
+  if (nodeIdMap.size === 0) return graphs.map((graph) => ({ ...graph, node_ids: [...graph.node_ids] }));
+  return graphs.map((graph) => ({
+    ...graph,
+    node_ids: graph.node_ids.map((nodeId) => nodeIdMap.get(nodeId) ?? nodeId),
+  }));
+}
+
+function rewriteWorkflowOutputSchemaNodeIds(
+  outputSchemas: WorkflowOutputSchemas = {},
+  nodeIdMap: ReadonlyMap<string, string>,
+  fallbackOutputSchemas: WorkflowOutputSchemas = {},
+): WorkflowOutputSchemas {
+  if (nodeIdMap.size === 0) return { ...outputSchemas };
+  const nextSchemas: WorkflowOutputSchemas = {};
+  for (const [nodeId, schema] of Object.entries(outputSchemas)) {
+    const nextNodeId = nodeIdMap.get(nodeId) ?? nodeId;
+    const fallbackSchema = isRecord(fallbackOutputSchemas[nextNodeId])
+      ? fallbackOutputSchemas[nextNodeId]
+      : undefined;
+    nextSchemas[nextNodeId] = copyOutputSchema(fallbackSchema ?? (isRecord(schema) ? schema : undefined));
+  }
+  for (const nextNodeId of nodeIdMap.values()) {
+    if (Object.prototype.hasOwnProperty.call(nextSchemas, nextNodeId)) continue;
+    const fallbackSchema = isRecord(fallbackOutputSchemas[nextNodeId])
+      ? fallbackOutputSchemas[nextNodeId]
+      : undefined;
+    if (fallbackSchema) nextSchemas[nextNodeId] = copyOutputSchema(fallbackSchema);
+  }
+  return nextSchemas;
+}
+
 function deriveWorkflowOutputSchemas(
   config: WorkflowConfig,
   baseOutputSchemas: WorkflowOutputSchemas = {},
@@ -4357,20 +4392,6 @@ export default function App() {
       target_id: edge.target_id === originalNodeId ? nextNode.id : edge.target_id,
     }));
     const nextLayout = cloneLayout(document.layout);
-    function rewriteGraphNodeIds(graph: WorkflowGraphMetadata): WorkflowGraphMetadata {
-      return {
-        ...graph,
-        node_ids: graph.node_ids.map((nodeId) => (nodeId === originalNodeId ? nextNode.id : nodeId)),
-      };
-    }
-    function rewriteOutputSchemas(): WorkflowOutputSchemas {
-      const nextSchemas = { ...(currentDocument.output_schemas ?? {}) };
-      if (Object.prototype.hasOwnProperty.call(nextSchemas, originalNodeId)) {
-        nextSchemas[nextNode.id] = copyOutputSchema(nextSchemas[originalNodeId]);
-        delete nextSchemas[originalNodeId];
-      }
-      return nextSchemas;
-    }
     let nextGraphs: WorkflowGraphMetadata[] | undefined;
     let nextOutputSchemas: WorkflowOutputSchemas | undefined;
     if (nextNode.id !== originalNodeId) {
@@ -4380,8 +4401,11 @@ export default function App() {
       nextConfig.gates = rewrittenConfig.gates;
       nextConfig.effects = rewrittenConfig.effects;
       nextConfig.queries = rewrittenConfig.queries;
-      nextGraphs = (currentDocument.graphs ?? []).map((graph) => rewriteGraphNodeIds(graph));
-      nextOutputSchemas = rewriteOutputSchemas();
+      nextGraphs = rewriteWorkflowGraphNodeIds(currentDocument.graphs ?? [], nodeIdMap);
+      nextOutputSchemas = rewriteWorkflowOutputSchemaNodeIds(
+        currentDocument.output_schemas ?? {},
+        nodeIdMap,
+      );
       nextLayout.nodes[nextNode.id] = nextLayout.nodes[originalNodeId] ?? fallbackPosition(0);
       delete nextLayout.nodes[originalNodeId];
     }
@@ -4445,14 +4469,36 @@ export default function App() {
         source_id: edge.source_id === selectedNode.id ? originalNodeId : edge.source_id,
         target_id: edge.target_id === selectedNode.id ? originalNodeId : edge.target_id,
       }));
+      const nodeIdMap = new Map([[selectedNode.id, originalNodeId]]);
+      const rewrittenConfig = rewriteWorkflowConfigBindingReferences(nextConfig, nodeIdMap);
+      nextConfig.triggers = rewrittenConfig.triggers;
+      nextConfig.gates = rewrittenConfig.gates;
+      nextConfig.effects = rewrittenConfig.effects;
+      nextConfig.queries = rewrittenConfig.queries;
     }
     const nextLayout = cloneLayout(document.layout);
     const savedPosition = savedWorkflowDocument.layout.nodes[originalNodeId];
     nextLayout.nodes[originalNodeId] = savedPosition ? { ...savedPosition } : fallbackPosition(0);
+    let nextGraphs: WorkflowGraphMetadata[] | undefined;
+    let nextOutputSchemas: WorkflowOutputSchemas | undefined;
     if (selectedNode.id !== originalNodeId) {
+      const nodeIdMap = new Map([[selectedNode.id, originalNodeId]]);
+      nextGraphs = rewriteWorkflowGraphNodeIds(document.graphs ?? [], nodeIdMap);
+      nextOutputSchemas = rewriteWorkflowOutputSchemaNodeIds(
+        document.output_schemas ?? {},
+        nodeIdMap,
+        savedWorkflowDocument.output_schemas ?? {},
+      );
       delete nextLayout.nodes[selectedNode.id];
     }
-    patchDocument(nextConfig, nextLayout, undefined, [originalNodeId]);
+    patchDocument(
+      nextConfig,
+      nextLayout,
+      nextGraphs,
+      [originalNodeId],
+      undefined,
+      nextOutputSchemas,
+    );
     setProgrammaticSelection([originalNodeId], originalNodeId);
     setSelectedEdgeId(null);
     hydrateInspectorDraftFromNode(savedNode, getCatalogEntry(catalog, savedNode.type));
