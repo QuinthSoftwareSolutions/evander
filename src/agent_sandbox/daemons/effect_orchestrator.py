@@ -109,12 +109,35 @@ _DEFAULT_MAX_GRAPH_DEPTH = 16
 _DEFAULT_MAX_EVENTS_PER_CYCLE = 200
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
+COMPLETION_PENDING_STATUS = "completion_pending"
 WorkflowNodeDefinition = (
     TriggerDefinitionDiscriminated
     | GateDefinitionDiscriminated
     | EffectDefinitionDiscriminated
     | QueryDefinitionDiscriminated
 )
+
+
+def _record_has_pending_completion(record: Any) -> bool:
+    status = str(getattr(record, "status", "") or "").strip()
+    return status in {"running", COMPLETION_PENDING_STATUS}
+
+
+def _store_has_inflight_execution_for_event(store: Any, event_id: str) -> bool:
+    has_running = getattr(store, "has_running_execution_for_event", None)
+    if callable(has_running):
+        return bool(has_running(event_id))
+    list_executions = getattr(store, "list_executions", None)
+    if not callable(list_executions):
+        return False
+    for record in list_executions():
+        if getattr(record, "event_id", None) != event_id:
+            continue
+        if _record_has_pending_completion(record):
+            return True
+    return False
+
+
 class EffectExecutionRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -134,6 +157,8 @@ class EffectExecutionRecord(BaseModel):
     input_payload: dict[str, Any] = Field(default_factory=dict)
     outputs: dict[str, Any] = Field(default_factory=dict)
     published_event_id: str | None = None
+    completion_pending_status: str | None = None
+    completion_event_branch_port: str | None = None
     error: str | None = None
     completion_event_enqueued_at: datetime | None = None
     binding_trace: dict[str, Any] | None = None
@@ -167,6 +192,9 @@ class GateExecutionRecord(BaseModel):
     input_event_ids_by_source: dict[str, str] = Field(default_factory=dict)
     input_occurred_at_by_source: dict[str, datetime] = Field(default_factory=dict)
     published_event_id: str | None = None
+    completion_pending_status: str | None = None
+    completion_event_branch_port: str | None = None
+    completion_event_for_execution_ids: dict[str, str] | None = None
     error: str | None = None
     completion_event_enqueued_at: datetime | None = None
     binding_trace: dict[str, Any] | None = None
@@ -517,6 +545,8 @@ class EffectOrchestratorWorker:
         _completed_count, published_count = self._reap_completed_futures()
         completion_events_published += published_count
         completion_events_published += self._run_post_completion_dispatch_hooks()
+        completion_events_published += self._retry_pending_effect_completion_publications()
+        completion_events_published += self._retry_pending_gate_completion_publications()
 
         loop = OrchestrationLoop[
             TriggerQueueRecord,
@@ -783,6 +813,284 @@ class EffectOrchestratorWorker:
                     hook_name,
                 )
         return dispatched
+
+    def _retry_pending_effect_completion_publications(self) -> int:
+        retried = 0
+        list_executions = getattr(self.execution_store, "list_executions", None)
+        if callable(list_executions):
+            records = list(list_executions())
+        else:
+            read_all = getattr(self.execution_store, "read_all", None)
+            if not callable(read_all):
+                return 0
+            records = list(read_all().values())
+
+        for record in records:
+            if str(getattr(record, "status", "") or "").strip() != COMPLETION_PENDING_STATUS:
+                continue
+            outputs = dict(getattr(record, "outputs", {}) or {})
+            branch_port = getattr(record, "completion_event_branch_port", None)
+            published_event_id = self._publish_effect_completion_event_or_mark_pending(
+                record=record,
+                outputs=outputs,
+                branch_port=branch_port,
+                pending_status=str(
+                    getattr(record, "completion_pending_status", None) or "succeeded"
+                ),
+                finished_at=datetime.now(UTC),
+            )
+            if published_event_id is None:
+                continue
+
+            self._finalize_effect_completion_publication(
+                record=record,
+                outputs=outputs,
+                published_event_id=published_event_id,
+                finished_at=datetime.now(UTC),
+                status=str(getattr(record, "completion_pending_status", None) or "succeeded"),
+            )
+            retried += 1
+        return retried
+
+    def _mark_effect_completion_publication_pending(
+        self,
+        *,
+        record: EffectExecutionRecord,
+        outputs: dict[str, Any],
+        finished_at: datetime,
+        error: BaseException,
+        pending_status: str,
+        branch_port: str | None = None,
+    ) -> None:
+        record.status = COMPLETION_PENDING_STATUS
+        record.completion_pending_status = pending_status
+        record.completion_event_branch_port = branch_port
+        record.outputs = dict(outputs)
+        record.published_event_id = None
+        record.completion_event_enqueued_at = None
+        record.error = str(error)
+        record.finished_at = finished_at
+        self.execution_store.record_execution(record)
+        self._update_event_delivery_state(record.event_id)
+
+    def _mark_effect_completion_publication_failed(
+        self,
+        *,
+        record: EffectExecutionRecord,
+        outputs: dict[str, Any],
+        finished_at: datetime,
+        error: BaseException,
+    ) -> None:
+        record.status = "failed"
+        record.outputs = dict(outputs)
+        record.published_event_id = None
+        record.completion_event_enqueued_at = None
+        record.error = str(error)
+        record.finished_at = finished_at
+        self.execution_store.record_execution(record)
+        self._update_event_delivery_state(record.event_id)
+
+    def _publish_effect_completion_event_or_mark_pending(
+        self,
+        *,
+        record: EffectExecutionRecord,
+        outputs: dict[str, Any],
+        pending_status: str,
+        branch_port: str | None = None,
+        finished_at: datetime | None = None,
+    ) -> str | None:
+        resolved_finished_at = finished_at or datetime.now(UTC)
+        try:
+            completion_event, idempotency_key, completion_event_id = (
+                self._build_completion_event_from_record(
+                    record=record,
+                    outputs=outputs,
+                    branch_port=branch_port,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Effect completion event build failed "
+                "event_id=%s trace_id=%s effect_id=%s effect_type=%s branch_port=%s",
+                record.event_id,
+                record.trace_id,
+                record.effect_id,
+                record.effect_type,
+                branch_port,
+            )
+            self._mark_effect_completion_publication_failed(
+                record=record,
+                outputs=outputs,
+                finished_at=resolved_finished_at,
+                error=exc,
+            )
+            return None
+        try:
+            self.event_queue.publish(completion_event, idempotency_key=idempotency_key)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Effect completion publication failed "
+                "event_id=%s trace_id=%s effect_id=%s effect_type=%s branch_port=%s",
+                record.event_id,
+                record.trace_id,
+                record.effect_id,
+                record.effect_type,
+                branch_port,
+            )
+            self._mark_effect_completion_publication_pending(
+                record=record,
+                outputs=outputs,
+                finished_at=resolved_finished_at,
+                error=exc,
+                pending_status=pending_status,
+                branch_port=branch_port,
+            )
+            return None
+        return completion_event_id
+
+    def _finalize_effect_completion_publication(
+        self,
+        *,
+        record: EffectExecutionRecord,
+        outputs: dict[str, Any],
+        published_event_id: str,
+        finished_at: datetime,
+        status: str = "succeeded",
+    ) -> None:
+        record.status = str(status or "succeeded").strip() or "succeeded"
+        record.outputs = dict(outputs)
+        record.published_event_id = published_event_id
+        record.completion_event_enqueued_at = finished_at
+        record.finished_at = finished_at
+        record.error = None
+        if outputs.get("success") is False:
+            message = outputs.get("message")
+            if isinstance(message, str) and message.strip():
+                record.error = message.strip()
+        self.execution_store.record_execution(record)
+        self._update_event_delivery_state(record.event_id)
+
+    def _retry_pending_gate_completion_publications(self) -> int:
+        retried = 0
+        list_executions = getattr(self.gate_execution_store, "list_executions", None)
+        if callable(list_executions):
+            records = list(list_executions())
+        else:
+            read_all = getattr(self.gate_execution_store, "read_all", None)
+            if not callable(read_all):
+                return 0
+            records = list(read_all().values())
+
+        for record in records:
+            if str(getattr(record, "status", "") or "").strip() != COMPLETION_PENDING_STATUS:
+                continue
+            outputs = dict(getattr(record, "outputs", {}) or {})
+            branch_port = getattr(record, "completion_event_branch_port", None)
+            for_execution_ids = getattr(record, "completion_event_for_execution_ids", None)
+            published_event_id = self._publish_gate_completion_event_or_mark_pending(
+                record=record,
+                outputs=outputs,
+                branch_port=branch_port,
+                for_execution_ids=for_execution_ids,
+                pending_status=str(
+                    getattr(record, "completion_pending_status", None) or "succeeded"
+                ),
+                finished_at=datetime.now(UTC),
+            )
+            if published_event_id is None:
+                continue
+
+            record.status = str(
+                getattr(record, "completion_pending_status", None) or "succeeded"
+            ).strip()
+            record.outputs = outputs
+            record.published_event_id = published_event_id
+            record.completion_event_enqueued_at = datetime.now(UTC)
+            record.error = None
+            self.gate_execution_store.record_execution(record)
+            self._update_event_delivery_state(record.event_id)
+            retried += 1
+        return retried
+
+    def _mark_gate_completion_publication_failed(
+        self,
+        *,
+        record: GateExecutionRecord,
+        outputs: dict[str, Any],
+        finished_at: datetime,
+        error: BaseException,
+    ) -> None:
+        record.status = "failed"
+        record.outputs = dict(outputs)
+        record.published_event_id = None
+        record.completion_event_enqueued_at = None
+        record.error = str(error)
+        record.finished_at = finished_at
+        self.gate_execution_store.record_execution(record)
+        self._update_event_delivery_state(record.event_id)
+
+    def _publish_gate_completion_event_or_mark_pending(
+        self,
+        *,
+        record: GateExecutionRecord,
+        outputs: dict[str, Any],
+        pending_status: str,
+        branch_port: str | None = None,
+        for_execution_ids: dict[str, str] | None = None,
+        finished_at: datetime | None = None,
+    ) -> str | None:
+        resolved_finished_at = finished_at or datetime.now(UTC)
+        try:
+            completion_event, idempotency_key, completion_event_id = (
+                self._build_gate_completion_event_from_record(
+                    record=record,
+                    outputs=outputs,
+                    branch_port=branch_port,
+                    for_execution_ids=for_execution_ids,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Gate completion event build failed "
+                "event_id=%s trace_id=%s gate_id=%s gate_type=%s branch_port=%s",
+                record.event_id,
+                record.trace_id,
+                record.gate_id,
+                record.gate_type,
+                branch_port,
+            )
+            self._mark_gate_completion_publication_failed(
+                record=record,
+                outputs=outputs,
+                finished_at=resolved_finished_at,
+                error=exc,
+            )
+            return None
+        try:
+            self.event_queue.publish(completion_event, idempotency_key=idempotency_key)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Gate completion publication failed "
+                "event_id=%s trace_id=%s gate_id=%s gate_type=%s branch_port=%s",
+                record.event_id,
+                record.trace_id,
+                record.gate_id,
+                record.gate_type,
+                branch_port,
+            )
+            record.status = COMPLETION_PENDING_STATUS
+            record.completion_pending_status = pending_status
+            record.completion_event_branch_port = branch_port
+            record.completion_event_for_execution_ids = for_execution_ids
+            record.outputs = dict(outputs)
+            record.published_event_id = None
+            record.completion_event_enqueued_at = None
+            record.error = str(exc)
+            record.finished_at = resolved_finished_at
+            self.gate_execution_store.record_execution(record)
+            self._update_event_delivery_state(record.event_id)
+            return None
+        return completion_event_id
 
     def _run_special_event_handlers(
         self,
@@ -1299,22 +1607,10 @@ class EffectOrchestratorWorker:
                     record.completion_event_enqueued_at = None
                     record.finished_at = finished_at
                     self.execution_store.record_execution(record)
-                    self._update_event_delivery_state(record.event_id)
                     if provider_class is not None:
                         provider_class.on_execution_waiting(worker=self, record=record)
+                    self._update_event_delivery_state(record.event_id)
                     continue
-                published_event_id = self._publish_completion_event_from_record(
-                    record=record, outputs=outputs
-                )
-                record.status = "succeeded"
-                record.outputs = outputs
-                if outputs.get("success") is False:
-                    message = outputs.get("message")
-                    if isinstance(message, str) and message.strip():
-                        record.error = message.strip()
-                record.published_event_id = published_event_id
-                record.completion_event_enqueued_at = finished_at
-                published_count += 1
             except Exception as exc:  # noqa: BLE001
                 logger.exception(
                     "Effect execution failed event_id=%s trace_id=%s effect_id=%s effect_type=%s",
@@ -1325,9 +1621,28 @@ class EffectOrchestratorWorker:
                 )
                 record.status = "failed"
                 record.error = str(exc)
-            record.finished_at = finished_at
-            self.execution_store.record_execution(record)
-            self._update_event_delivery_state(record.event_id)
+                record.finished_at = finished_at
+                self.execution_store.record_execution(record)
+                self._update_event_delivery_state(record.event_id)
+                continue
+
+            record.outputs = outputs
+            published_event_id = self._publish_effect_completion_event_or_mark_pending(
+                record=record,
+                outputs=outputs,
+                pending_status="succeeded",
+                finished_at=finished_at,
+            )
+            if published_event_id is None:
+                continue
+
+            self._finalize_effect_completion_publication(
+                record=record,
+                outputs=outputs,
+                published_event_id=published_event_id,
+                finished_at=finished_at,
+            )
+            published_count += 1
 
         return completed_count, published_count
 
@@ -1345,16 +1660,9 @@ class EffectOrchestratorWorker:
         self.event_queue.mark_delivered(event_id)
 
     def _event_has_inflight_effects(self, event_id: str) -> bool:
-        has_running = getattr(self.execution_store, "has_running_execution_for_event", None)
-        if callable(has_running):
-            return bool(has_running(event_id))
-        for record in self.execution_store.list_executions():
-            if record.event_id != event_id:
-                continue
-            if record.status != "running":
-                continue
-            return True
-        return False
+        return _store_has_inflight_execution_for_event(
+            self.execution_store, event_id
+        ) or _store_has_inflight_execution_for_event(self.gate_execution_store, event_id)
 
     def _publish_completion_event_from_record(
         self,
@@ -1363,6 +1671,23 @@ class EffectOrchestratorWorker:
         outputs: dict[str, Any],
         branch_port: str | None = None,
     ) -> str:
+        completion_event, idempotency_key, completion_event_id = (
+            self._build_completion_event_from_record(
+                record=record,
+                outputs=outputs,
+                branch_port=branch_port,
+            )
+        )
+        self.event_queue.publish(completion_event, idempotency_key=idempotency_key)
+        return completion_event_id
+
+    def _build_completion_event_from_record(
+        self,
+        *,
+        record: EffectExecutionRecord,
+        outputs: dict[str, Any],
+        branch_port: str | None = None,
+    ) -> tuple[TriggerEvent, str, str]:
         event_prefix = "effect" if branch_port is None else f"effect:{branch_port}"
         completion_event_id = _completion_event_id(
             parent_event_id=record.event_id,
@@ -1389,8 +1714,7 @@ class EffectOrchestratorWorker:
             if branch_port is None
             else f"{record.idempotency_key}:{branch_port}"
         )
-        self.event_queue.publish(completion_event, idempotency_key=idempotency_key)
-        return completion_event_id
+        return completion_event, idempotency_key, completion_event_id
 
     def _publish_gate_completion_event_from_record(
         self,
@@ -1400,6 +1724,25 @@ class EffectOrchestratorWorker:
         branch_port: str | None = None,
         for_execution_ids: dict[str, str] | None = None,
     ) -> str:
+        completion_event, idempotency_key, completion_event_id = (
+            self._build_gate_completion_event_from_record(
+                record=record,
+                outputs=outputs,
+                branch_port=branch_port,
+                for_execution_ids=for_execution_ids,
+            )
+        )
+        self.event_queue.publish(completion_event, idempotency_key=idempotency_key)
+        return completion_event_id
+
+    def _build_gate_completion_event_from_record(
+        self,
+        *,
+        record: GateExecutionRecord,
+        outputs: dict[str, Any],
+        branch_port: str | None = None,
+        for_execution_ids: dict[str, str] | None = None,
+    ) -> tuple[TriggerEvent, str, str]:
         completion_event_id = _completion_event_id(
             parent_event_id=record.event_id,
             node_id=record.gate_id,
@@ -1421,8 +1764,7 @@ class EffectOrchestratorWorker:
                 for_execution_ids=for_execution_ids,
             ),
         )
-        self.event_queue.publish(completion_event, idempotency_key=record.idempotency_key)
-        return completion_event_id
+        return completion_event, record.idempotency_key, completion_event_id
 
     def _write_skipped_node_record(
         self,
@@ -1606,14 +1948,29 @@ class EffectOrchestratorWorker:
             config_revision=config_revision,
         )
         if publish_completion_event:
-            record.published_event_id = self._publish_gate_completion_event_from_record(
+            record.status = COMPLETION_PENDING_STATUS
+            record.completion_pending_status = status
+            record.completion_event_branch_port = branch_port
+            record.completion_event_for_execution_ids = for_execution_ids
+            self.gate_execution_store.record_execution(record)
+            self._update_event_delivery_state(record.event_id)
+            published_event_id = self._publish_gate_completion_event_or_mark_pending(
                 record=record,
                 outputs=outputs,
                 branch_port=branch_port,
                 for_execution_ids=for_execution_ids,
+                pending_status=status,
+                finished_at=finished_at,
             )
+            if published_event_id is None:
+                return
+            record.published_event_id = published_event_id
+            record.status = status
+            record.error = None
             record.completion_event_enqueued_at = finished_at
         self.gate_execution_store.record_execution(record)
+        if publish_completion_event:
+            self._update_event_delivery_state(record.event_id)
 
     def _log_graph_revision_change(
         self, *, config_revision: str, node_count: int, edge_count: int

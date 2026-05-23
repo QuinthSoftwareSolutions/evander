@@ -404,6 +404,17 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
         record = kwargs.get("record")
         if worker is None or record is None:
             return
+        publish_or_mark_pending = getattr(
+            worker, "_publish_effect_completion_event_or_mark_pending", None
+        )
+        if callable(publish_or_mark_pending):
+            publish_or_mark_pending(
+                record=record,
+                outputs=dict(record.outputs),
+                branch_port=AGENT_PROMPT_STARTED_PORT,
+                pending_status="waiting",
+            )
+            return
         worker._publish_completion_event_from_record(
             record=record,
             outputs=dict(record.outputs),

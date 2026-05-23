@@ -5,6 +5,21 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-23 - Retry-Safe Workflow Completion Publication
+
+- Added durable `completion_pending` effect and gate execution state so
+  completion-event enqueue failures can be retried without rerunning completed
+  providers or gate logic.
+- Kept deterministic completion-event payload validation failures as failed
+  executions instead of retrying them as transient publish failures.
+- Preserved pending `started` branch publication for waiting agent effects so a
+  transient enqueue failure does not mark the source event delivered before the
+  branch activation is queued.
+- Treated `completion_pending` workflow execution records as active in admin
+  workflow-run snapshots, searches, and manual clear operations.
+- Added the pending-completion status to the workflow editor node ordering so
+  stalled completion publication remains legible in the UI.
+
 ## 2026-05-23 - Effect Store Rebind Drain
 
 - Deferred effect-worker store hot reloads while the current queue still has

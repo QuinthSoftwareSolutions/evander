@@ -351,7 +351,17 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
 };
 
 const RUNTIME_POLL_INTERVAL_MS = 5000;
-const NODE_STATUS_ORDER = ["failed", "running", "waiting", "inflight", "pending", "completed", "succeeded", "skipped"] as const;
+const NODE_STATUS_ORDER = [
+  "failed",
+  "running",
+  "waiting",
+  "completion_pending",
+  "inflight",
+  "pending",
+  "completed",
+  "succeeded",
+  "skipped",
+] as const;
 const WORKFLOW_SIDEBAR_WIDTH_STORAGE_KEY = "workflow-editor:sidebar-width";
 const WORKFLOW_SAMPLE_TUTORIAL_COMPLETED_STORAGE_KEY = "workflow-editor:sample-tutorial-completed";
 const WORKFLOW_SIDEBAR_DEFAULT_WIDTH = 320;

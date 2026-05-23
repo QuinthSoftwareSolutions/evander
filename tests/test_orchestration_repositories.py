@@ -242,6 +242,58 @@ def test_sqlite_execution_repository_supports_indexed_queries(tmp_path: Path) ->
     assert gate_store.find_latest_execution_for_gate("merge-1") == newer_gate
 
 
+def test_sqlite_execution_repository_treats_completion_pending_as_active(
+    tmp_path: Path,
+) -> None:
+    execution_store = SqliteExecutionStore(tmp_path / "orchestration.db")
+
+    running = _effect_record(execution_id="exec-1", idempotency_key="idem-1")
+    pending = _effect_record(execution_id="exec-2", idempotency_key="idem-2")
+    pending.status = "completion_pending"
+    pending.started_at = datetime(2026, 4, 23, 12, 5, tzinfo=UTC)
+    pending.finished_at = pending.started_at
+
+    execution_store.record_execution(running)
+    execution_store.record_execution(pending)
+
+    assert execution_store.has_running_execution_for_event("evt-1") is True
+    assert [record.execution_id for record in execution_store.list_active_records()] == [
+        "exec-2",
+        "exec-1",
+    ]
+
+
+def test_sqlite_gate_execution_repository_treats_completion_pending_as_active(
+    tmp_path: Path,
+) -> None:
+    gate_store = SqliteGateExecutionStore(tmp_path / "orchestration.db")
+    pending = _gate_record(
+        execution_id="gate-1",
+        idempotency_key="gate-idem-1",
+        gate_id="merge-1",
+        finished_at=datetime(2026, 4, 23, 12, 0, tzinfo=UTC),
+    )
+    pending.event_id = "evt-1"
+    pending.status = "completion_pending"
+    gate_store.record_execution(pending)
+
+    assert gate_store.has_running_execution_for_event("evt-1") is True
+    assert [record.execution_id for record in gate_store.list_active_records()] == [
+        "gate-1"
+    ]
+
+    cleared = gate_store.clear_event_records(
+        "evt-1",
+        cleared_at=datetime(2026, 4, 23, 13, 0, tzinfo=UTC),
+        clear_reason="manual_clear_stale_workflow_runs",
+        clear_error="cleared",
+    )
+
+    assert cleared == 1
+    assert gate_store.get_execution("gate-1").status == "failed"
+    assert gate_store.get_execution("gate-1").dismissed_at is not None
+
+
 def test_sqlite_execution_repository_clears_target_event_without_full_file_store(
     tmp_path: Path,
 ) -> None:

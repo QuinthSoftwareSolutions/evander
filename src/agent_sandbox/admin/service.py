@@ -11726,7 +11726,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             status = str(raw_record.get("status") or "").strip()
             if raw_record.get("dismissed_at"):
                 continue
-            if status not in {"running", "waiting", "failed"}:
+            if status not in {"running", "waiting", "failed", "completion_pending"}:
                 continue
             event_id = str(raw_record.get("event_id") or execution_id).strip()
             node_id = str(raw_record.get("effect_id") or "").strip()
@@ -11753,7 +11753,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             status = str(raw_record.get("status") or "").strip()
             if raw_record.get("dismissed_at"):
                 continue
-            if status not in {"running", "waiting", "failed"}:
+            if status not in {"running", "waiting", "failed", "completion_pending"}:
                 continue
             event_id = str(raw_record.get("event_id") or execution_id).strip()
             node_id = str(raw_record.get("gate_id") or "").strip()
@@ -12140,7 +12140,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     session_ids_by_trace.setdefault(trace_id_value, set()).update(group["session_ids"])
 
         matched_runs: list[WorkflowRunSearchItemPayload] = []
-        active_statuses = {"pending", "inflight", "running", "waiting"}
+        active_statuses = {"pending", "inflight", "running", "waiting", "completion_pending"}
         for group in groups.values():
             matched_node_ids = sorted(group["node_ids"] & target_node_ids)
             if not matched_node_ids:
@@ -12279,7 +12279,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                         records[execution_id] = record
                         updated += 1
                         continue
-                    if status not in {"running", "waiting"}:
+                    if status not in {"running", "waiting", "completion_pending"}:
                         continue
                     record.status = "failed"
                     record.finished_at = cleared_at

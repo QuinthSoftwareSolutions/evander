@@ -55,6 +55,7 @@ from agent_sandbox.daemons.effect_orchestrator import (
     GateExecutionRecord,
     EffectExecutionRecord,
     JsonExecutionStore,
+    JsonGateExecutionStore,
     SqliteExecutionStore,
     SqliteGateExecutionStore,
 )
@@ -4811,7 +4812,7 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
         content=b"sqlite run detail artifact\n",
         original_filename="sqlite-notes.txt",
         created_at=datetime(2026, 5, 16, 11, 0, tzinfo=UTC),
-        expires_at=datetime(2026, 5, 23, 11, 0, tzinfo=UTC),
+        expires_at=datetime(2026, 6, 23, 11, 0, tzinfo=UTC),
         metadata={"source": "sqlite-fixture"},
     )
     service.runtime.approvals.put(
@@ -5073,6 +5074,113 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
     assert detail.data_availability.tool_calls == "available"
     assert detail.data_availability.agent_links == "available"
     assert detail.data_availability.communication_artifacts == "available"
+
+
+def test_admin_service_keeps_completion_pending_workflow_runs_visible_and_clearable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    stores = {
+        "runtime_dir": runtime_dir,
+        "orchestration_store_backend": "json",
+        "orchestration_store_path": runtime_dir / "orchestration.db",
+        "orchestration_retention_days": 30,
+        "event_queue_store_path": runtime_dir / "trigger-orchestrator-events.json",
+        "effect_execution_store_path": runtime_dir / "effect-orchestrator-executions.json",
+        "gate_execution_store_path": runtime_dir / "gate-orchestrator-executions.json",
+        "workflow_config_snapshot_store_path": runtime_dir / "workflow-config-snapshots.json",
+        "await_agent_store_path": runtime_dir / "providers" / "gates" / "await-agent" / "pending.json",
+        "legacy_await_agent_store_path": runtime_dir / "await-agent-pending.json",
+    }
+    workflow_admin = service.worker_admin._deps.read_workflow_run_snapshot.__self__
+    monkeypatch.setattr(workflow_admin, "_workflow_run_store_paths", lambda: stores)
+    monkeypatch.setattr(
+        workflow_admin, "_read_workflow_editor_document", lambda: SimpleNamespace(graphs=[])
+    )
+
+    started_at = datetime(2026, 5, 20, 11, 0, tzinfo=UTC)
+    finished_at = datetime(2026, 5, 20, 11, 1, tzinfo=UTC)
+    effect_store = JsonExecutionStore(stores["effect_execution_store_path"])
+    effect_store.record_execution(
+        EffectExecutionRecord(
+            execution_id="exec-effect-1",
+            idempotency_key="evt-1::effect-1",
+            event_id="evt-1",
+            trace_id="trace-1",
+            source_node_id="trigger-1",
+            source_trigger_type="trigger:test",
+            effect_id="effect-1",
+            effect_type="effect:test",
+            status="completion_pending",
+            started_at=started_at,
+            finished_at=finished_at,
+            resolved_config_hash="hash-effect-1",
+            resolved_config={},
+            input_payload={},
+            outputs={"dispatch_id": "dispatch-1"},
+            completion_pending_status="succeeded",
+            completion_event_branch_port="main",
+        )
+    )
+    gate_store = JsonGateExecutionStore(stores["gate_execution_store_path"])
+    gate_store.record_execution(
+        GateExecutionRecord(
+            execution_id="exec-gate-1",
+            idempotency_key="evt-1::gate-1",
+            event_id="evt-1",
+            trace_id="trace-1",
+            source_node_id="effect-1",
+            source_trigger_type="trigger:test",
+            gate_id="gate-1",
+            gate_type="gate:test",
+            status="completion_pending",
+            started_at=started_at,
+            finished_at=finished_at,
+            resolved_config_hash="hash-gate-1",
+            resolved_config={},
+            input_payload={},
+            outputs={"ok": True},
+            inputs_by_source={"effect-1": {"dispatch_id": "dispatch-1"}},
+            input_event_ids_by_source={"effect-1": "evt-1"},
+            input_occurred_at_by_source={"effect-1": started_at},
+            completion_pending_status="succeeded",
+            completion_event_branch_port="main",
+            completion_event_for_execution_ids={"effect-1": "exec-effect-1"},
+        )
+    )
+
+    snapshot = service.read_workflow_run_snapshot()
+    assert len(snapshot.runs) == 1
+    snapshot_run = snapshot.runs[0]
+    assert snapshot_run.run_state == "active"
+    assert {node.node_id for node in snapshot_run.active_nodes} == {"effect-1", "gate-1"}
+    assert {node.status for node in snapshot_run.active_nodes} == {"completion_pending"}
+
+    search = service.read_workflow_run_search(node_id="effect-1")
+    assert len(search.runs) == 1
+    search_run = search.runs[0]
+    assert search_run.run_state == "active"
+    assert search_run.status_counts == {"completion_pending": 2}
+
+    clear = service.clear_workflow_run("evt-1")
+    assert clear.effect_records_updated == 1
+    assert clear.gate_records_updated == 1
+
+    cleared_effect = JsonExecutionStore(stores["effect_execution_store_path"]).get_execution(
+        "exec-effect-1"
+    )
+    cleared_gate = JsonGateExecutionStore(stores["gate_execution_store_path"]).get_execution(
+        "exec-gate-1"
+    )
+    assert cleared_effect is not None
+    assert cleared_effect.status == "failed"
+    assert cleared_effect.clear_reason == "manual_clear_stale_workflow_runs"
+    assert cleared_gate is not None
+    assert cleared_gate.status == "failed"
+    assert cleared_gate.clear_reason == "manual_clear_stale_workflow_runs"
 
 
 def test_conformance_reports_summarize_present_runtime_artifacts(tmp_path: Path) -> None:
