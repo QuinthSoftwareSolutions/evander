@@ -455,6 +455,7 @@ class EffectOrchestratorWorker:
         completion_events_published += published_count
         completion_events_published += self._run_post_completion_dispatch_hooks()
         completion_events_published += self._retry_pending_effect_completion_publications()
+        completion_events_published += self._retry_pending_gate_completion_publications()
 
         loop = OrchestrationLoop[
             TriggerQueueRecord,
@@ -762,6 +763,52 @@ class EffectOrchestratorWorker:
             record.completion_event_enqueued_at = datetime.now(UTC)
             record.error = None
             self.execution_store.record_execution(record)
+            self._update_event_delivery_state(record.event_id)
+            retried += 1
+        return retried
+
+    def _retry_pending_gate_completion_publications(self) -> int:
+        retried = 0
+        list_executions = getattr(self.gate_execution_store, "list_executions", None)
+        if callable(list_executions):
+            records = list(list_executions())
+        else:
+            read_all = getattr(self.gate_execution_store, "read_all", None)
+            if not callable(read_all):
+                return 0
+            records = list(read_all().values())
+
+        for record in records:
+            if str(getattr(record, "status", "") or "").strip() != COMPLETION_PENDING_STATUS:
+                continue
+            outputs = dict(getattr(record, "outputs", {}) or {})
+            branch_port = getattr(record, "completion_event_branch_port", None)
+            for_execution_ids = getattr(record, "completion_event_for_execution_ids", None)
+            try:
+                published_event_id = self._publish_gate_completion_event_from_record(
+                    record=record,
+                    outputs=outputs,
+                    branch_port=branch_port,
+                    for_execution_ids=for_execution_ids,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Gate completion retry failed event_id=%s trace_id=%s gate_id=%s gate_type=%s",
+                    record.event_id,
+                    record.trace_id,
+                    record.gate_id,
+                    record.gate_type,
+                )
+                continue
+
+            record.status = str(
+                getattr(record, "completion_pending_status", None) or "succeeded"
+            ).strip()
+            record.outputs = outputs
+            record.published_event_id = published_event_id
+            record.completion_event_enqueued_at = datetime.now(UTC)
+            record.error = None
+            self.gate_execution_store.record_execution(record)
             self._update_event_delivery_state(record.event_id)
             retried += 1
         return retried
@@ -1605,14 +1652,36 @@ class EffectOrchestratorWorker:
             config_revision=config_revision,
         )
         if publish_completion_event:
-            record.published_event_id = self._publish_gate_completion_event_from_record(
-                record=record,
-                outputs=outputs,
-                branch_port=branch_port,
-                for_execution_ids=for_execution_ids,
-            )
+            record.status = COMPLETION_PENDING_STATUS
+            record.completion_pending_status = status
+            record.completion_event_branch_port = branch_port
+            record.completion_event_for_execution_ids = for_execution_ids
+            self.gate_execution_store.record_execution(record)
+            self._update_event_delivery_state(record.event_id)
+            try:
+                record.published_event_id = self._publish_gate_completion_event_from_record(
+                    record=record,
+                    outputs=outputs,
+                    branch_port=branch_port,
+                    for_execution_ids=for_execution_ids,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Gate completion publication failed event_id=%s trace_id=%s gate_id=%s gate_type=%s",
+                    record.event_id,
+                    record.trace_id,
+                    record.gate_id,
+                    record.gate_type,
+                )
+                record.error = str(exc)
+                self.gate_execution_store.record_execution(record)
+                return
+            record.status = status
+            record.error = None
             record.completion_event_enqueued_at = finished_at
         self.gate_execution_store.record_execution(record)
+        if publish_completion_event:
+            self._update_event_delivery_state(record.event_id)
 
     def _log_graph_revision_change(
         self, *, config_revision: str, node_count: int, edge_count: int

@@ -2240,6 +2240,151 @@ def test_effect_orchestrator_retries_partially_published_completion_publish_once
     assert len(counting_factory.execute_calls) == 1
 
 
+def test_effect_orchestrator_retries_partially_published_gate_completion_publish_once(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "max_events_per_cycle": 1,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"value": {"type": "string"}},
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-map",
+                    "display_name": "Map",
+                    "type": "gate:map",
+                    "template": {"value": "${{trigger-1.value}}"},
+                    "outputs": {"value": {"type": "string"}},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "prompt": "value ${{gate-map.value}}",
+                }
+            ],
+            "edges": [
+                _edge("trigger-1", "gate-map"),
+                _edge("gate-map", "effect-1"),
+            ],
+        }
+    )
+    counting_factory = _CountingFactory({"effect-1": {"session_id": "session-123"}})
+
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker._executor = _ImmediateExecutor()  # type: ignore[assignment]
+    worker.provider_factory = counting_factory
+
+    gate_execute_calls = 0
+
+    def _wrap_gate_execute(target_worker: EffectOrchestratorWorker) -> None:
+        nonlocal gate_execute_calls
+        provider = target_worker._get_gate_provider("gate:map")
+        assert provider is not None
+        original_execute = provider.execute
+
+        def execute(**kwargs):
+            nonlocal gate_execute_calls
+            gate_execute_calls += 1
+            return original_execute(**kwargs)
+
+        provider.execute = execute  # type: ignore[method-assign]
+
+    _wrap_gate_execute(worker)
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-gate-retry-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"value": "hello"},
+        )
+    )
+
+    original_publish = worker.event_queue.publish
+    gate_publish_should_fail = True
+
+    def publish(event: TriggerEvent, *, idempotency_key: str | None = None):
+        nonlocal gate_publish_should_fail
+        record = original_publish(event, idempotency_key=idempotency_key)
+        if gate_publish_should_fail and event.trigger_id == "gate-map":
+            gate_publish_should_fail = False
+            raise RuntimeError("gate completion publish boom after write")
+        return record
+
+    worker.event_queue.publish = publish  # type: ignore[assignment]
+
+    worker.run_once()
+
+    gate_payload = json.loads(
+        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    gate_records = [item for item in gate_payload.values() if item["gate_id"] == "gate-map"]
+    assert len(gate_records) == 1
+    gate_record = gate_records[0]
+    assert gate_record["status"] == "completion_pending"
+    assert gate_record["completion_pending_status"] == "succeeded"
+    assert gate_record["outputs"] == {"value": "hello"}
+    assert gate_record["published_event_id"] is None
+    assert gate_record["completion_event_enqueued_at"] is None
+    assert gate_record["error"] == "gate completion publish boom after write"
+    assert gate_execute_calls == 1
+
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    completion_records = [
+        item for item in queue_payload.values() if item["trigger_id"] == "gate-map"
+    ]
+    assert len(completion_records) == 1
+    assert completion_records[0]["delivery_state"] == "pending"
+    assert queue_payload["event-gate-retry-1"]["delivery_state"] == "inflight"
+    assert len(counting_factory.execute_calls) == 0
+
+    worker.run_once()
+
+    gate_payload = json.loads(
+        (runtime_dir / "gate-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    gate_records = [item for item in gate_payload.values() if item["gate_id"] == "gate-map"]
+    assert len(gate_records) == 1
+    gate_record = gate_records[0]
+    assert gate_record["status"] == "succeeded"
+    assert gate_record["published_event_id"] is not None
+    assert gate_record["completion_event_enqueued_at"] is not None
+    assert gate_record["outputs"] == {"value": "hello"}
+    assert gate_execute_calls == 1
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    effect_records = [item for item in effect_payload.values() if item["effect_id"] == "effect-1"]
+    assert len(effect_records) == 1
+    assert effect_records[0]["status"] == "succeeded"
+    assert len(counting_factory.execute_calls) == 1
+
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    completion_records = [
+        item for item in queue_payload.values() if item["trigger_id"] == "gate-map"
+    ]
+    assert len(completion_records) == 1
+    assert completion_records[0]["delivery_state"] == "delivered"
+    assert queue_payload["event-gate-retry-1"]["delivery_state"] == "delivered"
+
+
 def test_effect_orchestrator_records_binding_resolution_failure_and_advances_queue(
     tmp_path: Path,
 ) -> None:
