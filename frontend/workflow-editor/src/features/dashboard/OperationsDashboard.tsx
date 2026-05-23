@@ -1185,9 +1185,6 @@ function releaseInfoSummary(releaseInfo: ReleaseInfoPayload | null): string | nu
   } else if (releaseInfo.missing_reasons.length > 0) {
     parts.push("Recent changelog unavailable");
   }
-  if (releaseInfo.news?.heading) {
-    parts.push(`News: ${releaseInfo.news.heading}`);
-  }
   return parts.join(" · ");
 }
 
@@ -1223,6 +1220,7 @@ function ProductContextPanel({
   releaseInfoState: RemoteState<ReleaseInfoPayload>;
   onLoadNewsEntry: (targetIndex: number) => void;
 }) {
+  const releaseSummary = releaseInfoSummary(releaseInfo);
   return (
     <DashboardPanel
       eyebrow="Product context"
@@ -1232,21 +1230,20 @@ function ProductContextPanel({
       statusClassName={stateClassName(releaseInfoTone(releaseInfoState))}
       statusLabel={releaseInfoStatusLabel(releaseInfoState)}
     >
-      {releaseInfo?.news ? (
-        <DashboardBlock
-          title="News"
-          state={releaseInfoState}
-          missingFallback="News is not available."
-          summary={releaseInfo.news.heading ?? "Latest update"}
-        >
-          <div className="release-news-card">
-            <div className="release-news-header">
-              <span>News</span>
-              <strong>{releaseInfo.news.heading ?? "Latest update"}</strong>
-            </div>
-            <div className="release-news-copy">
-              {releaseInfo.news.paragraphs.map((paragraph, index) => (
-                <p key={`${releaseInfo.news?.heading ?? "news"}-${index}`}>{paragraph}</p>
+      {releaseInfoState.loading && !releaseInfo ? <div className="empty-state">Loading…</div> : null}
+      {!releaseInfoState.loading && !releaseInfoState.error && releaseInfoState.missing && !releaseInfo ? (
+        <div className="empty-state">{releaseInfoState.missing}</div>
+      ) : null}
+      {releaseInfoState.error && !releaseInfo ? <div className="callout error-callout">{releaseInfoState.error}</div> : null}
+
+      {releaseInfo ? (
+        <div className="dashboard-product-context">
+          {releaseInfo.news ? (
+            <article className="release-news-entry">
+              <h3 className="release-news-title">{releaseInfo.news.heading ?? "Latest update"}</h3>
+              <div className="release-news-copy">
+                {releaseInfo.news.paragraphs.map((paragraph, index) => (
+                  <p key={`${releaseInfo.news?.heading ?? "news"}-${index}`}>{paragraph}</p>
               ))}
             </div>
             <p className="panel-meta release-news-source">
@@ -1284,71 +1281,58 @@ function ProductContextPanel({
                 }}
               >
                 <DashboardIcon name="older" />
-              </button>
-            </div>
-          </div>
-        </DashboardBlock>
-      ) : null}
+                </button>
+              </div>
+            </article>
+          ) : null}
 
-      <DashboardBlock
-        title="Release metadata"
-        state={releaseInfoState}
-        missingFallback="Release metadata is not available."
-        summary={releaseInfoSummary(releaseInfo)}
-        actions={
-          releaseInfo?.changelog ? (
-            <div className="feature-toolbar-actions icon-actions dashboard-release-actions">
-              <button type="button" aria-label="Download changelog" title="Download changelog" onClick={downloadChangelog}>
-                <DownloadIcon />
-              </button>
+          <section className="dashboard-release-secondary" aria-label="Release metadata">
+            <div className="dashboard-release-secondary-heading">
+              {releaseSummary ? (
+                <p className="panel-meta dashboard-release-summary" style={{ margin: 0 }}>
+                  {releaseSummary}
+                </p>
+              ) : null}
+              {releaseInfo.changelog ? (
+                <div className="feature-toolbar-actions icon-actions dashboard-release-actions">
+                  <button type="button" aria-label="Download changelog" title="Download changelog" onClick={downloadChangelog}>
+                    <DownloadIcon />
+                  </button>
+                </div>
+              ) : null}
             </div>
-          ) : null
-        }
-      >
-        {releaseInfo ? (
-          <div style={{ display: "grid", gap: "0.85rem" }}>
-            <p className="panel-meta dashboard-release-summary" style={{ margin: 0 }}>
-              {releaseInfoSummary(releaseInfo)}
-            </p>
-            <div className="detail-list dashboard-release-details">
-              <div>
-                <span>Version</span>
-                <strong>{releaseInfo.version ?? "Version unavailable"}</strong>
-              </div>
-              <div>
-                <span>Version source</span>
-                <strong>{releaseInfo.version_source ?? "No version source."}</strong>
-              </div>
-              <div>
-                <span>Build</span>
-                <strong>{releaseInfo.build ?? "Build unavailable"}</strong>
-              </div>
-              <div>
-                <span>Build source</span>
-                <strong>{releaseInfo.build_source ?? "No build source."}</strong>
-              </div>
-              <div>
-                <span>Changelog</span>
-                <strong>{releaseInfo.changelog ? releaseInfo.changelog.heading ?? "Recent release entries" : "Changelog unavailable"}</strong>
-              </div>
-              <div>
-                <span>Changelog source</span>
-                <strong>
-                  {releaseInfo.changelog
+            <DashboardMetricRows
+              className="dashboard-release-metadata"
+              items={[
+                {
+                  label: "Version",
+                  value: releaseInfo.version ?? "Version unavailable",
+                  detail: releaseInfo.version_source ?? "No version source.",
+                },
+                {
+                  label: "Build",
+                  value: releaseInfo.build ?? "Build unavailable",
+                  detail: releaseInfo.build_source ?? "No build source.",
+                },
+                {
+                  label: "Changelog",
+                  value: releaseInfo.changelog ? releaseInfo.changelog.heading ?? "Recent release entries" : "Changelog unavailable",
+                  detail: releaseInfo.changelog
                     ? [releaseInfo.changelog.source ?? "CHANGELOG.md", releaseInfo.changelog.path ?? null].filter(Boolean).join(" · ")
-                    : "No changelog source."}
-                </strong>
-              </div>
+                    : "No changelog source.",
+                },
+              ]}
+            />
+          </section>
+
+          {releaseInfo.missing_reasons.length > 0 ? (
+            <div className="release-missing-list">
+              <span>Missing details</span>
+              <strong>{releaseInfo.missing_reasons.join(" · ")}</strong>
             </div>
-            {releaseInfo.missing_reasons.length > 0 ? (
-              <div className="release-missing-list">
-                <span>Missing details</span>
-                <strong>{releaseInfo.missing_reasons.join(" · ")}</strong>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-      </DashboardBlock>
+          ) : null}
+        </div>
+      ) : null}
     </DashboardPanel>
   );
 }

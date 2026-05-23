@@ -1087,16 +1087,17 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Version 0\.2\.2/);
   assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Build agent-sandbox-build-20260521/);
   await assert.doesNotReject(() => releasePanel.getByRole("button", { name: "Download changelog" }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => releasePanel.locator(".release-news-header span").filter({ hasText: "News" }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => releasePanel.locator(".release-news-header strong").filter({ hasText: "Safer workflows, clearer operations" }).waitFor({ state: "visible" }));
+  assert.equal(await releasePanel.getByText("News", { exact: true }).count(), 0);
+  assert.equal(await releasePanel.getByText("News: Safer workflows, clearer operations", { exact: true }).count(), 0);
+  await assert.doesNotReject(() => releasePanel.locator(".release-news-title").filter({ hasText: "Safer workflows, clearer operations" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.getByRole("button", { name: "Older" }).waitFor({ state: "visible" }));
   assert.equal(await releasePanel.getByText("Entry 1 · Latest", { exact: true }).count(), 1);
   assert.equal(await releasePanel.getByText("Recent entries", { exact: true }).count(), 0);
-  const releaseBlocks = releasePanel.locator(".dashboard-block");
-  const newsBlockBox = await releaseBlocks.nth(0).boundingBox();
-  const releaseMetadataBlockBox = await releaseBlocks.nth(1).boundingBox();
-  assert.ok(newsBlockBox && releaseMetadataBlockBox, "expected news and release metadata blocks to have layout boxes");
-  assert.ok(newsBlockBox.y < releaseMetadataBlockBox.y, `expected News above Release metadata, got news y=${newsBlockBox.y} metadata y=${releaseMetadataBlockBox.y}`);
+  assert.equal(await releasePanel.locator(".dashboard-block").count(), 0);
+  const newsEntryBox = await releasePanel.locator(".release-news-entry").boundingBox();
+  const releaseMetadataBox = await releasePanel.locator(".dashboard-release-secondary").boundingBox();
+  assert.ok(newsEntryBox && releaseMetadataBox, "expected news and compact release metadata to have layout boxes");
+  assert.ok(newsEntryBox.y < releaseMetadataBox.y, `expected news entry above release metadata, got news y=${newsEntryBox.y} metadata y=${releaseMetadataBox.y}`);
 
   await page.setViewportSize({ width: 390, height: 900 });
   await assertDashboardFitsViewport(page, "mobile");

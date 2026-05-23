@@ -5689,66 +5689,23 @@ select {
   line-height: 1.45;
 }
 
-.detail-list.dashboard-release-details {
-  gap: 0.65rem;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
-  padding: 0;
-}
-
-.dashboard-release-details > div {
-  padding: 0.82rem 0.9rem;
-  background: rgba(232, 239, 236, 0.76);
-}
-
-.dashboard-release-actions {
-  justify-content: flex-end;
-}
-
-.release-missing-list {
+.dashboard-product-context {
   display: grid;
-  gap: 0.35rem;
-  padding: 0.85rem 0.95rem;
-  border: 1px dashed rgba(32, 69, 78, 0.14);
-  border-radius: 16px;
-  background: rgba(244, 248, 246, 0.86);
+  gap: 1rem;
 }
 
-.release-missing-list span,
-.release-news-header span {
-  color: #6a7d86;
-  font-size: 0.74rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  line-height: 1.2;
-  text-transform: uppercase;
-}
-
-.release-missing-list strong {
-  color: #183142;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
-.release-news-card {
+.release-news-entry {
   display: grid;
   gap: 0.75rem;
-  padding: 0.95rem;
-  border: 1px solid rgba(32, 69, 78, 0.1);
-  border-radius: 14px;
-  background: rgba(245, 249, 247, 0.86);
 }
 
-.release-news-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-}
-
-.release-news-header strong {
+.release-news-title {
+  margin: 0;
   color: #183142;
+  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  font-size: 1.22rem;
   line-height: 1.35;
-  text-align: right;
+  overflow-wrap: anywhere;
 }
 
 .release-news-copy {
@@ -5786,6 +5743,57 @@ select {
   font-size: 0.8rem;
   font-weight: 700;
   cursor: pointer;
+}
+
+.dashboard-release-secondary {
+  display: grid;
+  gap: 0.65rem;
+  padding-top: 0.95rem;
+  border-top: 1px solid rgba(32, 69, 78, 0.1);
+}
+
+.dashboard-release-secondary-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.dashboard-release-actions {
+  justify-content: flex-end;
+  padding: 0;
+}
+
+.dashboard-release-metadata {
+  border-radius: 14px;
+}
+
+.dashboard-release-metadata .dashboard-metric-row {
+  padding: 0.72rem 0.85rem;
+}
+
+.release-missing-list {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px dashed rgba(32, 69, 78, 0.14);
+  border-radius: 16px;
+  background: rgba(244, 248, 246, 0.86);
+}
+
+.release-missing-list span {
+  color: #6a7d86;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.release-missing-list strong {
+  color: #183142;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 @media (min-width: 1040px) {
@@ -6694,22 +6702,18 @@ select {
 
 :root[data-theme="dark"] .dashboard-release-summary,
 :root[data-theme="dark"] .release-missing-list span,
-:root[data-theme="dark"] .release-news-header span,
 :root[data-theme="dark"] .release-news-copy p,
 :root[data-theme="dark"] .release-news-pager span {
   color: #9eb2bf;
 }
 
-:root[data-theme="dark"] .dashboard-release-details > div,
-:root[data-theme="dark"] .release-news-card,
+:root[data-theme="dark"] .dashboard-release-secondary,
 :root[data-theme="dark"] .release-missing-list {
   border-color: rgba(125, 170, 190, 0.14);
-  background: rgba(18, 31, 39, 0.92);
 }
 
-:root[data-theme="dark"] .dashboard-release-details > div > strong,
 :root[data-theme="dark"] .release-missing-list strong,
-:root[data-theme="dark"] .release-news-header strong {
+:root[data-theme="dark"] .release-news-title {
   color: #d7e3ea;
 }
 
