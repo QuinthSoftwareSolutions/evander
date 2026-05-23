@@ -1,5 +1,29 @@
 # News
 
+## 2026-05-23 - Working With Agents Should Feel Clearer Every Week
+
+Truman is continuing to move toward a simple goal: make agent work easier to start, easier to follow, and easier to trust.
+
+A lot of the recent progress has been about visibility. When an agent is running, users should not have to guess what it is doing, where it is working, or what happened after a workflow step fired. Truman is steadily getting better at showing the shape of a run, surfacing useful session context, and giving operators clearer paths from a request to the actual work that happened.
+
+Some of that work is already visible in the product direction. The workflow run inspector is becoming the place to look when you want to understand a specific run: what triggered it, which nodes ran, what each step produced, and where it waited or failed. The workflow editor is moving toward friendlier structured forms and field help, so users do not need to edit raw JSON for common tasks. Admin Web is gaining more operational context, including dashboard health signals, version and changelog information, approval and tool-call visibility, and clearer session details.
+
+We are also working toward stronger safety and recovery surfaces. That includes making blocked or retryable automation easier to spot, showing what a container-backed agent session is allowed to do, improving cleanup and recovery visibility, and tightening the baseline so workflow events, approvals, and agent actions are easier to audit. In practical terms, the goal is that an operator can see not only that an agent did something, but also what it was allowed to do, why it did it, and what to do next if something needs attention.
+
+For new users, this should mean a smoother first experience. A guided sample workflow and reset path can make it easier to try Truman without learning every internal concept first. Better labels, tooltips, and structured controls should make the system feel more like an operating surface and less like a collection of configuration files.
+
+For existing users, this should mean less digging. The run inspector, session queries, dashboard signals, and audit views should help answer everyday questions faster: which run failed, which agent handled it, what output was produced, whether a human approval was involved, and whether the next action is retry, review, approve, or cleanup.
+
+A few practical tips:
+
+- If you are new to Truman, start from an existing workflow or sample before building one from scratch. It is usually easier to learn the model by changing one known path at a time.
+- Use the run details and session information as your first stop when something looks stuck. They often tell you whether the issue is routing, permissions, a tool failure, or an agent still doing work.
+- Keep early workflows small. A focused trigger, one clear decision point, and one visible result are much easier to validate than a large automation path with many hidden assumptions.
+- If you already use Truman regularly, add useful names, purpose text, and metadata to the workflows and sessions you create. Those details make dashboards, run history, and troubleshooting much more useful later.
+- Review approvals, tool access, and container settings when you change how an agent works. Good automation is not just about speed; it is also about knowing exactly what an agent is allowed to do.
+
+The direction from here is straightforward: Truman should keep becoming a calmer, clearer operating surface for AI agents. Less guessing, fewer hidden steps, better explanations, and more confidence that the system is doing the work you asked it to do.
+
 ## 2026-05-22 - The Control Plane Starts to Explain Itself
 
 Truman has crossed an important line: it is no longer just a way to send agents into work. It is becoming a control plane that can show operators what happened, what is happening, and where human judgment belongs.

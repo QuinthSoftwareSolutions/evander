@@ -12,6 +12,12 @@ material. Newer entries are added incrementally as changes land.
   trigger/effect/gate execution history, and bounded tool-call audit scanning
   for the detail view.
 
+## 2026-05-22 - Workflow Run Control Alignment
+
+- Fixed the workflow editor Current runs and Latest runs controls so run
+  lookup/search select text is not clipped and action buttons align with the
+  adjacent fields.
+
 ## 2026-05-22 - Unobtrusive Workflow Tutorial
 
 - Collapsed the workflow editor guided sample into a small tutorial launcher by
