@@ -14,6 +14,42 @@ function jsonResponse(payload, status = 200) {
   };
 }
 
+async function assertDashboardFitsViewport(page, label) {
+  const layout = await page.evaluate(() => {
+    const viewportWidth = window.innerWidth;
+    const scrollWidth = document.documentElement.scrollWidth;
+    const measuredElements = Array.from(
+      document.querySelectorAll(
+        [
+          ".dashboard-page .dashboard-panel",
+          ".dashboard-page .dashboard-block",
+          ".dashboard-page .dashboard-metric-row",
+          ".dashboard-page .dashboard-row-item",
+          ".dashboard-page .dashboard-row-item > .status-pill",
+          ".dashboard-page .dashboard-link-chip",
+        ].join(", "),
+      ),
+    );
+    const zeroSized = measuredElements
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.width <= 0 || rect.height <= 0;
+      })
+      .map((element) => (element instanceof HTMLElement ? element.className : element.nodeName))
+      .slice(0, 5);
+    return {
+      viewportWidth,
+      scrollWidth,
+      zeroSized,
+    };
+  });
+  assert.ok(
+    layout.scrollWidth <= layout.viewportWidth + 1,
+    `${label} dashboard should not create horizontal overflow: scrollWidth=${layout.scrollWidth}, viewport=${layout.viewportWidth}`,
+  );
+  assert.deepEqual(layout.zeroSized, [], `${label} dashboard compact elements should have visible layout boxes`);
+}
+
 test("admin shell defaults to the dashboard and preserves deep links", async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
@@ -30,7 +66,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   assert.ok(address && typeof address === "object" && "port" in address, "expected Vite to bind an ephemeral port");
 
   const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
 
@@ -983,6 +1019,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   const systemHealthBox = await systemHealthPanel.boundingBox();
   assert.ok(releaseBox && systemHealthBox, "expected dashboard panels to have layout boxes");
   assert.ok(releaseBox.x < systemHealthBox.x, `expected release panel to occupy the left dashboard column, got release x=${releaseBox.x} system x=${systemHealthBox.x}`);
+  await assertDashboardFitsViewport(page, "desktop");
   const onboardingWorkflowButton = onboardingPanel.getByRole("button", { name: "Open workflow" });
   let previousRightColumnY = -Infinity;
   for (const panel of [systemHealthPanel, agentPanel, workflowPanel, approvalsPanel, toolCallsPanel, onboardingPanel]) {
@@ -1060,6 +1097,16 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   const releaseMetadataBlockBox = await releaseBlocks.nth(1).boundingBox();
   assert.ok(newsBlockBox && releaseMetadataBlockBox, "expected news and release metadata blocks to have layout boxes");
   assert.ok(newsBlockBox.y < releaseMetadataBlockBox.y, `expected News above Release metadata, got news y=${newsBlockBox.y} metadata y=${releaseMetadataBlockBox.y}`);
+
+  await page.setViewportSize({ width: 390, height: 900 });
+  await assertDashboardFitsViewport(page, "mobile");
+  const mobileReleaseBox = await releasePanel.boundingBox();
+  const mobileSystemHealthBox = await systemHealthPanel.boundingBox();
+  assert.ok(mobileReleaseBox && mobileSystemHealthBox, "expected dashboard panels to keep layout boxes on mobile");
+  assert.ok(
+    Math.abs(mobileReleaseBox.x - mobileSystemHealthBox.x) < 2,
+    `expected mobile dashboard panels to share one column, got release x=${mobileReleaseBox.x} system x=${mobileSystemHealthBox.x}`,
+  );
 
   assert.equal(await page.evaluate(() => window.location.hash), "");
   assert.deepEqual(pageErrors, []);
