@@ -2037,6 +2037,7 @@ select {
 }
 
 .current-runs-section {
+  --workflow-run-control-height: 2.2rem;
   overflow: hidden;
 }
 
@@ -2450,19 +2451,43 @@ select {
 .run-detail-lookup {
   display: grid;
   grid-template-columns: minmax(5.5rem, 0.45fr) minmax(0, 1fr) auto;
+  align-items: stretch;
   gap: 0.4rem;
   margin-top: 0.75rem;
 }
 
-.run-detail-lookup select,
-.run-detail-lookup input {
+.current-runs-section .run-detail-lookup select,
+.current-runs-section .run-detail-lookup input,
+.current-runs-section .run-search-form select {
   min-width: 0;
-  height: 2.1rem;
+  height: var(--workflow-run-control-height);
+  margin: 0;
+  padding: 0 0.8rem;
   border: 1px solid rgba(91, 67, 37, 0.18);
   border-radius: 8px;
   background: rgba(255, 252, 246, 0.78);
   color: #3d3224;
   font-size: 0.82rem;
+  line-height: 1.2;
+}
+
+.current-runs-section .run-detail-lookup select,
+.current-runs-section .run-detail-lookup input {
+  width: 100%;
+}
+
+.current-runs-section .run-detail-lookup .subtle-button,
+.current-runs-section .run-search-form .subtle-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  height: var(--workflow-run-control-height);
+  margin: 0;
+  padding: 0 0.85rem;
+  border-radius: 8px;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .run-search-panel {
@@ -2485,18 +2510,16 @@ select {
   justify-content: space-between;
 }
 
-.run-search-form select {
-  min-width: min(100%, 14rem);
-  height: 2.1rem;
-  border: 1px solid rgba(91, 67, 37, 0.18);
-  border-radius: 8px;
-  background: rgba(255, 252, 246, 0.78);
-  color: #3d3224;
-  font-size: 0.82rem;
+.current-runs-section .run-search-form select {
+  flex: 1 1 14rem;
+  width: auto;
+  max-width: 100%;
 }
 
 .run-search-checkbox {
+  flex: 0 0 auto;
   margin: 0;
+  min-height: var(--workflow-run-control-height);
 }
 
 .run-search-results {

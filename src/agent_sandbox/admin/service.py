@@ -157,6 +157,7 @@ from agent_sandbox.repositories.orchestration_db import (
     connect_orchestration_db,
     datetime_to_storage,
     ensure_orchestration_schema,
+    json_loads_object,
 )
 from agent_sandbox.messaging.teams_auth import (
     DeviceCodeLoginSession,
@@ -833,6 +834,7 @@ SAMPLE_WORKFLOW_EXECUTION_ID = "sample:first-run:execution"
 SAMPLE_WORKFLOW_ARTIFACT_ID = "comm_0123456789abcdef0123456789abcdef"
 SAMPLE_WORKFLOW_GRAPH_ID = "sample:first-run:graph"
 SAMPLE_WORKFLOW_REVISION = "sample:first-run:revision"
+WORKFLOW_RUN_DETAIL_AUDIT_SCAN_LIMIT = 20_000
 SAMPLE_TRIGGER_NODE_ID = "sample-trigger"
 SAMPLE_AGENT_PROMPT_NODE_ID = "sample-agent-prompt"
 SAMPLE_APPROVAL_BOUNDARY_NODE_ID = "sample-approval-boundary"
@@ -13053,6 +13055,157 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             }
         return JsonTriggerEventRepository().read_events(stores["event_queue_store_path"])
 
+    def _workflow_run_detail_sqlite_records(
+        self,
+        stores: Mapping[str, Any],
+        lookup: WorkflowRunLookupPayload,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None:
+        if not self._workflow_uses_sqlite_store(stores):
+            return None
+        event_keys = {
+            value
+            for value in (lookup.run_id, lookup.event_id, lookup.trigger_event_id)
+            if value
+        }
+        trace_id = lookup.trace_id
+        if not event_keys and trace_id is None:
+            return None
+
+        db_path = Path(stores["orchestration_store_path"])
+        ensure_orchestration_schema(db_path)
+        queue_records: dict[str, Any] = {}
+        effect_records: dict[str, Any] = {}
+        gate_records: dict[str, Any] = {}
+
+        def add_payload(
+            target: dict[str, Any],
+            row: Any,
+            *,
+            key_field: str,
+        ) -> None:
+            payload = json_loads_object(row["payload_json"])
+            key = _coerce_optional_string(payload.get(key_field)) or _coerce_optional_string(
+                row[key_field]
+            )
+            if key:
+                target[key] = payload
+
+        def placeholders(values: set[str]) -> str:
+            return ", ".join("?" for _ in values)
+
+        with connect_orchestration_db(db_path) as connection:
+            if event_keys:
+                event_key_params = sorted(event_keys)
+                event_key_placeholders = placeholders(event_keys)
+                for row in connection.execute(
+                    f"""
+                    SELECT event_id, payload_json
+                    FROM trigger_events
+                    WHERE event_id IN ({event_key_placeholders})
+                    ORDER BY occurred_at ASC, event_id ASC
+                    """,
+                    event_key_params,
+                ):
+                    add_payload(queue_records, row, key_field="event_id")
+                for row in connection.execute(
+                    f"""
+                    SELECT execution_id, payload_json
+                    FROM effect_executions
+                    WHERE event_id IN ({event_key_placeholders})
+                    ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
+                    """,
+                    event_key_params,
+                ):
+                    add_payload(effect_records, row, key_field="execution_id")
+                for row in connection.execute(
+                    f"""
+                    SELECT execution_id, payload_json
+                    FROM gate_executions
+                    WHERE event_id IN ({event_key_placeholders})
+                    ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
+                    """,
+                    event_key_params,
+                ):
+                    add_payload(gate_records, row, key_field="execution_id")
+
+            if trace_id is not None:
+                for row in connection.execute(
+                    """
+                    SELECT event_id, payload_json
+                    FROM trigger_events
+                    WHERE trace_id = ?
+                    ORDER BY occurred_at ASC, event_id ASC
+                    """,
+                    (trace_id,),
+                ):
+                    add_payload(queue_records, row, key_field="event_id")
+                for row in connection.execute(
+                    """
+                    SELECT execution_id, payload_json
+                    FROM effect_executions
+                    WHERE trace_id = ?
+                    ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
+                    """,
+                    (trace_id,),
+                ):
+                    add_payload(effect_records, row, key_field="execution_id")
+                for row in connection.execute(
+                    """
+                    SELECT execution_id, payload_json
+                    FROM gate_executions
+                    WHERE trace_id = ?
+                    ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
+                    """,
+                    (trace_id,),
+                ):
+                    add_payload(gate_records, row, key_field="execution_id")
+
+            related_event_ids = {
+                event_id
+                for record in (
+                    list(queue_records.values())
+                    + list(effect_records.values())
+                    + list(gate_records.values())
+                )
+                for event_id in [_coerce_optional_string(record.get("event_id"))]
+                if event_id
+            }
+            if trace_id is not None and related_event_ids:
+                event_id_params = sorted(related_event_ids)
+                event_id_placeholders = placeholders(related_event_ids)
+                for row in connection.execute(
+                    f"""
+                    SELECT event_id, payload_json
+                    FROM trigger_events
+                    WHERE event_id IN ({event_id_placeholders})
+                    ORDER BY occurred_at ASC, event_id ASC
+                    """,
+                    event_id_params,
+                ):
+                    add_payload(queue_records, row, key_field="event_id")
+                for row in connection.execute(
+                    f"""
+                    SELECT execution_id, payload_json
+                    FROM effect_executions
+                    WHERE event_id IN ({event_id_placeholders})
+                    ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
+                    """,
+                    event_id_params,
+                ):
+                    add_payload(effect_records, row, key_field="execution_id")
+                for row in connection.execute(
+                    f"""
+                    SELECT execution_id, payload_json
+                    FROM gate_executions
+                    WHERE event_id IN ({event_id_placeholders})
+                    ORDER BY COALESCE(finished_at, started_at) ASC, execution_id ASC
+                    """,
+                    event_id_params,
+                ):
+                    add_payload(gate_records, row, key_field="execution_id")
+
+        return queue_records, effect_records, gate_records
+
     def _workflow_config_snapshot_repository(
         self, stores: Mapping[str, Any]
     ) -> JsonWorkflowConfigSnapshotRepository | SqliteWorkflowConfigSnapshotRepository:
@@ -13940,10 +14093,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             return sample_detail
 
         stores = self._workflow_run_store_paths()
-        _, effect_store, gate_store = self._workflow_run_store_bundle(stores)
-        queue_records = self._workflow_run_event_records(stores)
-        effect_records = effect_store.read_all()
-        gate_records = gate_store.read_all()
+        sqlite_records = self._workflow_run_detail_sqlite_records(stores, lookup)
+        if sqlite_records is not None:
+            queue_records, effect_records, gate_records = sqlite_records
+        else:
+            _, effect_store, gate_store = self._workflow_run_store_bundle(stores)
+            queue_records = self._workflow_run_event_records(stores)
+            effect_records = effect_store.read_all()
+            gate_records = gate_store.read_all()
         await_agent_payload = _read_merged_json_objects(
             stores["legacy_await_agent_store_path"],
             stores["await_agent_store_path"],
@@ -14434,25 +14591,28 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         if audit_log_path.exists():
             try:
-                with audit_log_path.open(encoding="utf-8") as handle:
-                    for raw_line in handle:
-                        line = raw_line.strip()
-                        if not line:
-                            continue
-                        try:
-                            payload = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        if not isinstance(payload, dict):
-                            continue
-                        if str(payload.get("event_type") or "").strip().casefold() != "tool_call":
-                            continue
-                        entry = _tool_call_audit_entry_from_payload(payload)
-                        if entry is None:
-                            continue
-                        if not tool_call_entry_matches_selected_run(entry):
-                            continue
-                        tool_call_audit_entries.append((entry, payload))
+                scanned_lines = 0
+                for raw_line in _iter_file_lines_reverse(audit_log_path):
+                    scanned_lines += 1
+                    if scanned_lines > WORKFLOW_RUN_DETAIL_AUDIT_SCAN_LIMIT:
+                        break
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(payload, dict):
+                        continue
+                    if str(payload.get("event_type") or "").strip().casefold() != "tool_call":
+                        continue
+                    entry = _tool_call_audit_entry_from_payload(payload)
+                    if entry is None:
+                        continue
+                    if not tool_call_entry_matches_selected_run(entry):
+                        continue
+                    tool_call_audit_entries.append((entry, payload))
             except Exception:
                 tool_call_audit_entries = []
 
