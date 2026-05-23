@@ -90,6 +90,9 @@ import {
   workflowJsonFieldFallbackValue,
 } from "./workflowFieldDefaults";
 import {
+  workflowCommunicationTargetInspectorState,
+} from "./workflowCommunicationTargets";
+import {
   toolArgumentPolicyDraftRowsFromValue,
   toolArgumentPolicyDraftRowsToValue,
   type ToolArgumentPolicyConstraintDraftRow,
@@ -245,6 +248,10 @@ const SYSTEM_BINDING_OPTIONS: ReadonlyArray<BindingOption> = [
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const BINDING_EXACT_RE = /^\$\{\{([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}$/;
 const EFFECT_TARGET_KEYS = ["target", "session_id", "vm_name"] as const;
+const COMMUNICATION_EFFECT_NODE_TYPES = new Set([
+  "effect:communication:send-message",
+  "effect:notification:send",
+]);
 const SEMANTIC_SAMPLE_POINT_ID = "00000000-0000-4000-8000-000000000001";
 type EffectTargetKey = (typeof EFFECT_TARGET_KEYS)[number];
 
@@ -2561,6 +2568,12 @@ function activeEffectTargetKey(values: Record<string, unknown>): EffectTargetKey
   return "target";
 }
 
+function isCommunicationEffectNodeType(type: string | undefined): type is
+  | "effect:communication:send-message"
+  | "effect:notification:send" {
+  return COMMUNICATION_EFFECT_NODE_TYPES.has(type ?? "");
+}
+
 function isWorkflowNodeKind(value: unknown): value is WorkflowNodeKind {
   return value === "trigger" || value === "gate" || value === "effect" || value === "query";
 }
@@ -2925,6 +2938,7 @@ export default function App() {
   })();
   const effectTargetField = selectedCatalogEntry?.fields.find((field) => field.key === effectTargetKey)
     ?? selectedCatalogEntry?.fields.find((field) => field.key === "target");
+  const communicationThreadField = selectedCatalogEntry?.fields.find((field) => field.key === "thread_id");
 
   useEffect(() => {
     setWorkflowHasUnsavedChanges(hasUnsavedWorkflowChanges);
@@ -4343,6 +4357,27 @@ export default function App() {
       nextKnownValues[field.key] = currentItems;
     }
 
+    if (isCommunicationEffectNodeType(selectedNode.type)) {
+      const communicationTargetField = selectedCatalogEntry?.fields.find((field) => field.key === "communication_target_id");
+      const selectedTargetValue = typeof nextKnownValues.communication_target_id === "string"
+        ? nextKnownValues.communication_target_id
+        : "";
+      const selectedTargetOption = communicationTargetField?.options.find((option) => option.value === selectedTargetValue);
+      const threadField = selectedCatalogEntry?.fields.find((field) => field.key === "thread_id");
+      const threadMode = threadField
+        ? fieldValueMode(threadField, nextKnownValues.thread_id)
+        : "literal";
+      const communicationState = workflowCommunicationTargetInspectorState(
+        selectedNode.type,
+        selectedTargetOption,
+        nextKnownValues.thread_id,
+        threadMode,
+      );
+      if (communicationState?.validation?.blocked) {
+        throw new Error(communicationState.validation.message);
+      }
+    }
+
     return removeUndefinedValues({
       id: rawId,
       display_name: rawName,
@@ -5570,8 +5605,20 @@ export default function App() {
     const value = inspectorKnownValues[field.key];
     const mode = inspectorFieldModes[field.key] ?? fieldValueMode(field, value);
     const isDisabled = field.read_only || workflowEditLocked;
+    const selectedNodeType = selectedNode?.type;
 
     if (field.kind === "string") {
+      const communicationState = field.key === "thread_id" && isCommunicationEffectNodeType(selectedNodeType)
+        ? workflowCommunicationTargetInspectorState(
+          selectedNodeType,
+          selectedCatalogEntry?.fields.find((currentField) => currentField.key === "communication_target_id")
+            ?.options.find((option) => option.value === (typeof inspectorKnownValues.communication_target_id === "string"
+              ? inspectorKnownValues.communication_target_id
+              : "")),
+          value,
+          mode,
+        )
+        : null;
       return (
         <div key={field.key} className="inspector-field">
           <div className="field-toolbar">
@@ -5637,8 +5684,19 @@ export default function App() {
                   (nextValue) => updateKnownField(field.key, nextValue),
                   isDisabled,
                   "",
-                )
+              )
             )}
+          {field.key === "thread_id" && communicationState ? (
+            <div>
+              <p className="field-description">{communicationState.threadHelp}</p>
+              {communicationState.advisory ? (
+                <div className="callout warning-callout">{communicationState.advisory}</div>
+              ) : null}
+              {communicationState.validation ? (
+                <div className="callout error-callout">{communicationState.validation.message}</div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       );
     }
@@ -5706,6 +5764,45 @@ export default function App() {
     }
 
     if (field.kind === "enum") {
+      if (field.key === "communication_target_id" && isCommunicationEffectNodeType(selectedNodeType)) {
+        const threadField = communicationThreadField;
+        const threadValue = threadField ? inspectorKnownValues[threadField.key] : undefined;
+        const threadMode = threadField
+          ? inspectorFieldModes[threadField.key] ?? fieldValueMode(threadField, threadValue)
+          : "literal";
+        const communicationState = workflowCommunicationTargetInspectorState(
+          selectedNodeType,
+          field.options.find((option) => option.value === (typeof value === "string" ? value : "")),
+          threadValue,
+          threadMode,
+        );
+        return (
+          <label key={field.key} className="inspector-field">
+            <div className="field-toolbar">
+              {renderFieldHeader(field)}
+            </div>
+            <select
+              value={typeof value === "string" ? value : ""}
+              onChange={(event) => updateKnownField(field.key, event.target.value)}
+              disabled={isDisabled}
+            >
+              <option value="">Select</option>
+              {field.options.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            {communicationState ? (
+              <div>
+                {communicationState.targetHelp.map((line, index) => (
+                  <p className="field-description" key={`${field.key}-target-help-${index}`}>{line}</p>
+                ))}
+              </div>
+            ) : null}
+          </label>
+        );
+      }
       return (
         <label key={field.key} className="inspector-field">
           <div className="field-toolbar">
