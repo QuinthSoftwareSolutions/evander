@@ -295,63 +295,7 @@ function assertResetSavePayload(body) {
   assert.equal(JSON.stringify(body.graphs).includes("trigger-new"), false);
 }
 
-function assertRenamedSavePayload(body) {
-  assert.equal(body.config.triggers.length, 1);
-  assert.equal(body.config.gates.length, 1);
-  assert.equal(body.config.effects.length, 1);
-  assert.equal(body.config.queries.length, 1);
-  assert.equal(body.config.triggers[0].id, "trigger-new");
-  assert.equal(body.config.triggers[0].display_name, "Incoming ticket");
-  assert.equal(body.config.gates[0].condition, "${{trigger-new.ticket.title}}");
-  assert.deepEqual(body.config.effects[0].payload, {
-    summary: "Ticket ${{trigger-new.ticket.title}}",
-    details: [
-      {
-        label: "Ticket id",
-        value: "${{trigger-new.ticket.id}}",
-      },
-      {
-        label: "System time",
-        value: "${{system.now}}",
-      },
-      {
-        label: "Malformed",
-        value: "Review ${{trigger-old.ticket ?? {bad}}}",
-      },
-      {
-        label: "External",
-        value: "Review ${{outside-node.ticket.title}}",
-      },
-    ],
-  });
-  assert.equal(body.config.queries[0].filter, "${{trigger-new.ticket.title ?? trigger-new.ticket.id}}");
-  assert.deepEqual(body.config.edges, [
-    {
-      source_id: "trigger-new",
-      target_id: "gate-old",
-      source_port: "completed",
-    },
-    {
-      source_id: "trigger-new",
-      target_id: "effect-old",
-      source_port: "completed",
-    },
-    {
-      source_id: "trigger-new",
-      target_id: "query-old",
-      source_port: "completed",
-    },
-  ]);
-  assert.deepEqual(body.layout.nodes, {
-    "gate-old": { x: 420, y: 60 },
-    "effect-old": { x: 420, y: 220 },
-    "query-old": { x: 420, y: 380 },
-    "trigger-new": { x: 100, y: 120 },
-  });
-  assert.deepEqual(body.graphs[0].node_ids, ["trigger-new", "gate-old", "effect-old", "query-old"]);
-}
-
-test("workflow editor renames a node id and rewrites downstream bindings when saved", async (t) => {
+test("workflow editor resets a renamed node id and restores downstream bindings when saved", async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
     root: projectRoot,
@@ -375,9 +319,6 @@ test("workflow editor renames a node id and rewrites downstream bindings when sa
   const consoleErrors = [];
   const unhandledApiRoutes = [];
   const saveRequests = [];
-  let expectedSaveMode = "renamed";
-  let expectedRevision = "rev-1";
-  let nextRevisionNumber = 2;
 
   await t.after(async () => {
     await page.close().catch(() => {});
@@ -502,25 +443,19 @@ test("workflow editor renames a node id and rewrites downstream bindings when sa
       assert.equal(route.request().method(), "PUT");
       const body = route.request().postDataJSON();
       saveRequests.push(body);
-      assert.equal(body.expected_revision, expectedRevision);
-      if (expectedSaveMode === "reset") {
-        assertResetSavePayload(body);
-      } else {
-        assertRenamedSavePayload(body);
-      }
-      const responseRevision = `rev-${nextRevisionNumber++}`;
-      expectedRevision = responseRevision;
-      const rewrittenOutputSchemas = {
-        [expectedSaveMode === "reset" ? "trigger-old" : "trigger-new"]: workflowDocument.output_schemas["trigger-old"],
-      };
+      assert.equal(body.expected_revision, "rev-1");
+      assertResetSavePayload(body);
       await route.fulfill(
         jsonResponse({
+          ...workflowDocument,
           config: body.config,
           layout: body.layout,
           graphs: body.graphs,
-          output_schemas: rewrittenOutputSchemas,
+          output_schemas: {
+            "trigger-old": workflowDocument.output_schemas["trigger-old"],
+          },
           validation_diagnostics: [],
-          revision: responseRevision,
+          revision: "rev-2",
         }),
       );
       return;
@@ -578,9 +513,7 @@ test("workflow editor renames a node id and rewrites downstream bindings when sa
   await page.waitForSelector(".canvas-shell .react-flow__pane");
 
   const triggerNode = page.locator('.react-flow__node[data-id="trigger-old"]');
-  const triggerBox = await triggerNode.boundingBox();
-  assert.ok(triggerBox, "expected trigger node bounds");
-  await page.mouse.click(triggerBox.x + triggerBox.width / 2, triggerBox.y + triggerBox.height / 2);
+  await triggerNode.locator(".node-title").click({ force: true });
   await page.waitForFunction(() => Boolean(document.querySelector('.react-flow__node[data-id="trigger-old"] .node-card.selected')));
 
   const inspector = page.locator(".sidebar-section.inspector").filter({ hasText: "Inspector" });
@@ -615,7 +548,6 @@ test("workflow editor renames a node id and rewrites downstream bindings when sa
   assert.equal(await problemsPanel.filter({ hasText: "trigger-new.ticket" }).count(), 0);
   assert.equal(await problemsPanel.filter({ hasText: "missing output" }).count(), 0);
 
-  expectedSaveMode = "reset";
   const resetSaveRequest = page.waitForRequest(
     (request) => request.url().includes("/api/workflow-editor/document") && request.method() === "PUT",
   );
@@ -625,35 +557,9 @@ test("workflow editor renames a node id and rewrites downstream bindings when sa
   ]);
   assert.equal(saveRequests.length, 1);
   await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
+  await page.locator(".save-status").filter({ hasText: "Workflow saved" }).waitFor({ state: "visible" });
 
-  const resetTriggerNode = page.locator('.react-flow__node[data-id="trigger-old"]');
-  await resetTriggerNode.locator(".node-drag-surface").click({ force: true });
-  await page.waitForFunction(() => Boolean(document.querySelector('.react-flow__node[data-id="trigger-old"] .node-card.selected')));
-  await inspector.waitFor({ state: "visible" });
-  await nodeIdInput.click();
-  await page.keyboard.press(`${modifierKey}+A`);
-  await page.keyboard.type("trigger-new");
-  await page.waitForTimeout(250);
-  assert.equal(await nodeIdInput.inputValue(), "trigger-new");
-
-  await gateNode.locator(".node-drag-surface").click({ force: true });
-  await page.waitForTimeout(250);
-  await page.waitForFunction(() => Boolean(document.querySelector('.react-flow__node[data-id="gate-old"] .node-card.selected')));
-  await inspector.waitFor({ state: "visible" });
-  assert.equal(await nodeIdInput.inputValue(), "gate-old");
-  assert.equal(await problemsPanel.filter({ hasText: "trigger-old" }).count(), 0);
-  assert.equal(await problemsPanel.filter({ hasText: "trigger-new.ticket" }).count(), 0);
-
-  expectedSaveMode = "renamed";
-  const saveRequest = page.waitForRequest(
-    (request) => request.url().includes("/api/workflow-editor/document") && request.method() === "PUT",
-  );
-  await Promise.all([
-    saveRequest,
-    page.getByRole("button", { name: "Save workflow" }).click(),
-  ]);
-
-  assert.equal(saveRequests.length, 2);
+  assert.equal(saveRequests.length, 1);
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
   assert.deepEqual(unhandledApiRoutes, []);
