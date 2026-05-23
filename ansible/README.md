@@ -265,8 +265,8 @@ the installed Codex package into `$(Pipeline.Workspace)/host-codex`. It exports 
 `HOST_CODEX_ROOT`, installs the workflow-editor npm dependencies, and downloads Chromium into
 `$(Pipeline.Workspace)/ms-playwright`. It then runs
 `scripts/build_agent_sandbox_runner_image.sh`.
-That script writes `dist/agent-sandbox-runner.tar.manifest` beside the tarball and reuses the cached
-archive when the manifest still matches. The manifest key covers the Dockerfile text, the build
+That script writes `dist/agent-sandbox-runner.tar.manifest` beside the tarball and reuses the cached archive
+when the manifest still matches. The manifest key covers the Dockerfile text, the build
 script text, `RUNNER_IMAGE_NAME`, the resolved Codex binary path and SHA-256, the relevant Codex
 platform package identity, and the base-image policy from the Dockerfile `FROM` line. Use
 `RUNNER_FORCE_REBUILD=1 ./scripts/build_agent_sandbox_runner_image.sh` or
