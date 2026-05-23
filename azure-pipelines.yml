@@ -56,6 +56,10 @@ parameters:
     displayName: Host Codex npm package
     type: string
     default: "@openai/codex"
+  - name: forceRunnerImageRebuild
+    displayName: Force runner image rebuild
+    type: boolean
+    default: false
   - name: dotnetSdkVersion
     displayName: Worker .NET SDK version
     type: string
@@ -474,10 +478,12 @@ stages:
                     export HOST_CODEX_PLATFORM_PACKAGE
                     ./scripts/build_agent_sandbox_runner_image.sh
                     test -s dist/agent-sandbox-runner.tar
+                    test -s dist/agent-sandbox-runner.tar.manifest
                   displayName: Build container runner image archive
                   env:
                     HOST_CODEX_NPM_PACKAGE: ${{ parameters.hostCodexNpmPackage }}
                     HOST_CODEX_PLATFORM_PACKAGE: "@openai/codex-linux-x64"
+                    RUNNER_FORCE_REBUILD: ${{ parameters.forceRunnerImageRebuild }}
                     PIPELINE_WORKSPACE: $(Pipeline.Workspace)
 
                 - task: UseDotNet@2
