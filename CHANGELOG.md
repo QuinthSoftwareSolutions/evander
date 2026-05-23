@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-23 - Pending Completion Workflow Visibility
+
+- Treated `completion_pending` workflow execution records as active in admin
+  workflow-run snapshots, searches, and manual clear operations.
+- Added the pending-completion status to the workflow editor node ordering so
+  stalled completion publication remains legible in the UI.
+
 ## 2026-05-23 - Workflow Run Detail Lookup Guardrail
 
 - Changed SQLite-backed workflow run detail lookups by event or trace id to
