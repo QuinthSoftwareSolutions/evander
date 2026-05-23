@@ -90,6 +90,11 @@ import {
   workflowJsonFieldFallbackValue,
 } from "./workflowFieldDefaults";
 import {
+  declaredOutputsForNode,
+  deriveWorkflowOutputSchemas,
+  upstreamBindingOptions,
+} from "./workflowNodeOutputs";
+import {
   toolArgumentPolicyDraftRowsFromValue,
   toolArgumentPolicyDraftRowsToValue,
   type ToolArgumentPolicyConstraintDraftRow,
@@ -229,18 +234,6 @@ type WorkflowDocumentLike = {
   graphs: WorkflowGraphMetadata[];
   output_schemas?: WorkflowOutputSchemas;
 };
-
-const SYSTEM_BINDING_OPTIONS: ReadonlyArray<BindingOption> = [
-  { value: "${{system.now.utc_timestamp}}", label: "[System] now.utc_timestamp" },
-  { value: "${{system.now.utc_timestamp_compact}}", label: "[System] now.utc_timestamp_compact" },
-  { value: "${{system.now.unix_seconds}}", label: "[System] now.unix_seconds" },
-  { value: "${{system.execution.trace_id}}", label: "[System] execution.trace_id" },
-  { value: "${{system.execution.event_id}}", label: "[System] execution.event_id" },
-  { value: "${{system.execution.node_id}}", label: "[System] execution.node_id" },
-  { value: "${{system.execution.started_at}}", label: "[System] execution.started_at" },
-  { value: "${{system.execution.started_at_compact}}", label: "[System] execution.started_at_compact" },
-  { value: "${{system.unique.compact}}", label: "[System] unique.compact" },
-];
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const BINDING_EXACT_RE = /^\$\{\{([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}$/;
@@ -2052,109 +2045,6 @@ function nodeTypeDescription(entry: WorkflowEditorNodeCatalogEntry): string {
   return description || NODE_TYPE_DESCRIPTIONS[entry.type] || NODE_KIND_DESCRIPTIONS[entry.kind];
 }
 
-function directUpstreamNodeIds(config: WorkflowConfig, targetId: string): string[] {
-  return config.edges.filter((edge) => edge.target_id === targetId).map((edge) => edge.source_id);
-}
-
-function copyOutputSchema(schema: Record<string, unknown> | undefined): Record<string, unknown> {
-  return { ...(schema ?? {}) };
-}
-
-function deriveWorkflowOutputSchemas(
-  config: WorkflowConfig,
-  baseOutputSchemas: WorkflowOutputSchemas = {},
-): WorkflowOutputSchemas {
-  const nodesById = new Map(workflowNodes(config).map((node) => [node.id, node]));
-  const cache = new Map<string, Record<string, unknown>>();
-  const visiting = new Set<string>();
-
-  function resolve(nodeId: string): Record<string, unknown> {
-    const cached = cache.get(nodeId);
-    if (cached) return cached;
-    const node = nodesById.get(nodeId);
-    if (!node) return {};
-    if (visiting.has(nodeId)) {
-      const fallback = isRecord(baseOutputSchemas[nodeId]) ? baseOutputSchemas[nodeId] : undefined;
-      return copyOutputSchema(fallback);
-    }
-
-    visiting.add(nodeId);
-    let schema: Record<string, unknown>;
-    if (node.type === "gate:filter" || node.type === "gate:dedupe") {
-      schema = copyOutputSchema(resolve(directUpstreamNodeIds(config, node.id)[0] ?? ""));
-    } else if (node.type === "gate:merge") {
-      schema = mergeDeclaredOutputIntersection(
-        directUpstreamNodeIds(config, node.id).map((upstreamNodeId) => resolve(upstreamNodeId)),
-      );
-    } else if (node.type === "gate:map" && isRecord(node.template)) {
-      schema = mapTemplateOutputSchema(node.template);
-    } else {
-      const backendSchema = isRecord(baseOutputSchemas[node.id]) ? baseOutputSchemas[node.id] : undefined;
-      schema = copyOutputSchema(backendSchema ?? (isRecord(node.outputs) ? node.outputs : undefined));
-    }
-    visiting.delete(nodeId);
-    cache.set(nodeId, schema);
-    return schema;
-  }
-
-  const outputSchemas: WorkflowOutputSchemas = {};
-  for (const node of workflowNodes(config)) {
-    outputSchemas[node.id] = copyOutputSchema(resolve(node.id));
-  }
-  return outputSchemas;
-}
-
-function declaredOutputsForNode(
-  node: WorkflowNodeConfig | undefined,
-  outputSchemas: WorkflowOutputSchemas = {},
-): Record<string, unknown> {
-  if (!node) return {};
-  const schema = isRecord(outputSchemas[node.id]) ? outputSchemas[node.id] : undefined;
-  if (schema) return copyOutputSchema(schema);
-  return copyOutputSchema(isRecord(node.outputs) ? node.outputs : undefined);
-}
-
-function mapTemplateOutputSchema(template: Record<string, unknown>): Record<string, unknown> {
-  const schema: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(template)) {
-    const outputName = key.trim();
-    if (!outputName) continue;
-    schema[outputName] = inferSchemaFromTemplateValue(value);
-  }
-  return schema;
-}
-
-function inferSchemaFromTemplateValue(value: unknown): Record<string, unknown> {
-  if (typeof value === "boolean") return { type: "boolean" };
-  if (typeof value === "number") return { type: Number.isInteger(value) ? "integer" : "number" };
-  if (value === null) return { type: "null" };
-  if (typeof value === "string") return { type: "string" };
-  if (Array.isArray(value)) return { type: "array" };
-  if (isRecord(value)) return { type: "object" };
-  return { type: "object" };
-}
-
-function mergeDeclaredOutputIntersection(outputs: Record<string, unknown>[]): Record<string, unknown> {
-  if (outputs.length === 0) return {};
-  const sharedKeys = new Set(Object.keys(outputs[0]));
-  for (const current of outputs.slice(1)) {
-    for (const key of [...sharedKeys]) {
-      if (!(key in current)) {
-        sharedKeys.delete(key);
-        continue;
-      }
-      if (JSON.stringify(outputs[0][key]) !== JSON.stringify(current[key])) {
-        sharedKeys.delete(key);
-      }
-    }
-  }
-  const merged: Record<string, unknown> = {};
-  for (const key of Object.keys(outputs[0])) {
-    if (sharedKeys.has(key)) merged[key] = outputs[0][key];
-  }
-  return merged;
-}
-
 function normalizeDerivedNodeFields(
   config: WorkflowConfig,
   baseOutputSchemas: WorkflowOutputSchemas = {},
@@ -2162,7 +2052,7 @@ function normalizeDerivedNodeFields(
   const nextConfig = cloneConfig(config);
   const outputSchemas = deriveWorkflowOutputSchemas(nextConfig, baseOutputSchemas);
   for (const gate of nextConfig.gates ?? []) {
-    if (gate.type === "gate:filter") {
+    if (gate.type === "gate:filter" || gate.type === "gate:debounce") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:map") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
@@ -2182,72 +2072,6 @@ function normalizeDerivedNodeFields(
     }
   }
   return nextConfig;
-}
-
-function collectAncestorNodeIds(config: WorkflowConfig, nodeId: string): string[] {
-  const inboundByTarget = new Map<string, string[]>();
-  for (const edge of config.edges) {
-    const current = inboundByTarget.get(edge.target_id) ?? [];
-    current.push(edge.source_id);
-    inboundByTarget.set(edge.target_id, current);
-  }
-  const ordered: string[] = [];
-  const queue = [...(inboundByTarget.get(nodeId) ?? [])];
-  const seen = new Set<string>();
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    if (seen.has(current)) continue;
-    seen.add(current);
-    ordered.push(current);
-    queue.push(...(inboundByTarget.get(current) ?? []));
-  }
-  return ordered;
-}
-
-function upstreamBindingOptions(
-  config: WorkflowConfig,
-  nodeId: string,
-  outputSchemas: WorkflowOutputSchemas = deriveWorkflowOutputSchemas(config),
-): BindingOption[] {
-  const options: BindingOption[] = [...SYSTEM_BINDING_OPTIONS];
-  const seen = new Set<string>();
-  for (const option of SYSTEM_BINDING_OPTIONS) {
-    seen.add(option.label.replace(/^\[System\] /, ""));
-    seen.add(option.value);
-  }
-  for (const upstreamNodeId of collectAncestorNodeIds(config, nodeId)) {
-    const outputs = declaredOutputsForNode(nodeById(config, upstreamNodeId), outputSchemas);
-    for (const outputName of Object.keys(outputs)) {
-      for (const outputPath of flattenOutputPaths(outputName, outputs[outputName])) {
-        const ref = `${upstreamNodeId}.${outputPath}`;
-        if (seen.has(`\${{${ref}}}`)) continue;
-        seen.add(`\${{${ref}}}`);
-        options.push({ value: `\${{${ref}}}`, label: ref });
-      }
-    }
-  }
-  return options;
-}
-
-function flattenOutputPaths(prefix: string, schema: unknown): string[] {
-  const paths = [prefix];
-  if (!isRecord(schema)) return paths;
-  const schemaType = typeof schema.type === "string" ? schema.type : "";
-  if (schemaType === "object" && isRecord(schema.properties)) {
-    for (const [key, childSchema] of Object.entries(schema.properties)) {
-      const childKey = key.trim();
-      if (!childKey) continue;
-      for (const childPath of flattenOutputPaths(`${prefix}.${childKey}`, childSchema)) {
-        paths.push(childPath);
-      }
-    }
-  }
-  if (schemaType === "array" && schema.items !== undefined) {
-    for (const childPath of flattenOutputPaths(`${prefix}.0`, schema.items)) {
-      paths.push(childPath);
-    }
-  }
-  return paths;
 }
 
 function validateWorkflowBindingDiagnostics(
@@ -2277,6 +2101,26 @@ function validateWorkflowBindingDiagnostics(
     }
   }
   return diagnostics;
+}
+
+function collectAncestorNodeIds(config: WorkflowConfig, nodeId: string): string[] {
+  const inboundByTarget = new Map<string, string[]>();
+  for (const edge of config.edges) {
+    const current = inboundByTarget.get(edge.target_id) ?? [];
+    current.push(edge.source_id);
+    inboundByTarget.set(edge.target_id, current);
+  }
+  const ordered: string[] = [];
+  const queue = [...(inboundByTarget.get(nodeId) ?? [])];
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    ordered.push(current);
+    queue.push(...(inboundByTarget.get(current) ?? []));
+  }
+  return ordered;
 }
 
 function walkEditableNodeConfigValues(node: WorkflowNodeConfig): Array<[string, unknown]> {
