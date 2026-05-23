@@ -2061,6 +2061,185 @@ def test_effect_orchestrator_marks_completion_publish_failure_pending(
     assert queue_payload["event-completion-publish-failure-1"]["delivery_state"] == "inflight"
 
 
+def test_effect_orchestrator_retries_pending_completion_publish_after_restart(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Create VM",
+                    "type": "effect:vm:create",
+                    "vm_name": "vm-1",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    counting_factory = _CountingFactory({"effect-1": {"session_id": "session-123"}})
+
+    first_worker = EffectOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None
+    )  # type: ignore[arg-type]
+    first_worker._executor = _ImmediateExecutor()  # type: ignore[assignment]
+    first_worker.provider_factory = counting_factory
+    original_publish = first_worker.event_queue.publish
+
+    def publish(event: TriggerEvent, *, idempotency_key: str | None = None):
+        if event.trigger_id == "effect-1":
+            raise RuntimeError("completion publish boom")
+        return original_publish(event, idempotency_key=idempotency_key)
+
+    first_worker.event_queue.publish = publish  # type: ignore[assignment]
+    first_worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-completion-retry-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    first_worker.run_once()
+
+    execution_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    record = next(iter(execution_payload.values()))
+    assert record["status"] == "completion_pending"
+    assert record["outputs"] == {"session_id": "session-123"}
+    assert record["published_event_id"] is None
+    assert record["completion_event_enqueued_at"] is None
+    assert len(counting_factory.execute_calls) == 1
+
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    assert queue_payload["event-completion-retry-1"]["delivery_state"] == "inflight"
+    assert all(item["trigger_id"] != "effect-1" for item in queue_payload.values())
+
+    restarted_worker = EffectOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None
+    )  # type: ignore[arg-type]
+    restarted_worker._executor = _ImmediateExecutor()  # type: ignore[assignment]
+    restarted_worker.provider_factory = counting_factory
+
+    restarted_worker.run_once()
+
+    execution_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    record = next(iter(execution_payload.values()))
+    assert record["status"] == "succeeded"
+    assert record["outputs"] == {"session_id": "session-123"}
+    assert record["published_event_id"] is not None
+    assert record["completion_event_enqueued_at"] is not None
+    assert len(counting_factory.execute_calls) == 1
+
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    assert queue_payload["event-completion-retry-1"]["delivery_state"] == "delivered"
+    assert sum(1 for item in queue_payload.values() if item["trigger_id"] == "effect-1") == 1
+
+
+def test_effect_orchestrator_retries_partially_published_completion_publish_once(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Create VM",
+                    "type": "effect:vm:create",
+                    "vm_name": "vm-1",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    counting_factory = _CountingFactory({"effect-1": {"session_id": "session-123"}})
+
+    first_worker = EffectOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None
+    )  # type: ignore[arg-type]
+    first_worker._executor = _ImmediateExecutor()  # type: ignore[assignment]
+    first_worker.provider_factory = counting_factory
+    original_publish = first_worker.event_queue.publish
+
+    def publish(event: TriggerEvent, *, idempotency_key: str | None = None):
+        record = original_publish(event, idempotency_key=idempotency_key)
+        if event.trigger_id == "effect-1":
+            raise RuntimeError("completion publish boom after write")
+        return record
+
+    first_worker.event_queue.publish = publish  # type: ignore[assignment]
+    first_worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-completion-retry-2",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    first_worker.run_once()
+
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    completion_records = [
+        item
+        for item in queue_payload.values()
+        if item["idempotency_key"] == "event-completion-retry-2::effect-1"
+    ]
+    assert len(completion_records) == 1
+    assert completion_records[0]["delivery_state"] == "pending"
+
+    restarted_worker = EffectOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None
+    )  # type: ignore[arg-type]
+    restarted_worker._executor = _ImmediateExecutor()  # type: ignore[assignment]
+    restarted_worker.provider_factory = counting_factory
+
+    restarted_worker.run_once()
+
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    completion_records = [
+        item
+        for item in queue_payload.values()
+        if item["idempotency_key"] == "event-completion-retry-2::effect-1"
+    ]
+    assert len(completion_records) == 1
+    assert completion_records[0]["delivery_state"] == "delivered"
+    assert sum(1 for item in queue_payload.values() if item["trigger_id"] == "effect-1") == 1
+    assert len(counting_factory.execute_calls) == 1
+
+
 def test_effect_orchestrator_records_binding_resolution_failure_and_advances_queue(
     tmp_path: Path,
 ) -> None:

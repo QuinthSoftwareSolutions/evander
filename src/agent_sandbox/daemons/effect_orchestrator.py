@@ -454,6 +454,7 @@ class EffectOrchestratorWorker:
         _completed_count, published_count = self._reap_completed_futures()
         completion_events_published += published_count
         completion_events_published += self._run_post_completion_dispatch_hooks()
+        completion_events_published += self._retry_pending_effect_completion_publications()
 
         loop = OrchestrationLoop[
             TriggerQueueRecord,
@@ -720,6 +721,50 @@ class EffectOrchestratorWorker:
                     hook_name,
                 )
         return dispatched
+
+    def _retry_pending_effect_completion_publications(self) -> int:
+        retried = 0
+        list_executions = getattr(self.execution_store, "list_executions", None)
+        if callable(list_executions):
+            records = list(list_executions())
+        else:
+            read_all = getattr(self.execution_store, "read_all", None)
+            if not callable(read_all):
+                return 0
+            records = list(read_all().values())
+
+        for record in records:
+            if str(getattr(record, "status", "") or "").strip() != COMPLETION_PENDING_STATUS:
+                continue
+            outputs = dict(getattr(record, "outputs", {}) or {})
+            branch_port = getattr(record, "completion_event_branch_port", None)
+            try:
+                published_event_id = self._publish_completion_event_from_record(
+                    record=record,
+                    outputs=outputs,
+                    branch_port=branch_port,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Effect completion retry failed event_id=%s trace_id=%s effect_id=%s effect_type=%s",
+                    record.event_id,
+                    record.trace_id,
+                    record.effect_id,
+                    record.effect_type,
+                )
+                continue
+
+            record.status = str(
+                getattr(record, "completion_pending_status", None) or "succeeded"
+            ).strip()
+            record.outputs = outputs
+            record.published_event_id = published_event_id
+            record.completion_event_enqueued_at = datetime.now(UTC)
+            record.error = None
+            self.execution_store.record_execution(record)
+            self._update_event_delivery_state(record.event_id)
+            retried += 1
+        return retried
 
     def _run_special_event_handlers(
         self,
