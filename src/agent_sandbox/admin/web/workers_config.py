@@ -73,6 +73,7 @@ _ASSISTANT_SETTINGS_FIELDS: tuple[tuple[str, str], ...] = (
     (_ASSISTANT_SETTINGS_DOMAIN, "show_launcher_when_disabled"),
     (_ASSISTANT_SETTINGS_DOMAIN, "read_only"),
     (_ASSISTANT_SETTINGS_DOMAIN, "default_model"),
+    (_ASSISTANT_SETTINGS_DOMAIN, "workflow_generation_model"),
     (_ASSISTANT_SETTINGS_DOMAIN, "default_profile"),
     (_ASSISTANT_SETTINGS_DOMAIN, "custom_system_instructions"),
 )
@@ -105,6 +106,9 @@ _SOURCE_DOMAIN_CONFIG_FIELD_TOOLTIPS: dict[tuple[str, str], str] = {
     ),
     (_ASSISTANT_SETTINGS_DOMAIN, "default_model"): (
         "Default model used for admin web assistant conversations when no request-specific model is selected."
+    ),
+    (_ASSISTANT_SETTINGS_DOMAIN, "workflow_generation_model"): (
+        "Optional model used only for natural-language workflow graph generation."
     ),
     (_ASSISTANT_SETTINGS_DOMAIN, "default_profile"): (
         "Default assistant capability profile used to decide which admin actions the assistant may request."

@@ -68,6 +68,7 @@ class AssistantSettingsConfig(BaseModel):
     enabled: bool = False
     show_launcher_when_disabled: bool = False
     default_model: str | None = None
+    workflow_generation_model: str | None = None
     default_profile: AssistantCapabilityProfileName | None = None
     read_only: bool = True
     custom_system_instructions: str | None = None
@@ -85,7 +86,7 @@ class AssistantSettingsConfig(BaseModel):
         return payload
 
     @field_validator(
-        "default_model", "default_profile", "custom_system_instructions"
+        "default_model", "workflow_generation_model", "default_profile", "custom_system_instructions"
     )
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:

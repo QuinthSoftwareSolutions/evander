@@ -142,6 +142,9 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
           display_name: "Dispatch agent",
           type: "effect:agent",
           prompt: "Handle ticket",
+          outputs: {
+            dispatch_id: { type: "string" },
+          },
         },
       ],
       queries: [],
@@ -188,6 +191,19 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
         type: "effect:agent",
         label: "Agent",
         fields: [
+          {
+            key: "outputs",
+            label: "Outputs",
+            kind: "json",
+            required: false,
+            bindable: false,
+            read_only: true,
+            multiline: false,
+            description: "Declared outputs.",
+            placeholder: null,
+            options: [],
+            item_fields: [],
+          },
           {
             key: "prompt",
             label: "Prompt",
@@ -350,8 +366,16 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   const nodeInspector = page.locator(".sidebar-section.inspector").filter({ hasText: "Display name" });
   const displayNameInput = nodeInspector.locator(".inspector-label").filter({ hasText: "Display name" }).locator("input");
   await nodeInspector.waitFor({ state: "visible" });
+  const promptField = nodeInspector.locator(".inspector-field").filter({ hasText: "Prompt" });
+  const outputsField = nodeInspector.locator(".inspector-field").filter({ hasText: "Outputs" });
+  await outputsField.waitFor({ state: "visible" });
+  const promptFieldBox = await promptField.boundingBox();
+  const outputsFieldBox = await outputsField.boundingBox();
+  assert.ok(promptFieldBox, "expected prompt field bounds");
+  assert.ok(outputsFieldBox, "expected outputs field bounds");
+  assert.ok(outputsFieldBox.y > promptFieldBox.y, "expected Outputs to render after selected-node configuration fields");
   await displayNameInput.fill("Dispatch agent v2");
-  const promptInput = nodeInspector.locator(".inspector-field").filter({ hasText: "Prompt" }).locator("input");
+  const promptInput = promptField.locator("input");
   await promptInput.fill("Handle escalations");
 
   await assert.doesNotReject(

@@ -26,6 +26,30 @@ material. Newer entries are added incrementally as changes land.
   pending events, so completion events published during a JSON-to-SQLite rebind
   are processed before the worker swaps to the new store.
 
+## 2026-05-23 - Workflow Inspector Outputs Placement
+
+- Moved the workflow editor node `Outputs` field to the bottom of the selected-node
+  inspector so node configuration stays grouped ahead of derived output schemas.
+
+## 2026-05-23 - Workflow Graph Generator Draft Mode
+
+- Added an experimental Admin Web workflow generator mode that opens as a small
+  Workflow-tab control, drafts a blank-canvas graph from natural language through
+  the host-side OpenAI Responses API, validates the generated graph, and imports
+  accepted drafts as unsaved workflow edits.
+- Added `assistant_settings.workflow_generation_model` as an optional model
+  override for generator calls, falling back to `assistant_settings.default_model`.
+
+## 2026-05-23 - Progressive Dashboard Loading
+
+- Changed the Admin Web dashboard to update panels as their own requests settle, and kept
+  release metadata, version, news, and changelog reads out of directory-change reloads.
+
+## 2026-05-23 - Dashboard System Health Cleanup
+
+- Moved dashboard capacity, descendant-scoped agent inventory, and collapsible full worker
+  coverage into the System Health panel, with disk dials for control-plane and worker hosts.
+
 ## 2026-05-23 - Workflow Run Detail Lookup Guardrail
 
 - Changed SQLite-backed workflow run detail lookups by event or trace id to

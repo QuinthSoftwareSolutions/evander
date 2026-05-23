@@ -235,6 +235,77 @@ def test_list_agents_includes_session_only_container_worker_targets(
     assert agents[0].host["labels"] == {"role": "demo"}
 
 
+def test_list_agents_descendant_scope_includes_child_directory_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    team = service.create_directory_child("root", "team")
+    assert team.ok is True and team.data is not None
+    team_path = team.data.details.directory.path
+    child = service.create_directory_child(team_path, "child")
+    assert child.ok is True and child.data is not None
+    child_path = child.data.details.directory.path
+    expires_at = datetime.now(UTC) + timedelta(hours=1)
+
+    for session_id, directory_path in [
+        ("vm-root", "root"),
+        ("vm-team", team_path),
+        ("vm-child", child_path),
+    ]:
+        service.runtime.session_repository.upsert_session(
+            SessionManifest(
+                session_id=session_id,
+                vm_id=session_id,
+                directory_path=directory_path,
+                allowed_tools=[],
+                expires_at=expires_at,
+            )
+        )
+
+    for session_id, directory_path in [
+        ("container-root", "root"),
+        ("container-team", team_path),
+        ("container-child", child_path),
+    ]:
+        service.runtime.session_repository.upsert_session(
+            SessionManifest(
+                session_id=session_id,
+                vm_provider="container_worker_vm",
+                vm_provider_id=f"{session_id}-target",
+                directory_path=directory_path,
+                allowed_tools=[],
+                expires_at=expires_at,
+                metadata={
+                    "execution_backend": "container_worker_vm",
+                    "target_name": f"{session_id}-target",
+                },
+            )
+        )
+
+    monkeypatch.setattr(service, "list_vms", MethodType(lambda self, **kwargs: [], service))
+
+    descendant_agents = service.list_agents(
+        directory_path=team_path,
+        direct_only=False,
+        include_inactive=True,
+        reconcile_containers=False,
+    )
+    assert {agent.session_id for agent in descendant_agents} == {
+        "vm-team",
+        "vm-child",
+        "container-team",
+        "container-child",
+    }
+
+    direct_agents = service.list_agents(
+        directory_path=team_path,
+        direct_only=True,
+        include_inactive=True,
+        reconcile_containers=False,
+    )
+    assert {agent.session_id for agent in direct_agents} == {"vm-team", "container-team"}
+
+
 def test_read_session_artifact_text_routes_container_sessions_to_worker_backend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
