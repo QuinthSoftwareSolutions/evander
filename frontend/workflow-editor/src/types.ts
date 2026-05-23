@@ -91,6 +91,8 @@ export type WorkflowValidationDiagnostic = {
 export type WorkflowEditorFieldOption = {
   value: string;
   label: string;
+  description?: string | null;
+  metadata?: Record<string, unknown>;
 };
 
 export type WorkflowEditorFieldDefinition = {
