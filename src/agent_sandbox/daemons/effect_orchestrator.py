@@ -101,12 +101,35 @@ _DEFAULT_MAX_GRAPH_DEPTH = 16
 _DEFAULT_MAX_EVENTS_PER_CYCLE = 200
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
+COMPLETION_PENDING_STATUS = "completion_pending"
 WorkflowNodeDefinition = (
     TriggerDefinitionDiscriminated
     | GateDefinitionDiscriminated
     | EffectDefinitionDiscriminated
     | QueryDefinitionDiscriminated
 )
+
+
+def _record_has_pending_completion(record: Any) -> bool:
+    status = str(getattr(record, "status", "") or "").strip()
+    return status in {"running", COMPLETION_PENDING_STATUS}
+
+
+def _store_has_inflight_execution_for_event(store: Any, event_id: str) -> bool:
+    has_running = getattr(store, "has_running_execution_for_event", None)
+    if callable(has_running):
+        return bool(has_running(event_id))
+    list_executions = getattr(store, "list_executions", None)
+    if not callable(list_executions):
+        return False
+    for record in list_executions():
+        if getattr(record, "event_id", None) != event_id:
+            continue
+        if _record_has_pending_completion(record):
+            return True
+    return False
+
+
 class EffectExecutionRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -126,6 +149,8 @@ class EffectExecutionRecord(BaseModel):
     input_payload: dict[str, Any] = Field(default_factory=dict)
     outputs: dict[str, Any] = Field(default_factory=dict)
     published_event_id: str | None = None
+    completion_pending_status: str | None = None
+    completion_event_branch_port: str | None = None
     error: str | None = None
     completion_event_enqueued_at: datetime | None = None
     binding_trace: dict[str, Any] | None = None
@@ -159,6 +184,9 @@ class GateExecutionRecord(BaseModel):
     input_event_ids_by_source: dict[str, str] = Field(default_factory=dict)
     input_occurred_at_by_source: dict[str, datetime] = Field(default_factory=dict)
     published_event_id: str | None = None
+    completion_pending_status: str | None = None
+    completion_event_branch_port: str | None = None
+    completion_event_for_execution_ids: dict[str, str] | None = None
     error: str | None = None
     completion_event_enqueued_at: datetime | None = None
     binding_trace: dict[str, Any] | None = None
@@ -1254,16 +1282,9 @@ class EffectOrchestratorWorker:
         self.event_queue.mark_delivered(event_id)
 
     def _event_has_inflight_effects(self, event_id: str) -> bool:
-        has_running = getattr(self.execution_store, "has_running_execution_for_event", None)
-        if callable(has_running):
-            return bool(has_running(event_id))
-        for record in self.execution_store.list_executions():
-            if record.event_id != event_id:
-                continue
-            if record.status != "running":
-                continue
-            return True
-        return False
+        return _store_has_inflight_execution_for_event(
+            self.execution_store, event_id
+        ) or _store_has_inflight_execution_for_event(self.gate_execution_store, event_id)
 
     def _publish_completion_event_from_record(
         self,

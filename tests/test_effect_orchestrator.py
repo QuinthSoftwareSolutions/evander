@@ -24,7 +24,10 @@ from agent_sandbox.daemons.effect_orchestrator import (
     AwaitAgentPendingRecord,
     EffectOrchestratorWorker,
     ExecutionGraph,
+    GateExecutionRecord,
     JsonExecutionStore,
+    SqliteExecutionStore,
+    SqliteGateExecutionStore,
     _await_agent_pending_target,
     _matching_outbound_edges,
     build_effect_orchestrator_worker,
@@ -146,6 +149,17 @@ class _AgentPromptDispatchPortStub:
             }
         )
         return self.result
+
+
+class _DeliveryStateQueueStub:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def mark_inflight(self, event_id: str) -> None:
+        self.calls.append(("inflight", event_id))
+
+    def mark_delivered(self, event_id: str) -> None:
+        self.calls.append(("delivered", event_id))
 
 
 class _ContainerDispatchBackendStub:
@@ -320,6 +334,70 @@ def test_effect_orchestrator_uses_shared_host_lock_manager(tmp_path: Path) -> No
     worker._kernel.run_once_with_lock = lambda: sentinel  # type: ignore[method-assign]
 
     assert worker.run_once_with_lock() is sentinel
+
+
+def test_effect_orchestrator_holds_delivery_for_gate_completion_pending(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [],
+            "effects": [],
+            "gates": [],
+            "queries": [],
+            "edges": [],
+        }
+    )
+    worker = EffectOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+    queue = _DeliveryStateQueueStub()
+    worker.event_queue = queue
+
+    db_path = tmp_path / "orchestration.db"
+    gate_store = SqliteGateExecutionStore(db_path)
+    gate_record = GateExecutionRecord(
+        execution_id="gate-exec-1",
+        idempotency_key="evt-1::gate-1",
+        event_id="evt-1",
+        trace_id="trace-1",
+        source_node_id="trigger-1",
+        source_trigger_type="trigger:cron",
+        gate_id="gate-1",
+        gate_type="gate:map",
+        status="completion_pending",
+        started_at=datetime(2026, 4, 23, 12, 0, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 4, 23, 12, 0, tzinfo=timezone.utc),
+        resolved_config_hash="hash",
+        resolved_config={},
+        input_payload={},
+        outputs={},
+        inputs_by_source={},
+        input_event_ids_by_source={},
+        input_occurred_at_by_source={},
+        completion_pending_status="succeeded",
+        completion_event_branch_port="completed",
+        completion_event_for_execution_ids={"effect-1": "exec-1"},
+    )
+    gate_store.record_execution(gate_record)
+
+    worker.execution_store = SqliteExecutionStore(db_path)
+    worker.gate_execution_store = gate_store
+
+    worker._update_event_delivery_state("evt-1")
+
+    assert queue.calls == [("inflight", "evt-1")]
+
+    worker._update_event_delivery_state("evt-missing")
+
+    assert queue.calls[-1] == ("delivered", "evt-missing")
 
 
 def test_effect_orchestrator_logs_graph_revision_changes(tmp_path: Path, caplog) -> None:

@@ -457,7 +457,7 @@ class SqliteExecutionRepository(Generic[TRecord]):
                 f"""
                 SELECT 1
                 FROM {self.table_name}
-                WHERE event_id = ? AND status = 'running'
+                WHERE event_id = ? AND status IN ('running', 'completion_pending')
                 LIMIT 1
                 """,
                 (normalized_event_id,),
@@ -470,7 +470,7 @@ class SqliteExecutionRepository(Generic[TRecord]):
                 f"""
                 SELECT payload_json
                 FROM {self.table_name}
-                WHERE status IN ('running', 'waiting', 'failed')
+                WHERE status IN ('running', 'waiting', 'failed', 'completion_pending')
                   AND dismissed_at IS NULL
                 ORDER BY COALESCE(finished_at, started_at) DESC, execution_id DESC
                 """
@@ -541,7 +541,7 @@ class SqliteExecutionRepository(Generic[TRecord]):
                         self._upsert_record(connection, record)
                         updated += 1
                         continue
-                    if status not in {"running", "waiting"}:
+                    if status not in {"running", "waiting", "completion_pending"}:
                         continue
                     setattr(record, "status", "failed")
                     setattr(record, "finished_at", cleared_at)
