@@ -1,3 +1,5 @@
+import type { WorkflowConfig } from "./types";
+
 const BINDING_REFERENCE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
 
 export type ParsedBindingReference = {
@@ -53,6 +55,20 @@ export function rewriteWorkflowNodeConfigBindings<T extends Record<string, unkno
     rewritten[key] = rewriteWorkflowBindingReferences(rewritten[key], nodeIdMap);
   }
   return rewritten as T;
+}
+
+export function rewriteWorkflowConfigBindingReferences(
+  config: WorkflowConfig,
+  nodeIdMap: ReadonlyMap<string, string>,
+): WorkflowConfig {
+  if (nodeIdMap.size === 0) return config;
+  return {
+    ...config,
+    triggers: config.triggers.map((node) => rewriteWorkflowNodeConfigBindings(node, nodeIdMap)),
+    gates: config.gates.map((node) => rewriteWorkflowNodeConfigBindings(node, nodeIdMap)),
+    effects: config.effects.map((node) => rewriteWorkflowNodeConfigBindings(node, nodeIdMap)),
+    queries: config.queries.map((node) => rewriteWorkflowNodeConfigBindings(node, nodeIdMap)),
+  };
 }
 
 export function rewriteWorkflowBindingReferences(
