@@ -302,6 +302,9 @@ CONFIG_FIELD_TOOLTIPS: dict[str, str] = {
     "default_model": (
         "Default agent model for sessions in this directory when no per-session model override is set."
     ),
+    "workflow_generation_model": (
+        "Optional model used by the Workflow tab natural-language graph generator."
+    ),
     "pr_template_markdown": (
         "Markdown boilerplate prepended to automated PR descriptions for this directory."
     ),

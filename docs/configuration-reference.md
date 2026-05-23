@@ -816,6 +816,7 @@ Storage paths:
 |---|---|---|
 | `runtime/directories.json` (or `directories_store_path`) | Directory tree metadata, canonical ownership, configured domains | `src/agent_sandbox/directories.py`, `src/agent_sandbox/admin/directory.py`, `src/agent_sandbox/ownership.py` |
 | `runtime/directory-config/root/.../<domain>.json` | Raw per-domain overlay payloads for directories listed in `directories.json` metadata | `src/agent_sandbox/directory_config.py` |
+| `runtime/assistant-settings.json` | Admin assistant and workflow generation settings | Admin Web Chat and Workflow generator |
 | `runtime/communication-targets.db` | SQLite-backed communication target overlays keyed by directory and target ID | `src/agent_sandbox/messaging/targets.py`, Admin Web Configuration -> Communications, workflow notification/message effects |
 
 Supported directory config domains:
@@ -832,6 +833,14 @@ Supported directory config domains:
 | `pr-template.json` | Directory-scoped markdown boilerplate prepended to automated PR bodies | `pr_template_markdown` |
 | `vm.json` | Guest-facing relay/network defaults | `bind_network_cidr`, `gateway_url`, OpenAI relay host/port, NuGet relay host/port, HTTP target relay host/port |
 | `communication_targets` (SQLite) | Directory-scoped communication targets inherited by target ID | `targets` entries with `id`, `provider`, `kind`, `address`, `policy.capabilities`, optional `policy.auth_profile_ref`, or `disabled: true` for inherited target removal |
+
+Assistant settings fields:
+
+| Field | Purpose |
+|---|---|
+| `default_model` | Default model for the Admin assistant and fallback model for workflow generation. |
+| `workflow_generation_model` | Optional model used only by the Workflow tab natural-language graph generator. |
+| `enabled`, `show_launcher_when_disabled`, `default_profile`, `read_only`, `custom_system_instructions` | Admin assistant launch, capability, and prompt controls. |
 
 Merge behavior in `src/agent_sandbox/directory_config.py`:
 

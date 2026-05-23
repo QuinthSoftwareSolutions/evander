@@ -1,8 +1,9 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type MutableRefObject, type ReactNode } from "react";
 
 import { ApiError, fetchJson, formatRelativeSeconds, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
 import { DownloadIcon } from "../admin/PageActionIcons";
+import { Tooltip } from "../admin/Tooltip";
 import type { AgentBackend } from "../admin/types";
 import { adminHash, type AdminHashParamValue, type AdminTab } from "../../adminRouting";
 import type { WorkflowEditorCatalog, WorkflowEditorDocument, WorkflowRunSnapshot } from "../../types";
@@ -15,10 +16,6 @@ type DashboardAdminState = {
   can_manage_users: boolean;
   privileged_operations: {
     unlocked: boolean;
-  };
-  assistant?: {
-    enabled: boolean;
-    show_launcher_when_disabled: boolean;
   };
 };
 
@@ -426,6 +423,15 @@ type DashboardState = {
   lastRefreshedAt: string | null;
 };
 
+type DashboardRemoteKey = Exclude<keyof DashboardState, "lastRefreshedAt">;
+
+type DashboardLoadTask<T> = {
+  key: DashboardRemoteKey;
+  request: (signal: AbortSignal) => Promise<T>;
+  missing?: string;
+  missingIfEmpty?: (value: T) => string | null;
+};
+
 type DashboardPillTone = "pass" | "fail" | "missing" | "running" | "idle";
 
 function createRemotePendingState<T>(): RemoteState<T> {
@@ -454,6 +460,42 @@ function createDashboardPendingState(): DashboardState {
     workflowDocument: createRemotePendingState(),
     workflowCatalog: createRemotePendingState(),
     lastRefreshedAt: null,
+  };
+}
+
+function createDirectoryDashboardPendingState(current: DashboardState): DashboardState {
+  return {
+    ...current,
+    agents: createRemotePendingState(),
+    approvals: createRemotePendingState(),
+    sessions: createRemotePendingState(),
+    toolCalls: createRemotePendingState(),
+    workflowCatalog: createRemotePendingState(),
+    lastRefreshedAt: null,
+  };
+}
+
+function createGlobalDashboardPendingState(current: DashboardState): DashboardState {
+  return {
+    ...current,
+    workers: createRemotePendingState(),
+    workflowRuns: createRemotePendingState(),
+    workflowActivity: createRemotePendingState(),
+    capacityHealth: createRemotePendingState(),
+    workflowDocument: createRemotePendingState(),
+    lastRefreshedAt: null,
+  };
+}
+
+function createReleaseInfoPendingState(current: DashboardState): DashboardState {
+  return {
+    ...current,
+    releaseInfo: {
+      ...current.releaseInfo,
+      loading: true,
+      error: null,
+      missing: null,
+    },
   };
 }
 
@@ -531,8 +573,11 @@ function hasActiveAgentStatus(status: string): boolean {
 
 function agentStatusTone(status: string): DashboardPillTone {
   const normalized = status.trim().toLowerCase();
-  if (normalized === "failed" || normalized === "error" || normalized === "stopped" || normalized === "inactive") {
+  if (normalized === "failed" || normalized === "error" || normalized === "stale" || normalized === "destroyed") {
     return "fail";
+  }
+  if (normalized === "starting" || normalized === "preparing") {
+    return "running";
   }
   if (hasActiveAgentStatus(normalized)) {
     return "pass";
@@ -639,6 +684,20 @@ function openTab(tab: AdminTab, params: Record<string, AdminHashParamValue> = {}
   window.location.hash = adminHash(tab, params);
 }
 
+function combinedStatusTone(states: RemoteState<unknown>[]): DashboardPillTone {
+  if (states.some((state) => state.error)) return "fail";
+  if (states.some((state) => state.loading)) return "running";
+  if (states.some((state) => state.missing)) return "missing";
+  return "pass";
+}
+
+function combinedStatusLabel(states: RemoteState<unknown>[]): string {
+  if (states.some((state) => state.error)) return "Error";
+  if (states.some((state) => state.loading)) return "Loading";
+  if (states.some((state) => state.missing)) return "Missing";
+  return "Live";
+}
+
 function panelTitleList(items: readonly string[]): string {
   return items.filter(Boolean).join(", ");
 }
@@ -662,6 +721,27 @@ function formatPercent(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "n/a";
   const digits = Math.abs(value) >= 10 || Number.isInteger(value) ? 0 : 1;
   return `${value.toFixed(digits)}%`;
+}
+
+function clampPercent(value: number | null | undefined): number | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.min(100, value));
+}
+
+function diskUsedPercent(disk: DiskUsageTelemetry | null | undefined): number | null {
+  if (!disk || disk.status !== "available") return null;
+  const explicit = clampPercent(disk.used_percent);
+  if (explicit != null) return explicit;
+  if (disk.total_bytes == null || disk.used_bytes == null || disk.total_bytes <= 0) return null;
+  return clampPercent((disk.used_bytes / disk.total_bytes) * 100);
+}
+
+function diskDialTone(disk: DiskUsageTelemetry | null | undefined): DashboardPillTone {
+  const usedPercent = diskUsedPercent(disk);
+  if (usedPercent == null) return "missing";
+  if (usedPercent > 80) return "fail";
+  if (usedPercent > 50) return "running";
+  return "pass";
 }
 
 function healthStateTone(health: HealthState): DashboardPillTone {
@@ -709,6 +789,22 @@ function workerDiskHealth(workers: CapacityHealthPayload["workers"]): HealthStat
   if (disks.some((disk) => disk.health === "warning")) return "warning";
   if (disks.length < workers.total_workers) return "unknown";
   return "ok";
+}
+
+function workerHostLabel(workerUrl: string): string {
+  try {
+    const parsed = new URL(workerUrl);
+    return parsed.host || workerUrl;
+  } catch {
+    return workerUrl;
+  }
+}
+
+function diskUsageDetail(disk: DiskUsageTelemetry | null | undefined): string {
+  if (!disk || disk.status !== "available") {
+    return disk?.errors[0]?.message ?? "Telemetry unavailable.";
+  }
+  return `${formatBytes(disk.used_bytes)} / ${formatBytes(disk.total_bytes)} used, ${formatBytes(disk.free_bytes)} free.`;
 }
 
 function capacitySummary(payload: CapacityHealthPayload): string {
@@ -791,6 +887,10 @@ function remoteMessage(state: RemoteState<unknown>, missingFallback: string, sum
   return summary?.trim() || missingFallback;
 }
 
+function dashboardBlockSlug(title: string): string {
+  return title.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "block";
+}
+
 function DashboardBlock({
   title,
   state,
@@ -808,8 +908,24 @@ function DashboardBlock({
 }) {
   const tone = statusTone(state);
   const showChildren = !state.loading && !state.error && !state.missing && state.data !== null;
+  if (title === "Admin state" || title === "Deployment") {
+    return null;
+  }
+  if (title === "Workers") {
+    return (
+      <DashboardCollapsibleBlock
+        title={title}
+        state={state}
+        missingFallback={missingFallback}
+        summary={summary}
+        actions={actions}
+      >
+        {children}
+      </DashboardCollapsibleBlock>
+    );
+  }
   return (
-    <section className="dashboard-block">
+    <section className={`dashboard-block dashboard-block-${dashboardBlockSlug(title)}`}>
       <div className="dashboard-block-header">
         <div className="dashboard-block-copy">
           <div className="dashboard-block-title-row">
@@ -825,6 +941,55 @@ function DashboardBlock({
       {state.error && !state.data ? <div className="callout error-callout">{state.error}</div> : null}
       {showChildren ? children : null}
     </section>
+  );
+}
+
+function DashboardCollapsibleBlock({
+  title,
+  state,
+  missingFallback,
+  summary,
+  actions,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  state: RemoteState<unknown>;
+  missingFallback: string;
+  summary?: string | null;
+  actions?: ReactNode;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  const tone = statusTone(state);
+  const showChildren = !state.loading && !state.error && !state.missing && state.data !== null;
+  return (
+    <details className={`dashboard-block dashboard-block-${dashboardBlockSlug(title)} dashboard-block-collapsible`} open={defaultOpen}>
+      <summary className="dashboard-block-summary">
+        <div className="dashboard-block-header">
+          <div className="dashboard-block-copy">
+            <div className="dashboard-block-title-row">
+              <div className="eyebrow">{title}</div>
+              <span className={`status-pill ${stateClassName(tone)}`}>{statusLabel(state)}</span>
+            </div>
+            <p style={{ margin: "0.2rem 0 0", color: "inherit" }}>{remoteMessage(state, missingFallback, summary)}</p>
+          </div>
+          <div className="dashboard-block-actions">
+            {actions}
+            <span className="dashboard-panel-expand-control dashboard-block-expand-control" aria-hidden="true">
+              <span className="dashboard-panel-expand-text-closed">+</span>
+              <span className="dashboard-panel-expand-text-open">-</span>
+            </span>
+          </div>
+        </div>
+      </summary>
+      <div className="dashboard-block-collapsible-body">
+        {state.loading && !state.data ? <div className="empty-state">Loading...</div> : null}
+        {!state.loading && !state.error && state.missing && !state.data ? <div className="empty-state">{state.missing}</div> : null}
+        {state.error && !state.data ? <div className="callout error-callout">{state.error}</div> : null}
+        {showChildren ? children : null}
+      </div>
+    </details>
   );
 }
 
@@ -952,6 +1117,10 @@ function DashboardPanel({
   children: ReactNode;
 }) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
+
+  if (eyebrow === "Agent inventory") {
+    return null;
+  }
 
   return (
     <details
@@ -1098,6 +1267,95 @@ function DashboardCompactRow({ title, meta, detail, links, statusText, statusTon
   );
 }
 
+function DashboardDiskDial({
+  label,
+  disk,
+  detail,
+}: {
+  label: string;
+  disk: DiskUsageTelemetry | null | undefined;
+  detail?: ReactNode;
+}) {
+  const usedPercent = diskUsedPercent(disk);
+  const clampedPercent = usedPercent ?? 0;
+  const tone = diskDialTone(disk);
+  const color = tone === "fail" ? "#be3144" : tone === "running" ? "#c58a1a" : tone === "pass" ? "#28885d" : "#8a99a3";
+  return (
+    <div className="dashboard-disk-card">
+      <div
+        className={`dashboard-disk-dial ${stateClassName(tone)}`}
+        style={{ background: `conic-gradient(${color} ${clampedPercent}%, rgba(32, 69, 78, 0.12) 0)` }}
+        role="img"
+        aria-label={`${label} disk usage ${formatPercent(usedPercent)}`}
+      >
+        <span>{formatPercent(usedPercent)}</span>
+      </div>
+      <div className="dashboard-disk-copy">
+        <strong>{label}</strong>
+        <span>{diskUsageDetail(disk)}</span>
+        {detail ? <span>{detail}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+function AgentTooltipContent({ agent }: { agent: AgentRecord }) {
+  return (
+    <span className="dashboard-agent-tooltip">
+      <strong>{agentDisplayLabel(agent)}</strong>
+      <span>Status: {agent.status}</span>
+      <span>Directory: {agent.directory_path}</span>
+      <span>Backend: {agent.backend}</span>
+      {agent.session_id ? <span>Session: {agent.session_id}</span> : null}
+      {agent.updated_at ? <span>Updated: {formatTimestamp(agent.updated_at)}</span> : null}
+    </span>
+  );
+}
+
+function DashboardAgentInventory({
+  agents,
+  onOpenAgent,
+}: {
+  agents: AgentRecord[];
+  onOpenAgent: (agent: AgentRecord) => void;
+}) {
+  const sortedAgents = sortedAgentInventory(agents);
+  const activeCount = countBy(agents, (agent) => hasActiveAgentStatus(agent.status));
+  const inactiveCount = agents.length - activeCount;
+  return (
+    <div className="dashboard-agent-inventory">
+      <div className="dashboard-agent-icon-grid" aria-label="Agent inventory">
+        {sortedAgents.map((agent) => {
+          const tone = agentInventoryTone(agent);
+          return (
+            <Tooltip key={`${agent.backend}:${agent.agent_id}`} content={<AgentTooltipContent agent={agent} />}>
+              <button
+                type="button"
+                className={`dashboard-agent-icon ${stateClassName(tone)}`}
+                aria-label={`Open agent ${agentDisplayLabel(agent)}`}
+                onClick={() => onOpenAgent(agent)}
+              >
+                <DashboardIcon name="agents" />
+              </button>
+            </Tooltip>
+          );
+        })}
+      </div>
+      <div className="dashboard-agent-totals">
+        <span>
+          Total <strong>{agents.length}</strong>
+        </span>
+        <span>
+          Active <strong>{activeCount}</strong>
+        </span>
+        <span>
+          Inactive <strong>{inactiveCount}</strong>
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function makeQuery(params: Record<string, string | number | boolean | null | undefined>): string {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -1122,6 +1380,38 @@ function agentSummary(items: AgentRecord[]): string {
   const active = countBy(items, (item) => hasActiveAgentStatus(item.status));
   const failed = countBy(items, (item) => agentStatusTone(item.status) === "fail");
   return `${items.length} agents, ${active} active, ${failed} flagged.`;
+}
+
+function agentInventoryTone(agent: AgentRecord): DashboardPillTone {
+  return agentStatusTone(agent.status);
+}
+
+function agentInventoryRank(agent: AgentRecord): number {
+  const tone = agentInventoryTone(agent);
+  if (tone === "pass") return 0;
+  if (tone === "running") return 1;
+  if (tone === "fail") return 2;
+  return 3;
+}
+
+function agentDisplayLabel(agent: AgentRecord): string {
+  return agent.target_name || agent.session_id || agent.agent_id;
+}
+
+function sortedAgentInventory(items: AgentRecord[]): AgentRecord[] {
+  return [...items].sort((left, right) => {
+    const byState = agentInventoryRank(left) - agentInventoryRank(right);
+    if (byState !== 0) return byState;
+    const byDirectory = left.directory_path.localeCompare(right.directory_path, undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+    if (byDirectory !== 0) return byDirectory;
+    return agentDisplayLabel(left).localeCompare(agentDisplayLabel(right), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+  });
 }
 
 function runsSummary(snapshot: WorkflowRunSnapshot): string {
@@ -1338,57 +1628,88 @@ function ProductContextPanel({
 }
 
 export function OperationsDashboard() {
-  const { selectedDirectoryPath } = useAdminUi();
+  const { selectedDirectoryPath, setSelectedDirectoryPath } = useAdminUi();
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [newsIndex, setNewsIndex] = useState(0);
   const [state, setState] = useState<DashboardState>(() => createDashboardPendingState());
 
-  useEffect(() => {
+  const directoryLoadIdRef = useRef(0);
+  const globalLoadIdRef = useRef(0);
+  const releaseLoadIdRef = useRef(0);
+
+  function startDashboardLoad(
+    loadIdRef: MutableRefObject<number>,
+    tasks: DashboardLoadTask<any>[],
+    pendingState: (current: DashboardState) => DashboardState,
+  ) {
     const controller = new AbortController();
+    const loadId = loadIdRef.current + 1;
+    loadIdRef.current = loadId;
     let cancelled = false;
+    setState(pendingState);
 
-    setState(createDashboardPendingState());
+    function isCurrentLoad() {
+      return !cancelled && !controller.signal.aborted && loadIdRef.current === loadId;
+    }
 
-    async function load() {
-      const directoryQuery = makeQuery({ directory_path: selectedDirectoryPath });
-      const dashboardCacheParams = {
-        _dashboard: "1",
-        _dashboard_refresh: refreshNonce > 0 ? refreshNonce : null,
-      };
-      const [
-        adminStateResult,
-        deploymentStatusResult,
-        workersResult,
-        agentsResult,
-        workflowRunsResult,
-        workflowActivityResult,
-        approvalsResult,
-        sessionsResult,
-        toolCallsResult,
-        capacityHealthResult,
-        releaseInfoResult,
-        workflowDocumentResult,
-        workflowCatalogResult,
-      ] =
-        await Promise.allSettled([
-          fetchJson<DashboardAdminState>(`/api/admin/state${directoryQuery}`, { credentials: "same-origin", signal: controller.signal }),
-          fetchJson<DeploymentStatus>(`/api/admin/deployment-status${makeQuery(dashboardCacheParams)}`, { signal: controller.signal }),
-          fetchJson<WorkerListResponse>(`/api/workers${makeQuery(dashboardCacheParams)}`, { signal: controller.signal }),
+    for (const task of tasks) {
+      void task
+        .request(controller.signal)
+        .then((value) => {
+          if (!isCurrentLoad()) return;
+          const result: PromiseSettledResult<any> = { status: "fulfilled", value };
+          setState(
+            (current) =>
+              ({
+                ...current,
+                [task.key]: remoteFromResult(result, task.missing ?? null, task.missingIfEmpty ?? null),
+              }) as DashboardState,
+          );
+        })
+        .catch((reason: unknown) => {
+          if (!isCurrentLoad()) return;
+          const result: PromiseSettledResult<any> = { status: "rejected", reason };
+          setState(
+            (current) =>
+              ({
+                ...current,
+                [task.key]: remoteFromResult(result, task.missing ?? null, task.missingIfEmpty ?? null),
+              }) as DashboardState,
+          );
+        });
+    }
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }
+
+  useEffect(() => {
+    const dashboardCacheParams = {
+      _dashboard: "1",
+      _dashboard_refresh: refreshNonce > 0 ? refreshNonce : null,
+    };
+    const directoryTasks: DashboardLoadTask<any>[] = [
+      {
+        key: "agents",
+        request: (signal) =>
           fetchJson<AgentListResponse>(
             `/api/admin/agents${makeQuery({
               directory_path: selectedDirectoryPath,
-              direct_only: true,
+              direct_only: false,
               include_inactive: true,
               backend: "all",
               ...dashboardCacheParams,
             })}`,
-            { signal: controller.signal },
+            { signal },
           ),
-          fetchJson<WorkflowRunSnapshot>(`/api/workflow-editor/runs${makeQuery(dashboardCacheParams)}`, { signal: controller.signal }),
-          fetchJson<WorkflowGraphActivityReport>(
-            `/api/admin/reports/workflow-graph-activity${makeQuery({ limit: 5, ...dashboardCacheParams })}`,
-            { signal: controller.signal },
-          ),
+        missing: "No agents were returned for this directory scope.",
+        missingIfEmpty: (value) => (value.items.length === 0 ? "No agents were returned for this directory scope." : null),
+      },
+      {
+        key: "approvals",
+        request: (signal) =>
           fetchJson<ApprovalIndexResponse>(
             `/api/admin/approvals${makeQuery({
               statuses: "pending",
@@ -1396,8 +1717,14 @@ export function OperationsDashboard() {
               direct_only: true,
               ...dashboardCacheParams,
             })}`,
-            { signal: controller.signal },
+            { signal },
           ),
+        missing: "No approval requests are waiting for review.",
+        missingIfEmpty: (value) => (value.health.total === 0 ? "No approval requests are waiting for review." : null),
+      },
+      {
+        key: "sessions",
+        request: (signal) =>
           fetchJson<SessionListResponse>(
             `/api/admin/sessions${makeQuery({
               include_expired: true,
@@ -1405,8 +1732,15 @@ export function OperationsDashboard() {
               direct_only: true,
               ...dashboardCacheParams,
             })}`,
-            { signal: controller.signal },
+            { signal },
           ),
+        missing: "No sessions are active or expired in the current directory scope.",
+        missingIfEmpty: (value) =>
+          value.counts.total === 0 ? "No sessions are active or expired in the current directory scope." : null,
+      },
+      {
+        key: "toolCalls",
+        request: (signal) =>
           fetchJson<ToolCallsResponse>(
             `/api/admin/tool-calls${makeQuery({
               directory_path: selectedDirectoryPath,
@@ -1414,99 +1748,130 @@ export function OperationsDashboard() {
               limit: 5,
               ...dashboardCacheParams,
             })}`,
-            { signal: controller.signal },
+            { signal },
           ),
-          fetchJson<CapacityHealthPayload>(`/api/admin/capacity-health${makeQuery(dashboardCacheParams)}`, { signal: controller.signal }),
-          fetchJson<ReleaseInfoPayload>(
-            `/api/admin/release-info${makeQuery({ ...dashboardCacheParams, news_index: newsIndex })}`,
-            { signal: controller.signal },
-          ),
-          fetchJson<WorkflowEditorDocument>(`/api/workflow-editor/document${makeQuery(dashboardCacheParams)}`, { signal: controller.signal }),
+        missing: "No tool-call audit entries were returned.",
+        missingIfEmpty: (value) => (value.items.length === 0 ? "No tool-call audit entries were returned." : null),
+      },
+      {
+        key: "workflowCatalog",
+        request: (signal) =>
           fetchJson<WorkflowEditorCatalog>(
             `/api/workflow-editor/catalog${makeQuery({ directory_path: selectedDirectoryPath, ...dashboardCacheParams })}`,
-            { signal: controller.signal },
+            { signal },
           ),
-        ]);
+        missing: "No catalog nodes are available for this directory.",
+        missingIfEmpty: (value) => (value.nodes.length === 0 ? "No catalog nodes are available for this directory." : null),
+      },
+    ];
 
-      if (cancelled) return;
-      if (releaseInfoResult.status === "fulfilled" && releaseInfoResult.value.news) {
-        setNewsIndex(releaseInfoResult.value.news.index);
+    return startDashboardLoad(directoryLoadIdRef, directoryTasks, createDirectoryDashboardPendingState);
+  }, [selectedDirectoryPath, refreshNonce]);
+
+  useEffect(() => {
+    const dashboardCacheParams = {
+      _dashboard: "1",
+      _dashboard_refresh: refreshNonce > 0 ? refreshNonce : null,
+    };
+    const globalTasks: DashboardLoadTask<any>[] = [
+      {
+        key: "workers",
+        request: (signal) => fetchJson<WorkerListResponse>(`/api/workers${makeQuery(dashboardCacheParams)}`, { signal }),
+        missing: "No workers are reporting.",
+        missingIfEmpty: (value) => (value.workers.length === 0 ? "No workers are reporting." : null),
+      },
+      {
+        key: "workflowRuns",
+        request: (signal) => fetchJson<WorkflowRunSnapshot>(`/api/workflow-editor/runs${makeQuery(dashboardCacheParams)}`, { signal }),
+        missing: "No workflow runs have been observed yet.",
+        missingIfEmpty: (value) => (value.runs.length === 0 ? "No workflow runs have been observed yet." : null),
+      },
+      {
+        key: "workflowActivity",
+        request: (signal) =>
+          fetchJson<WorkflowGraphActivityReport>(
+            `/api/admin/reports/workflow-graph-activity${makeQuery({ limit: 5, ...dashboardCacheParams })}`,
+            { signal },
+          ),
+        missing: "No workflow graph activity is available yet.",
+        missingIfEmpty: (value) => (value.graphs.length === 0 ? "No workflow graph activity is available yet." : null),
+      },
+      {
+        key: "capacityHealth",
+        request: (signal) => fetchJson<CapacityHealthPayload>(`/api/admin/capacity-health${makeQuery(dashboardCacheParams)}`, { signal }),
+      },
+      {
+        key: "workflowDocument",
+        request: (signal) => fetchJson<WorkflowEditorDocument>(`/api/workflow-editor/document${makeQuery(dashboardCacheParams)}`, { signal }),
+        missing: "No workflow document has been created yet.",
+        missingIfEmpty: (value) => (!value.config_exists && !value.layout_exists ? "No workflow document has been created yet." : null),
+      },
+    ];
+
+    return startDashboardLoad(globalLoadIdRef, globalTasks, createGlobalDashboardPendingState);
+  }, [refreshNonce]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const loadId = releaseLoadIdRef.current + 1;
+    releaseLoadIdRef.current = loadId;
+
+    setState(createReleaseInfoPendingState);
+
+    async function loadReleaseInfo() {
+      try {
+        const releaseInfo = await fetchJson<ReleaseInfoPayload>(
+          `/api/admin/release-info${makeQuery({
+            _dashboard: "1",
+            _dashboard_refresh: refreshNonce > 0 ? refreshNonce : null,
+            news_index: newsIndex,
+          })}`,
+          { signal: controller.signal },
+        );
+        if (controller.signal.aborted || releaseLoadIdRef.current !== loadId) return;
+        if (releaseInfo.news) {
+          setNewsIndex(releaseInfo.news.index);
+        }
+        setState((current) => ({
+          ...current,
+          releaseInfo: {
+            loading: false,
+            error: null,
+            missing: null,
+            data: releaseInfo,
+            updatedAt: new Date().toISOString(),
+          },
+        }));
+      } catch (reason) {
+        if (controller.signal.aborted || releaseLoadIdRef.current !== loadId) return;
+        const failure = classifyFailure(reason);
+        setState((current) => ({
+          ...current,
+          releaseInfo: {
+            loading: false,
+            error: failure.error,
+            missing: failure.error ? null : failure.missing ?? "Release metadata is not available.",
+            data: null,
+            updatedAt: new Date().toISOString(),
+          },
+        }));
       }
-      setState({
-        adminState: remoteFromResult(adminStateResult),
-        deploymentStatus: remoteFromResult(deploymentStatusResult),
-        workers: remoteFromResult(
-          workersResult,
-          "No workers are reporting.",
-          (value) => (value.workers.length === 0 ? "No workers are reporting." : null),
-        ),
-        agents: remoteFromResult(
-          agentsResult,
-          "No agents were returned for this directory scope.",
-          (value) => (value.items.length === 0 ? "No agents were returned for this directory scope." : null),
-        ),
-        workflowRuns: remoteFromResult(
-          workflowRunsResult,
-          "No workflow runs have been observed yet.",
-          (value) => (value.runs.length === 0 ? "No workflow runs have been observed yet." : null),
-        ),
-        workflowActivity: remoteFromResult(
-          workflowActivityResult,
-          "No workflow graph activity is available yet.",
-          (value) => (value.graphs.length === 0 ? "No workflow graph activity is available yet." : null),
-        ),
-        approvals: remoteFromResult(
-          approvalsResult,
-          "No approval requests are waiting for review.",
-          (value) => (value.health.total === 0 ? "No approval requests are waiting for review." : null),
-        ),
-        sessions: remoteFromResult(
-          sessionsResult,
-          "No sessions are active or expired in the current directory scope.",
-          (value) => (value.counts.total === 0 ? "No sessions are active or expired in the current directory scope." : null),
-        ),
-        toolCalls: remoteFromResult(
-          toolCallsResult,
-          "No tool-call audit entries were returned.",
-          (value) => (value.items.length === 0 ? "No tool-call audit entries were returned." : null),
-        ),
-        capacityHealth: remoteFromResult(capacityHealthResult),
-        releaseInfo: remoteFromResult(releaseInfoResult),
-        workflowDocument: remoteFromResult(
-          workflowDocumentResult,
-          "No workflow document has been created yet.",
-          (value) => (!value.config_exists && !value.layout_exists ? "No workflow document has been created yet." : null),
-        ),
-        workflowCatalog: remoteFromResult(
-          workflowCatalogResult,
-          "No catalog nodes are available for this directory.",
-          (value) => (value.nodes.length === 0 ? "No catalog nodes are available for this directory." : null),
-        ),
-        lastRefreshedAt: new Date().toISOString(),
-      });
     }
 
-    void load();
+    void loadReleaseInfo();
     return () => {
-      cancelled = true;
       controller.abort();
     };
-  }, [selectedDirectoryPath, refreshNonce]);
+  }, [refreshNonce]);
 
   async function loadNewsEntry(targetIndex: number) {
     if (targetIndex < 0) {
       return;
     }
+    const loadId = releaseLoadIdRef.current + 1;
+    releaseLoadIdRef.current = loadId;
     setNewsIndex(targetIndex);
-    setState((current) => ({
-      ...current,
-      releaseInfo: {
-        ...current.releaseInfo,
-        loading: true,
-        error: null,
-        missing: null,
-      },
-    }));
+    setState(createReleaseInfoPendingState);
 
     try {
       const releaseInfo = await fetchJson<ReleaseInfoPayload>(
@@ -1516,6 +1881,7 @@ export function OperationsDashboard() {
           news_index: targetIndex,
         })}`,
       );
+      if (releaseLoadIdRef.current !== loadId) return;
       setNewsIndex(releaseInfo.news?.index ?? targetIndex);
       setState((current) => ({
         ...current,
@@ -1528,6 +1894,7 @@ export function OperationsDashboard() {
         },
       }));
     } catch (reason) {
+      if (releaseLoadIdRef.current !== loadId) return;
       const failure = classifyFailure(reason);
       setState((current) => ({
         ...current,
@@ -1556,8 +1923,6 @@ export function OperationsDashboard() {
   const workflowDocument = state.workflowDocument.data;
   const workflowCatalog = state.workflowCatalog.data;
   const anyLoading =
-    state.adminState.loading ||
-    state.deploymentStatus.loading ||
     state.workers.loading ||
     state.agents.loading ||
     state.workflowRuns.loading ||
@@ -1569,6 +1934,24 @@ export function OperationsDashboard() {
     state.releaseInfo.loading ||
     state.workflowDocument.loading ||
     state.workflowCatalog.loading;
+  const systemHealthStates = [state.capacityHealth, state.agents, state.workers];
+
+  useEffect(() => {
+    if (anyLoading) return;
+    setState((current) =>
+      current.lastRefreshedAt
+        ? current
+        : { ...current, lastRefreshedAt: new Date().toISOString() },
+    );
+  }, [anyLoading]);
+
+  function openDashboardAgent(agent: AgentRecord) {
+    setSelectedDirectoryPath(agent.directory_path || "root");
+    openTab("agents", {
+      agent_id: agent.agent_id,
+      session_id: agent.session_id,
+    });
+  }
 
   return (
     <div className="feature-page dashboard-page" style={{ display: "grid", gap: "1rem" }}>
@@ -1611,9 +1994,9 @@ export function OperationsDashboard() {
         <div className="dashboard-panel-column dashboard-panel-column-secondary">
           <DashboardPanel
             eyebrow="System health"
-            title="Control-plane status"
-            statusClassName={stateClassName(statusTone(state.adminState))}
-            statusLabel={statusLabel(state.adminState)}
+            title="Capacity and execution"
+            statusClassName={stateClassName(combinedStatusTone(systemHealthStates))}
+            statusLabel={combinedStatusLabel(systemHealthStates)}
           >
             <DashboardBlock
               title="Admin state"
@@ -1713,7 +2096,7 @@ export function OperationsDashboard() {
                     ]}
                   />
                   <DashboardCompactRows>
-                    {workers.slice(0, 3).map((worker) => {
+                    {workers.map((worker) => {
                       const metadata = worker.description ?? worker.unit;
                       const detailParts = [worker.unit, worker.main_pid == null ? null : `PID ${worker.main_pid}`, worker.detail].filter(
                         (part): part is string => Boolean(part),
@@ -1742,6 +2125,28 @@ export function OperationsDashboard() {
             >
               {capacityHealth ? (
                 <div style={{ display: "grid", gap: "0.55rem" }}>
+                  <div className="dashboard-disk-grid">
+                    <DashboardDiskDial
+                      label="Control plane"
+                      disk={capacityHealth.control_plane.disk}
+                      detail={`Known storage ${formatBytes(capacityHealth.control_plane.storage.total.size_bytes)}.`}
+                    />
+                    {capacityHealth.workers.entries.length > 0 ? (
+                      capacityHealth.workers.entries.map((entry) => (
+                        <DashboardDiskDial
+                          key={entry.worker_url}
+                          label={workerHostLabel(entry.worker_url)}
+                          disk={entry.telemetry?.disk?.worker_root ?? null}
+                          detail={panelTitleList([
+                            entry.reachable ? "Reachable" : "Unreachable",
+                            entry.directory_paths.join(", ") || "No directory scope",
+                          ])}
+                        />
+                      ))
+                    ) : (
+                      <div className="dashboard-disk-empty">No worker host disk telemetry.</div>
+                    )}
+                  </div>
                   <DashboardCompactRows>
                     <DashboardCompactRow
                       title="Disk / storage"
@@ -1805,6 +2210,16 @@ export function OperationsDashboard() {
                   />
                 </div>
               ) : null}
+            </DashboardBlock>
+
+            <DashboardBlock
+              title="Agent inventory"
+              state={state.agents}
+              missingFallback="No agents are available for the selected directory and its descendants."
+              summary={agentSummary(agents)}
+              actions={<TabButton tab="agents" label="Agents" />}
+            >
+              {agents.length > 0 ? <DashboardAgentInventory agents={agents} onOpenAgent={openDashboardAgent} /> : null}
             </DashboardBlock>
         </DashboardPanel>
 
