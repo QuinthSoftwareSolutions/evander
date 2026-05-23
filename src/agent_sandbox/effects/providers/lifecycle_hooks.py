@@ -511,6 +511,17 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
         worker: Any,
         execution_record: Any,
     ) -> None:
+        publish_or_mark_pending = getattr(
+            worker, "_publish_effect_completion_event_or_mark_pending", None
+        )
+        if callable(publish_or_mark_pending):
+            publish_or_mark_pending(
+                record=execution_record,
+                outputs=dict(execution_record.outputs),
+                branch_port=AGENT_PROMPT_STARTED_PORT,
+                pending_status="waiting",
+            )
+            return
         publish = getattr(worker, "_publish_completion_event_from_record", None)
         if not callable(publish):
             return

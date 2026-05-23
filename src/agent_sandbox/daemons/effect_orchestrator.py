@@ -755,17 +755,93 @@ class EffectOrchestratorWorker:
                 )
                 continue
 
-            record.status = str(
-                getattr(record, "completion_pending_status", None) or "succeeded"
-            ).strip()
-            record.outputs = outputs
-            record.published_event_id = published_event_id
-            record.completion_event_enqueued_at = datetime.now(UTC)
-            record.error = None
-            self.execution_store.record_execution(record)
-            self._update_event_delivery_state(record.event_id)
+            self._finalize_effect_completion_publication(
+                record=record,
+                outputs=outputs,
+                published_event_id=published_event_id,
+                finished_at=datetime.now(UTC),
+                status=str(getattr(record, "completion_pending_status", None) or "succeeded"),
+            )
             retried += 1
         return retried
+
+    def _mark_effect_completion_publication_pending(
+        self,
+        *,
+        record: EffectExecutionRecord,
+        outputs: dict[str, Any],
+        finished_at: datetime,
+        error: BaseException,
+        pending_status: str,
+        branch_port: str | None = None,
+    ) -> None:
+        record.status = COMPLETION_PENDING_STATUS
+        record.completion_pending_status = pending_status
+        record.completion_event_branch_port = branch_port
+        record.outputs = dict(outputs)
+        record.published_event_id = None
+        record.completion_event_enqueued_at = None
+        record.error = str(error)
+        record.finished_at = finished_at
+        self.execution_store.record_execution(record)
+        self._update_event_delivery_state(record.event_id)
+
+    def _publish_effect_completion_event_or_mark_pending(
+        self,
+        *,
+        record: EffectExecutionRecord,
+        outputs: dict[str, Any],
+        pending_status: str,
+        branch_port: str | None = None,
+        finished_at: datetime | None = None,
+    ) -> str | None:
+        resolved_finished_at = finished_at or datetime.now(UTC)
+        try:
+            return self._publish_completion_event_from_record(
+                record=record,
+                outputs=outputs,
+                branch_port=branch_port,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Effect completion publication failed event_id=%s trace_id=%s effect_id=%s effect_type=%s branch_port=%s",
+                record.event_id,
+                record.trace_id,
+                record.effect_id,
+                record.effect_type,
+                branch_port,
+            )
+            self._mark_effect_completion_publication_pending(
+                record=record,
+                outputs=outputs,
+                finished_at=resolved_finished_at,
+                error=exc,
+                pending_status=pending_status,
+                branch_port=branch_port,
+            )
+            return None
+
+    def _finalize_effect_completion_publication(
+        self,
+        *,
+        record: EffectExecutionRecord,
+        outputs: dict[str, Any],
+        published_event_id: str,
+        finished_at: datetime,
+        status: str = "succeeded",
+    ) -> None:
+        record.status = str(status or "succeeded").strip() or "succeeded"
+        record.outputs = dict(outputs)
+        record.published_event_id = published_event_id
+        record.completion_event_enqueued_at = finished_at
+        record.finished_at = finished_at
+        record.error = None
+        if outputs.get("success") is False:
+            message = outputs.get("message")
+            if isinstance(message, str) and message.strip():
+                record.error = message.strip()
+        self.execution_store.record_execution(record)
+        self._update_event_delivery_state(record.event_id)
 
     def _retry_pending_gate_completion_publications(self) -> int:
         retried = 0
@@ -1328,9 +1404,9 @@ class EffectOrchestratorWorker:
                     record.completion_event_enqueued_at = None
                     record.finished_at = finished_at
                     self.execution_store.record_execution(record)
-                    self._update_event_delivery_state(record.event_id)
                     if provider_class is not None:
                         provider_class.on_execution_waiting(worker=self, record=record)
+                    self._update_event_delivery_state(record.event_id)
                     continue
             except Exception as exc:  # noqa: BLE001
                 logger.exception(
@@ -1348,38 +1424,21 @@ class EffectOrchestratorWorker:
                 continue
 
             record.outputs = outputs
-            try:
-                published_event_id = self._publish_completion_event_from_record(
-                    record=record, outputs=outputs
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.exception(
-                    "Effect completion publication failed event_id=%s trace_id=%s effect_id=%s effect_type=%s",
-                    record.event_id,
-                    record.trace_id,
-                    record.effect_id,
-                    record.effect_type,
-                )
-                record.status = COMPLETION_PENDING_STATUS
-                record.completion_pending_status = "succeeded"
-                record.published_event_id = None
-                record.completion_event_enqueued_at = None
-                record.error = str(exc)
-                record.finished_at = finished_at
-                self.execution_store.record_execution(record)
-                self._update_event_delivery_state(record.event_id)
+            published_event_id = self._publish_effect_completion_event_or_mark_pending(
+                record=record,
+                outputs=outputs,
+                pending_status="succeeded",
+                finished_at=finished_at,
+            )
+            if published_event_id is None:
                 continue
 
-            record.status = "succeeded"
-            if outputs.get("success") is False:
-                message = outputs.get("message")
-                if isinstance(message, str) and message.strip():
-                    record.error = message.strip()
-            record.published_event_id = published_event_id
-            record.completion_event_enqueued_at = finished_at
-            record.finished_at = finished_at
-            self.execution_store.record_execution(record)
-            self._update_event_delivery_state(record.event_id)
+            self._finalize_effect_completion_publication(
+                record=record,
+                outputs=outputs,
+                published_event_id=published_event_id,
+                finished_at=finished_at,
+            )
             published_count += 1
 
         return completed_count, published_count

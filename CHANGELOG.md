@@ -5,8 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
-## 2026-05-23 - Pending Completion Workflow Visibility
+## 2026-05-23 - Retry-Safe Workflow Completion Publication
 
+- Added durable `completion_pending` effect and gate execution state so
+  completion-event enqueue failures can be retried without rerunning completed
+  providers or gate logic.
+- Preserved pending `started` branch publication for waiting agent effects so a
+  transient enqueue failure does not mark the source event delivered before the
+  branch activation is queued.
 - Treated `completion_pending` workflow execution records as active in admin
   workflow-run snapshots, searches, and manual clear operations.
 - Added the pending-completion status to the workflow editor node ordering so
