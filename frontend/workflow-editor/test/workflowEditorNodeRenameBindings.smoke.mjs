@@ -512,13 +512,29 @@ test("workflow editor resets a renamed node id and restores downstream bindings 
 
   await page.waitForSelector(".canvas-shell .react-flow__pane");
 
+  const inspector = page.locator(".sidebar-section.inspector").filter({ hasText: "Inspector" });
+  const nodeIdInput = inspector.locator(".inspector-label").filter({ hasText: "Node id" }).locator("input");
+  async function waitForInspectorNodeId(nodeId) {
+    await inspector.waitFor({ state: "visible" });
+    await page.waitForFunction(
+      (expectedNodeId) => {
+        const inspectors = Array.from(document.querySelectorAll(".sidebar-section.inspector"));
+        return inspectors.some((section) => {
+          if (!section.textContent?.includes("Inspector")) return false;
+          const labels = Array.from(section.querySelectorAll(".inspector-label"));
+          return labels.some((label) =>
+            label.textContent?.includes("Node id") &&
+            label.querySelector("input")?.value === expectedNodeId,
+          );
+        });
+      },
+      nodeId,
+    );
+  }
+
   const triggerNode = page.locator('.react-flow__node[data-id="trigger-old"]');
   await triggerNode.locator(".node-title").click({ force: true });
-  await page.waitForFunction(() => Boolean(document.querySelector('.react-flow__node[data-id="trigger-old"] .node-card.selected')));
-
-  const inspector = page.locator(".sidebar-section.inspector").filter({ hasText: "Inspector" });
-  await inspector.waitFor({ state: "visible" });
-  const nodeIdInput = inspector.locator(".inspector-label").filter({ hasText: "Node id" }).locator("input");
+  await waitForInspectorNodeId("trigger-old");
   const modifierKey = process.platform === "darwin" ? "Meta" : "Control";
   await nodeIdInput.click();
   await page.keyboard.press(`${modifierKey}+A`);
@@ -528,8 +544,7 @@ test("workflow editor resets a renamed node id and restores downstream bindings 
   assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 1);
 
   await page.getByRole("button", { name: "Reset changes" }).click();
-  await page.waitForFunction(() => Boolean(document.querySelector('.react-flow__node[data-id="trigger-old"] .node-card.selected')));
-  await page.waitForTimeout(250);
+  await waitForInspectorNodeId("trigger-old");
   assert.equal(await nodeIdInput.inputValue(), "trigger-old");
   assert.equal(await page.locator('.react-flow__node[data-id="trigger-new"]').count(), 0);
   assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 0);
@@ -538,9 +553,7 @@ test("workflow editor resets a renamed node id and restores downstream bindings 
   const gateBox = await gateNode.boundingBox();
   assert.ok(gateBox, "expected gate node bounds");
   await gateNode.locator(".node-drag-surface").click({ force: true });
-  await page.waitForTimeout(250);
-  await page.waitForFunction(() => Boolean(document.querySelector('.react-flow__node[data-id="gate-old"] .node-card.selected')));
-  await inspector.waitFor({ state: "visible" });
+  await waitForInspectorNodeId("gate-old");
   assert.equal(await nodeIdInput.inputValue(), "gate-old");
 
   const problemsPanel = inspector.locator(".problems-panel");
