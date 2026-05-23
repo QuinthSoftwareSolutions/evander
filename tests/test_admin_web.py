@@ -1063,6 +1063,20 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
                     "policy": {"capabilities": ["notify"]},
                 },
                 {
+                    "id": "root-email-notify",
+                    "provider": "email",
+                    "kind": "email",
+                    "address": "root@example.com",
+                    "policy": {"capabilities": ["notify"], "auth_profile_ref": "email.root"},
+                },
+                {
+                    "id": "root-discord-reply-only",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345681",
+                    "policy": {"capabilities": ["reply"]},
+                },
+                {
                     "id": "mail-write",
                     "provider": "email",
                     "kind": "email",
@@ -1093,6 +1107,16 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
                     "policy": {"capabilities": ["write"]},
                 },
                 {
+                    "id": "ops-email-notify",
+                    "provider": "email",
+                    "kind": "email",
+                    "address": "ops@example.com",
+                    "policy": {
+                        "capabilities": ["notify"],
+                        "auth_profile_ref": "email.ops",
+                    },
+                },
+                {
                     "id": "discord-reply-only",
                     "provider": "discord",
                     "kind": "discord",
@@ -1112,30 +1136,113 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     assert root_response.status_code == 200
     assert ops_response.status_code == 200
 
-    def send_target_options(payload: dict[str, object]) -> list[dict[str, str]]:
+    def get_node(payload: dict[str, object], node_type: str) -> dict[str, object]:
         nodes = payload["nodes"]
         assert isinstance(nodes, list)
-        node = next(
+        return next(
             candidate
             for candidate in nodes
             if isinstance(candidate, dict)
-            and candidate["type"] == "effect:communication:send-message"
+            and candidate["type"] == node_type
         )
+
+    def get_field(
+        payload: dict[str, object], node_type: str, field_key: str
+    ) -> dict[str, object]:
+        node = get_node(payload, node_type)
         field = next(
             candidate
             for candidate in node["fields"]
-            if candidate["key"] == "communication_target_id"
+            if candidate["key"] == field_key
         )
-        assert field["kind"] == "enum"
-        return field["options"]
+        return field
 
-    assert send_target_options(root_response.json()) == [
-        {"value": "root-chat", "label": "root-chat (teams, write)"}
+    def get_options(
+        payload: dict[str, object], node_type: str
+    ) -> dict[str, dict[str, object]]:
+        field = get_field(payload, node_type, "communication_target_id")
+        assert field["kind"] in {"enum", "string"}
+        options = field["options"]
+        assert isinstance(options, list)
+        return {
+            option["value"]: option
+            for option in options
+            if isinstance(option, dict) and isinstance(option.get("value"), str)
+        }
+
+    root_payload = root_response.json()
+    ops_payload = ops_response.json()
+
+    send_root = get_options(root_payload, "effect:communication:send-message")
+    send_ops = get_options(ops_payload, "effect:communication:send-message")
+    notify_root = get_options(root_payload, "effect:notification:send")
+    notify_ops = get_options(ops_payload, "effect:notification:send")
+
+    send_target_description = get_field(
+        root_payload, "effect:communication:send-message", "communication_target_id"
+    )["description"]
+    notify_target_description = get_field(
+        root_payload, "effect:notification:send", "communication_target_id"
+    )["description"]
+    send_thread_description = get_field(
+        root_payload, "effect:communication:send-message", "thread_id"
+    )["description"]
+    notify_thread_description = get_field(
+        root_payload, "effect:notification:send", "thread_id"
+    )["description"]
+
+    assert "write or reply capability" in send_target_description
+    assert "notify capability" in notify_target_description
+    assert "top-level send" in send_thread_description
+    assert "reply hint" in notify_thread_description
+
+    assert set(send_root) == {"root-chat"}
+    assert set(send_ops) == {"ops-chat", "ops-discord"}
+    assert set(notify_root) == {"root-notify", "root-email-notify"}
+    assert set(notify_ops) == {"root-notify", "root-email-notify", "ops-email-notify"}
+
+    root_chat = send_root["root-chat"]
+    assert root_chat["metadata"]["provider"] == "teams"
+    assert root_chat["metadata"]["address"] == "team/channel"
+    assert root_chat["metadata"]["target_shape"] == "teams_channel"
+    assert root_chat["metadata"]["policy_capabilities"] == ["write"]
+    assert root_chat["metadata"]["thread_id"]["top_level"]["supported"] is True
+    assert root_chat["metadata"]["thread_id"]["reply"]["supported"] is False
+    assert root_chat["metadata"]["thread_id"]["reply"]["supported_target_shapes"] == [
+        "teams_channel"
     ]
-    assert send_target_options(ops_response.json()) == [
-        {"value": "ops-chat", "label": "ops-chat (teams, reply)"},
-        {"value": "ops-discord", "label": "ops-discord (discord, write)"},
-    ]
+
+    ops_chat = send_ops["ops-chat"]
+    assert ops_chat["metadata"]["provider"] == "teams"
+    assert ops_chat["metadata"]["target_shape"] == "teams_channel"
+    assert ops_chat["metadata"]["policy_capabilities"] == ["reply"]
+    assert ops_chat["metadata"]["thread_id"]["top_level"]["supported"] is False
+    assert ops_chat["metadata"]["thread_id"]["reply"]["supported"] is True
+
+    ops_discord = send_ops["ops-discord"]
+    assert ops_discord["metadata"]["provider"] == "discord"
+    assert ops_discord["metadata"]["target_shape"] == "discord_channel"
+    assert ops_discord["metadata"]["policy_capabilities"] == ["write"]
+    assert ops_discord["metadata"]["thread_id"]["top_level"]["supported"] is True
+    assert ops_discord["metadata"]["thread_id"]["reply"]["supported"] is False
+
+    root_notify = notify_root["root-notify"]
+    assert root_notify["metadata"]["provider"] == "teams"
+    assert root_notify["metadata"]["target_shape"] == "teams_channel"
+    assert root_notify["metadata"]["policy_capabilities"] == ["notify"]
+    assert root_notify["metadata"]["thread_id"]["reply_hint"]["supported"] is True
+
+    root_email_notify = notify_root["root-email-notify"]
+    assert root_email_notify["metadata"]["provider"] == "email"
+    assert root_email_notify["metadata"]["target_shape"] == "email_recipient"
+    assert root_email_notify["metadata"]["policy_capabilities"] == ["notify"]
+    assert root_email_notify["metadata"]["thread_id"]["reply_hint"]["supported"] is False
+
+    ops_email_notify = notify_ops["ops-email-notify"]
+    assert ops_email_notify["metadata"]["provider"] == "email"
+    assert ops_email_notify["metadata"]["target_shape"] == "email_recipient"
+    assert ops_email_notify["metadata"]["policy_capabilities"] == ["notify"]
+    assert ops_email_notify["metadata"]["thread_id"]["reply_hint"]["supported"] is False
 
 
 def test_workflow_editor_default_dedupe_node_uses_supported_event_binding() -> None:

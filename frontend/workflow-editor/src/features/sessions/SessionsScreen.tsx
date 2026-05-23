@@ -1353,6 +1353,10 @@ export function SessionsScreen() {
                   {toolsStatus ? <div className="success-box">{toolsStatus}</div> : null}
                   <label className="field-stack">
                     <span>Allowed scripts</span>
+                    <p className="field-description">
+                      One script name per line or comma-separated values. Blank lines and extra spaces are
+                      trimmed, and duplicates are ignored.
+                    </p>
                     <textarea
                       rows={4}
                       value={policyDraft.allowedScriptNames}
@@ -1413,6 +1417,10 @@ export function SessionsScreen() {
                   </div>
                   <label className="field-stack">
                     <span>Communication file max bytes</span>
+                    <p className="field-description">
+                      Size in bytes. Enter a non-negative whole number; blank keeps no explicit session value and
+                      falls back to the effective policy. 0 allows only zero-byte files.
+                    </p>
                     <input
                       type="number"
                       min="0"
@@ -1425,6 +1433,11 @@ export function SessionsScreen() {
                   </label>
                   <label className="field-stack">
                     <span>Allowed MIME types</span>
+                    <p className="field-description">
+                      One MIME type per line or comma-separated values, for example <code>text/plain</code> or{" "}
+                      <code>application/pdf</code>. Blank lines and extra spaces are trimmed, and duplicates are
+                      ignored.
+                    </p>
                     <textarea
                       rows={3}
                       value={policyDraft.communicationFileAllowedMimeTypes}
@@ -1434,6 +1447,10 @@ export function SessionsScreen() {
                   </label>
                   <label className="field-stack">
                     <span>Allowed extensions</span>
+                    <p className="field-description">
+                      One suffix per line or comma-separated values, for example <code>.txt</code> or{" "}
+                      <code>.pdf</code>. Blank lines and extra spaces are trimmed, and duplicates are ignored.
+                    </p>
                     <textarea
                       rows={3}
                       value={policyDraft.communicationFileAllowedExtensions}
@@ -1443,6 +1460,11 @@ export function SessionsScreen() {
                   </label>
                   <label className="field-stack">
                     <span>Blocked extensions</span>
+                    <p className="field-description">
+                      One suffix per line or comma-separated values. Entries such as <code>.exe</code> or{" "}
+                      <code>.sh</code> are always denied, even if an allowlist is broader. Blank lines and extra
+                      spaces are trimmed, and duplicates are ignored.
+                    </p>
                     <textarea
                       rows={3}
                       value={policyDraft.communicationFileBlockedExtensions}
@@ -1452,6 +1474,11 @@ export function SessionsScreen() {
                   </label>
                   <label className="field-stack">
                     <span>Metadata JSON</span>
+                    <p className="field-description">
+                      Must be a JSON object, for example <code>{'{ "ticket": "INC-123" }'}</code>. Blank saves{" "}
+                      <code>{'{}'}</code>. Arrays, strings, numbers, and malformed JSON are rejected before the API
+                      call.
+                    </p>
                     <textarea
                       rows={8}
                       value={policyDraft.metadataJson}
