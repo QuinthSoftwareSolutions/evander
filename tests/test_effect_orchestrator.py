@@ -63,6 +63,30 @@ class _FailingProvider(_Provider):
         raise RuntimeError("provider boom")
 
 
+class _CountingProvider:
+    def __init__(
+        self,
+        output: dict[str, object],
+        execute_calls: list[dict[str, object]],
+    ) -> None:
+        self.output = output
+        self.execute_calls = execute_calls
+
+    def execute(
+        self,
+        *,
+        resolved_config=None,
+        execution_context=None,
+    ) -> dict[str, object]:
+        self.execute_calls.append(
+            {
+                "resolved_config": dict(resolved_config or {}),
+                "execution_context": dict(execution_context or {}),
+            }
+        )
+        return dict(self.output)
+
+
 class _Factory:
     def __init__(
         self,
@@ -77,6 +101,18 @@ class _Factory:
         return _Provider(
             self.outputs_by_effect_id.get(effect.id, {}),
             wait_on=self.wait_on_by_effect_id.get(effect.id),
+        )
+
+
+class _CountingFactory:
+    def __init__(self, outputs_by_effect_id: dict[str, dict[str, object]]) -> None:
+        self.outputs_by_effect_id = outputs_by_effect_id
+        self.execute_calls: list[dict[str, object]] = []
+
+    def build(self, effect):
+        return _CountingProvider(
+            self.outputs_by_effect_id.get(effect.id, {}),
+            self.execute_calls,
         )
 
 
@@ -1900,6 +1936,129 @@ def test_effect_orchestrator_retries_running_effect_after_restart(tmp_path: Path
     queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
     assert queue_payload["event-restart-1"]["delivery_state"] == "delivered"
     assert any(item["trigger_id"] == "effect-1" for item in queue_payload.values())
+
+
+def test_effect_orchestrator_marks_provider_failure_failed(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Create VM",
+                    "type": "effect:vm:create",
+                    "vm_name": "vm-1",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker._executor = _ImmediateExecutor()  # type: ignore[assignment]
+    worker.provider_factory = _FailingFactory()
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-provider-failure-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    worker.run_once()
+
+    execution_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    record = next(iter(execution_payload.values()))
+    assert record["status"] == "failed"
+    assert record["error"] == "provider boom"
+    assert record["outputs"] == {}
+
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    assert queue_payload["event-provider-failure-1"]["delivery_state"] == "delivered"
+
+
+def test_effect_orchestrator_marks_completion_publish_failure_pending(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Create VM",
+                    "type": "effect:vm:create",
+                    "vm_name": "vm-1",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker._executor = _ImmediateExecutor()  # type: ignore[assignment]
+    counting_factory = _CountingFactory({"effect-1": {"session_id": "session-123"}})
+    worker.provider_factory = counting_factory
+    original_publish = worker.event_queue.publish
+
+    def publish(event: TriggerEvent, *, idempotency_key: str | None = None):
+        if event.trigger_id == "effect-1":
+            raise RuntimeError("completion publish boom")
+        return original_publish(event, idempotency_key=idempotency_key)
+
+    worker.event_queue.publish = publish  # type: ignore[assignment]
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-completion-publish-failure-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    worker.run_once()
+
+    execution_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    record = next(iter(execution_payload.values()))
+    assert record["status"] == "completion_pending"
+    assert record["completion_pending_status"] == "succeeded"
+    assert record["outputs"] == {"session_id": "session-123"}
+    assert record["published_event_id"] is None
+    assert record["completion_event_enqueued_at"] is None
+    assert record["error"] == "completion publish boom"
+    assert len(counting_factory.execute_calls) == 1
+
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    assert queue_payload["event-completion-publish-failure-1"]["delivery_state"] == "inflight"
 
 
 def test_effect_orchestrator_records_binding_resolution_failure_and_advances_queue(
