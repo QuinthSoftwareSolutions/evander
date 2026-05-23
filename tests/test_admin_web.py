@@ -10,6 +10,8 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
 from agent_sandbox.admin.service import (
@@ -33,6 +35,7 @@ from agent_sandbox.admin.service import (
     CapacityWorkerTelemetrySummaryPayload,
 )
 from agent_sandbox.admin import release_metadata as release_metadata_module
+from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.app import _workflow_run_events, create_app
 from agent_sandbox.admin.web.shared import AdminWebConfig
 from agent_sandbox.admin.web.user_store import AdminWebUserStore
@@ -5391,6 +5394,66 @@ def test_admin_web_dashboard_requests_use_opt_in_backend_cache(
     assert capacity_refreshed.json()["workers"]["total_workers"] == 3
     assert calls == 3
     assert capacity_calls == 3
+
+
+def _dashboard_cache_request(
+    path: str = "/api/admin/agents",
+    query_string: str = "_dashboard=1&directory_path=root&direct_only=false",
+) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": path,
+            "root_path": "",
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "headers": [],
+            "query_string": query_string.encode("utf-8"),
+        }
+    )
+
+
+def test_admin_web_dashboard_cache_coalesces_concurrent_json_misses() -> None:
+    async def run_case() -> None:
+        cache = AdminWebJsonResponseCache(default_ttl_seconds=30.0)
+        calls = 0
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def factory() -> JSONResponse:
+            nonlocal calls
+            calls += 1
+            started.set()
+            await release.wait()
+            return JSONResponse({"items": [{"agent_id": f"agent-{calls}"}]})
+
+        first_task = asyncio.create_task(
+            cache.get_or_set_json(
+                _dashboard_cache_request(),
+                "admin.agents.list",
+                factory,
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        second_task = asyncio.create_task(
+            cache.get_or_set_json(
+                _dashboard_cache_request(),
+                "admin.agents.list",
+                factory,
+            )
+        )
+        await asyncio.sleep(0)
+        release.set()
+        first, second = await asyncio.gather(first_task, second_task)
+
+        assert calls == 1
+        assert first.headers["x-admin-web-cache"] == "miss"
+        assert second.headers["x-admin-web-cache"] == "hit"
+        assert json.loads(first.body) == {"items": [{"agent_id": "agent-1"}]}
+        assert json.loads(second.body) == {"items": [{"agent_id": "agent-1"}]}
+
+    asyncio.run(run_case())
 
 
 def test_admin_web_conformance_report_endpoint_returns_invalid_records(
