@@ -4,6 +4,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from agent_sandbox.admin.service import AdminService
 
 
@@ -75,3 +77,28 @@ def test_admin_service_promote_agent_branch_passes_optional_flags(
     ]
     assert result["bare_repo_path"] == "sample"
     assert result["review_branch"] == "review/custom"
+
+
+def test_admin_service_promote_agent_branch_surfaces_phase_specific_script_error(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    service = AdminService(runtime_dir)
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=1,
+            stdout="",
+            stderr="Failed to resolve fetched commit for agents/session-1/topic\n",
+        )
+
+    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.run", _fake_run)
+
+    with pytest.raises(RuntimeError, match="Failed to resolve fetched commit for agents/session-1/topic"):
+        service.promote_agent_branch(
+            host_repo_path="/trusted/repo",
+            bare_repo_path="/git-remotes/sample.git",
+            agent_branch="agents/session-1/topic",
+        )

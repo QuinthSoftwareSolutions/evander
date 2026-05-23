@@ -129,12 +129,29 @@ else
 fi
 
 FETCH_REF="refs/heads/${AGENT_BRANCH}"
-git -C "${HOST_REPO_PATH}" fetch "${REMOTE_NAME}" "${FETCH_REF}"
+PROMOTION_REF="refs/agent-sandbox/promotions/${AGENT_BRANCH}"
+
+if ! git -C "${HOST_REPO_PATH}" fetch "${REMOTE_NAME}" "+${FETCH_REF}:${PROMOTION_REF}"; then
+  echo "Failed to fetch agent branch ${AGENT_BRANCH} from ${REMOTE_NAME}" >&2
+  exit 1
+fi
+
+if ! FETCHED_COMMIT="$(git -C "${HOST_REPO_PATH}" rev-parse --verify "${PROMOTION_REF}^{commit}")"; then
+  echo "Failed to resolve fetched commit for ${AGENT_BRANCH}" >&2
+  exit 1
+fi
+
 if git -C "${HOST_REPO_PATH}" show-ref --verify --quiet "refs/heads/${REVIEW_BRANCH}"; then
-  git -C "${HOST_REPO_PATH}" switch -C "${REVIEW_BRANCH}" FETCH_HEAD >/dev/null
+  if ! git -C "${HOST_REPO_PATH}" switch -C "${REVIEW_BRANCH}" "${FETCHED_COMMIT}" >/dev/null; then
+    echo "Failed to refresh local review branch: ${REVIEW_BRANCH}" >&2
+    exit 1
+  fi
   echo "Refreshed local review branch: ${REVIEW_BRANCH}"
 else
-  git -C "${HOST_REPO_PATH}" switch -c "${REVIEW_BRANCH}" FETCH_HEAD >/dev/null
+  if ! git -C "${HOST_REPO_PATH}" switch -c "${REVIEW_BRANCH}" "${FETCHED_COMMIT}" >/dev/null; then
+    echo "Failed to create local review branch: ${REVIEW_BRANCH}" >&2
+    exit 1
+  fi
   echo "Created local review branch: ${REVIEW_BRANCH}"
 fi
 

@@ -986,6 +986,27 @@ type DashboardLink = {
   params?: Record<string, AdminHashParamValue>;
 };
 
+type DashboardMetricRowItem = {
+  label: string;
+  value: ReactNode;
+  detail?: ReactNode;
+};
+
+type DashboardMetricChipItem = {
+  label: string;
+  value: ReactNode;
+  tone?: DashboardPillTone;
+};
+
+type DashboardCompactRowProps = {
+  title: ReactNode;
+  meta?: ReactNode;
+  detail?: ReactNode;
+  links?: DashboardLink[];
+  statusText?: ReactNode;
+  statusTone?: DashboardPillTone;
+};
+
 function DashboardLinkRow({ links }: { links: DashboardLink[] }) {
   if (links.length === 0) {
     return null;
@@ -1012,6 +1033,67 @@ function DashboardLinkRow({ links }: { links: DashboardLink[] }) {
           </span>
         ),
       )}
+    </div>
+  );
+}
+
+function DashboardMetricRow({ label, value, detail }: DashboardMetricRowItem) {
+  return (
+    <div className="dashboard-metric-row">
+      <div className="dashboard-metric-label">{label}</div>
+      <div className="dashboard-metric-copy">
+        <strong className="dashboard-metric-value">{value}</strong>
+        {detail ? <div className="dashboard-metric-detail">{detail}</div> : null}
+      </div>
+    </div>
+  );
+}
+
+function DashboardMetricRows({ items, className = "" }: { items: DashboardMetricRowItem[]; className?: string }) {
+  return (
+    <div className={["dashboard-metric-list", className].filter(Boolean).join(" ")}>
+      {items.map((item, index) => (
+        <DashboardMetricRow key={`${item.label}-${index}`} {...item} />
+      ))}
+    </div>
+  );
+}
+
+function DashboardMetricChips({ items, className = "" }: { items: DashboardMetricChipItem[]; className?: string }) {
+  if (items.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className={["dashboard-chip-row", className].filter(Boolean).join(" ")}>
+      {items.map((item, index) => (
+        <span
+          key={`${item.label}-${index}`}
+          className={`status-pill ${stateClassName(item.tone ?? "idle")}`}
+          title={typeof item.value === "string" || typeof item.value === "number" ? `${item.label}: ${item.value}` : item.label}
+        >
+          <span>{item.label}</span>
+          <strong>{item.value}</strong>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function DashboardCompactRows({ children, className = "" }: { children: ReactNode; className?: string }) {
+  return <div className={["dashboard-row-list", className].filter(Boolean).join(" ")}>{children}</div>;
+}
+
+function DashboardCompactRow({ title, meta, detail, links, statusText, statusTone = "idle" }: DashboardCompactRowProps) {
+  return (
+    <div className="dashboard-row-item">
+      <div className="dashboard-row-copy">
+        <strong className="dashboard-row-title">{title}</strong>
+        {meta ? <span className="dashboard-row-meta">{meta}</span> : null}
+        {detail ? <span className="dashboard-row-detail">{detail}</span> : null}
+        {links ? <DashboardLinkRow links={links} /> : null}
+      </div>
+      {statusText ? <span className={`status-pill ${stateClassName(statusTone)}`}>{statusText}</span> : null}
     </div>
   );
 }
@@ -1103,9 +1185,6 @@ function releaseInfoSummary(releaseInfo: ReleaseInfoPayload | null): string | nu
   } else if (releaseInfo.missing_reasons.length > 0) {
     parts.push("Recent changelog unavailable");
   }
-  if (releaseInfo.news?.heading) {
-    parts.push(`News: ${releaseInfo.news.heading}`);
-  }
   return parts.join(" · ");
 }
 
@@ -1141,6 +1220,7 @@ function ProductContextPanel({
   releaseInfoState: RemoteState<ReleaseInfoPayload>;
   onLoadNewsEntry: (targetIndex: number) => void;
 }) {
+  const releaseSummary = releaseInfoSummary(releaseInfo);
   return (
     <DashboardPanel
       eyebrow="Product context"
@@ -1150,21 +1230,20 @@ function ProductContextPanel({
       statusClassName={stateClassName(releaseInfoTone(releaseInfoState))}
       statusLabel={releaseInfoStatusLabel(releaseInfoState)}
     >
-      {releaseInfo?.news ? (
-        <DashboardBlock
-          title="News"
-          state={releaseInfoState}
-          missingFallback="News is not available."
-          summary={releaseInfo.news.heading ?? "Latest update"}
-        >
-          <div className="release-news-card">
-            <div className="release-news-header">
-              <span>News</span>
-              <strong>{releaseInfo.news.heading ?? "Latest update"}</strong>
-            </div>
-            <div className="release-news-copy">
-              {releaseInfo.news.paragraphs.map((paragraph, index) => (
-                <p key={`${releaseInfo.news?.heading ?? "news"}-${index}`}>{paragraph}</p>
+      {releaseInfoState.loading && !releaseInfo ? <div className="empty-state">Loading…</div> : null}
+      {!releaseInfoState.loading && !releaseInfoState.error && releaseInfoState.missing && !releaseInfo ? (
+        <div className="empty-state">{releaseInfoState.missing}</div>
+      ) : null}
+      {releaseInfoState.error && !releaseInfo ? <div className="callout error-callout">{releaseInfoState.error}</div> : null}
+
+      {releaseInfo ? (
+        <div className="dashboard-product-context">
+          {releaseInfo.news ? (
+            <article className="release-news-entry">
+              <h3 className="release-news-title">{releaseInfo.news.heading ?? "Latest update"}</h3>
+              <div className="release-news-copy">
+                {releaseInfo.news.paragraphs.map((paragraph, index) => (
+                  <p key={`${releaseInfo.news?.heading ?? "news"}-${index}`}>{paragraph}</p>
               ))}
             </div>
             <p className="panel-meta release-news-source">
@@ -1202,71 +1281,58 @@ function ProductContextPanel({
                 }}
               >
                 <DashboardIcon name="older" />
-              </button>
-            </div>
-          </div>
-        </DashboardBlock>
-      ) : null}
+                </button>
+              </div>
+            </article>
+          ) : null}
 
-      <DashboardBlock
-        title="Release metadata"
-        state={releaseInfoState}
-        missingFallback="Release metadata is not available."
-        summary={releaseInfoSummary(releaseInfo)}
-        actions={
-          releaseInfo?.changelog ? (
-            <div className="feature-toolbar-actions icon-actions dashboard-release-actions">
-              <button type="button" aria-label="Download changelog" title="Download changelog" onClick={downloadChangelog}>
-                <DownloadIcon />
-              </button>
+          <section className="dashboard-release-secondary" aria-label="Release metadata">
+            <div className="dashboard-release-secondary-heading">
+              {releaseSummary ? (
+                <p className="panel-meta dashboard-release-summary" style={{ margin: 0 }}>
+                  {releaseSummary}
+                </p>
+              ) : null}
+              {releaseInfo.changelog ? (
+                <div className="feature-toolbar-actions icon-actions dashboard-release-actions">
+                  <button type="button" aria-label="Download changelog" title="Download changelog" onClick={downloadChangelog}>
+                    <DownloadIcon />
+                  </button>
+                </div>
+              ) : null}
             </div>
-          ) : null
-        }
-      >
-        {releaseInfo ? (
-          <div style={{ display: "grid", gap: "0.85rem" }}>
-            <p className="panel-meta dashboard-release-summary" style={{ margin: 0 }}>
-              {releaseInfoSummary(releaseInfo)}
-            </p>
-            <div className="detail-list dashboard-release-details">
-              <div>
-                <span>Version</span>
-                <strong>{releaseInfo.version ?? "Version unavailable"}</strong>
-              </div>
-              <div>
-                <span>Version source</span>
-                <strong>{releaseInfo.version_source ?? "No version source."}</strong>
-              </div>
-              <div>
-                <span>Build</span>
-                <strong>{releaseInfo.build ?? "Build unavailable"}</strong>
-              </div>
-              <div>
-                <span>Build source</span>
-                <strong>{releaseInfo.build_source ?? "No build source."}</strong>
-              </div>
-              <div>
-                <span>Changelog</span>
-                <strong>{releaseInfo.changelog ? releaseInfo.changelog.heading ?? "Recent release entries" : "Changelog unavailable"}</strong>
-              </div>
-              <div>
-                <span>Changelog source</span>
-                <strong>
-                  {releaseInfo.changelog
+            <DashboardMetricRows
+              className="dashboard-release-metadata"
+              items={[
+                {
+                  label: "Version",
+                  value: releaseInfo.version ?? "Version unavailable",
+                  detail: releaseInfo.version_source ?? "No version source.",
+                },
+                {
+                  label: "Build",
+                  value: releaseInfo.build ?? "Build unavailable",
+                  detail: releaseInfo.build_source ?? "No build source.",
+                },
+                {
+                  label: "Changelog",
+                  value: releaseInfo.changelog ? releaseInfo.changelog.heading ?? "Recent release entries" : "Changelog unavailable",
+                  detail: releaseInfo.changelog
                     ? [releaseInfo.changelog.source ?? "CHANGELOG.md", releaseInfo.changelog.path ?? null].filter(Boolean).join(" · ")
-                    : "No changelog source."}
-                </strong>
-              </div>
+                    : "No changelog source.",
+                },
+              ]}
+            />
+          </section>
+
+          {releaseInfo.missing_reasons.length > 0 ? (
+            <div className="release-missing-list">
+              <span>Missing details</span>
+              <strong>{releaseInfo.missing_reasons.join(" · ")}</strong>
             </div>
-            {releaseInfo.missing_reasons.length > 0 ? (
-              <div className="release-missing-list">
-                <span>Missing details</span>
-                <strong>{releaseInfo.missing_reasons.join(" · ")}</strong>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-      </DashboardBlock>
+          ) : null}
+        </div>
+      ) : null}
     </DashboardPanel>
   );
 }
@@ -1543,12 +1609,12 @@ export function OperationsDashboard() {
         </div>
 
         <div className="dashboard-panel-column dashboard-panel-column-secondary">
-        <DashboardPanel
-          eyebrow="System health"
-          title="Control-plane status"
-          statusClassName={stateClassName(statusTone(state.adminState))}
-          statusLabel={statusLabel(state.adminState)}
-        >
+          <DashboardPanel
+            eyebrow="System health"
+            title="Control-plane status"
+            statusClassName={stateClassName(statusTone(state.adminState))}
+            statusLabel={statusLabel(state.adminState)}
+          >
             <DashboardBlock
               title="Admin state"
               state={state.adminState}
@@ -1561,24 +1627,26 @@ export function OperationsDashboard() {
               actions={<TabButton tab="configuration" label="Configuration" />}
             >
               {adminState ? (
-                <div className="detail-list">
-                  <div>
-                    <span>Directory</span>
-                    <strong>{adminState.selected_directory_path}</strong>
-                  </div>
-                  <div>
-                    <span>Execution backend</span>
-                    <strong>{adminState.execution_backend}</strong>
-                  </div>
-                  <div>
-                    <span>Directory-scoped config</span>
-                    <strong>{adminState.directory_scoped_config_enabled ? "Enabled" : "Disabled"}</strong>
-                  </div>
-                  <div>
-                    <span>Privileges</span>
-                    <strong>{adminState.privileged_operations.unlocked ? "Unlocked" : "Locked"}</strong>
-                  </div>
-                </div>
+                <DashboardMetricRows
+                  items={[
+                    {
+                      label: "Directory",
+                      value: adminState.selected_directory_path,
+                    },
+                    {
+                      label: "Execution backend",
+                      value: adminState.execution_backend,
+                    },
+                    {
+                      label: "Directory-scoped config",
+                      value: adminState.directory_scoped_config_enabled ? "Enabled" : "Disabled",
+                    },
+                    {
+                      label: "Privileges",
+                      value: adminState.privileged_operations.unlocked ? "Unlocked" : "Locked",
+                    },
+                  ]}
+                />
               ) : null}
             </DashboardBlock>
 
@@ -1596,24 +1664,26 @@ export function OperationsDashboard() {
               actions={<TabButton tab="workers" label="Workers" />}
             >
               {deploymentStatus ? (
-                <div className="detail-list">
-                  <div>
-                    <span>Status</span>
-                    <strong>{deploymentStatus.active ? (deploymentStatus.stale ? "Active, stale" : "Active") : "Idle"}</strong>
-                  </div>
-                  <div>
-                    <span>Message</span>
-                    <strong>{deploymentStatus.message ?? "No deployment message."}</strong>
-                  </div>
-                  <div>
-                    <span>Updated</span>
-                    <strong>{formatTimestamp(deploymentStatus.updated_at ?? deploymentStatus.started_at)}</strong>
-                  </div>
-                  <div>
-                    <span>TTL</span>
-                    <strong>{detailValue(deploymentStatus.ttl_seconds)}</strong>
-                  </div>
-                </div>
+                <DashboardMetricRows
+                  items={[
+                    {
+                      label: "Status",
+                      value: deploymentStatus.active ? (deploymentStatus.stale ? "Active, stale" : "Active") : "Idle",
+                    },
+                    {
+                      label: "Message",
+                      value: deploymentStatus.message ?? "No deployment message.",
+                    },
+                    {
+                      label: "Updated",
+                      value: formatTimestamp(deploymentStatus.updated_at ?? deploymentStatus.started_at),
+                    },
+                    {
+                      label: "TTL",
+                      value: detailValue(deploymentStatus.ttl_seconds),
+                    },
+                  ]}
+                />
               ) : null}
             </DashboardBlock>
 
@@ -1626,31 +1696,40 @@ export function OperationsDashboard() {
             >
               {workers.length > 0 ? (
                 <div style={{ display: "grid", gap: "0.55rem" }}>
-                  <div className="detail-list">
-                    <div>
-                      <span>Total</span>
-                      <strong>{workers.length}</strong>
-                    </div>
-                    <div>
-                      <span>Running</span>
-                      <strong>{countBy(workers, (worker) => worker.running)}</strong>
-                    </div>
-                    <div>
-                      <span>Failed</span>
-                      <strong>{countBy(workers, (worker) => worker.failed)}</strong>
-                    </div>
-                  </div>
-                  <div style={{ display: "grid", gap: "0.4rem" }}>
-                    {workers.slice(0, 3).map((worker) => (
-                      <div key={worker.worker_id} className="node-activity-item">
-                        <div>
-                          <strong>{worker.name}</strong>
-                          <span>{worker.description ?? worker.unit}</span>
-                        </div>
-                        <span className={`status-pill ${stateClassName(workerStatusTone(worker))}`}>{worker.active_state}</span>
-                      </div>
-                    ))}
-                  </div>
+                  <DashboardMetricRows
+                    items={[
+                      {
+                        label: "Total",
+                        value: workers.length,
+                      },
+                      {
+                        label: "Running",
+                        value: countBy(workers, (worker) => worker.running),
+                      },
+                      {
+                        label: "Failed",
+                        value: countBy(workers, (worker) => worker.failed),
+                      },
+                    ]}
+                  />
+                  <DashboardCompactRows>
+                    {workers.slice(0, 3).map((worker) => {
+                      const metadata = worker.description ?? worker.unit;
+                      const detailParts = [worker.unit, worker.main_pid == null ? null : `PID ${worker.main_pid}`, worker.detail].filter(
+                        (part): part is string => Boolean(part),
+                      );
+                      return (
+                        <DashboardCompactRow
+                          key={worker.worker_id}
+                          title={worker.name}
+                          meta={metadata}
+                          detail={detailParts.length > 0 ? detailParts.join(" · ") : null}
+                          statusText={worker.active_state}
+                          statusTone={workerStatusTone(worker)}
+                        />
+                      );
+                    })}
+                  </DashboardCompactRows>
                 </div>
               ) : null}
             </DashboardBlock>
@@ -1663,87 +1742,67 @@ export function OperationsDashboard() {
             >
               {capacityHealth ? (
                 <div style={{ display: "grid", gap: "0.55rem" }}>
-                  <div className="detail-list">
-                    <div>
-                      <span>Disk used</span>
-                      <strong>
-                        {formatPercent(capacityHealth.control_plane.disk.used_percent)} ({formatBytes(capacityHealth.control_plane.disk.used_bytes)} /{" "}
-                        {formatBytes(capacityHealth.control_plane.disk.total_bytes)})
-                      </strong>
-                    </div>
-                    <div>
-                      <span>Disk free</span>
-                      <strong>
-                        {formatPercent(capacityHealth.control_plane.disk.free_percent)} ({formatBytes(capacityHealth.control_plane.disk.free_bytes)})
-                      </strong>
-                    </div>
-                    <div>
-                      <span>Known storage</span>
-                      <strong>{formatBytes(capacityHealth.control_plane.storage.total.size_bytes)}</strong>
-                    </div>
-                    <div>
-                      <span>Sessions</span>
-                      <strong>
-                        {capacityHealth.sessions.total_sessions} sessions, {capacityHealth.sessions.total_agents} agents
-                      </strong>
-                    </div>
-                    <div>
-                      <span>Session storage</span>
-                      <strong>
-                        {formatBytes(capacityHealth.sessions.storage.measured_total.size_bytes)} across{" "}
-                        {capacityHealth.sessions.storage.measured_session_count} measured
-                      </strong>
-                    </div>
-                    <div>
-                      <span>Largest session</span>
-                      <strong>{sessionStorageSampleSummary(capacityHealth.sessions.storage.largest_sessions[0])}</strong>
-                    </div>
-                    <div>
-                      <span>Workers</span>
-                      <strong>
-                        {capacityHealth.workers.reachable_workers}/{capacityHealth.workers.total_workers} reachable,{" "}
-                        {capacityHealth.workers.telemetry_available_workers} telemetry
-                      </strong>
-                    </div>
-                    <div>
-                      <span>Worker disk</span>
-                      <strong>{workerDiskSummary(capacityHealth.workers)}</strong>
-                    </div>
-                    <div>
-                      <span>Queue</span>
-                      <strong>
-                        {capacityHealth.queue.pending_count} pending, {capacityHealth.queue.inflight_count} in-flight
-                      </strong>
-                    </div>
-                    <div>
-                      <span>Oldest queue</span>
-                      <strong>{capacityHealth.queue.oldest_age_seconds == null ? "n/a" : formatRelativeSeconds(capacityHealth.queue.oldest_age_seconds)}</strong>
-                    </div>
-                    <div>
-                      <span>Prompts</span>
-                      <strong>{capacityHealth.prompts.unread_count} unread</strong>
-                    </div>
-                  </div>
-                  <div className="status-pills">
-                    <span className={`status-pill ${stateClassName(healthStateTone(capacityHealth.control_plane.disk.health))}`}>
-                      Disk {capacityHealth.control_plane.disk.health}
-                    </span>
-                    <span className={`status-pill ${stateClassName(healthStateTone(capacityHealth.control_plane.storage.total.health))}`}>
-                      Storage {capacityHealth.control_plane.storage.total.health}
-                    </span>
-                    <span className={`status-pill ${stateClassName(capacityWorkerTone(capacityHealth.workers))}`}>
-                      Workers {capacityHealth.workers.telemetry_available_workers}/{capacityHealth.workers.total_workers} telemetry
-                    </span>
-                    <span className={`status-pill ${stateClassName(healthStateTone(workerDiskHealth(capacityHealth.workers)))}`}>
-                      Worker disk {workerDiskHealth(capacityHealth.workers)}
-                    </span>
-                    <span className={`status-pill ${stateClassName(healthStateTone(capacityHealth.queue.health))}`}>
-                      Queue {capacityHealth.queue.health}
-                    </span>
-                    <span className={`status-pill ${stateClassName(healthStateTone(capacityHealth.prompts.health))}`}>
-                      Prompts {capacityHealth.prompts.health}
-                    </span>
-                  </div>
+                  <DashboardCompactRows>
+                    <DashboardCompactRow
+                      title="Disk / storage"
+                      meta={`${formatPercent(capacityHealth.control_plane.disk.used_percent)} used (${formatBytes(capacityHealth.control_plane.disk.used_bytes)} / ${formatBytes(capacityHealth.control_plane.disk.total_bytes)})`}
+                      detail={`Free ${formatPercent(capacityHealth.control_plane.disk.free_percent)} (${formatBytes(capacityHealth.control_plane.disk.free_bytes)}) · Known storage ${formatBytes(capacityHealth.control_plane.storage.total.size_bytes)}`}
+                    />
+                    <DashboardCompactRow
+                      title="Sessions / storage"
+                      meta={`${capacityHealth.sessions.total_sessions} sessions, ${capacityHealth.sessions.total_agents} agents`}
+                      detail={`${formatBytes(capacityHealth.sessions.storage.measured_total.size_bytes)} across ${capacityHealth.sessions.storage.measured_session_count} measured · Largest session ${sessionStorageSampleSummary(capacityHealth.sessions.storage.largest_sessions[0])}`}
+                    />
+                    <DashboardCompactRow
+                      title="Workers / disk"
+                      meta={`${capacityHealth.workers.reachable_workers}/${capacityHealth.workers.total_workers} reachable, ${capacityHealth.workers.telemetry_available_workers} telemetry`}
+                      detail={workerDiskSummary(capacityHealth.workers)}
+                    />
+                    <DashboardCompactRow
+                      title="Queue"
+                      meta={`${capacityHealth.queue.pending_count} pending, ${capacityHealth.queue.inflight_count} in-flight`}
+                      detail={`Oldest queue ${capacityHealth.queue.oldest_age_seconds == null ? "n/a" : formatRelativeSeconds(capacityHealth.queue.oldest_age_seconds)}`}
+                    />
+                    <DashboardCompactRow
+                      title="Prompts"
+                      meta={`${capacityHealth.prompts.unread_count} unread`}
+                      detail={`Queue health ${capacityHealth.queue.health} · Prompt health ${capacityHealth.prompts.health}`}
+                    />
+                  </DashboardCompactRows>
+                  <DashboardMetricChips
+                    items={[
+                      {
+                        label: "Disk",
+                        value: capacityHealth.control_plane.disk.health,
+                        tone: healthStateTone(capacityHealth.control_plane.disk.health),
+                      },
+                      {
+                        label: "Storage",
+                        value: capacityHealth.control_plane.storage.total.health,
+                        tone: healthStateTone(capacityHealth.control_plane.storage.total.health),
+                      },
+                      {
+                        label: "Workers",
+                        value: `${capacityHealth.workers.telemetry_available_workers}/${capacityHealth.workers.total_workers} telemetry`,
+                        tone: capacityWorkerTone(capacityHealth.workers),
+                      },
+                      {
+                        label: "Worker disk",
+                        value: workerDiskHealth(capacityHealth.workers),
+                        tone: healthStateTone(workerDiskHealth(capacityHealth.workers)),
+                      },
+                      {
+                        label: "Queue",
+                        value: capacityHealth.queue.health,
+                        tone: healthStateTone(capacityHealth.queue.health),
+                      },
+                      {
+                        label: "Prompts",
+                        value: capacityHealth.prompts.health,
+                        tone: healthStateTone(capacityHealth.prompts.health),
+                      },
+                    ]}
+                  />
                 </div>
               ) : null}
             </DashboardBlock>
@@ -1764,42 +1823,32 @@ export function OperationsDashboard() {
             >
               {agents.length > 0 ? (
                 <div style={{ display: "grid", gap: "0.55rem" }}>
-                  <div className="detail-list">
-                    <div>
-                      <span>Total</span>
-                      <strong>{agents.length}</strong>
-                    </div>
-                    <div>
-                      <span>Active</span>
-                      <strong>{countBy(agents, (agent) => hasActiveAgentStatus(agent.status))}</strong>
-                    </div>
-                    <div>
-                      <span>Inactive</span>
-                      <strong>{countBy(agents, (agent) => !hasActiveAgentStatus(agent.status))}</strong>
-                    </div>
-                    <div>
-                      <span>Backends</span>
-                      <strong>
-                        {[
+                  <DashboardMetricRows
+                    items={[
+                      { label: "Total", value: agents.length },
+                      { label: "Active", value: countBy(agents, (agent) => hasActiveAgentStatus(agent.status)) },
+                      { label: "Inactive", value: countBy(agents, (agent) => !hasActiveAgentStatus(agent.status)) },
+                      {
+                        label: "Backends",
+                        value: [
                           `${countBy(agents, (agent) => agent.backend === "libvirt_vm")} VM`,
                           `${countBy(agents, (agent) => agent.backend === "container_worker_vm")} container`,
-                        ].join(", ")}
-                      </strong>
-                    </div>
-                  </div>
-                  <div style={{ display: "grid", gap: "0.4rem" }}>
+                        ].join(", "),
+                      },
+                    ]}
+                  />
+                  <DashboardCompactRows>
                     {agents.slice(0, 4).map((agent) => (
-                      <div key={agent.agent_id} className="node-activity-item">
-                        <div>
-                          <strong>{agent.target_name}</strong>
-                          <span>
-                            {agent.agent_id} · {agent.session_id ?? "no session"} · {agent.directory_path}
-                          </span>
-                        </div>
-                        <span className={`status-pill ${stateClassName(agentStatusTone(agent.status))}`}>{agent.status}</span>
-                      </div>
+                      <DashboardCompactRow
+                        key={agent.agent_id}
+                        title={agent.target_name}
+                        meta={`${agent.agent_id} · ${agent.session_id ?? "no session"} · ${agent.directory_path}`}
+                        detail={agent.backend}
+                        statusText={agent.status}
+                        statusTone={agentStatusTone(agent.status)}
+                      />
                     ))}
-                  </div>
+                  </DashboardCompactRows>
                 </div>
               ) : null}
             </DashboardBlock>
@@ -1820,44 +1869,31 @@ export function OperationsDashboard() {
             >
               {runSnapshot ? (
                 <div style={{ display: "grid", gap: "0.55rem" }}>
-                  <div className="detail-list">
-                    <div>
-                      <span>Total</span>
-                      <strong>{runSnapshot.runs.length}</strong>
-                    </div>
-                    <div>
-                      <span>Active</span>
-                      <strong>{countBy(runSnapshot.runs, (run) => runStatusTone(run.run_state) === "running")}</strong>
-                    </div>
-                    <div>
-                      <span>Failed</span>
-                      <strong>{countBy(runSnapshot.runs, (run) => runStatusTone(run.run_state) === "fail")}</strong>
-                    </div>
-                    <div>
-                      <span>Resumable</span>
-                      <strong>{countBy(runSnapshot.runs, (run) => Boolean(run.resumable))}</strong>
-                    </div>
-                  </div>
-                  <div style={{ display: "grid", gap: "0.4rem" }}>
+                  <DashboardMetricRows
+                    items={[
+                      { label: "Total", value: runSnapshot.runs.length },
+                      { label: "Active", value: countBy(runSnapshot.runs, (run) => runStatusTone(run.run_state) === "running") },
+                      { label: "Failed", value: countBy(runSnapshot.runs, (run) => runStatusTone(run.run_state) === "fail") },
+                      { label: "Resumable", value: countBy(runSnapshot.runs, (run) => Boolean(run.resumable)) },
+                    ]}
+                  />
+                  <DashboardCompactRows>
                     {runSnapshot.runs.slice(0, 4).map((run) => (
-                      <div key={run.event_id} className="node-activity-item">
-                        <div>
-                          <strong>{run.event_id}</strong>
-                          <span>
-                            {run.trace_id ?? "no trace"} · {formatTimestamp(run.latest_activity_at ?? run.occurred_at)}
-                          </span>
-                          <DashboardLinkRow
-                            links={[
-                              ...(run.trace_id
-                                ? [{ tab: "workflow" as AdminTab, label: "Trace", value: run.trace_id, params: { trace_id: run.trace_id } }]
-                                : []),
-                            ]}
-                          />
-                        </div>
-                        <span className={`status-pill ${stateClassName(runStatusTone(run.run_state))}`}>{run.run_state}</span>
-                      </div>
+                      <DashboardCompactRow
+                        key={run.event_id}
+                        title={run.event_id}
+                        meta={`${run.trace_id ?? "no trace"} · ${formatTimestamp(run.latest_activity_at ?? run.occurred_at)}`}
+                        detail={panelTitleList([run.source_node_id ?? "source missing", run.source_trigger_type ?? "trigger missing"])}
+                        links={
+                          run.trace_id
+                            ? [{ tab: "workflow", label: "Trace", value: run.trace_id, params: { trace_id: run.trace_id } }]
+                            : []
+                        }
+                        statusText={run.run_state}
+                        statusTone={runStatusTone(run.run_state)}
+                      />
                     ))}
-                  </div>
+                  </DashboardCompactRows>
                 </div>
               ) : null}
             </DashboardBlock>
@@ -1871,39 +1907,32 @@ export function OperationsDashboard() {
             >
               {activityReport ? (
                 <div style={{ display: "grid", gap: "0.55rem" }}>
-                  <div className="detail-list">
-                    <div>
-                      <span>Graphs</span>
-                      <strong>{activityReport.graphs.length}</strong>
-                    </div>
-                    <div>
-                      <span>Activities</span>
-                      <strong>{activityReport.graphs.reduce((sum, graph) => sum + graph.activity_count, 0)}</strong>
-                    </div>
-                    <div>
-                      <span>Latest</span>
-                      <strong>{activityReport.graphs.length === 0 ? "n/a" : formatTimestamp(activityReport.graphs[0]?.latest_activity_at ?? activityReport.generated_at)}</strong>
-                    </div>
-                  </div>
-                  <div style={{ display: "grid", gap: "0.4rem" }}>
+                  <DashboardMetricRows
+                    items={[
+                      { label: "Graphs", value: activityReport.graphs.length },
+                      { label: "Activities", value: activityReport.graphs.reduce((sum, graph) => sum + graph.activity_count, 0) },
+                      {
+                        label: "Latest",
+                        value: activityReport.graphs.length === 0 ? "n/a" : formatTimestamp(activityReport.graphs[0]?.latest_activity_at ?? activityReport.generated_at),
+                      },
+                    ]}
+                  />
+                  <DashboardCompactRows>
                     {activityReport.graphs.slice(0, 3).map((graph) => (
-                      <div key={graph.graph_id} className="node-activity-item">
-                        <div>
-                          <strong>{graph.name}</strong>
-                          <span>
-                            {graph.activity_count} activities · {graph.run_count} runs · {graph.node_count} nodes
-                          </span>
-                          <DashboardLinkRow
-                            links={[
-                              { tab: "reports", label: "Graph", value: graph.graph_id },
-                              ...(graph.node_ids[0] ? [{ tab: "workflow" as AdminTab, label: "Node", value: graph.node_ids[0] }] : []),
-                            ]}
-                          />
-                        </div>
-                        <span className={`status-pill ${stateClassName(statusByCountClass(graph.activity_count))}`}>{graph.activity_count}</span>
-                      </div>
+                      <DashboardCompactRow
+                        key={graph.graph_id}
+                        title={graph.name}
+                        meta={`${graph.activity_count} activities · ${graph.run_count} runs · ${graph.node_count} nodes`}
+                        detail={formatTimestamp(graph.latest_activity_at ?? activityReport.generated_at)}
+                        links={[
+                          { tab: "reports", label: "Graph", value: graph.graph_id },
+                          ...(graph.node_ids[0] ? [{ tab: "workflow" as AdminTab, label: "Node", value: graph.node_ids[0] }] : []),
+                        ]}
+                        statusText={String(graph.activity_count)}
+                        statusTone={statusByCountClass(graph.activity_count)}
+                      />
                     ))}
-                  </div>
+                  </DashboardCompactRows>
                 </div>
               ) : null}
             </DashboardBlock>
@@ -1924,39 +1953,32 @@ export function OperationsDashboard() {
             >
               {approvals ? (
                 <div style={{ display: "grid", gap: "0.55rem" }}>
-                  <div className="detail-list">
-                    <div>
-                      <span>Pending</span>
-                      <strong>{approvals.health.pending}</strong>
-                    </div>
-                    <div>
-                      <span>Expired</span>
-                      <strong>{approvals.health.expired}</strong>
-                    </div>
-                    <div>
-                      <span>Oldest pending</span>
-                      <strong>{approvals.health.oldest_pending_age_seconds == null ? "n/a" : formatRelativeSeconds(approvals.health.oldest_pending_age_seconds)}</strong>
-                    </div>
-                  </div>
-                  <div style={{ display: "grid", gap: "0.4rem" }}>
+                  <DashboardMetricRows
+                    items={[
+                      { label: "Pending", value: approvals.health.pending },
+                      { label: "Expired", value: approvals.health.expired },
+                      {
+                        label: "Oldest pending",
+                        value: approvals.health.oldest_pending_age_seconds == null ? "n/a" : formatRelativeSeconds(approvals.health.oldest_pending_age_seconds),
+                      },
+                    ]}
+                  />
+                  <DashboardCompactRows>
                     {approvals.items.slice(0, 4).map((item) => (
-                      <div key={item.request_id} className="node-activity-item">
-                        <div>
-                          <strong>{item.tool_name || item.action_type}</strong>
-                          <span>
-                            {item.session_id} · {formatTimestamp(item.created_at)}
-                          </span>
-                          <DashboardLinkRow
-                            links={[
-                              { tab: "sessions", label: "Session", value: item.session_id, params: { session_id: item.session_id } },
-                              { tab: "approvals", label: "Approval", value: item.request_id, params: { request_id: item.request_id } },
-                            ]}
-                          />
-                        </div>
-                        <span className={`status-pill ${stateClassName(approvalItemTone(item.status))}`}>{item.status}</span>
-                      </div>
+                      <DashboardCompactRow
+                        key={item.request_id}
+                        title={item.tool_name || item.action_type}
+                        meta={`${item.session_id} · ${formatTimestamp(item.created_at)}`}
+                        detail={panelTitleList([item.human_summary ?? "No human summary", item.directory_path ?? "no directory"])}
+                        links={[
+                          { tab: "sessions", label: "Session", value: item.session_id, params: { session_id: item.session_id } },
+                          { tab: "approvals", label: "Approval", value: item.request_id, params: { request_id: item.request_id } },
+                        ]}
+                        statusText={item.status}
+                        statusTone={approvalItemTone(item.status)}
+                      />
                     ))}
-                  </div>
+                  </DashboardCompactRows>
                 </div>
               ) : null}
             </DashboardBlock>
@@ -1970,49 +1992,36 @@ export function OperationsDashboard() {
             >
               {sessions ? (
                 <div style={{ display: "grid", gap: "0.55rem" }}>
-                  <div className="detail-list">
-                    <div>
-                      <span>Active</span>
-                      <strong>{sessions.counts.active}</strong>
-                    </div>
-                    <div>
-                      <span>Expired</span>
-                      <strong>{sessions.counts.expired}</strong>
-                    </div>
-                    <div>
-                      <span>Total</span>
-                      <strong>{sessions.counts.total}</strong>
-                    </div>
-                    <div>
-                      <span>Wake cue</span>
-                      <strong>
-                        {sessions.active_items.map(sessionWakeCue).find(Boolean) ??
+                  <DashboardMetricRows
+                    items={[
+                      { label: "Active", value: sessions.counts.active },
+                      { label: "Expired", value: sessions.counts.expired },
+                      { label: "Total", value: sessions.counts.total },
+                      {
+                        label: "Wake cue",
+                        value:
+                          sessions.active_items.map(sessionWakeCue).find(Boolean) ??
                           sessions.expired_items.map(sessionWakeCue).find(Boolean) ??
-                          "No wake-schedule cue exposed by the list payload."}
-                      </strong>
-                    </div>
-                  </div>
-                  <div style={{ display: "grid", gap: "0.4rem" }}>
+                          "No wake-schedule cue exposed by the list payload.",
+                      },
+                    ]}
+                  />
+                  <DashboardCompactRows>
                     {sessions.active_items.slice(0, 3).map((session) => (
-                      <div key={session.session_id} className="node-activity-item">
-                        <div>
-                          <strong>{session.session_id}</strong>
-                          <span>
-                            {panelTitleList([session.model ?? "no model", session.vm_id ?? "no VM", session.directory_path])}
-                          </span>
-                          <DashboardLinkRow
-                            links={[
-                              ...(session.issue_number
-                                ? [{ tab: "issues" as AdminTab, label: "Issue", value: session.issue_number }]
-                                : []),
-                              { tab: "sessions", label: "Session", value: session.session_id, params: { session_id: session.session_id } },
-                            ]}
-                          />
-                        </div>
-                        <span className={`status-pill ${stateClassName(sessionItemTone(session))}`}>{session.is_expired ? "Expired" : "Active"}</span>
-                      </div>
+                      <DashboardCompactRow
+                        key={session.session_id}
+                        title={session.session_id}
+                        meta={panelTitleList([session.model ?? "no model", session.vm_id ?? "no VM", session.directory_path])}
+                        detail={sessionWakeCue(session) ?? "No wake-schedule cue exposed by the list payload."}
+                        links={[
+                          ...(session.issue_number ? [{ tab: "issues" as AdminTab, label: "Issue", value: session.issue_number }] : []),
+                          { tab: "sessions", label: "Session", value: session.session_id, params: { session_id: session.session_id } },
+                        ]}
+                        statusText={session.is_expired ? "Expired" : "Active"}
+                        statusTone={sessionItemTone(session)}
+                      />
                     ))}
-                  </div>
+                  </DashboardCompactRows>
                 </div>
               ) : null}
             </DashboardBlock>
@@ -2033,68 +2042,56 @@ export function OperationsDashboard() {
             >
               {toolCalls ? (
                 <div style={{ display: "grid", gap: "0.55rem" }}>
-                  <div className="detail-list">
-                    <div>
-                      <span>Returned</span>
-                      <strong>{toolCalls.counts?.returned ?? toolCalls.items.length}</strong>
-                    </div>
-                    <div>
-                      <span>Success</span>
-                      <strong>{toolCalls.counts?.status_counts?.success ?? toolCalls.counts?.success ?? 0}</strong>
-                    </div>
-                    <div>
-                      <span>Denied</span>
-                      <strong>{toolCalls.counts?.status_counts?.denied ?? toolCalls.counts?.denied ?? 0}</strong>
-                    </div>
-                    <div>
-                      <span>Error</span>
-                      <strong>{toolCalls.counts?.status_counts?.error ?? toolCalls.counts?.error ?? 0}</strong>
-                    </div>
-                  </div>
-                  <div style={{ display: "grid", gap: "0.4rem" }}>
+                  <DashboardMetricRows
+                    items={[
+                      { label: "Returned", value: toolCalls.counts?.returned ?? toolCalls.items.length },
+                      { label: "Success", value: toolCalls.counts?.status_counts?.success ?? toolCalls.counts?.success ?? 0 },
+                      { label: "Denied", value: toolCalls.counts?.status_counts?.denied ?? toolCalls.counts?.denied ?? 0 },
+                      { label: "Error", value: toolCalls.counts?.status_counts?.error ?? toolCalls.counts?.error ?? 0 },
+                    ]}
+                  />
+                  <DashboardCompactRows>
                     {toolCalls.items.slice(0, 5).map((item) => (
-                      <div key={`${item.tool_name}-${item.created_at}-${item.request_id ?? item.correlation_id ?? item.trace_id ?? item.session_id ?? "call"}`} className="node-activity-item">
-                        <div>
-                          <strong>{item.tool_name}</strong>
-                          <span>
-                            {item.session_id ?? "no session"} · {formatTimestamp(item.created_at)}
-                          </span>
-                          <DashboardLinkRow
-                            links={[
-                              ...(item.session_id
-                                ? [{ tab: "sessions" as AdminTab, label: "Session", value: item.session_id, params: { session_id: item.session_id } }]
-                                : []),
-                              ...(item.approval_request_id
-                                ? [
-                                    {
-                                      tab: "approvals" as AdminTab,
-                                      label: "Approval",
-                                      value: item.approval_request_id,
-                                      params: { request_id: item.approval_request_id },
-                                    },
-                                  ]
-                                : []),
-                              ...(item.workflow_run_id ?? item.trace_id
-                                ? [
-                                    {
-                                      tab: "workflow" as AdminTab,
-                                      label: item.workflow_run_id ? "Run" : "Trace",
-                                      value: item.workflow_run_id ?? item.trace_id ?? "",
-                                      params: item.workflow_run_id
-                                        ? { run_id: item.workflow_run_id }
-                                        : { trace_id: item.trace_id ?? "" },
-                                    },
-                                  ]
-                                : []),
-                              ...(item.agent_id ? [{ tab: "agents" as AdminTab, label: "Agent", value: item.agent_id }] : []),
-                              ...(item.vm_id ? [{ tab: "vms" as AdminTab, label: "VM", value: item.vm_id }] : []),
-                            ]}
-                          />
-                        </div>
-                        <span className={`status-pill ${stateClassName(toolCallTone(item))}`}>{toolCallStatus(item)}</span>
-                      </div>
+                      <DashboardCompactRow
+                        key={`${item.tool_name}-${item.created_at}-${item.request_id ?? item.correlation_id ?? item.trace_id ?? item.session_id ?? "call"}`}
+                        title={item.tool_name}
+                        meta={`${item.session_id ?? "no session"} · ${formatTimestamp(item.created_at)}`}
+                        detail={panelTitleList([
+                          item.correlation_id ?? "Correlation missing",
+                          item.error_summary ?? item.error ?? "No error summary",
+                        ])}
+                        links={[
+                          ...(item.session_id
+                            ? [{ tab: "sessions" as AdminTab, label: "Session", value: item.session_id, params: { session_id: item.session_id } }]
+                            : []),
+                          ...(item.approval_request_id
+                            ? [
+                                {
+                                  tab: "approvals" as AdminTab,
+                                  label: "Approval",
+                                  value: item.approval_request_id,
+                                  params: { request_id: item.approval_request_id },
+                                },
+                              ]
+                            : []),
+                          ...(item.workflow_run_id ?? item.trace_id
+                            ? [
+                                {
+                                  tab: "workflow" as AdminTab,
+                                  label: item.workflow_run_id ? "Run" : "Trace",
+                                  value: item.workflow_run_id ?? item.trace_id ?? "",
+                                  params: item.workflow_run_id ? { run_id: item.workflow_run_id } : { trace_id: item.trace_id ?? "" },
+                                },
+                              ]
+                            : []),
+                          ...(item.agent_id ? [{ tab: "agents" as AdminTab, label: "Agent", value: item.agent_id }] : []),
+                          ...(item.vm_id ? [{ tab: "vms" as AdminTab, label: "VM", value: item.vm_id }] : []),
+                        ]}
+                        statusText={toolCallStatus(item)}
+                        statusTone={toolCallTone(item)}
+                      />
                     ))}
-                  </div>
+                  </DashboardCompactRows>
                 </div>
               ) : null}
             </DashboardBlock>
@@ -2117,31 +2114,31 @@ export function OperationsDashboard() {
                   <TabButton tab="configuration" label="Configuration" />
                 </>
               }
-            >
+              >
               {workflowDocument ? (
                 <div style={{ display: "grid", gap: "0.55rem" }}>
-                  <div className="detail-list">
-                    <div>
-                      <span>Config</span>
-                      <strong>{workflowDocument.config_exists ? "Present" : "Missing"}</strong>
-                    </div>
-                    <div>
-                      <span>Layout</span>
-                      <strong>{workflowDocument.layout_exists ? "Present" : "Missing"}</strong>
-                    </div>
-                    <div>
-                      <span>Graphs</span>
-                      <strong>{workflowDocument.graphs.length}</strong>
-                    </div>
-                    <div>
-                      <span>Revision</span>
-                      <strong>{workflowDocument.revision}</strong>
-                    </div>
-                  </div>
-                  <div className="status-pills">
-                    <span className={`status-pill ${stateClassName(statusByCountClass(workflowDocument.config_exists ? 1 : 0))}`}>Config {workflowDocument.config_exists ? "available" : "missing"}</span>
-                    <span className={`status-pill ${stateClassName(statusByCountClass(workflowDocument.layout_exists ? 1 : 0))}`}>Layout {workflowDocument.layout_exists ? "available" : "missing"}</span>
-                  </div>
+                  <DashboardMetricRows
+                    items={[
+                      { label: "Config", value: workflowDocument.config_exists ? "Present" : "Missing" },
+                      { label: "Layout", value: workflowDocument.layout_exists ? "Present" : "Missing" },
+                      { label: "Graphs", value: workflowDocument.graphs.length },
+                      { label: "Revision", value: workflowDocument.revision },
+                    ]}
+                  />
+                  <DashboardMetricChips
+                    items={[
+                      {
+                        label: "Config",
+                        value: workflowDocument.config_exists ? "available" : "missing",
+                        tone: statusByCountClass(workflowDocument.config_exists ? 1 : 0),
+                      },
+                      {
+                        label: "Layout",
+                        value: workflowDocument.layout_exists ? "available" : "missing",
+                        tone: statusByCountClass(workflowDocument.layout_exists ? 1 : 0),
+                      },
+                    ]}
+                  />
                 </div>
               ) : null}
             </DashboardBlock>
@@ -2157,38 +2154,38 @@ export function OperationsDashboard() {
                   <TabButton tab="configuration" label="Config" />
                 </>
               }
-            >
+              >
               {workflowCatalog ? (
                 <div style={{ display: "grid", gap: "0.55rem" }}>
-                  <div className="detail-list">
-                    <div>
-                      <span>Worker</span>
-                      <strong>{workflowCatalog.worker_id}</strong>
-                    </div>
-                    <div>
-                      <span>Nodes</span>
-                      <strong>{workflowCatalog.nodes.length}</strong>
-                    </div>
-                    <div>
-                      <span>Kinds</span>
-                      <strong>
-                        {countBy(workflowCatalog.nodes, (node) => node.kind === "trigger")} triggers,{" "}
-                        {countBy(workflowCatalog.nodes, (node) => node.kind === "gate")} gates,{" "}
-                        {countBy(workflowCatalog.nodes, (node) => node.kind === "effect")} effects
-                      </strong>
-                    </div>
-                  </div>
-                  <div style={{ display: "grid", gap: "0.4rem" }}>
+                  <DashboardMetricRows
+                    items={[
+                      { label: "Worker", value: workflowCatalog.worker_id },
+                      { label: "Nodes", value: workflowCatalog.nodes.length },
+                      {
+                        label: "Kinds",
+                        value: `${countBy(workflowCatalog.nodes, (node) => node.kind === "trigger")} triggers, ${countBy(
+                          workflowCatalog.nodes,
+                          (node) => node.kind === "gate",
+                        )} gates, ${countBy(workflowCatalog.nodes, (node) => node.kind === "effect")} effects`,
+                      },
+                    ]}
+                  />
+                  <DashboardCompactRows>
                     {workflowCatalog.nodes.slice(0, 4).map((node) => (
-                      <div key={`${node.kind}:${node.type}`} className="node-activity-item">
-                        <div>
-                          <strong>{node.label}</strong>
-                          <span>{node.type}</span>
-                        </div>
-                        <span className={`status-pill ${stateClassName(statusByCountClass(node.fields.length))}`}>{node.kind}</span>
-                      </div>
+                      <DashboardCompactRow
+                        key={`${node.kind}:${node.type}`}
+                        title={node.label}
+                        meta={node.type}
+                        detail={panelTitleList([
+                          `${node.fields.length} field${node.fields.length === 1 ? "" : "s"}`,
+                          `${node.input_ports.length} inputs`,
+                          `${node.output_ports.length} outputs`,
+                        ])}
+                        statusText={node.kind}
+                        statusTone={statusByCountClass(node.fields.length)}
+                      />
                     ))}
-                  </div>
+                  </DashboardCompactRows>
                 </div>
               ) : null}
             </DashboardBlock>

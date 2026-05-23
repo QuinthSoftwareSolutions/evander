@@ -12,6 +12,12 @@ material. Newer entries are added incrementally as changes land.
   trigger/effect/gate execution history, and bounded tool-call audit scanning
   for the detail view.
 
+## 2026-05-22 - Agent Branch Promotion FETCH_HEAD Fix
+
+- Updated agent branch promotion to fetch into a stable local ref, resolve that
+  ref to a commit, and update the review branch from the resolved SHA so
+  `FETCH_HEAD` no longer causes refresh failures.
+
 ## 2026-05-22 - Workflow Run Control Alignment
 
 - Fixed the workflow editor Current runs and Latest runs controls so run
