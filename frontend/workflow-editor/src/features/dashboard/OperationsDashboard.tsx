@@ -1625,12 +1625,12 @@ export function OperationsDashboard() {
         </div>
 
         <div className="dashboard-panel-column dashboard-panel-column-secondary">
-        <DashboardPanel
-          eyebrow="System health"
-          title="Control-plane status"
-          statusClassName={stateClassName(statusTone(state.adminState))}
-          statusLabel={statusLabel(state.adminState)}
-        >
+          <DashboardPanel
+            eyebrow="System health"
+            title="Control-plane status"
+            statusClassName={stateClassName(statusTone(state.adminState))}
+            statusLabel={statusLabel(state.adminState)}
+          >
             <DashboardBlock
               title="Admin state"
               state={state.adminState}
@@ -1643,24 +1643,26 @@ export function OperationsDashboard() {
               actions={<TabButton tab="configuration" label="Configuration" />}
             >
               {adminState ? (
-                <div className="detail-list">
-                  <div>
-                    <span>Directory</span>
-                    <strong>{adminState.selected_directory_path}</strong>
-                  </div>
-                  <div>
-                    <span>Execution backend</span>
-                    <strong>{adminState.execution_backend}</strong>
-                  </div>
-                  <div>
-                    <span>Directory-scoped config</span>
-                    <strong>{adminState.directory_scoped_config_enabled ? "Enabled" : "Disabled"}</strong>
-                  </div>
-                  <div>
-                    <span>Privileges</span>
-                    <strong>{adminState.privileged_operations.unlocked ? "Unlocked" : "Locked"}</strong>
-                  </div>
-                </div>
+                <DashboardMetricRows
+                  items={[
+                    {
+                      label: "Directory",
+                      value: adminState.selected_directory_path,
+                    },
+                    {
+                      label: "Execution backend",
+                      value: adminState.execution_backend,
+                    },
+                    {
+                      label: "Directory-scoped config",
+                      value: adminState.directory_scoped_config_enabled ? "Enabled" : "Disabled",
+                    },
+                    {
+                      label: "Privileges",
+                      value: adminState.privileged_operations.unlocked ? "Unlocked" : "Locked",
+                    },
+                  ]}
+                />
               ) : null}
             </DashboardBlock>
 
@@ -1678,24 +1680,26 @@ export function OperationsDashboard() {
               actions={<TabButton tab="workers" label="Workers" />}
             >
               {deploymentStatus ? (
-                <div className="detail-list">
-                  <div>
-                    <span>Status</span>
-                    <strong>{deploymentStatus.active ? (deploymentStatus.stale ? "Active, stale" : "Active") : "Idle"}</strong>
-                  </div>
-                  <div>
-                    <span>Message</span>
-                    <strong>{deploymentStatus.message ?? "No deployment message."}</strong>
-                  </div>
-                  <div>
-                    <span>Updated</span>
-                    <strong>{formatTimestamp(deploymentStatus.updated_at ?? deploymentStatus.started_at)}</strong>
-                  </div>
-                  <div>
-                    <span>TTL</span>
-                    <strong>{detailValue(deploymentStatus.ttl_seconds)}</strong>
-                  </div>
-                </div>
+                <DashboardMetricRows
+                  items={[
+                    {
+                      label: "Status",
+                      value: deploymentStatus.active ? (deploymentStatus.stale ? "Active, stale" : "Active") : "Idle",
+                    },
+                    {
+                      label: "Message",
+                      value: deploymentStatus.message ?? "No deployment message.",
+                    },
+                    {
+                      label: "Updated",
+                      value: formatTimestamp(deploymentStatus.updated_at ?? deploymentStatus.started_at),
+                    },
+                    {
+                      label: "TTL",
+                      value: detailValue(deploymentStatus.ttl_seconds),
+                    },
+                  ]}
+                />
               ) : null}
             </DashboardBlock>
 
@@ -1708,31 +1712,40 @@ export function OperationsDashboard() {
             >
               {workers.length > 0 ? (
                 <div style={{ display: "grid", gap: "0.55rem" }}>
-                  <div className="detail-list">
-                    <div>
-                      <span>Total</span>
-                      <strong>{workers.length}</strong>
-                    </div>
-                    <div>
-                      <span>Running</span>
-                      <strong>{countBy(workers, (worker) => worker.running)}</strong>
-                    </div>
-                    <div>
-                      <span>Failed</span>
-                      <strong>{countBy(workers, (worker) => worker.failed)}</strong>
-                    </div>
-                  </div>
-                  <div style={{ display: "grid", gap: "0.4rem" }}>
-                    {workers.slice(0, 3).map((worker) => (
-                      <div key={worker.worker_id} className="node-activity-item">
-                        <div>
-                          <strong>{worker.name}</strong>
-                          <span>{worker.description ?? worker.unit}</span>
-                        </div>
-                        <span className={`status-pill ${stateClassName(workerStatusTone(worker))}`}>{worker.active_state}</span>
-                      </div>
-                    ))}
-                  </div>
+                  <DashboardMetricRows
+                    items={[
+                      {
+                        label: "Total",
+                        value: workers.length,
+                      },
+                      {
+                        label: "Running",
+                        value: countBy(workers, (worker) => worker.running),
+                      },
+                      {
+                        label: "Failed",
+                        value: countBy(workers, (worker) => worker.failed),
+                      },
+                    ]}
+                  />
+                  <DashboardCompactRows>
+                    {workers.slice(0, 3).map((worker) => {
+                      const metadata = worker.description ?? worker.unit;
+                      const detailParts = [worker.unit, worker.main_pid == null ? null : `PID ${worker.main_pid}`, worker.detail].filter(
+                        (part): part is string => Boolean(part),
+                      );
+                      return (
+                        <DashboardCompactRow
+                          key={worker.worker_id}
+                          title={worker.name}
+                          meta={metadata}
+                          detail={detailParts.length > 0 ? detailParts.join(" · ") : null}
+                          statusText={worker.active_state}
+                          statusTone={workerStatusTone(worker)}
+                        />
+                      );
+                    })}
+                  </DashboardCompactRows>
                 </div>
               ) : null}
             </DashboardBlock>
@@ -1745,87 +1758,67 @@ export function OperationsDashboard() {
             >
               {capacityHealth ? (
                 <div style={{ display: "grid", gap: "0.55rem" }}>
-                  <div className="detail-list">
-                    <div>
-                      <span>Disk used</span>
-                      <strong>
-                        {formatPercent(capacityHealth.control_plane.disk.used_percent)} ({formatBytes(capacityHealth.control_plane.disk.used_bytes)} /{" "}
-                        {formatBytes(capacityHealth.control_plane.disk.total_bytes)})
-                      </strong>
-                    </div>
-                    <div>
-                      <span>Disk free</span>
-                      <strong>
-                        {formatPercent(capacityHealth.control_plane.disk.free_percent)} ({formatBytes(capacityHealth.control_plane.disk.free_bytes)})
-                      </strong>
-                    </div>
-                    <div>
-                      <span>Known storage</span>
-                      <strong>{formatBytes(capacityHealth.control_plane.storage.total.size_bytes)}</strong>
-                    </div>
-                    <div>
-                      <span>Sessions</span>
-                      <strong>
-                        {capacityHealth.sessions.total_sessions} sessions, {capacityHealth.sessions.total_agents} agents
-                      </strong>
-                    </div>
-                    <div>
-                      <span>Session storage</span>
-                      <strong>
-                        {formatBytes(capacityHealth.sessions.storage.measured_total.size_bytes)} across{" "}
-                        {capacityHealth.sessions.storage.measured_session_count} measured
-                      </strong>
-                    </div>
-                    <div>
-                      <span>Largest session</span>
-                      <strong>{sessionStorageSampleSummary(capacityHealth.sessions.storage.largest_sessions[0])}</strong>
-                    </div>
-                    <div>
-                      <span>Workers</span>
-                      <strong>
-                        {capacityHealth.workers.reachable_workers}/{capacityHealth.workers.total_workers} reachable,{" "}
-                        {capacityHealth.workers.telemetry_available_workers} telemetry
-                      </strong>
-                    </div>
-                    <div>
-                      <span>Worker disk</span>
-                      <strong>{workerDiskSummary(capacityHealth.workers)}</strong>
-                    </div>
-                    <div>
-                      <span>Queue</span>
-                      <strong>
-                        {capacityHealth.queue.pending_count} pending, {capacityHealth.queue.inflight_count} in-flight
-                      </strong>
-                    </div>
-                    <div>
-                      <span>Oldest queue</span>
-                      <strong>{capacityHealth.queue.oldest_age_seconds == null ? "n/a" : formatRelativeSeconds(capacityHealth.queue.oldest_age_seconds)}</strong>
-                    </div>
-                    <div>
-                      <span>Prompts</span>
-                      <strong>{capacityHealth.prompts.unread_count} unread</strong>
-                    </div>
-                  </div>
-                  <div className="status-pills">
-                    <span className={`status-pill ${stateClassName(healthStateTone(capacityHealth.control_plane.disk.health))}`}>
-                      Disk {capacityHealth.control_plane.disk.health}
-                    </span>
-                    <span className={`status-pill ${stateClassName(healthStateTone(capacityHealth.control_plane.storage.total.health))}`}>
-                      Storage {capacityHealth.control_plane.storage.total.health}
-                    </span>
-                    <span className={`status-pill ${stateClassName(capacityWorkerTone(capacityHealth.workers))}`}>
-                      Workers {capacityHealth.workers.telemetry_available_workers}/{capacityHealth.workers.total_workers} telemetry
-                    </span>
-                    <span className={`status-pill ${stateClassName(healthStateTone(workerDiskHealth(capacityHealth.workers)))}`}>
-                      Worker disk {workerDiskHealth(capacityHealth.workers)}
-                    </span>
-                    <span className={`status-pill ${stateClassName(healthStateTone(capacityHealth.queue.health))}`}>
-                      Queue {capacityHealth.queue.health}
-                    </span>
-                    <span className={`status-pill ${stateClassName(healthStateTone(capacityHealth.prompts.health))}`}>
-                      Prompts {capacityHealth.prompts.health}
-                    </span>
-                  </div>
+                  <DashboardCompactRows>
+                    <DashboardCompactRow
+                      title="Disk / storage"
+                      meta={`${formatPercent(capacityHealth.control_plane.disk.used_percent)} used (${formatBytes(capacityHealth.control_plane.disk.used_bytes)} / ${formatBytes(capacityHealth.control_plane.disk.total_bytes)})`}
+                      detail={`Free ${formatPercent(capacityHealth.control_plane.disk.free_percent)} (${formatBytes(capacityHealth.control_plane.disk.free_bytes)}) · Known storage ${formatBytes(capacityHealth.control_plane.storage.total.size_bytes)}`}
+                    />
+                    <DashboardCompactRow
+                      title="Sessions / storage"
+                      meta={`${capacityHealth.sessions.total_sessions} sessions, ${capacityHealth.sessions.total_agents} agents`}
+                      detail={`${formatBytes(capacityHealth.sessions.storage.measured_total.size_bytes)} across ${capacityHealth.sessions.storage.measured_session_count} measured · Largest session ${sessionStorageSampleSummary(capacityHealth.sessions.storage.largest_sessions[0])}`}
+                    />
+                    <DashboardCompactRow
+                      title="Workers / disk"
+                      meta={`${capacityHealth.workers.reachable_workers}/${capacityHealth.workers.total_workers} reachable, ${capacityHealth.workers.telemetry_available_workers} telemetry`}
+                      detail={workerDiskSummary(capacityHealth.workers)}
+                    />
+                    <DashboardCompactRow
+                      title="Queue"
+                      meta={`${capacityHealth.queue.pending_count} pending, ${capacityHealth.queue.inflight_count} in-flight`}
+                      detail={`Oldest queue ${capacityHealth.queue.oldest_age_seconds == null ? "n/a" : formatRelativeSeconds(capacityHealth.queue.oldest_age_seconds)}`}
+                    />
+                    <DashboardCompactRow
+                      title="Prompts"
+                      meta={`${capacityHealth.prompts.unread_count} unread`}
+                      detail={`Queue health ${capacityHealth.queue.health} · Prompt health ${capacityHealth.prompts.health}`}
+                    />
+                  </DashboardCompactRows>
+                  <DashboardMetricChips
+                    items={[
+                      {
+                        label: "Disk",
+                        value: capacityHealth.control_plane.disk.health,
+                        tone: healthStateTone(capacityHealth.control_plane.disk.health),
+                      },
+                      {
+                        label: "Storage",
+                        value: capacityHealth.control_plane.storage.total.health,
+                        tone: healthStateTone(capacityHealth.control_plane.storage.total.health),
+                      },
+                      {
+                        label: "Workers",
+                        value: `${capacityHealth.workers.telemetry_available_workers}/${capacityHealth.workers.total_workers} telemetry`,
+                        tone: capacityWorkerTone(capacityHealth.workers),
+                      },
+                      {
+                        label: "Worker disk",
+                        value: workerDiskHealth(capacityHealth.workers),
+                        tone: healthStateTone(workerDiskHealth(capacityHealth.workers)),
+                      },
+                      {
+                        label: "Queue",
+                        value: capacityHealth.queue.health,
+                        tone: healthStateTone(capacityHealth.queue.health),
+                      },
+                      {
+                        label: "Prompts",
+                        value: capacityHealth.prompts.health,
+                        tone: healthStateTone(capacityHealth.prompts.health),
+                      },
+                    ]}
+                  />
                 </div>
               ) : null}
             </DashboardBlock>
