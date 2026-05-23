@@ -455,14 +455,16 @@ Common editing tasks:
 6. Connect nodes on the canvas. Named output ports are offered where a source node has multiple
    routes.
 7. Select a node to open the Inspector.
-8. Edit node ID, display name, and type-specific fields. Fields can support literal values,
+8. Review the selected node's **Outputs** section to see declared or derived binding paths, schema
+   types, and copyable binding expressions for downstream fields.
+9. Edit node ID, display name, and type-specific fields. Fields can support literal values,
    bindings, templates, directory selectors, structured lists/maps, JSON, and catalog-backed
    options. Agent/VM creation tool argument policies use a structured rule-and-constraint editor
    for common policies, with raw JSON still available for advanced policy maps.
-9. Review diagnostics on dirty or invalid nodes.
-10. Use **Reset changes** for a selected dirty node when you want to return it to the saved
+10. Review diagnostics on dirty or invalid nodes.
+11. Use **Reset changes** for a selected dirty node when you want to return it to the saved
     version.
-11. Use **Save workflow** to persist the workflow document after all diagnostics are acceptable.
+12. Use **Save workflow** to persist the workflow document after all diagnostics are acceptable.
 
 Common runtime inspection tasks:
 

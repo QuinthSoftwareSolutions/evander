@@ -5,11 +5,15 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Event
 from textwrap import dedent
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
-from agent_sandbox.daemons.effect_orchestrator import build_effect_orchestrator_worker
+from agent_sandbox.daemons.effect_orchestrator import (
+    EffectOrchestratorWorker,
+    build_effect_orchestrator_worker,
+)
 from agent_sandbox.daemons.trigger_orchestrator import build_trigger_orchestrator_worker
 from agent_sandbox.events.models import TriggerEvent
 
@@ -35,9 +39,46 @@ class _RecordingEffectProvider:
         return {"success": True, "effect_id": self._effect_id}
 
 
+class _BlockingRecordingEffectProvider(_RecordingEffectProvider):
+    def __init__(
+        self, effect_id: str, calls: list[str], *, wait_on: Event | None = None
+    ) -> None:
+        super().__init__(effect_id, calls)
+        self._wait_on = wait_on
+
+    def execute(self, *, resolved_config=None):
+        if self._wait_on is not None:
+            self._wait_on.wait(timeout=2)
+        return super().execute(resolved_config=resolved_config)
+
+
+class _SequenceConfigReloader:
+    def __init__(self, *configs: TriggerOrchestratorWorkerGlobalConfig) -> None:
+        self._configs = list(configs)
+        self._index = 0
+
+    def get_latest(self) -> tuple[TriggerOrchestratorWorkerGlobalConfig, bool]:
+        if self._index < len(self._configs):
+            config = self._configs[self._index]
+            self._index += 1
+        else:
+            config = self._configs[-1]
+        return config, self._index > 1
+
+
 def _reload_worker_config(
     runtime_dir: Path,
     *,
+    orchestration_store_backend: str | None = None,
+    orchestration_store_path: Path | None = None,
+    event_queue_store_path: Path | None = None,
+    workflow_event_journal_path: Path | None = None,
+    internal_event_store_path: Path | None = None,
+    gate_execution_store_path: Path | None = None,
+    effect_execution_store_path: Path | None = None,
+    effect_cursor_store_path: Path | None = None,
+    workflow_config_snapshot_store_path: Path | None = None,
+    effect_lock_path: Path | None = None,
     provider_modules: list[str] | None = None,
     triggers: list[dict[str, object]] | None = None,
     gates: list[dict[str, object]] | None = None,
@@ -50,6 +91,56 @@ def _reload_worker_config(
             "runtime_dir": runtime_dir,
             "poll_interval_seconds": 1,
             "jitter_seconds": 0,
+            **(
+                {"orchestration_store_backend": orchestration_store_backend}
+                if orchestration_store_backend is not None
+                else {}
+            ),
+            **(
+                {"orchestration_store_path": orchestration_store_path}
+                if orchestration_store_path is not None
+                else {}
+            ),
+            **(
+                {"event_queue_store_path": event_queue_store_path}
+                if event_queue_store_path is not None
+                else {}
+            ),
+            **(
+                {"workflow_event_journal_path": workflow_event_journal_path}
+                if workflow_event_journal_path is not None
+                else {}
+            ),
+            **(
+                {"internal_event_store_path": internal_event_store_path}
+                if internal_event_store_path is not None
+                else {}
+            ),
+            **(
+                {"gate_execution_store_path": gate_execution_store_path}
+                if gate_execution_store_path is not None
+                else {}
+            ),
+            **(
+                {"effect_execution_store_path": effect_execution_store_path}
+                if effect_execution_store_path is not None
+                else {}
+            ),
+            **(
+                {"effect_cursor_store_path": effect_cursor_store_path}
+                if effect_cursor_store_path is not None
+                else {}
+            ),
+            **(
+                {"workflow_config_snapshot_store_path": workflow_config_snapshot_store_path}
+                if workflow_config_snapshot_store_path is not None
+                else {}
+            ),
+            **(
+                {"effect_lock_path": effect_lock_path}
+                if effect_lock_path is not None
+                else {}
+            ),
             "provider_loader": {
                 "provider_entry_points_enabled": False,
                 "provider_modules": provider_modules or [],
@@ -432,6 +523,235 @@ def test_effect_worker_reloads_custom_provider_module(
     assert all(
         "no_effect_executor_registered" not in (record.error or "") for record in effect_records
     )
+
+
+def test_effect_worker_reloads_to_sqlite_queue_backend_without_restart(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    legacy_queue_path = runtime_dir / "legacy-trigger-events.json"
+    legacy_journal_path = runtime_dir / "legacy-workflow-events.jsonl"
+    legacy_internal_path = runtime_dir / "legacy-internal-events.json"
+    legacy_effect_execution_path = runtime_dir / "legacy-effect-executions.json"
+    legacy_gate_execution_path = runtime_dir / "legacy-gate-executions.json"
+    legacy_snapshot_path = runtime_dir / "legacy-workflow-config-snapshots.json"
+    legacy_cursor_path = runtime_dir / "legacy-effect-cursors.json"
+    legacy_lock_path = runtime_dir / "legacy-effect-orchestrator.lock"
+    reloaded_store_path = runtime_dir / "reloaded-orchestration.db"
+    reloaded_cursor_path = runtime_dir / "reloaded-effect-cursors.json"
+
+    initial_config = _reload_worker_config(
+        runtime_dir,
+        orchestration_store_backend="json",
+        event_queue_store_path=legacy_queue_path,
+        workflow_event_journal_path=legacy_journal_path,
+        internal_event_store_path=legacy_internal_path,
+        gate_execution_store_path=legacy_gate_execution_path,
+        effect_execution_store_path=legacy_effect_execution_path,
+        effect_cursor_store_path=legacy_cursor_path,
+        workflow_config_snapshot_store_path=legacy_snapshot_path,
+        effect_lock_path=legacy_lock_path,
+    )
+    _save_worker_config(tmp_path, initial_config)
+
+    module_name = _write_reload_provider_module(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    sys.modules.pop(module_name, None)
+
+    trigger_worker = build_trigger_orchestrator_worker(config, project_dir=tmp_path)
+    effect_worker = build_effect_orchestrator_worker(config, project_dir=tmp_path)
+
+    module = importlib.import_module(module_name)
+    initial_trigger_cycle = trigger_worker.run_once()
+    initial_effect_cycle = effect_worker.run_once()
+    assert initial_trigger_cycle.events_published == 0
+    assert initial_effect_cycle.events_processed == 0
+    assert trigger_worker.event_queue.path == legacy_queue_path
+    assert effect_worker.event_queue.path == legacy_queue_path
+
+    updated_config = _reload_worker_config(
+        runtime_dir,
+        orchestration_store_backend="sqlite",
+        orchestration_store_path=reloaded_store_path,
+        effect_cursor_store_path=reloaded_cursor_path,
+        provider_modules=[module_name],
+        triggers=[
+            {
+                "id": "reload-trigger",
+                "display_name": "Reload trigger",
+                "type": "trigger:custom:reload",
+                "expression": "* * * * *",
+            }
+        ],
+        effects=[
+            {
+                "id": "reload-effect",
+                "display_name": "Reload effect",
+                "type": "effect:custom:reload",
+            }
+        ],
+        edges=[{"source_id": "reload-trigger", "target_id": "reload-effect"}],
+    )
+    _save_worker_config(tmp_path, updated_config)
+    module.TRIGGER_EVENT_QUEUE["reload-trigger"] = [
+        TriggerEvent(
+            event_id="reload-event-1",
+            trigger_id="reload-trigger",
+            trigger_type="trigger:custom:reload",
+            occurred_at=datetime(2026, 4, 19, 17, 0, tzinfo=timezone.utc),
+            payload={"kind": "reload"},
+        )
+    ]
+
+    trigger_cycle = trigger_worker.run_once()
+    effect_cycle = effect_worker.run_once()
+    effect_worker._wait_for_inflight_completion(timeout_seconds=2)
+    effect_worker.run_once()
+
+    assert trigger_cycle.events_published == 1
+    assert effect_cycle.events_processed >= 1
+    assert module.TRIGGER_POLLS == ["reload-trigger"]
+    assert module.EFFECT_CALLS == ["reload-effect"]
+    assert trigger_worker.event_queue.path == reloaded_store_path
+    assert effect_worker.event_queue.path == reloaded_store_path
+    assert effect_worker.cursor_path == reloaded_cursor_path
+    assert trigger_worker.worker_config.orchestration_store_backend == "sqlite"
+    assert effect_worker.worker_config.orchestration_store_backend == "sqlite"
+    assert trigger_worker.worker_config.orchestration_store_path == reloaded_store_path
+    assert effect_worker.worker_config.orchestration_store_path == reloaded_store_path
+
+
+def test_effect_worker_drains_completed_future_before_sqlite_store_rebind(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    legacy_queue_path = runtime_dir / "legacy-trigger-events.json"
+    legacy_journal_path = runtime_dir / "legacy-workflow-events.jsonl"
+    legacy_internal_path = runtime_dir / "legacy-internal-events.json"
+    legacy_effect_execution_path = runtime_dir / "legacy-effect-executions.json"
+    legacy_gate_execution_path = runtime_dir / "legacy-gate-executions.json"
+    legacy_snapshot_path = runtime_dir / "legacy-workflow-config-snapshots.json"
+    legacy_cursor_path = runtime_dir / "legacy-effect-cursors.json"
+    legacy_lock_path = runtime_dir / "legacy-effect-orchestrator.lock"
+    reloaded_store_path = runtime_dir / "reloaded-orchestration.db"
+    reloaded_cursor_path = runtime_dir / "reloaded-effect-cursors.json"
+
+    workflow_nodes = {
+        "triggers": [
+            {
+                "id": "source-trigger",
+                "display_name": "Source",
+                "type": "trigger:cron",
+                "expression": "* * * * *",
+            }
+        ],
+        "effects": [
+            {
+                "id": "slow-effect",
+                "display_name": "Slow effect",
+                "type": "effect:agent:prompt",
+                "prompt": "slow",
+            },
+            {
+                "id": "downstream-effect",
+                "display_name": "Downstream effect",
+                "type": "effect:agent:prompt",
+                "prompt": "downstream",
+            },
+        ],
+        "edges": [
+            {"source_id": "source-trigger", "target_id": "slow-effect"},
+            {"source_id": "slow-effect", "target_id": "downstream-effect"},
+        ],
+    }
+    initial_config = _reload_worker_config(
+        runtime_dir,
+        orchestration_store_backend="json",
+        event_queue_store_path=legacy_queue_path,
+        workflow_event_journal_path=legacy_journal_path,
+        internal_event_store_path=legacy_internal_path,
+        gate_execution_store_path=legacy_gate_execution_path,
+        effect_execution_store_path=legacy_effect_execution_path,
+        effect_cursor_store_path=legacy_cursor_path,
+        workflow_config_snapshot_store_path=legacy_snapshot_path,
+        effect_lock_path=legacy_lock_path,
+        **workflow_nodes,
+    )
+    updated_config = _reload_worker_config(
+        runtime_dir,
+        orchestration_store_backend="sqlite",
+        orchestration_store_path=reloaded_store_path,
+        effect_cursor_store_path=reloaded_cursor_path,
+        **workflow_nodes,
+    )
+
+    release_slow_effect = Event()
+    effect_calls: list[str] = []
+    effect_worker = EffectOrchestratorWorker(
+        config=config,
+        worker_config=initial_config,
+        config_reloader=_SequenceConfigReloader(initial_config, updated_config),
+        runtime=None,  # type: ignore[arg-type]
+    )
+
+    def _build_provider(effect):
+        return _BlockingRecordingEffectProvider(
+            effect.id,
+            effect_calls,
+            wait_on=release_slow_effect if effect.id == "slow-effect" else None,
+        )
+
+    effect_worker.provider_factory.build = _build_provider  # type: ignore[assignment]
+    effect_worker.event_queue.publish(
+        TriggerEvent(
+            event_id="source-event-1",
+            trigger_id="source-trigger",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 19, 18, 0, tzinfo=timezone.utc),
+            payload={"kind": "source"},
+        )
+    )
+
+    first_cycle = effect_worker.run_once()
+    assert first_cycle.effect_executions == 1
+    assert effect_calls == []
+
+    release_slow_effect.set()
+    effect_worker._wait_for_inflight_completion(timeout_seconds=2)
+    second_cycle = effect_worker.run_once()
+
+    assert second_cycle.completion_events_published >= 1
+    assert effect_worker.event_queue.path == legacy_queue_path
+    legacy_queue = json.loads(legacy_queue_path.read_text(encoding="utf-8"))
+    slow_completion_records = [
+        record for record in legacy_queue.values() if record["trigger_id"] == "slow-effect"
+    ]
+    assert len(slow_completion_records) == 1
+    assert slow_completion_records[0]["delivery_state"] == "delivered"
+
+    for _ in range(5):
+        legacy_queue = json.loads(legacy_queue_path.read_text(encoding="utf-8"))
+        if "downstream-effect" in effect_calls and all(
+            record["delivery_state"] == "delivered" for record in legacy_queue.values()
+        ):
+            break
+        effect_worker._wait_for_inflight_completion(timeout_seconds=2)
+        effect_worker.run_once()
+
+    assert effect_calls == ["slow-effect", "downstream-effect"]
+    legacy_queue = json.loads(legacy_queue_path.read_text(encoding="utf-8"))
+    assert all(record["delivery_state"] == "delivered" for record in legacy_queue.values())
+
+    for _ in range(5):
+        if effect_worker.event_queue.path == reloaded_store_path:
+            break
+        effect_worker.run_once()
+
+    assert effect_worker.event_queue.path == reloaded_store_path
+    assert effect_worker.event_queue.list_pending() == []
 
 
 def test_workers_keep_last_known_good_config_when_reload_payload_is_invalid(

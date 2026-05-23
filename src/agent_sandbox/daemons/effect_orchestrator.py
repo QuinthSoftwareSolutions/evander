@@ -74,8 +74,16 @@ from agent_sandbox.workflow.engine.node_executors import (
 )
 from agent_sandbox.workflow.engine import OrchestrationLoop
 from agent_sandbox.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
-from agent_sandbox.orchestration.wiring import EffectWorkerWiring, build_effect_worker_wiring
-from agent_sandbox.orchestration.wiring.effect import build_effect_provider_runtime_wiring
+from agent_sandbox.orchestration.wiring import (
+    EffectWorkerStoreWiring,
+    EffectWorkerWiring,
+    build_effect_worker_store_wiring,
+    build_effect_worker_wiring,
+)
+from agent_sandbox.orchestration.wiring.effect import (
+    EffectProviderRuntimeWiring,
+    build_effect_provider_runtime_wiring,
+)
 from agent_sandbox.orchestration.effect_extensions import SpecialEventResult
 from agent_sandbox.gates.providers.await_agent import (  # noqa: F401
     AwaitAgentPendingRecord,
@@ -369,10 +377,65 @@ class EffectOrchestratorWorker:
         previous_config = self.worker_config
         active_config = previous_config
         config_changed = latest_config != previous_config
+        early_completion_events_published = 0
         if config_changed:
-            if _provider_loader_signature(latest_config) != _provider_loader_signature(
+            provider_changed = _provider_loader_signature(latest_config) != _provider_loader_signature(
                 previous_config
-            ):
+            )
+            store_changed = _effect_store_binding_signature(latest_config) != _effect_store_binding_signature(
+                previous_config
+            )
+            store_wiring: EffectWorkerStoreWiring | None = None
+            runtime_wiring: EffectProviderRuntimeWiring | None = None
+            apply_config = True
+
+            if store_changed:
+                _completed_count, early_completion_events_published = self._reap_completed_futures()
+                pending_existing_store_events = len(self.event_queue.list_pending())
+                with self._inflight_lock:
+                    inflight_count = len(self._inflight)
+                if inflight_count > 0 or pending_existing_store_events > 0:
+                    logger.info(
+                        "Effect orchestrator store rebind deferred waiting for existing store "
+                        "drain revision=%s inflight=%d pending_events=%d "
+                        "completion_events_published=%d",
+                        _config_revision_hash(latest_config),
+                        inflight_count,
+                        pending_existing_store_events,
+                        early_completion_events_published,
+                    )
+                    apply_config = False
+                else:
+                    try:
+                        store_wiring = build_effect_worker_store_wiring(
+                            config=self.config,
+                            worker_config=latest_config,
+                            runtime=self.runtime,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Effect orchestrator store rebind failed revision=%s; "
+                            "restart or fix configuration before retrying",
+                            _config_revision_hash(latest_config),
+                        )
+                        apply_config = False
+                    else:
+                        if provider_changed:
+                            try:
+                                runtime_wiring = build_effect_provider_runtime_wiring(
+                                    config=self.config,
+                                    worker_config=latest_config,
+                                    runtime=self.runtime,
+                                    provider_config_resolver=self.provider_config_resolver,
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "Effect orchestrator provider_loader reload failed revision=%s; "
+                                    "restart or fix configuration before retrying",
+                                    _config_revision_hash(latest_config),
+                                )
+                                apply_config = False
+            elif provider_changed:
                 try:
                     runtime_wiring = build_effect_provider_runtime_wiring(
                         config=self.config,
@@ -386,8 +449,32 @@ class EffectOrchestratorWorker:
                         "restart or fix configuration before retrying",
                         _config_revision_hash(latest_config),
                     )
-                    latest_config = previous_config
-                else:
+                    apply_config = False
+
+            if apply_config:
+                self.worker_config = latest_config
+                active_config = latest_config
+                if store_wiring is not None:
+                    self.workflow_event_journal = store_wiring.workflow_event_journal
+                    self.event_queue = store_wiring.event_queue
+                    self.lock_path = store_wiring.lock_path
+                    self.cursor_path = store_wiring.cursor_path
+                    self.cursor_repository = store_wiring.effect_cursor_repository
+                    self.execution_store_path = latest_config.effect_execution_store_path
+                    self.execution_store = store_wiring.execution_store
+                    self.gate_execution_store_path = latest_config.gate_execution_store_path
+                    self.gate_execution_store = store_wiring.gate_execution_store
+                    self.workflow_config_snapshot_store = (
+                        store_wiring.workflow_config_snapshot_store
+                    )
+                    self.queued_agent_prompt_store = store_wiring.queued_agent_prompt_store
+                    self._kernel.config = PollingKernelConfig(
+                        poll_interval_seconds=self.worker_config.poll_interval_seconds,
+                        jitter_seconds=self.worker_config.jitter_seconds,
+                        lock_path=self.lock_path,
+                    )
+                    self.event_queue.reset_inflight()
+                if runtime_wiring is not None:
                     self.provider_config_resolver = runtime_wiring.provider_config_resolver
                     self.provider_factory = runtime_wiring.provider_factory
                     self.query_provider_factory = runtime_wiring.query_provider_factory
@@ -408,9 +495,13 @@ class EffectOrchestratorWorker:
                     self.effect_executor_registry = NodeExecutorRegistry()
                     self.query_executor_registry = NodeExecutorRegistry()
                     self._register_default_node_executors()
-            if latest_config != previous_config:
-                self.worker_config = latest_config
-                active_config = latest_config
+                elif store_wiring is not None and (
+                    latest_config.internal_event_store_path
+                    != previous_config.internal_event_store_path
+                    or latest_config.workflow_event_journal_path
+                    != previous_config.workflow_event_journal_path
+                ):
+                    self._register_default_node_executors()
                 logger.info(
                     "Effect orchestrator config revision changed revision=%s node_count=%d edge_count=%d",
                     _config_revision_hash(latest_config),
@@ -418,14 +509,14 @@ class EffectOrchestratorWorker:
                     + len(latest_config.gates)
                     + len(latest_config.effects)
                     + len(latest_config.queries),
-                    len(latest_config.edges),
+                    len(active_config.edges),
                 )
-        config_revision = _config_revision_hash(latest_config)
+        config_revision = _config_revision_hash(active_config)
         pending_events_scanned = 0
         events_processed = 0
         effect_executions_started = 0
         effect_executions_completed = 0
-        completion_events_published = 0
+        completion_events_published = early_completion_events_published
 
         graph = _build_execution_graph(active_config)
         snapshot_captured_at = datetime.now(UTC)
@@ -446,7 +537,7 @@ class EffectOrchestratorWorker:
         self._log_graph_revision_change(
             config_revision=config_revision,
             node_count=len(graph.nodes_by_id),
-            edge_count=len(latest_config.edges),
+            edge_count=len(active_config.edges),
         )
         completion_events_published += self._reconcile_gate_providers(graph=graph)
         completion_events_published += self._run_waiting_reconciliation_hooks()
@@ -2330,6 +2421,47 @@ def _provider_loader_signature(worker_config: TriggerOrchestratorWorkerGlobalCon
     payload = {
         "provider_loader": worker_config.provider_loader.model_dump(mode="json"),
         "provider_include_builtin": worker_config.provider_include_builtin,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _effect_store_binding_signature(
+    worker_config: TriggerOrchestratorWorkerGlobalConfig,
+) -> str:
+    payload = {
+        "runtime_dir": str(worker_config.runtime_dir),
+        "orchestration_store_backend": worker_config.orchestration_store_backend,
+        "orchestration_store_backend_explicit": "orchestration_store_backend"
+        in worker_config.model_fields_set,
+        "orchestration_store_path": str(worker_config.orchestration_store_path)
+        if worker_config.orchestration_store_path is not None
+        else None,
+        "orchestration_retention_days": worker_config.orchestration_retention_days,
+        "event_queue_store_path": str(worker_config.event_queue_store_path)
+        if worker_config.event_queue_store_path is not None
+        else None,
+        "workflow_event_journal_path": str(worker_config.workflow_event_journal_path)
+        if worker_config.workflow_event_journal_path is not None
+        else None,
+        "effect_execution_store_path": str(worker_config.effect_execution_store_path)
+        if worker_config.effect_execution_store_path is not None
+        else None,
+        "gate_execution_store_path": str(worker_config.gate_execution_store_path)
+        if worker_config.gate_execution_store_path is not None
+        else None,
+        "workflow_config_snapshot_store_path": str(worker_config.workflow_config_snapshot_store_path)
+        if worker_config.workflow_config_snapshot_store_path is not None
+        else None,
+        "effect_cursor_store_path": str(worker_config.effect_cursor_store_path)
+        if worker_config.effect_cursor_store_path is not None
+        else None,
+        "effect_lock_path": str(worker_config.effect_lock_path)
+        if worker_config.effect_lock_path is not None
+        else None,
+        "internal_event_store_path": str(worker_config.internal_event_store_path)
+        if worker_config.internal_event_store_path is not None
+        else None,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()

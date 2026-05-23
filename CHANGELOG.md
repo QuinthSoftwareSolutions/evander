@@ -20,6 +20,12 @@ material. Newer entries are added incrementally as changes land.
 - Added the pending-completion status to the workflow editor node ordering so
   stalled completion publication remains legible in the UI.
 
+## 2026-05-23 - Effect Store Rebind Drain
+
+- Deferred effect-worker store hot reloads while the current queue still has
+  pending events, so completion events published during a JSON-to-SQLite rebind
+  are processed before the worker swaps to the new store.
+
 ## 2026-05-23 - Workflow Run Detail Lookup Guardrail
 
 - Changed SQLite-backed workflow run detail lookups by event or trace id to
