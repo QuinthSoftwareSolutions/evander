@@ -837,6 +837,41 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       return;
     }
 
+    if (pathname === "/api/workflow-editor/sample-workflow") {
+      await route.fulfill(
+        jsonResponse({
+          active: false,
+          launched_at: null,
+          run: null,
+          detail: null,
+          tutorial_steps: [
+            {
+              step_id: "launch",
+              title: "Launch the sample",
+              body: "Create the guided in-memory run without touching runtime stores.",
+              status: "active",
+              node_id: null,
+            },
+            {
+              step_id: "inspect",
+              title: "Inspect the run",
+              body: "Open the existing inspector and review the simulated graph.",
+              status: "pending",
+              node_id: "sample:first-run:run",
+            },
+          ],
+          current_step: {
+            step_id: "launch",
+            title: "Launch the sample",
+            body: "Create the guided in-memory run without touching runtime stores.",
+            status: "active",
+            node_id: null,
+          },
+        }),
+      );
+      return;
+    }
+
     if (pathname === "/api/workflow-editor/document") {
       if (url.searchParams.has("_dashboard")) {
         assertDashboardCacheParams(url);
@@ -852,8 +887,8 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       }
       await route.fulfill(
         jsonResponse({
-          worker_id: "trigger-orchestrator",
-          nodes: [],
+          worker_id: workflowCatalogResponse.worker_id,
+          nodes: workflowCatalogResponse.nodes,
         }),
       );
       return;
@@ -866,12 +901,27 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       assertDashboardCacheParams(url);
       await route.fulfill(
         jsonResponse({
-          items: [],
+          items: [
+            {
+              tool_name: "prompt_agent",
+              created_at: "2026-05-18T10:01:30Z",
+              session_id: "session-1",
+              approval_request_id: "approval-1",
+              workflow_run_id: "evt-2",
+              trace_id: "trace-2",
+              correlation_id: "corr-1",
+              agent_id: "agent-1",
+              vm_id: "vm-1",
+              status: "denied",
+              decision: "denied",
+              error_summary: "Denied by policy",
+            },
+          ],
           counts: {
-            returned: 0,
+            returned: 1,
             status_counts: {
               success: 0,
-              denied: 0,
+              denied: 1,
               error: 0,
             },
           },
@@ -922,7 +972,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
     ),
     true,
   );
-  for (const panel of [systemHealthPanel, workflowPanel, approvalsPanel, toolCallsPanel]) {
+  for (const panel of [systemHealthPanel, agentPanel, workflowPanel, approvalsPanel, toolCallsPanel, onboardingPanel]) {
     await panel.evaluate((element) => {
       if (element instanceof HTMLDetailsElement) {
         element.open = true;
@@ -933,6 +983,7 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
   const systemHealthBox = await systemHealthPanel.boundingBox();
   assert.ok(releaseBox && systemHealthBox, "expected dashboard panels to have layout boxes");
   assert.ok(releaseBox.x < systemHealthBox.x, `expected release panel to occupy the left dashboard column, got release x=${releaseBox.x} system x=${systemHealthBox.x}`);
+  const onboardingWorkflowButton = onboardingPanel.getByRole("button", { name: "Open workflow" });
   let previousRightColumnY = -Infinity;
   for (const panel of [systemHealthPanel, agentPanel, workflowPanel, approvalsPanel, toolCallsPanel, onboardingPanel]) {
     const panelBox = await panel.boundingBox();
@@ -942,27 +993,60 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
     previousRightColumnY = panelBox.y;
   }
   assert.equal(await page.getByRole("button", { name: "Refresh dashboard" }).getAttribute("title"), "Refresh dashboard");
-  assert.equal(await page.getByRole("button", { name: "Open workflow" }).getAttribute("title"), "Open workflow");
-  await assert.doesNotReject(() => systemHealthPanel.locator(".detail-list strong").first().waitFor({ state: "visible" }));
+  assert.equal(await onboardingWorkflowButton.getAttribute("title"), "Open workflow");
+  await assert.doesNotReject(() => systemHealthPanel.locator(".dashboard-metric-row").first().waitFor({ state: "visible" }));
   await assert.doesNotReject(() => workflowPanel.getByText("2 runs, 1 active, 1 failed, 1 resumable.").waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => systemHealthPanel.getByText("Disk 40% used", { exact: false }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => systemHealthPanel.getByText("40% (40.0 GiB / 100.0 GiB)", { exact: true }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => systemHealthPanel.getByText("60% (60.0 GiB)", { exact: true }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => systemHealthPanel.getByText("128.0 MiB", { exact: true }).waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => systemHealthPanel.getByText("session-1 · 48.0 MiB · container_worker_vm", { exact: true }).waitFor({ state: "visible" }));
+  assert.equal(await systemHealthPanel.locator(".detail-list").count(), 0);
+  assert.equal(await systemHealthPanel.locator(".node-activity-item").count(), 0);
+  await assert.doesNotReject(() => agentPanel.locator(".dashboard-metric-row").first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => workflowPanel.locator(".dashboard-metric-row").first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => approvalsPanel.locator(".dashboard-metric-row").first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => toolCallsPanel.locator(".dashboard-metric-row").first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => onboardingPanel.locator(".dashboard-metric-row").first().waitFor({ state: "visible" }));
+  assert.equal(await agentPanel.locator(".detail-list").count(), 0);
+  assert.equal(await workflowPanel.locator(".detail-list").count(), 0);
+  assert.equal(await approvalsPanel.locator(".detail-list").count(), 0);
+  assert.equal(await toolCallsPanel.locator(".detail-list").count(), 0);
+  assert.equal(await onboardingPanel.locator(".detail-list").count(), 0);
+  assert.equal(await agentPanel.locator(".node-activity-item").count(), 0);
+  assert.equal(await workflowPanel.locator(".node-activity-item").count(), 0);
+  assert.equal(await approvalsPanel.locator(".node-activity-item").count(), 0);
+  assert.equal(await toolCallsPanel.locator(".node-activity-item").count(), 0);
+  assert.equal(await onboardingPanel.locator(".node-activity-item").count(), 0);
+  await assert.doesNotReject(() => agentPanel.getByText("prod-runner", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => workflowPanel.getByText("evt-2", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => approvalsPanel.getByText("Dispatch agent, root", { exact: true }).waitFor({ state: "visible" }));
+  const approvalsRow = approvalsPanel.locator(".dashboard-row-item").filter({ hasText: "Dispatch agent, root" }).first();
+  await assert.doesNotReject(() => approvalsRow.waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => toolCallsPanel.getByText("prompt_agent", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => toolCallsPanel.getByText("corr-1, Denied by policy", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => toolCallsPanel.locator(".dashboard-link-chip").filter({ hasText: "approval-1" }).first().waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => toolCallsPanel.locator(".dashboard-link-chip").filter({ hasText: "evt-2" }).first().waitFor({ state: "visible" }));
+  assert.ok((await onboardingPanel.locator(".dashboard-row-item").count()) > 0);
+  await assert.doesNotReject(() => systemHealthPanel.getByText("root", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => systemHealthPanel.getByText("Disk / storage", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => systemHealthPanel.getByText("40% used (40.0 GiB / 100.0 GiB)", { exact: false }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => systemHealthPanel.getByText("60% (60.0 GiB)", { exact: false }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => systemHealthPanel.getByText("128.0 MiB", { exact: false }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => systemHealthPanel.getByText("session-1 · 48.0 MiB · container_worker_vm", { exact: false }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => systemHealthPanel.getByText("2 pending, 1 in-flight", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => systemHealthPanel.getByText("3 unread", { exact: true }).waitFor({ state: "visible" }));
   const pendingApprovalPill = approvalsPanel.locator(".status-pill").filter({ hasText: "1 pending" }).first();
   await assert.doesNotReject(() => pendingApprovalPill.waitFor({ state: "visible" }));
-  await assert.doesNotReject(() => toolCallsPanel.getByText("No tool-call audit entries were returned.").first().waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.getByRole("heading", { name: "Version and changelog" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.locator(".dashboard-release-summary").waitFor({ state: "visible" }));
-  assert.equal((await systemHealthPanel.locator(".detail-list strong").first().textContent())?.trim(), "root");
-  const erroredRun = workflowPanel.locator(".node-activity-item").filter({ hasText: "evt-2" });
+  assert.match(await systemHealthPanel.locator(".dashboard-metric-row").first().innerText(), /root/);
+  const erroredRun = workflowPanel.locator(".dashboard-row-item").filter({ hasText: "evt-2" });
   const erroredRunStateClass = await erroredRun.locator(".status-pill").last().getAttribute("class");
   assert.ok(erroredRunStateClass?.includes("state-fail"), `expected errored run to use failure tone, got ${erroredRunStateClass}`);
+  assert.match(await approvalsRow.innerText(), /session-1/);
+  await assert.doesNotReject(() => workflowPanel.locator(".dashboard-link-chip").filter({ hasText: "trace-2" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => workflowPanel.getByText("trigger-2, trigger:manual", { exact: true }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => toolCallsPanel.getByText("1 recent calls, 0 successful, 1 denied, 0 errored.", { exact: true }).waitFor({ state: "visible" }));
+  const deniedToolCall = toolCallsPanel.locator(".dashboard-row-item").filter({ hasText: "prompt_agent" });
+  const deniedToolCallStateClass = await deniedToolCall.locator(".status-pill").last().getAttribute("class");
+  assert.ok(deniedToolCallStateClass?.includes("state-fail"), `expected denied tool call to use failure tone, got ${deniedToolCallStateClass}`);
   assert.equal((await pendingApprovalPill.textContent())?.trim(), "1 pending");
-  assert.equal((await toolCallsPanel.getByText("No tool-call audit entries were returned.").first().textContent())?.trim(), "No tool-call audit entries were returned.");
   assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Version 0\.2\.2/);
   assert.match(await releasePanel.locator(".dashboard-release-summary").innerText(), /Build agent-sandbox-build-20260521/);
   await assert.doesNotReject(() => releasePanel.getByRole("button", { name: "Download changelog" }).waitFor({ state: "visible" }));

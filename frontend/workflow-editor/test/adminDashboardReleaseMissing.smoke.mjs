@@ -361,6 +361,7 @@ test("admin shell release and capacity panels show missing states without invent
 
   const releasePanel = page.locator(".dashboard-panel-grid .dashboard-release-panel");
   const systemHealthPanel = page.locator(".dashboard-panel-grid .dashboard-panel").filter({ hasText: "System health" });
+  const toolCallsPanel = page.locator(".dashboard-panel-grid .dashboard-panel").filter({ hasText: "Explainability shortcuts" });
   await assert.doesNotReject(() => releasePanel.getByRole("heading", { name: "Version and changelog" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.locator(".status-pill").filter({ hasText: "Missing" }).waitFor({ state: "visible" }));
   assert.equal(
@@ -372,9 +373,15 @@ test("admin shell release and capacity panels show missing states without invent
       element.open = true;
     }
   });
+  await toolCallsPanel.evaluate((element) => {
+    if (element instanceof HTMLDetailsElement) {
+      element.open = true;
+    }
+  });
   const capacityBlock = systemHealthPanel.locator(".dashboard-block").filter({ hasText: "Capacity" });
   await assert.doesNotReject(() => capacityBlock.locator(".empty-state").filter({ hasText: "Capacity health is unavailable on this host." }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => capacityBlock.locator(".status-pill").filter({ hasText: "Missing" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => toolCallsPanel.getByText("No tool-call audit entries were returned.").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.locator(".release-missing-list strong").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.getByText("Version unavailable", { exact: true }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => releasePanel.getByText("Build unavailable", { exact: true }).waitFor({ state: "visible" }));
