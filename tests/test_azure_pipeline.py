@@ -40,6 +40,7 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
     assert parameters["controlPlaneSshNsgResourceGroup"]["default"] == "auto"
     assert parameters["controlPlaneSshNsgName"]["default"] == "auto"
     assert parameters["hostCodexNpmPackage"]["default"] == "@openai/codex"
+    assert parameters["forceRunnerImageRebuild"]["default"] is False
     assert parameters["dotnetSdkVersion"]["default"] == "10.0.x"
     assert "DownloadSecureFile@1" in text
     assert "controlPlaneSshKey.secureFilePath" in text
@@ -72,6 +73,7 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
     assert "Installed Codex package did not contain the expected executable" not in text
     assert "HOST_CODEX_NPM_PACKAGE: ${{ parameters.hostCodexNpmPackage }}" in text
     assert 'HOST_CODEX_PLATFORM_PACKAGE: "@openai/codex-linux-x64"' in text
+    assert "RUNNER_FORCE_REBUILD: ${{ parameters.forceRunnerImageRebuild }}" in text
     assert 'dotnet_path="$(command -v dotnet || true)"' in text
     assert 'HOST_DOTNET_ROOT="$(dirname "$dotnet_real_path")"' in text
     assert "Expected \\$HOST_DOTNET_ROOT/dotnet to exist and be executable." in text
@@ -114,6 +116,7 @@ def test_azure_pipeline_deploys_control_plane_before_worker() -> None:
     assert worker_step_names.index("Install worker .NET SDK") < worker_step_names.index(
         "Deploy worker VM with Ansible"
     )
+    assert "test -s dist/agent-sandbox-runner.tar.manifest" in text
 
 
 def test_azure_deploy_repo_matches_pipeline_source_of_truth() -> None:

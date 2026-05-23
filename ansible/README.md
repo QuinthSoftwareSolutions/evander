@@ -265,6 +265,14 @@ the installed Codex package into `$(Pipeline.Workspace)/host-codex`. It exports 
 `HOST_CODEX_ROOT`, installs the workflow-editor npm dependencies, and downloads Chromium into
 `$(Pipeline.Workspace)/ms-playwright`. It then runs
 `scripts/build_agent_sandbox_runner_image.sh`.
+That script writes `dist/agent-sandbox-runner.tar.manifest` beside the tarball and reuses the cached archive
+when the manifest still matches. The manifest key covers the Dockerfile text, the build
+script text, `RUNNER_IMAGE_NAME`, the resolved Codex binary path and SHA-256, the relevant Codex
+platform package identity, and the base-image policy from the Dockerfile `FROM` line. Use
+`RUNNER_FORCE_REBUILD=1 ./scripts/build_agent_sandbox_runner_image.sh` or
+`./scripts/build_agent_sandbox_runner_image.sh --force` to force a rebuild; that is the right path
+when you want a moving base tag such as `ubuntu:24.04` refreshed, because the tag text can stay the
+same while the remote image changes.
 Before `ansible/worker.yml`, the pipeline resolves `HOST_NODE_ROOT` from the installed Node runtime
 and exports `HOST_PLAYWRIGHT_NODE_MODULES` plus `HOST_PLAYWRIGHT_BROWSERS` so the worker toolchain
 roles do not depend on nvm-style or home-cache hosted-agent paths. The default package spec is
@@ -513,7 +521,9 @@ network/routing setup that can reach only the required control-plane relay and g
 plus the apt relay on `3142` and the Nexus package cache on `8081`. Worker outbound rules should still deny direct access to Ubuntu mirrors, `pypi.org`, and `registry.npmjs.org`; the control plane is the only host that needs upstream package internet access for these formats.
 If the host Docker bridge cannot reach apt mirrors while building the tarball, build it with
 `RUNNER_BUILD_NETWORK=host ./scripts/build_agent_sandbox_runner_image.sh`; this does not change the
-worker daemon's runtime networking policy.
+worker daemon's runtime networking policy. This first slice keeps Ansible's tar-copy/load deployment model; worker-side remote manifest comparison is deferred because the host-side cache already skips
+the expensive local `docker build`/`docker save` path when inputs are unchanged, while a remote skip
+would need a separate trusted manifest storage/read path on the worker.
 
 After the worker playbook and control-plane config are both deployed, verify the full path from the
 control plane:
