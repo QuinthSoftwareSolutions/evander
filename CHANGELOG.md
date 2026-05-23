@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-23 - Dashboard Agent Inventory Polling
+
+- Added a dashboard-scoped Agent Inventory poll that refreshes visible agent
+  data about every 10 seconds while the dashboard is mounted.
+- Coalesced concurrent dashboard JSON cache misses for the same request so
+  shared polling clients do not start duplicate backend reads.
+
 ## 2026-05-23 - Workflow Generator Draft Safety Fixes
 
 - Guarded generated workflow draft layout against cyclic graphs so invalid

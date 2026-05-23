@@ -14,6 +14,8 @@ from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.shared import AdminWebAuth, json_error
 
+DASHBOARD_AGENT_LIST_CACHE_TTL_SECONDS = 10.0
+
 
 def _jsonable(value: Any) -> Any:
     if isinstance(value, BaseModel):
@@ -213,7 +215,13 @@ def agent_routes(
     return [
         Route(
             "/api/admin/agents",
-            cache.wrap("admin.agents.list", list_agents) if cache else list_agents,
+            cache.wrap(
+                "admin.agents.list",
+                list_agents,
+                ttl_seconds=DASHBOARD_AGENT_LIST_CACHE_TTL_SECONDS,
+            )
+            if cache
+            else list_agents,
             methods=["GET"],
         ),
         Route("/api/admin/agents", create_agent, methods=["POST"]),

@@ -8,6 +8,8 @@ import type { AgentBackend } from "../admin/types";
 import { adminHash, type AdminHashParamValue, type AdminTab } from "../../adminRouting";
 import type { WorkflowEditorCatalog, WorkflowEditorDocument, WorkflowRunSnapshot } from "../../types";
 
+const DASHBOARD_AGENT_INVENTORY_POLL_MS = 10_000;
+
 type DashboardAdminState = {
   selected_directory_path: string;
   directory_scoped_config_enabled: boolean;
@@ -1368,6 +1370,23 @@ function makeQuery(params: Record<string, string | number | boolean | null | und
   return result ? `?${result}` : "";
 }
 
+function dashboardCacheParams(refreshKey: number | null = null) {
+  return {
+    _dashboard: "1",
+    _dashboard_refresh: refreshKey && refreshKey > 0 ? refreshKey : null,
+  };
+}
+
+function dashboardAgentInventoryUrl(directoryPath: string, refreshKey: number | null = null): string {
+  return `/api/admin/agents${makeQuery({
+    directory_path: directoryPath,
+    direct_only: false,
+    include_inactive: true,
+    backend: "all",
+    ...dashboardCacheParams(refreshKey),
+  })}`;
+}
+
 function workerSummary(workers: WorkerSummary[]): string {
   if (workers.length === 0) return "No workers are reporting.";
   const running = countBy(workers, (worker) => worker.running);
@@ -1636,6 +1655,7 @@ export function OperationsDashboard() {
   const directoryLoadIdRef = useRef(0);
   const globalLoadIdRef = useRef(0);
   const releaseLoadIdRef = useRef(0);
+  const agentInventoryLoadIdRef = useRef(0);
 
   function startDashboardLoad(
     loadIdRef: MutableRefObject<number>,
@@ -1686,27 +1706,8 @@ export function OperationsDashboard() {
   }
 
   useEffect(() => {
-    const dashboardCacheParams = {
-      _dashboard: "1",
-      _dashboard_refresh: refreshNonce > 0 ? refreshNonce : null,
-    };
+    const cacheParams = dashboardCacheParams(refreshNonce);
     const directoryTasks: DashboardLoadTask<any>[] = [
-      {
-        key: "agents",
-        request: (signal) =>
-          fetchJson<AgentListResponse>(
-            `/api/admin/agents${makeQuery({
-              directory_path: selectedDirectoryPath,
-              direct_only: false,
-              include_inactive: true,
-              backend: "all",
-              ...dashboardCacheParams,
-            })}`,
-            { signal },
-          ),
-        missing: "No agents were returned for this directory scope.",
-        missingIfEmpty: (value) => (value.items.length === 0 ? "No agents were returned for this directory scope." : null),
-      },
       {
         key: "approvals",
         request: (signal) =>
@@ -1715,7 +1716,7 @@ export function OperationsDashboard() {
               statuses: "pending",
               directory_path: selectedDirectoryPath,
               direct_only: true,
-              ...dashboardCacheParams,
+              ...cacheParams,
             })}`,
             { signal },
           ),
@@ -1730,7 +1731,7 @@ export function OperationsDashboard() {
               include_expired: true,
               directory_path: selectedDirectoryPath,
               direct_only: true,
-              ...dashboardCacheParams,
+              ...cacheParams,
             })}`,
             { signal },
           ),
@@ -1746,7 +1747,7 @@ export function OperationsDashboard() {
               directory_path: selectedDirectoryPath,
               direct_only: true,
               limit: 5,
-              ...dashboardCacheParams,
+              ...cacheParams,
             })}`,
             { signal },
           ),
@@ -1757,7 +1758,7 @@ export function OperationsDashboard() {
         key: "workflowCatalog",
         request: (signal) =>
           fetchJson<WorkflowEditorCatalog>(
-            `/api/workflow-editor/catalog${makeQuery({ directory_path: selectedDirectoryPath, ...dashboardCacheParams })}`,
+            `/api/workflow-editor/catalog${makeQuery({ directory_path: selectedDirectoryPath, ...cacheParams })}`,
             { signal },
           ),
         missing: "No catalog nodes are available for this directory.",
@@ -1769,20 +1770,86 @@ export function OperationsDashboard() {
   }, [selectedDirectoryPath, refreshNonce]);
 
   useEffect(() => {
-    const dashboardCacheParams = {
-      _dashboard: "1",
-      _dashboard_refresh: refreshNonce > 0 ? refreshNonce : null,
+    const controller = new AbortController();
+    const loadId = agentInventoryLoadIdRef.current + 1;
+    agentInventoryLoadIdRef.current = loadId;
+    let cancelled = false;
+    let timer: number | null = null;
+    let firstPoll = true;
+
+    function isCurrentLoad() {
+      return !cancelled && !controller.signal.aborted && agentInventoryLoadIdRef.current === loadId;
+    }
+
+    async function pollAgents(refreshKey: number | null = null) {
+      const showInitialLoading = firstPoll;
+      firstPoll = false;
+      if (showInitialLoading) {
+        setState((current) => ({
+          ...current,
+          agents: {
+            ...current.agents,
+            loading: true,
+            error: null,
+            missing: null,
+          },
+        }));
+      }
+
+      try {
+        const value = await fetchJson<AgentListResponse>(dashboardAgentInventoryUrl(selectedDirectoryPath, refreshKey), {
+          signal: controller.signal,
+        });
+        if (!isCurrentLoad()) return;
+        const result: PromiseSettledResult<AgentListResponse> = { status: "fulfilled", value };
+        setState((current) => ({
+          ...current,
+          agents: remoteFromResult(
+            result,
+            "No agents were returned for this directory scope.",
+            (payload) => (payload.items.length === 0 ? "No agents were returned for this directory scope." : null),
+          ),
+        }));
+      } catch (reason: unknown) {
+        if (!isCurrentLoad()) return;
+        const result: PromiseSettledResult<AgentListResponse> = { status: "rejected", reason };
+        setState((current) => ({
+          ...current,
+          agents: remoteFromResult(result, "No agents were returned for this directory scope."),
+        }));
+      }
+    }
+
+    async function pollLoop(refreshKey: number | null = null) {
+      await pollAgents(refreshKey);
+      if (!isCurrentLoad()) return;
+      timer = window.setTimeout(() => {
+        void pollLoop();
+      }, DASHBOARD_AGENT_INVENTORY_POLL_MS);
+    }
+
+    void pollLoop(refreshNonce > 0 ? refreshNonce : null);
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
     };
+  }, [selectedDirectoryPath, refreshNonce]);
+
+  useEffect(() => {
+    const cacheParams = dashboardCacheParams(refreshNonce);
     const globalTasks: DashboardLoadTask<any>[] = [
       {
         key: "workers",
-        request: (signal) => fetchJson<WorkerListResponse>(`/api/workers${makeQuery(dashboardCacheParams)}`, { signal }),
+        request: (signal) => fetchJson<WorkerListResponse>(`/api/workers${makeQuery(cacheParams)}`, { signal }),
         missing: "No workers are reporting.",
         missingIfEmpty: (value) => (value.workers.length === 0 ? "No workers are reporting." : null),
       },
       {
         key: "workflowRuns",
-        request: (signal) => fetchJson<WorkflowRunSnapshot>(`/api/workflow-editor/runs${makeQuery(dashboardCacheParams)}`, { signal }),
+        request: (signal) => fetchJson<WorkflowRunSnapshot>(`/api/workflow-editor/runs${makeQuery(cacheParams)}`, { signal }),
         missing: "No workflow runs have been observed yet.",
         missingIfEmpty: (value) => (value.runs.length === 0 ? "No workflow runs have been observed yet." : null),
       },
@@ -1790,7 +1857,7 @@ export function OperationsDashboard() {
         key: "workflowActivity",
         request: (signal) =>
           fetchJson<WorkflowGraphActivityReport>(
-            `/api/admin/reports/workflow-graph-activity${makeQuery({ limit: 5, ...dashboardCacheParams })}`,
+            `/api/admin/reports/workflow-graph-activity${makeQuery({ limit: 5, ...cacheParams })}`,
             { signal },
           ),
         missing: "No workflow graph activity is available yet.",
@@ -1798,11 +1865,11 @@ export function OperationsDashboard() {
       },
       {
         key: "capacityHealth",
-        request: (signal) => fetchJson<CapacityHealthPayload>(`/api/admin/capacity-health${makeQuery(dashboardCacheParams)}`, { signal }),
+        request: (signal) => fetchJson<CapacityHealthPayload>(`/api/admin/capacity-health${makeQuery(cacheParams)}`, { signal }),
       },
       {
         key: "workflowDocument",
-        request: (signal) => fetchJson<WorkflowEditorDocument>(`/api/workflow-editor/document${makeQuery(dashboardCacheParams)}`, { signal }),
+        request: (signal) => fetchJson<WorkflowEditorDocument>(`/api/workflow-editor/document${makeQuery(cacheParams)}`, { signal }),
         missing: "No workflow document has been created yet.",
         missingIfEmpty: (value) => (!value.config_exists && !value.layout_exists ? "No workflow document has been created yet." : null),
       },
