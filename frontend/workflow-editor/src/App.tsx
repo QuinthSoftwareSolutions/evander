@@ -66,6 +66,7 @@ import {
   isParsedBindingExpression,
   isParsedBindingReference,
   parseBindingExpression,
+  rewriteWorkflowConfigBindingReferences,
   rewriteWorkflowNodeConfigBindings,
   type ParsedBindingExpression,
   type ParsedBindingReference,
@@ -4344,6 +4345,7 @@ export default function App() {
 
   function replaceSelectedNode(nextNode: WorkflowNodeConfig, originalNodeId: string) {
     if (!document || !selectedNode || workflowEditLocked) return;
+    const currentDocument = document;
     const nextConfig = cloneConfig(document.config);
     const collectionName = kindCollectionKey(nodeKindFromType(selectedNode.type));
     nextConfig[collectionName] = nextConfig[collectionName].map((node) =>
@@ -4355,11 +4357,42 @@ export default function App() {
       target_id: edge.target_id === originalNodeId ? nextNode.id : edge.target_id,
     }));
     const nextLayout = cloneLayout(document.layout);
+    function rewriteGraphNodeIds(graph: WorkflowGraphMetadata): WorkflowGraphMetadata {
+      return {
+        ...graph,
+        node_ids: graph.node_ids.map((nodeId) => (nodeId === originalNodeId ? nextNode.id : nodeId)),
+      };
+    }
+    function rewriteOutputSchemas(): WorkflowOutputSchemas {
+      const nextSchemas = { ...(currentDocument.output_schemas ?? {}) };
+      if (Object.prototype.hasOwnProperty.call(nextSchemas, originalNodeId)) {
+        nextSchemas[nextNode.id] = copyOutputSchema(nextSchemas[originalNodeId]);
+        delete nextSchemas[originalNodeId];
+      }
+      return nextSchemas;
+    }
+    let nextGraphs: WorkflowGraphMetadata[] | undefined;
+    let nextOutputSchemas: WorkflowOutputSchemas | undefined;
     if (nextNode.id !== originalNodeId) {
+      const nodeIdMap = new Map([[originalNodeId, nextNode.id]]);
+      const rewrittenConfig = rewriteWorkflowConfigBindingReferences(nextConfig, nodeIdMap);
+      nextConfig.triggers = rewrittenConfig.triggers;
+      nextConfig.gates = rewrittenConfig.gates;
+      nextConfig.effects = rewrittenConfig.effects;
+      nextConfig.queries = rewrittenConfig.queries;
+      nextGraphs = (currentDocument.graphs ?? []).map((graph) => rewriteGraphNodeIds(graph));
+      nextOutputSchemas = rewriteOutputSchemas();
       nextLayout.nodes[nextNode.id] = nextLayout.nodes[originalNodeId] ?? fallbackPosition(0);
       delete nextLayout.nodes[originalNodeId];
     }
-    patchDocument(nextConfig, nextLayout, undefined, [nextNode.id]);
+    patchDocument(
+      nextConfig,
+      nextLayout,
+      nextGraphs,
+      [nextNode.id],
+      undefined,
+      nextOutputSchemas,
+    );
     setProgrammaticSelection([nextNode.id], nextNode.id);
     setSelectedEdgeId(null);
     setNodeEditOrigins((current) => {
