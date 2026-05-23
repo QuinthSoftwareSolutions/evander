@@ -390,7 +390,6 @@ const NODE_STATUS_ORDER = [
   "skipped",
 ] as const;
 const WORKFLOW_SIDEBAR_WIDTH_STORAGE_KEY = "workflow-editor:sidebar-width";
-const WORKFLOW_SAMPLE_TUTORIAL_COMPLETED_STORAGE_KEY = "workflow-editor:sample-tutorial-completed";
 const WORKFLOW_SIDEBAR_DEFAULT_WIDTH = 320;
 const WORKFLOW_SIDEBAR_MIN_WIDTH = 320;
 const WORKFLOW_SIDEBAR_MAX_WIDTH = 760;
@@ -417,11 +416,6 @@ function readStoredWorkflowSidebarWidth(): number {
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed)) return WORKFLOW_SIDEBAR_DEFAULT_WIDTH;
   return Math.min(Math.max(parsed, WORKFLOW_SIDEBAR_MIN_WIDTH), WORKFLOW_SIDEBAR_MAX_WIDTH);
-}
-
-function readStoredWorkflowSampleTutorialCompleted(): boolean {
-  if (typeof window === "undefined") return false;
-  return window.localStorage.getItem(WORKFLOW_SAMPLE_TUTORIAL_COMPLETED_STORAGE_KEY) === "true";
 }
 
 function maxWorkflowSidebarWidth(containerWidth: number): number {
@@ -2757,10 +2751,7 @@ export default function App() {
   const [sampleWorkflowLoading, setSampleWorkflowLoading] = useState(true);
   const [sampleWorkflowError, setSampleWorkflowError] = useState<string | null>(null);
   const [sampleWorkflowAction, setSampleWorkflowAction] = useState<"launch" | "reset" | null>(null);
-  const [sampleWorkflowTutorialOpen, setSampleWorkflowTutorialOpen] = useState(false);
-  const [sampleWorkflowTutorialCompleted, setSampleWorkflowTutorialCompleted] = useState(
-    () => readStoredWorkflowSampleTutorialCompleted(),
-  );
+  const [sampleWorkflowPanelOpen, setSampleWorkflowPanelOpen] = useState(false);
   const [activeWorkflowTutorial, setActiveWorkflowTutorial] = useState<WorkflowTutorialSession | null>(null);
   const [workflowTutorialHint, setWorkflowTutorialHint] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<WorkflowRunDetail | null>(null);
@@ -3378,18 +3369,9 @@ export default function App() {
     }
   }
 
-  function markWorkflowSampleTutorialCompleted() {
-    setSampleWorkflowTutorialCompleted(true);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(WORKFLOW_SAMPLE_TUTORIAL_COMPLETED_STORAGE_KEY, "true");
-    }
-    setSampleWorkflowTutorialOpen(false);
-  }
-
   async function resetWorkflowSample() {
     if (sampleWorkflowAction !== null) return;
     const inspectedSampleEventId = sampleWorkflow?.detail?.event_id ?? sampleWorkflow?.run?.event_id ?? null;
-    const shouldCompleteTutorial = Boolean(sampleWorkflow?.active || inspectedSampleEventId);
     setSampleWorkflowAction("reset");
     setSampleWorkflowError(null);
     try {
@@ -3401,9 +3383,6 @@ export default function App() {
         exitInspectMode();
         setRunDetailLookup("");
         setRunDetailError(null);
-      }
-      if (shouldCompleteTutorial) {
-        markWorkflowSampleTutorialCompleted();
       }
     } catch (reason: unknown) {
       setSampleWorkflowError(reason instanceof Error ? reason.message : String(reason));
@@ -7022,25 +7001,22 @@ export default function App() {
     const sampleRun = sampleWorkflow?.run ?? null;
     const sampleEventId = sampleWorkflow?.detail?.event_id ?? sampleRun?.event_id ?? null;
     const isBusy = sampleWorkflowLoading || sampleWorkflowAction !== null;
-    if (!sampleWorkflowTutorialOpen) {
+    if (!sampleWorkflowPanelOpen) {
       return (
-        <div className={`guided-sample-launcher${sampleWorkflowTutorialCompleted ? " is-complete" : " needs-attention"}`}>
+        <div className="guided-sample-launcher">
           <button
             type="button"
-            className={`guided-sample-launcher-button${sampleWorkflowTutorialCompleted ? " is-complete" : " needs-attention"}`}
+            className="primary"
             onClick={() => {
-              setSampleWorkflowTutorialOpen(true);
+              setSampleWorkflowPanelOpen(false);
               startWorkflowTutorial();
             }}
-            aria-expanded="false"
           >
-            Tutorial
+            First steps
           </button>
-          {!sampleWorkflowTutorialCompleted ? (
-            <button type="button" className="guided-sample-skip-button" onClick={markWorkflowSampleTutorialCompleted}>
-              Skip
-            </button>
-          ) : null}
+          <button type="button" className="subtle-button" onClick={() => setSampleWorkflowPanelOpen(true)}>
+            Sample run
+          </button>
         </div>
       );
     }
@@ -7048,15 +7024,15 @@ export default function App() {
       <div className="sidebar-section guided-sample-section">
         <div className="guided-sample-header">
           <div>
-            <div className="section-label">Guided sample</div>
-            <h2>First run walkthrough</h2>
+            <div className="section-label">Sample run</div>
+            <h2>In-memory walkthrough</h2>
             <p>Launch an in-memory run, inspect the simulated graph, and reset it without touching runtime stores.</p>
           </div>
           <div className="guided-sample-header-actions">
             <span className={`sample-state-pill state-${sampleWorkflow?.active ? "active" : "idle"}`}>
               {sampleWorkflowLoading ? "Loading" : sampleWorkflow?.active ? "Active" : "Idle"}
             </span>
-            <button type="button" className="subtle-button guided-sample-hide-button" onClick={() => setSampleWorkflowTutorialOpen(false)}>
+            <button type="button" className="subtle-button guided-sample-hide-button" onClick={() => setSampleWorkflowPanelOpen(false)}>
               Hide
             </button>
           </div>
@@ -7069,11 +7045,6 @@ export default function App() {
           <button type="button" className="subtle-button" onClick={() => void resetWorkflowSample()} disabled={isBusy}>
             {sampleWorkflowAction === "reset" ? "Resetting..." : "Reset sample"}
           </button>
-          {!sampleWorkflowTutorialCompleted ? (
-            <button type="button" className="subtle-button" onClick={markWorkflowSampleTutorialCompleted}>
-              Mark complete
-            </button>
-          ) : null}
         </div>
         {sampleWorkflow?.current_step ? (
           <div className="guided-sample-current-step">
