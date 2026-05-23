@@ -363,13 +363,18 @@ class EffectOrchestratorWorker:
 
             if store_changed:
                 _completed_count, early_completion_events_published = self._reap_completed_futures()
+                pending_existing_store_events = len(self.event_queue.list_pending())
                 with self._inflight_lock:
                     inflight_count = len(self._inflight)
-                if inflight_count > 0:
+                if inflight_count > 0 or pending_existing_store_events > 0:
                     logger.info(
-                        "Effect orchestrator store rebind deferred waiting for in-flight effect executions revision=%s inflight=%d",
+                        "Effect orchestrator store rebind deferred waiting for existing store "
+                        "drain revision=%s inflight=%d pending_events=%d "
+                        "completion_events_published=%d",
                         _config_revision_hash(latest_config),
                         inflight_count,
+                        pending_existing_store_events,
+                        early_completion_events_published,
                     )
                     apply_config = False
                 else:
