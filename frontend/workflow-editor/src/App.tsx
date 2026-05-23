@@ -119,6 +119,7 @@ import {
   createWorkflowTutorialSession,
   workflowTutorialDefinitionById,
   workflowTutorialTargetNodeId,
+  workflowTutorialRequiredActionMatches,
   type WorkflowTutorialRequiredAction,
   type WorkflowTutorialSession,
   type WorkflowTutorialStep,
@@ -2761,6 +2762,7 @@ export default function App() {
     () => readStoredWorkflowSampleTutorialCompleted(),
   );
   const [activeWorkflowTutorial, setActiveWorkflowTutorial] = useState<WorkflowTutorialSession | null>(null);
+  const [workflowTutorialHint, setWorkflowTutorialHint] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<WorkflowRunDetail | null>(null);
   const [runDetailLookup, setRunDetailLookup] = useState(initialWorkflowRunLookup?.value ?? "");
   const [runDetailLookupKind, setRunDetailLookupKind] = useState<WorkflowRunDetailLookupKind>(
@@ -2827,6 +2829,10 @@ export default function App() {
     : null;
   const isTutorialMode = Boolean(activeWorkflowTutorialDefinition && activeWorkflowTutorialStep);
   const workflowEditLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial);
+  const activeWorkflowDocument = isTutorialMode && activeWorkflowTutorial ? activeWorkflowTutorial.document : document;
+  const activeWorkflowConfig = activeWorkflowDocument?.config ?? emptyConfig();
+  const activeWorkflowOutputSchemas = activeWorkflowDocument?.output_schemas ?? EMPTY_OUTPUT_SCHEMAS;
+  const activeWorkflowCatalog = activeWorkflowTutorialDefinition?.catalog ?? catalog;
   const config = document?.config ?? emptyConfig();
   const workflowGraphs = document?.graphs ?? [];
   const visibleWorkflowGraphs = workflowGraphs.filter((graph) =>
@@ -2887,7 +2893,7 @@ export default function App() {
           {},
           [],
           {},
-          [],
+          selectedNodeIds,
           new Set<string>(),
           new Set<string>(),
         ),
@@ -2941,30 +2947,35 @@ export default function App() {
   const selectedInspectCatalogEntry = selectedInspectGraphNode
     ? getCatalogEntry(catalog, selectedInspectGraphNode.type)
     : undefined;
-  const selectedNode = !isInspectMode && selectedNodeIds.length === 1 && selectedNodeId ? nodeById(config, selectedNodeId) : undefined;
-  const selectedCatalogEntry = selectedNode ? getCatalogEntry(catalog, selectedNode.type) : undefined;
+  const selectedNode = !isInspectMode && selectedNodeIds.length === 1 && selectedNodeId
+    ? nodeById(activeWorkflowConfig, selectedNodeId)
+    : undefined;
+  const selectedCatalogEntry = selectedNode ? getCatalogEntry(activeWorkflowCatalog, selectedNode.type) : undefined;
   const selectedNodeDiagnostics = selectedNode
-    ? validationDiagnostics.filter((diagnostic) => diagnostic.node_id === selectedNode.id)
+    ? (isTutorialMode
+        ? (activeWorkflowDocument?.validation_diagnostics ?? [])
+        : validationDiagnostics
+      ).filter((diagnostic) => diagnostic.node_id === selectedNode.id)
     : [];
   const selectedNodeOutputContract = useMemo(
     () => (
       selectedNode
-        ? workflowNodeOutputContract(config, selectedNode.id, document?.output_schemas ?? EMPTY_OUTPUT_SCHEMAS)
+        ? workflowNodeOutputContract(activeWorkflowConfig, selectedNode.id, activeWorkflowOutputSchemas)
         : null
     ),
-    [config, document?.output_schemas, selectedNode?.id],
+    [activeWorkflowConfig, activeWorkflowOutputSchemas, selectedNode?.id],
   );
   const selectedEdge = selectedEdgeId
-    ? config.edges.find(
+    ? activeWorkflowConfig.edges.find(
         (edge) =>
           edgeId(edge) === selectedEdgeId &&
           visibleGraphNodeIds.has(edge.source_id) &&
           visibleGraphNodeIds.has(edge.target_id),
       )
     : undefined;
-  const selectedEdgeSourceNode = selectedEdge ? nodeById(config, selectedEdge.source_id) : undefined;
+  const selectedEdgeSourceNode = selectedEdge ? nodeById(activeWorkflowConfig, selectedEdge.source_id) : undefined;
   const selectedEdgeSourceCatalogEntry = selectedEdgeSourceNode
-    ? getCatalogEntry(catalog, selectedEdgeSourceNode.type)
+    ? getCatalogEntry(activeWorkflowCatalog, selectedEdgeSourceNode.type)
     : undefined;
   const selectedEdgeRouteLabel = selectedEdge
     ? workflowEdgeRouteLabel(selectedEdge.source_port, selectedEdgeSourceCatalogEntry?.output_ports ?? [])
@@ -3038,7 +3049,7 @@ export default function App() {
     return ensureDirectorySelectOption(withRoot, selectedDirectoryPath, selectedDirectoryPath);
   }, [directoryTree, selectedDirectoryPath]);
   const selectedNodeBindingOptions = selectedNode
-    ? upstreamBindingOptions(config, selectedNode.id, document?.output_schemas ?? EMPTY_OUTPUT_SCHEMAS)
+    ? upstreamBindingOptions(activeWorkflowConfig, selectedNode.id, activeWorkflowOutputSchemas)
     : [];
   const hasCollapsedTargetUi =
     selectedNode?.type === "effect:vm:copy-files" ||
@@ -3531,6 +3542,61 @@ export default function App() {
     void loadWorkflowRunSearch(query);
   }
 
+  function tutorialCurrentRequiredAction(): WorkflowTutorialRequiredAction | null {
+    return activeWorkflowTutorialStep?.requiredAction ?? null;
+  }
+
+  function tutorialActionMatchesCurrentStep(action: WorkflowTutorialRequiredAction): boolean {
+    const requiredAction = tutorialCurrentRequiredAction();
+    return requiredAction ? workflowTutorialRequiredActionMatches(requiredAction, action) : false;
+  }
+
+  function tutorialActionHintFor(requiredAction: WorkflowTutorialRequiredAction | null): string {
+    if (!requiredAction) return "";
+    return `Follow this step: ${tutorialRequiredActionDescription(requiredAction)}`;
+  }
+
+  function tutorialAllowsAction(action: WorkflowTutorialRequiredAction): boolean {
+    if (!isTutorialMode) return true;
+    return tutorialActionMatchesCurrentStep(action);
+  }
+
+  function tutorialAllowsNodeType(kind: WorkflowNodeKind, type: string): boolean {
+    const requiredAction = tutorialCurrentRequiredAction();
+    return Boolean(
+      isTutorialMode &&
+      requiredAction?.kind === "add-node" &&
+      requiredAction.nodeKind === kind &&
+      requiredAction.nodeType === type,
+    );
+  }
+
+  function tutorialAllowsInspectorFieldEdit(fieldKey: string): boolean {
+    const requiredAction = tutorialCurrentRequiredAction();
+    return Boolean(
+      isTutorialMode &&
+      requiredAction?.kind === "bind-field" &&
+      selectedNode?.id === requiredAction.nodeId &&
+      requiredAction.fieldKey === fieldKey,
+    );
+  }
+
+  function completeTutorialAction(action: WorkflowTutorialRequiredAction): boolean {
+    if (!isTutorialMode) return true;
+    const requiredAction = tutorialCurrentRequiredAction();
+    if (!requiredAction || !workflowTutorialRequiredActionMatches(requiredAction, action)) {
+      setWorkflowTutorialHint(tutorialActionHintFor(requiredAction));
+      return false;
+    }
+    setWorkflowTutorialHint(null);
+    if (requiredAction.kind === "reset") {
+      resetWorkflowTutorial();
+      return true;
+    }
+    advanceWorkflowTutorial();
+    return true;
+  }
+
   function startWorkflowTutorial(tutorialId = "first-steps") {
     if (activeWorkflowTutorial) return;
     const definition = workflowTutorialDefinitionById(tutorialId);
@@ -3544,6 +3610,7 @@ export default function App() {
       canvasViewport,
       viewportWasMeaningful: isMeaningfulViewport(canvasViewport),
     };
+    setWorkflowTutorialHint(null);
     setActiveWorkflowTutorial(createWorkflowTutorialSession(definition.id));
     setRunDetail(null);
     setProgrammaticSelection([]);
@@ -3564,6 +3631,7 @@ export default function App() {
       const nextStepIndex = Math.min(current.stepIndex + 1, definition.steps.length - 1);
       if (nextStepIndex === current.stepIndex) return current;
       hasAutoFitRef.current = false;
+      setWorkflowTutorialHint(null);
       return {
         ...current,
         stepIndex: nextStepIndex,
@@ -3577,13 +3645,21 @@ export default function App() {
       const definition = workflowTutorialDefinitionById(current.tutorialId);
       if (!definition) return current;
       hasAutoFitRef.current = false;
+      setWorkflowTutorialHint(null);
       return createWorkflowTutorialSession(definition.id);
     });
+    setProgrammaticSelection([]);
+    setSelectedEdgeId(null);
+    setSelectedGraphId(null);
+    setNodeConnectionMenu(null);
+    setPendingConnection(null);
+    setSnapGuides([]);
   }
 
   function exitWorkflowTutorial() {
     const snapshot = tutorialSnapshotRef.current;
     setActiveWorkflowTutorial(null);
+    setWorkflowTutorialHint(null);
     setNodeConnectionMenu(null);
     setPendingConnection(null);
     setSnapGuides([]);
@@ -3921,6 +3997,66 @@ export default function App() {
     setSaveState("idle");
   }
 
+  function patchWorkflowDocument(
+    nextConfig: WorkflowConfig,
+    nextLayout: WorkflowLayout,
+    nextGraphs?: WorkflowGraphMetadata[],
+    selectedNodeIdsAfterPatch?: string[],
+    diagnosticsOverride?: WorkflowValidationDiagnostic[],
+    outputSchemasOverride?: WorkflowOutputSchemas,
+    revisionOverride?: string,
+  ) {
+    if (isTutorialMode && activeWorkflowTutorial) {
+      const baseDocument = activeWorkflowTutorial.document;
+      const nextDocument = normalizeWorkflowEditorDocument(
+        {
+          ...baseDocument,
+          config: nextConfig,
+          layout: nextLayout,
+          graphs: nextGraphs ?? baseDocument.graphs ?? [],
+          output_schemas: outputSchemasOverride ?? baseDocument.output_schemas ?? {},
+          validation_diagnostics: diagnosticsOverride ?? baseDocument.validation_diagnostics ?? [],
+          revision: revisionOverride ?? baseDocument.revision,
+        },
+        selectedDirectoryPath,
+      );
+      const nextDiagnostics = diagnosticsOverride ?? validateWorkflowBindingDiagnostics(
+        nextDocument.config,
+        nextDocument.output_schemas,
+      );
+      setActiveWorkflowTutorial((current) => (
+        current ? {
+          ...current,
+          document: nextDocument,
+        } : current
+      ));
+      setFlowNodes((currentNodes) =>
+        buildNodes(
+          nextDocument.config,
+          nextLayout,
+          activeWorkflowCatalog,
+          {},
+          nextDiagnostics,
+          currentPositionsFromNodes(currentNodes),
+          selectedNodeIdsAfterPatch ?? currentNodes.filter((node) => node.selected).map((node) => node.id),
+          new Set<string>(),
+        ),
+      );
+      setFlowEdges(buildEdges(nextDocument.config, activeWorkflowCatalog));
+      setSaveState("idle");
+      return;
+    }
+    patchDocument(
+      nextConfig,
+      nextLayout,
+      nextGraphs,
+      selectedNodeIdsAfterPatch,
+      diagnosticsOverride,
+      outputSchemasOverride,
+      revisionOverride,
+    );
+  }
+
   function setProgrammaticSelection(nextNodeIds: string[], preferredNodeId: string | null = null) {
     const uniqueNodeIds = Array.from(new Set(nextNodeIds));
     setSelectedNodeIds(uniqueNodeIds);
@@ -4032,7 +4168,22 @@ export default function App() {
   }
 
   function startPendingConnection(route: WorkflowConnectionRouteOption) {
-    if (!nodeConnectionMenu || workflowEditLocked) return;
+    const expectedAction = tutorialCurrentRequiredAction();
+    const canStartConnection = Boolean(
+      isTutorialMode &&
+      expectedAction?.kind === "connect" &&
+      nodeConnectionMenu &&
+      expectedAction.sourceNodeId === nodeConnectionMenu.nodeId &&
+      expectedAction.sourcePort === route.sourcePort,
+    );
+    if (isTutorialMode && expectedAction?.kind === "connect" && !canStartConnection) {
+      setWorkflowTutorialHint(tutorialActionHintFor(expectedAction));
+      return;
+    }
+    if (workflowEditLocked && !canStartConnection) {
+      return;
+    }
+    if (!nodeConnectionMenu) return;
     setPendingConnection({
       sourceId: nodeConnectionMenu.nodeId,
       sourcePort: route.sourcePort,
@@ -4043,6 +4194,7 @@ export default function App() {
     });
     setNodeConnectionMenu(null);
     setSelectedEdgeId(null);
+    setWorkflowTutorialHint(null);
     setError(null);
     appShellRef.current?.focus();
   }
@@ -4054,11 +4206,12 @@ export default function App() {
   }
 
   function addWorkflowEdge(sourceId: string, targetId: string, sourcePort?: string | null): boolean {
-    if (!document || workflowEditLocked) return false;
+    const workflowDocument = activeWorkflowDocument;
+    if (!workflowDocument) return false;
     const normalizedSourcePort = normalizeWorkflowSourcePort(sourcePort);
     const validationError = validateConnection(
-      document.config,
-      catalog,
+      workflowDocument.config,
+      activeWorkflowCatalog,
       sourceId,
       targetId,
       normalizedSourcePort,
@@ -4067,9 +4220,9 @@ export default function App() {
       setError(validationError);
       return false;
     }
-    const targetNode = nodeById(document.config, targetId);
-    const allowCycle = targetNode?.type === "gate:for" && wouldCreateCycle(document.config, sourceId, targetId);
-    const nextConfig = cloneConfig(document.config);
+    const targetNode = nodeById(workflowDocument.config, targetId);
+    const allowCycle = targetNode?.type === "gate:for" && wouldCreateCycle(workflowDocument.config, sourceId, targetId);
+    const nextConfig = cloneConfig(workflowDocument.config);
     const nextEdge: WorkflowEdge = {
       source_id: sourceId,
       target_id: targetId,
@@ -4084,7 +4237,7 @@ export default function App() {
       ...nextConfig.edges,
       nextEdge,
     ];
-    patchDocument(nextConfig, cloneLayout(document.layout));
+    patchWorkflowDocument(nextConfig, cloneLayout(workflowDocument.layout));
     setSelectedEdgeId(null);
     setError(null);
     return true;
@@ -4094,7 +4247,19 @@ export default function App() {
     event: ReactDragEvent<HTMLButtonElement>,
     entry: WorkflowEditorNodeCatalogEntry,
   ) {
-    if (workflowEditLocked) {
+    const expectedAction = tutorialCurrentRequiredAction();
+    const canDrag = Boolean(
+      isTutorialMode &&
+      expectedAction?.kind === "add-node" &&
+      expectedAction.nodeKind === entry.kind &&
+      expectedAction.nodeType === entry.type,
+    );
+    if (isTutorialMode && expectedAction?.kind === "add-node" && !canDrag) {
+      event.preventDefault();
+      setWorkflowTutorialHint(tutorialActionHintFor(expectedAction));
+      return;
+    }
+    if (workflowEditLocked && !canDrag) {
       event.preventDefault();
       return;
     }
@@ -4107,15 +4272,38 @@ export default function App() {
   }
 
   function handleNodeTypeDragOver(event: ReactDragEvent<HTMLElement>) {
-    if (workflowEditLocked || !Array.from(event.dataTransfer.types).includes(NODE_TYPE_DRAG_DATA_MIME)) return;
+    const expectedAction = tutorialCurrentRequiredAction();
+    if (
+      workflowEditLocked &&
+      !(
+        isTutorialMode &&
+        expectedAction?.kind === "add-node"
+      )
+    ) return;
+    if (!Array.from(event.dataTransfer.types).includes(NODE_TYPE_DRAG_DATA_MIME)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
   }
 
   function handleNodeTypeDrop(event: ReactDragEvent<HTMLElement>) {
-    if (workflowEditLocked) return;
+    const expectedAction = tutorialCurrentRequiredAction();
+    if (
+      workflowEditLocked &&
+      !(
+        isTutorialMode &&
+        expectedAction?.kind === "add-node"
+      )
+    ) return;
     const payload = parseNodeTypeDragPayload(event.dataTransfer);
     if (!payload) return;
+    if (
+      isTutorialMode &&
+      expectedAction?.kind === "add-node" &&
+      (expectedAction.nodeKind !== payload.kind || expectedAction.nodeType !== payload.type)
+    ) {
+      setWorkflowTutorialHint(tutorialActionHintFor(expectedAction));
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
     addNode(payload.kind, payload.type, nodePositionFromScreenPoint(event.clientX, event.clientY));
@@ -4124,7 +4312,19 @@ export default function App() {
   function handleNodeContextMenu(event: React.MouseEvent, node: Node<GraphNodeData>) {
     event.preventDefault();
     event.stopPropagation();
-    if (workflowEditLocked) return;
+    const expectedAction = tutorialCurrentRequiredAction();
+    if (
+      workflowEditLocked &&
+      !(
+        isTutorialMode &&
+        expectedAction?.kind === "connect" &&
+        expectedAction.sourceNodeId === node.id
+      )
+    ) return;
+    if (isTutorialMode && expectedAction?.kind === "connect" && expectedAction.sourceNodeId !== node.id) {
+      setWorkflowTutorialHint(tutorialActionHintFor(expectedAction));
+      return;
+    }
     const position = canvasPointFromScreenPoint(event.clientX, event.clientY);
     if (!position) return;
     setProgrammaticSelection([node.id], node.id);
@@ -4138,15 +4338,11 @@ export default function App() {
     });
     setPendingConnection(null);
     setError(null);
+    setWorkflowTutorialHint(null);
     appShellRef.current?.focus();
   }
 
   function handleWorkflowNodeClick(event: React.MouseEvent, node: Node<GraphNodeData>) {
-    if (isTutorialMode) {
-      event.stopPropagation();
-      appShellRef.current?.focus();
-      return;
-    }
     if (isInspectMode) {
       event.stopPropagation();
       setNodeConnectionMenu(null);
@@ -4155,6 +4351,54 @@ export default function App() {
       setSelectedNodeId(node.id);
       setSelectedEdgeId(null);
       setSnapGuides([]);
+      appShellRef.current?.focus();
+      return;
+    }
+    if (isTutorialMode) {
+      const expectedAction = tutorialCurrentRequiredAction();
+      if (pendingConnection) {
+        const connectAction: WorkflowTutorialRequiredAction = {
+          kind: "connect",
+          sourceNodeId: pendingConnection.sourceId,
+          sourcePort: pendingConnection.sourcePort,
+          targetNodeId: node.id,
+        };
+        if (tutorialAllowsAction(connectAction)) {
+          event.stopPropagation();
+          if (addWorkflowEdge(pendingConnection.sourceId, node.id, pendingConnection.sourcePort)) {
+            setPendingConnection(null);
+            completeTutorialAction(connectAction);
+          }
+          appShellRef.current?.focus();
+          return;
+        }
+        setWorkflowTutorialHint(tutorialActionHintFor(expectedAction));
+        event.stopPropagation();
+        appShellRef.current?.focus();
+        return;
+      }
+      if (expectedAction?.kind === "select-node" && expectedAction.nodeId === node.id) {
+        event.stopPropagation();
+        setNodeConnectionMenu(null);
+        setPendingConnection(null);
+        setProgrammaticSelection([node.id], node.id);
+        setSelectedEdgeId(null);
+        setSnapGuides([]);
+        setWorkflowTutorialHint(null);
+        completeTutorialAction({ kind: "select-node", nodeId: node.id });
+        appShellRef.current?.focus();
+        return;
+      }
+      if (expectedAction?.kind === "connect" && expectedAction.sourceNodeId === node.id) {
+        event.stopPropagation();
+        setProgrammaticSelection([node.id], node.id);
+        setSelectedEdgeId(null);
+        setWorkflowTutorialHint(null);
+        appShellRef.current?.focus();
+        return;
+      }
+      event.stopPropagation();
+      setWorkflowTutorialHint(tutorialActionHintFor(expectedAction));
       appShellRef.current?.focus();
       return;
     }
@@ -4240,7 +4484,12 @@ export default function App() {
   }
 
   function handlePaneClick() {
-    if (isTutorialMode) return;
+    if (isTutorialMode) {
+      if (pendingConnection || nodeConnectionMenu) {
+        closeConnectionUi();
+      }
+      return;
+    }
     if (pendingConnection || nodeConnectionMenu) {
       closeConnectionUi();
     }
@@ -4449,15 +4698,29 @@ export default function App() {
   }
 
   function addNode(kind: WorkflowNodeKind, type: string, requestedPosition?: { x: number; y: number } | null) {
-    if (!document || workflowEditLocked) return;
-    const nextConfig = cloneConfig(document.config);
+    const workflowDocument = activeWorkflowDocument;
+    if (!workflowDocument) return;
+    const expectedAction = tutorialCurrentRequiredAction();
+    const isTutorialAddNode =
+      isTutorialMode &&
+      expectedAction?.kind === "add-node" &&
+      expectedAction.nodeKind === kind &&
+      expectedAction.nodeType === type;
+    const tutorialAddNodeAction = isTutorialAddNode ? expectedAction : null;
+    if (workflowEditLocked && !isTutorialAddNode) return;
+    if (isTutorialMode && expectedAction?.kind === "add-node" && !isTutorialAddNode) {
+      setWorkflowTutorialHint(tutorialActionHintFor(expectedAction));
+      return;
+    }
+    const nextConfig = cloneConfig(workflowDocument.config);
     nextConfig.triggers ??= [];
     nextConfig.gates ??= [];
     nextConfig.effects ??= [];
     nextConfig.queries ??= [];
-    const node = createDefaultNode(kind, type, generateNodeId(nextConfig, kind, type));
+    const nodeId = tutorialAddNodeAction ? tutorialAddNodeAction.nodeId : generateNodeId(nextConfig, kind, type);
+    const node = createDefaultNode(kind, type, nodeId);
     nextConfig[kindCollectionKey(kind)].push(node);
-    const nextLayout = cloneLayout(document.layout);
+    const nextLayout = cloneLayout(workflowDocument.layout);
     const nextNodeIndex =
       nextConfig.triggers.length +
         nextConfig.gates.length +
@@ -4465,11 +4728,20 @@ export default function App() {
         nextConfig.queries.length -
         1;
     nextLayout.nodes[node.id] =
-      requestedPosition ?? nodePositionAtCanvasCenter() ?? fallbackPosition(nextNodeIndex);
-    patchDocument(nextConfig, nextLayout, undefined, [node.id]);
+      (tutorialAddNodeAction ? tutorialAddNodeAction.position : requestedPosition) ?? nodePositionAtCanvasCenter() ?? fallbackPosition(nextNodeIndex);
+    patchWorkflowDocument(nextConfig, nextLayout, undefined, [node.id]);
     setProgrammaticSelection([node.id], node.id);
     setSelectedEdgeId(null);
     setInspectorDraftError(null);
+    if (tutorialAddNodeAction) {
+      completeTutorialAction({
+        kind: "add-node",
+        nodeKind: tutorialAddNodeAction.nodeKind,
+        nodeType: tutorialAddNodeAction.nodeType,
+        nodeId: tutorialAddNodeAction.nodeId,
+        position: tutorialAddNodeAction.position,
+      });
+    }
     setError(null);
   }
 
@@ -4478,7 +4750,7 @@ export default function App() {
   }
 
   function selectDownstreamBranch() {
-    if (!document || !selectedNodeId) return;
+    if (!document || !selectedNodeId || workflowEditLocked) return;
     const queuedNodeIds = [selectedNodeId];
     const selectedNodeSet = new Set<string>();
     while (queuedNodeIds.length > 0) {
@@ -4496,6 +4768,7 @@ export default function App() {
   }
 
   function selectWorkflowGraph(graph: WorkflowGraphMetadata) {
+    if (workflowEditLocked) return;
     setSelectedGraphId(graph.id);
     setProgrammaticSelection(graph.node_ids, graph.node_ids[0] ?? null);
     setSelectedEdgeId(null);
@@ -4653,7 +4926,39 @@ export default function App() {
   }
 
   function replaceSelectedNode(nextNode: WorkflowNodeConfig, originalNodeId: string) {
-    if (!document || !selectedNode || workflowEditLocked) return;
+    if (!document || !selectedNode) return;
+    if (workflowEditLocked && !(isTutorialMode && tutorialCurrentRequiredAction()?.kind === "bind-field")) return;
+    if (isTutorialMode && activeWorkflowTutorial && activeWorkflowDocument) {
+      const nextConfig = cloneConfig(activeWorkflowDocument.config);
+      const collectionName = kindCollectionKey(nodeKindFromType(selectedNode.type));
+      nextConfig[collectionName] = nextConfig[collectionName].map((node) =>
+        node.id === originalNodeId ? nextNode : node,
+      );
+      nextConfig.edges = nextConfig.edges.map((edge) => ({
+        ...edge,
+        source_id: edge.source_id === originalNodeId ? nextNode.id : edge.source_id,
+        target_id: edge.target_id === originalNodeId ? nextNode.id : edge.target_id,
+      }));
+      const nextLayout = cloneLayout(activeWorkflowDocument.layout);
+      if (nextNode.id !== originalNodeId) {
+        nextLayout.nodes[nextNode.id] = nextLayout.nodes[originalNodeId] ?? fallbackPosition(0);
+        delete nextLayout.nodes[originalNodeId];
+      }
+      patchWorkflowDocument(
+        nextConfig,
+        nextLayout,
+        activeWorkflowDocument.graphs,
+        [nextNode.id],
+        undefined,
+        activeWorkflowDocument.output_schemas,
+        activeWorkflowDocument.revision,
+      );
+      setProgrammaticSelection([nextNode.id], nextNode.id);
+      setSelectedEdgeId(null);
+      setInspectorDraftError(null);
+      setError(null);
+      return;
+    }
     const currentDocument = document;
     const nextConfig = cloneConfig(document.config);
     const collectionName = kindCollectionKey(nodeKindFromType(selectedNode.type));
@@ -4683,7 +4988,7 @@ export default function App() {
       nextLayout.nodes[nextNode.id] = nextLayout.nodes[originalNodeId] ?? fallbackPosition(0);
       delete nextLayout.nodes[originalNodeId];
     }
-    patchDocument(
+    patchWorkflowDocument(
       nextConfig,
       nextLayout,
       nextGraphs,
@@ -4707,7 +5012,9 @@ export default function App() {
   }
 
   function resetSelectedNodeChanges() {
-    if (!document || !selectedNode || workflowEditLocked) return;
+    if (!document || !selectedNode) return;
+    if (isTutorialMode) return;
+    if (workflowEditLocked && !(isTutorialMode && tutorialCurrentRequiredAction()?.kind === "bind-field")) return;
     const originalNodeId = nodeEditOrigins[selectedNode.id] ?? selectedNode.id;
     const savedWorkflowDocument = savedDocument;
     if (!savedWorkflowDocument) {
@@ -4765,7 +5072,7 @@ export default function App() {
       );
       delete nextLayout.nodes[selectedNode.id];
     }
-    patchDocument(
+    patchWorkflowDocument(
       nextConfig,
       nextLayout,
       nextGraphs,
@@ -4790,7 +5097,8 @@ export default function App() {
   }
 
   function stageInspectorDraft(nextDraft: Partial<InspectorDraftSnapshot> = {}) {
-    if (!document || !selectedNode || workflowEditLocked) return;
+    if (!document || !selectedNode) return;
+    if (workflowEditLocked && !(isTutorialMode && tutorialCurrentRequiredAction()?.kind === "bind-field")) return;
     try {
       const nextNode = materializeInspectorNodeFromDraft({
         nodeId: nextDraft.nodeId ?? inspectorNodeId,
@@ -4812,7 +5120,8 @@ export default function App() {
   }
 
   function onConnect(connection: Connection) {
-    if (!document || !connection.source || !connection.target || workflowEditLocked) return;
+    if (!document || !connection.source || !connection.target) return;
+    if (workflowEditLocked && !(isTutorialMode && tutorialCurrentRequiredAction()?.kind === "connect")) return;
     addWorkflowEdge(connection.source, connection.target, connection.sourceHandle);
   }
 
@@ -4922,6 +5231,22 @@ export default function App() {
       setInspectorJsonDrafts(nextJsonDrafts);
     }
     stageInspectorDraft({ knownValues: next, jsonDrafts: nextJsonDrafts });
+    const expectedAction = tutorialCurrentRequiredAction();
+    if (
+      isTutorialMode &&
+      expectedAction?.kind === "bind-field" &&
+      selectedNode &&
+      expectedAction.nodeId === selectedNode.id &&
+      expectedAction.fieldKey === key &&
+      String(value) === expectedAction.bindingExpression
+    ) {
+      completeTutorialAction({
+        kind: "bind-field",
+        nodeId: selectedNode.id,
+        fieldKey: key,
+        bindingExpression: expectedAction.bindingExpression,
+      });
+    }
   }
 
   function updateToolArgumentPolicyDraftRows(fieldKey: string, nextRows: ToolArgumentPolicyDraftRow[]) {
@@ -5036,7 +5361,7 @@ export default function App() {
     if (!hasCollapsedTargetUi || !effectTargetField) return null;
     const value = inspectorKnownValues[effectTargetKey];
     const mode = inspectorFieldModes[effectTargetKey] ?? fieldValueMode(effectTargetField, value);
-    const isDisabled = effectTargetField.read_only || workflowEditLocked;
+    const isDisabled = effectTargetField.read_only || (workflowEditLocked && !tutorialAllowsInspectorFieldEdit(effectTargetKey));
     const targetTypeLabel = selectedNode?.type === "effect:agent:prompt" ? "Prompt target type" : "Target type";
     const targetPlaceholder =
       effectTargetKey === "session_id"
@@ -5167,6 +5492,7 @@ export default function App() {
                       className="subtle-button output-contract-copy"
                       onClick={() => void copyBindingExpression(row.bindingExpression)}
                       aria-label={`Copy binding expression for ${row.bindingPath}`}
+                      disabled={workflowEditLocked}
                     >
                       <CopyIcon />
                     </button>
@@ -5994,7 +6320,7 @@ export default function App() {
   function renderField(field: WorkflowEditorFieldDefinition) {
     const value = inspectorKnownValues[field.key];
     const mode = inspectorFieldModes[field.key] ?? fieldValueMode(field, value);
-    const isDisabled = field.read_only || workflowEditLocked;
+    const isDisabled = field.read_only || (workflowEditLocked && !tutorialAllowsInspectorFieldEdit(field.key));
     const selectedNodeType = selectedNode?.type;
 
     if (field.kind === "string") {
@@ -7026,7 +7352,7 @@ export default function App() {
             type="button"
             className="subtle-button"
             onClick={() => inspectWorkflowRun(run.event_id)}
-            disabled={runDetailLoading}
+            disabled={runDetailLoading || workflowEditLocked}
           >
             Inspect
           </button>
@@ -7118,7 +7444,11 @@ export default function App() {
                     placeholder="Lookup id"
                     aria-label="Workflow run lookup id"
                   />
-                  <button type="submit" className="subtle-button" disabled={runDetailLoading || !runDetailLookup.trim()}>
+                  <button
+                    type="submit"
+                    className="subtle-button"
+                    disabled={runDetailLoading || !runDetailLookup.trim() || workflowEditLocked}
+                  >
                     {runDetailLoading ? "Loading..." : "Inspect"}
                   </button>
                 </form>
@@ -7174,7 +7504,7 @@ export default function App() {
                     <button
                       type="submit"
                       className="subtle-button"
-                      disabled={runSearchLoading || !selectedRunSearchScope}
+                      disabled={runSearchLoading || !selectedRunSearchScope || workflowEditLocked}
                     >
                       {runSearchLoading ? "Loading..." : "Find"}
                     </button>
@@ -7277,6 +7607,7 @@ export default function App() {
                       key={graph.id}
                       className={`workflow-graph-item${selectedGraphId === graph.id ? " selected" : ""}`}
                       onClick={() => selectWorkflowGraph(graph)}
+                      disabled={workflowEditLocked}
                     >
                       <span className="workflow-graph-name">{graph.name}</span>
                       <span className="workflow-graph-meta">
@@ -7372,10 +7703,10 @@ export default function App() {
                             <Tooltip key={entry.type} content={nodeTypeDescription(entry)} inline={false}>
                               <button
                                 type="button"
-                                draggable={!workflowEditLocked}
+                                draggable={!workflowEditLocked || tutorialAllowsNodeType(entry.kind, entry.type)}
                                 onDragStart={(event) => startNodeTypeDrag(event, entry)}
                                 onClick={() => addNode(entry.kind, entry.type)}
-                                disabled={workflowEditLocked}
+                                disabled={workflowEditLocked && !tutorialAllowsNodeType(entry.kind, entry.type)}
                               >
                                 {entry.label}
                               </button>
@@ -7422,8 +7753,10 @@ export default function App() {
                 <div className="inspector-summary">
                   <div>{selectedNodeIds.length} nodes selected</div>
                 </div>
-                <button onClick={() => setProgrammaticSelection([])}>Clear selection</button>
-                <button onClick={selectDownstreamBranch} disabled={!selectedNodeId}>
+                <button onClick={() => setProgrammaticSelection([])} disabled={workflowEditLocked}>
+                  Clear selection
+                </button>
+                <button onClick={selectDownstreamBranch} disabled={workflowEditLocked || !selectedNodeId}>
                   Select downstream branch
                 </button>
                 <button className="danger" onClick={deleteSelectedNode} disabled={workflowEditLocked}>
@@ -7459,7 +7792,9 @@ export default function App() {
                   </div>
                 ) : null}
                 {renderSelectedNodeOutputContract()}
-                <button onClick={selectDownstreamBranch}>Select downstream branch</button>
+                <button onClick={selectDownstreamBranch} disabled={workflowEditLocked}>
+                  Select downstream branch
+                </button>
                 <label className="inspector-label">
                   <span>Node id</span>
                   <input
@@ -7469,6 +7804,7 @@ export default function App() {
                       setInspectorNodeId(nextValue);
                       stageInspectorDraft({ nodeId: nextValue });
                     }}
+                    disabled={workflowEditLocked}
                   />
                 </label>
                 <label className="inspector-label">
@@ -7480,6 +7816,7 @@ export default function App() {
                       setInspectorDisplayName(nextValue);
                       stageInspectorDraft({ displayName: nextValue });
                     }}
+                    disabled={workflowEditLocked}
                   />
                 </label>
 
@@ -7611,6 +7948,11 @@ export default function App() {
                   </div>
                   <h2>{activeWorkflowTutorialStep.title}</h2>
                   <p>{activeWorkflowTutorialStep.body}</p>
+                  {workflowTutorialHint ? (
+                    <div className="workflow-tutorial-action-hint workflow-tutorial-action-hint-message">
+                      {workflowTutorialHint}
+                    </div>
+                  ) : null}
                   <div className="workflow-tutorial-action-hint">
                     Required: {tutorialRequiredActionDescription(activeWorkflowTutorialStep.requiredAction)}
                   </div>

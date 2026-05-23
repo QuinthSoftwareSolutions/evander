@@ -364,6 +364,43 @@ export function workflowTutorialTargetNodeId(target: WorkflowTutorialTarget): st
   return target.kind === "node" ? target.nodeId : null;
 }
 
+export function workflowTutorialRequiredActionMatches(
+  expected: WorkflowTutorialRequiredAction,
+  actual: WorkflowTutorialRequiredAction,
+): boolean {
+  if (expected.kind !== actual.kind) return false;
+  switch (expected.kind) {
+    case "next":
+    case "reset":
+      return true;
+    case "select-node":
+      return actual.kind === "select-node" && expected.nodeId === actual.nodeId;
+    case "add-node":
+      return (
+        actual.kind === "add-node" &&
+        expected.nodeKind === actual.nodeKind &&
+        expected.nodeType === actual.nodeType &&
+        expected.nodeId === actual.nodeId
+      );
+    case "connect":
+      return (
+        actual.kind === "connect" &&
+        expected.sourceNodeId === actual.sourceNodeId &&
+        expected.targetNodeId === actual.targetNodeId &&
+        expected.sourcePort === actual.sourcePort
+      );
+    case "bind-field":
+      return (
+        actual.kind === "bind-field" &&
+        expected.nodeId === actual.nodeId &&
+        expected.fieldKey === actual.fieldKey &&
+        expected.bindingExpression === actual.bindingExpression
+      );
+    default:
+      return false;
+  }
+}
+
 export function cloneWorkflowTutorialDocument(document: WorkflowEditorDocument): WorkflowEditorDocument {
   return JSON.parse(JSON.stringify(document)) as WorkflowEditorDocument;
 }
