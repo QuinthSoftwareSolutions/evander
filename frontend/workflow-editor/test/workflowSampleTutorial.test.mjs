@@ -874,6 +874,12 @@ async function dispatchWorkflowNodeMouseEvent(page, nodeId, eventType) {
   }, eventType);
 }
 
+async function clickNodeCenter(page, nodeLocator, options = {}) {
+  const box = await nodeLocator.boundingBox();
+  assert.ok(box);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, options);
+}
+
 test("workflow editor guides, inspects, and resets the guided sample workflow", async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
@@ -1218,18 +1224,13 @@ test("workflow editor guides, inspects, and resets the guided sample workflow", 
   await page.getByRole("button", { name: "Prompt agent" }).click();
   await page.getByRole("dialog", { name: "Connect the nodes" }).waitFor({ state: "visible" });
   const triggerNode = page.locator('.react-flow__node[data-id="tutorial-trigger"]');
-  const triggerBox = await triggerNode.boundingBox();
-  assert.ok(triggerBox);
   const nodeContextMenu = page.locator(".node-context-menu");
-  const triggerSurface = triggerNode.locator(".node-drag-surface");
-  await triggerSurface.click({ button: "right" });
+  await clickNodeCenter(page, triggerNode, { button: "right" });
   await nodeContextMenu.waitFor({ state: "visible" });
   await page.getByRole("menuitem", { name: "Completed" }).click();
   await page.waitForFunction(() => document.querySelector(".pending-connection-line") !== null);
   const effectNode = page.locator('.react-flow__node[data-id="tutorial-effect"]');
-  const effectBox = await effectNode.boundingBox();
-  assert.ok(effectBox);
-  await effectNode.locator(".node-drag-surface").click();
+  await effectNode.click();
   await page.getByRole("dialog", { name: "Bind the prompt" }).waitFor({ state: "visible" });
   const tutorialInspector = page.locator(".sidebar-section.inspector").filter({ hasText: "tutorial-effect" });
   await tutorialInspector.getByText("Prompt", { exact: true }).waitFor({ state: "visible" });
@@ -1251,6 +1252,7 @@ test("workflow editor guides, inspects, and resets the guided sample workflow", 
   await page.locator('.react-flow__node[data-id="effect-1"]').waitFor({ state: "visible" });
   assert.equal(await page.locator('.react-flow__node[data-id="tutorial-trigger"]').count(), 0);
   assert.equal(await page.locator('.react-flow__node[data-id="tutorial-effect"]').count(), 0);
+  assert.equal(documentPutRequests.length, 0);
 
   await page.getByRole("button", { name: "Sample run" }).click();
   await page.waitForSelector(".guided-sample-section");
