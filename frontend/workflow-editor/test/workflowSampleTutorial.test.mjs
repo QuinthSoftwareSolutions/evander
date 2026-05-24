@@ -874,6 +874,12 @@ async function dispatchWorkflowNodeMouseEvent(page, nodeId, eventType) {
   }, eventType);
 }
 
+async function clickNodeCenter(page, nodeLocator, options = {}) {
+  const box = await nodeLocator.boundingBox();
+  assert.ok(box);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, options);
+}
+
 test("workflow editor guides, inspects, and resets the guided sample workflow", async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
@@ -894,8 +900,10 @@ test("workflow editor guides, inspects, and resets the guided sample workflow", 
   const page = await context.newPage();
 
   const requestedEndpoints = [];
+  const documentPutRequests = [];
   const pageErrors = [];
   const consoleErrors = [];
+  const tutorialProgressKey = "workflow-editor:tutorial-progress:v1";
   let sampleActive = false;
   let sampleLaunchRequests = 0;
 
@@ -1083,6 +1091,12 @@ test("workflow editor guides, inspects, and resets the guided sample workflow", 
     }
 
     if (pathname === "/api/workflow-editor/document") {
+      if (route.request().method() === "PUT") {
+        documentPutRequests.push({
+          method: route.request().method(),
+          body: route.request().postData() ?? "",
+        });
+      }
       await route.fulfill(jsonResponse(workflowDocument));
       return;
     }
@@ -1160,19 +1174,46 @@ test("workflow editor guides, inspects, and resets the guided sample workflow", 
 
   await page.waitForSelector(".guided-sample-launcher");
   await assert.equal(await page.locator(".guided-sample-section").count(), 0);
-  await assert.equal(await page.getByRole("button", { name: "First steps" }).count(), 1);
+  await assert.equal(await page.getByRole("button", { name: "Tutorials" }).count(), 1);
   await assert.equal(await page.getByRole("button", { name: "Sample run" }).count(), 1);
   await assert.equal(await page.getByRole("button", { name: "Launch sample" }).count(), 0);
 
-  await page.getByRole("button", { name: "First steps" }).click();
-  await page.getByRole("dialog", { name: "Welcome" }).waitFor({ state: "visible" });
-  await page.getByText("This walkthrough covers the basics of configuring workflows.", { exact: true }).waitFor({
+  const tutorialsButton = page.getByRole("button", { name: "Tutorials" });
+  const initialTutorialsButtonClass = (await tutorialsButton.getAttribute("class")) ?? "";
+  assert.match(initialTutorialsButtonClass, /needs-attention/);
+  assert.doesNotMatch(initialTutorialsButtonClass, /is-complete/);
+  await tutorialsButton.click();
+  const tutorialChooser = page.getByRole("dialog", { name: "Tutorials" });
+  await tutorialChooser.waitFor({ state: "visible" });
+  await page.getByText("First steps", { exact: true }).waitFor({ state: "visible" });
+  await page.getByText("Learn the basics of selecting, adding, connecting, and binding workflow nodes.", { exact: true }).waitFor({
     state: "visible",
   });
-  await page.getByRole("button", { name: "Exit" }).click();
+  await page.getByRole("button", { name: "Start" }).waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Skip" }).click();
+  await page.waitForFunction(() => !document.querySelector(".workflow-tutorial-chooser-backdrop"));
   await page.waitForFunction(() => !document.querySelector(".workflow-tutorial-bubble"));
+  await page.waitForFunction(() => document.querySelector(".guided-sample-launcher-button.is-complete") !== null);
+  await page.waitForFunction((storageKey) => {
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      if (!raw) return false;
+      const progress = JSON.parse(raw);
+      return Array.isArray(progress.skippedTutorialIds) &&
+        progress.skippedTutorialIds.includes("first-steps") &&
+        Array.isArray(progress.completedTutorialIds) &&
+        progress.completedTutorialIds.length === 0;
+    } catch {
+      return false;
+    }
+  }, tutorialProgressKey);
+  assert.match((await tutorialsButton.getAttribute("class")) ?? "", /is-complete/);
+  assert.doesNotMatch((await tutorialsButton.getAttribute("class")) ?? "", /needs-attention/);
 
-  await page.getByRole("button", { name: "First steps" }).click();
+  await tutorialsButton.click();
+  await tutorialChooser.waitFor({ state: "visible" });
+  await page.getByText("Skipped", { exact: true }).waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "Restart" }).click();
   await page.getByRole("dialog", { name: "Welcome" }).waitFor({ state: "visible" });
   await page.getByRole("button", { name: "Next" }).click();
   await page.getByRole("dialog", { name: "Select the trigger" }).waitFor({ state: "visible" });
@@ -1182,19 +1223,39 @@ test("workflow editor guides, inspects, and resets the guided sample workflow", 
   await page.getByRole("dialog", { name: "Add a downstream node" }).waitFor({ state: "visible" });
   await page.getByRole("button", { name: "Prompt agent" }).click();
   await page.getByRole("dialog", { name: "Connect the nodes" }).waitFor({ state: "visible" });
-  await dispatchWorkflowNodeMouseEvent(page, "tutorial-trigger", "contextmenu");
+  const triggerNode = page.locator('.react-flow__node[data-id="tutorial-trigger"]');
+  const nodeContextMenu = page.locator(".node-context-menu");
+  await clickNodeCenter(page, triggerNode, { button: "right" });
+  await nodeContextMenu.waitFor({ state: "visible" });
   await page.getByRole("menuitem", { name: "Completed" }).click();
-  await dispatchWorkflowNodeMouseEvent(page, "tutorial-effect", "click");
+  await page.waitForFunction(() => document.querySelector(".pending-connection-line") !== null);
+  const effectNode = page.locator('.react-flow__node[data-id="tutorial-effect"]');
+  await effectNode.click();
   await page.getByRole("dialog", { name: "Bind the prompt" }).waitFor({ state: "visible" });
   const tutorialInspector = page.locator(".sidebar-section.inspector").filter({ hasText: "tutorial-effect" });
   await tutorialInspector.getByText("Prompt", { exact: true }).waitFor({ state: "visible" });
   assert.equal(await tutorialInspector.locator("textarea").first().isEnabled(), true);
+  const promptField = tutorialInspector.locator(".inspector-field").filter({
+    has: page.locator(".field-header").getByText("Prompt", { exact: true }),
+  }).first();
+  await promptField.locator(".mode-select select").selectOption("bind");
+  const finishDialog = page.getByRole("dialog", { name: "Finish" });
+  if (await finishDialog.isVisible().catch(() => false)) {
+    await finishDialog.waitFor({ state: "visible" });
+  } else {
+    const bindingSelect = promptField.locator(".binding-editor select");
+    await bindingSelect.waitFor({ state: "visible" });
+    await bindingSelect.selectOption("${{tutorial-trigger.completed}}");
+    await finishDialog.waitFor({ state: "visible" });
+  }
+  await page.waitForFunction(() => document.querySelector(".guided-sample-launcher-button.is-complete") !== null);
   await page.getByRole("button", { name: "Exit" }).click();
   await page.waitForFunction(() => !document.querySelector(".workflow-tutorial-bubble"));
   await page.locator('.react-flow__node[data-id="trigger-1"]').waitFor({ state: "visible" });
   await page.locator('.react-flow__node[data-id="effect-1"]').waitFor({ state: "visible" });
   assert.equal(await page.locator('.react-flow__node[data-id="tutorial-trigger"]').count(), 0);
   assert.equal(await page.locator('.react-flow__node[data-id="tutorial-effect"]').count(), 0);
+  assert.equal(documentPutRequests.length, 0);
 
   await page.getByRole("button", { name: "Sample run" }).click();
   await page.waitForSelector(".guided-sample-section");
@@ -1242,6 +1303,7 @@ test("workflow editor guides, inspects, and resets the guided sample workflow", 
 
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
+  assert.deepEqual(documentPutRequests, []);
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/auth/session"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/deployment-status"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/state?directory_path=root"));

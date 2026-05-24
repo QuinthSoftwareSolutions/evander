@@ -260,7 +260,7 @@ const TUTORIAL_FIRST_STEPS: WorkflowTutorialDefinition = {
     {
       id: "select-trigger",
       title: "Select the trigger",
-      body: "Click the trigger node to focus its configuration and outputs.",
+      body: "The trigger starts the workflow. Click it to inspect its outputs and configuration.",
       target: { kind: "node", nodeId: TUTORIAL_TRIGGER_NODE_ID },
       bubblePlacement: "right",
       camera: "center-node",
@@ -280,7 +280,7 @@ const TUTORIAL_FIRST_STEPS: WorkflowTutorialDefinition = {
     {
       id: "add-effect",
       title: "Add a downstream node",
-      body: "Add the prompt effect node that will receive the trigger output.",
+      body: "Effects run downstream work. Add the Prompt agent effect so the trigger has somewhere to connect.",
       target: { kind: "node", nodeId: TUTORIAL_EFFECT_NODE_ID },
       bubblePlacement: "left",
       camera: "fit-node",
@@ -296,9 +296,9 @@ const TUTORIAL_FIRST_STEPS: WorkflowTutorialDefinition = {
     {
       id: "connect-nodes",
       title: "Connect the nodes",
-      body: "Connect Completed from the trigger into the downstream prompt node.",
-      target: { kind: "node", nodeId: TUTORIAL_EFFECT_NODE_ID },
-      bubblePlacement: "left",
+      body: "Right-click the trigger, choose Completed, then click Prompt agent to wire the trigger output downstream.",
+      target: { kind: "node", nodeId: TUTORIAL_TRIGGER_NODE_ID },
+      bubblePlacement: "bottom",
       camera: "fit-node",
       highlightMode: "spotlight",
       requiredAction: {
@@ -311,7 +311,7 @@ const TUTORIAL_FIRST_STEPS: WorkflowTutorialDefinition = {
     {
       id: "bind-prompt",
       title: "Bind the prompt",
-      body: "Bind the trigger output into the downstream Prompt field.",
+      body: "Bind the Prompt field to the trigger's Completed output so the effect receives the workflow data.",
       target: { kind: "node", nodeId: TUTORIAL_EFFECT_NODE_ID },
       bubblePlacement: "right",
       camera: "center-node",
