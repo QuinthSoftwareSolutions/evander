@@ -56,6 +56,7 @@ test("tutorial connect decoration keeps both source and target nodes active", ()
   assert.match(decorateBranch, /connectTargetNodeId/);
   assert.match(decorateBranch, /isConnectParticipant/);
   assert.match(decorateBranch, /tutorialBlocked: targetNodeId !== null \? !\(isTarget \|\| isConnectParticipant\) : false,/);
+  assert.match(decorateBranch, /visibility: "visible"/);
 });
 
 test("tutorial connect route checks stay exact on the right-click path", () => {

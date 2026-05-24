@@ -897,6 +897,7 @@ test("workflow editor guides, inspects, and resets the guided sample workflow", 
   const documentPutRequests = [];
   const pageErrors = [];
   const consoleErrors = [];
+  const tutorialProgressKey = "workflow-editor:tutorial-progress:v1";
   let sampleActive = false;
   let sampleLaunchRequests = 0;
 
@@ -1172,6 +1173,9 @@ test("workflow editor guides, inspects, and resets the guided sample workflow", 
   await assert.equal(await page.getByRole("button", { name: "Launch sample" }).count(), 0);
 
   const tutorialsButton = page.getByRole("button", { name: "Tutorials" });
+  const initialTutorialsButtonClass = (await tutorialsButton.getAttribute("class")) ?? "";
+  assert.match(initialTutorialsButtonClass, /needs-attention/);
+  assert.doesNotMatch(initialTutorialsButtonClass, /is-complete/);
   await tutorialsButton.click();
   const tutorialChooser = page.getByRole("dialog", { name: "Tutorials" });
   await tutorialChooser.waitFor({ state: "visible" });
@@ -1179,15 +1183,30 @@ test("workflow editor guides, inspects, and resets the guided sample workflow", 
   await page.getByText("Learn the basics of selecting, adding, connecting, and binding workflow nodes.", { exact: true }).waitFor({
     state: "visible",
   });
+  await page.getByRole("button", { name: "Start" }).waitFor({ state: "visible" });
   await page.getByRole("button", { name: "Skip" }).click();
   await page.waitForFunction(() => !document.querySelector(".workflow-tutorial-chooser-backdrop"));
   await page.waitForFunction(() => !document.querySelector(".workflow-tutorial-bubble"));
   await page.waitForFunction(() => document.querySelector(".guided-sample-launcher-button.is-complete") !== null);
+  await page.waitForFunction((storageKey) => {
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      if (!raw) return false;
+      const progress = JSON.parse(raw);
+      return Array.isArray(progress.skippedTutorialIds) &&
+        progress.skippedTutorialIds.includes("first-steps") &&
+        Array.isArray(progress.completedTutorialIds) &&
+        progress.completedTutorialIds.length === 0;
+    } catch {
+      return false;
+    }
+  }, tutorialProgressKey);
   assert.match((await tutorialsButton.getAttribute("class")) ?? "", /is-complete/);
   assert.doesNotMatch((await tutorialsButton.getAttribute("class")) ?? "", /needs-attention/);
 
   await tutorialsButton.click();
   await tutorialChooser.waitFor({ state: "visible" });
+  await page.getByText("Skipped", { exact: true }).waitFor({ state: "visible" });
   await page.getByRole("button", { name: "Restart" }).click();
   await page.getByRole("dialog", { name: "Welcome" }).waitFor({ state: "visible" });
   await page.getByRole("button", { name: "Next" }).click();
@@ -1201,29 +1220,30 @@ test("workflow editor guides, inspects, and resets the guided sample workflow", 
   const triggerNode = page.locator('.react-flow__node[data-id="tutorial-trigger"]');
   const triggerBox = await triggerNode.boundingBox();
   assert.ok(triggerBox);
-  await page.mouse.click(
-    triggerBox.x + triggerBox.width / 2,
-    triggerBox.y + triggerBox.height / 2,
-    { button: "right" },
-  );
-  await page.waitForTimeout(100);
-  if ((await page.locator(".node-context-menu").count()) === 0) {
-    await dispatchWorkflowNodeMouseEvent(page, "tutorial-trigger", "contextmenu");
-  }
+  const nodeContextMenu = page.locator(".node-context-menu");
+  const triggerSurface = triggerNode.locator(".node-drag-surface");
+  await triggerSurface.click({ button: "right" });
+  await nodeContextMenu.waitFor({ state: "visible" });
   await page.getByRole("menuitem", { name: "Completed" }).click();
   await page.waitForFunction(() => document.querySelector(".pending-connection-line") !== null);
   const effectNode = page.locator('.react-flow__node[data-id="tutorial-effect"]');
   const effectBox = await effectNode.boundingBox();
   assert.ok(effectBox);
-  await page.mouse.click(effectBox.x + effectBox.width / 2, effectBox.y + effectBox.height / 2);
-  await page.waitForTimeout(100);
-  if ((await page.getByRole("dialog", { name: "Bind the prompt" }).count()) === 0) {
-    await dispatchWorkflowNodeMouseEvent(page, "tutorial-effect", "click");
-  }
+  await effectNode.locator(".node-drag-surface").click();
   await page.getByRole("dialog", { name: "Bind the prompt" }).waitFor({ state: "visible" });
   const tutorialInspector = page.locator(".sidebar-section.inspector").filter({ hasText: "tutorial-effect" });
   await tutorialInspector.getByText("Prompt", { exact: true }).waitFor({ state: "visible" });
   assert.equal(await tutorialInspector.locator("textarea").first().isEnabled(), true);
+  await tutorialInspector
+    .locator(".inspector-field")
+    .filter({ hasText: "Prompt" })
+    .locator("select")
+    .first()
+    .selectOption("bind");
+  const bindingSelect = tutorialInspector.locator(".binding-editor select");
+  await bindingSelect.waitFor({ state: "visible" });
+  await bindingSelect.selectOption("${{tutorial-trigger.completed}}");
+  await page.getByRole("dialog", { name: "Finish" }).waitFor({ state: "visible" });
   await page.waitForFunction(() => document.querySelector(".guided-sample-launcher-button.is-complete") !== null);
   await page.getByRole("button", { name: "Exit" }).click();
   await page.waitForFunction(() => !document.querySelector(".workflow-tutorial-bubble"));

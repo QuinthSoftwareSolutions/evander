@@ -1921,6 +1921,10 @@ function decorateWorkflowTutorialNodes(
       (node.id === connectSourceNodeId || node.id === connectTargetNodeId);
     return {
       ...node,
+      style: {
+        ...(node.style ?? {}),
+        visibility: "visible",
+      },
       data: {
         ...node.data,
         tutorialHighlight: (isTarget || isConnectParticipant) && step.highlightMode !== "none",
