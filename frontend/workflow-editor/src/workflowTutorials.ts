@@ -297,8 +297,8 @@ const TUTORIAL_FIRST_STEPS: WorkflowTutorialDefinition = {
       id: "connect-nodes",
       title: "Connect the nodes",
       body: "Connect Completed from the trigger into the downstream prompt node.",
-      target: { kind: "node", nodeId: TUTORIAL_EFFECT_NODE_ID },
-      bubblePlacement: "left",
+      target: { kind: "node", nodeId: TUTORIAL_TRIGGER_NODE_ID },
+      bubblePlacement: "bottom",
       camera: "fit-node",
       highlightMode: "spotlight",
       requiredAction: {

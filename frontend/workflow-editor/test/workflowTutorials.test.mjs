@@ -35,6 +35,8 @@ test("first steps tutorial is registered with the expected walkthrough order", (
   assert.equal(WORKFLOW_TUTORIAL_FIRST_STEPS.steps[1].requiredAction.kind, "select-node");
   assert.equal(WORKFLOW_TUTORIAL_FIRST_STEPS.steps[3].requiredAction.kind, "add-node");
   assert.equal(WORKFLOW_TUTORIAL_FIRST_STEPS.steps[4].requiredAction.kind, "connect");
+  assert.equal(WORKFLOW_TUTORIAL_FIRST_STEPS.steps[4].target.nodeId, "tutorial-trigger");
+  assert.equal(WORKFLOW_TUTORIAL_FIRST_STEPS.steps[4].bubblePlacement, "bottom");
   assert.equal(WORKFLOW_TUTORIAL_FIRST_STEPS.steps[5].requiredAction.kind, "bind-field");
   assert.equal(WORKFLOW_TUTORIAL_FIRST_STEPS.steps[6].requiredAction.kind, "reset");
 });

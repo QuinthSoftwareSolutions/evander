@@ -1862,14 +1862,20 @@ function decorateWorkflowTutorialNodes(
 ): Node<GraphNodeData>[] {
   if (!step) return nodes;
   const targetNodeId = workflowTutorialTargetNodeId(step.target);
+  const connectSourceNodeId = step.requiredAction.kind === "connect" ? step.requiredAction.sourceNodeId : null;
+  const connectTargetNodeId = step.requiredAction.kind === "connect" ? step.requiredAction.targetNodeId : null;
   return nodes.map((node) => {
     const isTarget = targetNodeId !== null && node.id === targetNodeId;
+    const isConnectParticipant =
+      connectSourceNodeId !== null &&
+      connectTargetNodeId !== null &&
+      (node.id === connectSourceNodeId || node.id === connectTargetNodeId);
     return {
       ...node,
       data: {
         ...node.data,
-        tutorialHighlight: isTarget && step.highlightMode !== "none",
-        tutorialBlocked: targetNodeId !== null ? !isTarget : false,
+        tutorialHighlight: (isTarget || isConnectParticipant) && step.highlightMode !== "none",
+        tutorialBlocked: targetNodeId !== null ? !(isTarget || isConnectParticipant) : false,
         tutorialHighlightMode: step.highlightMode,
       },
     };

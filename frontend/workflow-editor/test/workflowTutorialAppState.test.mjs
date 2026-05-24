@@ -23,6 +23,18 @@ test("tutorial edits do not replace the shared workflow graph state", () => {
   assert.doesNotMatch(tutorialPatchBranch, /setFlowEdges/);
 });
 
+test("tutorial connect decoration keeps both source and target nodes active", () => {
+  const decorateBranch = sourceBetween(
+    "function decorateWorkflowTutorialNodes(",
+    "function tutorialRequiredActionLabel(",
+  );
+
+  assert.match(decorateBranch, /connectSourceNodeId/);
+  assert.match(decorateBranch, /connectTargetNodeId/);
+  assert.match(decorateBranch, /isConnectParticipant/);
+  assert.match(decorateBranch, /tutorialBlocked: targetNodeId !== null \? !\(isTarget \|\| isConnectParticipant\) : false,/);
+});
+
 test("tutorial connection completion selects the target before bind-field steps", () => {
   const pendingConnectionBranch = sourceBetween(
     "if (pendingConnection) {",
