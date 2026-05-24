@@ -1241,6 +1241,76 @@ def test_create_container_agent_rejects_unknown_codex_skill_before_prepare(
         )
 
 
+def test_create_container_agent_does_not_persist_session_when_write_files_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    created = service.create_directory_child("root", "team")
+    assert created.ok is True and created.data is not None
+    team_path = created.data.details.directory.path
+    write_result = service.write_directory_domain_config(
+        team_path,
+        "providers",
+        {
+            "container_worker_base_url": "http://team-worker.test:11888",
+            "container_worker_token_env": "TEAM_WORKER_TOKEN",
+        },
+    )
+    assert write_result.ok is True
+    captured: list[tuple[str, dict[str, object]]] = []
+
+    def prepare_session(
+        self: ContainerWorkerClient, request: WorkerSessionPrepareRequest
+    ) -> WorkerSessionRecord:
+        captured.append((request.session_id, dict(request.metadata)))
+        return WorkerSessionRecord(
+            session_id=request.session_id,
+            root_path=f"/worker/{request.session_id}",
+            agent_home_path=f"/worker/{request.session_id}/agent_home",
+            repo_root_path=f"/worker/{request.session_id}/agent_home/repos",
+            artifacts_path=f"/worker/{request.session_id}/artifacts",
+            logs_path=f"/worker/{request.session_id}/logs",
+            metadata_path=f"/worker/{request.session_id}/metadata.json",
+            metadata=dict(request.metadata),
+        )
+
+    monkeypatch.setattr(ContainerWorkerClient, "prepare_session", prepare_session)
+
+    def write_files(
+        self: ContainerWorkerClient,
+        session_id: str,
+        request: WorkerFileWriteRequest,
+    ) -> WorkerFileWriteRecord:
+        assert session_id == "container-session"
+        raise RuntimeError("bootstrap write failed")
+
+    monkeypatch.setattr(ContainerWorkerClient, "write_files", write_files)
+
+    with pytest.raises(RuntimeError, match="bootstrap write failed"):
+        service.create_admin_agent(
+            {
+                "backend": "container_worker_vm",
+                "session_id": "container-session",
+                "target_name": "container-target",
+                "directory_path": team_path,
+            }
+        )
+
+    assert captured == [
+        (
+            "container-session",
+            {
+                "execution_backend": "container_worker_vm",
+                "directory_path": team_path,
+                "target_name": "container-target",
+                "labels": {},
+                "worker_url": "http://team-worker.test:11888",
+            },
+        )
+    ]
+    assert service.runtime.session_repository.get_session("container-session") is None
+
+
 def test_install_admin_agent_skills_copies_managed_skill_to_container_session(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
