@@ -23,6 +23,29 @@ test("tutorial edits do not replace the shared workflow graph state", () => {
   assert.doesNotMatch(tutorialPatchBranch, /setFlowEdges/);
 });
 
+test("tutorial progress stays local and the chooser can skip or restart without auto-starting", () => {
+  const progressHelpers = sourceBetween(
+    "const WORKFLOW_TUTORIAL_PROGRESS_STORAGE_KEY",
+    "function readStoredWorkflowSidebarWidth()",
+  );
+  const chooserBranch = sourceBetween(
+    "function renderWorkflowTutorialChooser()",
+    "function renderWorkflowSamplePanel()",
+  );
+
+  assert.match(progressHelpers, /readStoredWorkflowTutorialProgress/);
+  assert.match(progressHelpers, /normalizeWorkflowTutorialProgress/);
+  assert.match(progressHelpers, /workflowTutorialProgressIds/);
+  assert.match(app, /const \[workflowTutorialChooserOpen, setWorkflowTutorialChooserOpen\]/);
+  assert.match(app, /const hasUnfinishedUnskippedTutorials =/);
+  assert.match(app, /setWorkflowTutorialChooserOpen\(true\)/);
+  assert.match(app, /updateWorkflowTutorialProgressStatus\(definition\.id, "skipped"\)/);
+  assert.match(chooserBranch, /startWorkflowTutorial\(definition\.id\)/);
+  assert.match(chooserBranch, /restartWorkflowTutorial\(definition\.id\)/);
+  assert.match(chooserBranch, /skipWorkflowTutorial\(definition\.id\)/);
+  assert.match(chooserBranch, /clearWorkflowTutorialProgressStatus\(definition\.id\)/);
+});
+
 test("tutorial connect decoration keeps both source and target nodes active", () => {
   const decorateBranch = sourceBetween(
     "function decorateWorkflowTutorialNodes(",
@@ -33,6 +56,22 @@ test("tutorial connect decoration keeps both source and target nodes active", ()
   assert.match(decorateBranch, /connectTargetNodeId/);
   assert.match(decorateBranch, /isConnectParticipant/);
   assert.match(decorateBranch, /tutorialBlocked: targetNodeId !== null \? !\(isTarget \|\| isConnectParticipant\) : false,/);
+});
+
+test("tutorial connect route checks stay exact on the right-click path", () => {
+  const connectionBranch = sourceBetween(
+    "function startPendingConnection(route: WorkflowConnectionRouteOption) {",
+    "function updatePendingConnectionCursor(clientX: number, clientY: number)",
+  );
+  const contextMenuBranch = sourceBetween(
+    "function handleNodeContextMenu(event: React.MouseEvent, node: Node<GraphNodeData>) {",
+    "function handleWorkflowNodeClick(event: React.MouseEvent, node: Node<GraphNodeData>) {",
+  );
+
+  assert.match(connectionBranch, /expectedAction\.sourceNodeId === nodeConnectionMenu\.nodeId/);
+  assert.match(connectionBranch, /expectedAction\.sourcePort === route\.sourcePort/);
+  assert.match(contextMenuBranch, /expectedAction\?\.kind === "connect"/);
+  assert.match(contextMenuBranch, /expectedAction\.sourceNodeId === node\.id/);
 });
 
 test("tutorial connection completion selects the target before bind-field steps", () => {

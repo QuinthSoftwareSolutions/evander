@@ -118,6 +118,7 @@ import {
 } from "./workflowNodeSnap";
 import {
   createWorkflowTutorialSession,
+  WORKFLOW_TUTORIAL_DEFINITIONS,
   workflowTutorialDefinitionById,
   workflowTutorialTargetNodeId,
   workflowTutorialRequiredActionMatches,
@@ -392,6 +393,7 @@ const NODE_STATUS_ORDER = [
   "skipped",
 ] as const;
 const WORKFLOW_SIDEBAR_WIDTH_STORAGE_KEY = "workflow-editor:sidebar-width";
+const WORKFLOW_TUTORIAL_PROGRESS_STORAGE_KEY = "workflow-editor:tutorial-progress:v1";
 const WORKFLOW_SIDEBAR_DEFAULT_WIDTH = 320;
 const WORKFLOW_SIDEBAR_MIN_WIDTH = 320;
 const WORKFLOW_SIDEBAR_MAX_WIDTH = 760;
@@ -411,6 +413,53 @@ type NodeTypeDragPayload = {
   kind: WorkflowNodeKind;
   type: string;
 };
+
+type WorkflowTutorialProgress = {
+  completedTutorialIds: string[];
+  skippedTutorialIds: string[];
+};
+
+type WorkflowTutorialChooserStatus = "available" | "completed" | "skipped" | "in-progress";
+
+function workflowTutorialProgressIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const validTutorialIds = new Set(WORKFLOW_TUTORIAL_DEFINITIONS.map((definition) => definition.id));
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const tutorialId = entry.trim();
+    if (!tutorialId || !validTutorialIds.has(tutorialId) || seen.has(tutorialId)) continue;
+    seen.add(tutorialId);
+    result.push(tutorialId);
+  }
+  return result;
+}
+
+function normalizeWorkflowTutorialProgress(value: unknown): WorkflowTutorialProgress {
+  if (!isRecord(value)) {
+    return { completedTutorialIds: [], skippedTutorialIds: [] };
+  }
+  return {
+    completedTutorialIds: workflowTutorialProgressIds(value.completedTutorialIds),
+    skippedTutorialIds: workflowTutorialProgressIds(value.skippedTutorialIds),
+  };
+}
+
+function readStoredWorkflowTutorialProgress(): WorkflowTutorialProgress {
+  if (typeof window === "undefined") {
+    return { completedTutorialIds: [], skippedTutorialIds: [] };
+  }
+  const raw = window.localStorage.getItem(WORKFLOW_TUTORIAL_PROGRESS_STORAGE_KEY);
+  if (!raw) {
+    return { completedTutorialIds: [], skippedTutorialIds: [] };
+  }
+  try {
+    return normalizeWorkflowTutorialProgress(JSON.parse(raw));
+  } catch {
+    return { completedTutorialIds: [], skippedTutorialIds: [] };
+  }
+}
 
 function readStoredWorkflowSidebarWidth(): number {
   if (typeof window === "undefined") return WORKFLOW_SIDEBAR_DEFAULT_WIDTH;
@@ -1882,18 +1931,38 @@ function decorateWorkflowTutorialNodes(
   });
 }
 
+function tutorialNodeLabel(nodeId: string): string {
+  switch (nodeId) {
+    case "tutorial-trigger":
+      return "Agent run completed";
+    case "tutorial-effect":
+      return "Prompt agent";
+    default:
+      return nodeId;
+  }
+}
+
+function tutorialFieldLabel(fieldKey: string): string {
+  switch (fieldKey) {
+    case "prompt":
+      return "Prompt";
+    default:
+      return fieldKey;
+  }
+}
+
 function tutorialRequiredActionLabel(action: WorkflowTutorialRequiredAction): string {
   switch (action.kind) {
     case "next":
       return "Next";
     case "select-node":
-      return `Select ${action.nodeId}`;
+      return `Select ${tutorialNodeLabel(action.nodeId)}`;
     case "add-node":
       return `Add ${action.nodeType}`;
     case "connect":
-      return `Connect ${action.sourceNodeId} to ${action.targetNodeId}`;
+      return `Connect ${tutorialNodeLabel(action.sourceNodeId)} to ${tutorialNodeLabel(action.targetNodeId)}`;
     case "bind-field":
-      return `Bind ${action.nodeId}.${action.fieldKey}`;
+      return `Bind ${tutorialFieldLabel(action.fieldKey)}`;
     case "reset":
       return "Reset";
     default:
@@ -1906,13 +1975,13 @@ function tutorialRequiredActionDescription(action: WorkflowTutorialRequiredActio
     case "next":
       return "Press Next to continue.";
     case "select-node":
-      return `Click node ${action.nodeId} to continue.`;
+      return `Click ${tutorialNodeLabel(action.nodeId)} to continue.`;
     case "add-node":
       return `Add ${action.nodeType} at the tutorial position.`;
     case "connect":
-      return `Connect ${action.sourceNodeId} via ${action.sourcePort ?? "default"} to ${action.targetNodeId}.`;
+      return `Right-click ${tutorialNodeLabel(action.sourceNodeId)}, choose Completed, then click ${tutorialNodeLabel(action.targetNodeId)}.`;
     case "bind-field":
-      return `Bind ${action.nodeId}.${action.fieldKey} to ${action.bindingExpression}.`;
+      return `Bind ${tutorialFieldLabel(action.fieldKey)} to the trigger's Completed output.`;
     case "reset":
       return "Reset the tutorial to practice again.";
     default:
@@ -2935,6 +3004,10 @@ export default function App() {
   const [sampleWorkflowError, setSampleWorkflowError] = useState<string | null>(null);
   const [sampleWorkflowAction, setSampleWorkflowAction] = useState<"launch" | "reset" | null>(null);
   const [sampleWorkflowPanelOpen, setSampleWorkflowPanelOpen] = useState(false);
+  const [workflowTutorialChooserOpen, setWorkflowTutorialChooserOpen] = useState(false);
+  const [workflowTutorialProgress, setWorkflowTutorialProgress] = useState<WorkflowTutorialProgress>(
+    () => readStoredWorkflowTutorialProgress(),
+  );
   const [activeWorkflowTutorial, setActiveWorkflowTutorial] = useState<WorkflowTutorialSession | null>(null);
   const [workflowTutorialHint, setWorkflowTutorialHint] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<WorkflowRunDetail | null>(null);
@@ -3003,6 +3076,14 @@ export default function App() {
     : null;
   const isTutorialMode = Boolean(activeWorkflowTutorialDefinition && activeWorkflowTutorialStep);
   const workflowEditLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial);
+  const workflowTutorialProgressSets = useMemo(() => ({
+    completed: new Set(workflowTutorialProgress.completedTutorialIds),
+    skipped: new Set(workflowTutorialProgress.skippedTutorialIds),
+  }), [workflowTutorialProgress]);
+  const hasUnfinishedUnskippedTutorials = WORKFLOW_TUTORIAL_DEFINITIONS.some((definition) => (
+    !workflowTutorialProgressSets.completed.has(definition.id) &&
+    !workflowTutorialProgressSets.skipped.has(definition.id)
+  ));
   const activeWorkflowDocument = isTutorialMode && activeWorkflowTutorial ? activeWorkflowTutorial.document : document;
   const activeWorkflowConfig = activeWorkflowDocument?.config ?? emptyConfig();
   const activeWorkflowOutputSchemas = activeWorkflowDocument?.output_schemas ?? EMPTY_OUTPUT_SCHEMAS;
@@ -3294,6 +3375,11 @@ export default function App() {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(WORKFLOW_SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth));
   }, [sidebarWidth]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(WORKFLOW_TUTORIAL_PROGRESS_STORAGE_KEY, JSON.stringify(workflowTutorialProgress));
+  }, [workflowTutorialProgress]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -3752,6 +3838,26 @@ export default function App() {
     );
   }
 
+  function updateWorkflowTutorialProgressStatus(
+    tutorialId: string,
+    status: "completed" | "skipped" | null,
+  ) {
+    setWorkflowTutorialProgress((current) => {
+      const completedTutorialIds = current.completedTutorialIds.filter((id) => id !== tutorialId);
+      const skippedTutorialIds = current.skippedTutorialIds.filter((id) => id !== tutorialId);
+      if (status === "completed") {
+        completedTutorialIds.push(tutorialId);
+      } else if (status === "skipped") {
+        skippedTutorialIds.push(tutorialId);
+      }
+      return { completedTutorialIds, skippedTutorialIds };
+    });
+  }
+
+  function clearWorkflowTutorialProgressStatus(tutorialId: string) {
+    updateWorkflowTutorialProgressStatus(tutorialId, null);
+  }
+
   function completeTutorialAction(action: WorkflowTutorialRequiredAction): boolean {
     if (!isTutorialMode) return true;
     const requiredAction = tutorialCurrentRequiredAction();
@@ -3769,6 +3875,7 @@ export default function App() {
   }
 
   function startWorkflowTutorial(tutorialId = "first-steps") {
+    setWorkflowTutorialChooserOpen(false);
     if (activeWorkflowTutorial) return;
     const definition = workflowTutorialDefinitionById(tutorialId);
     if (!definition) return;
@@ -3794,13 +3901,58 @@ export default function App() {
     setError(null);
   }
 
+  function restartWorkflowTutorial(tutorialId = "first-steps") {
+    const definition = workflowTutorialDefinitionById(tutorialId);
+    if (!definition) return;
+    setWorkflowTutorialChooserOpen(false);
+    if (activeWorkflowTutorial?.tutorialId === definition.id) {
+      resetWorkflowTutorial();
+      return;
+    }
+    startWorkflowTutorial(definition.id);
+  }
+
+  function skipWorkflowTutorial(tutorialId = "first-steps") {
+    const definition = workflowTutorialDefinitionById(tutorialId);
+    if (!definition) return;
+    updateWorkflowTutorialProgressStatus(definition.id, "skipped");
+    setWorkflowTutorialChooserOpen(false);
+    if (activeWorkflowTutorial?.tutorialId === definition.id) {
+      exitWorkflowTutorial();
+    }
+  }
+
+  function workflowTutorialChooserStatusFor(tutorialId: string): WorkflowTutorialChooserStatus {
+    if (activeWorkflowTutorial?.tutorialId === tutorialId) return "in-progress";
+    if (workflowTutorialProgressSets.completed.has(tutorialId)) return "completed";
+    if (workflowTutorialProgressSets.skipped.has(tutorialId)) return "skipped";
+    return "available";
+  }
+
+  function workflowTutorialChooserStatusLabel(status: WorkflowTutorialChooserStatus): string {
+    switch (status) {
+      case "completed":
+        return "Completed";
+      case "skipped":
+        return "Skipped";
+      case "in-progress":
+        return "In progress";
+      case "available":
+      default:
+        return "Ready";
+    }
+  }
+
   function advanceWorkflowTutorial() {
+    const currentTutorialId = activeWorkflowTutorial?.tutorialId ?? null;
+    let reachedFinalStep = false;
     setActiveWorkflowTutorial((current) => {
       if (!current) return current;
       const definition = workflowTutorialDefinitionById(current.tutorialId);
       if (!definition) return current;
       const nextStepIndex = Math.min(current.stepIndex + 1, definition.steps.length - 1);
       if (nextStepIndex === current.stepIndex) return current;
+      reachedFinalStep = nextStepIndex === definition.steps.length - 1;
       hasAutoFitRef.current = false;
       setWorkflowTutorialHint(null);
       return {
@@ -3808,6 +3960,9 @@ export default function App() {
         stepIndex: nextStepIndex,
       };
     });
+    if (reachedFinalStep && currentTutorialId) {
+      updateWorkflowTutorialProgressStatus(currentTutorialId, "completed");
+    }
   }
 
   function resetWorkflowTutorial() {
@@ -7481,6 +7636,67 @@ export default function App() {
     );
   }
 
+  function renderWorkflowTutorialChooser() {
+    if (!workflowTutorialChooserOpen) return null;
+    return (
+      <div
+        className="modal-backdrop workflow-tutorial-chooser-backdrop"
+        role="presentation"
+        onClick={(event) => {
+          if (event.target === event.currentTarget) {
+            setWorkflowTutorialChooserOpen(false);
+          }
+        }}
+      >
+        <div className="modal-card workflow-tutorial-chooser-modal" role="dialog" aria-modal="true" aria-label="Tutorials">
+          <div className="modal-header workflow-tutorial-chooser-header">
+            <div>
+              <div className="section-label">Tutorials</div>
+              <h2>Choose a walkthrough</h2>
+              <p>Start, restart, skip, or clear local tutorial status without touching the saved workflow.</p>
+            </div>
+            <button type="button" className="subtle-button" onClick={() => setWorkflowTutorialChooserOpen(false)}>
+              Close
+            </button>
+          </div>
+          <div className="workflow-tutorial-chooser-body">
+            <div className="workflow-tutorial-chooser-list" aria-label="Tutorial chooser">
+              {WORKFLOW_TUTORIAL_DEFINITIONS.map((definition) => {
+                const status = workflowTutorialChooserStatusFor(definition.id);
+                const isActive = status === "in-progress";
+                const primaryAction = status === "available"
+                  ? () => startWorkflowTutorial(definition.id)
+                  : () => restartWorkflowTutorial(definition.id);
+                const secondaryAction = status === "available" || isActive
+                  ? () => skipWorkflowTutorial(definition.id)
+                  : () => clearWorkflowTutorialProgressStatus(definition.id);
+                return (
+                  <article key={definition.id} className={`workflow-tutorial-chooser-item status-${status}`}>
+                    <div className="workflow-tutorial-chooser-item-header">
+                      <div>
+                        <h3>{definition.title}</h3>
+                        <p>{definition.description}</p>
+                      </div>
+                      <span className="workflow-tutorial-chooser-status">{workflowTutorialChooserStatusLabel(status)}</span>
+                    </div>
+                    <div className="workflow-tutorial-chooser-actions">
+                      <button type="button" className="primary" onClick={primaryAction}>
+                        {status === "available" ? "Start" : "Restart"}
+                      </button>
+                      <button type="button" className="subtle-button" onClick={secondaryAction}>
+                        {status === "available" || isActive ? "Skip" : "Clear status"}
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function renderWorkflowSamplePanel() {
     const tutorialSteps = sampleWorkflow?.tutorial_steps ?? [];
     const currentStepId = sampleWorkflow?.current_step?.step_id ?? null;
@@ -7493,15 +7709,23 @@ export default function App() {
         <div className="guided-sample-launcher">
           <button
             type="button"
-            className="primary"
+            className={`guided-sample-launcher-button${hasUnfinishedUnskippedTutorials ? " needs-attention" : " is-complete"}`}
+            aria-haspopup="dialog"
+            aria-expanded={workflowTutorialChooserOpen}
             onClick={() => {
-              setSampleWorkflowPanelOpen(false);
-              startWorkflowTutorial();
+              setWorkflowTutorialChooserOpen(true);
             }}
           >
-            First steps
+            Tutorials
           </button>
-          <button type="button" className="subtle-button" onClick={() => setSampleWorkflowPanelOpen(true)}>
+          <button
+            type="button"
+            className="subtle-button"
+            onClick={() => {
+              setWorkflowTutorialChooserOpen(false);
+              setSampleWorkflowPanelOpen(true);
+            }}
+          >
             Sample run
           </button>
         </div>
@@ -8418,6 +8642,8 @@ export default function App() {
             </>
           )}
         </aside>
+
+        {renderWorkflowTutorialChooser()}
 
           <div
             className="workflow-sidebar-resize-handle"

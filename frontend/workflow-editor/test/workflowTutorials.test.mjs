@@ -33,11 +33,15 @@ test("first steps tutorial is registered with the expected walkthrough order", (
   );
   assert.equal(WORKFLOW_TUTORIAL_FIRST_STEPS.steps[0].requiredAction.kind, "next");
   assert.equal(WORKFLOW_TUTORIAL_FIRST_STEPS.steps[1].requiredAction.kind, "select-node");
+  assert.match(WORKFLOW_TUTORIAL_FIRST_STEPS.steps[1].body, /The trigger starts the workflow\./);
   assert.equal(WORKFLOW_TUTORIAL_FIRST_STEPS.steps[3].requiredAction.kind, "add-node");
+  assert.match(WORKFLOW_TUTORIAL_FIRST_STEPS.steps[3].body, /Effects run downstream work\./);
   assert.equal(WORKFLOW_TUTORIAL_FIRST_STEPS.steps[4].requiredAction.kind, "connect");
   assert.equal(WORKFLOW_TUTORIAL_FIRST_STEPS.steps[4].target.nodeId, "tutorial-trigger");
+  assert.match(WORKFLOW_TUTORIAL_FIRST_STEPS.steps[4].body, /Right-click the trigger, choose Completed, then click Prompt agent/);
   assert.equal(WORKFLOW_TUTORIAL_FIRST_STEPS.steps[4].bubblePlacement, "bottom");
   assert.equal(WORKFLOW_TUTORIAL_FIRST_STEPS.steps[5].requiredAction.kind, "bind-field");
+  assert.match(WORKFLOW_TUTORIAL_FIRST_STEPS.steps[5].body, /Bind the Prompt field to the trigger's Completed output/);
   assert.equal(WORKFLOW_TUTORIAL_FIRST_STEPS.steps[6].requiredAction.kind, "reset");
 });
 
