@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-24 - Container Worker Manifest Persistence Fix
+
+- Delayed workflow container-agent session manifest persistence until worker
+  preparation and bootstrap file writes succeed.
+- Prevented newly requested container sessions from leaving a stale active
+  manifest behind when bootstrap fails before the worker is ready.
+
 ## 2026-05-23 - Runner Cache and Workflow Tutorial Fixes
 
 - Pulled moving Docker base-image tags during forced runner-image rebuilds and
