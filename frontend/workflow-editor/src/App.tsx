@@ -7704,19 +7704,26 @@ export default function App() {
     const sampleRun = sampleWorkflow?.run ?? null;
     const sampleEventId = sampleWorkflow?.detail?.event_id ?? sampleRun?.event_id ?? null;
     const isBusy = sampleWorkflowLoading || sampleWorkflowAction !== null;
+    const tutorialLauncherHasAttention = hasUnfinishedUnskippedTutorials;
+    const tutorialLauncherStatusLabel = tutorialLauncherHasAttention ? "1 available" : "All done";
+    const tutorialLauncherAriaLabel = tutorialLauncherHasAttention
+      ? "Open tutorials chooser, 1 tutorial available"
+      : "Open tutorials chooser, all tutorials completed or skipped";
     if (!sampleWorkflowPanelOpen) {
       return (
         <div className="guided-sample-launcher">
           <button
             type="button"
-            className={`guided-sample-launcher-button${hasUnfinishedUnskippedTutorials ? " needs-attention" : " is-complete"}`}
+            className={`guided-sample-launcher-button${tutorialLauncherHasAttention ? " needs-attention" : " is-complete"}`}
             aria-haspopup="dialog"
             aria-expanded={workflowTutorialChooserOpen}
+            aria-label={tutorialLauncherAriaLabel}
             onClick={() => {
               setWorkflowTutorialChooserOpen(true);
             }}
           >
-            Tutorials
+            <span>Tutorials</span>
+            <span className="guided-sample-launcher-status">{tutorialLauncherStatusLabel}</span>
           </button>
           <button
             type="button"

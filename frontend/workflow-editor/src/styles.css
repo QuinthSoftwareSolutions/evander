@@ -2321,10 +2321,30 @@ select {
 }
 
 .sidebar .guided-sample-launcher-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem;
   padding: 0.38rem 0.55rem;
   border: 1px solid rgba(91, 67, 37, 0.14);
   background: rgba(247, 242, 235, 0.36);
   color: #6a5740;
+}
+
+.sidebar .guided-sample-launcher-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.12rem;
+  padding: 0.14rem 0.38rem;
+  border-radius: 999px;
+  background: rgba(91, 67, 37, 0.08);
+  color: #7a5a31;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  white-space: nowrap;
+  text-transform: uppercase;
 }
 
 .sidebar .guided-sample-launcher-button.needs-attention {
@@ -2334,11 +2354,21 @@ select {
   box-shadow: 0 0 0 2px rgba(201, 151, 52, 0.14);
 }
 
+.sidebar .guided-sample-launcher-button.needs-attention .guided-sample-launcher-status {
+  background: rgba(201, 151, 52, 0.18);
+  color: #6a470f;
+}
+
 .sidebar .guided-sample-launcher-button.is-complete {
   padding-inline: 0.25rem;
   border-color: transparent;
   background: transparent;
   color: rgba(106, 87, 64, 0.62);
+}
+
+.sidebar .guided-sample-launcher-button.is-complete .guided-sample-launcher-status {
+  background: rgba(91, 67, 37, 0.06);
+  color: rgba(106, 87, 64, 0.72);
 }
 
 .sidebar .guided-sample-skip-button {
@@ -7350,6 +7380,11 @@ select {
   color: #aebdb5;
 }
 
+:root[data-theme="dark"] .sidebar .guided-sample-launcher-status {
+  background: rgba(128, 106, 66, 0.16);
+  color: #d5c39f;
+}
+
 :root[data-theme="dark"] .sidebar .guided-sample-launcher-button.needs-attention {
   border-color: rgba(163, 128, 49, 0.42);
   background: rgba(82, 63, 28, 0.52);
@@ -7357,10 +7392,20 @@ select {
   box-shadow: 0 0 0 2px rgba(163, 128, 49, 0.12);
 }
 
+:root[data-theme="dark"] .sidebar .guided-sample-launcher-button.needs-attention .guided-sample-launcher-status {
+  background: rgba(163, 128, 49, 0.22);
+  color: #f6df9b;
+}
+
 :root[data-theme="dark"] .sidebar .guided-sample-launcher-button.is-complete {
   border-color: transparent;
   background: transparent;
   color: rgba(174, 189, 181, 0.56);
+}
+
+:root[data-theme="dark"] .sidebar .guided-sample-launcher-button.is-complete .guided-sample-launcher-status {
+  background: rgba(128, 106, 66, 0.12);
+  color: rgba(214, 198, 165, 0.72);
 }
 
 :root[data-theme="dark"] .sidebar .guided-sample-skip-button {
