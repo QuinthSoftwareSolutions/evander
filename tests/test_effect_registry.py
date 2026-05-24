@@ -86,9 +86,13 @@ class _FakeContainerBackend:
         self.log_snapshot_calls: list[dict[str, object]] = []
         self.status = SimpleNamespace(status=ExecutionStatusKind.STOPPED, message=None, metadata={})
         self.logs = ""
+        self.prepare_error: Exception | None = None
+        self.write_files_error: Exception | None = None
         self.start_error: Exception | None = None
 
     def prepare_session(self, **kwargs):
+        if self.prepare_error is not None:
+            raise self.prepare_error
         self.prepared_sessions.append(kwargs)
         return SimpleNamespace(
             agent_home_container_path="/home/agent",
@@ -106,6 +110,8 @@ class _FakeContainerBackend:
         )
 
     def write_files(self, **kwargs):
+        if self.write_files_error is not None:
+            raise self.write_files_error
         self.written_files.append(kwargs)
         return SimpleNamespace(
             copied_count=len(kwargs["files"]),
@@ -2077,6 +2083,94 @@ def test_agent_create_container_upserts_when_session_exists(
     assert updated.allowed_tools == [ToolName.SET_ISSUE_PLAN]
     assert updated.metadata["execution_backend"] == "container_worker_vm"
     assert updated.metadata["model"] == "gpt-5.5"
+
+
+def test_agent_create_container_does_not_persist_manifest_when_prepare_fails(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    backend.prepare_error = RuntimeError("prepare failed")
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    with pytest.raises(RuntimeError, match="prepare failed"):
+        factory.build(
+            AgentCreateEffectDefinition(
+                id="agent-create",
+                display_name="Create",
+                type="effect:agent:create",
+                execution_backend="container_worker_vm",
+                session_id="session-1",
+                model="gpt-5.4",
+            )
+        ).execute()
+
+    assert backend.prepared_sessions == []
+    assert backend.written_files == []
+    assert session_repository.get_session("session-1") is None
+
+
+def test_agent_create_container_does_not_persist_manifest_when_write_files_fails(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    backend.write_files_error = RuntimeError("write files failed")
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_create.container_backend",
+        lambda context, config: backend,
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    with pytest.raises(RuntimeError, match="write files failed"):
+        factory.build(
+            AgentCreateEffectDefinition(
+                id="agent-create",
+                display_name="Create",
+                type="effect:agent:create",
+                execution_backend="container_worker_vm",
+                session_id="session-1",
+                model="gpt-5.4",
+            )
+        ).execute()
+
+    assert backend.prepared_sessions[0]["session_id"] == "session-1"
+    assert backend.written_files == []
+    assert session_repository.get_session("session-1") is None
 
 
 def test_agent_clone_container_skips_push_alias_for_unreachable_remotes() -> None:

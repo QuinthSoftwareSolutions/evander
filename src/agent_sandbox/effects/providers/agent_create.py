@@ -262,7 +262,6 @@ class AgentCreateEffectProvider(EffectProviderBase):
             ),
             metadata=metadata,
         )
-        session_repository.upsert_session(manifest)
         session_record = backend.prepare_session(
             session_id=session_id,
             metadata={
@@ -286,6 +285,7 @@ class AgentCreateEffectProvider(EffectProviderBase):
                 *codex_skill_files,
             ],
         )
+        session_repository.upsert_session(manifest)
         return {
             "success": True,
             "message": f"Prepared container worker session {session_id} with agent bootstrap files",
