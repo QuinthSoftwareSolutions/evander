@@ -1235,16 +1235,19 @@ test("workflow editor guides, inspects, and resets the guided sample workflow", 
   const tutorialInspector = page.locator(".sidebar-section.inspector").filter({ hasText: "tutorial-effect" });
   await tutorialInspector.getByText("Prompt", { exact: true }).waitFor({ state: "visible" });
   assert.equal(await tutorialInspector.locator("textarea").first().isEnabled(), true);
-  await tutorialInspector
-    .locator(".inspector-field")
-    .filter({ hasText: "Prompt" })
-    .locator("select")
-    .first()
-    .selectOption("bind");
-  const bindingSelect = tutorialInspector.locator(".binding-editor select");
-  await bindingSelect.waitFor({ state: "visible" });
-  await bindingSelect.selectOption("${{tutorial-trigger.completed}}");
-  await page.getByRole("dialog", { name: "Finish" }).waitFor({ state: "visible" });
+  const promptField = tutorialInspector.locator(".inspector-field").filter({
+    has: page.locator(".field-header").getByText("Prompt", { exact: true }),
+  }).first();
+  await promptField.locator(".mode-select select").selectOption("bind");
+  const finishDialog = page.getByRole("dialog", { name: "Finish" });
+  if (await finishDialog.isVisible().catch(() => false)) {
+    await finishDialog.waitFor({ state: "visible" });
+  } else {
+    const bindingSelect = promptField.locator(".binding-editor select");
+    await bindingSelect.waitFor({ state: "visible" });
+    await bindingSelect.selectOption("${{tutorial-trigger.completed}}");
+    await finishDialog.waitFor({ state: "visible" });
+  }
   await page.waitForFunction(() => document.querySelector(".guided-sample-launcher-button.is-complete") !== null);
   await page.getByRole("button", { name: "Exit" }).click();
   await page.waitForFunction(() => !document.querySelector(".workflow-tutorial-bubble"));
