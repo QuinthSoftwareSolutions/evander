@@ -3084,10 +3084,11 @@ export default function App() {
     completed: new Set(workflowTutorialProgress.completedTutorialIds),
     skipped: new Set(workflowTutorialProgress.skippedTutorialIds),
   }), [workflowTutorialProgress]);
-  const hasUnfinishedUnskippedTutorials = WORKFLOW_TUTORIAL_DEFINITIONS.some((definition) => (
+  const unfinishedUnskippedTutorialCount = WORKFLOW_TUTORIAL_DEFINITIONS.filter((definition) => (
     !workflowTutorialProgressSets.completed.has(definition.id) &&
     !workflowTutorialProgressSets.skipped.has(definition.id)
-  ));
+  )).length;
+  const hasUnfinishedUnskippedTutorials = unfinishedUnskippedTutorialCount > 0;
   const activeWorkflowDocument = isTutorialMode && activeWorkflowTutorial ? activeWorkflowTutorial.document : document;
   const activeWorkflowConfig = activeWorkflowDocument?.config ?? emptyConfig();
   const activeWorkflowOutputSchemas = activeWorkflowDocument?.output_schemas ?? EMPTY_OUTPUT_SCHEMAS;
@@ -7709,9 +7710,11 @@ export default function App() {
     const sampleEventId = sampleWorkflow?.detail?.event_id ?? sampleRun?.event_id ?? null;
     const isBusy = sampleWorkflowLoading || sampleWorkflowAction !== null;
     const tutorialLauncherHasAttention = hasUnfinishedUnskippedTutorials;
-    const tutorialLauncherStatusLabel = tutorialLauncherHasAttention ? "1 available" : "All done";
+    const tutorialLauncherStatusLabel = tutorialLauncherHasAttention
+      ? `${unfinishedUnskippedTutorialCount} available`
+      : "All done";
     const tutorialLauncherAriaLabel = tutorialLauncherHasAttention
-      ? "Open tutorials chooser, 1 tutorial available"
+      ? `Open tutorials chooser, ${unfinishedUnskippedTutorialCount} tutorial${unfinishedUnskippedTutorialCount === 1 ? "" : "s"} available`
       : "Open tutorials chooser, all tutorials completed or skipped";
     if (!sampleWorkflowPanelOpen) {
       return (
