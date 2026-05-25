@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from agent_sandbox.events.models import TriggerDefinition
+from agent_sandbox.events.models import ConfigValue, TriggerDefinition
 from agent_sandbox.events.internal import validate_internal_event_type
 from agent_sandbox.events.provider_types import (
     EmailProvider,
@@ -252,72 +252,64 @@ class EmailNewMessageTriggerDefinition(TriggerDefinition):
         return normalize_string_list(value)
 
 
-class PullRequestNewFeedbackTriggerDefinition(TriggerDefinition):
+class _PullRequestTriggerDefinition(TriggerDefinition):
+    provider: PrFeedbackProvider
+    repo: ConfigValue | None = None
+    directory_path: ConfigValue | None = None
+    organization_url: str | None = None
+    project: str | None = None
+    status: ConfigValue | None = None
+    creator_id: ConfigValue | None = None
+    reviewer_id: ConfigValue | None = None
+    source_ref_name: ConfigValue | None = None
+    target_ref_name: ConfigValue | None = None
+    source_repository_id: ConfigValue | None = None
+    repository_id: ConfigValue | None = None
+    min_time: ConfigValue | None = None
+    max_time: ConfigValue | None = None
+    query_time_range_type: ConfigValue | None = None
+    include_links: ConfigValue | None = None
+    max_comment_length: ConfigValue | None = None
+    tags: ConfigValue | None = None
+    top: ConfigValue | None = None
+    skip: ConfigValue | None = None
+    cursor: ConfigValue | None = None
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def validate_provider(cls, value: object) -> str:
+        return validate_pr_feedback_provider(value)
+
+    @field_validator("organization_url", mode="before")
+    @classmethod
+    def normalize_organization_url(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip().rstrip("/")
+        return text or None
+
+    @field_validator("project", mode="before")
+    @classmethod
+    def normalize_project(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def normalize_tags(cls, value: object) -> object:
+        if value is None or isinstance(value, str):
+            return value
+        raise ValueError("query:pull-request:list tags must be a string")
+
+
+class PullRequestNewFeedbackTriggerDefinition(_PullRequestTriggerDefinition):
     type: Literal["trigger:pull-request:new-feedback"]
-    provider: PrFeedbackProvider
-    organization_url: str | None = None
-    project: str | None = None
-
-    @field_validator("provider", mode="before")
-    @classmethod
-    def validate_provider(cls, value: object) -> str:
-        return validate_pr_feedback_provider(value)
-
-    @field_validator("organization_url", mode="before")
-    @classmethod
-    def normalize_organization_url(cls, value: object) -> object:
-        if value is None:
-            return None
-        text = str(value).strip().rstrip("/")
-        return text or None
-
-    @field_validator("project", mode="before")
-    @classmethod
-    def normalize_project(cls, value: object) -> object:
-        if value is None:
-            return None
-        text = str(value).strip()
-        return text or None
-
-    @model_validator(mode="after")
-    def validate_provider_specific_fields(self) -> "PullRequestNewFeedbackTriggerDefinition":
-        if self.provider == "ado" and not self.organization_url:
-            raise ValueError("organization_url is required when provider is 'ado'")
-        return self
 
 
-class PullRequestCompletedTriggerDefinition(TriggerDefinition):
+class PullRequestCompletedTriggerDefinition(_PullRequestTriggerDefinition):
     type: Literal["trigger:pull-request:completed"]
-    provider: PrFeedbackProvider
-    organization_url: str | None = None
-    project: str | None = None
-
-    @field_validator("provider", mode="before")
-    @classmethod
-    def validate_provider(cls, value: object) -> str:
-        return validate_pr_feedback_provider(value)
-
-    @field_validator("organization_url", mode="before")
-    @classmethod
-    def normalize_organization_url(cls, value: object) -> object:
-        if value is None:
-            return None
-        text = str(value).strip().rstrip("/")
-        return text or None
-
-    @field_validator("project", mode="before")
-    @classmethod
-    def normalize_project(cls, value: object) -> object:
-        if value is None:
-            return None
-        text = str(value).strip()
-        return text or None
-
-    @model_validator(mode="after")
-    def validate_provider_specific_fields(self) -> "PullRequestCompletedTriggerDefinition":
-        if self.provider == "ado" and not self.organization_url:
-            raise ValueError("organization_url is required when provider is 'ado'")
-        return self
 
 
 class ReviewNewRequestTriggerDefinition(TriggerDefinition):
