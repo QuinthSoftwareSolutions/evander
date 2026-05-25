@@ -660,6 +660,24 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "skip",
         "cursor",
     ]
+    pr_get = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "query:pull-request:get"
+    )
+    assert [field["key"] for field in pr_get["fields"]] == [
+        "provider",
+        "repo",
+        "pr_id",
+        "directory_path",
+        "organization_url",
+        "project",
+        "include_reviewers",
+        "include_commits",
+    ]
+    assert [option["value"] for option in pr_get["fields"][0]["options"]] == [
+        "azure_devops",
+        "ado",
+        "github",
+    ]
     session_list = next(
         node for node in catalog_payload["nodes"] if node["type"] == "query:session:list"
     )
