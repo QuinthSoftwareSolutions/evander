@@ -33,6 +33,7 @@ from agent_sandbox.events.provider_models import (
 from agent_sandbox.models import (
     DirectoryPath,
     LocalIssueRecord,
+    PullRequestItem,
     PrFeedbackItem,
     RemoteIssueReference,
 )
@@ -40,6 +41,7 @@ from agent_sandbox.pr_tracking import (
     PrMapStore,
     completion_event_id,
     completion_event_payload,
+    is_pr_completed,
     status_snapshot_from_pull_request,
 )
 from agent_sandbox.pr_feedback.providers import (
@@ -1612,6 +1614,104 @@ def _build_trigger_event_queue_for_worker_config(
     )
 
 
+def _normalize_optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _trigger_has_explicit_pr_criteria(
+    trigger: PullRequestNewFeedbackTriggerDefinition | PullRequestCompletedTriggerDefinition,
+) -> bool:
+    return _normalize_optional_text(trigger.repo) is not None
+
+
+def _trigger_effective_directory_path(
+    trigger: PullRequestNewFeedbackTriggerDefinition | PullRequestCompletedTriggerDefinition,
+    current_directory_path: str,
+) -> str:
+    return _normalize_optional_text(trigger.directory_path) or DirectoryPath(
+        segments=current_directory_path
+    ).as_posix()
+
+
+def _list_explicit_ado_trigger_pull_requests(
+    *,
+    trigger: PullRequestNewFeedbackTriggerDefinition | PullRequestCompletedTriggerDefinition,
+    config: WorkerConfig,
+    runtime_gateway_config: GatewayConfig,
+    current_directory_path: str,
+) -> list[PullRequestItem]:
+    normalized_current_directory_path = DirectoryPath(segments=current_directory_path).as_posix()
+    trigger_directory_path = _normalize_optional_text(trigger.directory_path)
+    if trigger_directory_path is not None:
+        effective_directory_path = DirectoryPath(segments=trigger_directory_path).as_posix()
+        if effective_directory_path != normalized_current_directory_path:
+            _LOG.debug(
+                "Skipping Azure PR polling for trigger_id=%s directory=%s current_directory=%s",
+                trigger.id,
+                effective_directory_path,
+                normalized_current_directory_path,
+            )
+            return []
+    effective_directory_path = trigger_directory_path or normalized_current_directory_path
+    directory_config = _resolve_directory_worker_config(
+        config, runtime_gateway_config, effective_directory_path
+    )
+    pat_env_name = runtime_gateway_config.azure_devops_pr_pat_env
+    pat = os.environ.get(pat_env_name, "").strip()
+    if not pat:
+        _LOG.debug(
+            "Skipping Azure PR polling for directory=%s because %s is unset",
+            effective_directory_path,
+            pat_env_name,
+        )
+        return []
+
+    repo = _normalize_optional_text(trigger.repo)
+    if not repo:
+        return []
+
+    organization_url = (
+        _normalize_optional_text(trigger.organization_url)
+        or _normalize_optional_text(directory_config.organization_url)
+        or _normalize_optional_text(config.organization_url)
+    )
+    project = (
+        _normalize_optional_text(trigger.project)
+        or _normalize_optional_text(directory_config.project)
+        or _normalize_optional_text(config.project)
+    )
+    provider = AzureDevOpsPrQueryProvider(
+        organization_url=organization_url or "",
+        project=project or "",
+        pat=pat,
+        timeout_seconds=30.0,
+    )
+    response = provider.list_pull_requests(
+        repo=repo,
+        project=project,
+        status=trigger.status,
+        creator_id=trigger.creator_id,
+        reviewer_id=trigger.reviewer_id,
+        source_ref_name=trigger.source_ref_name,
+        target_ref_name=trigger.target_ref_name,
+        source_repository_id=trigger.source_repository_id,
+        repository_id=trigger.repository_id,
+        min_time=trigger.min_time,
+        max_time=trigger.max_time,
+        query_time_range_type=trigger.query_time_range_type,
+        include_links=trigger.include_links,
+        max_comment_length=trigger.max_comment_length,
+        tags=trigger.tags,
+        top=trigger.top,
+        skip=trigger.skip,
+        cursor=trigger.cursor,
+    )
+    return list(response.pull_requests)
+
+
 def _load_ado_pr_feedback_session_bindings(
     *,
     runtime_dir: Path,
@@ -1713,13 +1813,13 @@ def _publish_directory_pr_feedback_events(
     if not triggers:
         return 0
 
-    bindings = _load_ado_pr_feedback_session_bindings(
-        runtime_dir=config.runtime_dir,
-        pr_map_path=runtime_gateway_config.pr_map_path,
-        directory_path=directory_path,
-    )
-    if not bindings:
-        return 0
+    legacy_bindings: dict[tuple[str, str], dict[str, str]] = {}
+    if any(not _trigger_has_explicit_pr_criteria(trigger) for trigger in triggers):
+        legacy_bindings = _load_ado_pr_feedback_session_bindings(
+            runtime_dir=config.runtime_dir,
+            pr_map_path=runtime_gateway_config.pr_map_path,
+            directory_path=directory_path,
+        )
 
     pat_env_name = runtime_gateway_config.azure_devops_pr_pat_env
     pat = os.environ.get(pat_env_name, "").strip()
@@ -1744,6 +1844,32 @@ def _publish_directory_pr_feedback_events(
     published_count = 0
 
     for trigger in triggers:
+        if _trigger_has_explicit_pr_criteria(trigger):
+            streams = [
+                (
+                    {
+                        "provider": candidate.provider,
+                        "repo": candidate.repo,
+                        "pr_id": candidate.pr_id,
+                    },
+                    {},
+                )
+                for candidate in _list_explicit_ado_trigger_pull_requests(
+                    trigger=trigger,
+                    config=config,
+                    runtime_gateway_config=runtime_gateway_config,
+                    current_directory_path=directory_path,
+                )
+            ]
+        else:
+            streams = [
+                (
+                    {"provider": "azure_devops", "repo": repo, "pr_id": pr_id},
+                    legacy_bindings.get((repo, pr_id), {}),
+                )
+                for repo, pr_id in sorted(legacy_bindings.keys())
+            ]
+
         state = cursor_store.get(trigger.id)
         state_cursors = state.get("stream_cursors", {})
         if not isinstance(state_cursors, dict):
@@ -1752,8 +1878,9 @@ def _publish_directory_pr_feedback_events(
         next_cursors = dict(state_cursors)
         discovered: list[tuple[dict[str, str], PrFeedbackItem]] = []
 
-        for repo, pr_id in sorted(bindings.keys()):
-            binding = bindings.get((repo, pr_id), {})
+        for stream, binding in streams:
+            repo = stream["repo"]
+            pr_id = stream["pr_id"]
             adapter = AzureDevOpsFeedbackAdapter(
                 organization_url=trigger.organization_url or config.organization_url,
                 project=_ado_project_for_feedback_stream(
@@ -1809,7 +1936,7 @@ def _publish_directory_pr_feedback_events(
             if previous is not None and feedback.created_at <= previous:
                 continue
 
-            binding = bindings.get((stream["repo"], stream["pr_id"]))
+            binding = legacy_bindings.get((stream["repo"], stream["pr_id"]), {})
             stored = feedback_store.add_feedback_if_new(
                 FeedbackEnvelope.model_validate(feedback.model_dump(mode="json"))
             )
@@ -1873,13 +2000,13 @@ def _publish_directory_pr_completion_events(
     if not triggers:
         return 0
 
-    bindings = _load_ado_pr_feedback_session_bindings(
-        runtime_dir=config.runtime_dir,
-        pr_map_path=runtime_gateway_config.pr_map_path,
-        directory_path=directory_path,
-    )
-    if not bindings:
-        return 0
+    legacy_bindings: dict[tuple[str, str], dict[str, str]] = {}
+    if any(not _trigger_has_explicit_pr_criteria(trigger) for trigger in triggers):
+        legacy_bindings = _load_ado_pr_feedback_session_bindings(
+            runtime_dir=config.runtime_dir,
+            pr_map_path=runtime_gateway_config.pr_map_path,
+            directory_path=directory_path,
+        )
 
     pat_env_name = runtime_gateway_config.azure_devops_pr_pat_env
     pat = os.environ.get(pat_env_name, "").strip()
@@ -1900,8 +2027,23 @@ def _publish_directory_pr_completion_events(
     published_count = 0
 
     for trigger in triggers:
-        for repo, pr_id in sorted(bindings.keys()):
-            binding = bindings.get((repo, pr_id), {})
+        if _trigger_has_explicit_pr_criteria(trigger):
+            candidates = _list_explicit_ado_trigger_pull_requests(
+                trigger=trigger,
+                config=config,
+                runtime_gateway_config=runtime_gateway_config,
+                current_directory_path=directory_path,
+            )
+        else:
+            candidates = [
+                PullRequestItem(provider="azure_devops", repo=repo, pr_id=pr_id)
+                for repo, pr_id in sorted(legacy_bindings.keys())
+            ]
+
+        for candidate in candidates:
+            repo = candidate.repo
+            pr_id = candidate.pr_id
+            binding = legacy_bindings.get((repo, pr_id), {})
             provider = AzureDevOpsPrQueryProvider(
                 organization_url=trigger.organization_url or config.organization_url,
                 project=_ado_project_for_feedback_stream(
@@ -1934,43 +2076,53 @@ def _publish_directory_pr_completion_events(
                     )
                     continue
                 raise
-            update = pr_map_store.update_status(
-                status_snapshot_from_pull_request(response, repo=repo, pr_id=pr_id),
-                trigger_id=trigger.id,
-            )
-            if not update.completed_ready:
+            snapshot = status_snapshot_from_pull_request(response, repo=repo, pr_id=pr_id)
+            if not is_pr_completed(snapshot):
                 continue
+            if _trigger_has_explicit_pr_criteria(trigger):
+                event_entry = snapshot
+                mark_published = False
+            else:
+                update = pr_map_store.update_status(
+                    snapshot,
+                    trigger_id=trigger.id,
+                )
+                if not update.completed_ready:
+                    continue
+                event_entry = update.entry
+                mark_published = True
 
-            event_id = completion_event_id(trigger.id, update.entry)
+            event_id = completion_event_id(trigger.id, event_entry)
             event = TriggerEvent(
                 event_id=event_id,
                 trigger_id=trigger.id,
                 trigger_type=trigger.type,
-                occurred_at=_pr_completion_occurred_at(update.entry),
-                payload=completion_event_payload(update.entry),
+                occurred_at=_pr_completion_occurred_at(event_entry),
+                payload=completion_event_payload(event_entry),
             )
             already_queued = event_queue.contains(event.event_id)
             record = event_queue.publish(event)
             if record.event_id == event.event_id:
-                pr_map_store.mark_completion_event_published(
-                    provider=update.entry["provider"],
-                    repo=update.entry["repo"],
-                    pr_id=update.entry["pr_id"],
-                    trigger_id=trigger.id,
-                    event_id=event.event_id,
-                )
+                if mark_published:
+                    pr_map_store.mark_completion_event_published(
+                        provider=event_entry["provider"],
+                        repo=event_entry["repo"],
+                        pr_id=event_entry["pr_id"],
+                        trigger_id=trigger.id,
+                        event_id=event.event_id,
+                    )
                 audit_logger.log_decision(
                     event_type=AuditEventType.PR_COMPLETION_DETECTED,
                     session_id=binding["session_id"]
                     if binding and binding.get("session_id")
                     else None,
                     vm_id=binding["vm_id"] if binding and binding.get("vm_id") else None,
-                    provider=update.entry["provider"],
-                    repo=update.entry["repo"],
-                    pr_id=update.entry["pr_id"],
+                    provider=event_entry["provider"],
+                    repo=event_entry["repo"],
+                    pr_id=event_entry["pr_id"],
                     decision="detected",
                     reason="pr-completed",
-                    args={"pr": completion_event_payload(update.entry)["pr"]},
+                    args={"pr": completion_event_payload(event_entry)["pr"]},
                     result={"event_id": event.event_id},
                 )
             if not already_queued and record.event_id == event.event_id:
