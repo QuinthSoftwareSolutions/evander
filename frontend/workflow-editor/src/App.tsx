@@ -3849,7 +3849,7 @@ export default function App() {
     updateWorkflowTutorialProgressStatus(definition.id, "skipped");
     setWorkflowTutorialChooserOpen(false);
     if (activeWorkflowTutorial?.tutorialId === definition.id) {
-      exitWorkflowTutorial();
+      exitWorkflowTutorial({ markCompleted: false });
     }
   }
 
@@ -3874,16 +3874,37 @@ export default function App() {
     }
   }
 
+  function workflowTutorialIsAtFinalStep(tutorial: WorkflowTutorialSession | null): boolean {
+    if (!tutorial) return false;
+    const definition = workflowTutorialDefinitionById(tutorial.tutorialId);
+    if (!definition) return false;
+    return tutorial.stepIndex >= definition.steps.length - 1;
+  }
+
+  function markActiveWorkflowTutorialCompletedIfFinished() {
+    if (!activeWorkflowTutorial || !workflowTutorialIsAtFinalStep(activeWorkflowTutorial)) return;
+    updateWorkflowTutorialProgressStatus(activeWorkflowTutorial.tutorialId, "completed");
+  }
+
   function advanceWorkflowTutorial() {
-    const currentTutorialId = activeWorkflowTutorial?.tutorialId ?? null;
-    let reachedFinalStep = false;
+    const currentTutorial = activeWorkflowTutorial;
+    const currentDefinition = currentTutorial ? workflowTutorialDefinitionById(currentTutorial.tutorialId) : null;
+    const currentNextStepIndex = currentTutorial && currentDefinition
+      ? Math.min(currentTutorial.stepIndex + 1, currentDefinition.steps.length - 1)
+      : null;
+    const reachedFinalStep = Boolean(
+      currentTutorial &&
+      currentDefinition &&
+      currentNextStepIndex !== null &&
+      currentNextStepIndex !== currentTutorial.stepIndex &&
+      currentNextStepIndex === currentDefinition.steps.length - 1,
+    );
     setActiveWorkflowTutorial((current) => {
       if (!current) return current;
       const definition = workflowTutorialDefinitionById(current.tutorialId);
       if (!definition) return current;
       const nextStepIndex = Math.min(current.stepIndex + 1, definition.steps.length - 1);
       if (nextStepIndex === current.stepIndex) return current;
-      reachedFinalStep = nextStepIndex === definition.steps.length - 1;
       hasAutoFitRef.current = false;
       setWorkflowTutorialHint(null);
       return {
@@ -3891,12 +3912,13 @@ export default function App() {
         stepIndex: nextStepIndex,
       };
     });
-    if (reachedFinalStep && currentTutorialId) {
-      updateWorkflowTutorialProgressStatus(currentTutorialId, "completed");
+    if (reachedFinalStep && currentTutorial) {
+      updateWorkflowTutorialProgressStatus(currentTutorial.tutorialId, "completed");
     }
   }
 
   function resetWorkflowTutorial() {
+    markActiveWorkflowTutorialCompletedIfFinished();
     setActiveWorkflowTutorial((current) => {
       if (!current) return current;
       const definition = workflowTutorialDefinitionById(current.tutorialId);
@@ -3913,7 +3935,10 @@ export default function App() {
     setSnapGuides([]);
   }
 
-  function exitWorkflowTutorial() {
+  function exitWorkflowTutorial(options: { markCompleted?: boolean } = {}) {
+    if (options.markCompleted !== false) {
+      markActiveWorkflowTutorialCompletedIfFinished();
+    }
     const snapshot = tutorialSnapshotRef.current;
     setActiveWorkflowTutorial(null);
     setWorkflowTutorialHint(null);
@@ -8580,7 +8605,7 @@ export default function App() {
                     <button type="button" className="subtle-button" onClick={resetWorkflowTutorial}>
                       Reset
                     </button>
-                    <button type="button" className="subtle-button" onClick={exitWorkflowTutorial}>
+                    <button type="button" className="subtle-button" onClick={() => exitWorkflowTutorial()}>
                       Exit
                     </button>
                   </div>

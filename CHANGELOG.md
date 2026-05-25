@@ -13,6 +13,8 @@ material. Newer entries are added incrementally as changes land.
 - Moved Admin Web users to `runtime/admin-web.db` with one-time legacy JSON
   import, and stored workflow tutorial completion/skipped state as an
   account-scoped preference instead of browser-local state.
+- Marked the workflow editor first-steps tutorial complete when an operator
+  exits or resets from the final step, while preserving the explicit skip path.
 - Removed the obsolete duplicate issue-comment workflow trigger alias from the
   runtime, node catalogue, documentation, and tests.
 - Added internal wake sockets for trigger/effect orchestration so host-owned
