@@ -140,6 +140,7 @@ Type-specific keys:
 | `type` | Required keys | Optional keys |
 |---|---|---|
 | `trigger:event` | `event_type` | `correlation_key` |
+| `trigger:http:webhook` | `slug`, `secret_env` | `event_type` |
 | `trigger:cron` | `expression` | — |
 | `trigger:ticket:created` | `directories` | — |
 | `trigger:ticket:changed` | `directories` | — |
@@ -178,6 +179,20 @@ configured machine token from `AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS`. Mac
 configured as comma-separated `source-name:token` entries; the matching source name is recorded on
 the published event. Token values must not contain commas or colons. The ingress accepts arbitrary
 JSON-object payloads for workflow-specific data.
+
+`trigger:http:webhook` exposes a public `POST /api/workflow-webhooks/{slug}` ingress for a single
+active webhook trigger. The configured `slug` must match `[A-Za-z0-9_.-]+`, be unique across the
+active composed config, and is used as the public path segment. `secret_env` names the host
+environment variable that contains the HMAC secret. `event_type` is optional and defaults to
+`webhook.<slug>`. Requests must include
+`X-Agent-Sandbox-Signature-256: sha256=<hex>` and the signature must be computed over the exact raw
+request body bytes using HMAC-SHA256. The webhook ingress accepts JSON object bodies only. The
+durable event stored for the trigger is `external.<event_type>`, and downstream trigger output is
+the webhook envelope with `slug`, `headers`, `query`, `body`, `received_at`, `remote_addr`, and
+`signature_header`.
+
+Use `gate:filter`, `gate:map`, `gate:deserialize`, and `gate:dedupe` downstream when you need to
+reshape or suppress webhook deliveries after the trigger fires.
 
 The current trigger set also includes `trigger:teams:new-message`, `trigger:review:new-request`,
 and `trigger:script-run-request`. Teams is fed by a host-side ingest worker that reads the same
@@ -221,6 +236,13 @@ Example:
       "display_name": "Repo push",
       "type": "trigger:git:push",
       "path_to_repo": "/var/lib/git/my-repo.git"
+    },
+    {
+      "id": "deploy-webhook",
+      "display_name": "Deploy webhook",
+      "type": "trigger:http:webhook",
+      "slug": "deploy",
+      "secret_env": "WEBHOOK_SECRET"
     }
   ]
 }

@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - Signed Workflow Webhook Docs
+
+- Documented the `trigger:http:webhook` trigger shape, public ingress path,
+  signature header format, and raw-body HMAC requirements.
+- Added an operator-facing signed request example and noted that webhook
+  deliveries should be reshaped downstream with the standard gate nodes.
+
 ## 2026-05-24 - Container Worker Manifest Persistence Fix
 
 - Delayed workflow container-agent session manifest persistence until worker
