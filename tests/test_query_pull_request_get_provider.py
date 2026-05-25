@@ -142,8 +142,14 @@ def test_pull_request_get_query_resolves_github_token_and_falls_back_without_one
     captured: dict[str, Any] = {}
 
     class StubProvider:
-        def __init__(self, *, token: str | None = None) -> None:
+        def __init__(
+            self,
+            *,
+            token: str | None = None,
+            timeout_seconds: float = 30.0,
+        ) -> None:
             captured["token"] = token
+            captured["timeout_seconds"] = timeout_seconds
 
         def get_pull_request(self, **kwargs: Any) -> GetPullRequestResponse:
             captured["get"] = kwargs
@@ -172,6 +178,7 @@ def test_pull_request_get_query_resolves_github_token_and_falls_back_without_one
         GatewayConfig(
             runtime_dir=tmp_path,
             github_token_env="TEAM_GITHUB_TOKEN",
+            email_provider_timeout_seconds=9.5,
         )
     )
 
@@ -192,6 +199,7 @@ def test_pull_request_get_query_resolves_github_token_and_falls_back_without_one
 
     assert resolver.calls == ["root/team-a"]
     assert captured["token"] == "gh-secret"
+    assert captured["timeout_seconds"] == 9.5
     assert captured["get"] == {
         "repo": "org/repo",
         "pr_id": "19",

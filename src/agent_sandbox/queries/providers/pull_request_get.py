@@ -42,7 +42,11 @@ class PullRequestGetQueryProvider(QueryProviderBase):
             config = self._resolve_directory_config(directory_path)
             token_env = self._normalize_optional_string(getattr(config, "github_token_env", None))
             token = self._context().resolve_secret(token_env) if token_env else None
-            response = GitHubPrQueryProvider(token=token).get_pull_request(
+            timeout_seconds = float(getattr(config, "email_provider_timeout_seconds", 30.0) or 30.0)
+            response = GitHubPrQueryProvider(
+                token=token,
+                timeout_seconds=timeout_seconds,
+            ).get_pull_request(
                 repo=repo,
                 pr_id=pr_id,
                 include_reviewers=include_reviewers,
