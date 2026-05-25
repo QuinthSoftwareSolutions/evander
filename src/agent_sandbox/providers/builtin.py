@@ -25,6 +25,7 @@ from agent_sandbox.effects.providers.chat_assistant import ChatAssistantEnsureSe
 from agent_sandbox.effects.providers.communication_send_message import (
     CommunicationSendMessageEffectProvider,
 )
+from agent_sandbox.effects.providers.http_request import HttpRequestEffectProvider
 from agent_sandbox.effects.providers.git_promote_agent_branch import (
     GitPromoteAgentBranchEffectProvider,
 )
@@ -162,6 +163,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:chat-assistant:ensure-session": ChatAssistantEnsureSessionEffectProvider,
             "effect:agent:exec": AgentExecEffectProvider,
             "effect:bash:script": BashScriptEffectProvider,
+            "effect:http:request": HttpRequestEffectProvider,
             "effect:vm:exec": VmExecEffectProvider,
             "effect:vm:copy-files": VmCopyFilesEffectProvider,
             "effect:vm:delete-files": VmDeleteFilesEffectProvider,
