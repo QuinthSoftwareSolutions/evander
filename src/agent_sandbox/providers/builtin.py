@@ -14,6 +14,7 @@ from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffec
 from agent_sandbox.effects.providers.agent_create import AgentCreateEffectProvider
 from agent_sandbox.effects.providers.agent_destroy import AgentDestroyEffectProvider
 from agent_sandbox.effects.providers.artifacts import (
+    ArtifactImportPublishedEffectProvider,
     ArtifactPublishArtifactsEffectProvider,
     ArtifactStageEffectProvider,
 )
@@ -177,6 +178,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:agent:copy-files": AgentCopyFilesEffectProvider,
             "effect:artifact:stage": ArtifactStageEffectProvider,
             "effect:artifact:publish-artifacts": ArtifactPublishArtifactsEffectProvider,
+            "effect:artifact:import-published": ArtifactImportPublishedEffectProvider,
             "effect:agent:prompt": AgentPromptEffectProvider,
             "effect:agent:enqueue-prompt": AgentEnqueuePromptEffectProvider,
             "effect:chat-assistant:ensure-session": ChatAssistantEnsureSessionEffectProvider,

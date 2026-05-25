@@ -129,7 +129,7 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
     {
       key: "artifacts",
       label: "Artifacts",
-      description: "Stage and publish agent artifacts.",
+      description: "Stage, import, and publish agent artifacts.",
       prefixes: ["effect:artifact:"],
     },
     {

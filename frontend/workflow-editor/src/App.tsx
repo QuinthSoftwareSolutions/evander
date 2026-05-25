@@ -378,6 +378,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:session:renew-if-expired": "Extend an expired session from the host.",
   "effect:artifact:stage": "Copy a file or directory from /home/agent into /artifacts.",
   "effect:artifact:publish-artifacts": "Publish the session /artifacts folder as an immutable tar.gz archive.",
+  "effect:artifact:import-published": "Import a published artifact archive into a session artifacts folder.",
   "effect:git:promote-agent-branch": "Promote an agent branch into a trusted host checkout.",
   "effect:pr:create": "Create a pull request from the host side.",
   "effect:pull-request:update": "Update pull request metadata or tags.",
@@ -1804,6 +1805,17 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       type,
       session_id: "session-id",
       key: "runs/artifact-key",
+    };
+  }
+  if (kind === "effect" && type === "effect:artifact:import-published") {
+    return {
+      id,
+      display_name: "Import published artifact",
+      type,
+      session_id: "session-id",
+      key: "runs/artifact-key",
+      destination_path: "input",
+      overwrite: false,
     };
   }
   if (kind === "effect" && type === "effect:git:promote-agent-branch") {

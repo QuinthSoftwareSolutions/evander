@@ -386,6 +386,9 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:artifact:publish-artifacts": (
             provider_models.ArtifactPublishArtifactsEffectDefinition
         ),
+        "effect:artifact:import-published": (
+            provider_models.ArtifactImportPublishedEffectDefinition
+        ),
         "effect:agent:prompt": provider_models.AgentPromptEffectDefinition,
         "effect:agent:enqueue-prompt": provider_models.AgentEnqueuePromptEffectDefinition,
         "effect:chat-assistant:ensure-session": (

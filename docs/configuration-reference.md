@@ -399,6 +399,7 @@ Type-specific keys:
 | `effect:agent:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:artifact:stage` | one of `target`, `session_id`, `vm_name`; `path` | `destination_path`, `vm_user`, `outputs` |
 | `effect:artifact:publish-artifacts` | one of `target`, `session_id`, `vm_name`; `key` | `vm_user`, `outputs` |
+| `effect:artifact:import-published` | one of `target`, `session_id`, `vm_name`; `key` | `destination_path`, `overwrite`, `vm_user`, `outputs` |
 | `effect:semantic:ensure-collection` | `collection_name` | `directory_path`, `outputs` |
 | `effect:semantic:upsert` | `collection_name`, `point_id`, `text` | `payload`, `directory_path`, `wait`, `outputs` |
 | `effect:semantic:delete` | `collection_name`, `point_ids` | `directory_path`, `wait`, `outputs` |
@@ -481,6 +482,11 @@ set, is relative to `/artifacts` and cannot contain dot or parent segments.
 `effect:artifact:publish-artifacts` compresses the entire `/artifacts` folder
 as a `tar.gz` archive and stores it in the host durable artifact store under an
 immutable caller-provided `key`. Reusing a key fails.
+`effect:artifact:import-published` reads an immutable published artifact by
+`key`, copies its archive into the selected session, and extracts it under that
+session's `/artifacts` folder. `destination_path`, when set, is a relative
+prefix under `/artifacts`; existing files cause the import to fail unless
+`overwrite` is true.
 
 ### Query definition schema keys
 

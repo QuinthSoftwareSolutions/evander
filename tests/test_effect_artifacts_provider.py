@@ -2,18 +2,25 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import subprocess
+import sys
 import tarfile
 from pathlib import Path
 
 import pytest
 
 from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
+from agent_sandbox.effects.providers.agent_copy_files import AgentCopyFilesEffectProvider
 from agent_sandbox.effects.providers.artifacts import (
+    ArtifactImportPublishedEffectProvider,
     ArtifactPublishArtifactsEffectProvider,
     ArtifactStageEffectProvider,
+    _IMPORT_SCRIPT,
 )
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.events.provider_models import (
+    ArtifactImportPublishedEffectDefinition,
     ArtifactPublishArtifactsEffectDefinition,
     ArtifactStageEffectDefinition,
 )
@@ -136,3 +143,116 @@ def test_artifact_publish_effect_stores_tar_gz_by_immutable_key(
     with pytest.raises(ValueError, match="already exists"):
         provider.execute()
     assert calls == 1
+
+
+def test_artifact_import_published_copies_archive_and_extracts_into_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = PublishedArtifactStore(tmp_path)
+    record = store.publish_single_file(
+        key="manuals/reviewed/run-1",
+        session_id="manual-upload",
+        filename="reviewed.docx",
+        artifact_path="input/reviewed.docx",
+        content=b"docx",
+    )
+    copy_calls: list[dict[str, object]] = []
+    exec_commands: list[str] = []
+
+    def fake_copy(self: AgentCopyFilesEffectProvider, *, resolved_config=None):
+        del resolved_config
+        effect = self.effect_definition
+        files = [entry.model_dump(mode="json") for entry in effect.files]  # type: ignore[attr-defined]
+        copy_calls.append({"session_id": effect.session_id, "files": files})  # type: ignore[attr-defined]
+        return {
+            "success": True,
+            "session_id": "session-1",
+            "execution_backend": "container_worker_vm",
+            "copied_count": 1,
+            "copied_paths": [files[0]["destination_path"]],
+        }
+
+    def fake_exec(self: AgentExecEffectProvider, *, resolved_config=None):
+        del resolved_config
+        effect = self.effect_definition
+        exec_commands.append(str(effect.command))  # type: ignore[attr-defined]
+        return {
+            "success": True,
+            "session_id": "session-1",
+            "execution_backend": "container_worker_vm",
+            "stdout": _stdout_payload(
+                {
+                    "success": True,
+                    "artifacts_root": "/artifacts",
+                    "destination_path": "input",
+                    "imported_file_count": 1,
+                    "imported_paths": ["input/input/reviewed.docx"],
+                    "source_byte_count": 4,
+                    "overwrite": True,
+                }
+            ),
+        }
+
+    monkeypatch.setattr(AgentCopyFilesEffectProvider, "execute", fake_copy)
+    monkeypatch.setattr(AgentExecEffectProvider, "execute", fake_exec)
+    provider = ArtifactImportPublishedEffectProvider()
+    provider.initialize(
+        ArtifactImportPublishedEffectDefinition(
+            id="artifact-import-1",
+            display_name="Import",
+            type="effect:artifact:import-published",
+            session_id="session-1",
+            key="manuals/reviewed/run-1",
+            destination_path="input",
+            overwrite=True,
+        ),
+        _context(tmp_path),
+    )
+
+    result = provider.execute()
+
+    assert result["success"] is True
+    assert result["key"] == "manuals/reviewed/run-1"
+    assert result["sha256"] == record.sha256
+    assert result["imported_file_count"] == 1
+    assert copy_calls[0]["session_id"] == "session-1"
+    copied_file = copy_calls[0]["files"][0]  # type: ignore[index]
+    assert copied_file["source_path"] == str(store.get("manuals/reviewed/run-1").blob_path)
+    assert copied_file["destination_path"].endswith(f"{record.storage_id}.tar.gz")
+    assert exec_commands[0].count("effect:artifact:import-published") == 1
+    assert " input 1 " in exec_commands[0]
+
+
+def test_artifact_import_script_extracts_regular_files_and_rejects_collisions(
+    tmp_path: Path,
+) -> None:
+    archive_path = tmp_path / "archive.tar.gz"
+    source = tmp_path / "reviewed.docx"
+    source.write_bytes(b"docx")
+    with tarfile.open(archive_path, "w:gz") as archive:
+        archive.add(source, arcname="input/reviewed.docx")
+    artifacts_root = tmp_path / "artifacts"
+    artifacts_root.mkdir()
+
+    first = subprocess.run(
+        [sys.executable, "-", str(archive_path), "", "0"],
+        input=_IMPORT_SCRIPT,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "AGENT_SANDBOX_ARTIFACTS_DIR": str(artifacts_root)},
+    )
+    second = subprocess.run(
+        [sys.executable, "-", str(archive_path), "", "0"],
+        input=_IMPORT_SCRIPT,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "AGENT_SANDBOX_ARTIFACTS_DIR": str(artifacts_root)},
+    )
+
+    assert first.returncode == 0
+    assert (artifacts_root / "input/reviewed.docx").read_bytes() == b"docx"
+    assert "input/reviewed.docx" in first.stdout
+    assert second.returncode == 2
+    assert "import destination already exists" in second.stderr

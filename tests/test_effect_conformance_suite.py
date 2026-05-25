@@ -313,6 +313,15 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "key": "runs/session-1/report",
         }
     )
+    artifact_import = adapter.validate_python(
+        {
+            "id": "effect-artifact-import",
+            "display_name": "Import artifact",
+            "type": "effect:artifact:import-published",
+            "session_id": "session-1",
+            "key": "runs/session-1/report",
+        }
+    )
 
     assert vm.type == "effect:vm:create"
     assert vm.labels == {"workflow": "issue-worker"}
@@ -348,6 +357,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert session_approve_tools.type == "effect:session:approve-mcp-tools-for-run"
     assert artifact_stage.type == "effect:artifact:stage"
     assert artifact_publish.type == "effect:artifact:publish-artifacts"
+    assert artifact_import.type == "effect:artifact:import-published"
     assert promote.type == "effect:git:promote-agent-branch"
     assert pr_create.type == "effect:pr:create"
     assert prompt.prompt == "Continue ${{effect_1.session_id}}"

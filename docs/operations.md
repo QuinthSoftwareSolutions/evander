@@ -1848,8 +1848,12 @@ UTF-8 text file from that folder.
 Use `effect:artifact:stage` to copy a file or directory from `/home/agent` into
 that folder, then `effect:artifact:publish-artifacts` to publish the full folder
 as an immutable keyed `tar.gz` archive under `runtime/published-artifacts/`.
+Use `effect:artifact:import-published` to extract a previously published archive
+back into a selected session's `/artifacts` folder; imports fail on existing
+files unless `overwrite` is set.
 The Admin Web Artifacts tab can resolve archives by key, list them by publish
-time, and download the stored archive.
+time, download the stored archive, and manually upload a single file as a
+published artifact archive.
 
 After the initial guest provider command run exits, setup triggers one
 provider-specific verification pass. Customize that verification

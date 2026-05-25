@@ -1682,6 +1682,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:artifact:publish-artifacts": (
         "Compress and publish the session artifacts folder to the durable artifact store."
     ),
+    "effect:artifact:import-published": (
+        "Import a published artifact archive into a session artifacts folder."
+    ),
     "effect:git:promote-agent-branch": (
         "Promote an agent branch into a trusted host checkout."
     ),
@@ -2960,6 +2963,43 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 bindable=True,
                 description="Immutable key for the published tar.gz archive.",
                 placeholder="runs/${{trigger.event_id}}",
+            ),
+            _field("vm_user", "VM user", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:artifact:import-published",
+        label="Import published artifact",
+        fields=[
+            _field("target", "Target", "string", bindable=True),
+            _field("session_id", "Session ID", "string", bindable=True),
+            _field("vm_name", "VM name", "string", bindable=True),
+            _field(
+                "key",
+                "Key",
+                "string",
+                required=True,
+                bindable=True,
+                description="Immutable key of the published tar.gz archive to import.",
+                placeholder="manuals/true-app/reviewed/latest",
+            ),
+            _field(
+                "destination_path",
+                "Destination path",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional relative prefix under /artifacts. Defaults to the archive paths."
+                ),
+                placeholder="input",
+            ),
+            _field(
+                "overwrite",
+                "Overwrite",
+                "boolean",
+                bindable=True,
+                description="When enabled, replace existing artifact files during import.",
             ),
             _field("vm_user", "VM user", "string", bindable=True),
         ],
@@ -10448,6 +10488,24 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def published_artifact_file(self, key: str) -> PublishedArtifact:
         return self._published_artifact_store().get(validate_artifact_key(key))
 
+    def upload_published_artifact(
+        self,
+        *,
+        key: str,
+        filename: str,
+        content: bytes,
+        artifact_path: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> PublishedArtifactMetadata:
+        return self._published_artifact_store().publish_single_file(
+            key=validate_artifact_key(key),
+            session_id="manual-upload",
+            filename=filename,
+            content=content,
+            artifact_path=artifact_path,
+            metadata=metadata,
+        )
+
     @staticmethod
     def _derive_local_pr_notes_ref(remote_url: str) -> str:
 
@@ -11328,9 +11386,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         layout: dict[str, object],
         graphs: list[WorkflowEditorGraphMetadata],
     ) -> str:
+        revision_config = dict(config)
+        if graphs:
+            revision_config.pop("workflow_graphs", None)
         return self._stable_json_revision(
             {
-                "config": config,
+                "config": revision_config,
                 "layout": layout,
                 "graphs": [graph.model_dump(mode="json") for graph in graphs],
             }

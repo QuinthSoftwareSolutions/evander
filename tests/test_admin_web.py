@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import io
 import json
 import subprocess
+import tarfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import MethodType
@@ -1111,6 +1113,20 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "session_id",
         "vm_name",
         "key",
+        "vm_user",
+    ]
+    artifact_import = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "effect:artifact:import-published"
+    )
+    assert [field["key"] for field in artifact_import["fields"]] == [
+        "target",
+        "session_id",
+        "vm_name",
+        "key",
+        "destination_path",
+        "overwrite",
         "vm_user",
     ]
     agent_clone_repo = next(
@@ -3380,6 +3396,46 @@ def test_admin_web_artifact_key_ending_download_resolves_metadata(
     assert detail_response.json()["key"] == "runs/foo/download"
     assert download_response.status_code == 200
     assert download_response.content == b"published archive"
+
+
+def test_admin_web_uploads_single_file_as_published_artifact(tmp_path: Path) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    response = client.post(
+        "/api/admin/artifacts/uploads",
+        data={"key": "manuals/true-app/reviewed/run-1", "artifact_path": "input/reviewed.docx"},
+        files={
+            "file": (
+                "reviewed.docx",
+                b"docx bytes",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+    duplicate = client.post(
+        "/api/admin/artifacts/uploads",
+        data={"key": "manuals/true-app/reviewed/run-1"},
+        files={"file": ("reviewed.docx", b"again")},
+    )
+    download = client.get(
+        "/api/admin/artifact-downloads/manuals%2Ftrue-app%2Freviewed%2Frun-1"
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["key"] == "manuals/true-app/reviewed/run-1"
+    assert payload["session_id"] == "manual-upload"
+    assert payload["source_file_count"] == 1
+    assert payload["metadata"]["source"] == "manual_upload"
+    assert payload["metadata"]["original_filename"] == "reviewed.docx"
+    assert payload["metadata"]["artifact_path"] == "input/reviewed.docx"
+    assert duplicate.status_code == 400
+    assert "already exists" in duplicate.json()["error"]
+    assert download.status_code == 200
+    with tarfile.open(fileobj=io.BytesIO(download.content), mode="r:gz") as archive:
+        member = archive.extractfile("input/reviewed.docx")
+        assert member is not None
+        assert member.read() == b"docx bytes"
 
 
 def _write_json_payload(path: Path, payload: dict[str, object]) -> None:
