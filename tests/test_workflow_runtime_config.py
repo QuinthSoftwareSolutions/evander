@@ -746,6 +746,77 @@ def test_load_config_preserves_state_workflow_graph_metadata(tmp_path: Path) -> 
     ]
 
 
+def test_load_config_rejects_duplicate_state_workflow_graph_ids(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "workflow_graphs": [
+                    {
+                        "id": "graph-state",
+                        "name": "Alpha state graph",
+                        "directory_paths": ["root/team-a"],
+                        "node_ids": ["trigger-alpha", "effect-state-alpha"],
+                    },
+                    {
+                        "id": "graph-state",
+                        "name": "Beta state graph",
+                        "directory_paths": ["root/team-a"],
+                        "node_ids": ["trigger-beta", "effect-state-beta"],
+                    },
+                ],
+                "triggers": [
+                    {
+                        "id": "trigger-alpha",
+                        "display_name": "Alpha state trigger",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    },
+                    {
+                        "id": "trigger-beta",
+                        "display_name": "Beta state trigger",
+                        "type": "trigger:cron",
+                        "expression": "*/5 * * * *",
+                    },
+                ],
+                "effects": [
+                    {
+                        "id": "effect-state-alpha",
+                        "display_name": "Update alpha state",
+                        "type": "effect:state:update",
+                        "namespace": "workflow",
+                        "key": "cursor",
+                        "operation": "set",
+                        "value": {"graph": "alpha"},
+                    },
+                    {
+                        "id": "effect-state-beta",
+                        "display_name": "Update beta state",
+                        "type": "effect:state:update",
+                        "namespace": "workflow",
+                        "key": "cursor",
+                        "operation": "set",
+                        "value": {"graph": "beta"},
+                    },
+                ],
+                "edges": [
+                    {"source_id": "trigger-alpha", "target_id": "effect-state-alpha"},
+                    {"source_id": "trigger-beta", "target_id": "effect-state-beta"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Duplicate workflow graph id: graph-state"):
+        load_trigger_orchestrator_worker_global_config(
+            project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+        )
+
+
 @pytest.mark.parametrize(
     ("workflow_graphs", "message"),
     [

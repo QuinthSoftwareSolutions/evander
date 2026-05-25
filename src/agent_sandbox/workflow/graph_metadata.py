@@ -36,6 +36,7 @@ def resolve_workflow_graph_metadata(
 
     exact_metadata_by_component: dict[frozenset[str], ResolvedWorkflowGraphMetadata] = {}
     normalized_graphs = [_normalize_workflow_graph(graph) for graph in workflow_graphs or []]
+    _validate_unique_graph_ids(normalized_graphs)
     for graph in normalized_graphs:
         graph_node_ids = _normalized_node_id_set(graph.node_ids)
         if not graph_node_ids:
@@ -151,6 +152,21 @@ def _normalize_workflow_graph(graph: Any) -> WorkflowPackGraph:
     if isinstance(graph, WorkflowPackGraph):
         return graph
     return WorkflowPackGraph.model_validate(graph)
+
+
+def _validate_unique_graph_ids(graphs: Iterable[WorkflowPackGraph]) -> None:
+    seen_graph_ids: set[str] = set()
+    duplicate_graph_ids: set[str] = set()
+    for graph in graphs:
+        graph_id = _normalize_text(graph.id)
+        if not graph_id:
+            raise ValueError("Workflow graph id must be a non-empty string.")
+        if graph_id in seen_graph_ids:
+            duplicate_graph_ids.add(graph_id)
+        seen_graph_ids.add(graph_id)
+    if duplicate_graph_ids:
+        duplicate_list = ", ".join(sorted(duplicate_graph_ids))
+        raise ValueError(f"Duplicate workflow graph id: {duplicate_list}")
 
 
 def _first_directory_path(graph: WorkflowPackGraph) -> str:
