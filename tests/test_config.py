@@ -1261,6 +1261,86 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_effect_ids(
         )
 
 
+@pytest.mark.parametrize(
+    ("state_effect", "state_query", "message"),
+    [
+        (
+            {
+                "id": "effect-state-update",
+                "display_name": "Update state",
+                "type": "effect:state:update",
+                "namespace": "workflow",
+                "key": "cursor",
+                "operation": "replace",
+                "value": {"counter": 1},
+            },
+            {
+                "id": "query-state-get",
+                "display_name": "Read state",
+                "type": "query:state:get",
+                "namespace": "workflow",
+                "key": "cursor",
+            },
+            "effect:state:update operation must be set, patch, or delete",
+        ),
+        (
+            {
+                "id": "effect-state-update",
+                "display_name": "Update state",
+                "type": "effect:state:update",
+                "namespace": "workflow",
+                "key": "cursor",
+                "operation": "set",
+                "value": {"counter": 1},
+            },
+            {
+                "id": "query-state-get",
+                "display_name": "Read state",
+                "type": "query:state:get",
+                "namespace": "workflow",
+            },
+            "key",
+        ),
+    ],
+)
+def test_trigger_orchestrator_worker_global_config_validates_state_node_schemas(
+    state_effect: dict[str, object],
+    state_query: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {
+                "triggers": [
+                    {
+                        "id": "trigger-state",
+                        "display_name": "State trigger",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "effects": [state_effect],
+                "queries": [state_query],
+                "edges": [
+                    {"source_id": "trigger-state", "target_id": "effect-state-update"},
+                    {"source_id": "effect-state-update", "target_id": "query-state-get"},
+                ],
+                "workflow_graphs": [
+                    {
+                        "id": "graph-state",
+                        "name": "State graph",
+                        "directory_paths": ["root/team-a"],
+                        "node_ids": [
+                            "trigger-state",
+                            "effect-state-update",
+                            "query-state-get",
+                        ],
+                    }
+                ],
+            }
+        )
+
+
 def test_trigger_orchestrator_worker_global_config_defaults_provider_profile_to_agent_default() -> (
     None
 ):

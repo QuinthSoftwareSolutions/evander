@@ -371,6 +371,7 @@ Type-specific keys:
 | `effect:semantic:ensure-collection` | `collection_name` | `directory_path`, `outputs` |
 | `effect:semantic:upsert` | `collection_name`, `point_id`, `text` | `payload`, `directory_path`, `wait`, `outputs` |
 | `effect:semantic:delete` | `collection_name`, `point_ids` | `directory_path`, `wait`, `outputs` |
+| `effect:state:update` | `namespace`, `key`, `operation` | `value`, `patch`, `expected_version`, `outputs` |
 | `effect:agent:destroy` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `execution_backend`, `directory_path`, `outputs` |
 | `effect:bash:script` | `script_path` | `args`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:http:request` | `url` | `method`, `allowed_url_patterns`, `payload`, `headers`, `timeout_seconds`, `check`, `outputs` |
@@ -466,6 +467,7 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:semantic:store-status` | _none beyond envelope_ | `collection_name`, `directory_path`, `outputs` |
 | `query:semantic:search` | `collection_name`, `query_text` | `filter`, `limit`, `score_threshold`, `directory_path`, `outputs` |
 | `query:semantic:get` | `collection_name`, `point_ids` | `directory_path`, `outputs` |
+| `query:state:get` | `namespace`, `key` | `outputs` |
 | `query:session-context` | one of `target`, `session_id`, `vm_name` | `outputs` |
 | `query:session:list` | _none beyond envelope_ | `directory_path`, `metadata_equals`, `metadata_exists`, `metadata_prefix`, `state`, `active_only`, `limit`, `outputs` |
 | `query:vm:run-state` | one of `session_id`, `vm_name` | `outputs` |
@@ -787,6 +789,24 @@ points without vectors. `query:semantic:get` and `effect:semantic:delete` operat
 point IDs; filter-based delete is intentionally not supported. If an existing collection uses
 different dimensions, distance, or named vectors, schema-sensitive operations fail and do not delete
 or recreate anything.
+
+### Workflow state
+
+`effect:state:update` and `query:state:get` persist graph-local workflow state in
+`runtime/workflow-state.json`. Records are scoped by the tuple
+`(directory_path, graph_id, namespace, key)`, so the same namespace/key pair can be reused safely
+in different persisted workflow graphs.
+
+`effect:state:update` supports `set`, `patch`, and `delete`. `set` replaces the stored JSON value
+and starts at version `1` when the record is new. `patch` applies JSON Merge Patch semantics, so
+`null` removes object members. `expected_version` is an optimistic-concurrency guard: when it does
+not match the current version, the write is rejected without mutating the file and the response
+reports the conflict. Missing records compare as version `0`.
+
+`query:state:get` returns `found: false` and `value: null` when no record exists for the current
+scope. Both nodes require persisted workflow graph metadata at runtime. The worker resolves
+`graph_id` from `workflow_graphs` in inline config or `graphs` in workflow packs and does not
+invent fallback graph IDs for state nodes.
 
 ### Retell phone-call keys
 

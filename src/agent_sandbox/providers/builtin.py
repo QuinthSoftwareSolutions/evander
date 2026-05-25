@@ -43,6 +43,7 @@ from agent_sandbox.effects.providers.semantic_ensure_collection import (
     SemanticEnsureCollectionEffectProvider,
 )
 from agent_sandbox.effects.providers.semantic_upsert import SemanticUpsertEffectProvider
+from agent_sandbox.effects.providers.state_update import StateUpdateEffectProvider
 from agent_sandbox.effects.providers.session_update_metadata import (
     SessionUpdateMetadataEffectProvider,
 )
@@ -81,6 +82,7 @@ from agent_sandbox.queries.providers.pull_request_list import PullRequestListQue
 from agent_sandbox.queries.providers.semantic_get import SemanticGetQueryProvider
 from agent_sandbox.queries.providers.semantic_search import SemanticSearchQueryProvider
 from agent_sandbox.queries.providers.semantic_store_status import SemanticStoreStatusQueryProvider
+from agent_sandbox.queries.providers.state_get import StateGetQueryProvider
 from agent_sandbox.queries.providers.session_context import SessionContextQueryProvider
 from agent_sandbox.queries.providers.session_list import SessionListQueryProvider
 from agent_sandbox.queries.providers.vm_run_state import VmRunStateQueryProvider
@@ -192,6 +194,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:semantic:ensure-collection": SemanticEnsureCollectionEffectProvider,
             "effect:semantic:upsert": SemanticUpsertEffectProvider,
             "effect:semantic:delete": SemanticDeleteEffectProvider,
+            "effect:state:update": StateUpdateEffectProvider,
         },
         query_providers={
             "query:vm:run-state": VmRunStateQueryProvider,
@@ -206,6 +209,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:semantic:store-status": SemanticStoreStatusQueryProvider,
             "query:semantic:search": SemanticSearchQueryProvider,
             "query:semantic:get": SemanticGetQueryProvider,
+            "query:state:get": StateGetQueryProvider,
         },
         node_definition_resolvers={
             **trigger_node_schema_resolvers(),

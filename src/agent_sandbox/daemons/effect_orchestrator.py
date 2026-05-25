@@ -10,7 +10,7 @@ import random
 import time
 from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
@@ -77,6 +77,10 @@ from agent_sandbox.workflow.graph import (
     compute_downstream_depth,
     index_declared_outputs,
     would_form_cycle,
+)
+from agent_sandbox.workflow.graph_metadata import (
+    ResolvedWorkflowGraphMetadata,
+    resolve_workflow_graph_metadata,
 )
 from agent_sandbox.workflow.engine.node_executors import (
     NodeExecutorRegistry,
@@ -236,6 +240,9 @@ class ExecutionGraph:
     downstream_index: dict[str, tuple[str, ...]]
     inbound_index: dict[str, tuple[Any, ...]]
     declared_outputs: dict[str, dict[str, Any]]
+    node_graph_metadata_by_id: dict[str, ResolvedWorkflowGraphMetadata] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)
@@ -1375,6 +1382,7 @@ class EffectOrchestratorWorker:
         config_revision: str,
     ) -> bool:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, query.id)
+        graph_metadata = graph.node_graph_metadata_by_id.get(query.id)
         existing = self.execution_store.find_execution_by_idempotency_key(idempotency_key)
         if existing is not None:
             if existing.status == "running":
@@ -1385,6 +1393,7 @@ class EffectOrchestratorWorker:
                     self._execute_query_provider,
                     query=query,
                     resolved_config=dict(existing.resolved_config),
+                    graph_metadata=graph_metadata,
                 )
                 with self._inflight_lock:
                     self._inflight[idempotency_key] = InflightExecution(
@@ -1455,7 +1464,10 @@ class EffectOrchestratorWorker:
         )
         self.execution_store.record_execution(record)
         future = self._executor.submit(
-            self._execute_query_provider, query=query, resolved_config=resolved_config
+            self._execute_query_provider,
+            query=query,
+            resolved_config=resolved_config,
+            graph_metadata=graph_metadata,
         )
         with self._inflight_lock:
             self._inflight[idempotency_key] = InflightExecution(
@@ -1472,6 +1484,7 @@ class EffectOrchestratorWorker:
         config_revision: str,
     ) -> bool:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, effect.id)
+        graph_metadata = graph.node_graph_metadata_by_id.get(effect.id)
         existing = self.execution_store.find_execution_by_idempotency_key(idempotency_key)
         if existing is not None:
             if existing.status == "running":
@@ -1482,10 +1495,12 @@ class EffectOrchestratorWorker:
                     self._execute_provider,
                     effect=effect,
                     resolved_config=dict(existing.resolved_config),
+                    graph_metadata=graph_metadata,
                     execution_context=_effect_execution_context(
                         idempotency_key=idempotency_key,
                         queue_record=queue_record,
                         effect=effect,
+                        graph_metadata=graph_metadata,
                     ),
                 )
                 with self._inflight_lock:
@@ -1552,6 +1567,7 @@ class EffectOrchestratorWorker:
             resolved_config = executor.prepare_resolved_config(
                 effect=effect,
                 resolved_config=resolved_config,
+                graph_metadata=graph_metadata,
                 upstream_payload=upstream_payload,
                 declared_upstream_output_names=upstream_output_names,
                 system_value_resolver=_system_value_resolver(
@@ -1597,10 +1613,12 @@ class EffectOrchestratorWorker:
             self._execute_provider,
             effect=effect,
             resolved_config=resolved_config,
+            graph_metadata=graph_metadata,
             execution_context=_effect_execution_context(
                 idempotency_key=idempotency_key,
                 queue_record=queue_record,
                 effect=effect,
+                graph_metadata=graph_metadata,
             ),
         )
         with self._inflight_lock:
@@ -1682,6 +1700,7 @@ class EffectOrchestratorWorker:
         *,
         effect: EffectDefinitionDiscriminated,
         resolved_config: dict[str, Any],
+        graph_metadata: ResolvedWorkflowGraphMetadata | None = None,
         execution_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         executor = self.effect_executor_registry.resolve(effect.type)
@@ -1689,6 +1708,7 @@ class EffectOrchestratorWorker:
             executor.execute(
                 effect=effect,
                 resolved_config=resolved_config,
+                graph_metadata=graph_metadata,
                 execution_context=dict(execution_context or {}),
             )
             or {}
@@ -1699,9 +1719,17 @@ class EffectOrchestratorWorker:
         *,
         query: QueryDefinitionDiscriminated,
         resolved_config: dict[str, Any],
+        graph_metadata: ResolvedWorkflowGraphMetadata | None = None,
     ) -> dict[str, Any]:
         executor = self.query_executor_registry.resolve(query.type)
-        return dict(executor.execute(query=query, resolved_config=resolved_config) or {})
+        return dict(
+            executor.execute(
+                query=query,
+                resolved_config=resolved_config,
+                graph_metadata=graph_metadata,
+            )
+            or {}
+        )
 
     def _list_vm_summaries_for_reconciliation(self) -> list[Any]:
         admin_service = getattr(self.provider_factory, "admin_service", None)
@@ -2283,6 +2311,11 @@ def _build_execution_graph(worker_config: TriggerOrchestratorWorkerGlobalConfig)
     }
     edges = list(worker_config.edges)
     acyclic_edges = [edge for edge in edges if not _edge_allows_cycle(edge)]
+    node_graph_metadata_by_id = resolve_workflow_graph_metadata(
+        nodes_by_id=nodes_by_id,
+        edges=edges,
+        workflow_graphs=worker_config.workflow_graphs,
+    )
 
     return ExecutionGraph(
         nodes_by_id=nodes_by_id,
@@ -2298,6 +2331,7 @@ def _build_execution_graph(worker_config: TriggerOrchestratorWorkerGlobalConfig)
             worker_config.effects,
             worker_config.queries,
         ),
+        node_graph_metadata_by_id=node_graph_metadata_by_id,
     )
 
 
@@ -2871,6 +2905,7 @@ def _effect_execution_context(
     idempotency_key: str,
     queue_record: TriggerQueueRecord,
     effect: EffectDefinitionDiscriminated,
+    graph_metadata: ResolvedWorkflowGraphMetadata | None = None,
 ) -> dict[str, Any]:
     input_payload = dict(queue_record.payload)
     context = {
@@ -2882,6 +2917,13 @@ def _effect_execution_context(
         "node_type": effect.type,
         "input_payload": input_payload,
     }
+    if graph_metadata is not None:
+        context["graph_id"] = graph_metadata.graph_id
+        context["directory_path"] = graph_metadata.directory_path
+        context["graph_metadata"] = {
+            "graph_id": graph_metadata.graph_id,
+            "directory_path": graph_metadata.directory_path,
+        }
     if isinstance(input_payload.get(NODE_OUTPUTS_CONTEXT_KEY), dict):
         context[NODE_OUTPUTS_CONTEXT_KEY] = input_payload[NODE_OUTPUTS_CONTEXT_KEY]
     return context

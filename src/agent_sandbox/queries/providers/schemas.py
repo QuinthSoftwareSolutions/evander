@@ -35,6 +35,12 @@ class SessionContextQueryDefinition(QueryDefinition):
         return self
 
 
+class StateGetQueryDefinition(QueryDefinition):
+    type: Literal["query:state:get"]
+    namespace: ConfigValue
+    key: ConfigValue
+
+
 class SessionListQueryDefinition(QueryDefinition):
     type: Literal["query:session:list"]
     directory_path: ConfigValue | None = None
