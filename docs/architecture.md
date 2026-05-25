@@ -242,13 +242,15 @@ Execution model:
 6. `gate:serialize` nodes serialize bindable values into JSON/YAML text outputs.
 7. `gate:dedupe` nodes atomically forward the first activation for a resolved key inside its TTL
    window and drop duplicate activations until the key expires.
-8. `gate:merge` nodes behave like a Reactive Extensions `merge`: each inbound event is forwarded
+8. `gate:switch` nodes evaluate ordered cases, forward the first matching branch through the case
+   `source_port`, and fall back to `default_port` when present.
+9. `gate:merge` nodes behave like a Reactive Extensions `merge`: each inbound event is forwarded
    independently as it arrives, while the gate records the latest payload seen from every upstream
    source for debugging and conflict inspection.
-9. Effects consume the post-gate payload and still resolve `${{node.output_name}}` bindings against the
-   upstream event payload.
-10. On success, the effect publishes a completion event whose `trigger_id` is the effect id so
-   downstream edges can continue the chain.
+10. Effects consume the post-gate payload and still resolve `${{node.output_name}}` bindings against the
+    upstream event payload.
+11. On success, the effect publishes a completion event whose `trigger_id` is the effect id so
+    downstream edges can continue the chain.
 
 Safety/idempotency guarantees:
 
@@ -263,7 +265,7 @@ Safety/idempotency guarantees:
 Gate execution state is intentionally explicit:
 
 - `succeeded`: the gate emitted a downstream event.
-- `dropped`: a filter gate suppressed the event.
+- `dropped`: a filter, dedupe, or switch gate suppressed the event.
 - `failed`: evaluation, binding, or merge projection failed.
 - `skipped`: the node was bypassed because of a validation or cycle guard.
 

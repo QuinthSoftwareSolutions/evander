@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - Workflow Switch Documentation
+
+- Documented `gate:switch` in the configuration reference with ordered cases,
+  `default_port`, `source_port`-based branch wiring, and pass-through payload
+  behavior.
+- Added a switch workflow example that uses current `source_id`/`target_id`
+  edges and shows ready, blocked, and fallback routing.
+- Clarified the architecture notes so `dropped` now covers filter, dedupe, and
+  switch suppressions in the workflow runtime.
+
 ## 2026-05-25 - Workflow Tutorial Cleanup
 
 - Removed the obsolete workflow editor in-memory first-run walkthrough, its
