@@ -15489,6 +15489,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "gate:serialize",
                 "gate:map",
                 "gate:dedupe",
+                "gate:switch",
                 "gate:await-agent",
                 "gate:for",
                 "gate:merge",

@@ -6,7 +6,7 @@ from agent_sandbox.events.models import NODE_OUTPUTS_CONTEXT_KEY
 from agent_sandbox.gate_runtime import GateRuntimeError, filter_payload_matches, filter_when_matches
 from agent_sandbox.gates.providers.base import GateProviderBase
 from agent_sandbox.workflow.binding import binding_trace_to_payload, resolve_workflow_bindings
-from agent_sandbox.workflow.validation import NodeCapability
+from agent_sandbox.workflow.validation import NodeCapability, WorkflowValidationDiagnostic
 
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
@@ -14,6 +14,57 @@ _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
 
 class SwitchGateProvider(GateProviderBase):
     capability = NodeCapability(min_inbound=1, max_inbound=1)
+
+    @classmethod
+    def validate_graph_node(
+        cls,
+        *,
+        node: Any,
+        edges: list[Any] | None = None,
+        **_: Any,
+    ) -> list[WorkflowValidationDiagnostic]:
+        gate_id = _node_id(node)
+        if not gate_id or not edges:
+            return []
+
+        valid_ports = _switch_valid_source_ports(node)
+        missing_source_port = False
+        invalid_source_ports: set[str] = set()
+        for edge in edges:
+            if _edge_source_id(edge) != gate_id:
+                continue
+            source_port = _edge_source_port(edge)
+            if source_port is None:
+                missing_source_port = True
+                continue
+            if source_port not in valid_ports:
+                invalid_source_ports.add(source_port)
+
+        diagnostics: list[WorkflowValidationDiagnostic] = []
+        if missing_source_port:
+            diagnostics.append(
+                WorkflowValidationDiagnostic(
+                    code="node_capability",
+                    message=(
+                        f"gate:switch {gate_id} outbound edges require source_port"
+                    ),
+                    node_id=gate_id,
+                    node_type="gate:switch",
+                )
+            )
+        if invalid_source_ports:
+            diagnostics.append(
+                WorkflowValidationDiagnostic(
+                    code="node_capability",
+                    message=(
+                        f"gate:switch {gate_id} uses invalid source_port value(s): "
+                        f"{', '.join(sorted(invalid_source_ports))}"
+                    ),
+                    node_id=gate_id,
+                    node_type="gate:switch",
+                )
+            )
+        return diagnostics
 
     def execute(self, **kwargs: Any) -> bool:
         worker = kwargs["worker"]
@@ -148,3 +199,65 @@ def _coerce_non_empty_string(value: Any, *, field_name: str) -> str:
     if not text:
         raise GateRuntimeError(f"gate:switch {field_name} must be a non-empty string")
     return text
+
+
+def _switch_valid_source_ports(node: Any) -> set[str]:
+    ports: set[str] = set()
+    cases = getattr(node, "cases", None)
+    if cases is None and isinstance(node, dict):
+        cases = node.get("cases")
+    if isinstance(cases, list):
+        for case in cases:
+            port = _case_port(case)
+            if port is not None:
+                ports.add(port)
+    default_port = getattr(node, "default_port", None)
+    if default_port is None and isinstance(node, dict):
+        default_port = node.get("default_port")
+    if default_port is not None:
+        text = str(default_port).strip()
+        if text:
+            ports.add(text)
+    return ports
+
+
+def _case_port(case: Any) -> str | None:
+    if isinstance(case, dict):
+        value = case.get("port")
+    else:
+        value = getattr(case, "port", None)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _node_id(node: Any) -> str:
+    if isinstance(node, dict):
+        value = node.get("id")
+    else:
+        value = getattr(node, "id", None)
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _edge_source_id(edge: Any) -> str:
+    if isinstance(edge, dict):
+        value = edge.get("source_id")
+    else:
+        value = getattr(edge, "source_id", None)
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _edge_source_port(edge: Any) -> str | None:
+    if isinstance(edge, dict):
+        value = edge.get("source_port")
+    else:
+        value = getattr(edge, "source_port", None)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None

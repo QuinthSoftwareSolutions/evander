@@ -163,6 +163,72 @@ def test_binding_diagnostics_accept_filter_derived_outputs() -> None:
     assert diagnostics == []
 
 
+def test_binding_diagnostics_accept_switch_derived_outputs_with_duplicate_case_ports() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-ticket-created-main",
+                "display_name": "Ticket created",
+                "type": "trigger:ticket:created",
+                "directories": ["root"],
+            }
+        ],
+        "gates": [
+            {
+                "id": "gate-switch-1",
+                "display_name": "Route ticket",
+                "type": "gate:switch",
+                "default_port": "fallback",
+                "cases": [
+                    {
+                        "port": "ready",
+                        "label": "Ready route",
+                        "when": {
+                            "left": "${{trigger-ticket-created-main.ticket.state}}",
+                            "equals": "ready",
+                        },
+                    },
+                    {
+                        "port": "ready",
+                        "label": "Ready match",
+                        "match": {"ticket": {"state": "ready"}},
+                    },
+                    {
+                        "port": "blocked",
+                        "label": "Blocked route",
+                        "match": {"ticket": {"state": "blocked"}},
+                    },
+                ],
+            }
+        ],
+        "effects": [
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": "Review ${{gate-switch-1.ticket.body}}",
+            }
+        ],
+        "edges": [
+            {"source_id": "trigger-ticket-created-main", "target_id": "gate-switch-1"},
+            {
+                "source_id": "gate-switch-1",
+                "source_port": "ready",
+                "target_id": "prompt-agent",
+            },
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["gate-switch-1"]["ticket"]["properties"]["body"] == {
+        "type": "string"
+    }
+    assert diagnostics == []
+
+
 def test_binding_diagnostics_accept_merge_derived_outputs() -> None:
     config = {
         "triggers": [
