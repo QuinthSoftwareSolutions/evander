@@ -17,6 +17,10 @@ from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.email.http_utils import ProviderRequestError
 from agent_sandbox.email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary
 from agent_sandbox.gateway import create_server
+from agent_sandbox.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 from agent_sandbox.models import (
     DiscordCommandEnvelope,
     LocalIssueRecord,
@@ -99,6 +103,14 @@ def write_root_policy_overlay(context, payload: dict[str, object]) -> None:
         domain="policy",
         payload=payload,
     )
+
+
+def write_root_communication_targets(context, targets: list[dict[str, object]]) -> None:
+    context.directories.ensure_root()
+    repository = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(context.config.runtime_dir)
+    )
+    repository.write_overlay("root", {"targets": targets})
 
 
 def set_discord_service(context, service) -> None:
@@ -879,6 +891,48 @@ def test_discord_post_status_posts_to_allowlisted_channel(tmp_path: Path) -> Non
     assert result["status"] == "posted"
     assert fake_discord.post_calls == [
         ("Host relay is healthy.", "chan-allowlisted", "session-1"),
+    ]
+
+
+def test_discord_post_status_resolves_communication_target_id(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    write_root_communication_targets(
+        context,
+        [
+            {
+                "id": "discord-ops",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "123456789012345678",
+                "policy": {"capabilities": ["write"]},
+            }
+        ],
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.DISCORD_POST_STATUS],
+            discord_channel_allowlist=["discord-ops"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    fake_discord = FakeDiscordService(commands=[])
+    set_discord_service(context, fake_discord)
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "discord_post_status",
+        {
+            "session_id": "session-1",
+            "channel_id": "discord-ops",
+            "message": "Host relay is healthy.",
+        },
+    )
+
+    assert result["status"] == "posted"
+    assert fake_discord.post_calls == [
+        ("Host relay is healthy.", "123456789012345678", "session-1"),
     ]
 
 

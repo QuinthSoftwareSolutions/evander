@@ -395,6 +395,10 @@ Storage layout for directory config:
     `chat:<chat-id>` before sending. User targets require `session.teams_user_allowlist` or a
     declared communication target; they are not valid for message reads, reactions, or attachment
     downloads.
+- Session communication allowlists can also contain directory-scoped communication target IDs. A
+  target ID is resolved from the session directory at use time and must expose `read`, `write`, or
+  `reply` to match the attempted read/poll/download, top-level send, or reply/reaction operation.
+  Raw Teams and Discord IDs remain supported.
 - The host-side Teams adapter reads channel threads from
   `GET /teams/{team-id}/channels/{channel-id}/messages` and group chats from
   `GET /chats/{chat-id}/messages`. Direct-message triggers discover one-on-one chats with
@@ -849,14 +853,17 @@ Audit/result behavior:
   3. Otherwise, if `author_id` is in global `discord_operator_user_allowlist`, allow it.
   4. Otherwise deny and audit as denied.
 - Posting precedence for `discord_post_status`:
-  - Destination `channel_id` must be in `session.discord_channel_allowlist`.
+  - Destination `channel_id` must be in `session.discord_channel_allowlist`, either directly or
+    through a communication target ID with `write`.
   - `discord_operator_user_allowlist` does not override post destination checks.
 - Reaction precedence for `add_message_reaction`:
-  - `provider=discord` requires `channel_id` in `session.discord_channel_allowlist`.
+  - `provider=discord` requires `channel_id` in `session.discord_channel_allowlist`, either
+    directly or through a communication target ID with `reply`.
   - `provider=teams` requires `channel_target` in the effective Teams channel/chat allowlist:
     `session.teams_channel_allowlist` for channel targets or `session.teams_chat_allowlist` for
-    chat targets. Send tools can also target entries declared in `session.teams_user_allowlist`
-    with `user:<user-id-or-upn>`.
+    chat targets. Communication target IDs with `reply` can be used in the same fields. Send tools
+    can also target entries declared in `session.teams_user_allowlist` with
+    `user:<user-id-or-upn>` or a `write`-capable Teams user communication target.
   - Message reads do not apply automatic read reactions; agents must call this tool explicitly.
 - Retry/backoff and failure handling:
   - The Discord `bot_api` adapter retries transient failures with exponential backoff and jitter.

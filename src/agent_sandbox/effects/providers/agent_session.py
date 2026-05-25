@@ -15,9 +15,9 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.runtime import allowed_tools_for_capability_profile
 from agent_sandbox.services import (
-    normalize_teams_chat_targets,
-    normalize_teams_channel_targets,
-    normalize_teams_user_target,
+    normalize_teams_chat_or_target_refs,
+    normalize_teams_channel_or_target_refs,
+    normalize_teams_user_or_target_refs,
 )
 from agent_sandbox.execution import (
     ExecutionBackendKind,
@@ -120,26 +120,15 @@ def as_bool_or_none(value: Any) -> bool | None:
 
 
 def normalize_teams_channel_allowlist(value: list[str] | None) -> list[str]:
-    return normalize_teams_channel_targets(value)
+    return normalize_teams_channel_or_target_refs(value)
 
 
 def normalize_teams_chat_allowlist(value: list[str] | None) -> list[str]:
-    return normalize_teams_chat_targets(value)
+    return normalize_teams_chat_or_target_refs(value)
 
 
 def normalize_teams_user_allowlist(value: list[str] | None) -> list[str]:
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for raw_target in value or []:
-        text = str(raw_target).strip()
-        if not text:
-            continue
-        target = normalize_teams_user_target(text)
-        if target in seen:
-            continue
-        seen.add(target)
-        normalized.append(target)
-    return normalized
+    return normalize_teams_user_or_target_refs(value)
 
 
 def runtime_session_repository(context: EffectRuntimeContext, config: GatewayConfig):

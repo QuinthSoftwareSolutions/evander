@@ -21,6 +21,9 @@ material. Newer entries are added incrementally as changes land.
   dark-mode surfaces, labels, disabled controls, and result rows.
 - Clarified that communication targets are provider-generic and the Teams channel
   lookup is only an optional helper.
+- Allowed session Teams/Discord communication allowlists, inbound polling routes,
+  and guest messaging tools to use directory-scoped communication target IDs while
+  preserving raw legacy IDs and enforcing target capabilities per operation.
 
 ## 2026-05-25 - Workflow Tutorial Cleanup
 

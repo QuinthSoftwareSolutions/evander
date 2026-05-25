@@ -34,7 +34,6 @@ from agent_sandbox.runtime import (
 from agent_sandbox.repositories.records import JsonTeamsRecordsRepository
 from agent_sandbox.services import (
     GraphTeamsService,
-    effective_teams_channel_targets,
     normalize_teams_target,
     parse_teams_target,
 )
@@ -192,7 +191,10 @@ class TeamsIngestWorker:
             for session in active_sessions
             if ToolName.TEAMS_GET_MESSAGES in session.allowed_tools
             and _directory_is_within_scope(session.directory_path, directory_path)
-            for normalized in effective_teams_channel_targets(session, skip_user_targets=True)
+            for normalized in self.runtime.policy_config.resolved_teams_channel_targets_for_session(
+                session,
+                capability="read",
+            )
         }
         return sorted(targets)
 

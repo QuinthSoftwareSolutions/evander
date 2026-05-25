@@ -1253,6 +1253,71 @@ def normalize_teams_chat_targets(value: list[str] | None) -> list[str]:
     )
 
 
+def _normalize_teams_or_target_refs(
+    value: list[str] | None,
+    *,
+    field_name: str,
+    allowed_kind: str | None = None,
+    forbid_user_targets: bool = True,
+) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_target in value or []:
+        text = str(raw_target).strip()
+        if not text:
+            continue
+        try:
+            target = normalize_teams_target(text)
+        except ValueError:
+            target = text
+        else:
+            parsed_target = parse_teams_target(target)
+            if allowed_kind is not None and parsed_target.kind != allowed_kind:
+                if allowed_kind == "chat":
+                    raise ValueError(
+                        f"{field_name} accepts chat targets only; use teams_channel_allowlist "
+                        "for channel targets and teams_user_allowlist for user targets"
+                    )
+                raise ValueError(f"{field_name} accepts {allowed_kind} targets only")
+            if forbid_user_targets and parsed_target.kind == "user":
+                raise ValueError(
+                    f"{field_name} accepts channel/chat targets only; use teams_user_allowlist "
+                    "for user targets"
+                )
+        if target in seen:
+            continue
+        seen.add(target)
+        normalized.append(target)
+    return normalized
+
+
+def normalize_teams_channel_or_target_refs(value: list[str] | None) -> list[str]:
+    return _normalize_teams_or_target_refs(value, field_name="teams_channel_allowlist")
+
+
+def normalize_teams_chat_or_target_refs(value: list[str] | None) -> list[str]:
+    return _normalize_teams_or_target_refs(
+        value,
+        field_name="teams_chat_allowlist",
+        allowed_kind="chat",
+    )
+
+
+def normalize_teams_user_or_target_refs(value: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_target in value or []:
+        text = str(raw_target).strip()
+        if not text:
+            continue
+        target = normalize_teams_user_target(text) if text.startswith("user:") or "@" in text else text
+        if target in seen:
+            continue
+        seen.add(target)
+        normalized.append(target)
+    return normalized
+
+
 def effective_teams_channel_targets(
     session: SessionManifest,
     *,

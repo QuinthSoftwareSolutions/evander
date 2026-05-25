@@ -986,10 +986,17 @@ The same delegated Teams identity/configuration is also used by the host-side Te
 that feeds `trigger:teams:new-message` for both channel threads and group chats, plus
 `trigger:teams:direct-message` for one-on-one direct messages sent by configured sender user ids.
 
-Session and `effect:agent:create` manifests declare Teams channel targets with
-`teams_channel_allowlist` and Teams chat targets with `teams_chat_allowlist`. One-on-one user
-send targets stay separate in `teams_user_allowlist`; they are not valid for Teams reads,
-reactions, attachment downloads, or ingest polling.
+Session and `effect:agent:create` manifests can use either legacy raw Teams/Discord IDs or
+directory-scoped communication target IDs in their communication allowlists. Declared target IDs are
+resolved at use time from the session directory, take precedence over raw IDs when a value collides,
+and must expose the capability required by the operation: `read` for message reads, inbound
+trigger polling, and attachment list/download; `write` for top-level sends; and `reply` for thread
+replies and reactions. Raw legacy IDs keep the existing allowlist behavior.
+
+Teams channel targets can still be declared directly with `teams_channel_allowlist`, Teams chat
+targets with `teams_chat_allowlist`, and one-on-one user send targets with
+`teams_user_allowlist`. Teams `user:` communication targets are send-only; they are not valid for
+Teams reads, reactions, attachment downloads, or `trigger:teams:new-message` polling.
 Direct-message trigger polling is configured with `sender_user_ids` on
 `trigger:teams:direct-message`.
 

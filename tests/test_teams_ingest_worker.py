@@ -9,6 +9,10 @@ import pytest
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directories import DirectoryService
+from agent_sandbox.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 from agent_sandbox.models import SessionManifest, TeamsMessageEnvelope, ToolName
 from agent_sandbox.messaging.teams_ingest import build_teams_ingest_worker
 
@@ -34,6 +38,14 @@ def patch_worker_httpx_client(
         "agent_sandbox.messaging.teams_ingest.httpx.Client",
         lambda timeout: real_client(timeout=timeout, transport=transport),
     )
+
+
+def write_root_communication_targets(worker, targets: list[dict[str, object]]) -> None:
+    worker.runtime.directories.ensure_root()
+    repository = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(worker.config.runtime_dir)
+    )
+    repository.write_overlay("root", {"targets": targets})
 
 
 def test_build_teams_ingest_worker_uses_worker_config_and_normalizes_directories(
@@ -223,6 +235,58 @@ def test_teams_ingest_worker_polls_chat_targets_from_chat_allowlist(
     assert [request.url.path for request in requests] == ["/v1.0/chats/chat-1/messages"]
     assert worker.store.list_all_messages(channel_targets=["chat:chat-1"])
     assert worker.store.get_cursor("chat:chat-1") == "chat:chat-1/msg-1"
+    assert result.channel_targets_polled == 1
+
+
+def test_teams_ingest_worker_resolves_communication_target_allowlists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/teams/team-a/channels/channel-1/messages"):
+            return httpx.Response(200, json={"value": []}, request=request)
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+        }
+    )
+    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    ensure_directory(worker, "root/team-a")
+    write_root_communication_targets(
+        worker,
+        [
+            {
+                "id": "teams-inbox",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["read"]},
+            }
+        ],
+    )
+    worker.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["teams-inbox"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    result = worker.run_once()
+
+    assert [request.url.path for request in requests] == [
+        "/v1.0/teams/team-a/channels/channel-1/messages"
+    ]
     assert result.channel_targets_polled == 1
 
 
