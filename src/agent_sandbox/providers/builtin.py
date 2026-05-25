@@ -88,6 +88,9 @@ from agent_sandbox.triggers.providers.agent_run_completed import AgentRunComplet
 from agent_sandbox.triggers.providers.ado_work_item_matching import (
     AdoWorkItemMatchingTriggerProvider,
 )
+from agent_sandbox.triggers.providers.communication_new_message import (
+    CommunicationNewMessageTriggerProvider,
+)
 from agent_sandbox.triggers.providers.cron import CronTriggerProvider
 from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
@@ -111,7 +114,6 @@ from agent_sandbox.triggers.providers.ticket_changed import TicketChangedTrigger
 from agent_sandbox.triggers.providers.ticket_created import TicketCreatedTriggerProvider
 from agent_sandbox.triggers.providers.webhook import WebhookTriggerProvider
 
-
 def register_providers() -> dict[str, dict[str, type]]:
     return dict(
         trigger_providers={
@@ -122,6 +124,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "trigger:issue:comment-created": IssueCommentCreatedTriggerProvider,
             "trigger:ado:work-item-matching": AdoWorkItemMatchingTriggerProvider,
             "trigger:script-run-request": ScriptRunRequestTriggerProvider,
+            "trigger:communication:new-message": CommunicationNewMessageTriggerProvider,
             "trigger:http:webhook": WebhookTriggerProvider,
             "trigger:discord:new-message": DiscordNewMessageTriggerProvider,
             "trigger:teams:new-message": TeamsNewMessageTriggerProvider,

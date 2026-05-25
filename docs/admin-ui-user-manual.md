@@ -355,7 +355,8 @@ Specialized configuration areas:
 - **Contacts**: maintain named contact entries with descriptions, email addresses, and phone
   numbers for directory-scoped use.
 - **Communication targets**: declare inherited and explicit messaging targets used by workflow
-  notification/message effects.
+  notification/message effects and by the provider-neutral communication message trigger when the
+  target has `read` capability.
 - **Approval notification targets**: choose notify-capable communication targets for approval
   notifications.
 - **Directory override JSON**: copy the unified explicit overrides for review, diffing, or support.

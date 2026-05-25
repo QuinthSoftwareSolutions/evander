@@ -134,6 +134,19 @@ def _trigger_adapter() -> _MaterializingTriggerAdapter:
         ),
         (
             {
+                "id": "comm",
+                "display_name": "Communication",
+                "type": "trigger:communication:new-message",
+                "communication_target_ids": ["team-a/channel-1", "discord:chan-2"],
+                "directory_path": "root/team-a",
+                "author_ids": ["user-a"],
+                "content_contains": "hello",
+            },
+            "trigger:communication:new-message",
+            "communication_target_ids",
+        ),
+        (
+            {
                 "id": "discord",
                 "display_name": "Discord",
                 "type": "trigger:discord:new-message",
@@ -304,6 +317,16 @@ def test_conformance_schema_accepts_required_trigger_shapes(
             },
             "discord_bot_token_env",
             "trigger:discord:new-message",
+        ),
+        (
+            {
+                "id": "comm-bad",
+                "display_name": "Communication",
+                "type": "trigger:communication:new-message",
+                "communication_target_ids": ["  ", ""],
+            },
+            "communication_target_ids",
+            "trigger:communication:new-message",
         ),
         (
             {
@@ -1847,6 +1870,7 @@ def test_conformance_traceability_matrix_and_report(
             "schema:trigger:cron",
             "schema:trigger:ticket:created",
             "schema:trigger:ticket:changed",
+            "schema:trigger:communication:new-message",
             "schema:trigger:discord:new-message",
             "schema:trigger:teams:new-message",
             "schema:trigger:teams:direct-message",

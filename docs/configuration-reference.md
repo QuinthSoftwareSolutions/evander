@@ -157,6 +157,7 @@ Type-specific keys:
 | `trigger:ado:work-item-matching` | — | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top` |
 | `trigger:script-run-request` | — | — |
 | `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |
+| `trigger:communication:new-message` | `communication_target_ids` | `directory_path`, `author_ids`, `content_contains`, `case_sensitive` |
 | `trigger:teams:new-message` | `targets` | `user_ids` |
 | `trigger:teams:direct-message` | `sender_user_ids` | `message_filter` |
 | `trigger:email:new-message` | `provider`, `account_identifier`, `mailbox_ids` | `auth_secret_refs` |
@@ -222,6 +223,19 @@ tool appends to after validating that the calling session is allowed to invoke t
 script name. The checked-in global workflow currently filters that trigger down to
 `provision_exampleindustry_app_demo_environment.sh`, which wraps the existing host-side Example
 Industry APP Azure provisioning script and resumes the originating session with the JSON result.
+
+`trigger:communication:new-message` is a provider-neutral chat trigger over declared
+directory-scoped communication targets. Its `communication_target_ids` list is required and must
+name at least one target from the selected `directory_path` (default `root`); omitted target IDs do
+not subscribe to all targets. Version 1 accepts only Teams channel/chat and Discord channel targets
+with the `read` capability, rejects Teams `user:` targets, and intentionally excludes email. The
+optional `author_ids` list filters by provider-native author/user ID, `content_contains` applies a
+substring filter to message content, and `case_sensitive` defaults to `false`. The trigger reads
+the existing host-owned Teams and Discord inbox stores and emits `provider`,
+`communication_target_id`, `message_id`, `thread_id`, `content`, `author_id`, `author_name`,
+`created_at`, `received_at`, `target`, and a nested `message` object with safe provider metadata;
+communication target `policy.auth_profile_ref` values are not emitted.
+
 These flows are independent from the wake workers. Discord inbox waking and scheduled resumes are
 covered by dedicated wake workers, while Azure DevOps PR feedback and completion pickup live in the
 ADO worker.
@@ -473,6 +487,11 @@ include the `write` capability for a top-level message, or the `reply` capabilit
 when `thread_id` is set. Teams targets can address
 `team-id/channel-id`, `chat:<chat-id>`, or a declared one-on-one user as
 `user:<user-id-or-upn>`. Discord targets post to the configured channel.
+
+`trigger:communication:new-message` uses the same communication target store for inbound reads.
+Targets selected for this trigger must include `read`, must be Teams channel/chat or Discord
+channel targets, and are resolved for the trigger's `directory_path` before the provider polls the
+host-owned inbox stores.
 
 `effect:notification:send` delivers through a declared communication target in
 the same directory-scoped SQLite store. The target must include the `notify`

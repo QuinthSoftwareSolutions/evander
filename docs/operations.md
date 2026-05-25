@@ -1654,6 +1654,11 @@ You can run the wrapper directly on the host for validation:
   host-side Teams ingest worker that polls Microsoft Graph on the host and writes into the Teams
   message store consumed by trigger orchestration.
 - The ingest worker uses the same delegated Teams auth settings described above.
+- `trigger:communication:new-message` is the provider-neutral inbound chat trigger for declared
+  communication targets. Configure it with explicit `communication_target_ids`; each selected
+  target must be a read-capable Teams channel/chat or Discord channel target in the trigger's
+  `directory_path`. The trigger consumes the existing Teams and Discord inbox stores, so no
+  separate ingest worker or provider credential is configured for this node.
 - Direct-message triggers require `sender_user_ids` so only configured one-on-one senders can wake
   workflows.
 - This polling path is independent from the wake workers; Discord/scheduled wake behavior now stays with

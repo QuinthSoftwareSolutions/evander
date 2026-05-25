@@ -1,7 +1,18 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from agent_sandbox.config import GatewayConfig
-from agent_sandbox.events.provider_models import CronTriggerDefinition
+from agent_sandbox.events.provider_models import (
+    CommunicationNewMessageTriggerDefinition,
+    CronTriggerDefinition,
+)
+from agent_sandbox.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 from agent_sandbox.triggers.providers.base import TriggerProviderBase
 from agent_sandbox.triggers.registry import (
     DEFAULT_TRIGGER_PROVIDER_REGISTRY,
@@ -11,8 +22,15 @@ from agent_sandbox.triggers.registry import (
 
 
 class _ResolverStub:
+    def __init__(self, runtime_dir: Path | None = None) -> None:
+        self._runtime_dir = runtime_dir or GatewayConfig().runtime_dir
+
     def resolve_for_directory(self, directory_path: str | None) -> GatewayConfig:
-        return GatewayConfig(runtime_dir=(GatewayConfig().runtime_dir / (directory_path or "root")))
+        del directory_path
+        return GatewayConfig(
+            runtime_dir=self._runtime_dir,
+            directories_store_path=self._runtime_dir / "directories.json",
+        )
 
 
 class _RecordingProvider(TriggerProviderBase):
@@ -33,6 +51,7 @@ def test_default_registry_includes_all_known_trigger_types() -> None:
         "trigger:issue:comment-created",
         "trigger:ado:work-item-matching",
         "trigger:script-run-request",
+        "trigger:communication:new-message",
         "trigger:http:webhook",
         "trigger:discord:new-message",
         "trigger:teams:new-message",
@@ -91,3 +110,42 @@ def test_factory_exposes_vm_inventory_metadata_alias() -> None:
     assert provider.runtime_context is not None
     assert provider.runtime_context.metadata["admin_service"] is runtime
     assert callable(getattr(provider.runtime_context.metadata["vm_inventory"], "list_vms", None))
+
+
+def test_factory_rejects_non_read_communication_targets_during_provider_setup(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    repository = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(runtime_dir)
+    )
+    repository.write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "teams-notify",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team-a/channel-1",
+                    "policy": {"capabilities": ["notify"]},
+                }
+            ]
+        },
+    )
+    trigger = CommunicationNewMessageTriggerDefinition.model_validate(
+        {
+            "id": "comm-1",
+            "display_name": "Communication",
+            "type": "trigger:communication:new-message",
+            "communication_target_ids": ["teams-notify"],
+        }
+    )
+
+    factory = TriggerProviderFactory(
+        provider_config_resolver=_ResolverStub(runtime_dir=runtime_dir),
+        registry=TriggerProviderRegistry(),
+    )
+
+    with pytest.raises(ValueError, match="read capability"):
+        factory.build(trigger, directory_path="root")

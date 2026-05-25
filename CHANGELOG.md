@@ -85,6 +85,12 @@ material. Newer entries are added incrementally as changes land.
 - Woke await-agent completion drains through the trigger worker's configured
   effect lock path, so custom workflow runtime directories still hot-drain
   effect work.
+- Added `trigger:communication:new-message`, a provider-neutral inbound chat
+  trigger over read-capable Teams channel/chat and Discord communication
+  targets, with Admin Web catalog support and normalized message outputs.
+- Tightened communication trigger reload/runtime validation so Teams `user:`
+  targets stay send-only and custom directory stores are preserved on workflow
+  config reloads.
 - Fixed explicit Azure DevOps PR trigger polling so completion triggers without
   a status scan terminal PR states, and explicit feedback events stay unbound in
   mixed legacy/explicit configurations.

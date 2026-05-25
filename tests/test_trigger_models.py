@@ -18,6 +18,7 @@ from agent_sandbox.events.provider_models import (
     ArtifactPublishArtifactsEffectDefinition,
     ArtifactStageEffectDefinition,
     CommunicationSendMessageEffectDefinition,
+    CommunicationNewMessageTriggerDefinition,
     GitPromoteAgentBranchEffectDefinition,
     GitPushTriggerDefinition,
     HttpRequestEffectDefinition,
@@ -34,6 +35,7 @@ from agent_sandbox.events.provider_models import (
     SessionUpdateMetadataEffectDefinition,
     WebhookTriggerDefinition,
 )
+from agent_sandbox.workflow.contracts import effective_node_output_schema
 
 
 def test_ticket_created_trigger_normalizes_directories() -> None:
@@ -211,6 +213,46 @@ def test_teams_trigger_accepts_per_target_message_filter() -> None:
     assert trigger.targets[0].message_filter.mentions.user_ids == [
         "143e5b02-868f-4f0c-a262-cf509b6c09e5"
     ]
+
+def test_communication_trigger_normalizes_targets_and_authors() -> None:
+    trigger = CommunicationNewMessageTriggerDefinition.model_validate(
+        {
+            "id": "comm-1",
+            "display_name": "Communication",
+            "type": "trigger:communication:new-message",
+            "communication_target_ids": [" TEAM-A/CHANNEL-1 ", "discord:CHAN-2", ""],
+            "directory_path": " root/team-a ",
+            "author_ids": [" AUTHOR-A ", "Author-B", ""],
+            "content_contains": "  Hello there  ",
+        }
+    )
+
+    assert trigger.communication_target_ids == ["team-a/channel-1", "discord:chan-2"]
+    assert trigger.directory_path == "root/team-a"
+    assert trigger.author_ids == ["author-a", "author-b"]
+    assert trigger.content_contains == "Hello there"
+    assert trigger.case_sensitive is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "id": "comm-missing",
+            "display_name": "Communication",
+            "type": "trigger:communication:new-message",
+        },
+        {
+            "id": "comm-empty",
+            "display_name": "Communication",
+            "type": "trigger:communication:new-message",
+            "communication_target_ids": ["  ", ""],
+        },
+    ],
+)
+def test_communication_trigger_requires_target_ids(payload: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match="communication_target_ids"):
+        CommunicationNewMessageTriggerDefinition.model_validate(payload)
 
 
 def test_teams_direct_message_trigger_requires_sender_user_ids() -> None:
@@ -513,6 +555,28 @@ def test_agent_prompt_new_trigger_validates() -> None:
     )
 
     assert trigger.type == "trigger:agent:prompt:new"
+
+
+def test_communication_trigger_output_schema_exposes_normalized_payload_fields() -> None:
+    schema = effective_node_output_schema({"type": "trigger:communication:new-message"})
+
+    assert schema["provider"] == {"type": "string"}
+    assert schema["communication_target_id"] == {"type": "string"}
+    assert schema["message_id"] == {"type": "string"}
+    assert schema["thread_id"] == {"type": ["string", "null"]}
+    assert schema["author_id"] == {"type": "string"}
+    assert schema["author_name"] == {"type": "string"}
+    assert schema["content"] == {"type": "string"}
+    assert schema["created_at"] == {"type": "string"}
+    assert schema["received_at"] == {"type": "string"}
+    assert schema["target"] == {"type": "string"}
+    assert schema["message"]["properties"]["provider"] == {"type": "string"}
+    assert schema["message"]["properties"]["communication_target_id"] == {
+        "type": "string"
+    }
+    assert schema["message"]["properties"]["message_id"] == {"type": "string"}
+    assert schema["message"]["properties"]["target"] == {"type": "string"}
+    assert schema["message"]["properties"]["metadata"] == {"type": "object"}
 
 
 def test_await_agent_gate_requires_session_id_or_vm_name() -> None:

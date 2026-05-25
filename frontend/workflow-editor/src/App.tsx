@@ -331,6 +331,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "trigger:issue:comment-created": "Start when a tracked issue receives a new comment.",
   "trigger:discord:new-message": "Start from new Discord messages that match the configured filters.",
   "trigger:teams:new-message": "Start from new Microsoft Teams messages that match the configured targets.",
+  "trigger:communication:new-message": "Start from new messages on configured communication targets.",
   "trigger:teams:direct-message": "Start from allowlisted one-on-one Microsoft Teams direct messages.",
   "trigger:email:new-message": "Start from newly ingested email messages for the configured mailbox scope.",
   "trigger:pull-request:new-feedback": "Start when new pull-request feedback arrives from the configured provider.",
@@ -1469,6 +1470,17 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       type,
       targets: [],
       user_ids: [],
+    };
+  }
+  if (kind === "trigger" && type === "trigger:communication:new-message") {
+    return {
+      id,
+      display_name: "Communication message",
+      type,
+      communication_target_ids: [],
+      directory_path: "root",
+      author_ids: [],
+      case_sensitive: false,
     };
   }
   if (kind === "trigger" && type === "trigger:teams:direct-message") {

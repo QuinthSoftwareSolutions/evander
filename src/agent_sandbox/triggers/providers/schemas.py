@@ -211,6 +211,45 @@ class ScriptRunRequestTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:script-run-request"]
 
 
+def _normalize_lower_string_list(value: object) -> object:
+    normalized = normalize_string_list(value)
+    if not isinstance(normalized, list):
+        return normalized
+    return [item.lower() for item in normalized]
+
+
+class CommunicationNewMessageTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:communication:new-message"]
+    communication_target_ids: list[str] = Field(min_length=1)
+    directory_path: str | None = "root"
+    author_ids: list[str] = Field(default_factory=list)
+    content_contains: str | None = None
+    case_sensitive: bool = False
+
+    @field_validator("communication_target_ids", mode="before")
+    @classmethod
+    def normalize_communication_target_ids(cls, value: object) -> object:
+        normalized = _normalize_lower_string_list(value)
+        if isinstance(normalized, list) and not normalized:
+            raise ValueError("communication_target_ids must contain at least one target")
+        return normalized
+
+    @field_validator("directory_path", "content_contains", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value: object, info) -> object:
+        if value is None:
+            return "root" if info.field_name == "directory_path" else None
+        text = str(value).strip()
+        if info.field_name == "directory_path":
+            return text or "root"
+        return text or None
+
+    @field_validator("author_ids", mode="before")
+    @classmethod
+    def normalize_author_ids(cls, value: object) -> object:
+        return _normalize_lower_string_list(value)
+
+
 class DiscordNewMessageTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:discord:new-message"]
     discord_bot_token_env: str = Field(min_length=1)

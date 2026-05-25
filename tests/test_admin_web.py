@@ -669,6 +669,23 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         node for node in catalog_payload["nodes"] if node["type"] == "trigger:teams:new-message"
     )
     assert [field["key"] for field in teams_message["fields"]] == ["targets", "user_ids"]
+    communication_message = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "trigger:communication:new-message"
+    )
+    assert [field["key"] for field in communication_message["fields"]] == [
+        "communication_target_ids",
+        "directory_path",
+        "author_ids",
+        "content_contains",
+        "case_sensitive",
+    ]
+    assert next(
+        field
+        for field in communication_message["fields"]
+        if field["key"] == "communication_target_ids"
+    )["kind"] == "string_list"
     teams_direct_message = next(
         node
         for node in catalog_payload["nodes"]
@@ -1067,11 +1084,39 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
                     "policy": {"capabilities": ["notify"]},
                 },
                 {
+                    "id": "root-read-chat",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team/read",
+                    "policy": {"capabilities": ["read"]},
+                },
+                {
+                    "id": "root-read-discord",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345682",
+                    "policy": {"capabilities": ["read"]},
+                },
+                {
+                    "id": "root-read-user",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "user:operator@example.com",
+                    "policy": {"capabilities": ["read"]},
+                },
+                {
                     "id": "root-email-notify",
                     "provider": "email",
                     "kind": "email",
                     "address": "root@example.com",
                     "policy": {"capabilities": ["notify"], "auth_profile_ref": "email.root"},
+                },
+                {
+                    "id": "mail-read",
+                    "provider": "email",
+                    "kind": "email",
+                    "address": "read@example.com",
+                    "policy": {"capabilities": ["read"], "auth_profile_ref": "email.read"},
                 },
                 {
                     "id": "root-discord-reply-only",
@@ -1109,6 +1154,20 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
                     "kind": "discord",
                     "address": "123456789012345678",
                     "policy": {"capabilities": ["write"]},
+                },
+                {
+                    "id": "ops-read-chat",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team/ops-read",
+                    "policy": {"capabilities": ["read"]},
+                },
+                {
+                    "id": "ops-read-discord",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345683/123456789012345684",
+                    "policy": {"capabilities": ["read"]},
                 },
                 {
                     "id": "ops-email-notify",
@@ -1162,10 +1221,12 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
         return field
 
     def get_options(
-        payload: dict[str, object], node_type: str
+        payload: dict[str, object],
+        node_type: str,
+        field_key: str = "communication_target_id",
     ) -> dict[str, dict[str, object]]:
-        field = get_field(payload, node_type, "communication_target_id")
-        assert field["kind"] in {"enum", "string"}
+        field = get_field(payload, node_type, field_key)
+        assert field["kind"] in {"enum", "string", "string_list"}
         options = field["options"]
         assert isinstance(options, list)
         return {
@@ -1181,6 +1242,16 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     send_ops = get_options(ops_payload, "effect:communication:send-message")
     notify_root = get_options(root_payload, "effect:notification:send")
     notify_ops = get_options(ops_payload, "effect:notification:send")
+    read_root = get_options(
+        root_payload,
+        "trigger:communication:new-message",
+        "communication_target_ids",
+    )
+    read_ops = get_options(
+        ops_payload,
+        "trigger:communication:new-message",
+        "communication_target_ids",
+    )
 
     send_target_description = get_field(
         root_payload, "effect:communication:send-message", "communication_target_id"
@@ -1204,6 +1275,13 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     assert set(send_ops) == {"ops-chat", "ops-discord"}
     assert set(notify_root) == {"root-notify", "root-email-notify"}
     assert set(notify_ops) == {"root-notify", "root-email-notify", "ops-email-notify"}
+    assert set(read_root) == {"root-read-chat", "root-read-discord"}
+    assert set(read_ops) == {
+        "root-read-chat",
+        "root-read-discord",
+        "ops-read-chat",
+        "ops-read-discord",
+    }
 
     root_chat = send_root["root-chat"]
     assert root_chat["metadata"]["provider"] == "teams"
@@ -1247,6 +1325,18 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     assert ops_email_notify["metadata"]["target_shape"] == "email_recipient"
     assert ops_email_notify["metadata"]["policy_capabilities"] == ["notify"]
     assert ops_email_notify["metadata"]["thread_id"]["reply_hint"]["supported"] is False
+
+    root_read_chat = read_root["root-read-chat"]
+    assert root_read_chat["metadata"]["provider"] == "teams"
+    assert root_read_chat["metadata"]["address"] == "team/read"
+    assert root_read_chat["metadata"]["target_shape"] == "teams_channel"
+    assert root_read_chat["metadata"]["required_capability"] == "read"
+    assert root_read_chat["metadata"]["policy_capabilities"] == ["read"]
+
+    ops_read_discord = read_ops["ops-read-discord"]
+    assert ops_read_discord["metadata"]["provider"] == "discord"
+    assert ops_read_discord["metadata"]["target_shape"] == "discord_channel"
+    assert ops_read_discord["metadata"]["required_capability"] == "read"
 
 
 def test_workflow_editor_default_dedupe_node_uses_supported_event_binding() -> None:
