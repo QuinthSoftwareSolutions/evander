@@ -1,5 +1,7 @@
 import { FormEvent, useEffect, useRef, useState, type ReactNode } from "react";
 
+import companyLogoDark from "../altlogo-dark.png";
+import companyLogoLight from "../altlogo-light.png";
 import logoDark from "../logo-dark.png";
 import logoLight from "../logo-light.png";
 import WorkflowEditorApp from "./App";
@@ -991,6 +993,26 @@ function DirectoryChooserModal({
   );
 }
 
+function LoginBrandBar({ theme, onToggleTheme }: { theme: AdminTheme; onToggleTheme: () => void }) {
+  return (
+    <div className="admin-login-brandbar">
+      <img
+        className="admin-login-company-logo"
+        src={theme === "dark" ? companyLogoDark : companyLogoLight}
+        alt="Company logo"
+      />
+      <button type="button" className="admin-shell-button admin-shell-button-muted admin-login-theme-toggle" onClick={onToggleTheme}>
+        {theme === "dark" ? "Light mode" : "Dark mode"}
+      </button>
+      <img
+        className="admin-login-truman-logo"
+        src={theme === "dark" ? logoDark : logoLight}
+        alt="evander Control Plane logo"
+      />
+    </div>
+  );
+}
+
 function LoginScreen({
   session,
   theme,
@@ -1025,56 +1047,45 @@ function LoginScreen({
         <div className="admin-login-aurora admin-login-aurora-right" />
       </div>
       <div className="admin-login-stage">
-      <div className="admin-login-logo-layer" aria-hidden="true">
-        <img
-          className="admin-login-logo-hero"
-          src={theme === "dark" ? logoDark : logoLight}
-          alt=""
-        />
-      </div>
-      <div className="admin-login-toolbar">
-        <button type="button" className="admin-shell-button admin-shell-button-muted" onClick={onToggleTheme}>
-          {theme === "dark" ? "Light mode" : "Dark mode"}
-        </button>
-      </div>
-      <DeploymentStatusBanner status={deploymentStatus} />
-      <div className="admin-login-card">
-        <h1>Admin Sign In</h1>
-        <p>
-          {session.auth_mode === "azure_sso"
-            ? "Authenticate with Microsoft Entra to access the multi-user admin surface."
-            : "Authenticate to access the multi-user admin surface."}
-        </p>
-        {session.auth_mode === "local_password" ? (
-          <form className="admin-login-form" onSubmit={handleSubmit}>
-            <label className="inspector-label">
-              <span>Username</span>
-              <input name="username" defaultValue="admin" autoComplete="username" />
-            </label>
-            <label className="inspector-label">
-              <span>Password</span>
-              <input name="password" type="password" autoComplete="current-password" />
-            </label>
-            {error ? <div className="admin-login-error">{error}</div> : null}
-            <button className="admin-shell-button admin-login-action" type="submit" disabled={loading}>
-              {loading ? "Signing in..." : "Sign in"}
-            </button>
-          </form>
-        ) : null}
-        {session.auth_mode === "azure_sso" ? (
-          <div className="admin-login-actions">
-            {error ? <div className="admin-login-error">{error}</div> : null}
-            <button
-              className="admin-shell-button admin-login-action"
-              type="button"
-              disabled={loading || !session.azure_sso_login_url}
-              onClick={onAzureSignIn}
-            >
-              {loading ? "Redirecting..." : "Sign in with Microsoft"}
-            </button>
-          </div>
-        ) : null}
-      </div>
+        <LoginBrandBar theme={theme} onToggleTheme={onToggleTheme} />
+        <DeploymentStatusBanner status={deploymentStatus} />
+        <div className="admin-login-card">
+          <h1>Admin Sign In</h1>
+          <p>
+            {session.auth_mode === "azure_sso"
+              ? "Authenticate with Microsoft Entra to access the multi-user admin surface."
+              : "Authenticate to access the multi-user admin surface."}
+          </p>
+          {session.auth_mode === "local_password" ? (
+            <form className="admin-login-form" onSubmit={handleSubmit}>
+              <label className="inspector-label">
+                <span>Username</span>
+                <input name="username" defaultValue="admin" autoComplete="username" />
+              </label>
+              <label className="inspector-label">
+                <span>Password</span>
+                <input name="password" type="password" autoComplete="current-password" />
+              </label>
+              {error ? <div className="admin-login-error">{error}</div> : null}
+              <button className="admin-shell-button admin-login-action" type="submit" disabled={loading}>
+                {loading ? "Signing in..." : "Sign in"}
+              </button>
+            </form>
+          ) : null}
+          {session.auth_mode === "azure_sso" ? (
+            <div className="admin-login-actions">
+              {error ? <div className="admin-login-error">{error}</div> : null}
+              <button
+                className="admin-shell-button admin-login-action"
+                type="button"
+                disabled={loading || !session.azure_sso_login_url}
+                onClick={onAzureSignIn}
+              >
+                {loading ? "Redirecting..." : "Sign in with Microsoft"}
+              </button>
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   );
@@ -1464,16 +1475,8 @@ export default function AdminRoot() {
   if (session === null) {
     return (
       <div className="admin-login-shell">
-        <div className="admin-login-toolbar">
-          <button
-            type="button"
-            className="admin-shell-button admin-shell-button-muted"
-            onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
-          >
-            {theme === "dark" ? "Light mode" : "Dark mode"}
-          </button>
-        </div>
         <div className="admin-login-stage">
+          <LoginBrandBar theme={theme} onToggleTheme={() => setTheme((current) => (current === "dark" ? "light" : "dark"))} />
           <DeploymentStatusBanner status={deploymentStatus} />
           <div className="admin-login-card">
             <div className="eyebrow">Agent Sandbox</div>
