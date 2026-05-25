@@ -2134,6 +2134,64 @@ def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) 
     assert (tmp_path / "config" / "trigger-orchestrator" / "layout.json").exists()
 
 
+def test_admin_web_workflow_editor_accepts_revision_returned_from_previous_save(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = {
+        "config": {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "cron-15m",
+                    "display_name": "Every 15 minutes",
+                    "type": "trigger:cron",
+                    "expression": "*/15 * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "prompt-agent",
+                    "display_name": "Prompt agent",
+                    "type": "effect:agent:prompt",
+                    "prompt": "Summarize",
+                }
+            ],
+            "edges": [{"source_id": "cron-15m", "target_id": "prompt-agent"}],
+        },
+        "layout": {
+            "nodes": {
+                "cron-15m": {"x": 100, "y": 50},
+                "prompt-agent": {"x": 300, "y": 50},
+            }
+        },
+        "graphs": [
+            {
+                "id": "graph-cron-15m",
+                "name": "Scheduled prompt",
+                "description": "Prompts an agent on the cron schedule.",
+                "directory_paths": ["root"],
+                "user_ids": ["admin"],
+                "node_ids": ["cron-15m", "prompt-agent"],
+            }
+        ],
+    }
+
+    payload["expected_revision"] = _workflow_expected_revision(client)
+    first_save = client.put("/api/workflow-editor/document", json=payload)
+    assert first_save.status_code == 200
+    first_revision = first_save.json()["revision"]
+    assert isinstance(first_revision, str)
+
+    payload["config"]["effects"][0]["display_name"] = "Prompt agent v2"
+    payload["layout"]["nodes"]["prompt-agent"]["x"] = 320
+    payload["expected_revision"] = first_revision
+    second_save = client.put("/api/workflow-editor/document", json=payload)
+
+    assert second_save.status_code == 200
+    assert second_save.json()["revision"] == _workflow_expected_revision(client)
+
+
 def test_admin_web_saves_disconnected_workflow_editor_document(tmp_path: Path) -> None:
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
     payload = {
