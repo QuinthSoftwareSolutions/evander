@@ -275,15 +275,6 @@ test("workflow editor shows selected-node output contracts and copies binding ex
     runs: [],
     node_activity: {},
   };
-  const sampleWorkflow = {
-    active: false,
-    launched_at: null,
-    run: null,
-    detail: null,
-    tutorial_steps: [],
-    current_step: null,
-  };
-
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const { pathname } = url;
@@ -338,11 +329,6 @@ test("workflow editor shows selected-node output contracts and copies binding ex
 
     if (pathname === "/api/workflow-editor/runs") {
       await route.fulfill(jsonResponse(workflowRuns));
-      return;
-    }
-
-    if (pathname === "/api/workflow-editor/sample-workflow") {
-      await route.fulfill(jsonResponse(sampleWorkflow));
       return;
     }
 
@@ -448,6 +434,5 @@ test("workflow editor shows selected-node output contracts and copies binding ex
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/document"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/catalog?directory_path=root"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/runs"));
-  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/sample-workflow"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/runs/stream"));
 });

@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - Workflow Tutorial Cleanup
+
+- Removed the obsolete workflow editor in-memory first-run walkthrough, its
+  sidebar controls, and its Admin Web API routes now that Tutorials owns the
+  onboarding flow.
+
 ## 2026-05-24 - Container Worker Manifest Persistence Fix
 
 - Delayed workflow container-agent session manifest persistence until worker
@@ -55,8 +61,8 @@ material. Newer entries are added incrementally as changes land.
   calls so browser request timing is not the only rate-control layer.
 - Remapped generated draft output schemas when imported node ids collide with
   existing workflow nodes.
-- Kept the guided sample controls visible while inspecting a sample run so the
-  first-run walkthrough can reset and complete from inspect mode.
+- Kept the first-run walkthrough controls visible while inspecting a walkthrough
+  run so onboarding can reset and complete from inspect mode.
 
 ## 2026-05-23 - Retry-Safe Workflow Completion Publication
 
@@ -124,9 +130,9 @@ material. Newer entries are added incrementally as changes land.
 
 ## 2026-05-22 - Unobtrusive Workflow Tutorial
 
-- Collapsed the workflow editor guided sample into a small tutorial launcher by
-  default, with a skip/mark-complete path that removes the first-run highlight
-  without launching the sample.
+- Collapsed the workflow editor first-run walkthrough into a small tutorial
+  launcher by default, with a skip/mark-complete path that removes the first-run
+  highlight without launching the walkthrough.
 
 ## 2026-05-22 - Explicit Agent Resume Threads
 

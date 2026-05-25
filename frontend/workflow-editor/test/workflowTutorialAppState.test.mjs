@@ -30,7 +30,7 @@ test("tutorial progress stays local and the chooser can skip or restart without 
   );
   const chooserBranch = sourceBetween(
     "function renderWorkflowTutorialChooser()",
-    "function renderWorkflowSamplePanel()",
+    "function renderWorkflowTutorialLauncher()",
   );
 
   assert.match(progressHelpers, /readStoredWorkflowTutorialProgress/);
