@@ -21,6 +21,9 @@ material. Newer entries are added incrementally as changes land.
 - Woke await-agent completion drains through the trigger worker's configured
   effect lock path, so custom workflow runtime directories still hot-drain
   effect work.
+- Added `trigger:communication:new-message`, a provider-neutral inbound chat
+  trigger over read-capable Teams channel/chat and Discord communication
+  targets, with Admin Web catalog support and normalized message outputs.
 
 ## 2026-05-24 - Container Worker Manifest Persistence Fix
 

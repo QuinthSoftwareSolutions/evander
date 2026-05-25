@@ -721,6 +721,12 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   - `{"target":"team-id/channel-id"}`
   - `{"target":"chat:<chat-id>","message_filter":{"content":{"contains":"@Truman Bot"}}}`
   - optional `case_sensitive: true|false` (default `false`)
+- `trigger:communication:new-message` provides the provider-neutral inbound chat path for
+  directory-scoped communication targets. It requires explicit `communication_target_ids`, defaults
+  `directory_path` to `root`, supports optional `author_ids`, `content_contains`, and
+  `case_sensitive`, and listens only to read-capable Teams channel/chat or Discord channel targets.
+  It reuses the host-owned Teams and Discord inbox stores and does not expose communication target
+  auth profile references in trigger outputs.
 - Session manifests opt into Teams access explicitly:
 
   ```json

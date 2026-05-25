@@ -1418,7 +1418,9 @@ def _communication_target_option_metadata(
         parsed_target = parse_teams_target(address)
         metadata["teams_target_kind"] = parsed_target.kind
         metadata["teams_target_normalized"] = parsed_target.normalized
-    if purpose == "send-message":
+    if purpose == "read-message":
+        metadata["required_capability"] = "read"
+    elif purpose == "send-message":
         metadata["thread_id"] = {
             "top_level": {
                 "supported": "write" in capabilities,
@@ -1536,6 +1538,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:script-run-request": "Start from an approved run_script request submitted by a session.",
     "trigger:discord:new-message": (
         "Start from new Discord messages that match the configured filters."
+    ),
+    "trigger:communication:new-message": (
+        "Start from new Teams or Discord messages on declared communication targets."
     ),
     "trigger:teams:new-message": (
         "Start from new Microsoft Teams messages that match the configured targets."
@@ -1794,6 +1799,48 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 ],
             ),
             _field("user_ids", "User IDs", "string_list"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:communication:new-message",
+        label="Communication message",
+        fields=[
+            _field(
+                "communication_target_ids",
+                "Communication targets",
+                "string_list",
+                required=True,
+                description=(
+                    "Directory-scoped Teams channel/chat or Discord channel targets with "
+                    "read capability. The trigger listens only to explicitly selected targets."
+                ),
+            ),
+            _field(
+                "directory_path",
+                "Directory path",
+                "string",
+                placeholder="root",
+                default_value="root",
+            ),
+            _field(
+                "author_ids",
+                "Author IDs",
+                "string_list",
+                description="Optional provider-native author/user IDs to allow.",
+            ),
+            _field(
+                "content_contains",
+                "Content contains",
+                "string",
+                description="Optional substring filter applied to message content.",
+            ),
+            _field(
+                "case_sensitive",
+                "Case sensitive",
+                "boolean",
+                default_value=False,
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -11913,6 +11960,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     continue
                 if "notify" not in capabilities:
                     continue
+            elif purpose == "read-message":
+                if provider not in {"teams", "discord"}:
+                    continue
+                if "read" not in capabilities:
+                    continue
+                if _communication_target_shape(target) == "teams_user":
+                    continue
             else:
                 continue
             option = _communication_target_option(target, purpose=purpose)
@@ -11930,6 +11984,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     ) -> list[WorkflowEditorFieldOption]:
         return self._communication_target_options(directory_path, purpose="notification")
 
+    def _communication_read_target_options(
+        self, directory_path: str | None
+    ) -> list[WorkflowEditorFieldOption]:
+        return self._communication_target_options(directory_path, purpose="read-message")
+
     def _read_workflow_editor_catalog(
         self, directory_path: str | None = None
     ) -> WorkflowEditorCatalogPayload:
@@ -11940,6 +11999,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
         communication_notification_target_options = (
             self._communication_notification_target_options(directory_path)
+        )
+        communication_read_target_options = self._communication_read_target_options(
+            directory_path
         )
         nodes: list[WorkflowEditorNodeCatalogEntry] = []
         for entry in _WORKFLOW_EDITOR_NODE_CATALOG:
@@ -11971,6 +12033,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 node.fields = [
                     field.model_copy(update={"options": communication_notification_target_options})
                     if field.key == "communication_target_id"
+                    else field
+                    for field in node.fields
+                ]
+            if node.type == "trigger:communication:new-message":
+                node.fields = [
+                    field.model_copy(update={"options": communication_read_target_options})
+                    if field.key == "communication_target_ids"
                     else field
                     for field in node.fields
                 ]

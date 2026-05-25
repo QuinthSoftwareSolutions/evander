@@ -1631,6 +1631,11 @@ You can run the wrapper directly on the host for validation:
   Microsoft Graph on the host and writes into the Teams message store consumed by trigger
   orchestration.
 - The ingest worker uses the same delegated Teams auth settings described above.
+- `trigger:communication:new-message` is the provider-neutral inbound chat trigger for declared
+  communication targets. Configure it with explicit `communication_target_ids`; each selected
+  target must be a read-capable Teams channel/chat or Discord channel target in the trigger's
+  `directory_path`. The trigger consumes the existing Teams and Discord inbox stores, so no
+  separate ingest worker or provider credential is configured for this node.
 - This polling path is independent from the wake workers; Discord/scheduled wake behavior now stays with
   `agent-sandbox-discord-wake` and `agent-sandbox-scheduled-wake` while Azure DevOps PR feedback ingestion stays with
   `agent-sandbox-ado-worker`.
