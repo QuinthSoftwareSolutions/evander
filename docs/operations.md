@@ -1244,6 +1244,12 @@ session. Existing guest tools still require `metadata.pr_feedback_streams` on
 sessions that should call `list_unread_feedback`, `list_all_feedback`, or
 `post_pr_feedback_reply`.
 
+Workflow-owned chat polling should follow the same pattern with
+`query:communication:messages`: read the local Teams or Discord inbox store,
+persist the returned `next_cursor` in workflow-owned state, and keep the query
+separate from the host wake workers. That query is read-only and does not call
+live provider APIs.
+
 ### Wake workers
 
 - `agent-sandbox-cli discord-wake` owns Discord inbox wakeups and resumes.

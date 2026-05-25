@@ -383,6 +383,7 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:git:pr-note` | `host_repo_path`, `local_branch` | `remote_name`, `notes_ref`, `outputs` |
 | `query:issue:get` | `issue_id` | `outputs` |
 | `query:pull-request:feedback` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `cursor`, `outputs` |
+| `query:communication:messages` | `communication_target_id` | `directory_path`, `limit`, `cursor`, `before_cursor`, `thread_id`, `outputs` |
 | `query:pull-request:list` | `provider`, `repo` | `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `outputs` |
 | `query:semantic:store-status` | _none beyond envelope_ | `collection_name`, `directory_path`, `outputs` |
 | `query:semantic:search` | `collection_name`, `query_text` | `filter`, `limit`, `score_threshold`, `directory_path`, `outputs` |
@@ -422,6 +423,13 @@ include the `write` capability for a top-level message, or the `reply` capabilit
 when `thread_id` is set. Teams targets can address
 `team-id/channel-id`, `chat:<chat-id>`, or a declared one-on-one user as
 `user:<user-id-or-upn>`. Discord targets post to the configured channel.
+
+`query:communication:messages` reads normalized message history from the local
+Teams or Discord inbox stores populated by the ingest workers. It requires a
+declared communication target with the `read` capability, supports Teams and
+Discord only, does not call live provider APIs, and returns normalized
+`messages` plus `next_cursor` so the workflow owns cursor persistence. The
+query does not advance or persist read cursors on the host.
 
 `effect:notification:send` delivers through a declared communication target in
 the same directory-scoped SQLite store. The target must include the `notify`
