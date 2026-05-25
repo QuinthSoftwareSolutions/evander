@@ -320,6 +320,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:semantic:upsert": provider_models.SemanticUpsertEffectDefinition,
         "effect:semantic:delete": provider_models.SemanticDeleteEffectDefinition,
         "effect:bash:script": provider_models.BashScriptEffectDefinition,
+        "effect:http:request": provider_models.HttpRequestEffectDefinition,
         "effect:vm:exec": provider_models.VmExecEffectDefinition,
         "effect:vm:copy-files": provider_models.VmCopyFilesEffectDefinition,
         "effect:vm:delete-files": provider_models.VmDeleteFilesEffectDefinition,

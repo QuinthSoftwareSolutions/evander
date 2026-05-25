@@ -524,6 +524,17 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "stdout": {"type": "string"},
         "stderr": {"type": "string"},
     },
+    "effect:http:request": {
+        "success": {"type": "boolean"},
+        "status_code": {"type": "integer"},
+        "method": {"type": "string"},
+        "url": {"type": "string"},
+        "headers": {"type": "object"},
+        "body_text": {"type": "string"},
+        "body_json": {"type": "object"},
+        "content_type": {"type": "string"},
+        "elapsed_ms": {"type": "integer"},
+    },
     "effect:vm:exec": {
         "success": {"type": "boolean"},
         "vm_name": {"type": "string"},
