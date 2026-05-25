@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -13,6 +14,8 @@ from agent_sandbox.events.provider_types import (
     validate_pr_feedback_provider,
 )
 from agent_sandbox.workflow.contracts import normalize_directory_paths, normalize_string_list
+
+_WEBHOOK_SLUG_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 class EventTriggerDefinition(TriggerDefinition):
@@ -32,6 +35,59 @@ class EventTriggerDefinition(TriggerDefinition):
             return None
         text = str(value).strip()
         return text or None
+
+
+class WebhookTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:http:webhook"]
+    slug: str = Field(min_length=1)
+    secret_env: str = Field(min_length=1)
+    event_type: str | None = None
+
+    @field_validator("slug", mode="before")
+    @classmethod
+    def normalize_slug(cls, value: object) -> str:
+        if value is None:
+            raise ValueError("slug must be a non-empty string")
+        text = str(value).strip()
+        if not text:
+            raise ValueError("slug must be a non-empty string")
+        if not _WEBHOOK_SLUG_RE.fullmatch(text):
+            raise ValueError("slug must match [A-Za-z0-9_.-]+")
+        return text
+
+    @field_validator("secret_env", mode="before")
+    @classmethod
+    def normalize_secret_env(cls, value: object) -> str:
+        if value is None:
+            raise ValueError("secret_env must be a non-empty string")
+        text = str(value).strip()
+        if not text:
+            raise ValueError("secret_env must be a non-empty string")
+        return text
+
+    @field_validator("event_type", mode="before")
+    @classmethod
+    def normalize_event_type(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @model_validator(mode="after")
+    def sync_event_type_config(self) -> "WebhookTriggerDefinition":
+        if self.event_type is None:
+            self.event_type = f"webhook.{self.slug}"
+        else:
+            if self.event_type.startswith("external."):
+                raise ValueError("event_type must not include the reserved 'external.' prefix")
+            self.event_type = validate_internal_event_type(self.event_type)
+        self.config = {
+            **self.config,
+            "slug": self.slug,
+            "secret_env": self.secret_env,
+            "event_type": self.event_type,
+        }
+        return self
 
 
 class CronTriggerDefinition(TriggerDefinition):

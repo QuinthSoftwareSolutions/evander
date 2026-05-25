@@ -149,6 +149,7 @@ Type-specific keys:
 | `type` | Required keys | Optional keys |
 |---|---|---|
 | `trigger:event` | `event_type` | `correlation_key` |
+| `trigger:http:webhook` | `slug`, `secret_env` | `event_type` |
 | `trigger:cron` | `expression` | — |
 | `trigger:ticket:created` | `directories` | — |
 | `trigger:ticket:changed` | `directories` | — |
@@ -156,6 +157,8 @@ Type-specific keys:
 | `trigger:ado:work-item-matching` | — | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top` |
 | `trigger:script-run-request` | — | — |
 | `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |
+| `trigger:teams:new-message` | `targets` | `user_ids` |
+| `trigger:teams:direct-message` | `sender_user_ids` | `message_filter` |
 | `trigger:email:new-message` | `provider`, `account_identifier`, `mailbox_ids` | `auth_secret_refs` |
 | `trigger:pull-request:new-feedback` | `provider` | `organization_url`, `project` (but `organization_url` becomes required when `provider=ado`) |
 | `trigger:pull-request:completed` | `provider` | `organization_url`, `project` (but `organization_url` becomes required when `provider=ado`) |
@@ -188,6 +191,20 @@ configured as comma-separated `source-name:token` entries; the matching source n
 the published event. Token values must not contain commas or colons. The ingress accepts arbitrary
 JSON-object payloads for workflow-specific data.
 
+`trigger:http:webhook` exposes a public `POST /api/workflow-webhooks/{slug}` ingress for a single
+active webhook trigger. The configured `slug` must match `[A-Za-z0-9_.-]+`, be unique across the
+active composed config, and is used as the public path segment. `secret_env` names the host
+environment variable that contains the HMAC secret. `event_type` is optional and defaults to
+`webhook.<slug>`. Requests must include
+`X-Agent-Sandbox-Signature-256: sha256=<hex>` and the signature must be computed over the exact raw
+request body bytes using HMAC-SHA256. The webhook ingress accepts JSON object bodies only. The
+durable event stored for the trigger is `external.<event_type>`, and downstream trigger output is
+the webhook envelope with `slug`, `headers`, `query`, `body`, `received_at`, `remote_addr`, and
+`signature_header`.
+
+Use `gate:filter`, `gate:map`, `gate:deserialize`, and `gate:dedupe` downstream when you need to
+reshape or suppress webhook deliveries after the trigger fires.
+
 The current trigger set also includes `trigger:teams:new-message`,
 `trigger:teams:direct-message`, `trigger:review:new-request`, and `trigger:script-run-request`.
 Teams is fed by a host-side ingest worker that reads the same delegated Teams auth settings
@@ -198,8 +215,9 @@ tool appends to after validating that the calling session is allowed to invoke t
 script name. The checked-in global workflow currently filters that trigger down to
 `provision_exampleindustry_app_demo_environment.sh`, which wraps the existing host-side Example
 Industry APP Azure provisioning script and resumes the originating session with the JSON result.
-All three flows are independent from the wake workers; Discord inbox waking and scheduled resumes are covered by the dedicated wake workers while
-PR/Discord feedback wakeups.
+These flows are independent from the wake workers. Discord inbox waking and scheduled resumes are
+covered by dedicated wake workers, while Azure DevOps PR feedback and completion pickup live in the
+ADO worker.
 
 Example:
 
@@ -231,6 +249,13 @@ Example:
       "display_name": "Repo push",
       "type": "trigger:git:push",
       "path_to_repo": "/var/lib/git/my-repo.git"
+    },
+    {
+      "id": "deploy-webhook",
+      "display_name": "Deploy webhook",
+      "type": "trigger:http:webhook",
+      "slug": "deploy",
+      "secret_env": "WEBHOOK_SECRET"
     }
   ]
 }

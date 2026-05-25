@@ -33,6 +33,7 @@ def test_default_registry_includes_all_known_trigger_types() -> None:
         "trigger:issue:comment-created",
         "trigger:ado:work-item-matching",
         "trigger:script-run-request",
+        "trigger:http:webhook",
         "trigger:discord:new-message",
         "trigger:teams:new-message",
         "trigger:teams:direct-message",

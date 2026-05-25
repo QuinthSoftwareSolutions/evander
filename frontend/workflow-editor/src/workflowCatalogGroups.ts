@@ -26,9 +26,10 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
     {
       key: "platform",
       label: "Platform events",
-      description: "Start from internal workflow events, agent lifecycle signals, or operator requests.",
+      description: "Start from internal workflow events, webhook deliveries, agent lifecycle signals, or operator requests.",
       types: [
         "trigger:event",
+        "trigger:http:webhook",
         "trigger:script-run-request",
         "trigger:agent:run:completed",
       ],

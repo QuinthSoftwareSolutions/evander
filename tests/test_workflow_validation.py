@@ -530,6 +530,44 @@ def test_output_schema_derivation_exposes_static_serialize_outputs() -> None:
     assert diagnostics == []
 
 
+def test_output_schema_derivation_exposes_webhook_envelope_outputs() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-webhook-1",
+                "display_name": "Webhook",
+                "type": "trigger:http:webhook",
+                "slug": "build-notify",
+                "secret_env": "WEBHOOK_SECRET",
+            }
+        ],
+        "effects": [
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": "Webhook ${{trigger-webhook-1.slug}} via ${{trigger-webhook-1.signature_header}}",
+            }
+        ],
+        "edges": [{"source_id": "trigger-webhook-1", "target_id": "prompt-agent"}],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["trigger-webhook-1"] == {
+        "slug": {"type": "string"},
+        "headers": {"type": "object"},
+        "query": {"type": "object"},
+        "body": {"type": "object"},
+        "received_at": {"type": "string"},
+        "remote_addr": {"type": "string"},
+        "signature_header": {"type": "string"},
+    }
+    assert diagnostics == []
+
+
 def test_pull_request_list_next_cursor_is_bindable() -> None:
     config = {
         "triggers": [

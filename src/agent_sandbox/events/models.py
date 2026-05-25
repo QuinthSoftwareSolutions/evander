@@ -264,6 +264,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
 
     models_by_type: dict[str, type[BaseModel]] = {
         "trigger:event": provider_models.EventTriggerDefinition,
+        "trigger:http:webhook": provider_models.WebhookTriggerDefinition,
         "trigger:cron": provider_models.CronTriggerDefinition,
         "trigger:ticket:created": provider_models.TicketCreatedTriggerDefinition,
         "trigger:ticket:changed": provider_models.TicketChangedTriggerDefinition,

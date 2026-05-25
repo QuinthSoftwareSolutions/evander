@@ -32,6 +32,7 @@ from agent_sandbox.events.provider_models import (
     SessionApproveMcpToolsForRunEffectDefinition,
     SessionRenewIfExpiredEffectDefinition,
     SessionUpdateMetadataEffectDefinition,
+    WebhookTriggerDefinition,
 )
 
 
@@ -75,6 +76,77 @@ def test_issue_comment_trigger_normalizes_ado_config() -> None:
     assert trigger.organization_url == "https://dev.azure.com/example"
     assert trigger.project == "APP"
     assert trigger.directories == ["root/team-a"]
+
+
+def test_webhook_trigger_defaults_event_type_from_slug() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    trigger = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "webhook-1",
+                "display_name": "Webhook",
+                "type": "trigger:http:webhook",
+                "slug": "build-notify",
+                "secret_env": "WEBHOOK_SECRET",
+            }
+        )
+    )
+
+    assert isinstance(trigger, WebhookTriggerDefinition)
+    assert trigger.slug == "build-notify"
+    assert trigger.secret_env == "WEBHOOK_SECRET"
+    assert trigger.event_type == "webhook.build-notify"
+    assert trigger.config["slug"] == "build-notify"
+    assert trigger.config["secret_env"] == "WEBHOOK_SECRET"
+    assert trigger.config["event_type"] == "webhook.build-notify"
+
+
+@pytest.mark.parametrize(
+    "slug, expected_error",
+    [
+        ("", "slug must be a non-empty string"),
+        ("not a slug", r"slug must match \[A-Za-z0-9_.-\]\+"),
+    ],
+)
+def test_webhook_trigger_rejects_invalid_slug(slug: str, expected_error: str) -> None:
+    with pytest.raises(ValueError, match=expected_error):
+        WebhookTriggerDefinition.model_validate(
+            {
+                "id": "webhook-2",
+                "display_name": "Webhook",
+                "type": "trigger:http:webhook",
+                "slug": slug,
+                "secret_env": "WEBHOOK_SECRET",
+            }
+        )
+
+
+def test_webhook_trigger_rejects_blank_secret_env() -> None:
+    with pytest.raises(ValueError, match="secret_env must be a non-empty string"):
+        WebhookTriggerDefinition.model_validate(
+            {
+                "id": "webhook-3",
+                "display_name": "Webhook",
+                "type": "trigger:http:webhook",
+                "slug": "build-notify",
+                "secret_env": "   ",
+            }
+        )
+
+
+def test_webhook_trigger_rejects_reserved_external_event_type() -> None:
+    with pytest.raises(ValueError, match="reserved 'external\\.' prefix"):
+        WebhookTriggerDefinition.model_validate(
+            {
+                "id": "webhook-4",
+                "display_name": "Webhook",
+                "type": "trigger:http:webhook",
+                "slug": "build-notify",
+                "secret_env": "WEBHOOK_SECRET",
+                "event_type": "external.webhook.build-notify",
+            }
+        )
 
 
 def test_email_trigger_validates_provider_enum() -> None:

@@ -451,6 +451,43 @@ Workflow-specific payloads are intentionally not schema-validated by the HTTP AP
 requiring a JSON object. Downstream nodes read custom fields from the trigger output payload, for
 example `${{trigger-external-deploy.payload.target}}`.
 
+### Signed Workflow Webhooks
+
+For public inbound workflows, configure `trigger:http:webhook` and POST to
+`/api/workflow-webhooks/{slug}`. The request body must be a JSON object, and the signature header
+must be `X-Agent-Sandbox-Signature-256: sha256=<hex>`, where the HMAC-SHA256 is computed over the
+exact raw request body bytes with the configured secret.
+
+The webhook trigger stores the durable event as `external.webhook.<slug>` by default, exposes the
+webhook envelope downstream, and leaves payload shaping to gates such as `gate:filter`,
+`gate:map`, `gate:deserialize`, and `gate:dedupe`.
+
+```bash
+WEBHOOK_BODY='{"target":"demo"}'
+WEBHOOK_SECRET='replace-with-your-secret'
+SIG="$(
+  printf '%s' "$WEBHOOK_BODY" |
+    openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex |
+    awk '{print $2}'
+)"
+
+curl -X POST http://127.0.0.1:8100/api/workflow-webhooks/deploy \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-Sandbox-Signature-256: sha256=${SIG}" \
+  -d "$WEBHOOK_BODY"
+```
+
+```python
+import hashlib
+import hmac
+import os
+
+body = b'{"target":"demo"}'
+secret = os.environ["WEBHOOK_SECRET"].encode()
+signature = hmac.new(secret, body, hashlib.sha256).hexdigest()
+print(signature)
+```
+
 ## Local Git Remotes
 
 Issue VM creation is now separate from repo setup. Create the VM first:
