@@ -84,6 +84,8 @@ def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
     assert [effect["id"] for effect in composed.effects] == ["effect-b"]
     assert [graph.id for graph in composed.graphs] == ["graph-a", "graph-b"]
     assert [graph.directory_paths for graph in composed.graphs] == [["root"], ["root/team-a"]]
+    assert [graph.user_ids for graph in composed.graphs] == [["alice"], ["bob"]]
+    assert [graph.node_ids for graph in composed.graphs] == [["trigger-a"], ["effect-b"]]
     assert composed.edges == [
         {
             "source_id": "trigger-a",

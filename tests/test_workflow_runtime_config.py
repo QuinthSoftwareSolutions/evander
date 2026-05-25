@@ -500,6 +500,51 @@ def test_load_config_preserves_editor_workflow_graph_metadata(tmp_path: Path) ->
     assert config.workflow_graphs[0].node_ids == ["trigger-cron"]
 
 
+def test_load_config_preserves_inline_workflow_graph_metadata_without_inline_ir(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "workflow_graphs": [
+                    {
+                        "id": "graph-inline-only",
+                        "name": "Inline-only graph",
+                        "description": "Runtime graph metadata without inline IR.",
+                        "directory_paths": "root/team-a",
+                        "user_ids": "alice",
+                        "node_ids": "trigger-cron",
+                    }
+                ],
+                "triggers": [
+                    {
+                        "id": "trigger-cron",
+                        "display_name": "Cron",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "effects": [],
+                "edges": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+    )
+
+    assert [graph.id for graph in config.workflow_graphs] == ["graph-inline-only"]
+    assert config.workflow_graphs[0].directory_paths == ["root/team-a"]
+    assert config.workflow_graphs[0].user_ids == ["alice"]
+    assert config.workflow_graphs[0].node_ids == ["trigger-cron"]
+
+
 def test_load_config_composes_configured_pack_with_hidden_system_pack(
     tmp_path: Path,
 ) -> None:
