@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -250,6 +249,77 @@ def test_github_ci_runs_use_workflow_endpoint_and_normalize_payloads(
     assert len(requests) == 4
 
 
+def test_github_ci_runs_skip_unknown_conclusions_when_filtering(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runs = [
+        {
+            "id": 151,
+            "run_number": 31,
+            "run_attempt": 1,
+            "workflow_id": 777,
+            "name": "CI",
+            "head_branch": "main",
+            "head_sha": "sha-failure",
+            "status": "completed",
+            "conclusion": "failure",
+            "updated_at": "2026-04-03T12:00:00Z",
+            "actor": {"login": "octo-failure"},
+            "pull_requests": [],
+        },
+        {
+            "id": 152,
+            "run_number": 32,
+            "run_attempt": 1,
+            "workflow_id": 777,
+            "name": "CI",
+            "head_branch": "main",
+            "head_sha": "sha-neutral",
+            "status": "completed",
+            "conclusion": "neutral",
+            "updated_at": "2026-04-03T12:01:00Z",
+            "actor": {"login": "octo-neutral"},
+            "pull_requests": [],
+        },
+        {
+            "id": 153,
+            "run_number": 33,
+            "run_attempt": 1,
+            "workflow_id": 777,
+            "name": "CI",
+            "head_branch": "main",
+            "head_sha": "sha-action-required",
+            "status": "completed",
+            "conclusion": "action_required",
+            "updated_at": "2026-04-03T12:02:00Z",
+            "actor": {"login": "octo-action-required"},
+            "pull_requests": [],
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/repos/owner/repo/actions/runs"
+        return httpx.Response(200, json={"workflow_runs": runs}, request=request)
+
+    _patch_httpx_client(monkeypatch, handler)
+    trigger = _trigger(
+        provider="github_actions",
+        repo="owner/repo",
+        conclusions=["failure"],
+        include_existing=True,
+    )
+    provider = CiRunCompletedTriggerProvider()
+    provider.initialize(trigger, _context(runtime_dir))
+
+    events = provider.poll()
+    assert [event.event_id for event in events] == [
+        "ci-trigger:github_actions:owner/repo:151:1"
+    ]
+    assert events[0].payload["conclusion"] == "failure"
+
+
 def test_github_ci_runs_suppress_initial_history_and_retry_until_acknowledged(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -354,6 +424,63 @@ def test_github_ci_runs_suppress_initial_history_and_retry_until_acknowledged(
     provider.acknowledge_published_event(second[0])
     assert provider.poll() == []
     assert token not in json.dumps(second[0].payload, sort_keys=True)
+
+
+def test_github_ci_runs_initialize_empty_first_poll_before_emitting_new_runs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    requested_runs: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/repos/owner/repo/actions/runs"
+        assert request.url.params["status"] == "completed"
+        return httpx.Response(200, json={"workflow_runs": requested_runs}, request=request)
+
+    _patch_httpx_client(monkeypatch, handler)
+    trigger = _trigger(
+        provider="github_actions",
+        repo="owner/repo",
+        include_existing=False,
+    )
+    provider = CiRunCompletedTriggerProvider()
+    provider.initialize(trigger, _context(runtime_dir))
+
+    assert provider.poll() == []
+    cursor_path = runtime_dir / "trigger-cursors-ci-runs.json"
+    cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+    stream_state = next(iter(cursor_payload["ci-trigger"]["streams"].values()))
+    assert stream_state == {
+        "initialized": True,
+        "last_completed_at": None,
+        "recent_run_keys": [],
+    }
+
+    requested_runs = [
+        {
+            "id": 251,
+            "run_number": 41,
+            "run_attempt": 1,
+            "workflow_id": 777,
+            "name": "CI",
+            "head_branch": "main",
+            "head_sha": "sha-new",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/owner/repo/actions/runs/251",
+            "run_started_at": "2026-04-03T12:05:00Z",
+            "updated_at": "2026-04-03T12:10:00Z",
+            "actor": {"login": "octo-new"},
+            "pull_requests": [],
+        }
+    ]
+
+    events = provider.poll()
+    assert [event.event_id for event in events] == [
+        "ci-trigger:github_actions:owner/repo:251:1"
+    ]
+    assert events[0].payload["completed_at"] == "2026-04-03T12:10:00Z"
 
 
 def test_ado_ci_runs_use_directory_config_fallback_and_normalize_results(

@@ -118,11 +118,10 @@ class CiRunCompletedTriggerProvider(TriggerProviderBase):
         runs = self._discover_runs(trigger)
         if stream_state is None and not trigger.include_existing:
             baseline_state = _baseline_stream_state(runs)
-            if baseline_state is not None:
-                self._cursor_store().update(
-                    trigger.id,
-                    lambda state: _seed_stream_state(state, stream_key, baseline_state),
-                )
+            self._cursor_store().update(
+                trigger.id,
+                lambda state: _seed_stream_state(state, stream_key, baseline_state),
+            )
             return []
 
         recent_run_keys = {
@@ -216,7 +215,7 @@ class CiRunCompletedTriggerProvider(TriggerProviderBase):
                         raw, workflow
                     ):
                         continue
-                    if run.conclusion is not None and run.conclusion not in trigger.conclusions:
+                    if run.conclusion not in trigger.conclusions:
                         continue
                     selected_runs.setdefault(run.run_key, run)
 
@@ -278,7 +277,7 @@ class CiRunCompletedTriggerProvider(TriggerProviderBase):
                         continue
                     if trigger.pipeline_name and run.pipeline_name != trigger.pipeline_name:
                         continue
-                    if run.conclusion is not None and run.conclusion not in trigger.conclusions:
+                    if run.conclusion not in trigger.conclusions:
                         continue
                     selected_runs.setdefault(run.run_key, run)
 
@@ -509,7 +508,6 @@ class CiRunCompletedTriggerProvider(TriggerProviderBase):
         return context.resolved_config
 
     def _stream_key(self, trigger: CiRunCompletedTriggerDefinition) -> str:
-        context = self._context()
         config = self._resolve_directory_config()
         repo = _normalize_text(trigger.repo) or "*"
         branches = ",".join(sorted(_normalize_text_list(trigger.branches))) or "*"
@@ -590,12 +588,10 @@ def _acknowledge_run(
     return state
 
 
-def _baseline_stream_state(runs: list[_NormalizedCiRun]) -> dict[str, Any] | None:
-    if not runs:
-        return None
+def _baseline_stream_state(runs: list[_NormalizedCiRun]) -> dict[str, Any]:
     return {
         "initialized": True,
-        "last_completed_at": _format_dt(max(run.completed_at for run in runs)),
+        "last_completed_at": _format_dt(max((run.completed_at for run in runs), default=None)),
         "recent_run_keys": merge_cursor_ids(
             [],
             [run.run_key for run in runs],

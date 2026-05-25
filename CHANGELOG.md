@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - CI Run Completed Trigger Fixes
+
+- Persisted initialized empty CI run cursors on first polls when history
+  suppression is enabled, so the first later completed run is emitted.
+- Rejected CI runs with unknown conclusions when applying configured conclusion
+  allowlists.
+
 ## 2026-05-25 - CI Run Completed Trigger Documentation
 
 - Documented `trigger:ci:run:completed` in the configuration reference,
