@@ -1619,6 +1619,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Promote an agent branch into a trusted host checkout."
     ),
     "effect:pr:create": "Create a pull request from a host-side checkout.",
+    "effect:event:schedule": "Schedule a one-shot internal workflow event for later delivery.",
     "query:vm:run-state": "Read the current run state for a VM-backed agent target.",
     "query:git:pr-note": "Read pull-request note context from a host checkout.",
     "query:pull-request:list": "List provider pull requests with optional status, branch, time, or tag filters.",
@@ -3036,6 +3037,26 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("event_type", "Event type", "string", required=True, bindable=True),
             _field("correlation_key", "Correlation key", "string", bindable=True),
             _field("payload", "Payload", "json", required=True, bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:event:schedule",
+        label="Schedule internal event",
+        fields=[
+            _field("event_type", "Event type", "string", required=True, bindable=True),
+            _field("correlation_key", "Correlation key", "string", bindable=True),
+            _field(
+                "payload",
+                "Payload",
+                "json",
+                required=True,
+                bindable=True,
+                json_value_type="object",
+            ),
+            _field("run_at", "Run at", "string", bindable=True),
+            _field("delay_seconds", "Delay seconds", "number", bindable=True),
+            _field("idempotency_key", "Idempotency key", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
