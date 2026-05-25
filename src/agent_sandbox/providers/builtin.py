@@ -72,6 +72,7 @@ from agent_sandbox.queries.providers.agent_artifact_text import AgentArtifactTex
 from agent_sandbox.queries.providers.ado_work_items import AdoWorkItemsQueryProvider
 from agent_sandbox.queries.providers.git_pr_note import GitPrNoteQueryProvider
 from agent_sandbox.queries.providers.issue_get import IssueGetQueryProvider
+from agent_sandbox.queries.providers.issue_list import IssueListQueryProvider
 from agent_sandbox.queries.providers.pull_request_feedback import (
     PullRequestFeedbackQueryProvider,
 )
@@ -189,6 +190,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:session:list": SessionListQueryProvider,
             "query:agent:artifact-text": AgentArtifactTextQueryProvider,
             "query:issue:get": IssueGetQueryProvider,
+            "query:issue:list": IssueListQueryProvider,
             "query:ado:work-items": AdoWorkItemsQueryProvider,
             "query:pull-request:list": PullRequestListQueryProvider,
             "query:pull-request:feedback": PullRequestFeedbackQueryProvider,

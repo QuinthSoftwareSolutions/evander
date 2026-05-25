@@ -114,6 +114,58 @@ def test_semantic_management_outputs_are_bindable() -> None:
     assert diagnostics == []
 
 
+def test_issue_list_outputs_are_bindable() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-cron-1",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "*/15 * * * *",
+            }
+        ],
+        "queries": [
+            {
+                "id": "query-issues-1",
+                "display_name": "Issue list",
+                "type": "query:issue:list",
+                "directory_path": "root/team-a",
+                "direct_only": True,
+                "states": ["Open", "In Progress"],
+                "exclude_states": ["Done"],
+                "source": "local_gui",
+                "source_type": "local_manual",
+                "tags_any": ["triage"],
+                "tags_all": ["team-a"],
+                "metadata_equals": {"priority": "high"},
+                "metadata_exists": ["owner"],
+                "metadata_prefix": {"fields.title": "Fix"},
+                "limit": 10,
+            }
+        ],
+        "effects": [
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": "Found ${{query-issues-1.count}} issues in ${{query-issues-1.issues}}",
+            }
+        ],
+        "edges": [
+            {"source_id": "trigger-cron-1", "target_id": "query-issues-1"},
+            {"source_id": "query-issues-1", "target_id": "prompt-agent"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["query-issues-1"]["issues"]["type"] == "array"
+    assert output_schemas["query-issues-1"]["count"] == {"type": "integer"}
+    assert diagnostics == []
+
+
 def test_binding_diagnostics_accept_filter_derived_outputs() -> None:
     config = {
         "triggers": [

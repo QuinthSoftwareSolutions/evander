@@ -11,6 +11,7 @@ from agent_sandbox.events.provider_models import (
     AgentArtifactTextQueryDefinition,
     GitPrNoteQueryDefinition,
     IssueGetQueryDefinition,
+    IssueListQueryDefinition,
     PullRequestListQueryDefinition,
     SessionContextQueryDefinition,
     VmRunStateQueryDefinition,
@@ -77,6 +78,7 @@ def test_default_registry_includes_known_query_types() -> None:
         "query:session:list",
         "query:agent:artifact-text",
         "query:issue:get",
+        "query:issue:list",
         "query:ado:work-items",
         "query:pull-request:list",
         "query:pull-request:feedback",
@@ -241,6 +243,21 @@ def test_issue_get_query_provider_returns_current_issue_payload(tmp_path: Path) 
 
     assert admin_service.issue_calls == [{"issue_id": "root:issue-42"}]
     assert output["metadata"]["steps"] == ["analyze", "implement"]
+
+
+def test_issue_list_query_provider_can_be_built() -> None:
+    query = IssueListQueryDefinition(
+        id="query-issues",
+        display_name="Issue list",
+        type="query:issue:list",
+    )
+
+    factory = QueryProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=_AdminServiceStub(vms=[])
+    )
+    provider = factory.build(query)
+
+    assert provider.__class__.__name__ == "IssueListQueryProvider"
 
 
 def test_agent_artifact_text_query_provider_returns_artifact_content() -> None:
