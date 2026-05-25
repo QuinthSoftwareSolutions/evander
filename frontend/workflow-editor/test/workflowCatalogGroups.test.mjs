@@ -27,6 +27,7 @@ test("groups effect node types by related functionality", () => {
     catalogNode("effect", "effect:issue:update-metadata", "Issue update metadata"),
     catalogNode("effect", "effect:ado:update-work-item", "ADO update work item"),
     catalogNode("effect", "effect:bash:script", "Bash script"),
+    catalogNode("effect", "effect:http:request", "HTTP request"),
     catalogNode("effect", "effect:artifact:publish-artifacts", "Publish artifacts"),
     catalogNode("effect", "effect:communication:send-message", "Send message"),
     catalogNode("effect", "effect:notification:send", "Send notification"),
@@ -49,6 +50,10 @@ test("groups effect node types by related functionality", () => {
       {
         label: "Shell & host scripts",
         types: ["effect:bash:script"],
+      },
+      {
+        label: "HTTP",
+        types: ["effect:http:request"],
       },
       {
         label: "Semantic store",
@@ -80,26 +85,53 @@ test("groups effect node types by related functionality", () => {
 
 test("groups trigger node types into domain families", () => {
   const groups = groupWorkflowNodeCatalogEntries([
+    catalogNode("trigger", "trigger:communication:new-message", "Communication message"),
+    catalogNode("trigger", "trigger:discord:new-message", "Discord message"),
     catalogNode("trigger", "trigger:teams:new-message", "Teams message"),
+    catalogNode("trigger", "trigger:teams:direct-message", "Teams direct message"),
+    catalogNode("trigger", "trigger:email:new-message", "Email message"),
     catalogNode("trigger", "trigger:ticket:created", "Ticket created"),
     catalogNode("trigger", "trigger:cron", "Cron"),
     catalogNode("trigger", "trigger:event", "Internal event"),
     catalogNode("trigger", "trigger:ci:run:completed", "CI run completed"),
+    catalogNode("trigger", "trigger:http:webhook", "Webhook"),
     catalogNode("trigger", "trigger:git:push", "Git push"),
   ], "trigger");
 
-  assert.deepEqual(groups.map((group) => group.label), [
-    "Scheduled",
-    "Platform events",
-    "Tickets & reviews",
-    "Communications",
-    "Git",
-  ]);
-  const gitGroup = groups.find((group) => group.label === "Git");
-  assert.deepEqual(gitGroup?.entries.map((entry) => entry.type), [
-    "trigger:ci:run:completed",
-    "trigger:git:push",
-  ]);
+  assert.deepEqual(
+    groups.map((group) => ({
+      label: group.label,
+      types: group.entries.map((entry) => entry.type),
+    })),
+    [
+      {
+        label: "Scheduled",
+        types: ["trigger:cron"],
+      },
+      {
+        label: "Platform events",
+        types: ["trigger:event", "trigger:http:webhook"],
+      },
+      {
+        label: "Tickets & reviews",
+        types: ["trigger:ticket:created"],
+      },
+      {
+        label: "Communications",
+        types: [
+          "trigger:communication:new-message",
+          "trigger:discord:new-message",
+          "trigger:email:new-message",
+          "trigger:teams:direct-message",
+          "trigger:teams:new-message",
+        ],
+      },
+      {
+        label: "Git",
+        types: ["trigger:ci:run:completed", "trigger:git:push"],
+      },
+    ],
+  );
 });
 
 test("groups pull request query nodes with git metadata", () => {

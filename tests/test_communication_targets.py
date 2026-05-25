@@ -10,7 +10,9 @@ from agent_sandbox.messaging.targets import (
     CommunicationTargetsConfig,
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
+    validate_communication_new_message_trigger_targets,
 )
+from agent_sandbox.events.provider_models import CommunicationNewMessageTriggerDefinition
 
 
 def test_communication_targets_reject_duplicate_ids() -> None:
@@ -169,3 +171,88 @@ def test_communication_targets_resolve_directory_inheritance_and_disabled_overri
     assert resolved.by_id()["teams-primary"].address == "team-b/channel-2"
     assert resolved.by_id()["teams-primary"].policy.capabilities == ["reply"]
     assert "discord-ops" not in resolved.by_id()
+
+
+def test_communication_trigger_target_validation_accepts_read_capable_targets(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    directory_store = DirectoryStore(runtime_dir / "directories.json")
+    repository = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(runtime_dir)
+    )
+    repository.write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "teams-primary",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team-a/channel-1",
+                    "policy": {"capabilities": ["read"]},
+                },
+                {
+                    "id": "discord-ops",
+                    "provider": "discord",
+                    "kind": "discord",
+                    "address": "123456789012345678",
+                    "policy": {"capabilities": ["read"]},
+                },
+            ]
+        },
+    )
+
+    trigger = CommunicationNewMessageTriggerDefinition.model_validate(
+        {
+            "id": "comm-1",
+            "display_name": "Communication",
+            "type": "trigger:communication:new-message",
+            "communication_target_ids": ["teams-primary", "discord-ops"],
+        }
+    )
+
+    validate_communication_new_message_trigger_targets(
+        trigger,
+        runtime_dir=runtime_dir,
+        directory_store=directory_store,
+    )
+
+
+def test_communication_trigger_target_validation_rejects_teams_user_targets(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    directory_store = DirectoryStore(runtime_dir / "directories.json")
+    repository = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(runtime_dir)
+    )
+    repository.write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "teams-user",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "user:operator@example.com",
+                    "policy": {"capabilities": ["read"]},
+                }
+            ]
+        },
+    )
+    trigger = CommunicationNewMessageTriggerDefinition.model_validate(
+        {
+            "id": "comm-1",
+            "display_name": "Communication",
+            "type": "trigger:communication:new-message",
+            "communication_target_ids": ["teams-user"],
+        }
+    )
+
+    with pytest.raises(ValueError, match="Teams user target"):
+        validate_communication_new_message_trigger_targets(
+            trigger,
+            runtime_dir=runtime_dir,
+            directory_store=directory_store,
+        )

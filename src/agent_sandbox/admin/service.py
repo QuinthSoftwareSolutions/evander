@@ -198,9 +198,9 @@ from agent_sandbox.workflow.validation import (
     validate_workflow_binding_diagnostics,
 )
 from agent_sandbox.services import (
-    normalize_teams_chat_targets,
-    normalize_teams_target,
-    normalize_teams_user_target,
+    normalize_teams_chat_or_target_refs,
+    normalize_teams_channel_or_target_refs,
+    normalize_teams_user_or_target_refs,
 )
 from agent_sandbox.worker.security import sanitize_text
 
@@ -1418,7 +1418,9 @@ def _communication_target_option_metadata(
         parsed_target = parse_teams_target(address)
         metadata["teams_target_kind"] = parsed_target.kind
         metadata["teams_target_normalized"] = parsed_target.normalized
-    if purpose == "send-message":
+    if purpose == "read-message":
+        metadata["required_capability"] = "read"
+    elif purpose == "send-message":
         metadata["thread_id"] = {
             "top_level": {
                 "supported": "write" in capabilities,
@@ -1524,9 +1526,60 @@ def _field(
     )
 
 
+def _pull_request_trigger_fields() -> list[WorkflowEditorFieldDefinition]:
+    return [
+        _field(
+            "provider",
+            "Provider",
+            "enum",
+            required=True,
+            options=[
+                _field_option("local", "Local"),
+                _field_option("github", "GitHub"),
+                _field_option("ado", "Azure DevOps"),
+            ],
+        ),
+        _field(
+            "repo",
+            "Repo",
+            "string",
+            description=(
+                "Set a repo to enable explicit Azure DevOps PR polling. Leave blank to use "
+                "legacy pr-map compatibility."
+            ),
+        ),
+        _field("directory_path", "Directory path", "string"),
+        _field("organization_url", "Organization URL", "string"),
+        _field("project", "Project", "string"),
+        _field("status", "Status", "string"),
+        _field("creator_id", "Creator ID", "string"),
+        _field("reviewer_id", "Reviewer ID", "string"),
+        _field("source_ref_name", "Source ref", "string"),
+        _field("target_ref_name", "Target ref", "string"),
+        _field("source_repository_id", "Source repository ID", "string"),
+        _field("repository_id", "Repository ID", "string"),
+        _field("min_time", "Min time", "string"),
+        _field("max_time", "Max time", "string"),
+        _field("query_time_range_type", "Time range type", "string"),
+        _field("include_links", "Include links", "boolean"),
+        _field("max_comment_length", "Max comment length", "number"),
+        _field(
+            "tags",
+            "Tags",
+            "string",
+            description="Tag expression with and, or, not, and parentheses.",
+            placeholder="(TagA or TagB) and not TagC",
+        ),
+        _field("top", "Top", "number"),
+        _field("skip", "Skip", "number"),
+        _field("cursor", "Cursor", "string"),
+    ]
+
+
 _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:cron": "Start a workflow on a recurring cron schedule.",
     "trigger:event": "Start when an internal workflow event is emitted.",
+    "trigger:http:webhook": "Start from a signed HTTP webhook delivered to a public endpoint.",
     "trigger:ticket:created": "Start when a tracked ticket is created.",
     "trigger:ticket:changed": "Start when a tracked ticket changes state or metadata.",
     "trigger:issue:comment-created": "Start when a tracked issue receives a new comment.",
@@ -1537,8 +1590,14 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:discord:new-message": (
         "Start from new Discord messages that match the configured filters."
     ),
+    "trigger:communication:new-message": (
+        "Start from new Teams or Discord messages on declared communication targets."
+    ),
     "trigger:teams:new-message": (
         "Start from new Microsoft Teams messages that match the configured targets."
+    ),
+    "trigger:teams:direct-message": (
+        "Start from allowlisted one-on-one Microsoft Teams direct messages."
     ),
     "trigger:email:new-message": (
         "Start from newly ingested email messages for the configured mailbox scope."
@@ -1586,6 +1645,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:semantic:upsert": "Embed one text string and upsert it as one Qdrant point.",
     "effect:semantic:delete": "Delete semantic points by explicit point IDs.",
     "effect:bash:script": "Run a host-side Bash script from the effect orchestrator.",
+    "effect:http:request": (
+        "Perform a host-side raw HTTP GET, POST, or PUT request with URL allowlist control."
+    ),
     "effect:vm:exec": "Run a shell command inside a VM-backed agent target.",
     "effect:vm:copy-files": "Copy rendered file content into a VM-backed agent target.",
     "effect:vm:delete-files": "Delete files from a VM-backed agent target.",
@@ -1622,6 +1684,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
         "Promote an agent branch into a trusted host checkout."
     ),
     "effect:pr:create": "Create a pull request from a host-side checkout.",
+    "effect:event:schedule": "Schedule a one-shot internal workflow event for later delivery.",
     "query:vm:run-state": "Read the current run state for a VM-backed agent target.",
     "query:git:pr-note": "Read pull-request note context from a host checkout.",
     "query:pull-request:list": "List provider pull requests with optional status, branch, time, or tag filters.",
@@ -1687,6 +1750,36 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         fields=[
             _field("event_type", "Event type", "string", required=True),
             _field("correlation_key", "Correlation key", "string"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:http:webhook",
+        label="Webhook",
+        fields=[
+            _field(
+                "slug",
+                "Slug",
+                "string",
+                required=True,
+                description="Public webhook path segment. Must match [A-Za-z0-9_.-]+.",
+                placeholder="build-notify",
+            ),
+            _field(
+                "secret_env",
+                "Secret env",
+                "string",
+                required=True,
+                description="Environment variable that stores the shared webhook HMAC secret.",
+                placeholder="WEBHOOK_SECRET",
+            ),
+            _field(
+                "event_type",
+                "Event type",
+                "string",
+                description="Defaults to webhook.<slug> when omitted.",
+                placeholder="webhook.build-notify",
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -1801,6 +1894,74 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="trigger",
+        type="trigger:communication:new-message",
+        label="Communication message",
+        fields=[
+            _field(
+                "communication_target_ids",
+                "Communication targets",
+                "string_list",
+                required=True,
+                description=(
+                    "Directory-scoped Teams channel/chat or Discord channel targets with "
+                    "read capability. The trigger listens only to explicitly selected targets."
+                ),
+            ),
+            _field(
+                "directory_path",
+                "Directory path",
+                "string",
+                placeholder="root",
+                default_value="root",
+            ),
+            _field(
+                "author_ids",
+                "Author IDs",
+                "string_list",
+                description="Optional provider-native author/user IDs to allow.",
+            ),
+            _field(
+                "content_contains",
+                "Content contains",
+                "string",
+                description="Optional substring filter applied to message content.",
+            ),
+            _field(
+                "case_sensitive",
+                "Case sensitive",
+                "boolean",
+                default_value=False,
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:teams:direct-message",
+        label="Teams direct message",
+        fields=[
+            _field(
+                "sender_user_ids",
+                "Sender user IDs",
+                "string_list",
+                required=True,
+                description=(
+                    "Microsoft Graph user IDs allowed to wake this workflow from one-on-one "
+                    "Teams chats."
+                ),
+            ),
+            _field(
+                "message_filter",
+                "Message filter",
+                "json",
+                description=(
+                    'Optional wake filter, for example '
+                    '{"content":{"contains":"literal text","case_sensitive":false}}.'
+                ),
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
         type="trigger:email:new-message",
         label="Email message",
         fields=[
@@ -1824,41 +1985,13 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         kind="trigger",
         type="trigger:pull-request:new-feedback",
         label="PR feedback",
-        fields=[
-            _field(
-                "provider",
-                "Provider",
-                "enum",
-                required=True,
-                options=[
-                    _field_option("local", "Local"),
-                    _field_option("github", "GitHub"),
-                    _field_option("ado", "Azure DevOps"),
-                ],
-            ),
-            _field("organization_url", "Organization URL", "string"),
-            _field("project", "Project", "string"),
-        ],
+        fields=_pull_request_trigger_fields(),
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="trigger",
         type="trigger:pull-request:completed",
         label="PR completed",
-        fields=[
-            _field(
-                "provider",
-                "Provider",
-                "enum",
-                required=True,
-                options=[
-                    _field_option("local", "Local"),
-                    _field_option("github", "GitHub"),
-                    _field_option("ado", "Azure DevOps"),
-                ],
-            ),
-            _field("organization_url", "Organization URL", "string"),
-            _field("project", "Project", "string"),
-        ],
+        fields=_pull_request_trigger_fields(),
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="trigger",
@@ -2987,6 +3120,72 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="effect",
+        type="effect:http:request",
+        label="HTTP request",
+        fields=[
+            _field(
+                "method",
+                "Method",
+                "enum",
+                bindable=True,
+                default_value="GET",
+                options=[
+                    _field_option("GET", "GET"),
+                    _field_option("POST", "POST"),
+                    _field_option("PUT", "PUT"),
+                ],
+            ),
+            _field(
+                "url",
+                "URL",
+                "string",
+                required=True,
+                bindable=True,
+                placeholder="https://api.example.test/items",
+            ),
+            _field(
+                "allowed_url_patterns",
+                "Allowed URL patterns",
+                "string_list",
+                bindable=True,
+                default_value=["*"],
+                placeholder="https://api.example.test/*",
+                description=(
+                    "Shell-style URL or host patterns allowed for this request. "
+                    "Use '*' to allow any HTTP or HTTPS target."
+                ),
+            ),
+            _field(
+                "payload",
+                "Payload",
+                "json",
+                bindable=True,
+                json_value_type="object",
+                description="Optional JSON request body sent for POST or PUT requests.",
+            ),
+            _field(
+                "headers",
+                "Headers",
+                "json",
+                bindable=True,
+                json_value_type="object",
+                description="Optional request headers as a JSON object.",
+            ),
+            _field("timeout_seconds", "Timeout seconds", "number", bindable=True),
+            _field(
+                "check",
+                "Check status",
+                "boolean",
+                bindable=True,
+                default_value=False,
+                description=(
+                    "When enabled, non-2xx responses raise after response details are captured."
+                ),
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
         type="effect:vm:exec",
         label="VM exec",
         fields=[
@@ -3129,6 +3328,26 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("event_type", "Event type", "string", required=True, bindable=True),
             _field("correlation_key", "Correlation key", "string", bindable=True),
             _field("payload", "Payload", "json", required=True, bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:event:schedule",
+        label="Schedule internal event",
+        fields=[
+            _field("event_type", "Event type", "string", required=True, bindable=True),
+            _field("correlation_key", "Correlation key", "string", bindable=True),
+            _field(
+                "payload",
+                "Payload",
+                "json",
+                required=True,
+                bindable=True,
+                json_value_type="object",
+            ),
+            _field("run_at", "Run at", "string", bindable=True),
+            _field("delay_seconds", "Delay seconds", "number", bindable=True),
+            _field("idempotency_key", "Idempotency key", "string", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -4947,7 +5166,7 @@ def _build_issue_session_manifest(
         teams_channel_allowlist=_normalize_teams_channel_allowlist(
             teams_channel_allowlist or [], field_name="teams_channel_allowlist"
         ),
-        teams_chat_allowlist=normalize_teams_chat_targets(teams_chat_allowlist),
+        teams_chat_allowlist=normalize_teams_chat_or_target_refs(teams_chat_allowlist),
         teams_user_allowlist=_normalize_teams_user_allowlist(
             teams_user_allowlist or [], field_name="teams_user_allowlist"
         ),
@@ -5063,31 +5282,15 @@ def _normalize_plain_string_list(value: object, *, field_name: str) -> list[str]
 
 
 def _normalize_teams_channel_allowlist(value: object, *, field_name: str) -> list[str]:
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for target in _normalize_plain_string_list(value, field_name=field_name):
-        normalized_target = normalize_teams_target(target)
-        if normalized_target.startswith("user:"):
-            raise ValueError(
-                f"{field_name} accepts channel/chat targets only; use teams_user_allowlist for user targets"
-            )
-        if normalized_target in seen:
-            continue
-        seen.add(normalized_target)
-        normalized.append(normalized_target)
-    return normalized
+    return normalize_teams_channel_or_target_refs(
+        _normalize_plain_string_list(value, field_name=field_name)
+    )
 
 
 def _normalize_teams_user_allowlist(value: object, *, field_name: str) -> list[str]:
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for target in _normalize_plain_string_list(value, field_name=field_name):
-        normalized_target = normalize_teams_user_target(target)
-        if normalized_target in seen:
-            continue
-        seen.add(normalized_target)
-        normalized.append(normalized_target)
-    return normalized
+    return normalize_teams_user_or_target_refs(
+        _normalize_plain_string_list(value, field_name=field_name)
+    )
 
 
 COMMUNICATION_FILE_SESSION_POLICY_FIELDS: tuple[str, ...] = (
@@ -5215,7 +5418,7 @@ def _session_policy_update_from_payload(
             field_name=teams_field,
         )
     if "teams_chat_allowlist" in payload:
-        update["teams_chat_allowlist"] = normalize_teams_chat_targets(
+        update["teams_chat_allowlist"] = normalize_teams_chat_or_target_refs(
             _normalize_plain_string_list(
                 payload.get("teams_chat_allowlist"), field_name="teams_chat_allowlist"
             )
@@ -12006,6 +12209,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     continue
                 if "notify" not in capabilities:
                     continue
+            elif purpose == "read-message":
+                if provider not in {"teams", "discord"}:
+                    continue
+                if "read" not in capabilities:
+                    continue
+                if _communication_target_shape(target) == "teams_user":
+                    continue
             else:
                 continue
             option = _communication_target_option(target, purpose=purpose)
@@ -12023,6 +12233,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     ) -> list[WorkflowEditorFieldOption]:
         return self._communication_target_options(directory_path, purpose="notification")
 
+    def _communication_read_target_options(
+        self, directory_path: str | None
+    ) -> list[WorkflowEditorFieldOption]:
+        return self._communication_target_options(directory_path, purpose="read-message")
+
     def _read_workflow_editor_catalog(
         self, directory_path: str | None = None
     ) -> WorkflowEditorCatalogPayload:
@@ -12033,6 +12248,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
         communication_notification_target_options = (
             self._communication_notification_target_options(directory_path)
+        )
+        communication_read_target_options = self._communication_read_target_options(
+            directory_path
         )
         nodes: list[WorkflowEditorNodeCatalogEntry] = []
         for entry in _WORKFLOW_EDITOR_NODE_CATALOG:
@@ -12064,6 +12282,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 node.fields = [
                     field.model_copy(update={"options": communication_notification_target_options})
                     if field.key == "communication_target_id"
+                    else field
+                    for field in node.fields
+                ]
+            if node.type == "trigger:communication:new-message":
+                node.fields = [
+                    field.model_copy(update={"options": communication_read_target_options})
+                    if field.key == "communication_target_ids"
                     else field
                     for field in node.fields
                 ]

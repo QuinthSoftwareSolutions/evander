@@ -9,6 +9,10 @@ import pytest
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directories import DirectoryService
+from agent_sandbox.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 from agent_sandbox.models import SessionManifest, TeamsMessageEnvelope, ToolName
 from agent_sandbox.messaging.teams_ingest import build_teams_ingest_worker
 
@@ -34,6 +38,20 @@ def patch_worker_httpx_client(
         "agent_sandbox.messaging.teams_ingest.httpx.Client",
         lambda timeout: real_client(timeout=timeout, transport=transport),
     )
+
+
+def write_root_communication_targets(worker, targets: list[dict[str, object]]) -> None:
+    worker.runtime.directories.ensure_root()
+    repository = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(worker.config.runtime_dir)
+    )
+    repository.write_overlay("root", {"targets": targets})
+
+
+def write_trigger_config(project_dir: Path, triggers: list[dict[str, object]]) -> None:
+    trigger_config_path = project_dir / "config" / "trigger-orchestrator" / "config.json"
+    trigger_config_path.parent.mkdir(parents=True, exist_ok=True)
+    trigger_config_path.write_text(json.dumps({"triggers": triggers}), encoding="utf-8")
 
 
 def test_build_teams_ingest_worker_uses_worker_config_and_normalizes_directories(
@@ -224,6 +242,336 @@ def test_teams_ingest_worker_polls_chat_targets_from_chat_allowlist(
     assert worker.store.list_all_messages(channel_targets=["chat:chat-1"])
     assert worker.store.get_cursor("chat:chat-1") == "chat:chat-1/msg-1"
     assert result.channel_targets_polled == 1
+
+
+def test_teams_ingest_worker_resolves_communication_target_allowlists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/teams/team-a/channels/channel-1/messages"):
+            return httpx.Response(200, json={"value": []}, request=request)
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+        }
+    )
+    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    ensure_directory(worker, "root/team-a")
+    write_root_communication_targets(
+        worker,
+        [
+            {
+                "id": "teams-inbox",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["read"]},
+            }
+        ],
+    )
+    worker.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["teams-inbox"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    result = worker.run_once()
+
+    assert [request.url.path for request in requests] == [
+        "/v1.0/teams/team-a/channels/channel-1/messages"
+    ]
+    assert result.channel_targets_polled == 1
+
+
+def test_teams_ingest_worker_polls_allowlisted_direct_messages_from_configured_trigger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_trigger_config(
+        tmp_path,
+        [
+            {
+                "id": "teams-dm-trigger",
+                "display_name": "Teams direct message",
+                "type": "trigger:teams:direct-message",
+                "sender_user_ids": ["user-allowed"],
+            }
+        ],
+    )
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/me/chats"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {"id": "dm-chat", "chatType": "oneOnOne"},
+                        {"id": "group-chat", "chatType": "group"},
+                    ]
+                },
+                request=request,
+            )
+        if request.url.path.endswith("/chats/dm-chat/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-1",
+                            "createdDateTime": "2026-05-25T11:00:00Z",
+                            "body": {"content": "hello", "contentType": "text"},
+                            "from": {"user": {"id": "user-allowed", "displayName": "Ada"}},
+                        },
+                        {
+                            "id": "msg-2",
+                            "createdDateTime": "2026-05-25T11:01:00Z",
+                            "body": {"content": "ignored", "contentType": "text"},
+                            "from": {"user": {"id": "user-other", "displayName": "Grace"}},
+                        },
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+        }
+    )
+    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    ensure_directory(worker, "root/team-a")
+    worker.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    result = worker.run_once()
+
+    assert [request.url.path for request in requests] == [
+        "/v1.0/me/chats",
+        "/v1.0/chats/dm-chat/messages",
+    ]
+    stored = worker.store.list_all_messages(channel_targets=["chat:dm-chat"])
+    assert [message.cursor for message in stored] == ["chat:dm-chat/msg-1"]
+    assert stored[0].metadata["target_type"] == "direct_message"
+    assert stored[0].metadata["chat_type"] == "oneOnOne"
+    assert worker.store.get_cursor("chat:dm-chat") == "chat:dm-chat/msg-2"
+    assert result.channel_targets_polled == 0
+    assert result.direct_chats_polled == 1
+
+
+def test_teams_ingest_worker_polls_direct_messages_without_active_sessions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_trigger_config(
+        tmp_path,
+        [
+            {
+                "id": "teams-dm-trigger",
+                "display_name": "Teams direct message",
+                "type": "trigger:teams:direct-message",
+                "sender_user_ids": ["user-allowed"],
+            }
+        ],
+    )
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/me/chats"):
+            return httpx.Response(
+                200,
+                json={"value": [{"id": "dm-chat", "chatType": "oneOnOne"}]},
+                request=request,
+            )
+        if request.url.path.endswith("/chats/dm-chat/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-1",
+                            "createdDateTime": "2026-05-25T11:00:00Z",
+                            "body": {"content": "cold start", "contentType": "text"},
+                            "from": {"user": {"id": "user-allowed", "displayName": "Ada"}},
+                        }
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+        }
+    )
+    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+
+    result = worker.run_once()
+
+    assert [request.url.path for request in requests] == [
+        "/v1.0/me/chats",
+        "/v1.0/chats/dm-chat/messages",
+    ]
+    stored = worker.store.list_all_messages(channel_targets=["chat:dm-chat"])
+    assert [message.cursor for message in stored] == ["chat:dm-chat/msg-1"]
+    assert stored[0].metadata["target_type"] == "direct_message"
+    assert result.directories_polled == 1
+    assert result.sessions_seen == 0
+    assert result.direct_chats_polled == 1
+
+
+def test_teams_ingest_worker_skips_disabled_direct_message_triggers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_trigger_config(
+        tmp_path,
+        [
+            {
+                "id": "teams-dm-trigger",
+                "display_name": "Teams direct message",
+                "type": "trigger:teams:direct-message",
+                "enabled": False,
+                "sender_user_ids": ["user-allowed"],
+            }
+        ],
+    )
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"value": []}, request=request)
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+        }
+    )
+    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+
+    result = worker.run_once()
+
+    assert requests == []
+    assert result.directories_polled == 0
+    assert result.direct_chats_polled == 0
+
+
+def test_teams_ingest_worker_marks_allowlisted_one_on_one_chat_as_direct_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_trigger_config(
+        tmp_path,
+        [
+            {
+                "id": "teams-dm-trigger",
+                "display_name": "Teams direct message",
+                "type": "trigger:teams:direct-message",
+                "sender_user_ids": ["user-allowed"],
+            }
+        ],
+    )
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/me/chats"):
+            return httpx.Response(
+                200,
+                json={"value": [{"id": "dm-chat", "chatType": "oneOnOne"}]},
+                request=request,
+            )
+        if request.url.path.endswith("/chats/dm-chat/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-1",
+                            "createdDateTime": "2026-05-25T11:00:00Z",
+                            "body": {"content": "wake me", "contentType": "text"},
+                            "from": {"user": {"id": "user-allowed", "displayName": "Ada"}},
+                        },
+                        {
+                            "id": "msg-2",
+                            "createdDateTime": "2026-05-25T11:01:00Z",
+                            "body": {"content": "normal chat read", "contentType": "text"},
+                            "from": {"user": {"id": "user-other", "displayName": "Grace"}},
+                        },
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+        }
+    )
+    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    ensure_directory(worker, "root/team-a")
+    worker.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_chat_allowlist=["chat:dm-chat"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    result = worker.run_once()
+
+    assert [request.url.path for request in requests] == [
+        "/v1.0/me/chats",
+        "/v1.0/chats/dm-chat/messages",
+    ]
+    stored = worker.store.list_all_messages(channel_targets=["chat:dm-chat"])
+    assert [message.cursor for message in stored] == [
+        "chat:dm-chat/msg-1",
+        "chat:dm-chat/msg-2",
+    ]
+    assert {message.metadata["target_type"] for message in stored} == {"direct_message"}
+    assert {message.metadata["chat_type"] for message in stored} == {"oneOnOne"}
+    assert worker.store.get_cursor("chat:dm-chat") == "chat:dm-chat/msg-2"
+    assert result.channel_targets_polled == 1
+    assert result.direct_chats_polled == 1
 
 
 def test_teams_ingest_worker_uses_history_page_budget_per_target(
