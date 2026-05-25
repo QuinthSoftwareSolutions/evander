@@ -36,7 +36,11 @@ from agent_sandbox.gate_runtime import (
     GateRuntimeError,
     require_object_payload,
 )
-from agent_sandbox.orchestration.host_polling import HostFileLockManager, HostSleeper
+from agent_sandbox.orchestration.host_polling import (
+    HostFileLockManager,
+    HostWakeSleeper,
+    wake_socket_path_for_lock,
+)
 from agent_sandbox.orchestration.adapters import (
     EffectCompletionPublisherAdapter,
     EffectDependencyResolverAdapter,
@@ -351,6 +355,7 @@ class EffectOrchestratorWorker:
         self._lifecycle_reconciliation_hooks = resolved_wiring.lifecycle_reconciliation_hooks
         self._completion_dispatch_hooks = resolved_wiring.completion_dispatch_hooks
         self.event_queue.reset_inflight()
+        self._wake_sleeper = HostWakeSleeper(wake_socket_path_for_lock(self.lock_path))
         self._kernel = PollingOrchestratorKernel(
             config=PollingKernelConfig(
                 poll_interval_seconds=self.worker_config.poll_interval_seconds,
@@ -358,9 +363,10 @@ class EffectOrchestratorWorker:
                 lock_path=self.lock_path,
             ),
             lock_manager=HostFileLockManager(),
-            sleeper=HostSleeper(),
+            sleeper=self._wake_sleeper,
             run_cycle=self.run_once,
             get_sleep_seconds=lambda result: result.next_sleep_seconds,
+            on_start=self._wake_sleeper.start,
         )
 
     def run_forever(self) -> None:
@@ -468,6 +474,7 @@ class EffectOrchestratorWorker:
                         store_wiring.workflow_config_snapshot_store
                     )
                     self.queued_agent_prompt_store = store_wiring.queued_agent_prompt_store
+                    self._wake_sleeper.set_path(wake_socket_path_for_lock(self.lock_path))
                     self._kernel.config = PollingKernelConfig(
                         poll_interval_seconds=self.worker_config.poll_interval_seconds,
                         jitter_seconds=self.worker_config.jitter_seconds,

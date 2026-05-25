@@ -107,7 +107,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
 def create_app(service: AdminService) -> Starlette:
     dist_dir = _dist_dir()
-    admin_user_store = AdminWebUserStore(service.config.runtime_dir / "admin-web-users.json")
+    admin_user_store = AdminWebUserStore(
+        service.config.runtime_dir / "admin-web.db",
+        legacy_json_path=service.config.runtime_dir / "admin-web-users.json",
+    )
     auth = AdminWebAuth(AdminWebConfig.from_env(), user_store=admin_user_store)
     dashboard_cache = AdminWebJsonResponseCache()
 
