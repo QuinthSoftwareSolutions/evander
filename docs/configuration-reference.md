@@ -107,6 +107,7 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `event_queue_store_path` | `config/trigger-orchestrator/config.json` | Legacy JSON trigger queue path used when `orchestration_store_backend` is `json` and as the migration source. |
 | `event_queue_cursor_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator event queue cursor/checkpoint store path. |
 | `workflow_event_journal_path` | `config/trigger-orchestrator/config.json` | Legacy JSONL workflow event journal path used when `orchestration_store_backend` is `json` and as the migration source. |
+| `scheduled_internal_event_store_path` | `config/trigger-orchestrator/config.json` | Durable one-shot scheduled internal event store path used by `effect:event:schedule`. Defaults to `runtime/scheduled-internal-events.json`. |
 | `workflow_packs` | `config/trigger-orchestrator/config.json` | Ordered workflow-pack filenames under `config/workflow-packs/` to compose into executable IR. |
 | `workflow_ir` | `config/trigger-orchestrator/config.json` | Optional inline IR overlay (`version`, `nodes`, `edges`) merged after pack composition. |
 | `workflow_graphs` | `config/trigger-orchestrator/config.json` | Optional editor metadata for connected graphs when using inline/non-pack workflows (`id`, `name`, `description`, `directory_paths`, `user_ids`, `node_ids`). `user_ids` are ownership/audit metadata, not a visibility boundary. Pack-backed workflows store the same metadata as `graphs` inside the pack file. |
@@ -197,7 +198,10 @@ The HTTP ingress requires either a bearer token minted by a signed-in Admin Web 
 configured machine token from `AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS`. Machine tokens are
 configured as comma-separated `source-name:token` entries; the matching source name is recorded on
 the published event. Token values must not contain commas or colons. The ingress accepts arbitrary
-JSON-object payloads for workflow-specific data.
+JSON-object payloads for workflow-specific data. Scheduled internal events are first written to
+`scheduled_internal_event_store_path` and then published into the normal internal event store by
+the trigger orchestrator when they become due, so the end-to-end delay is bounded by the trigger
+orchestrator poll interval.
 
 `trigger:http:webhook` exposes a public `POST /api/workflow-webhooks/{slug}` ingress for a single
 active webhook trigger. The configured `slug` must match `[A-Za-z0-9_.-]+`, be unique across the
@@ -372,6 +376,7 @@ Type-specific keys:
 | `effect:http:request` | `url` | `method`, `allowed_url_patterns`, `payload`, `headers`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
+| `effect:event:schedule` | `event_type`, `payload`; exactly one of `run_at`, `delay_seconds` | `correlation_key`, `idempotency_key`, `outputs` |
 | `effect:issue:update-state` | `issue_id`, `state` | `sync_proxy_cache`, `outputs` |
 | `effect:issue:upsert-ado-proxy` | one of `item`, `items` | `directory_path`, `organization_url`, `project`, `repo_source`, `yaml_output_dir`, `outputs` |
 | `effect:pull-request:update` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `title`, `description`, `status`, `add_tags`, `remove_tags`, `expected_statuses`, `outputs` |
@@ -398,6 +403,15 @@ destination branch exists and its tip is not contained in the local branch, the
 effect returns `success: false` with `reason: destination_branch_ahead` and does
 not push. Use a downstream `gate:filter` on `success == false` when an agent
 should be prompted to fetch and merge the destination branch.
+
+`effect:event:schedule` stores a one-shot pending scheduled internal event
+instead of publishing immediately. It validates the event type, keeps the
+payload as a JSON object, and uses either an absolute `run_at` timestamp or a
+relative `delay_seconds` value to compute the due time. Duplicate
+`idempotency_key` values reuse the original schedule record unchanged, which
+keeps retries from mutating the first submission. The trigger orchestrator
+publishes due scheduled events during its normal cycle, so delivery latency is
+bounded by its `poll_interval_seconds`.
 
 `effect:agent:prompt` and `effect:agent:enqueue-prompt` have two named outgoing
 ports: `started` emits after the prompt is dispatched, and `completed` emits

@@ -114,6 +114,59 @@ def test_semantic_management_outputs_are_bindable() -> None:
     assert diagnostics == []
 
 
+def test_schedule_event_outputs_are_bindable() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-cron-1",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "*/15 * * * *",
+            }
+        ],
+        "effects": [
+            {
+                "id": "schedule-event-1",
+                "display_name": "Schedule event",
+                "type": "effect:event:schedule",
+                "event_type": "custom.operator_event",
+                "payload": {"source": "workflow"},
+                "delay_seconds": 60,
+            },
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": (
+                    "Scheduled ${{schedule-event-1.schedule_id}} for "
+                    "${{schedule-event-1.run_at}} with status ${{schedule-event-1.status}}"
+                ),
+            },
+        ],
+        "queries": [],
+        "edges": [
+            {"source_id": "trigger-cron-1", "target_id": "schedule-event-1"},
+            {"source_id": "schedule-event-1", "target_id": "prompt-agent"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["schedule-event-1"] == {
+        "success": {"type": "boolean"},
+        "created": {"type": "boolean"},
+        "schedule_id": {"type": "string"},
+        "event_type": {"type": "string"},
+        "correlation_key": {"type": ["string", "null"]},
+        "run_at": {"type": "string"},
+        "status": {"type": "string"},
+        "payload": {"type": "object"},
+    }
+    assert diagnostics == []
+
+
 def test_http_request_outputs_are_bindable() -> None:
     config = {
         "triggers": [

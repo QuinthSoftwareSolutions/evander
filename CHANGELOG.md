@@ -5,6 +5,24 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - Scheduled Event Hot Reload Fixes
+
+- Fixed `effect:event:schedule` so hot-reloaded
+  `scheduled_internal_event_store_path` values are honored without restarting
+  the effect orchestrator.
+- Rejected non-finite or out-of-range `delay_seconds` values before schedule
+  timestamp construction so invalid workflow input records a failed effect
+  instead of aborting the worker cycle.
+
+## 2026-05-25 - Scheduled Internal Event Documentation
+
+- Documented `effect:event:schedule` as a one-shot scheduled internal event
+  effect with `event_type`, `payload`, and exactly one of `run_at` or
+  `delay_seconds`.
+- Clarified the durable `scheduled_internal_event_store_path` default and noted
+  that the trigger orchestrator publishes due schedule records during its
+  normal poll cycle.
+
 ## 2026-05-25 - Workflow Webhook Idempotency Fix
 
 - Changed signed workflow webhook ingress to publish every valid delivery as a

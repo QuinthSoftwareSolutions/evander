@@ -398,6 +398,16 @@ _EFFECT_OUTPUT_SCHEMAS = {
         "correlation_key": {"type": ["string", "null"]},
         "created_at": {"type": "string"},
     },
+    "effect:event:schedule": {
+        "success": {"type": "boolean"},
+        "created": {"type": "boolean"},
+        "schedule_id": {"type": "string"},
+        "event_type": {"type": "string"},
+        "correlation_key": {"type": ["string", "null"]},
+        "run_at": {"type": "string"},
+        "status": {"type": "string"},
+        "payload": {"type": "object"},
+    },
     "effect:vm:create": {
         "provider": {"type": "string"},
         "session_id": {"type": "string"},

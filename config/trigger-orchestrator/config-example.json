@@ -21,6 +21,7 @@
   },
   "runtime_dir": "runtime",
   "workflow_event_journal_path": "runtime/workflow-events.jsonl",
+  "scheduled_internal_event_store_path": "runtime/scheduled-internal-events.json",
   "workflow_packs": [
     "agent-default.v1.json"
   ],

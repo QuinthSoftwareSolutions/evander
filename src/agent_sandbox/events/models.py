@@ -344,6 +344,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         ),
         "effect:git:promote-agent-branch": provider_models.GitPromoteAgentBranchEffectDefinition,
         "effect:pr:create": provider_models.PrCreateEffectDefinition,
+        "effect:event:schedule": provider_models.EventScheduleEffectDefinition,
         "query:vm:run-state": provider_models.VmRunStateQueryDefinition,
         "query:git:pr-note": provider_models.GitPrNoteQueryDefinition,
         "query:session-context": provider_models.SessionContextQueryDefinition,

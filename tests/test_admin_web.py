@@ -447,6 +447,23 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "correlation_key",
         "payload",
     ]
+    event_schedule = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:event:schedule"
+    )
+    assert [field["key"] for field in event_schedule["fields"]] == [
+        "event_type",
+        "correlation_key",
+        "payload",
+        "run_at",
+        "delay_seconds",
+        "idempotency_key",
+    ]
+    assert event_schedule["fields"][0]["bindable"] is True
+    assert event_schedule["fields"][2]["required"] is True
+    assert event_schedule["fields"][2]["json_value_type"] == "object"
+    assert event_schedule["fields"][3]["bindable"] is True
+    assert event_schedule["fields"][4]["bindable"] is True
+    assert event_schedule["fields"][5]["bindable"] is True
     communication = next(
         node
         for node in catalog_payload["nodes"]

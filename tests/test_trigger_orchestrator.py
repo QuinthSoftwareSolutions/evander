@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from agent_sandbox.events.internal import InternalEventBus
+from agent_sandbox.events.scheduled import ScheduledInternalEventStore
 from agent_sandbox.orchestration.host_polling import HostFileLockManager
 from agent_sandbox.daemons.trigger_orchestrator import (
     TriggerOrchestratorCycleResult,
@@ -914,6 +916,193 @@ def test_trigger_orchestrator_reloads_provider_factory_after_provider_loader_cha
         updated_config.event_queue_store_path.read_text(encoding="utf-8")
     )
     assert list(queue_payload.keys()) == ["reload-event-1"]
+
+
+def test_due_scheduled_internal_event_publishes_before_event_trigger_poll(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "event-listener",
+                    "display_name": "Plan committed",
+                    "type": "trigger:event",
+                    "event_type": "issue.plan_committed",
+                }
+            ],
+        }
+    )
+    scheduled_store = ScheduledInternalEventStore(
+        worker_config.scheduled_internal_event_store_path
+    )
+    scheduled_event, created = scheduled_store.schedule_event(
+        event_type="issue.plan_committed",
+        payload={"issue_id": "ISSUE-1", "plan_version": 3},
+        correlation_key="issue:ISSUE-1",
+        run_at=datetime.now(UTC) - timedelta(seconds=1),
+        idempotency_key="schedule-1",
+        source={
+            "source_type": "workflow_effect",
+            "workflow_run_id": "run-1",
+            "workflow_event_id": "event-1",
+            "workflow_trace_id": "trace-1",
+            "node_id": "node-1",
+            "node_type": "effect:event:schedule",
+        },
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None
+    )  # type: ignore[arg-type]
+
+    result = worker.run_once()
+
+    assert created is True
+    assert result.events_published == 1
+
+    internal_events = InternalEventBus(
+        worker_config.internal_event_store_path,
+        journal_path=worker_config.workflow_event_journal_path,
+    ).list_events()
+    assert len(internal_events) == 1
+    published_event = internal_events[0]
+    assert published_event.event_type == "issue.plan_committed"
+    assert published_event.payload == {"issue_id": "ISSUE-1", "plan_version": 3}
+    assert published_event.correlation_key == "issue:ISSUE-1"
+    assert published_event.idempotency_key == f"scheduled-event:{scheduled_event.schedule_id}"
+    assert published_event.source is not None
+    assert published_event.source.source_type == "scheduled_internal_event"
+    assert published_event.source.workflow_run_id == "run-1"
+    assert published_event.source.workflow_event_id == "event-1"
+    assert published_event.source.workflow_trace_id == "trace-1"
+    assert published_event.source.node_id == "node-1"
+    assert published_event.source.node_type == "effect:event:schedule"
+
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    assert list(queue_payload.keys()) == [f"event-listener:{published_event.event_id}"]
+    record = queue_payload[f"event-listener:{published_event.event_id}"]
+    assert record["payload"]["event_type"] == "issue.plan_committed"
+    assert record["payload"]["payload"] == {"issue_id": "ISSUE-1", "plan_version": 3}
+    assert record["payload"]["correlation_key"] == "issue:ISSUE-1"
+    assert record["payload"]["source"]["source_type"] == "scheduled_internal_event"
+    assert record["payload"]["source"]["workflow_run_id"] == "run-1"
+
+    schedule_payload = json.loads(
+        worker_config.scheduled_internal_event_store_path.read_text(encoding="utf-8")
+    )
+    scheduled_record = schedule_payload[scheduled_event.schedule_id]
+    assert scheduled_record["status"] == "published"
+    assert scheduled_record["published_event_id"] == published_event.event_id
+
+
+def test_future_scheduled_internal_event_stays_pending_until_due(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [],
+        }
+    )
+    scheduled_store = ScheduledInternalEventStore(
+        worker_config.scheduled_internal_event_store_path
+    )
+    scheduled_event, created = scheduled_store.schedule_event(
+        event_type="issue.plan_committed",
+        payload={"issue_id": "ISSUE-2"},
+        run_at=datetime.now(UTC) + timedelta(minutes=5),
+        idempotency_key="schedule-future",
+        source={
+            "source_type": "workflow_effect",
+            "workflow_run_id": "run-2",
+            "workflow_event_id": "event-2",
+            "workflow_trace_id": "trace-2",
+            "node_id": "node-2",
+            "node_type": "effect:event:schedule",
+        },
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None
+    )  # type: ignore[arg-type]
+
+    result = worker.run_once()
+
+    assert created is True
+    assert result.events_published == 0
+    assert not worker_config.internal_event_store_path.exists()
+
+    schedule_payload = json.loads(
+        worker_config.scheduled_internal_event_store_path.read_text(encoding="utf-8")
+    )
+    scheduled_record = schedule_payload[scheduled_event.schedule_id]
+    assert scheduled_record["status"] == "pending"
+    assert scheduled_record["published_event_id"] is None
+    assert scheduled_record["published_at"] is None
+
+
+def test_due_scheduled_internal_event_is_published_once_across_cycles(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [],
+        }
+    )
+    scheduled_store = ScheduledInternalEventStore(
+        worker_config.scheduled_internal_event_store_path
+    )
+    scheduled_event, created = scheduled_store.schedule_event(
+        event_type="issue.plan_committed",
+        payload={"issue_id": "ISSUE-3"},
+        run_at=datetime.now(UTC) - timedelta(seconds=1),
+        idempotency_key="schedule-once",
+        source={
+            "source_type": "workflow_effect",
+            "workflow_run_id": "run-3",
+            "workflow_event_id": "event-3",
+            "workflow_trace_id": "trace-3",
+            "node_id": "node-3",
+            "node_type": "effect:event:schedule",
+        },
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None
+    )  # type: ignore[arg-type]
+
+    first_cycle = worker.run_once()
+    second_cycle = worker.run_once()
+
+    assert created is True
+    assert first_cycle.events_published == 0
+    assert second_cycle.events_published == 0
+
+    internal_events = InternalEventBus(
+        worker_config.internal_event_store_path,
+        journal_path=worker_config.workflow_event_journal_path,
+    ).list_events()
+    assert len(internal_events) == 1
+    assert internal_events[0].idempotency_key == f"scheduled-event:{scheduled_event.schedule_id}"
+
+    schedule_payload = json.loads(
+        worker_config.scheduled_internal_event_store_path.read_text(encoding="utf-8")
+    )
+    scheduled_record = schedule_payload[scheduled_event.schedule_id]
+    assert scheduled_record["status"] == "published"
+    assert scheduled_record["published_event_id"] == internal_events[0].event_id
 
 
 def test_trigger_orchestrator_direct_worker_does_not_reload_from_cwd(

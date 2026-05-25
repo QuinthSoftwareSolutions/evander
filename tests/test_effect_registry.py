@@ -28,7 +28,7 @@ from agent_sandbox.effects.registry import (
     EffectProviderFactory,
     EffectProviderRegistry,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from agent_sandbox.events.models import WorkflowNodeEnvelope
 from agent_sandbox.events.provider_models import (
@@ -40,6 +40,7 @@ from agent_sandbox.events.provider_models import (
     AgentExecEffectDefinition,
     AgentPromptEffectDefinition,
     ChatAssistantEnsureSessionEffectDefinition,
+    EventScheduleEffectDefinition,
     PullRequestUpdateEffectDefinition,
     VmBootstrapFrontendEffectDefinition,
     VmBootstrapPythonEffectDefinition,
@@ -315,6 +316,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:bash:script",
         "effect:http:request",
         "effect:event:emit",
+        "effect:event:schedule",
         "effect:vm:exec",
         "effect:vm:copy-files",
         "effect:vm:delete-files",
@@ -332,6 +334,60 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:pull-request:update",
     }
     assert DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:http:request"] is HttpRequestEffectProvider
+
+
+def test_event_schedule_effect_definition_validates_contract_shape() -> None:
+    effect = EventScheduleEffectDefinition(
+        id="effect-event-schedule",
+        display_name="Schedule internal event",
+        type="effect:event:schedule",
+        event_type="custom.operator_event",
+        payload={"hello": "world"},
+        delay_seconds=60,
+    )
+
+    assert effect.event_type == "custom.operator_event"
+    assert effect.payload == {"hello": "world"}
+
+    with pytest.raises(ValidationError, match="exactly one of run_at or delay_seconds"):
+        EventScheduleEffectDefinition(
+            id="effect-event-schedule",
+            display_name="Schedule internal event",
+            type="effect:event:schedule",
+            event_type="custom.operator_event",
+            payload={},
+        )
+
+    with pytest.raises(ValidationError, match="payload must be a JSON object"):
+        EventScheduleEffectDefinition(
+            id="effect-event-schedule",
+            display_name="Schedule internal event",
+            type="effect:event:schedule",
+            event_type="custom.operator_event",
+            payload=[],
+            delay_seconds=60,
+        )
+
+    with pytest.raises(ValidationError, match="event_type must start with"):
+        EventScheduleEffectDefinition(
+            id="effect-event-schedule",
+            display_name="Schedule internal event",
+            type="effect:event:schedule",
+            event_type="bad event",
+            payload={},
+            delay_seconds=60,
+        )
+
+    with pytest.raises(ValidationError, match="exactly one of run_at or delay_seconds"):
+        EventScheduleEffectDefinition(
+            id="effect-event-schedule",
+            display_name="Schedule internal event",
+            type="effect:event:schedule",
+            event_type="custom.operator_event",
+            payload={},
+            run_at="2030-01-01T12:00:00Z",
+            delay_seconds=60,
+        )
 
 
 def test_factory_initializes_provider_with_runtime_context() -> None:

@@ -28,6 +28,7 @@ from agent_sandbox.daemons.effect_orchestrator import (
     EffectOrchestratorWorker,
     ExecutionGraph,
     GateExecutionRecord,
+    EventScheduleEffectExecutor,
     JsonExecutionStore,
     SqliteExecutionStore,
     SqliteGateExecutionStore,
@@ -38,6 +39,7 @@ from agent_sandbox.daemons.effect_orchestrator import (
     EffectOrchestratorCycleResult,
     main,
 )
+from agent_sandbox.events.scheduled import ScheduledInternalEventStore
 from agent_sandbox.messaging.agent_prompt_queue import (
     AgentPromptQueueStore,
     QueuedAgentPromptRecord,
@@ -360,6 +362,76 @@ def test_effect_orchestrator_run_once_uses_reloaded_worker_config_for_sleep(tmp_
     result = worker.run_once()
 
     assert result.next_sleep_seconds == 13
+
+
+def test_event_schedule_effect_uses_reloaded_scheduled_store_path(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    old_store_path = runtime_dir / "old-scheduled-events.json"
+    new_store_path = runtime_dir / "new-scheduled-events.json"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    base_worker_config = {
+        "runtime_dir": runtime_dir,
+        "poll_interval_seconds": 1,
+        "jitter_seconds": 0,
+        "triggers": [
+            {
+                "id": "trigger-1",
+                "display_name": "Trigger",
+                "type": "trigger:cron",
+                "expression": "* * * * *",
+            }
+        ],
+        "effects": [
+            {
+                "id": "schedule-plan",
+                "display_name": "Schedule plan",
+                "type": "effect:event:schedule",
+                "event_type": "custom.operator_event",
+                "payload": {"value": "ok"},
+                "run_at": "2026-05-25T12:05:00Z",
+            }
+        ],
+        "edges": [_edge("trigger-1", "schedule-plan")],
+    }
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            **base_worker_config,
+            "scheduled_internal_event_store_path": old_store_path,
+        }
+    )
+    updated_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            **base_worker_config,
+            "scheduled_internal_event_store_path": new_store_path,
+        }
+    )
+    worker = EffectOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        config_reloader=_StaticReloader(updated_config, changed=True),
+        runtime=None,  # type: ignore[arg-type]
+    )
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="input-event-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime.now(timezone.utc),
+            trace_id="trace-1",
+            payload={},
+        )
+    )
+
+    worker.run_once()
+    worker._wait_for_inflight_completion(timeout_seconds=2)
+    worker.run_once()
+
+    assert not old_store_path.exists()
+    scheduled_events = json.loads(new_store_path.read_text(encoding="utf-8"))
+    scheduled = next(iter(scheduled_events.values()))
+    assert scheduled["event_type"] == "custom.operator_event"
+    assert scheduled["payload"] == {"value": "ok"}
+    assert scheduled["run_at"] == "2026-05-25T12:05:00Z"
 
 
 def test_effect_orchestrator_uses_shared_host_lock_manager(tmp_path: Path) -> None:
@@ -7144,3 +7216,290 @@ def test_event_emit_effect_retry_uses_idempotency_key(tmp_path: Path) -> None:
 
     events = json.loads(worker_config.internal_event_store_path.read_text(encoding="utf-8"))
     assert len(events) == 1
+
+
+def test_event_schedule_effect_resolves_bindings_and_writes_pending_record(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Trigger",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {
+                        "event_type": {"type": "string"},
+                        "case_id": {"type": "string"},
+                        "summary": {"type": "string"},
+                        "scheduled_for": {"type": "string"},
+                    },
+                }
+            ],
+            "effects": [
+                {
+                    "id": "schedule-plan",
+                    "display_name": "Schedule plan",
+                    "type": "effect:event:schedule",
+                    "event_type": "${{trigger-1.event_type}}",
+                    "correlation_key": "case:${{trigger-1.case_id}}",
+                    "payload": {
+                        "case_id": "${{trigger-1.case_id}}",
+                        "summary": "${{trigger-1.summary}}",
+                    },
+                    "run_at": "${{trigger-1.scheduled_for}}",
+                    "idempotency_key": "schedule:${{trigger-1.case_id}}",
+                }
+            ],
+            "edges": [_edge("trigger-1", "schedule-plan")],
+        }
+    )
+    worker = EffectOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None
+    )  # type: ignore[arg-type]
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="input-event-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime.now(timezone.utc),
+            trace_id="trace-1",
+            payload={
+                "event_type": "custom.operator_event",
+                "case_id": "CASE-1",
+                "summary": "ready",
+                "scheduled_for": "2026-05-25T12:05:00Z",
+            },
+        )
+    )
+
+    worker.run_once()
+    worker._wait_for_inflight_completion(timeout_seconds=2)
+    worker.run_once()
+
+    executions = [
+        record for record in worker.execution_store.list_executions() if record.effect_id == "schedule-plan"
+    ]
+    assert executions[-1].status == "succeeded"
+    assert executions[-1].outputs["created"] is True
+    assert executions[-1].outputs["run_at"] == "2026-05-25T12:05:00Z"
+
+    scheduled_events = json.loads(
+        worker_config.scheduled_internal_event_store_path.read_text(encoding="utf-8")
+    )
+    assert len(scheduled_events) == 1
+    scheduled = next(iter(scheduled_events.values()))
+    assert scheduled["event_type"] == "custom.operator_event"
+    assert scheduled["payload"] == {"case_id": "CASE-1", "summary": "ready"}
+    assert scheduled["correlation_key"] == "case:CASE-1"
+    assert scheduled["run_at"] == "2026-05-25T12:05:00Z"
+    assert scheduled["status"] == "pending"
+    assert scheduled["source"]["source_type"] == "scheduled_internal_event"
+    assert scheduled["source"]["workflow_run_id"] == "trace-1"
+    assert scheduled["source"]["workflow_event_id"] == "input-event-1"
+    assert scheduled["source"]["workflow_trace_id"] == "trace-1"
+    assert scheduled["source"]["node_id"] == "schedule-plan"
+    assert scheduled["source"]["node_type"] == "effect:event:schedule"
+    assert json.loads(worker_config.internal_event_store_path.read_text(encoding="utf-8")) == {}
+
+
+def test_event_schedule_effect_duplicate_idempotency_returns_original_record_without_mutation(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Trigger",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {
+                        "event_type": {"type": "string"},
+                        "case_id": {"type": "string"},
+                    },
+                }
+            ],
+            "effects": [
+                {
+                    "id": "schedule-once",
+                    "display_name": "Schedule once",
+                    "type": "effect:event:schedule",
+                    "event_type": "${{trigger-1.event_type}}",
+                    "payload": {"case_id": "${{trigger-1.case_id}}"},
+                    "run_at": "2026-05-25T12:05:00Z",
+                    "idempotency_key": "schedule:${{trigger-1.case_id}}",
+                }
+            ],
+            "edges": [_edge("trigger-1", "schedule-once")],
+        }
+    )
+    worker = EffectOrchestratorWorker(
+        config=config, worker_config=worker_config, runtime=None
+    )  # type: ignore[arg-type]
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="input-event-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime.now(timezone.utc),
+            trace_id="trace-1",
+            payload={"event_type": "custom.operator_event", "case_id": "CASE-1"},
+        )
+    )
+    worker.run_once()
+    worker._wait_for_inflight_completion(timeout_seconds=2)
+    worker.run_once()
+
+    first_schedule = json.loads(
+        worker_config.scheduled_internal_event_store_path.read_text(encoding="utf-8")
+    )
+    first_schedule_record = next(iter(first_schedule.values()))
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="input-event-2",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime.now(timezone.utc),
+            trace_id="trace-2",
+            payload={"event_type": "custom.operator_event", "case_id": "CASE-1"},
+        )
+    )
+    worker.run_once()
+    worker._wait_for_inflight_completion(timeout_seconds=2)
+    worker.run_once()
+
+    second_schedule = json.loads(
+        worker_config.scheduled_internal_event_store_path.read_text(encoding="utf-8")
+    )
+    second_schedule_record = next(iter(second_schedule.values()))
+
+    executions = [
+        record for record in worker.execution_store.list_executions() if record.effect_id == "schedule-once"
+    ]
+    assert len(executions) == 2
+    assert sorted(record.outputs["created"] for record in executions) == [False, True]
+    assert first_schedule == second_schedule
+    assert second_schedule_record == first_schedule_record
+    assert json.loads(worker_config.internal_event_store_path.read_text(encoding="utf-8")) == {}
+
+
+def test_event_schedule_effect_prepare_resolved_config_normalizes_delay_seconds(
+    tmp_path: Path,
+) -> None:
+    executor = EventScheduleEffectExecutor(
+        scheduled_internal_event_store=ScheduledInternalEventStore(
+            tmp_path / "scheduled-internal-events.json"
+        )
+    )
+
+    resolved = executor.prepare_resolved_config(
+        resolved_config={
+            "event_type": "custom.operator_event",
+            "payload": {"value": "ok"},
+            "delay_seconds": "90",
+        },
+        started_at=datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert resolved["event_type"] == "custom.operator_event"
+    assert resolved["payload"] == {"value": "ok"}
+    assert resolved["delay_seconds"] == 90.0
+    assert resolved["run_at"] == "2026-05-25T12:01:30Z"
+
+
+@pytest.mark.parametrize(
+    ("resolved_config", "message"),
+    [
+        (
+            {
+                "event_type": "bad event type",
+                "payload": {},
+                "run_at": "2026-05-25T12:05:00Z",
+            },
+            "event_type",
+        ),
+        (
+            {
+                "event_type": "custom.operator_event",
+                "payload": "not-an-object",
+                "run_at": "2026-05-25T12:05:00Z",
+            },
+            "payload must resolve to a JSON object",
+        ),
+        (
+            {
+                "event_type": "custom.operator_event",
+                "payload": {},
+                "run_at": "not-a-timestamp",
+            },
+            "run_at must be an ISO-8601 timestamp",
+        ),
+        (
+            {
+                "event_type": "custom.operator_event",
+                "payload": {},
+                "delay_seconds": "not-a-number",
+            },
+            "delay_seconds must be a number",
+        ),
+        (
+            {
+                "event_type": "custom.operator_event",
+                "payload": {},
+                "delay_seconds": "1e309",
+            },
+            "delay_seconds must be a finite number",
+        ),
+        (
+            {
+                "event_type": "custom.operator_event",
+                "payload": {},
+                "delay_seconds": "nan",
+            },
+            "delay_seconds must be a finite number",
+        ),
+        (
+            {
+                "event_type": "custom.operator_event",
+                "payload": {},
+                "delay_seconds": "1e20",
+            },
+            "delay_seconds is outside the supported datetime range",
+        ),
+        (
+            {
+                "event_type": "custom.operator_event",
+                "payload": {},
+            },
+            "requires exactly one of run_at or delay_seconds",
+        ),
+    ],
+)
+def test_event_schedule_effect_prepare_resolved_config_rejects_invalid_values(
+    tmp_path: Path, resolved_config: dict[str, object], message: str
+) -> None:
+    executor = EventScheduleEffectExecutor(
+        scheduled_internal_event_store=ScheduledInternalEventStore(
+            tmp_path / "scheduled-internal-events.json"
+        )
+    )
+
+    with pytest.raises(ValueError, match=message):
+        executor.prepare_resolved_config(
+            resolved_config=resolved_config,
+            started_at=datetime(2026, 5, 25, 12, 0, tzinfo=timezone.utc),
+        )

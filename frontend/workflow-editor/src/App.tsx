@@ -365,6 +365,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:vm:copy-files": "Copy rendered file content into a VM.",
   "effect:vm:delete-files": "Delete files from a VM.",
   "effect:event:emit": "Emit an internal workflow event for other graphs.",
+  "effect:event:schedule": "Schedule a one-shot internal workflow event for later delivery.",
   "effect:issue:update-metadata": "Patch metadata on a tracked issue.",
   "effect:ado:update-work-item": "Update an Azure DevOps work item with an optional state guard.",
   "effect:session:update-metadata": "Patch session metadata on the host.",
@@ -1668,6 +1669,16 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       type,
       event_type: "custom.operator_event",
       payload: {},
+    };
+  }
+  if (kind === "effect" && type === "effect:event:schedule") {
+    return {
+      id,
+      display_name: "Schedule internal event",
+      type,
+      event_type: "custom.operator_event",
+      payload: {},
+      delay_seconds: 60,
     };
   }
   if (kind === "effect" && type === "effect:issue:update-metadata") {

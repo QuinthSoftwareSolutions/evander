@@ -18,6 +18,7 @@ from agent_sandbox.effects.providers.artifacts import (
     ArtifactStageEffectProvider,
 )
 from agent_sandbox.effects.providers.event_emit import EventEmitEffectProvider
+from agent_sandbox.effects.providers.event_schedule import EventScheduleEffectProvider
 from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
 from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
 from agent_sandbox.effects.providers.bash_script import BashScriptEffectProvider
@@ -151,6 +152,7 @@ def register_providers() -> dict[str, dict[str, type]]:
         },
         effect_providers={
             "effect:event:emit": EventEmitEffectProvider,
+            "effect:event:schedule": EventScheduleEffectProvider,
             "effect:vm:create": VmCreateEffectProvider,
             "effect:vm:clone-repo": VmCloneRepoEffectProvider,
             "effect:vm:bootstrap-python": VmBootstrapPythonEffectProvider,

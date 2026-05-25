@@ -30,6 +30,38 @@ class EventEmitEffectDefinition(EffectDefinition):
         return value
 
 
+class EventScheduleEffectDefinition(EffectDefinition):
+    type: Literal["effect:event:schedule"]
+    event_type: ConfigValue
+    correlation_key: ConfigValue | None = None
+    payload: ConfigValue = Field(default_factory=dict)
+    run_at: ConfigValue | None = None
+    delay_seconds: ConfigValue | None = None
+    idempotency_key: ConfigValue | None = None
+
+    @field_validator("event_type")
+    @classmethod
+    def validate_static_event_type(cls, value: ConfigValue) -> ConfigValue:
+        if isinstance(value, str) and "${{" not in value:
+            validate_internal_event_type(value)
+        return value
+
+    @field_validator("payload")
+    @classmethod
+    def validate_payload_shape(cls, value: ConfigValue) -> ConfigValue:
+        if not isinstance(value, (Mapping, str)):
+            raise ValueError("effect:event:schedule payload must be a JSON object")
+        return value
+
+    @model_validator(mode="after")
+    def validate_time_configuration(self) -> "EventScheduleEffectDefinition":
+        has_run_at = self.run_at is not None
+        has_delay_seconds = self.delay_seconds is not None
+        if has_run_at == has_delay_seconds:
+            raise ValueError("effect:event:schedule requires exactly one of run_at or delay_seconds")
+        return self
+
+
 class VmCreateEffectDefinition(EffectDefinition):
     type: Literal["effect:vm:create"]
     provider: ConfigValue | None = None
