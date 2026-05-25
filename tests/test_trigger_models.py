@@ -347,8 +347,18 @@ def test_communication_trigger_output_schema_exposes_normalized_payload_fields()
     assert schema["communication_target_id"] == {"type": "string"}
     assert schema["message_id"] == {"type": "string"}
     assert schema["thread_id"] == {"type": ["string", "null"]}
+    assert schema["author_id"] == {"type": "string"}
+    assert schema["author_name"] == {"type": "string"}
+    assert schema["content"] == {"type": "string"}
+    assert schema["created_at"] == {"type": "string"}
     assert schema["received_at"] == {"type": "string"}
     assert schema["target"] == {"type": "string"}
+    assert schema["message"]["properties"]["provider"] == {"type": "string"}
+    assert schema["message"]["properties"]["communication_target_id"] == {
+        "type": "string"
+    }
+    assert schema["message"]["properties"]["message_id"] == {"type": "string"}
+    assert schema["message"]["properties"]["target"] == {"type": "string"}
     assert schema["message"]["properties"]["metadata"] == {"type": "object"}
 
 
