@@ -1226,6 +1226,17 @@ metadata. For Azure DevOps, set `provider` to `azure_devops` or `ado`; the node
 uses the directory-scoped ADO organization, project, and PAT unless
 `organization_url` or `project` is supplied on the node.
 
+Use `query:pull-request:get` when a workflow needs a single normalized snapshot
+of a specific pull request. The node accepts Azure DevOps `provider` values
+`azure_devops`, `azure-devops`, and `ado`, plus GitHub `provider` `github`, and
+it does not store cursor or workflow state. For Azure DevOps, it uses the
+directory-scoped organization, project, and PAT unless `organization_url` or
+`project` is supplied on the node. For GitHub, it uses the directory-scoped
+`github_token_env` when configured and can fetch public data without a token.
+Set `include_commits=true` to fetch commit details and `include_reviewers=true`
+to fetch review API data; `include_reviewers=false` returns an empty reviewer
+list.
+
 Azure DevOps exposes PR labels through separate endpoints, so the `tags`
 expression is applied after listing candidate PRs. The expression supports tag
 names with case-insensitive `and`, `or`, `not`, and parentheses, for example

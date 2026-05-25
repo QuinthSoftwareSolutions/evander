@@ -382,6 +382,7 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:ado:work-items` | _none beyond envelope_ | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top`, `skip`, `outputs` |
 | `query:git:pr-note` | `host_repo_path`, `local_branch` | `remote_name`, `notes_ref`, `outputs` |
 | `query:issue:get` | `issue_id` | `outputs` |
+| `query:pull-request:get` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `include_reviewers`, `include_commits`, `outputs` |
 | `query:pull-request:feedback` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `cursor`, `outputs` |
 | `query:pull-request:list` | `provider`, `repo` | `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `outputs` |
 | `query:semantic:store-status` | _none beyond envelope_ | `collection_name`, `directory_path`, `outputs` |
@@ -400,13 +401,20 @@ by metadata key or dotted metadata path. `metadata_exists` may be a string, arra
 or object of key -> boolean. `directory_path` scopes to that directory and its
 descendants. `active_only=true` or `state=active` excludes expired sessions.
 
-`query:pull-request:list`, `query:pull-request:feedback`, and
-`effect:pull-request:update` accept Azure DevOps `provider` as `azure_devops`,
-`azure-devops`, or `ado`. `query:pull-request:feedback` fetches normalized
-feedback for one provider/repo/PR stream and returns `feedback` plus
-`next_cursor`; workflows own where that cursor is stored. For Azure DevOps,
-`project` can be explicit, read from directory provider config, or derived from
-a composite repo slug such as `organization/project/repo`.
+`query:pull-request:get`, `query:pull-request:list`, `query:pull-request:feedback`,
+and `effect:pull-request:update` accept Azure DevOps `provider` as
+`azure_devops`, `azure-devops`, or `ado`. `query:pull-request:get` also accepts
+GitHub `provider` as `github`. It returns normalized pull request metadata and
+does not store cursor or workflow state. For Azure DevOps, `project` can be
+explicit, read from directory provider config, or derived from a composite repo
+slug such as `organization/project/repo`. For `query:pull-request:get`,
+Azure DevOps uses the directory-scoped `azure_devops_organization_url`,
+`azure_devops_project`, and `azure_devops_pr_pat_env` unless `organization_url`
+or `project` is supplied on the node. GitHub uses directory-scoped
+`github_token_env` when configured and can fetch public data without a token.
+Set `include_commits=true` to fetch commit details and `include_reviewers=true`
+to fetch review API data; `include_reviewers=false` returns an empty reviewer
+list.
 
 Azure DevOps PR tag filters are applied client-side after the PR list call. The
 `tags` filter accepts tag names with case-insensitive `and`, `or`, `not`, and
