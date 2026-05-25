@@ -5847,6 +5847,7 @@ export default function App() {
     setSaveState("saving");
     setError(null);
     try {
+      const expectedRevision = savedDocument?.revision ?? document.revision;
       const saved = await fetchJson<WorkflowEditorSave>(
         "/api/workflow-editor/document",
         {
@@ -5855,7 +5856,7 @@ export default function App() {
             config: document.config,
             layout: document.layout,
             graphs: document.graphs,
-            expected_revision: document.revision,
+            expected_revision: expectedRevision,
           }),
         },
       );
