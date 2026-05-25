@@ -100,6 +100,39 @@ def test_compose_workflow_ir_accepts_inline_overlay_with_ir_metadata(tmp_path: P
     assert [trigger["id"] for trigger in composed.triggers] == ["trigger-inline"]
 
 
+def test_compose_workflow_ir_preserves_disabled_trigger_flag(tmp_path: Path) -> None:
+    composed = compose_workflow_ir(
+        project_dir=tmp_path,
+        workflow_packs=[],
+        inline_ir={
+            "version": "v1",
+            "nodes": [
+                {
+                    "id": "trigger-disabled",
+                    "display_name": "disabled tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "enabled": False,
+                }
+            ],
+            "edges": [],
+        },
+    )
+
+    assert composed.triggers == [
+        {
+            "id": "trigger-disabled",
+            "display_name": "disabled tick",
+            "type": "trigger:cron",
+            "config": {
+                "expression": "* * * * *",
+                "enabled": False,
+            },
+            "outputs": None,
+        }
+    ]
+
+
 def test_hidden_system_workflow_pack_contains_chat_assistant_graph() -> None:
     project_dir = Path(__file__).resolve().parents[1]
 

@@ -55,6 +55,7 @@ from agent_sandbox.storage import JsonStore
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
 from agent_sandbox.triggers.providers.pull_request_new_feedback import _parse_dt
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
+from agent_sandbox.workflow.node_state import workflow_node_is_enabled
 from agent_sandbox.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 
 _LOG = logging.getLogger(__name__)
@@ -1553,6 +1554,8 @@ def _load_ado_pr_feedback_triggers(
         return []
     triggers: list[PullRequestNewFeedbackTriggerDefinition] = []
     for trigger in worker_config.triggers:
+        if not workflow_node_is_enabled(trigger):
+            continue
         materialized = materialize_node_definition(trigger)
         if (
             isinstance(materialized, PullRequestNewFeedbackTriggerDefinition)
@@ -1570,6 +1573,8 @@ def _load_ado_pr_completed_triggers(
         return []
     triggers: list[PullRequestCompletedTriggerDefinition] = []
     for trigger in worker_config.triggers:
+        if not workflow_node_is_enabled(trigger):
+            continue
         materialized = materialize_node_definition(trigger)
         if (
             isinstance(materialized, PullRequestCompletedTriggerDefinition)

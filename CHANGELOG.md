@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - Workflow Trigger Disable Toggle
+
+- Added an `enabled: false` workflow trigger state that skips trigger polling and
+  the legacy ADO/Git direct publishers while preserving already queued work.
+- Added a Workflow editor trigger toggle and ghosted disabled-trigger styling.
+
 ## 2026-05-25 - Teams Direct Message Trigger
 
 - Added `trigger:teams:direct-message` for allowlisted one-on-one Microsoft

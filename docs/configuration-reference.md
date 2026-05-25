@@ -138,6 +138,11 @@ Each trigger entry requires the shared envelope keys:
 - `id` (string, required, unique across all triggers)
 - `display_name` (string, required)
 - `type` (required discriminator)
+- `enabled` (boolean, optional; only `false` disables the trigger)
+
+Disabled triggers remain in the graph for editing, but trigger polling and the legacy ADO/Git
+direct publishers skip them. Events already queued before a trigger is disabled are still processed
+by the effect worker.
 
 Type-specific keys:
 
