@@ -8,7 +8,7 @@ import os
 import random
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
@@ -70,6 +70,10 @@ from agent_sandbox.workflow.graph import (
     compute_downstream_depth,
     index_declared_outputs,
     would_form_cycle,
+)
+from agent_sandbox.workflow.graph_metadata import (
+    ResolvedWorkflowGraphMetadata,
+    resolve_workflow_graph_metadata,
 )
 from agent_sandbox.workflow.engine.node_executors import (
     NodeExecutorRegistry,
@@ -220,6 +224,9 @@ class ExecutionGraph:
     downstream_index: dict[str, tuple[str, ...]]
     inbound_index: dict[str, tuple[Any, ...]]
     declared_outputs: dict[str, dict[str, Any]]
+    node_graph_metadata_by_id: dict[str, ResolvedWorkflowGraphMetadata] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)
@@ -2145,6 +2152,11 @@ def _build_execution_graph(worker_config: TriggerOrchestratorWorkerGlobalConfig)
     }
     edges = list(worker_config.edges)
     acyclic_edges = [edge for edge in edges if not _edge_allows_cycle(edge)]
+    node_graph_metadata_by_id = resolve_workflow_graph_metadata(
+        nodes_by_id=nodes_by_id,
+        edges=edges,
+        workflow_graphs=worker_config.workflow_graphs,
+    )
 
     return ExecutionGraph(
         nodes_by_id=nodes_by_id,
@@ -2160,6 +2172,7 @@ def _build_execution_graph(worker_config: TriggerOrchestratorWorkerGlobalConfig)
             worker_config.effects,
             worker_config.queries,
         ),
+        node_graph_metadata_by_id=node_graph_metadata_by_id,
     )
 
 

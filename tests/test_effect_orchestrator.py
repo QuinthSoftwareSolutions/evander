@@ -29,6 +29,7 @@ from agent_sandbox.daemons.effect_orchestrator import (
     SqliteExecutionStore,
     SqliteGateExecutionStore,
     _await_agent_pending_target,
+    _build_execution_graph,
     _matching_outbound_edges,
     build_effect_orchestrator_worker,
     EffectExecutionRecord,
@@ -280,6 +281,64 @@ def test_matching_outbound_edges_honors_resume_target_node() -> None:
     matched = _matching_outbound_edges(queue_record=queue_record, graph=graph)
 
     assert [edge["target_id"] for edge in matched] == ["effect-b"]
+
+
+def test_build_execution_graph_resolves_state_workflow_graph_metadata() -> None:
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": Path("runtime"),
+            "triggers": [
+                {
+                    "id": "trigger-state",
+                    "display_name": "State trigger",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-state-update",
+                    "display_name": "Update state",
+                    "type": "effect:state:update",
+                    "namespace": "workflow",
+                    "key": "cursor",
+                    "operation": "set",
+                    "value": {"counter": 1},
+                }
+            ],
+            "queries": [
+                {
+                    "id": "query-state-get",
+                    "display_name": "Read state",
+                    "type": "query:state:get",
+                    "namespace": "workflow",
+                    "key": "cursor",
+                }
+            ],
+            "edges": [
+                {"source_id": "trigger-state", "target_id": "effect-state-update"},
+                {"source_id": "effect-state-update", "target_id": "query-state-get"},
+            ],
+            "workflow_graphs": [
+                {
+                    "id": "graph-state",
+                    "name": "State graph",
+                    "directory_paths": ["root/team-a"],
+                    "node_ids": [
+                        "trigger-state",
+                        "effect-state-update",
+                        "query-state-get",
+                    ],
+                }
+            ],
+        }
+    )
+
+    graph = _build_execution_graph(worker_config)
+
+    assert graph.node_graph_metadata_by_id["trigger-state"].graph_id == "graph-state"
+    assert graph.node_graph_metadata_by_id["effect-state-update"].directory_path == "root/team-a"
+    assert graph.node_graph_metadata_by_id["query-state-get"].graph_id == "graph-state"
 
 
 def test_effect_orchestrator_main_help_does_not_crash(monkeypatch: pytest.MonkeyPatch) -> None:

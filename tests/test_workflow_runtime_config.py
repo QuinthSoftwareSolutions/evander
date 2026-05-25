@@ -675,6 +675,164 @@ def test_load_config_exposes_workflow_pack_graph_metadata(tmp_path: Path) -> Non
     assert config.workflow_graphs[0].node_ids == ["trigger-cron-synthetic"]
 
 
+def test_load_config_preserves_state_workflow_graph_metadata(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "workflow_graphs": [
+                    {
+                        "id": "graph-state",
+                        "name": "State graph",
+                        "description": "Persisted state graph metadata.",
+                        "directory_paths": ["root/team-a"],
+                        "node_ids": [
+                            "trigger-state",
+                            "effect-state-update",
+                            "query-state-get",
+                        ],
+                    }
+                ],
+                "triggers": [
+                    {
+                        "id": "trigger-state",
+                        "display_name": "State trigger",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "effect-state-update",
+                        "display_name": "Update state",
+                        "type": "effect:state:update",
+                        "namespace": "workflow",
+                        "key": "cursor",
+                        "operation": "set",
+                        "value": {"counter": 1},
+                    }
+                ],
+                "queries": [
+                    {
+                        "id": "query-state-get",
+                        "display_name": "Read state",
+                        "type": "query:state:get",
+                        "namespace": "workflow",
+                        "key": "cursor",
+                    }
+                ],
+                "edges": [
+                    {"source_id": "trigger-state", "target_id": "effect-state-update"},
+                    {"source_id": "effect-state-update", "target_id": "query-state-get"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+    )
+
+    assert [graph.id for graph in config.workflow_graphs] == ["graph-state"]
+    assert config.workflow_graphs[0].directory_paths == ["root/team-a"]
+    assert config.workflow_graphs[0].node_ids == [
+        "trigger-state",
+        "effect-state-update",
+        "query-state-get",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("workflow_graphs", "message"),
+    [
+        (
+            [],
+            "Workflow node effect-state-update requires persisted workflow graph metadata",
+        ),
+        (
+            [
+                {
+                    "id": "graph-state",
+                    "name": "State graph",
+                    "node_ids": ["trigger-state", "effect-state-update"],
+                }
+            ],
+            "Workflow graph graph-state node_ids must exactly match the connected component",
+        ),
+        (
+            [
+                {
+                    "id": "graph-state",
+                    "name": "State graph",
+                    "node_ids": [
+                        "trigger-state",
+                        "effect-state-update",
+                        "missing-node",
+                    ],
+                }
+            ],
+            "references unknown node IDs: missing-node",
+        ),
+    ],
+)
+def test_load_config_requires_persisted_state_workflow_graph_metadata(
+    tmp_path: Path, workflow_graphs: list[dict[str, object]], message: str
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "workflow_graphs": workflow_graphs,
+                "triggers": [
+                    {
+                        "id": "trigger-state",
+                        "display_name": "State trigger",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "effects": [
+                    {
+                        "id": "effect-state-update",
+                        "display_name": "Update state",
+                        "type": "effect:state:update",
+                        "namespace": "workflow",
+                        "key": "cursor",
+                        "operation": "set",
+                        "value": {"counter": 1},
+                    }
+                ],
+                "queries": [
+                    {
+                        "id": "query-state-get",
+                        "display_name": "Read state",
+                        "type": "query:state:get",
+                        "namespace": "workflow",
+                        "key": "cursor",
+                    }
+                ],
+                "edges": [
+                    {"source_id": "trigger-state", "target_id": "effect-state-update"},
+                    {"source_id": "effect-state-update", "target_id": "query-state-get"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        load_trigger_orchestrator_worker_global_config(
+            project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+        )
+
+
 def test_load_config_strips_legacy_system_nodes_from_configured_pack(
     tmp_path: Path,
 ) -> None:
