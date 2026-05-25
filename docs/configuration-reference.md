@@ -127,6 +127,10 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `provider_loader.provider_modules` | `config/trigger-orchestrator/config.json` | Additional provider plugin Python modules to load after selected profile modules. |
 | `provider_loader.provider_entry_points_enabled` | `config/trigger-orchestrator/config.json` | Enables provider plugin discovery via Python entry points. |
 
+Wake sockets are internal runtime artifacts, not operator-facing config fields. The trigger worker
+listens on the path derived from `lock_path` with `.wake.sock`, and the effect worker listens on the
+path derived from `effect_lock_path` with `.wake.sock`.
+
 ### Trigger definition schema keys
 
 Each trigger entry requires the shared envelope keys:
@@ -143,7 +147,7 @@ Type-specific keys:
 | `trigger:cron` | `expression` | — |
 | `trigger:ticket:created` | `directories` | — |
 | `trigger:ticket:changed` | `directories` | — |
-| `trigger:issue:comment-created` / `trigger:issue:new-comment` | — | `provider`, `organization_url`, `project`, `directories` |
+| `trigger:issue:comment-created` | — | `provider`, `organization_url`, `project`, `directories` |
 | `trigger:ado:work-item-matching` | — | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top` |
 | `trigger:script-run-request` | — | — |
 | `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |

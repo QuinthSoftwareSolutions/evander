@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import ast
+import time
 from pathlib import Path
 
 import pytest
 
 from agent_sandbox.orchestration import kernels
+from agent_sandbox.orchestration.host_polling import (
+    HostWakeNotifier,
+    HostWakeSleeper,
+    wake_socket_path_for_lock,
+)
 from agent_sandbox.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
 
 
@@ -169,6 +175,30 @@ def test_compute_next_sleep_seconds_uses_jitter(monkeypatch: pytest.MonkeyPatch)
     assert kernels.compute_next_sleep_seconds(
         poll_interval_seconds=3.0, jitter_seconds=0.0
     ) == 3.0
+
+
+def test_wake_socket_path_is_derived_from_lock_path(tmp_path: Path) -> None:
+    assert wake_socket_path_for_lock(tmp_path / "effect-orchestrator.lock") == (
+        tmp_path / "effect-orchestrator.wake.sock"
+    )
+
+
+def test_host_wake_sleeper_returns_when_notified(tmp_path: Path) -> None:
+    wake_path = tmp_path / "worker.wake.sock"
+    sleeper = HostWakeSleeper(wake_path)
+    sleeper.start()
+    try:
+        assert HostWakeNotifier(wake_path).notify() is True
+        started = time.monotonic()
+        sleeper.sleep(10.0)
+    finally:
+        sleeper.close()
+
+    assert time.monotonic() - started < 0.5
+
+
+def test_host_wake_notifier_noops_when_receiver_is_missing(tmp_path: Path) -> None:
+    assert HostWakeNotifier(tmp_path / "missing.wake.sock").notify() is False
 
 
 def test_kernel_module_has_no_platform_specific_imports() -> None:

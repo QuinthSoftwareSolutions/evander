@@ -57,7 +57,6 @@ _TRIGGER_OUTPUT_SCHEMAS = {
     "trigger:ticket:created": _TICKET_OUTPUT_SCHEMA,
     "trigger:ticket:changed": _TICKET_OUTPUT_SCHEMA,
     "trigger:issue:comment-created": _ISSUE_COMMENT_OUTPUT_SCHEMA,
-    "trigger:issue:new-comment": _ISSUE_COMMENT_OUTPUT_SCHEMA,
     "trigger:ado:work-item-matching": {
         "provider": {"type": "string"},
         "directory_path": {"type": "string"},

@@ -238,12 +238,3 @@ def test_directory_scope_allows_descendants_via_shared_helper(tmp_path: Path) ->
     events = _provider(tmp_path).poll()
 
     assert [event.payload["comment_id"] for event in events] == ["nested"]
-
-
-def test_alias_trigger_type_materializes_and_runs(tmp_path: Path) -> None:
-    _store_issue(tmp_path, _ado_issue(comments=[{"id": "alias", "text": "hello"}]))
-
-    events = _provider(tmp_path, type="trigger:issue:new-comment").poll()
-
-    assert len(events) == 1
-    assert events[0].trigger_type == "trigger:issue:new-comment"

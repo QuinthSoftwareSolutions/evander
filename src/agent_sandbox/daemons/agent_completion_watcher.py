@@ -10,6 +10,7 @@ from uuid import uuid4
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.models import VmSummary
+from agent_sandbox.orchestration.host_polling import notify_wake_socket_for_lock
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,7 @@ def await_agent_completion_and_publish(
     dispatch_id: str,
     event_queue_store_path: Path | None = None,
     workflow_event_journal_path: Path | None = None,
+    effect_lock_path: Path | None = None,
     orchestration_store_backend: str = "json",
     orchestration_store_path: Path | None = None,
     orchestration_retention_days: int | None = None,
@@ -99,6 +101,7 @@ def await_agent_completion_and_publish(
             event_queue_store_path or runtime_dir / "trigger-orchestrator-events.json",
             **queue_kwargs,
         )
+    resolved_effect_lock_path = effect_lock_path or runtime_dir / "effect-orchestrator.lock"
     started_at = time.monotonic()
 
     while time.monotonic() - started_at < timeout_seconds:
@@ -127,7 +130,10 @@ def await_agent_completion_and_publish(
                 session_id=session_id,
                 directory_path=directory_path,
             )
-            event_queue.publish(event, idempotency_key=f"{trigger_id}:{dispatch_id}")
+            already_queued = event_queue.contains(event.event_id)
+            record = event_queue.publish(event, idempotency_key=f"{trigger_id}:{dispatch_id}")
+            if not already_queued and record.event_id == event.event_id:
+                notify_wake_socket_for_lock(resolved_effect_lock_path)
             return True
         time.sleep(max(0.1, poll_interval_seconds))
     return False
@@ -142,6 +148,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dispatch-id", required=True)
     parser.add_argument("--event-queue-store-path")
     parser.add_argument("--workflow-event-journal-path")
+    parser.add_argument("--effect-lock-path")
     parser.add_argument("--orchestration-store-backend", choices=("json", "sqlite"), default="json")
     parser.add_argument("--orchestration-store-path")
     parser.add_argument("--orchestration-retention-days", type=int)
@@ -174,6 +181,7 @@ def main() -> int:
         workflow_event_journal_path=Path(args.workflow_event_journal_path)
         if args.workflow_event_journal_path
         else None,
+        effect_lock_path=Path(args.effect_lock_path) if args.effect_lock_path else None,
         orchestration_store_backend=args.orchestration_store_backend,
         orchestration_store_path=Path(args.orchestration_store_path)
         if args.orchestration_store_path
