@@ -496,6 +496,8 @@ def test_load_config_preserves_editor_workflow_graph_metadata(tmp_path: Path) ->
     assert _node_ids(config.triggers) == ["trigger-cron", "system.chat_assistant"]
     assert [graph.id for graph in config.workflow_graphs] == ["graph-cron"]
     assert config.workflow_graphs[0].directory_paths == ["root"]
+    assert config.workflow_graphs[0].user_ids == ["alice"]
+    assert config.workflow_graphs[0].node_ids == ["trigger-cron"]
 
 
 def test_load_config_composes_configured_pack_with_hidden_system_pack(
@@ -550,6 +552,7 @@ def test_load_config_composes_configured_pack_with_hidden_system_pack(
         "trigger-cron-synthetic",
         "system.chat_assistant",
     ]
+    assert config.workflow_graphs == []
     assert _node_ids(config.effects) == [
         "effect-log-synthetic",
         "system.chat_assistant.ensure_session",
@@ -563,6 +566,68 @@ def test_load_config_composes_configured_pack_with_hidden_system_pack(
             "system.chat_assistant.enqueue_prompt",
         ),
     ]
+
+
+def test_load_config_exposes_workflow_pack_graph_metadata(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    packs_dir = project_dir / "config" / "workflow-packs"
+    packs_dir.mkdir(parents=True, exist_ok=True)
+    (packs_dir / "graph-pack.v1.json").write_text(
+        json.dumps(
+            {
+                "pack_id": "graph-pack",
+                "pack_version": "v1",
+                "graphs": [
+                    {
+                        "id": "graph-synthetic",
+                        "name": "Synthetic graph",
+                        "description": "Pack-level workflow graph metadata.",
+                        "directory_paths": "root/team-a",
+                        "user_ids": "alice",
+                        "node_ids": "trigger-cron-synthetic",
+                    }
+                ],
+                "ir": {
+                    "version": "v1",
+                    "nodes": [
+                        {
+                            "id": "trigger-cron-synthetic",
+                            "display_name": "Synthetic tick",
+                            "type": "trigger:cron",
+                            "expression": "* * * * *",
+                        },
+                        {
+                            "id": "effect-log-synthetic",
+                            "display_name": "Synthetic script",
+                            "type": "effect:bash:script",
+                            "script_path": "/bin/echo",
+                            "args": ["synthetic-workflow"],
+                        },
+                    ],
+                    "edges": [
+                        {"source_id": "trigger-cron-synthetic", "target_id": "effect-log-synthetic"}
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    path.write_text(
+        json.dumps({"workflow_packs": ["graph-pack.v1.json"]}),
+        encoding="utf-8",
+    )
+
+    config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+    )
+
+    assert [graph.id for graph in config.workflow_graphs] == ["graph-synthetic"]
+    assert config.workflow_graphs[0].directory_paths == ["root/team-a"]
+    assert config.workflow_graphs[0].user_ids == ["alice"]
+    assert config.workflow_graphs[0].node_ids == ["trigger-cron-synthetic"]
 
 
 def test_load_config_strips_legacy_system_nodes_from_configured_pack(
