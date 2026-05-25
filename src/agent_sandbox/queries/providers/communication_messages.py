@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, unquote
 
 from agent_sandbox.directories import DirectoryStore
 from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
@@ -334,17 +335,27 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
         cursor: str | None,
         before_cursor: str | None,
     ) -> list[DiscordMessageEnvelope]:
-        ordered = sorted(messages, key=lambda item: (item.created_at, item.message_id))
+        ordered = sorted(messages, key=self._discord_message_sort_key)
         if cursor is not None:
-            cursor_dt = self._parse_timestamp_cursor(cursor, field_name="cursor")
-            ordered = [message for message in ordered if message.created_at > cursor_dt]
+            cursor_key = self._parse_discord_cursor(cursor, field_name="cursor")
+            ordered = [
+                message
+                for message in ordered
+                if self._discord_message_is_after_cursor(message, cursor_key)
+            ]
             if limit is not None:
                 ordered = ordered[:limit]
             return ordered
 
         if before_cursor is not None:
-            before_dt = self._parse_timestamp_cursor(before_cursor, field_name="before_cursor")
-            ordered = [message for message in ordered if message.created_at < before_dt]
+            before_key = self._parse_discord_cursor(
+                before_cursor, field_name="before_cursor"
+            )
+            ordered = [
+                message
+                for message in ordered
+                if self._discord_message_is_before_cursor(message, before_key)
+            ]
             if limit is not None:
                 ordered = ordered[-limit:]
             return ordered
@@ -392,7 +403,61 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
 
     @staticmethod
     def _discord_message_cursor(message: DiscordMessageEnvelope) -> str:
-        return message.created_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        created_at = message.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        else:
+            created_at = created_at.astimezone(UTC)
+        timestamp = created_at.isoformat().replace("+00:00", "Z")
+        return f"{timestamp}|{quote(message.message_id, safe='')}"
+
+    def _parse_discord_cursor(
+        self, value: str, *, field_name: str
+    ) -> tuple[datetime, str | None]:
+        text = self._normalize_required_string(value, field_name=field_name)
+        timestamp_text, separator, encoded_message_id = text.partition("|")
+        cursor_dt = self._parse_timestamp_cursor(timestamp_text, field_name=field_name)
+        if not separator:
+            return cursor_dt, None
+        message_id = unquote(encoded_message_id)
+        if not message_id:
+            raise ValueError(
+                f"{self.NODE_TYPE} {field_name} must include a non-empty Discord message id"
+            )
+        return cursor_dt, message_id
+
+    @classmethod
+    def _discord_message_is_after_cursor(
+        cls,
+        message: DiscordMessageEnvelope,
+        cursor_key: tuple[datetime, str | None],
+    ) -> bool:
+        cursor_dt, cursor_message_id = cursor_key
+        message_key = cls._discord_message_sort_key(message)
+        if cursor_message_id is None:
+            return message_key[0] > cursor_dt
+        return message_key > (cursor_dt, cursor_message_id)
+
+    @classmethod
+    def _discord_message_is_before_cursor(
+        cls,
+        message: DiscordMessageEnvelope,
+        cursor_key: tuple[datetime, str | None],
+    ) -> bool:
+        cursor_dt, cursor_message_id = cursor_key
+        message_key = cls._discord_message_sort_key(message)
+        if cursor_message_id is None:
+            return message_key[0] < cursor_dt
+        return message_key < (cursor_dt, cursor_message_id)
+
+    @staticmethod
+    def _discord_message_sort_key(message: DiscordMessageEnvelope) -> tuple[datetime, str]:
+        created_at = message.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        else:
+            created_at = created_at.astimezone(UTC)
+        return created_at, message.message_id
 
     def _parse_timestamp_cursor(self, value: str, *, field_name: str) -> datetime:
         text = self._normalize_required_string(value, field_name=field_name)

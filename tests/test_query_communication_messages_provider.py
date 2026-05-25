@@ -373,16 +373,16 @@ def test_query_communication_messages_returns_discord_messages_and_preserves_sto
     assert output["target"] == "123456789012345678/234567890123456789"
     assert output["target_type"] == "discord"
     assert output["count"] == 3
-    assert output["next_cursor"] == "2026-03-21T00:00:03Z"
+    assert output["next_cursor"] == "2026-03-21T00:00:03Z|msg-3"
     assert [message["message_id"] for message in output["messages"]] == [
         "msg-1",
         "msg-2",
         "msg-3",
     ]
     assert [message["cursor"] for message in output["messages"]] == [
-        "2026-03-21T00:00:01Z",
-        "2026-03-21T00:00:02Z",
-        "2026-03-21T00:00:03Z",
+        "2026-03-21T00:00:01Z|msg-1",
+        "2026-03-21T00:00:02Z|msg-2",
+        "2026-03-21T00:00:03Z|msg-3",
     ]
     assert output["messages"][0]["metadata"]["content"] == "first"
     assert output["messages"][0]["channel_id"] == "234567890123456789"
@@ -425,7 +425,80 @@ def test_query_communication_messages_discord_supports_cursor_and_limit(
 
     assert output["count"] == 1
     assert [message["message_id"] for message in output["messages"]] == ["msg-2"]
-    assert output["next_cursor"] == "2026-03-21T00:00:02Z"
+    assert output["next_cursor"] == "2026-03-21T00:00:02Z|msg-2"
+
+
+def test_query_communication_messages_discord_cursor_preserves_equal_timestamp_messages(
+    tmp_path: Path,
+) -> None:
+    runtime = _runtime(tmp_path)
+    _write_targets(
+        tmp_path,
+        [
+            {
+                "id": "discord-ops",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "123456789012345678/234567890123456789",
+                "policy": {"capabilities": ["read"]},
+            }
+        ],
+    )
+    store = DiscordInboxStore(tmp_path / "runtime" / "discord-inbox-store.json")
+    shared_created_at = datetime(2026, 3, 21, 0, 0, 1, tzinfo=UTC)
+    store.add_message_if_new(
+        _discord_message(
+            "msg-1",
+            created_at=shared_created_at,
+            content="first",
+        )
+    )
+    store.add_message_if_new(
+        _discord_message(
+            "msg-2",
+            created_at=shared_created_at,
+            content="second",
+        )
+    )
+    store.add_message_if_new(
+        _discord_message(
+            "msg-3",
+            created_at=datetime(2026, 3, 21, 0, 0, 2, tzinfo=UTC),
+            content="third",
+        )
+    )
+
+    first_page = _query(
+        runtime=runtime,
+        communication_target_id="discord-ops",
+        limit=1,
+    )
+    second_page = _query(
+        runtime=runtime,
+        communication_target_id="discord-ops",
+        cursor=str(first_page["next_cursor"]),
+        limit=1,
+    )
+    third_page = _query(
+        runtime=runtime,
+        communication_target_id="discord-ops",
+        cursor=str(second_page["next_cursor"]),
+        limit=1,
+    )
+    before_second = _query(
+        runtime=runtime,
+        communication_target_id="discord-ops",
+        before_cursor=str(second_page["next_cursor"]),
+        limit=1,
+    )
+
+    assert [message["message_id"] for message in first_page["messages"]] == ["msg-1"]
+    assert first_page["next_cursor"] == "2026-03-21T00:00:01Z|msg-1"
+    assert [message["message_id"] for message in second_page["messages"]] == ["msg-2"]
+    assert second_page["next_cursor"] == "2026-03-21T00:00:01Z|msg-2"
+    assert [message["message_id"] for message in third_page["messages"]] == ["msg-3"]
+    assert third_page["next_cursor"] == "2026-03-21T00:00:02Z|msg-3"
+    assert [message["message_id"] for message in before_second["messages"]] == ["msg-1"]
 
 
 def test_query_communication_messages_rejects_discord_thread_id(tmp_path: Path) -> None:
