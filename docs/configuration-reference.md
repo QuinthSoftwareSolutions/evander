@@ -496,6 +496,7 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:issue:list` | _none beyond envelope_ | `directory_path`, `direct_only`, `states`, `exclude_states`, `source`, `source_type`, `tags_any`, `tags_all`, `metadata_equals`, `metadata_exists`, `metadata_prefix`, `limit`, `outputs` |
 | `query:pull-request:get` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `include_reviewers`, `include_commits`, `outputs` |
 | `query:pull-request:feedback` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `cursor`, `outputs` |
+| `query:communication:messages` | `communication_target_id` | `directory_path`, `limit`, `cursor`, `before_cursor`, `thread_id`, `outputs` |
 | `query:pull-request:list` | `provider`, `repo` | `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `outputs` |
 | `query:semantic:store-status` | _none beyond envelope_ | `collection_name`, `directory_path`, `outputs` |
 | `query:semantic:search` | `collection_name`, `query_text` | `filter`, `limit`, `score_threshold`, `directory_path`, `outputs` |
@@ -551,6 +552,13 @@ include the `write` capability for a top-level message, or the `reply` capabilit
 when `thread_id` is set. Teams targets can address
 `team-id/channel-id`, `chat:<chat-id>`, or a declared one-on-one user as
 `user:<user-id-or-upn>`. Discord targets post to the configured channel.
+
+`query:communication:messages` reads normalized message history from the local
+Teams or Discord inbox stores populated by the ingest workers. It requires a
+declared communication target with the `read` capability, supports Teams and
+Discord only, does not call live provider APIs, and returns normalized
+`messages` plus `next_cursor` so the workflow owns cursor persistence. The
+query does not advance or persist read cursors on the host.
 
 `trigger:communication:new-message` uses the same communication target store for inbound reads.
 Targets selected for this trigger must include `read`, must be Teams channel/chat or Discord

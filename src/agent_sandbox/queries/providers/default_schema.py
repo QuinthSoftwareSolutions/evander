@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from agent_sandbox.queries.providers.schemas import (
     AdoWorkItemsQueryDefinition,
     AgentArtifactTextQueryDefinition,
+    CommunicationMessagesQueryDefinition,
     GitPrNoteQueryDefinition,
     IssueGetQueryDefinition,
     IssueListQueryDefinition,
@@ -35,6 +36,7 @@ _QUERY_MODEL_BY_TYPE = {
     "query:ado:work-items": AdoWorkItemsQueryDefinition,
     "query:pull-request:list": PullRequestListQueryDefinition,
     "query:pull-request:feedback": PullRequestFeedbackQueryDefinition,
+    "query:communication:messages": CommunicationMessagesQueryDefinition,
     "query:pull-request:get": PullRequestGetQueryDefinition,
     "query:state:get": StateGetQueryDefinition,
     "query:semantic:store-status": SemanticStoreStatusQueryDefinition,

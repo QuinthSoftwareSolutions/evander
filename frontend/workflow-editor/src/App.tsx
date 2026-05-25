@@ -384,6 +384,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "query:vm:run-state": "Read the current run state for a VM.",
   "query:git:pr-note": "Read pull-request note context from a host checkout.",
   "query:pull-request:list": "List provider pull requests.",
+  "query:communication:messages": "Read messages from a read-capable Teams or Discord target.",
   "query:pull-request:get": "Get a provider pull request by id.",
   "query:session-context": "Read session context and metadata.",
   "query:state:get": "Read graph-local workflow state for the current persisted workflow graph.",
@@ -1892,6 +1893,15 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       status: "active",
       top: 50,
       skip: 0,
+    };
+  }
+  if (kind === "query" && type === "query:communication:messages") {
+    return {
+      id,
+      display_name: "Communication messages",
+      type,
+      communication_target_id: "communication-target-id",
+      limit: 50,
     };
   }
   if (kind === "query" && type === "query:pull-request:get") {

@@ -1691,6 +1691,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "query:git:pr-note": "Read pull-request note context from a host checkout.",
     "query:pull-request:list": "List provider pull requests with optional status, branch, time, or tag filters.",
     "query:pull-request:feedback": "Fetch provider pull-request feedback without owning cursor state.",
+    "query:communication:messages": (
+        "Read messages from a read-capable Teams or Discord communication target."
+    ),
     "query:pull-request:get": "Get a provider pull request by id without owning cursor state.",
     "query:session-context": "Read session context and metadata.",
     "query:state:get": "Read graph-local workflow state for the current persisted workflow graph.",
@@ -3873,6 +3876,48 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("organization_url", "Organization URL", "string", bindable=True),
             _field("project", "Project", "string", bindable=True),
             _field("cursor", "Cursor", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:communication:messages",
+        label="Communication messages",
+        fields=[
+            _field(
+                "communication_target_id",
+                "Communication target",
+                "enum",
+                required=True,
+                description=(
+                    "Select a read-capable Teams or Discord communication target."
+                ),
+            ),
+            _field(
+                "limit",
+                "Limit",
+                "number",
+                bindable=True,
+                description="Default 50. Maximum 200.",
+                default_value=50,
+            ),
+            _field("cursor", "Cursor", "string", bindable=True),
+            _field("before_cursor", "Before cursor", "string", bindable=True),
+            _field(
+                "thread_id",
+                "Thread ID",
+                "string",
+                bindable=True,
+                description=(
+                    "Filters Teams channel-thread replies; Discord targets reject thread_id."
+                ),
+            ),
+            _field(
+                "directory_path",
+                "Directory path",
+                "string",
+                bindable=True,
+                description="Directory path used to resolve the communication target.",
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -12471,6 +12516,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if node.type == "effect:notification:send":
                 node.fields = [
                     field.model_copy(update={"options": communication_notification_target_options})
+                    if field.key == "communication_target_id"
+                    else field
+                    for field in node.fields
+                ]
+            if node.type == "query:communication:messages":
+                node.fields = [
+                    field.model_copy(update={"options": communication_read_target_options})
                     if field.key == "communication_target_id"
                     else field
                     for field in node.fields

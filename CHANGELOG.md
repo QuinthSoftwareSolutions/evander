@@ -10,6 +10,14 @@ material. Newer entries are added incrementally as changes land.
 - Moved sign-in branding into a top bar with the company logo on the left,
   the theme toggle centered, and a smaller evander logo on the right.
 
+## 2026-05-25 - Communication Messages Query
+
+- Added the `query:communication:messages` workflow query for reading
+  normalized Teams and Discord inbox messages through declared read-capable
+  communication targets.
+- Fixed Discord query pagination so messages that share the same `created_at`
+  timestamp are preserved across limited pages.
+
 ## 2026-05-25 - Pull Request Get Workflow Query
 
 - Added `query:pull-request:get` for normalized provider pull request snapshots,
