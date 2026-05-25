@@ -39,6 +39,7 @@ from agent_sandbox.services import (
 )
 from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage
 from agent_sandbox.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
+from agent_sandbox.workflow.node_state import workflow_node_is_enabled
 
 logger = logging.getLogger(__name__)
 _ATTACHMENT_SECRET_KEYS = {
@@ -107,10 +108,13 @@ class TeamsIngestWorker:
     def run_once(self) -> TeamsIngestCycleResult:
         now = datetime.now(UTC)
         active_sessions = self.runtime.session_repository.list_active_sessions(now=now)
-        directories = self._directories_to_scan(active_sessions)
         channel_targets_polled = 0
         direct_chats_polled = 0
         direct_sender_ids = self._direct_message_sender_ids()
+        directories = self._directories_to_scan(
+            active_sessions,
+            include_default_directory=bool(direct_sender_ids),
+        )
         for directory_path in directories:
             channel_targets = self._channel_targets_for_directory(
                 directory_path,
@@ -172,12 +176,19 @@ class TeamsIngestWorker:
     def _log_cycle_exception(self, _exc: Exception) -> None:
         logger.exception("Teams ingest worker cycle failed")
 
-    def _directories_to_scan(self, active_sessions: list[SessionManifest]) -> list[str]:
+    def _directories_to_scan(
+        self,
+        active_sessions: list[SessionManifest],
+        *,
+        include_default_directory: bool = False,
+    ) -> list[str]:
         if self.worker_config.directories:
             return list(self.worker_config.directories)
         directories = {
             DirectoryPath(segments=session.directory_path).as_posix() for session in active_sessions
         }
+        if include_default_directory and not directories:
+            directories.add("root")
         return sorted(directories)
 
     def _channel_targets_for_directory(
@@ -210,6 +221,8 @@ class TeamsIngestWorker:
 
         sender_ids: set[str] = set()
         for trigger in trigger_config.triggers:
+            if not workflow_node_is_enabled(trigger):
+                continue
             if trigger.type != "trigger:teams:direct-message":
                 continue
             materialized = materialize_node_definition(trigger)
@@ -241,18 +254,25 @@ class TeamsIngestWorker:
         )
         direct_chats_polled = 0
         with httpx.Client(timeout=provider_config.teams_timeout_seconds) as client:
+            direct_chat_targets_polled: set[str] = set()
+            if direct_sender_ids:
+                direct_chat_targets_polled = self._poll_direct_chats(
+                    client,
+                    service=service,
+                    sender_ids=direct_sender_ids,
+                    allowlisted_chat_targets={
+                        target for target in channel_targets if target.startswith("chat:")
+                    },
+                )
+                direct_chats_polled = len(direct_chat_targets_polled)
             for channel_target in channel_targets:
+                if channel_target in direct_chat_targets_polled:
+                    continue
                 self._poll_channel(
                     client,
                     service=service,
                     channel_target=channel_target,
                     budget=service.new_pagination_budget(),
-                )
-            if direct_sender_ids:
-                direct_chats_polled = self._poll_direct_chats(
-                    client,
-                    service=service,
-                    sender_ids=direct_sender_ids,
                 )
         return direct_chats_polled
 
@@ -307,6 +327,7 @@ class TeamsIngestWorker:
         channel_target: str,
         budget: Any | None = None,
         direct_message_sender_ids: set[str] | None = None,
+        store_unmatched_direct_messages: bool = False,
     ) -> None:
         target = parse_teams_target(channel_target)
         cursor_state = self.store.get_cursor_state(channel_target)
@@ -345,7 +366,10 @@ class TeamsIngestWorker:
             latest_seen_message = message
             if direct_message_sender_ids is not None:
                 message = _mark_direct_message(message)
-                if message.author_id.strip() not in direct_message_sender_ids:
+                if (
+                    message.author_id.strip() not in direct_message_sender_ids
+                    and not store_unmatched_direct_messages
+                ):
                     continue
             if self._is_known_status_post(message.cursor):
                 continue
@@ -369,8 +393,9 @@ class TeamsIngestWorker:
         *,
         service: GraphTeamsService,
         sender_ids: set[str],
-    ) -> int:
-        chats_polled = 0
+        allowlisted_chat_targets: set[str],
+    ) -> set[str]:
+        chats_polled: set[str] = set()
         for chat_payload in service._iter_one_on_one_chats(
             client,
             budget=service.new_pagination_budget(),
@@ -381,13 +406,15 @@ class TeamsIngestWorker:
             chat_id = str(chat_payload.get("id") or "").strip()
             if not chat_id:
                 continue
-            chats_polled += 1
+            chat_target = f"chat:{chat_id}"
+            chats_polled.add(chat_target)
             self._poll_channel(
                 client,
                 service=service,
-                channel_target=f"chat:{chat_id}",
+                channel_target=chat_target,
                 budget=service.new_pagination_budget(),
                 direct_message_sender_ids=sender_ids,
+                store_unmatched_direct_messages=chat_target in allowlisted_chat_targets,
             )
         return chats_polled
 

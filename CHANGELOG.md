@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - Container Worker Browser Env
+
+- Exported `CHROME_BIN` and `CHROMIUM_BIN` from Playwright-enabled
+  `container_worker_vm` sessions so Karma-style browser test launchers can use
+  the seeded Chromium binary mounted from the worker cache.
+
 ## 2026-05-25 - Workflow Trigger Disable Toggle
 
 - Added an `enabled: false` workflow trigger state that skips trigger polling and
@@ -18,6 +24,9 @@ material. Newer entries are added incrementally as changes land.
   Teams ingest polling.
 - Documented the Teams direct-message trigger and updated example Truman packs
   with a separate direct-message prompt path.
+- Fixed Teams direct-message ingest so enabled triggers poll on cold start
+  without active sessions, disabled triggers are ignored, and one-on-one chats
+  already allowlisted for normal Teams reads still publish DM trigger events.
 
 ## 2026-05-25 - Workflow Editor Inspector Layout
 

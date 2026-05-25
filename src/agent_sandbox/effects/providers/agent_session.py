@@ -1004,6 +1004,10 @@ def _container_profile_content(*, dotnet: bool, playwright: bool) -> str:
                 "  fi",
                 "  unset _agent_sandbox_playwright_chromium",
                 "fi",
+                'if [ -n "${PLAYWRIGHT_MCP_EXECUTABLE_PATH:-}" ]; then',
+                '  export CHROME_BIN="${CHROME_BIN:-$PLAYWRIGHT_MCP_EXECUTABLE_PATH}"',
+                '  export CHROMIUM_BIN="${CHROMIUM_BIN:-$PLAYWRIGHT_MCP_EXECUTABLE_PATH}"',
+                "fi",
             ]
         )
     return "\n".join(lines) + "\n"
