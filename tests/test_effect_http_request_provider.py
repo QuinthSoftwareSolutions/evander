@@ -166,6 +166,61 @@ def test_http_request_provider_returns_body_json_none_for_text_response(
     assert result["content_type"] == "text/plain; charset=utf-8"
 
 
+def test_http_request_provider_allows_matching_url_pattern(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    transport = httpx.MockTransport(handler)
+    _install_mock_client(monkeypatch, transport)
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(), _runtime_context(tmp_path))
+
+    result = provider.execute(
+        resolved_config={
+            "url": "https://api.example.test/items/42",
+            "allowed_url_patterns": ["https://api.example.test/*"],
+        }
+    )
+
+    assert len(requests) == 1
+    assert str(requests[0].url) == "https://api.example.test/items/42"
+    assert result["success"] is True
+
+
+def test_http_request_provider_rejects_disallowed_url_before_request(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    transport = httpx.MockTransport(handler)
+    _install_mock_client(monkeypatch, transport)
+
+    provider = HttpRequestEffectProvider()
+    provider.initialize(_effect_definition(), _runtime_context(tmp_path))
+
+    with pytest.raises(ValueError, match="url is not allowed by allowed_url_patterns"):
+        provider.execute(
+            resolved_config={
+                "url": "https://api.example.test@169.254.169.254/latest/meta-data",
+                "allowed_url_patterns": ["https://api.example.test/*"],
+            }
+        )
+
+    assert requests == []
+
+
 def test_http_request_provider_returns_failure_result_when_check_is_disabled(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -216,8 +271,14 @@ def test_http_request_provider_raises_when_checked_request_fails(
             r"effect:http:request GET https://example\.test/api failed with status 502: "
             r"gateway timeout while talking to upstream"
         ),
-    ):
+    ) as exc_info:
         provider.execute(resolved_config={"check": True})
+
+    outputs = getattr(exc_info.value, "outputs")
+    assert outputs["success"] is False
+    assert outputs["status_code"] == 502
+    assert outputs["body_text"] == "gateway timeout while talking to upstream"
+    assert outputs["headers"]["content-type"] == "text/plain"
 
 
 @pytest.mark.parametrize(
@@ -232,6 +293,11 @@ def test_http_request_provider_raises_when_checked_request_fails(
             "url",
             {"url": "ftp://example.test/api"},
             "effect:http:request url must be a non-empty http or https URL",
+        ),
+        (
+            "allowed_url_patterns",
+            {"allowed_url_patterns": []},
+            "effect:http:request allowed_url_patterns must include a pattern",
         ),
     ],
 )

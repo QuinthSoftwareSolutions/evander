@@ -204,6 +204,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "type": "effect:http:request",
             "method": "post",
             "url": "https://example.test/api",
+            "allowed_url_patterns": ["https://example.test/*"],
             "headers": {"Accept": "application/json"},
             "payload": {"message": "hello"},
         }
@@ -337,6 +338,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert agent_exec.type == "effect:agent:exec"
     assert bash_script.type == "effect:bash:script"
     assert http_request.type == "effect:http:request"
+    assert http_request.allowed_url_patterns == ["https://example.test/*"]
     assert vm_exec.type == "effect:vm:exec"
     assert vm_copy.type == "effect:vm:copy-files"
     assert issue_state.type == "effect:issue:update-state"

@@ -313,7 +313,7 @@ Type-specific keys:
 | `effect:semantic:delete` | `collection_name`, `point_ids` | `directory_path`, `wait`, `outputs` |
 | `effect:agent:destroy` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `execution_backend`, `directory_path`, `outputs` |
 | `effect:bash:script` | `script_path` | `args`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
-| `effect:http:request` | `url` | `method`, `payload`, `headers`, `timeout_seconds`, `check`, `outputs` |
+| `effect:http:request` | `url` | `method`, `allowed_url_patterns`, `payload`, `headers`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:issue:update-state` | `issue_id`, `state` | `sync_proxy_cache`, `outputs` |
@@ -328,8 +328,14 @@ Type-specific keys:
 `effect:http:request` performs a host-side raw HTTP or HTTPS request from the
 effect orchestrator. It supports `GET`, `POST`, and `PUT`; sends `payload` as a
 JSON request body when present; treats non-2xx responses as normal workflow
-outputs by default; and raises on non-2xx only when `check` is true. This effect
-does not use the guest HTTP target relay or its destination allowlist.
+outputs by default; and raises on non-2xx only when `check` is true. When
+`check` raises, response outputs are still recorded on the failed run.
+`allowed_url_patterns` defaults to `["*"]` and is checked before the host request
+is opened. Patterns are shell-style globs matched against either the full URL or
+origin when they include a scheme, for example `https://api.example.test/*`, and
+against the host or `host:port` when they do not, for example `*.example.test`.
+This effect does not use the guest HTTP target relay or its destination
+allowlist.
 
 `effect:pr:create` preflights the destination branch before pushing. If the
 destination branch exists and its tip is not contained in the local branch, the

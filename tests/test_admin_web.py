@@ -237,7 +237,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     )
     assert (
         descriptions_by_type["effect:http:request"]
-        == "Perform a host-side raw HTTP GET, POST, or PUT request and expose the response."
+        == "Perform a host-side raw HTTP GET, POST, or PUT request with URL allowlist control."
     )
     assert (
         descriptions_by_type["effect:agent:exec"]
@@ -512,6 +512,7 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert [field["key"] for field in http_request["fields"]] == [
         "method",
         "url",
+        "allowed_url_patterns",
         "payload",
         "headers",
         "timeout_seconds",
@@ -525,6 +526,8 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     ]
     assert http_request_fields["method"]["default_value"] == "GET"
     assert http_request_fields["url"]["required"] and http_request_fields["url"]["bindable"]
+    assert http_request_fields["allowed_url_patterns"]["kind"] == "string_list"
+    assert http_request_fields["allowed_url_patterns"]["default_value"] == ["*"]
     assert http_request_fields["payload"]["json_value_type"] == "object"
     assert http_request_fields["headers"]["json_value_type"] == "object"
     assert http_request_fields["check"]["default_value"] is False

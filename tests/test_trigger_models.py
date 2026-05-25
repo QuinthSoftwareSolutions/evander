@@ -20,6 +20,7 @@ from agent_sandbox.events.provider_models import (
     CommunicationSendMessageEffectDefinition,
     GitPromoteAgentBranchEffectDefinition,
     GitPushTriggerDefinition,
+    HttpRequestEffectDefinition,
     IssueUpdateStateEffectDefinition,
     NotificationSendEffectDefinition,
     PrCreateEffectDefinition,
@@ -384,6 +385,7 @@ def test_http_request_effect_accepts_bindings_and_static_headers() -> None:
             "type": "effect:http:request",
             "method": "GET",
             "url": "https://example.test/api",
+            "allowed_url_patterns": ["https://example.test/*"],
             "headers": {"Accept": "application/json"},
             "payload": {"ticket_id": "${{trigger.ticket_id}}"},
             "check": "${{trigger.check}}",
@@ -393,9 +395,23 @@ def test_http_request_effect_accepts_bindings_and_static_headers() -> None:
     assert effect.type == "effect:http:request"
     assert effect.method == "GET"
     assert effect.url == "https://example.test/api"
+    assert effect.allowed_url_patterns == ["https://example.test/*"]
     assert effect.headers == {"Accept": "application/json"}
     assert effect.payload == {"ticket_id": "${{trigger.ticket_id}}"}
     assert effect.check == "${{trigger.check}}"
+
+
+def test_http_request_effect_defaults_to_allow_any_url_pattern() -> None:
+    effect = HttpRequestEffectDefinition.model_validate(
+        {
+            "id": "effect-http",
+            "display_name": "HTTP request",
+            "type": "effect:http:request",
+            "url": "https://example.test/api",
+        }
+    )
+
+    assert effect.allowed_url_patterns == ["*"]
 
 
 def test_http_request_effect_rejects_invalid_static_method() -> None:
@@ -423,6 +439,24 @@ def test_http_request_effect_rejects_invalid_static_url() -> None:
                 "display_name": "HTTP request",
                 "type": "effect:http:request",
                 "url": "ftp://example.test/api",
+            }
+        )
+
+
+def test_http_request_effect_rejects_invalid_allowed_url_patterns() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+
+    with pytest.raises(
+        ValueError,
+        match="effect:http:request allowed_url_patterns must be a string, string list, or binding",
+    ):
+        adapter.validate_python(
+            {
+                "id": "effect-http",
+                "display_name": "HTTP request",
+                "type": "effect:http:request",
+                "url": "https://example.test/api",
+                "allowed_url_patterns": [42],
             }
         )
 

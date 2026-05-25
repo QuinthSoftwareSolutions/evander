@@ -1616,7 +1616,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:semantic:delete": "Delete semantic points by explicit point IDs.",
     "effect:bash:script": "Run a host-side Bash script from the effect orchestrator.",
     "effect:http:request": (
-        "Perform a host-side raw HTTP GET, POST, or PUT request and expose the response."
+        "Perform a host-side raw HTTP GET, POST, or PUT request with URL allowlist control."
     ),
     "effect:vm:exec": "Run a shell command inside a VM-backed agent target.",
     "effect:vm:copy-files": "Copy rendered file content into a VM-backed agent target.",
@@ -2969,6 +2969,18 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 required=True,
                 bindable=True,
                 placeholder="https://api.example.test/items",
+            ),
+            _field(
+                "allowed_url_patterns",
+                "Allowed URL patterns",
+                "string_list",
+                bindable=True,
+                default_value=["*"],
+                placeholder="https://api.example.test/*",
+                description=(
+                    "Shell-style URL or host patterns allowed for this request. "
+                    "Use '*' to allow any HTTP or HTTPS target."
+                ),
             ),
             _field(
                 "payload",

@@ -349,7 +349,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:semantic:ensure-collection": "Ensure a semantic collection exists with the configured vector schema.",
   "effect:semantic:upsert": "Embed one text string and upsert it as one semantic point.",
   "effect:semantic:delete": "Delete semantic points by explicit point IDs.",
-  "effect:http:request": "Perform a host-side raw HTTP GET, POST, or PUT request.",
+  "effect:http:request": "Perform a host-side raw HTTP GET, POST, or PUT request with URL allowlist control.",
   "effect:vm:create": "Create a VM for the workflow.",
   "effect:vm:clone-repo": "Clone a repository into a target VM.",
   "effect:vm:bootstrap-python": "Bootstrap a Python checkout and environment in a VM.",
@@ -1572,6 +1572,7 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       type,
       method: "GET",
       url: "https://api.example.test/items",
+      allowed_url_patterns: ["*"],
       check: false,
     };
   }

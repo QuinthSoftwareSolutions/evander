@@ -286,6 +286,7 @@ class HttpRequestEffectDefinition(EffectDefinition):
     type: Literal["effect:http:request"]
     method: ConfigValue = "GET"
     url: ConfigValue
+    allowed_url_patterns: ConfigValue | None = Field(default_factory=lambda: ["*"])
     payload: ConfigValue | None = None
     headers: ConfigValue | None = None
     timeout_seconds: ConfigValue | None = None
@@ -322,6 +323,32 @@ class HttpRequestEffectDefinition(EffectDefinition):
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("effect:http:request url must be a non-empty http or https URL")
         return normalized
+
+    @field_validator("allowed_url_patterns")
+    @classmethod
+    def validate_allowed_url_patterns(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None:
+            return value
+        if isinstance(value, str):
+            if value.strip():
+                return value
+            raise ValueError(
+                "effect:http:request allowed_url_patterns must include a pattern"
+            )
+        if not isinstance(value, list):
+            raise ValueError(
+                "effect:http:request allowed_url_patterns must be a string, string list, or binding"
+            )
+        if not value:
+            raise ValueError(
+                "effect:http:request allowed_url_patterns must include a pattern"
+            )
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(
+                    "effect:http:request allowed_url_patterns must be a string, string list, or binding"
+                )
+        return value
 
     @field_validator("headers")
     @classmethod

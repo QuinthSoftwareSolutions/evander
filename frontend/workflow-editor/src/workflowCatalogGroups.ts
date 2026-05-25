@@ -109,7 +109,7 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
     {
       key: "http",
       label: "HTTP",
-      description: "Perform host-side HTTP requests and expose upstream responses.",
+      description: "Perform allowlisted host-side HTTP requests and expose upstream responses.",
       prefixes: ["effect:http:"],
     },
     {

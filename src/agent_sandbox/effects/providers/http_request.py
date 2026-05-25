@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Mapping
+from fnmatch import fnmatchcase
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 
-from .base import EffectProviderBase
+from .base import EffectProviderBase, EffectProviderExecutionError
 
 NODE_TYPE = "effect:http:request"
 
@@ -21,6 +22,10 @@ class HttpRequestEffectProvider(EffectProviderBase):
 
         method = self._normalize_method(payload.get("method", "GET"))
         url = self._normalize_url(payload.get("url"))
+        allowed_url_patterns = self._normalize_allowed_url_patterns(
+            payload.get("allowed_url_patterns", ["*"])
+        )
+        self._enforce_allowed_url(url, allowed_url_patterns)
         headers = self._normalize_headers(payload.get("headers"))
         timeout_seconds = self._resolve_timeout_seconds(payload.get("timeout_seconds"))
         check = self._normalize_bool(payload.get("check", False))
@@ -56,8 +61,9 @@ class HttpRequestEffectProvider(EffectProviderBase):
         }
         if check and not success:
             excerpt = self._body_excerpt(body_text)
-            raise RuntimeError(
-                f"{NODE_TYPE} {method} {url} failed with status {status_code}: {excerpt}"
+            raise EffectProviderExecutionError(
+                f"{NODE_TYPE} {method} {url} failed with status {status_code}: {excerpt}",
+                outputs=result,
             )
         return result
 
@@ -66,7 +72,15 @@ class HttpRequestEffectProvider(EffectProviderBase):
         payload: dict[str, Any] = {}
         if definition is None:
             return payload
-        for field_name in ("method", "url", "payload", "headers", "timeout_seconds", "check"):
+        for field_name in (
+            "method",
+            "url",
+            "allowed_url_patterns",
+            "payload",
+            "headers",
+            "timeout_seconds",
+            "check",
+        ):
             if hasattr(definition, field_name):
                 payload[field_name] = getattr(definition, field_name)
         return payload
@@ -93,7 +107,91 @@ class HttpRequestEffectProvider(EffectProviderBase):
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError(f"{NODE_TYPE} url must be a non-empty http or https URL")
+        try:
+            parsed.port
+        except ValueError as exc:
+            raise ValueError(f"{NODE_TYPE} url must include a valid port") from exc
         return url
+
+    @classmethod
+    def _normalize_allowed_url_patterns(cls, value: Any) -> list[str]:
+        if value is None:
+            return ["*"]
+        if isinstance(value, str):
+            pattern = value.strip()
+            if not pattern:
+                raise ValueError(f"{NODE_TYPE} allowed_url_patterns must include a pattern")
+            return [pattern]
+        if not isinstance(value, list):
+            raise ValueError(f"{NODE_TYPE} allowed_url_patterns must be a string or string list")
+        patterns: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError(
+                    f"{NODE_TYPE} allowed_url_patterns must be a string or string list"
+                )
+            pattern = item.strip()
+            if pattern:
+                patterns.append(pattern)
+        if not patterns:
+            raise ValueError(f"{NODE_TYPE} allowed_url_patterns must include a pattern")
+        return patterns
+
+    @classmethod
+    def _enforce_allowed_url(cls, url: str, allowed_url_patterns: list[str]) -> None:
+        candidates = cls._url_match_candidates(url)
+        for raw_pattern in allowed_url_patterns:
+            pattern = cls._normalize_allowed_url_pattern(raw_pattern)
+            if pattern == "*":
+                return
+            if "://" in pattern:
+                scoped_candidates = (candidates["url"], candidates["origin"])
+            else:
+                scoped_candidates = (candidates["host"], candidates["netloc"])
+            if any(fnmatchcase(candidate, pattern) for candidate in scoped_candidates):
+                return
+        raise ValueError(f"{NODE_TYPE} url is not allowed by allowed_url_patterns: {url}")
+
+    @staticmethod
+    def _url_match_candidates(url: str) -> dict[str, str]:
+        parsed = urlparse(url)
+        host = parsed.hostname
+        if host is None:
+            raise ValueError(f"{NODE_TYPE} url must be a non-empty http or https URL")
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError(f"{NODE_TYPE} url must include a valid port") from exc
+        normalized_host = host.rstrip(".").casefold()
+        host_for_netloc = (
+            f"[{normalized_host}]"
+            if ":" in normalized_host and not normalized_host.startswith("[")
+            else normalized_host
+        )
+        netloc = f"{host_for_netloc}:{port}" if port is not None else host_for_netloc
+        scheme = parsed.scheme.casefold()
+        path = parsed.path or "/"
+        normalized_url = urlunparse((scheme, netloc, path, "", parsed.query, ""))
+        return {
+            "scheme": scheme,
+            "host": normalized_host,
+            "netloc": netloc,
+            "origin": f"{scheme}://{netloc}",
+            "url": normalized_url,
+        }
+
+    @staticmethod
+    def _normalize_allowed_url_pattern(pattern: str) -> str:
+        normalized = pattern.strip()
+        if not normalized or normalized == "*":
+            return normalized
+        if "://" not in normalized:
+            return normalized.rstrip(".").casefold()
+        parsed = urlparse(normalized)
+        if not parsed.scheme or not parsed.netloc:
+            return normalized
+        netloc = parsed.netloc.rsplit("@", 1)[-1].rstrip(".").casefold()
+        return urlunparse((parsed.scheme.casefold(), netloc, parsed.path, "", parsed.query, ""))
 
     @staticmethod
     def _normalize_headers(value: Any) -> dict[str, str]:

@@ -14,6 +14,9 @@ material. Newer entries are added incrementally as changes land.
   body text, parsed JSON when available, content type, and elapsed time.
 - Kept the effect JSON-body-only, disabled redirects by default, and preserved
   the default non-2xx success semantics unless `check` is enabled.
+- Added per-effect `allowed_url_patterns` URL allowlist enforcement, defaulting
+  to `["*"]`, and preserved response outputs when checked non-2xx responses fail
+  the run.
 
 ## 2026-05-24 - Container Worker Manifest Persistence Fix
 
