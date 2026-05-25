@@ -107,6 +107,7 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `event_queue_store_path` | `config/trigger-orchestrator/config.json` | Legacy JSON trigger queue path used when `orchestration_store_backend` is `json` and as the migration source. |
 | `event_queue_cursor_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator event queue cursor/checkpoint store path. |
 | `workflow_event_journal_path` | `config/trigger-orchestrator/config.json` | Legacy JSONL workflow event journal path used when `orchestration_store_backend` is `json` and as the migration source. |
+| `scheduled_internal_event_store_path` | `config/trigger-orchestrator/config.json` | Durable scheduled internal event store path. Defaults to `runtime/scheduled-internal-events.json`. |
 | `workflow_packs` | `config/trigger-orchestrator/config.json` | Ordered workflow-pack filenames under `config/workflow-packs/` to compose into executable IR. |
 | `workflow_ir` | `config/trigger-orchestrator/config.json` | Optional inline IR overlay (`version`, `nodes`, `edges`) merged after pack composition. |
 | `workflow_graphs` | `config/trigger-orchestrator/config.json` | Optional editor metadata for connected graphs when using inline/non-pack workflows (`id`, `name`, `description`, `directory_paths`, `user_ids`, `node_ids`). `user_ids` are ownership/audit metadata, not a visibility boundary. Pack-backed workflows store the same metadata as `graphs` inside the pack file. |

@@ -643,6 +643,10 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
         == "/tmp/agent-sandbox-runtime/workflow-events.jsonl"
     )
     assert (
+        str(config.scheduled_internal_event_store_path)
+        == "/tmp/agent-sandbox-runtime/scheduled-internal-events.json"
+    )
+    assert (
         str(config.gate_execution_store_path)
         == "/tmp/agent-sandbox-runtime/gate-orchestrator-executions.json"
     )
