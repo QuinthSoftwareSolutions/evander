@@ -15,8 +15,14 @@ from agent_sandbox.daemons.trigger_orchestrator import (
     build_trigger_orchestrator_worker,
     main,
 )
+from agent_sandbox.events.internal import InternalEventBus
 from agent_sandbox.events.models import TriggerEvent
-from agent_sandbox.events.provider_models import AgentPromptNewTriggerDefinition, EventTriggerDefinition
+from agent_sandbox.events.provider_models import (
+    AgentPromptNewTriggerDefinition,
+    EventTriggerDefinition,
+    TeamsNewMessageTriggerDefinition,
+    WebhookTriggerDefinition,
+)
 from agent_sandbox.messaging.agent_prompt_store import AgentPromptRecord, AgentPromptStore
 from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
 from agent_sandbox.models import SessionManifest
@@ -24,9 +30,9 @@ from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepo
 from agent_sandbox.triggers.providers.agent_prompt_new import AgentPromptNewTriggerProvider
 from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
 from agent_sandbox.triggers.providers.event import EventTriggerProvider
+from agent_sandbox.triggers.providers.webhook import WebhookTriggerProvider
 from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
-from agent_sandbox.events.provider_models import TeamsNewMessageTriggerDefinition
 
 
 class _StaticProvider:
@@ -1085,8 +1091,6 @@ def test_multiple_event_triggers_can_listen_to_same_internal_event(tmp_path: Pat
 
 
 def test_event_trigger_acknowledges_internal_event_after_publish(tmp_path: Path) -> None:
-    from agent_sandbox.events.internal import InternalEventBus
-
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
     event_bus = InternalEventBus(
@@ -1128,3 +1132,212 @@ def test_event_trigger_acknowledges_internal_event_after_publish(tmp_path: Path)
 
     assert second == []
     assert cursor_payload["event-listener"]["emitted_internal_event_ids"] == [internal.event_id]
+
+
+def _webhook_trigger_definition(
+    *,
+    trigger_id: str,
+    slug: str,
+    event_type: str | None = None,
+) -> WebhookTriggerDefinition:
+    payload: dict[str, object] = {
+        "id": trigger_id,
+        "display_name": "Webhook listener",
+        "type": "trigger:http:webhook",
+        "slug": slug,
+        "secret_env": "WEBHOOK_SECRET",
+    }
+    if event_type is not None:
+        payload["event_type"] = event_type
+    return WebhookTriggerDefinition.model_validate(payload)
+
+
+def _webhook_provider(runtime_dir: Path, *, trigger_id: str, slug: str) -> WebhookTriggerProvider:
+    provider = WebhookTriggerProvider()
+    provider.initialize(
+        _webhook_trigger_definition(trigger_id=trigger_id, slug=slug),
+        TriggerRuntimeContext(
+            resolved_config=GatewayConfig(runtime_dir=runtime_dir),
+            env={},
+        ),
+    )
+    return provider
+
+
+def _webhook_event_bus(runtime_dir: Path) -> InternalEventBus:
+    return InternalEventBus(
+        runtime_dir / "internal-events.json",
+        journal_path=runtime_dir / "workflow-events.jsonl",
+    )
+
+
+def test_webhook_trigger_emits_only_matching_signed_webhook_events(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    bus = _webhook_event_bus(runtime_dir)
+    matched = bus.publish(
+        event_type="external.webhook.build-notify",
+        payload={
+            "slug": "build-notify",
+            "headers": {"x-test": "one"},
+            "query": {"source": "ci"},
+            "body": {"target": "demo"},
+            "received_at": "2026-04-03T12:00:00Z",
+            "remote_addr": "198.51.100.10",
+            "signature_header": "sha256=1234",
+        },
+        source={
+            "source_type": "webhook",
+            "source_name": "build-notify",
+            "node_id": "webhook-1",
+            "node_type": "trigger:http:webhook",
+            "workflow_trace_id": "trace-123",
+        },
+        idempotency_key="sha256=body-1",
+        created_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+    )
+    bus.publish(
+        event_type="issue.plan_committed",
+        payload={"issue_id": "ISSUE-1"},
+        source={"source_type": "event", "source_name": "issue"},
+    )
+    bus.publish(
+        event_type="external.webhook.other-slug",
+        payload={"slug": "other-slug"},
+        source={
+            "source_type": "webhook",
+            "source_name": "other-slug",
+            "node_id": "webhook-2",
+            "node_type": "trigger:http:webhook",
+        },
+    )
+
+    provider = _webhook_provider(runtime_dir, trigger_id="webhook-1", slug="build-notify")
+
+    first = provider.poll()
+    assert len(first) == 1
+    assert first[0].event_id == f"webhook-1:{matched.event_id}"
+    assert first[0].trigger_type == "trigger:http:webhook"
+    assert first[0].occurred_at == matched.created_at
+    assert first[0].trace_id == "trace-123"
+    assert first[0].payload == dict(matched.payload)
+
+    cursor_path = runtime_dir / "trigger-cursors-http-webhook.json"
+    assert json.loads(cursor_path.read_text(encoding="utf-8")) == {}
+
+    provider.acknowledge_published_event(first[0])
+    second = provider.poll()
+
+    cursor_payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+    assert second == []
+    assert cursor_payload["webhook-1"]["emitted_internal_event_ids"] == [matched.event_id]
+
+
+def test_webhook_trigger_does_not_cross_deliver_between_slugs(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    bus = _webhook_event_bus(runtime_dir)
+    first_event = bus.publish(
+        event_type="external.webhook.build-notify",
+        payload={"slug": "build-notify", "body": {"target": "build"}},
+        source={
+            "source_type": "webhook",
+            "source_name": "build-notify",
+            "node_id": "webhook-build",
+            "node_type": "trigger:http:webhook",
+        },
+    )
+    second_event = bus.publish(
+        event_type="external.webhook.deploy-notify",
+        payload={"slug": "deploy-notify", "body": {"target": "deploy"}},
+        source={
+            "source_type": "webhook",
+            "source_name": "deploy-notify",
+            "node_id": "webhook-deploy",
+            "node_type": "trigger:http:webhook",
+        },
+    )
+
+    build_provider = _webhook_provider(
+        runtime_dir, trigger_id="webhook-build", slug="build-notify"
+    )
+    deploy_provider = _webhook_provider(
+        runtime_dir, trigger_id="webhook-deploy", slug="deploy-notify"
+    )
+
+    build_events = build_provider.poll()
+    deploy_events = deploy_provider.poll()
+
+    assert [event.event_id for event in build_events] == [
+        f"webhook-build:{first_event.event_id}"
+    ]
+    assert [event.event_id for event in deploy_events] == [
+        f"webhook-deploy:{second_event.event_id}"
+    ]
+    assert build_events[0].payload["slug"] == "build-notify"
+    assert deploy_events[0].payload["slug"] == "deploy-notify"
+
+
+def test_trigger_orchestrator_publishes_webhook_events_and_keeps_cursor_state(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    bus = _webhook_event_bus(runtime_dir)
+    internal = bus.publish(
+        event_type="external.webhook.build-notify",
+        payload={
+            "slug": "build-notify",
+            "headers": {"content-type": "application/json"},
+            "query": {},
+            "body": {"target": "demo"},
+            "received_at": "2026-04-03T12:00:00Z",
+            "remote_addr": "198.51.100.10",
+            "signature_header": "sha256=body-hash",
+        },
+        source={
+            "source_type": "webhook",
+            "source_name": "build-notify",
+            "node_id": "webhook-1",
+            "node_type": "trigger:http:webhook",
+        },
+        idempotency_key="sha256=body-hash",
+        created_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+    )
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "webhook-1",
+                    "display_name": "Build notifications",
+                    "type": "trigger:http:webhook",
+                    "slug": "build-notify",
+                    "secret_env": "WEBHOOK_SECRET",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    provider = _webhook_provider(runtime_dir, trigger_id="webhook-1", slug="build-notify")
+    worker.provider_factory.build = lambda trigger: provider  # type: ignore[assignment]
+
+    first = worker.run_once()
+    second = worker.run_once()
+
+    assert first.configured_triggers == 1
+    assert first.events_discovered == 1
+    assert first.events_published == 1
+    assert second.events_discovered == 0
+    assert second.events_published == 0
+
+    queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
+    assert list(queue_payload) == [f"webhook-1:{internal.event_id}"]
+    assert queue_payload[f"webhook-1:{internal.event_id}"]["trace_id"]
+
+    provider_cursor = json.loads(
+        (runtime_dir / "trigger-cursors-http-webhook.json").read_text(encoding="utf-8")
+    )
+    assert provider_cursor["webhook-1"]["emitted_internal_event_ids"] == [internal.event_id]
