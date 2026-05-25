@@ -78,7 +78,6 @@ def workflow_webhook_routes(service: AdminService) -> list[Route]:
         ).hexdigest()
         if not hmac.compare_digest(expected_signature, signature_match.group(1).lower()):
             return json_error("Webhook signature is invalid or missing", status_code=401)
-        normalized_signature = f"sha256={signature_match.group(1).lower()}"
 
         received_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         envelope = {
@@ -96,7 +95,6 @@ def workflow_webhook_routes(service: AdminService) -> list[Route]:
                 event_type=trigger.event_type,
                 payload=envelope,
                 correlation_key=f"webhook:{trigger.slug}",
-                idempotency_key=normalized_signature,
                 source={
                     "source_type": "webhook",
                     "source_name": trigger.slug,

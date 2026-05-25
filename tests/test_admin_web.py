@@ -4506,7 +4506,7 @@ def test_workflow_webhook_ingress_publishes_internal_event_and_bypasses_auth(
     assert response.status_code == 202
     assert repeat.status_code == 202
     assert auth_required.status_code == 401
-    assert response.json()["event_id"] == repeat.json()["event_id"]
+    assert response.json()["event_id"] != repeat.json()["event_id"]
     assert response.json()["event_type"] == "external.webhook.build-notify"
     assert response.json()["correlation_key"] == "webhook:build-notify"
     assert response.json()["source"] == {
@@ -4532,9 +4532,82 @@ def test_workflow_webhook_ingress_publishes_internal_event_and_bypasses_auth(
     assert response.json()["payload"]["remote_addr"]
 
     events = InternalEventBus(tmp_path / "runtime" / "internal-events.json").list_events()
-    assert len(events) == 1
-    assert events[0].event_type == "external.webhook.build-notify"
-    assert events[0].idempotency_key == headers["X-Agent-Sandbox-Signature-256"]
+    assert len(events) == 2
+    assert {event.event_id for event in events} == {
+        response.json()["event_id"],
+        repeat.json()["event_id"],
+    }
+    assert {event.event_type for event in events} == {"external.webhook.build-notify"}
+    assert [event.idempotency_key for event in events] == [None, None]
+
+
+def test_workflow_webhook_ingress_does_not_dedupe_same_body_across_slugs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
+    config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "poll_interval_seconds": 1,
+                "jitter_seconds": 0,
+                "triggers": [
+                    {
+                        "id": "webhook-build",
+                        "display_name": "Build webhook",
+                        "type": "trigger:http:webhook",
+                        "slug": "build-notify",
+                        "secret_env": "WEBHOOK_SECRET",
+                    },
+                    {
+                        "id": "webhook-deploy",
+                        "display_name": "Deploy webhook",
+                        "type": "trigger:http:webhook",
+                        "slug": "deploy-notify",
+                        "secret_env": "WEBHOOK_SECRET",
+                    },
+                ],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    body = b"{\"target\":\"demo\"}"
+    headers = _signed_webhook_headers(body, secret="webhook-secret")
+    build_response = client.post(
+        "/api/workflow-webhooks/build-notify",
+        content=body,
+        headers=headers,
+    )
+    deploy_response = client.post(
+        "/api/workflow-webhooks/deploy-notify",
+        content=body,
+        headers=headers,
+    )
+
+    assert build_response.status_code == 202
+    assert deploy_response.status_code == 202
+    assert build_response.json()["event_id"] != deploy_response.json()["event_id"]
+
+    events = InternalEventBus(tmp_path / "runtime" / "internal-events.json").list_events()
+    assert len(events) == 2
+    assert {event.event_id for event in events} == {
+        build_response.json()["event_id"],
+        deploy_response.json()["event_id"],
+    }
+    assert {event.event_type for event in events} == {
+        "external.webhook.build-notify",
+        "external.webhook.deploy-notify",
+    }
+    assert {event.source.source_name for event in events if event.source is not None} == {
+        "build-notify",
+        "deploy-notify",
+    }
+    assert [event.idempotency_key for event in events] == [None, None]
 
 
 @pytest.mark.parametrize(

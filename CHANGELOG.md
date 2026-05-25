@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - Workflow Webhook Idempotency Fix
+
+- Changed signed workflow webhook ingress to publish every valid delivery as a
+  fresh internal event instead of using the body HMAC signature as a global
+  idempotency key, avoiding repeated-payload and shared-secret cross-slug
+  suppression.
+
 ## 2026-05-25 - Signed Workflow Webhook Docs
 
 - Documented the `trigger:http:webhook` trigger shape, public ingress path,
