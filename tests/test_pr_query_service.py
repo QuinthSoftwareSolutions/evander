@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from agent_sandbox.services import AzureDevOpsPrQueryProvider, PrQueryService
+from agent_sandbox.services import AzureDevOpsPrQueryProvider, GitHubPrQueryProvider, PrQueryService
 
 
 def patch_httpx_client(monkeypatch: pytest.MonkeyPatch, transport: httpx.BaseTransport) -> None:
@@ -333,6 +333,159 @@ def test_azure_query_provider_get_pull_request_keeps_raw_commits(
     assert isinstance(result.raw.get("commits"), list)
 
 
+def test_github_query_provider_get_pull_request_uses_base_payload_without_optional_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.url.path == "/repos/org/repo/pulls/17"
+        assert "authorization" not in request.headers
+        assert request.headers["accept"] == "application/vnd.github+json"
+        assert request.headers["x-github-api-version"] == "2022-11-28"
+        return httpx.Response(
+            200,
+            json={
+                "number": 17,
+                "title": "Fix race",
+                "state": "open",
+                "html_url": "https://github.test/org/repo/pull/17",
+                "head": {"ref": "feature/fix-race", "sha": "abc123"},
+                "base": {"ref": "main", "sha": "def456"},
+                "user": {"login": "agent-user"},
+                "requested_reviewers": [
+                    {"login": "reviewer-one"},
+                ],
+            },
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = GitHubPrQueryProvider(api_base_url="https://api.github.test")
+
+    result = provider.get_pull_request(repo="org/repo", pr_id="17")
+
+    assert len(requests) == 1
+    assert result.provider == "github"
+    assert result.title == "Fix race"
+    assert result.status == "open"
+    assert result.url == "https://github.test/org/repo/pull/17"
+    assert result.source_branch == "feature/fix-race"
+    assert result.target_branch == "main"
+    assert result.source_commit == "abc123"
+    assert result.target_commit == "def456"
+    assert result.created_by == "agent-user"
+    assert [reviewer.reviewer_id for reviewer in result.reviewers] == ["reviewer-one"]
+    assert result.reviewers[0].status == "requested"
+    assert result.commits == []
+
+
+def test_github_query_provider_get_pull_request_honors_optional_flags_and_merges_reviews(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        assert request.url.path in {
+            "/repos/org/repo/pulls/17",
+            "/repos/org/repo/pulls/17/commits",
+            "/repos/org/repo/pulls/17/reviews",
+        }
+        assert request.headers["authorization"] == "Bearer token-1"
+        assert request.headers["accept"] == "application/vnd.github+json"
+        if request.url.path.endswith("/commits"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "sha": "abc123",
+                        "html_url": "https://github.test/org/repo/commit/abc123",
+                        "commit": {"message": "First commit"},
+                    }
+                ],
+            )
+        if request.url.path.endswith("/reviews"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "user": {"login": "reviewer-one"},
+                        "state": "APPROVED",
+                        "submitted_at": "2026-05-01T12:00:00Z",
+                    },
+                    {
+                        "user": {"login": "reviewer-one"},
+                        "state": "CHANGES_REQUESTED",
+                        "submitted_at": "2026-05-01T13:00:00Z",
+                    },
+                    {
+                        "user": {"login": "reviewer-two"},
+                        "state": "COMMENTED",
+                        "submitted_at": "2026-05-01T14:00:00Z",
+                    },
+                ],
+            )
+        return httpx.Response(
+            200,
+            json={
+                "number": 17,
+                "title": "Fix race",
+                "state": "closed",
+                "merged": True,
+                "merged_at": "2026-05-01T15:00:00Z",
+                "html_url": "https://github.test/org/repo/pull/17",
+                "head": {"ref": "feature/fix-race", "sha": "abc123"},
+                "base": {"ref": "main", "sha": "def456"},
+                "user": {"login": "agent-user"},
+                "requested_reviewers": [
+                    {"login": "reviewer-two"},
+                    {"login": "reviewer-three"},
+                ],
+            },
+        )
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = GitHubPrQueryProvider(
+        token="token-1",
+        api_base_url="https://api.github.test",
+    )
+
+    result = provider.get_pull_request(
+        repo="org/repo",
+        pr_id="17",
+        include_reviewers=True,
+        include_commits=True,
+    )
+
+    assert requests == [
+        "/repos/org/repo/pulls/17",
+        "/repos/org/repo/pulls/17/commits",
+        "/repos/org/repo/pulls/17/reviews",
+    ]
+    assert result.status == "merged"
+    assert result.commits[0].commit_id == "abc123"
+    assert result.commits[0].comment == "First commit"
+    assert [reviewer.reviewer_id for reviewer in result.reviewers] == [
+        "reviewer-one",
+        "reviewer-two",
+        "reviewer-three",
+    ]
+    assert result.reviewers[0].status == "changes_requested"
+    assert result.reviewers[1].status == "commented"
+    assert result.reviewers[2].status == "requested"
+    assert result.raw["commits"][0]["sha"] == "abc123"
+    assert len(result.raw["reviews"]) == 3
+
+
+def test_pr_query_service_rejects_github_listing() -> None:
+    provider = GitHubPrQueryProvider(api_base_url="https://api.github.test")
+    service = PrQueryService(providers={"github": provider})
+
+    with pytest.raises(ValueError, match="GitHub PR listing is not supported"):
+        service.list_pull_requests(provider="github", repo="org/repo")
+
+
 def test_azure_query_provider_update_pull_request_updates_metadata_and_tags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -348,9 +501,7 @@ def test_azure_query_provider_update_pull_request_updates_metadata_and_tags(
                     "title": "Old title",
                     "status": "active",
                     "_links": {
-                        "web": {
-                            "href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"
-                        }
+                        "web": {"href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"}
                     },
                 },
             )
@@ -383,16 +534,16 @@ def test_azure_query_provider_update_pull_request_updates_metadata_and_tags(
                     "title": "New title",
                     "status": "abandoned",
                     "_links": {
-                        "web": {
-                            "href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"
-                        }
+                        "web": {"href": "https://dev.azure.com/org/proj/_git/repo-1/pullrequest/17"}
                     },
                 },
             )
         if request.method == "POST" and request.url.path.endswith("/pullRequests/17/labels"):
             assert json.loads(request.content.decode("utf-8")) == {"name": "reviewed"}
             return httpx.Response(200, json={"name": "reviewed"})
-        if request.method == "DELETE" and request.url.path.endswith("/pullRequests/17/labels/stale"):
+        if request.method == "DELETE" and request.url.path.endswith(
+            "/pullRequests/17/labels/stale"
+        ):
             return httpx.Response(200, json={})
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
 

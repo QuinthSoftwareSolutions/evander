@@ -321,14 +321,10 @@ def _artifact_teams_reference_content_url(artifact: dict[str, Any]) -> str | Non
         candidates.extend([metadata.get("contentUrl"), metadata.get("content_url")])
         attachment_ref = metadata.get("attachment_ref")
         if isinstance(attachment_ref, dict):
-            candidates.extend(
-                [attachment_ref.get("contentUrl"), attachment_ref.get("content_url")]
-            )
+            candidates.extend([attachment_ref.get("contentUrl"), attachment_ref.get("content_url")])
             ref_metadata = attachment_ref.get("metadata")
             if isinstance(ref_metadata, dict):
-                candidates.extend(
-                    [ref_metadata.get("contentUrl"), ref_metadata.get("content_url")]
-                )
+                candidates.extend([ref_metadata.get("contentUrl"), ref_metadata.get("content_url")])
     for candidate in candidates:
         normalized = _quote_teams_reference_content_url(candidate)
         if normalized:
@@ -363,9 +359,7 @@ class EmailService:
     def get_message(self, mailbox_id: str, message_id: str) -> EmailMessageDetail:
         return self.provider.get_message(mailbox_id=mailbox_id, message_id=message_id)
 
-    def list_attachments(
-        self, mailbox_id: str, message_id: str
-    ) -> list[EmailAttachmentMetadata]:
+    def list_attachments(self, mailbox_id: str, message_id: str) -> list[EmailAttachmentMetadata]:
         return self.provider.list_attachments(mailbox_id=mailbox_id, message_id=message_id)
 
     def download_attachment(
@@ -497,9 +491,17 @@ class TeamsInlineMediaProvider:
         for index, item in enumerate(
             self.service.list_attachments(resource_id, channel_target=channel_target)
         ):
-            mime_type = str(
-                item.get("mime_type") or item.get("content_type") or item.get("contentType") or ""
-            ).split(";", 1)[0].strip() or None
+            mime_type = (
+                str(
+                    item.get("mime_type")
+                    or item.get("content_type")
+                    or item.get("contentType")
+                    or ""
+                )
+                .split(";", 1)[0]
+                .strip()
+                or None
+            )
             filename = str(
                 item.get("filename") or item.get("name") or f"teams-inline-media-{index}"
             ).strip()
@@ -522,8 +524,7 @@ class TeamsInlineMediaProvider:
                     mime_type=mime_type,
                     byte_count=byte_count,
                     url=(
-                        str(item.get("contentUrl") or item.get("content_url") or "").strip()
-                        or None
+                        str(item.get("contentUrl") or item.get("content_url") or "").strip() or None
                     ),
                     metadata=_sanitize_attachment_metadata(item),
                 )
@@ -1178,9 +1179,7 @@ def _graph_error_details(response: httpx.Response) -> str:
     return ", ".join(parts)
 
 
-_TEAMS_TARGET_ERROR = (
-    "expected 'team-id/channel-id', 'chat:<chat-id>', or 'user:<user-id-or-upn>'."
-)
+_TEAMS_TARGET_ERROR = "expected 'team-id/channel-id', 'chat:<chat-id>', or 'user:<user-id-or-upn>'."
 
 
 def normalize_teams_user_target(target: str) -> str:
@@ -2242,11 +2241,7 @@ class GraphTeamsService:
             include_remote_hosted=False,
         )
         attachment = next(
-            (
-                item
-                for item in attachments
-                if _teams_attachment_id(item) == attachment_id
-            ),
+            (item for item in attachments if _teams_attachment_id(item) == attachment_id),
             None,
         )
         if attachment is None and self._record_has_hosted_content_hint(record):
@@ -2256,11 +2251,7 @@ class GraphTeamsService:
                 include_remote_hosted=True,
             )
             attachment = next(
-                (
-                    item
-                    for item in attachments
-                    if _teams_attachment_id(item) == attachment_id
-                ),
+                (item for item in attachments if _teams_attachment_id(item) == attachment_id),
                 None,
             )
         if attachment is None:
@@ -2333,9 +2324,7 @@ class GraphTeamsService:
                 hosted_contents.append(
                     {
                         "@microsoft.graph.temporaryId": temporary_id,
-                        "contentBytes": base64.b64encode(_artifact_bytes(artifact)).decode(
-                            "ascii"
-                        ),
+                        "contentBytes": base64.b64encode(_artifact_bytes(artifact)).decode("ascii"),
                         "contentType": content_type,
                     }
                 )
@@ -2361,16 +2350,14 @@ class GraphTeamsService:
         body_html = _teams_message_to_html(message)
         for attachment_id in attachment_references:
             body_html += (
-                '<p><attachment id="'
-                f'{html.escape(attachment_id, quote=True)}'
-                '"></attachment></p>'
+                f'<p><attachment id="{html.escape(attachment_id, quote=True)}"></attachment></p>'
             )
         for filename, hosted_content_url in inline_images:
             body_html += (
                 '<p><img src="'
-                f'{html.escape(hosted_content_url, quote=True)}'
+                f"{html.escape(hosted_content_url, quote=True)}"
                 '" alt="'
-                f'{html.escape(filename, quote=True)}'
+                f"{html.escape(filename, quote=True)}"
                 '"></p>'
             )
         payload: dict[str, Any] = {
@@ -2863,12 +2850,15 @@ class PrFeedbackService:
 
 
 def _pr_artifact_filename(artifact: dict[str, Any]) -> str:
-    return str(
-        artifact.get("normalized_safe_filename")
-        or artifact.get("filename")
-        or artifact.get("original_filename")
+    return (
+        str(
+            artifact.get("normalized_safe_filename")
+            or artifact.get("filename")
+            or artifact.get("original_filename")
+            or "attachment"
+        ).strip()
         or "attachment"
-    ).strip() or "attachment"
+    )
 
 
 def _pr_artifact_mime_type(artifact: dict[str, Any]) -> str | None:
@@ -2910,7 +2900,9 @@ def _append_markdown_attachment_links(
     return "\n".join(lines).rstrip()
 
 
-def _reject_unsupported_attachments(provider: str, attachments: list[dict[str, Any]] | None) -> None:
+def _reject_unsupported_attachments(
+    provider: str, attachments: list[dict[str, Any]] | None
+) -> None:
     if attachments:
         raise ValueError(f"{provider} PR publishing does not support artifact attachments")
 
@@ -3302,9 +3294,7 @@ class AzureDevOpsPrQueryProvider:
         return [
             name
             for name in (
-                str(item.get("name", "")).strip()
-                for item in label_items
-                if isinstance(item, dict)
+                str(item.get("name", "")).strip() for item in label_items if isinstance(item, dict)
             )
             if name
         ]
@@ -3584,6 +3574,271 @@ class AzureDevOpsPrQueryProvider:
         )
 
 
+class GitHubPrQueryProvider:
+    def __init__(
+        self,
+        *,
+        token: str | None = None,
+        api_base_url: str = "https://api.github.com",
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        self.token = token.strip() if token else None
+        self.api_base_url = api_base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
+
+    def _headers(self) -> dict[str, str]:
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
+
+    def list_pull_requests(
+        self,
+        *,
+        repo: str,
+        project: str | None = None,
+        status: str | None = None,
+        creator_id: str | None = None,
+        reviewer_id: str | None = None,
+        source_ref_name: str | None = None,
+        target_ref_name: str | None = None,
+        source_repository_id: str | None = None,
+        repository_id: str | None = None,
+        min_time: str | None = None,
+        max_time: str | None = None,
+        query_time_range_type: str | None = None,
+        include_links: bool | None = None,
+        max_comment_length: int | None = None,
+        tags: str | None = None,
+        top: int | None = None,
+        skip: int | None = None,
+        cursor: str | None = None,
+    ) -> ListPullRequestsResponse:
+        raise ValueError("GitHub PR listing is not supported")
+
+    def get_pull_request(
+        self,
+        *,
+        repo: str,
+        pr_id: str,
+        include_reviewers: bool | None = None,
+        include_commits: bool | None = None,
+    ) -> GetPullRequestResponse:
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = client.get(
+                f"{self.api_base_url}/repos/{repo}/pulls/{pr_id}",
+                headers=self._headers(),
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+            base_payload = payload if isinstance(payload, dict) else {}
+            raw_payload: dict[str, Any] = dict(base_payload)
+
+            commits_payload: list[dict[str, Any]] = []
+            if include_commits:
+                commits_response = client.get(
+                    f"{self.api_base_url}/repos/{repo}/pulls/{pr_id}/commits",
+                    headers=self._headers(),
+                )
+                commits_response.raise_for_status()
+                commits_raw = commits_response.json()
+                if isinstance(commits_raw, list):
+                    raw_items = commits_raw
+                elif isinstance(commits_raw, dict):
+                    raw_items = commits_raw.get("value")
+                else:
+                    raw_items = None
+                if isinstance(raw_items, list):
+                    commits_payload = [item for item in raw_items if isinstance(item, dict)]
+                raw_payload["commits"] = commits_payload
+
+            review_payload: list[dict[str, Any]] = []
+            if include_reviewers:
+                reviews_response = client.get(
+                    f"{self.api_base_url}/repos/{repo}/pulls/{pr_id}/reviews",
+                    headers=self._headers(),
+                )
+                reviews_response.raise_for_status()
+                reviews_raw = reviews_response.json()
+                raw_items = reviews_raw if isinstance(reviews_raw, list) else []
+                review_payload = [item for item in raw_items if isinstance(item, dict)]
+                raw_payload["reviews"] = review_payload
+
+        return GetPullRequestResponse(
+            provider="github",
+            repo=repo,
+            pr_id=pr_id,
+            title=str(base_payload.get("title", "")).strip() or None,
+            status=self._normalize_status(base_payload),
+            url=(
+                str(base_payload.get("html_url") or base_payload.get("url") or "").strip() or None
+            ),
+            source_branch=self._normalize_pull_branch(base_payload, branch_name="head", key="ref"),
+            target_branch=self._normalize_pull_branch(base_payload, branch_name="base", key="ref"),
+            source_commit=self._normalize_pull_branch(base_payload, branch_name="head", key="sha"),
+            target_commit=self._normalize_pull_branch(base_payload, branch_name="base", key="sha"),
+            created_by=self._normalize_created_by(base_payload),
+            reviewers=self._normalize_reviewers(base_payload, review_payload, include_reviewers),
+            commits=self._normalize_commits(commits_payload),
+            raw=raw_payload,
+        )
+
+    def _normalize_status(self, payload: dict[str, Any]) -> str | None:
+        merged = payload.get("merged")
+        merged_at = payload.get("merged_at")
+        if merged is True or str(merged_at or "").strip():
+            return "merged"
+        status = str(payload.get("state", "")).strip().lower()
+        return status or None
+
+    def _normalize_pull_branch(
+        self,
+        payload: dict[str, Any],
+        *,
+        branch_name: str,
+        key: str,
+    ) -> str | None:
+        branch = payload.get(branch_name)
+        if not isinstance(branch, dict):
+            return None
+        value = str(branch.get(key, "")).strip()
+        return value or None
+
+    def _normalize_created_by(self, payload: dict[str, Any]) -> str | None:
+        user = payload.get("user")
+        if not isinstance(user, dict):
+            return None
+        value = str(user.get("login", "")).strip()
+        return value or None
+
+    def _normalize_commits(self, commits_payload: list[dict[str, Any]]) -> list[PullRequestCommit]:
+        commits: list[PullRequestCommit] = []
+        for item in commits_payload:
+            commit_id = str(item.get("sha", "")).strip()
+            if not commit_id:
+                continue
+            commit_info = item.get("commit") if isinstance(item.get("commit"), dict) else {}
+            message = str(commit_info.get("message", "")).strip() or None
+            commits.append(
+                PullRequestCommit(
+                    commit_id=commit_id,
+                    url=str(item.get("html_url") or item.get("url") or "").strip() or None,
+                    comment=message,
+                )
+            )
+        return commits
+
+    def _normalize_reviewers(
+        self,
+        payload: dict[str, Any],
+        review_payload: list[dict[str, Any]],
+        include_reviewers: bool | None,
+    ) -> list[PullRequestReviewer]:
+        if include_reviewers is False:
+            return []
+        if include_reviewers is None:
+            requested = payload.get("requested_reviewers")
+            reviewer_items = requested if isinstance(requested, list) else []
+            reviewers: list[PullRequestReviewer] = []
+            for item in reviewer_items:
+                if not isinstance(item, dict):
+                    continue
+                reviewer_id = self._github_reviewer_id(item)
+                if reviewer_id is None:
+                    continue
+                reviewers.append(
+                    PullRequestReviewer(
+                        reviewer_id=reviewer_id,
+                        display_name=self._github_reviewer_display_name(item),
+                        status="requested",
+                    )
+                )
+            return reviewers
+
+        latest_review_by_reviewer: dict[str, tuple[datetime, int, dict[str, Any]]] = {}
+        for index, review in enumerate(review_payload):
+            reviewer_id = self._github_reviewer_id(review)
+            if reviewer_id is None:
+                continue
+            sort_key = self._github_review_sort_key(review, index)
+            existing = latest_review_by_reviewer.get(reviewer_id)
+            if existing is None or sort_key > existing[:2]:
+                latest_review_by_reviewer[reviewer_id] = (sort_key[0], sort_key[1], review)
+
+        reviewers = [
+            self._review_to_reviewer(reviewer_id=reviewer_id, review=review)
+            for reviewer_id, (_sort_time, _sort_index, review) in latest_review_by_reviewer.items()
+        ]
+
+        requested = payload.get("requested_reviewers")
+        requested_reviewers = requested if isinstance(requested, list) else []
+        present_ids = {
+            reviewer.reviewer_id.casefold() for reviewer in reviewers if reviewer.reviewer_id
+        }
+        for item in requested_reviewers:
+            if not isinstance(item, dict):
+                continue
+            reviewer_id = self._github_reviewer_id(item)
+            if reviewer_id is None or reviewer_id.casefold() in present_ids:
+                continue
+            reviewers.append(
+                PullRequestReviewer(
+                    reviewer_id=reviewer_id,
+                    display_name=self._github_reviewer_display_name(item),
+                    status="requested",
+                )
+            )
+            present_ids.add(reviewer_id.casefold())
+        return reviewers
+
+    def _github_reviewer_id(self, payload: dict[str, Any]) -> str | None:
+        user = payload.get("user") if isinstance(payload.get("user"), dict) else payload
+        if not isinstance(user, dict):
+            return None
+        value = str(user.get("login") or user.get("id") or "").strip()
+        return value or None
+
+    def _github_reviewer_display_name(self, payload: dict[str, Any]) -> str | None:
+        user = payload.get("user") if isinstance(payload.get("user"), dict) else payload
+        if not isinstance(user, dict):
+            return None
+        value = str(user.get("login") or user.get("name") or user.get("id") or "").strip()
+        return value or None
+
+    def _github_review_sort_key(self, review: dict[str, Any], index: int) -> tuple[datetime, int]:
+        submitted_at = str(review.get("submitted_at") or review.get("submittedAt") or "").strip()
+        if submitted_at:
+            try:
+                return (_parse_dt(submitted_at), index)
+            except ValueError:
+                pass
+        return (datetime.min.replace(tzinfo=UTC), index)
+
+    def _review_to_reviewer(
+        self, *, reviewer_id: str, review: dict[str, Any]
+    ) -> PullRequestReviewer:
+        user = review.get("user") if isinstance(review.get("user"), dict) else {}
+        state = str(review.get("state", "")).strip().lower() or None
+        vote_by_state = {
+            "approved": 10,
+            "changes_requested": -10,
+            "commented": 0,
+            "dismissed": None,
+            "pending": None,
+        }
+        return PullRequestReviewer(
+            reviewer_id=reviewer_id,
+            display_name=str(user.get("login") or user.get("name") or reviewer_id or "").strip()
+            or None,
+            vote=vote_by_state.get(state),
+            status=state,
+        )
+
+
 def _normalize_azure_devops_repo_identifier(repo: str) -> str:
     normalized = unquote(repo.strip())
     if not normalized:
@@ -3639,9 +3894,7 @@ class _PullRequestTagExpressionParser:
         expression = self._parse_or()
         trailing = self._peek()
         if trailing is not None:
-            raise ValueError(
-                f"unexpected token {trailing.value!r} in pull request tag expression"
-            )
+            raise ValueError(f"unexpected token {trailing.value!r} in pull request tag expression")
         return expression
 
     def _parse_or(self) -> _PullRequestTagExpression:
@@ -4280,9 +4533,7 @@ class AzureDevOpsPrPublishProvider:
         )
         content = _append_markdown_attachment_links(body_text, uploaded_attachments)
         payload: dict[str, Any] = {
-            "comments": [
-                {"parentCommentId": 0, "content": content.strip(), "commentType": "text"}
-            ],
+            "comments": [{"parentCommentId": 0, "content": content.strip(), "commentType": "text"}],
             "status": "active",
         }
         if thread_context is not None:
@@ -4594,8 +4845,7 @@ def _azure_devops_pr_iteration_context(
         )
         changes_payload = changes_response.json()
         raw_changes = (
-            changes_payload.get("changeEntries")
-            or changes_payload.get("value")
+            changes_payload.get("changeEntries") or changes_payload.get("value")
             if isinstance(changes_payload, dict)
             else []
         )
