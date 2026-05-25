@@ -49,6 +49,32 @@ test("tutorial progress uses account preferences and the chooser can skip or res
   assert.match(chooserBranch, /clearWorkflowTutorialProgressStatus\(definition\.id\)/);
 });
 
+test("tutorial final reset and exit persist completion without changing skip", () => {
+  const completionHelpers = sourceBetween(
+    "function workflowTutorialIsAtFinalStep(",
+    "function advanceWorkflowTutorial()",
+  );
+  const resetBranch = sourceBetween(
+    "function resetWorkflowTutorial()",
+    "function exitWorkflowTutorial(",
+  );
+  const exitBranch = sourceBetween(
+    "function exitWorkflowTutorial(",
+    "function exitInspectMode()",
+  );
+  const skipBranch = sourceBetween(
+    "function skipWorkflowTutorial(",
+    "function workflowTutorialChooserStatusFor(",
+  );
+
+  assert.match(completionHelpers, /definition\.steps\.length - 1/);
+  assert.match(completionHelpers, /updateWorkflowTutorialProgressStatus\(activeWorkflowTutorial\.tutorialId, "completed"\)/);
+  assert.match(resetBranch, /markActiveWorkflowTutorialCompletedIfFinished\(\)/);
+  assert.match(exitBranch, /markActiveWorkflowTutorialCompletedIfFinished\(\)/);
+  assert.match(exitBranch, /markCompleted\?: boolean/);
+  assert.match(skipBranch, /exitWorkflowTutorial\(\{ markCompleted: false \}\)/);
+});
+
 test("tutorial connect decoration keeps both source and target nodes active", () => {
   const decorateBranch = sourceBetween(
     "function decorateWorkflowTutorialNodes(",

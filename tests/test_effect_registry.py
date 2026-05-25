@@ -21,6 +21,7 @@ from agent_sandbox.effects.providers.agent_session import (
     container_thread_id_from_logs,
     selected_execution_backend_for_target,
 )
+from agent_sandbox.effects.providers.http_request import HttpRequestEffectProvider
 from agent_sandbox.effects.providers.base import EffectProviderBase, EffectRuntimeContext
 from agent_sandbox.effects.registry import (
     DEFAULT_EFFECT_PROVIDER_REGISTRY,
@@ -313,6 +314,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:semantic:upsert",
         "effect:semantic:delete",
         "effect:bash:script",
+        "effect:http:request",
         "effect:event:emit",
         "effect:event:schedule",
         "effect:vm:exec",
@@ -331,6 +333,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:pr:create",
         "effect:pull-request:update",
     }
+    assert DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:http:request"] is HttpRequestEffectProvider
 
 
 def test_event_schedule_effect_definition_validates_contract_shape() -> None:
@@ -1980,6 +1983,8 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert "PLAYWRIGHT_MCP_EXECUTABLE_PATH" in bootstrap_by_path[
         "/home/agent/.profile"
     ]["content"]
+    assert "CHROME_BIN" in bootstrap_by_path["/home/agent/.profile"]["content"]
+    assert "CHROMIUM_BIN" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "/home/agent/.dotnet-cli/.keep" not in bootstrap_by_path
     assert "/home/agent/.nuget/NuGet/NuGet.Config" in bootstrap_by_path
     nuget_config = bootstrap_by_path["/home/agent/.nuget/NuGet/NuGet.Config"]["content"]

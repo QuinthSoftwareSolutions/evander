@@ -21,10 +21,12 @@ from agent_sandbox.models import (
     ToolName,
     digest_payload,
 )
+from agent_sandbox.messaging.targets import (
+    CommunicationTargetCapability,
+    CommunicationTargetDefinition,
+)
 from agent_sandbox.services import (
-    effective_teams_channel_targets,
     normalize_teams_target,
-    normalize_teams_user_target,
     parse_teams_target,
     teams_target_from_message,
 )
@@ -545,11 +547,93 @@ class PolicyEngine:
                 f"PR repository {provider}:{repo} is not allowlisted for session {session.session_id}"
             )
 
-    def require_discord_channel(self, session: SessionManifest, channel_id: str) -> None:
-        if channel_id not in session.discord_channel_allowlist:
+    def _communication_target_for_session(
+        self,
+        session: SessionManifest,
+        reference: str,
+        *,
+        provider: str,
+        capability: CommunicationTargetCapability,
+    ) -> CommunicationTargetDefinition | None:
+        try:
+            return self.policy_config.resolve_communication_target_reference_for_session(
+                session,
+                reference,
+                provider=provider,
+                capability=capability,
+            )
+        except ValueError as exc:
+            raise PolicyError(str(exc)) from exc
+
+    @staticmethod
+    def _discord_channel_id_from_target(target: CommunicationTargetDefinition) -> str:
+        return str(target.address or "").strip().split("/")[-1].strip()
+
+    def _requested_discord_channel_id(
+        self,
+        session: SessionManifest,
+        channel_id: str,
+        *,
+        capability: CommunicationTargetCapability,
+    ) -> str:
+        normalized_channel_id = str(channel_id or "").strip()
+        target = self._communication_target_for_session(
+            session,
+            normalized_channel_id,
+            provider="discord",
+            capability=capability,
+        )
+        if target is not None:
+            return self._discord_channel_id_from_target(target)
+        return normalized_channel_id
+
+    def _requested_teams_target(
+        self,
+        session: SessionManifest,
+        channel_target: str,
+        *,
+        capability: CommunicationTargetCapability,
+        allow_user_target: bool,
+    ) -> str:
+        raw_target = str(channel_target or "").strip()
+        target = self._communication_target_for_session(
+            session,
+            raw_target,
+            provider="teams",
+            capability=capability,
+        )
+        try:
+            target_value = target.address if target is not None else raw_target
+            normalized_target = normalize_teams_target(target_value)
+        except ValueError as exc:
+            raise PolicyError(str(exc)) from exc
+        if parse_teams_target(normalized_target).kind == "user" and not allow_user_target:
+            raise PolicyError("Teams user targets are only supported for send operations")
+        return normalized_target
+
+    def require_discord_channel(
+        self,
+        session: SessionManifest,
+        channel_id: str,
+        *,
+        capability: CommunicationTargetCapability = "read",
+    ) -> str:
+        requested_channel_id = self._requested_discord_channel_id(
+            session,
+            channel_id,
+            capability=capability,
+        )
+        allowed_channel_ids = set(
+            self.policy_config.resolved_discord_channel_ids_for_session(
+                session,
+                capability=capability,
+            )
+        )
+        if requested_channel_id not in allowed_channel_ids:
             raise PolicyError(
                 f"Discord channel is not allowlisted for session {session.session_id}"
             )
+        return requested_channel_id
 
     def require_discord_command_source(
         self,
@@ -570,7 +654,12 @@ class PolicyEngine:
                 f"Discord command {command.command_id} is missing required source metadata"
             )
 
-        allowlisted_channel = source_channel_id in session.discord_channel_allowlist
+        allowlisted_channel = source_channel_id in set(
+            self.policy_config.resolved_discord_channel_ids_for_session(
+                session,
+                capability="read",
+            )
+        )
         allowlisted_operator = source_author_id in effective_policy.discord_operator_user_allowlist
         if not (allowlisted_channel or allowlisted_operator):
             raise PolicyError(
@@ -604,41 +693,71 @@ class PolicyEngine:
                 f"Teams message {message.cursor} is missing required source metadata"
             ) from exc
 
-        if target not in set(effective_teams_channel_targets(session, skip_user_targets=True)):
+        if target not in set(
+            self.policy_config.resolved_teams_channel_targets_for_session(
+                session,
+                capability="read",
+            )
+        ):
             raise PolicyError(
                 f"Teams message {message.cursor} source is not allowlisted for session "
                 f"{session.session_id}"
             )
 
-    def require_teams_channel_target(self, session: SessionManifest, channel_target: str) -> str:
-        try:
-            normalized_target = normalize_teams_target(channel_target)
-        except ValueError as exc:
-            raise PolicyError(str(exc)) from exc
-        if parse_teams_target(normalized_target).kind == "user":
-            raise PolicyError("Teams user targets are only supported for send operations")
-        if normalized_target not in set(effective_teams_channel_targets(session, skip_user_targets=True)):
+    def require_teams_channel_target(
+        self,
+        session: SessionManifest,
+        channel_target: str,
+        *,
+        capability: CommunicationTargetCapability = "read",
+    ) -> str:
+        normalized_target = self._requested_teams_target(
+            session,
+            channel_target,
+            capability=capability,
+            allow_user_target=False,
+        )
+        if normalized_target not in set(
+            self.policy_config.resolved_teams_channel_targets_for_session(
+                session,
+                capability=capability,
+            )
+        ):
             raise PolicyError(f"Teams target is not allowlisted for session {session.session_id}")
         return normalized_target
 
-    def require_teams_send_target(self, session: SessionManifest, channel_target: str) -> str:
-        try:
-            normalized_target = normalize_teams_target(channel_target)
-        except ValueError as exc:
-            raise PolicyError(str(exc)) from exc
+    def require_teams_send_target(
+        self,
+        session: SessionManifest,
+        channel_target: str,
+        *,
+        capability: CommunicationTargetCapability = "write",
+    ) -> str:
+        normalized_target = self._requested_teams_target(
+            session,
+            channel_target,
+            capability=capability,
+            allow_user_target=True,
+        )
         parsed_target = parse_teams_target(normalized_target)
         if parsed_target.kind == "user":
-            allowed_users = {
-                normalize_teams_user_target(value)
-                for value in session.teams_user_allowlist
-                if value.strip()
-            }
+            allowed_users = set(
+                self.policy_config.resolved_teams_user_targets_for_session(
+                    session,
+                    capability=capability,
+                )
+            )
             if normalized_target not in allowed_users:
                 raise PolicyError(
                     f"Teams user target is not allowlisted for session {session.session_id}"
                 )
             return normalized_target
-        if normalized_target not in set(effective_teams_channel_targets(session, skip_user_targets=True)):
+        if normalized_target not in set(
+            self.policy_config.resolved_teams_channel_targets_for_session(
+                session,
+                capability=capability,
+            )
+        ):
             raise PolicyError(f"Teams target is not allowlisted for session {session.session_id}")
         return normalized_target
 
@@ -769,20 +888,32 @@ class PolicyEngine:
         channel_id: str | None = None,
         channel_target: str | None = None,
         allow_teams_user_target: bool = False,
+        capability: CommunicationTargetCapability = "read",
     ) -> str:
         normalized_provider = str(provider or "").strip().lower()
         if normalized_provider == "discord":
-            self.require_discord_channel(session, str(channel_id or "").strip())
+            return self.require_discord_channel(
+                session,
+                str(channel_id or "").strip(),
+                capability=capability,
+            )
         elif normalized_provider == "teams":
             if allow_teams_user_target:
-                self.require_teams_send_target(session, str(channel_target or "").strip())
-            else:
-                self.require_teams_channel_target(session, str(channel_target or "").strip())
+                return self.require_teams_send_target(
+                    session,
+                    str(channel_target or "").strip(),
+                    capability=capability,
+                )
+            return self.require_teams_channel_target(
+                session,
+                str(channel_target or "").strip(),
+                capability=capability,
+            )
         elif normalized_provider == "email":
             self.require_email_mailbox(session, str(mailbox_id or "").strip())
+            return str(mailbox_id or "").strip()
         else:
             raise PolicyError("Communication file provider must be one of: discord, teams, email")
-        return normalized_provider
 
     def require_communication_file_content(
         self,
@@ -852,15 +983,17 @@ class PolicyEngine:
         channel_id: str | None = None,
         channel_target: str | None = None,
         allow_teams_user_target: bool = False,
-    ) -> None:
+        capability: CommunicationTargetCapability = "write",
+    ) -> str:
         self.require_communication_file_send_enabled(session)
-        self.require_communication_file_scope(
+        resolved_scope = self.require_communication_file_scope(
             session,
             provider=provider,
             mailbox_id=mailbox_id,
             channel_id=channel_id,
             channel_target=channel_target,
             allow_teams_user_target=allow_teams_user_target,
+            capability=capability,
         )
         for artifact in artifacts:
             artifact_session_id = _artifact_field(artifact, "session_id")
@@ -880,6 +1013,7 @@ class PolicyEngine:
                 mime_type=_artifact_field(artifact, "mime_type"),
                 byte_count=int(_artifact_field(artifact, "byte_count", 0)),
             )
+        return resolved_scope
 
     def require_communication_file_send_approval(
         self,

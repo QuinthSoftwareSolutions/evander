@@ -40,6 +40,7 @@ from agent_sandbox.workflow.runtime_config import (
     TriggerOrchestratorWorkerGlobalConfigReloader,
     load_trigger_orchestrator_worker_global_config,
 )
+from agent_sandbox.workflow.node_state import workflow_node_is_enabled
 from agent_sandbox.orchestration.host_polling import (
     HostFileLockManager,
     HostWakeNotifier,
@@ -291,7 +292,11 @@ class TriggerOrchestratorWorker:
     def _configured_triggers(
         self, worker_config: TriggerOrchestratorWorkerGlobalConfig
     ) -> list[TriggerDefinitionDiscriminated]:
-        return [trigger for trigger in worker_config.triggers if not _is_system_trigger(trigger)]
+        return [
+            trigger
+            for trigger in worker_config.triggers
+            if not _is_system_trigger(trigger) and workflow_node_is_enabled(trigger)
+        ]
 
     def _load_configured_providers(
         self,

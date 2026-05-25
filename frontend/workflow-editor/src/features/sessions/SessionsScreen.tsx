@@ -1365,11 +1365,12 @@ export function SessionsScreen() {
                     />
                   </label>
                   <label className="field-stack">
-                    <span>Discord channel allowlist</span>
+                    <span>Discord channel or target allowlist</span>
                     <textarea
                       rows={4}
                       value={policyDraft.discordChannelAllowlist}
                       onChange={(event) => updatePolicyDraft({ discordChannelAllowlist: event.target.value })}
+                      placeholder="channel-id or communication-target-id"
                       disabled={mutationLocked}
                     />
                   </label>
@@ -1379,7 +1380,7 @@ export function SessionsScreen() {
                       rows={4}
                       value={policyDraft.teamsChannelAllowlist}
                       onChange={(event) => updatePolicyDraft({ teamsChannelAllowlist: event.target.value })}
-                      placeholder="team-id/channel-id or chat:<chat-id>"
+                      placeholder="communication-target-id, team-id/channel-id, or chat:<chat-id>"
                       disabled={mutationLocked}
                     />
                   </label>

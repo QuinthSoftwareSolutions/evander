@@ -314,6 +314,89 @@ class BashScriptEffectDefinition(EffectDefinition):
     check: ConfigValue | None = True
 
 
+class HttpRequestEffectDefinition(EffectDefinition):
+    type: Literal["effect:http:request"]
+    method: ConfigValue = "GET"
+    url: ConfigValue
+    allowed_url_patterns: ConfigValue | None = Field(default_factory=lambda: ["*"])
+    payload: ConfigValue | None = None
+    headers: ConfigValue | None = None
+    timeout_seconds: ConfigValue | None = None
+    check: ConfigValue | None = False
+
+    @field_validator("method")
+    @classmethod
+    def validate_method(cls, value: ConfigValue) -> ConfigValue:
+        if not isinstance(value, str):
+            raise ValueError("effect:http:request method must be a string or binding")
+        normalized = value.strip()
+        if "${{" in normalized:
+            return normalized
+        if not normalized:
+            raise ValueError("effect:http:request method must be GET, POST, or PUT")
+        normalized = normalized.upper()
+        if normalized not in {"GET", "POST", "PUT"}:
+            raise ValueError("effect:http:request method must be GET, POST, or PUT")
+        return normalized
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: ConfigValue) -> ConfigValue:
+        if not isinstance(value, str):
+            raise ValueError("effect:http:request url must be a string or binding")
+        normalized = value.strip()
+        if "${{" in normalized:
+            return normalized
+        if not normalized:
+            raise ValueError("effect:http:request url must be a non-empty http or https URL")
+        from urllib.parse import urlparse
+
+        parsed = urlparse(normalized)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("effect:http:request url must be a non-empty http or https URL")
+        return normalized
+
+    @field_validator("allowed_url_patterns")
+    @classmethod
+    def validate_allowed_url_patterns(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None:
+            return value
+        if isinstance(value, str):
+            if value.strip():
+                return value
+            raise ValueError(
+                "effect:http:request allowed_url_patterns must include a pattern"
+            )
+        if not isinstance(value, list):
+            raise ValueError(
+                "effect:http:request allowed_url_patterns must be a string, string list, or binding"
+            )
+        if not value:
+            raise ValueError(
+                "effect:http:request allowed_url_patterns must include a pattern"
+            )
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(
+                    "effect:http:request allowed_url_patterns must be a string, string list, or binding"
+                )
+        return value
+
+    @field_validator("headers")
+    @classmethod
+    def validate_headers(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            text = value.strip()
+            if "${{" in text:
+                return text
+            raise ValueError("effect:http:request headers must be a mapping or binding")
+        if not isinstance(value, Mapping):
+            raise ValueError("effect:http:request headers must be a mapping or binding")
+        return value
+
+
 class VmStartEffectDefinition(EffectDefinition):
     type: Literal["effect:vm:start"]
     target: ConfigValue | None = None

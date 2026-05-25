@@ -100,6 +100,10 @@ import {
   workflowCommunicationTargetInspectorState,
 } from "./workflowCommunicationTargets";
 import {
+  workflowTriggerEnabled,
+  workflowTriggerEnabledValue,
+} from "./workflowTriggerState";
+import {
   toolArgumentPolicyDraftRowsFromValue,
   toolArgumentPolicyDraftRowsToValue,
   type ToolArgumentPolicyConstraintDraftRow,
@@ -138,6 +142,7 @@ type GraphNodeData = {
   diagnosticCount: number;
   hasDiagnostics: boolean;
   hasUnsavedChanges: boolean;
+  isDisabled: boolean;
   isInspectGhost?: boolean;
   pendingConnectionRole?: PendingConnectionRole | null;
   tutorialHighlight?: boolean;
@@ -320,11 +325,14 @@ const NODE_KIND_DESCRIPTIONS: Record<WorkflowNodeKind, string> = {
 const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "trigger:cron": "Start a workflow on a recurring cron schedule.",
   "trigger:event": "Start when an internal workflow event is emitted.",
+  "trigger:http:webhook": "Start from a signed HTTP webhook delivered to a public endpoint.",
   "trigger:ticket:created": "Start when a tracked ticket is created.",
   "trigger:ticket:changed": "Start when a tracked ticket changes state or metadata.",
   "trigger:issue:comment-created": "Start when a tracked issue receives a new comment.",
   "trigger:discord:new-message": "Start from new Discord messages that match the configured filters.",
   "trigger:teams:new-message": "Start from new Microsoft Teams messages that match the configured targets.",
+  "trigger:communication:new-message": "Start from new messages on configured communication targets.",
+  "trigger:teams:direct-message": "Start from allowlisted one-on-one Microsoft Teams direct messages.",
   "trigger:email:new-message": "Start from newly ingested email messages for the configured mailbox scope.",
   "trigger:pull-request:new-feedback": "Start when new pull-request feedback arrives from the configured provider.",
   "trigger:pull-request:completed": "Start when a tracked pull request reaches a terminal state.",
@@ -346,6 +354,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:semantic:ensure-collection": "Ensure a semantic collection exists with the configured vector schema.",
   "effect:semantic:upsert": "Embed one text string and upsert it as one semantic point.",
   "effect:semantic:delete": "Delete semantic points by explicit point IDs.",
+  "effect:http:request": "Perform a host-side raw HTTP GET, POST, or PUT request with URL allowlist control.",
   "effect:vm:create": "Create a VM for the workflow.",
   "effect:vm:clone-repo": "Clone a repository into a target VM.",
   "effect:vm:bootstrap-python": "Bootstrap a Python checkout and environment in a VM.",
@@ -498,7 +507,7 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
         nodeData.dominantStatus ? ` runtime-${nodeData.dominantStatus}` : ""
       }${nodeData.hasDiagnostics ? " invalid" : ""}${
         nodeData.pendingConnectionRole ? ` connection-${nodeData.pendingConnectionRole}` : ""
-      }${nodeData.hasUnsavedChanges ? " unsaved" : ""}${nodeData.isInspectGhost ? " inspect-ghost" : ""}${
+      }${nodeData.hasUnsavedChanges ? " unsaved" : ""}${nodeData.isDisabled ? " trigger-disabled" : ""}${nodeData.isInspectGhost ? " inspect-ghost" : ""}${
         nodeData.tutorialHighlight ? ` tutorial-highlight tutorial-highlight-${nodeData.tutorialHighlightMode ?? "pulse"}` : ""
       }${nodeData.tutorialBlocked ? " tutorial-blocked" : ""}`}
     >
@@ -527,6 +536,13 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
               <Tooltip content="Unsaved changes">
                 <div className="node-unsaved-badge" aria-label="Unsaved changes">
                   Unsaved changes
+                </div>
+              </Tooltip>
+            ) : null}
+            {nodeData.isDisabled ? (
+              <Tooltip content="Trigger disabled">
+                <div className="node-disabled-badge" aria-label="Trigger disabled">
+                  Disabled
                 </div>
               </Tooltip>
             ) : null}
@@ -839,6 +855,7 @@ function buildNodes(
         diagnosticCount,
         hasDiagnostics: diagnosticCount > 0,
         hasUnsavedChanges: dirtyNodeIds.has(node.id),
+        isDisabled: kind === "trigger" && !workflowTriggerEnabled(node),
         isInspectGhost: ghostNodeIds.has(node.id),
       },
     };
@@ -1412,6 +1429,16 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   if (kind === "trigger" && type === "trigger:event") {
     return { id, display_name: "Internal event", type, event_type: "custom.operator_event" };
   }
+  if (kind === "trigger" && type === "trigger:http:webhook") {
+    return {
+      id,
+      display_name: "Webhook",
+      type,
+      slug: `webhook-${id}`,
+      secret_env: "WEBHOOK_SECRET",
+      event_type: `webhook.webhook-${id}`,
+    };
+  }
   if (kind === "trigger" && type === "trigger:ticket:created") {
     return { id, display_name: "Ticket created", type, directories: ["root"] };
   }
@@ -1444,6 +1471,26 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       type,
       targets: [],
       user_ids: [],
+    };
+  }
+  if (kind === "trigger" && type === "trigger:communication:new-message") {
+    return {
+      id,
+      display_name: "Communication message",
+      type,
+      communication_target_ids: [],
+      directory_path: "root",
+      author_ids: [],
+      case_sensitive: false,
+    };
+  }
+  if (kind === "trigger" && type === "trigger:teams:direct-message") {
+    return {
+      id,
+      display_name: "Teams direct message",
+      type,
+      sender_user_ids: [],
+      message_filter: null,
     };
   }
   if (kind === "trigger" && type === "trigger:email:new-message") {
@@ -1552,6 +1599,17 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       type,
       collection_name: "agent_memory",
       point_ids: [SEMANTIC_SAMPLE_POINT_ID],
+    };
+  }
+  if (kind === "effect" && type === "effect:http:request") {
+    return {
+      id,
+      display_name: "HTTP request",
+      type,
+      method: "GET",
+      url: "https://api.example.test/items",
+      allowed_url_patterns: ["*"],
+      check: false,
     };
   }
   if (kind === "effect" && type === "effect:vm:create") {
@@ -3860,7 +3918,7 @@ export default function App() {
     updateWorkflowTutorialProgressStatus(definition.id, "skipped");
     setWorkflowTutorialChooserOpen(false);
     if (activeWorkflowTutorial?.tutorialId === definition.id) {
-      exitWorkflowTutorial();
+      exitWorkflowTutorial({ markCompleted: false });
     }
   }
 
@@ -3885,16 +3943,37 @@ export default function App() {
     }
   }
 
+  function workflowTutorialIsAtFinalStep(tutorial: WorkflowTutorialSession | null): boolean {
+    if (!tutorial) return false;
+    const definition = workflowTutorialDefinitionById(tutorial.tutorialId);
+    if (!definition) return false;
+    return tutorial.stepIndex >= definition.steps.length - 1;
+  }
+
+  function markActiveWorkflowTutorialCompletedIfFinished() {
+    if (!activeWorkflowTutorial || !workflowTutorialIsAtFinalStep(activeWorkflowTutorial)) return;
+    updateWorkflowTutorialProgressStatus(activeWorkflowTutorial.tutorialId, "completed");
+  }
+
   function advanceWorkflowTutorial() {
-    const currentTutorialId = activeWorkflowTutorial?.tutorialId ?? null;
-    let reachedFinalStep = false;
+    const currentTutorial = activeWorkflowTutorial;
+    const currentDefinition = currentTutorial ? workflowTutorialDefinitionById(currentTutorial.tutorialId) : null;
+    const currentNextStepIndex = currentTutorial && currentDefinition
+      ? Math.min(currentTutorial.stepIndex + 1, currentDefinition.steps.length - 1)
+      : null;
+    const reachedFinalStep = Boolean(
+      currentTutorial &&
+      currentDefinition &&
+      currentNextStepIndex !== null &&
+      currentNextStepIndex !== currentTutorial.stepIndex &&
+      currentNextStepIndex === currentDefinition.steps.length - 1,
+    );
     setActiveWorkflowTutorial((current) => {
       if (!current) return current;
       const definition = workflowTutorialDefinitionById(current.tutorialId);
       if (!definition) return current;
       const nextStepIndex = Math.min(current.stepIndex + 1, definition.steps.length - 1);
       if (nextStepIndex === current.stepIndex) return current;
-      reachedFinalStep = nextStepIndex === definition.steps.length - 1;
       hasAutoFitRef.current = false;
       setWorkflowTutorialHint(null);
       return {
@@ -3902,12 +3981,13 @@ export default function App() {
         stepIndex: nextStepIndex,
       };
     });
-    if (reachedFinalStep && currentTutorialId) {
-      updateWorkflowTutorialProgressStatus(currentTutorialId, "completed");
+    if (reachedFinalStep && currentTutorial) {
+      updateWorkflowTutorialProgressStatus(currentTutorial.tutorialId, "completed");
     }
   }
 
   function resetWorkflowTutorial() {
+    markActiveWorkflowTutorialCompletedIfFinished();
     setActiveWorkflowTutorial((current) => {
       if (!current) return current;
       const definition = workflowTutorialDefinitionById(current.tutorialId);
@@ -3924,7 +4004,10 @@ export default function App() {
     setSnapGuides([]);
   }
 
-  function exitWorkflowTutorial() {
+  function exitWorkflowTutorial(options: { markCompleted?: boolean } = {}) {
+    if (options.markCompleted !== false) {
+      markActiveWorkflowTutorialCompletedIfFinished();
+    }
     const snapshot = tutorialSnapshotRef.current;
     setActiveWorkflowTutorial(null);
     setWorkflowTutorialHint(null);
@@ -4312,6 +4395,9 @@ export default function App() {
 
     const { id: _id, display_name: _displayName, type: _type, ...extras } = nextNode;
     const knownFieldKeys = new Set((nextCatalogEntry?.fields ?? []).map((field) => field.key));
+    if (nextNode.type.startsWith("trigger:")) {
+      knownFieldKeys.add("enabled");
+    }
     const nextKnownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => knownFieldKeys.has(key)));
     const nextUnknownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => !knownFieldKeys.has(key)));
     const nextJsonDrafts: Record<string, string> = {};
@@ -5313,6 +5399,9 @@ export default function App() {
     }
 
     const nextKnownValues = { ...draft.knownValues };
+    if (selectedNode.type.startsWith("trigger:") && nextKnownValues.enabled !== false) {
+      delete nextKnownValues.enabled;
+    }
     if (hasCollapsedTargetUi) {
       const activeTargetKey = activeEffectTargetKey(nextKnownValues);
       for (const key of EFFECT_TARGET_KEYS) {
@@ -5698,6 +5787,16 @@ export default function App() {
     }
   }
 
+  function updateSelectedTriggerEnabled(nextEnabled: boolean) {
+    if (!selectedNode || !selectedNode.type.startsWith("trigger:")) return;
+    const next = { ...inspectorKnownValues, enabled: workflowTriggerEnabledValue(nextEnabled) };
+    if (next.enabled === undefined) {
+      delete next.enabled;
+    }
+    setInspectorKnownValues(next);
+    stageInspectorDraft({ knownValues: next });
+  }
+
   function updateKnownField(key: string, value: unknown) {
     const next = { ...inspectorKnownValues, [key]: value };
     let nextJsonDrafts = inspectorJsonDrafts;
@@ -6032,6 +6131,27 @@ export default function App() {
             <span className="workflow-field-tooltip-icon" aria-hidden="true">i</span>
           </Tooltip>
         ) : null}
+      </div>
+    );
+  }
+
+  function renderSelectedTriggerToggle() {
+    if (!selectedNode || !selectedNode.type.startsWith("trigger:")) return null;
+    const enabled = inspectorKnownValues.enabled === undefined
+      ? workflowTriggerEnabled(selectedNode)
+      : inspectorKnownValues.enabled !== false;
+    return (
+      <div className="trigger-enable-control">
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(event) => updateSelectedTriggerEnabled(event.target.checked)}
+            disabled={workflowEditLocked}
+            aria-label="Trigger enabled"
+          />
+          <span>{enabled ? "Trigger enabled" : "Trigger disabled"}</span>
+        </label>
       </div>
     );
   }
@@ -7960,6 +8080,7 @@ export default function App() {
                     </div>
                   ) : null}
                   <button onClick={selectDownstreamBranch}>Select downstream branch</button>
+                  {renderSelectedTriggerToggle()}
                   <label className="inspector-label">
                     <span>Node id</span>
                     <input
@@ -8413,10 +8534,10 @@ export default function App() {
                     </div>
                   </div>
                 ) : null}
-                {renderSelectedNodeOutputContract()}
                 <button onClick={selectDownstreamBranch} disabled={workflowEditLocked}>
                   Select downstream branch
                 </button>
+                {renderSelectedTriggerToggle()}
                 <label className="inspector-label">
                   <span>Node id</span>
                   <input
@@ -8454,6 +8575,8 @@ export default function App() {
                 ) : null}
 
                 {inspectorOutputFields.map((field) => renderField(field))}
+
+                {renderSelectedNodeOutputContract()}
 
                 {selectedNodeHasUnsavedChanges ? (
                   <button className="primary" onClick={resetSelectedNodeChanges} disabled={workflowEditLocked}>
@@ -8591,7 +8714,7 @@ export default function App() {
                     <button type="button" className="subtle-button" onClick={resetWorkflowTutorial}>
                       Reset
                     </button>
-                    <button type="button" className="subtle-button" onClick={exitWorkflowTutorial}>
+                    <button type="button" className="subtle-button" onClick={() => exitWorkflowTutorial()}>
                       Exit
                     </button>
                   </div>

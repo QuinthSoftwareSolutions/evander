@@ -8,6 +8,7 @@ import math
 import os
 import random
 import time
+from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -148,6 +149,13 @@ def _store_has_inflight_execution_for_event(store: Any, event_id: str) -> bool:
         if _record_has_pending_completion(record):
             return True
     return False
+
+
+def _outputs_from_exception(exc: BaseException) -> dict[str, Any]:
+    outputs = getattr(exc, "outputs", None)
+    if isinstance(outputs, Mapping):
+        return dict(outputs)
+    return {}
 
 
 class EffectExecutionRecord(BaseModel):
@@ -1747,6 +1755,7 @@ class EffectOrchestratorWorker:
                     self._update_event_delivery_state(record.event_id)
                     continue
             except Exception as exc:  # noqa: BLE001
+                outputs = _outputs_from_exception(exc)
                 logger.exception(
                     "Effect execution failed event_id=%s trace_id=%s effect_id=%s effect_type=%s",
                     record.event_id,
@@ -1756,6 +1765,7 @@ class EffectOrchestratorWorker:
                 )
                 record.status = "failed"
                 record.error = str(exc)
+                record.outputs = outputs
                 record.finished_at = finished_at
                 self.execution_store.record_execution(record)
                 self._update_event_delivery_state(record.event_id)

@@ -514,9 +514,11 @@ cache is seeded the same way
 `agent_sandbox_worker_node_toolchain_archive_path`) and verified by running `node`, `npm`, and `npx`.
 The Playwright runtime and browser caches are seeded from `HOST_PLAYWRIGHT_NODE_MODULES` or the repo
 frontend `node_modules`, plus `HOST_PLAYWRIGHT_BROWSERS` or `~/.cache/ms-playwright`; archive
-variables can provide prebuilt tarballs. Populate the NuGet fallback cache before relying on fallback
-restores for project-specific packages beyond the playbook's restore-support seed. Docker `host`
-networking remains refused; choose a private Docker
+variables can provide prebuilt tarballs. Playwright-enabled container sessions resolve the seeded
+Chromium executable and export it as `PLAYWRIGHT_MCP_EXECUTABLE_PATH`, `CHROME_BIN`, and
+`CHROMIUM_BIN`. Populate the NuGet fallback cache before relying on fallback restores for
+project-specific packages beyond the playbook's restore-support seed. Docker `host` networking
+remains refused; choose a private Docker
 network/routing setup that can reach only the required control-plane relay and gateway endpoints
 plus the apt relay on `3142` and the Nexus package cache on `8081`. Worker outbound rules should still deny direct access to Ubuntu mirrors, `pypi.org`, and `registry.npmjs.org`; the control plane is the only host that needs upstream package internet access for these formats.
 If the host Docker bridge cannot reach apt mirrors while building the tarball, build it with

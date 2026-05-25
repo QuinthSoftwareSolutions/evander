@@ -1200,6 +1200,33 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_trigger_ids
         )
 
 
+def test_trigger_orchestrator_worker_global_config_rejects_duplicate_webhook_slugs() -> None:
+    with pytest.raises(
+        ValueError,
+        match="Webhook trigger slugs must be globally unique across active config: build-notify",
+    ):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {
+                "triggers": [
+                    {
+                        "id": "webhook-1",
+                        "display_name": "Webhook 1",
+                        "type": "trigger:http:webhook",
+                        "slug": "build-notify",
+                        "secret_env": "WEBHOOK_SECRET",
+                    },
+                    {
+                        "id": "webhook-2",
+                        "display_name": "Webhook 2",
+                        "type": "trigger:http:webhook",
+                        "slug": "build-notify",
+                        "secret_env": "WEBHOOK_SECRET_2",
+                    },
+                ]
+            }
+        )
+
+
 def test_trigger_orchestrator_worker_global_config_rejects_duplicate_effect_ids() -> None:
     with pytest.raises(
         ValueError,
