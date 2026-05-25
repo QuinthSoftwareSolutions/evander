@@ -23,19 +23,22 @@ test("tutorial edits do not replace the shared workflow graph state", () => {
   assert.doesNotMatch(tutorialPatchBranch, /setFlowEdges/);
 });
 
-test("tutorial progress stays local and the chooser can skip or restart without auto-starting", () => {
+test("tutorial progress uses account preferences and the chooser can skip or restart without auto-starting", () => {
   const progressHelpers = sourceBetween(
-    "const WORKFLOW_TUTORIAL_PROGRESS_STORAGE_KEY",
+    "const WORKFLOW_TUTORIAL_PROGRESS_API_PATH",
     "function readStoredWorkflowSidebarWidth()",
   );
   const chooserBranch = sourceBetween(
     "function renderWorkflowTutorialChooser()",
-    "function renderWorkflowSamplePanel()",
+    "function renderWorkflowTutorialLauncher()",
   );
 
-  assert.match(progressHelpers, /readStoredWorkflowTutorialProgress/);
+  assert.match(progressHelpers, /workflowTutorialProgressApiPayload/);
   assert.match(progressHelpers, /normalizeWorkflowTutorialProgress/);
   assert.match(progressHelpers, /workflowTutorialProgressIds/);
+  assert.match(app, /fetchJson<unknown>\(WORKFLOW_TUTORIAL_PROGRESS_API_PATH\)/);
+  assert.match(app, /method: "PUT"/);
+  assert.doesNotMatch(app, /workflow-editor:tutorial-progress/);
   assert.match(app, /const \[workflowTutorialChooserOpen, setWorkflowTutorialChooserOpen\]/);
   assert.match(app, /const hasUnfinishedUnskippedTutorials =/);
   assert.match(app, /setWorkflowTutorialChooserOpen\(true\)/);

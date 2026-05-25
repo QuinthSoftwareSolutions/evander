@@ -65,7 +65,7 @@ class TicketChangedTriggerDefinition(TriggerDefinition):
 
 
 class IssueCommentCreatedTriggerDefinition(TriggerDefinition):
-    type: Literal["trigger:issue:comment-created", "trigger:issue:new-comment"]
+    type: Literal["trigger:issue:comment-created"]
     provider: str | None = None
     organization_url: str | None = None
     project: str | None = None

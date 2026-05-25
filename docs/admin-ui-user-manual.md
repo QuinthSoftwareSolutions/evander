@@ -479,22 +479,17 @@ Common runtime inspection tasks:
 1. Use **Tutorials** to open the walkthrough chooser. **First steps** teaches the workflow canvas
    basics in an isolated local tutorial graph; **Skip** marks the tutorial complete for the chooser
    attention state without launching it, and **Restart** can run it again later.
-2. Use **Sample run** when you want the in-memory first-run walkthrough. The sample creates a
-   simulated run with a trigger, agent/tool step, approval boundary, inspectable outputs, and a safe
-   stop without writing runtime files or starting an agent.
-3. Use **Inspect sample** to open the sample in the same run inspector used for real workflow
-   runs, then **Reset sample** to return it to a clean idle state.
-4. Use **Current runs** to inspect active workflow events and node activity.
-5. Enter an event ID, trace ID, session ID, or artifact ID when you need an exact run.
-6. Use **Inspect** to enter inspect mode for the selected run.
-7. In inspect mode, select nodes on the run graph to see node status, duration, started/finished
+2. Use **Current runs** to inspect active workflow events and node activity.
+3. Enter an event ID, trace ID, session ID, or artifact ID when you need an exact run.
+4. Use **Inspect** to enter inspect mode for the selected run.
+5. In inspect mode, select nodes on the run graph to see node status, duration, started/finished
    times, errors, binding errors, links, resolved inputs, outputs, input payload, inputs by source,
    binding trace, and raw records.
-8. Use **Latest runs** search to find recent runs by graph or node scope, including runs without
+6. Use **Latest runs** search to find recent runs by graph or node scope, including runs without
    session links and completed runs when those toggles are enabled.
-9. Use resume, clear/delete, or failure-dismiss controls only when you understand the runtime
+7. Use resume, clear/delete, or failure-dismiss controls only when you understand the runtime
    effect and have privileges unlocked.
-10. Exit inspect mode to return to graph editing.
+8. Exit inspect mode to return to graph editing.
 
 Workflow edits are staged in the browser until **Save workflow** succeeds. Leaving the workflow
 view or changing directory while there are unsaved workflow changes prompts for confirmation.

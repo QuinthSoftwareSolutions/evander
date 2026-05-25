@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import select
+import socket
 import subprocess
 import time
 import uuid
@@ -18,6 +20,10 @@ def test_handle_git_push_trigger_enqueues_matching_branch_updates(tmp_path: Path
     repo_path = (tmp_path / "git-remotes" / "sample.git").resolve()
     repo_path.mkdir(parents=True)
     queue_path = tmp_path / "runtime" / "trigger-events.json"
+    wake_path = tmp_path / "runtime" / "effect-orchestrator.wake.sock"
+    wake_path.parent.mkdir(parents=True, exist_ok=True)
+    wake_listener = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    wake_listener.bind(str(wake_path))
     config_path = tmp_path / "trigger-config.json"
     config_path.write_text(
         json.dumps(
@@ -44,20 +50,27 @@ def test_handle_git_push_trigger_enqueues_matching_branch_updates(tmp_path: Path
         ]
     )
 
-    result = subprocess.run(
-        [str(script), str(repo_path)],
-        input=stdin_payload,
-        text=True,
-        capture_output=True,
-        env={
-            **os.environ,
-            "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
-        },
-        cwd=root,
-        check=False,
-    )
+    ready = []
+    try:
+        result = subprocess.run(
+            [str(script), str(repo_path)],
+            input=stdin_payload,
+            text=True,
+            capture_output=True,
+            env={
+                **os.environ,
+                "AGENT_SANDBOX_TRIGGER_ORCHESTRATOR_CONFIG": str(config_path),
+            },
+            cwd=root,
+            check=False,
+        )
+        ready, _, _ = select.select([wake_listener], [], [], 1.0)
+    finally:
+        wake_listener.close()
+        wake_path.unlink(missing_ok=True)
 
     assert result.returncode == 0, result.stderr
+    assert ready
 
     queue_payload = json.loads(queue_path.read_text(encoding="utf-8"))
     assert list(queue_payload.keys()) == [f"git-main:main:{'1' * 40}"]
