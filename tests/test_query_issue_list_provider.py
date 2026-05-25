@@ -412,6 +412,7 @@ def test_issue_list_query_serializes_mapping_and_model_records() -> None:
         ),
         reader,
         runtime_directory="root/team-a",
+        resolved_config={"direct_only": False},
     )
 
     model_payload = next(item for item in output["issues"] if item["issue_id"] == "root::local::10")
