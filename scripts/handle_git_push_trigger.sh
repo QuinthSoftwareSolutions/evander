@@ -63,6 +63,7 @@ from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.orchestration.host_polling import HostWakeNotifier, wake_socket_path_for_lock
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
 from agent_sandbox.triggers.providers.git_push import build_git_push_payloads, git_push_trigger_matches_repo
+from agent_sandbox.workflow.node_state import workflow_node_is_enabled
 from agent_sandbox.workflow.packs import compose_workflow_ir
 
 def _resolve_repo(path_text: str) -> Path:
@@ -298,6 +299,7 @@ def main() -> int:
         trigger
         for trigger in triggers
         if isinstance(trigger, dict)
+        and workflow_node_is_enabled(trigger)
         and str(trigger.get("type", "")).strip() == "trigger:git:push"
         and str(trigger.get("id", "")).strip()
         and git_push_trigger_matches_repo(trigger, str(repo_path))

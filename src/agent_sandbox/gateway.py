@@ -159,7 +159,6 @@ from agent_sandbox.runtime import RuntimeContext, build_runtime
 from agent_sandbox.semantic.gateway_adapter import GatewaySemanticAdapter
 from agent_sandbox.services import (
     TeamsInlineMediaProvider,
-    effective_teams_channel_targets,
     normalize_pr_feedback_provider,
     parse_teams_target,
     resolve_teams_send_target,
@@ -1615,7 +1614,10 @@ def create_server(context: RuntimeContext) -> FastMCP:
             )
 
         if requested_channel_id:
-            for normalized in effective_teams_channel_targets(session, skip_user_targets=True):
+            for normalized in context.policy.policy_config.resolved_teams_channel_targets_for_session(
+                session,
+                capability="read",
+            ):
                 if _teams_target_channel_id(normalized) == requested_channel_id:
                     candidates.append(normalized)
             if candidates:
@@ -1682,26 +1684,26 @@ def create_server(context: RuntimeContext) -> FastMCP:
             channel_id = str(request.channel_id or "").strip()
             service = context.discord_service_for_session(request.session_id)
             if hasattr(service, "list_attachments"):
-                context.policy.require_communication_file_scope(
+                resolved_channel_id = context.policy.require_communication_file_scope(
                     session, provider=provider, channel_id=channel_id
                 )
                 return _coerce_attachment_refs(
                     provider,
                     request.message_id,
-                    service.list_attachments(request.message_id, channel_id=channel_id),
-                    channel_id=channel_id,
+                    service.list_attachments(request.message_id, channel_id=resolved_channel_id),
+                    channel_id=resolved_channel_id,
                 )
             record = context.discord_commands.get(request.message_id)
             if record is None:
                 raise ToolError(f"Unknown Discord message_id: {request.message_id}")
-            context.policy.require_communication_file_scope(
+            resolved_channel_id = context.policy.require_communication_file_scope(
                 session, provider=provider, channel_id=channel_id or record.channel_id
             )
             return _attachments_from_metadata(
                 provider,
                 request.message_id,
                 record.metadata,
-                channel_id=channel_id or record.channel_id,
+                channel_id=resolved_channel_id,
             )
         if provider == "teams":
             session = context.policy.require_tool(request.session_id, tool_name)
@@ -1784,7 +1786,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
         }
         if provider == "discord":
             service = context.discord_service_for_session(request.session_id)
-            kwargs["channel_id"] = request.channel_id
+            kwargs["channel_id"] = ref.channel_id or request.channel_id
         elif provider == "teams":
             service = context.teams_service_for_session(request.session_id)
             kwargs["channel_target"] = ref.channel_target or request.channel_target
@@ -1840,7 +1842,9 @@ def create_server(context: RuntimeContext) -> FastMCP:
         mime_type: str | None,
     ) -> CommunicationFileArtifact:
         store = _communication_artifact_store()
-        source_channel = ref.channel_target or request.channel_id or request.channel_target
+        source_channel = (
+            ref.channel_target or ref.channel_id or request.channel_id or request.channel_target
+        )
         record = store.stage(
             provider=request.provider,
             session_id=request.session_id,
@@ -6245,9 +6249,13 @@ def create_server(context: RuntimeContext) -> FastMCP:
         args = {"session_id": session_id, "channel_id": channel_id, "message": message}
         try:
             session = context.policy.require_tool(session_id, ToolName.DISCORD_POST_STATUS)
-            context.policy.require_discord_channel(session, channel_id)
+            resolved_channel_id = context.policy.require_discord_channel(
+                session,
+                channel_id,
+                capability="write",
+            )
             result = context.discord_service_for_session(session_id).post_status(
-                message, channel_id, session_id
+                message, resolved_channel_id, session_id
             )
             audit_success(session_id, ToolName.DISCORD_POST_STATUS, args, result)
             return result
@@ -6510,7 +6518,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 normalized_channel_id = str(channel_id or "").strip()
                 if not normalized_channel_id:
                     raise ToolError("channel_id is required for Discord reactions")
-                context.policy.require_discord_channel(session, normalized_channel_id)
+                normalized_channel_id = context.policy.require_discord_channel(
+                    session,
+                    normalized_channel_id,
+                    capability="reply",
+                )
                 result = context.discord_service_for_session(session_id).add_reaction(
                     channel_id=normalized_channel_id,
                     message_id=normalized_message_id,
@@ -6521,6 +6533,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 normalized_target = context.policy.require_teams_channel_target(
                     session,
                     str(channel_target or "").strip(),
+                    capability="reply",
                 )
                 result = context.teams_service_for_session(session_id).add_reaction(
                     channel_target=normalized_target,
@@ -6817,7 +6830,11 @@ def create_server(context: RuntimeContext) -> FastMCP:
         }
         try:
             session = context.policy.require_tool(session_id, ToolName.TEAMS_POST_STATUS)
-            normalized_target = context.policy.require_teams_send_target(session, channel_target)
+            normalized_target = context.policy.require_teams_send_target(
+                session,
+                channel_target,
+                capability="reply" if thread_id is not None else "write",
+            )
             if parse_teams_target(normalized_target).kind == "user" and thread_id is not None:
                 raise PolicyError("Teams user targets do not support thread replies")
             service = context.teams_service_for_session(session_id)
@@ -7899,7 +7916,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             session = context.policy.require_tool(session_id, ToolName.DISCORD_POST_FILE)
             artifacts = _artifact_payloads(artifact_ids)
             args["artifacts"] = _artifact_audit_summaries(artifact_ids)
-            context.policy.require_communication_file_artifacts(
+            resolved_channel_id = context.policy.require_communication_file_artifacts(
                 session, artifacts, provider="discord", channel_id=channel_id
             )
             approval_payload = request.model_dump(
@@ -7911,7 +7928,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
             service = context.discord_service_for_session(session_id)
             if not hasattr(service, "post_file"):
                 raise ToolError("Configured Discord adapter does not support file posts")
-            result = service.post_file(message, channel_id, session_id, artifacts)
+            result = service.post_file(message, resolved_channel_id, session_id, artifacts)
             response = CommunicationSendMessageWithAttachmentsResponse(
                 provider="discord",
                 status=str(result.get("status", "posted")),
@@ -7926,7 +7943,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 {
                     **_communication_target_audit_fields(
                         provider="discord",
-                        channel_id=channel_id,
+                        channel_id=resolved_channel_id,
                         approval_request_id=request_id,
                         approval_decision=None if approval is None else approval.status.value,
                     ),
@@ -7972,14 +7989,20 @@ def create_server(context: RuntimeContext) -> FastMCP:
             session = context.policy.require_tool(session_id, ToolName.TEAMS_POST_FILE)
             artifacts = _artifact_payloads(artifact_ids)
             args["artifacts"] = _artifact_audit_summaries(artifact_ids)
+            required_capability = "reply" if thread_id is not None else "write"
             context.policy.require_communication_file_artifacts(
                 session,
                 artifacts,
                 provider="teams",
                 channel_target=channel_target,
                 allow_teams_user_target=True,
+                capability=required_capability,
             )
-            target = context.policy.require_teams_send_target(session, channel_target)
+            target = context.policy.require_teams_send_target(
+                session,
+                channel_target,
+                capability=required_capability,
+            )
             if parse_teams_target(target).kind == "user" and thread_id is not None:
                 raise PolicyError("Teams user targets do not support thread replies")
             approval_payload = request.model_dump(

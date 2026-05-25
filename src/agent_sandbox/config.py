@@ -28,11 +28,15 @@ from agent_sandbox.models import (
     validate_tool_argument_policy_map,
 )
 from agent_sandbox.provider_profiles import DEFAULT_PROVIDER_PROFILE_NAME, resolve_provider_profile
+from agent_sandbox.events.scheduled import (
+    scheduled_internal_event_store_path as runtime_scheduled_internal_event_store_path,
+)
 from agent_sandbox.events.models import (
     EdgeDefinition,
     EffectDefinitionDiscriminated,
     GateDefinitionDiscriminated,
     QueryDefinitionDiscriminated,
+    materialize_node_definition,
     TriggerDefinitionDiscriminated,
 )
 from agent_sandbox.workflow.graph_metadata import resolve_workflow_graph_metadata
@@ -789,6 +793,7 @@ class OrchestrationCoreConfig(BaseModel):
     event_queue_cursor_store_path: Path | None = None
     workflow_event_journal_path: Path | None = None
     internal_event_store_path: Path | None = None
+    scheduled_internal_event_store_path: Path | None = None
     gate_execution_store_path: Path | None = None
     gate_cursor_store_path: Path | None = None
     effect_execution_store_path: Path | None = None
@@ -820,6 +825,21 @@ class OrchestrationCoreConfig(BaseModel):
             duplicate_list = ", ".join(duplicates)
             raise ValueError(
                 f"Node IDs must be globally unique across triggers, gates, effects, and queries: {duplicate_list}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_unique_webhook_trigger_slugs(self) -> OrchestrationCoreConfig:
+        slugs = [
+            str(getattr(materialize_node_definition(trigger), "slug")).strip()
+            for trigger in self.triggers
+            if str(trigger.type).strip() == "trigger:http:webhook"
+        ]
+        duplicates = sorted(slug for slug, count in Counter(slugs).items() if count > 1)
+        if duplicates:
+            duplicate_list = ", ".join(duplicates)
+            raise ValueError(
+                f"Webhook trigger slugs must be globally unique across active config: {duplicate_list}"
             )
         return self
 
@@ -863,6 +883,10 @@ class OrchestrationCoreConfig(BaseModel):
             self.workflow_event_journal_path = self.runtime_dir / "workflow-events.jsonl"
         if self.internal_event_store_path is None:
             self.internal_event_store_path = self.runtime_dir / "internal-events.json"
+        if self.scheduled_internal_event_store_path is None:
+            self.scheduled_internal_event_store_path = (
+                runtime_scheduled_internal_event_store_path(self.runtime_dir)
+            )
         if self.gate_execution_store_path is None:
             self.gate_execution_store_path = self.runtime_dir / "gate-orchestrator-executions.json"
         if self.gate_cursor_store_path is None:

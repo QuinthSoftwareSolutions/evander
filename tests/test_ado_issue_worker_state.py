@@ -1872,6 +1872,670 @@ def test_publish_directory_pr_completion_events_updates_pr_map_and_enqueues_even
     assert republished == 0
 
 
+def test_publish_directory_pr_feedback_events_uses_explicit_pr_query_candidates_without_pr_map(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+
+    runtime_gateway_config = ado_worker.GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(worker_config.runtime_dir),
+            "session_store_path": str(worker_config.runtime_dir / "sessions.json"),
+            "approval_store_path": str(worker_config.runtime_dir / "approvals.json"),
+            "draft_store_path": str(worker_config.runtime_dir / "drafts.json"),
+            "email_store_path": str(worker_config.runtime_dir / "emails.json"),
+            "discord_command_store_path": str(worker_config.runtime_dir / "discord_commands.json"),
+            "audit_log_path": str(worker_config.runtime_dir / "audit.jsonl"),
+            "pr_map_path": str(worker_config.runtime_dir / "pr-map.json"),
+            "azure_devops_pr_pat_env": "AZURE_DEVOPS_PR_PAT",
+        }
+    )
+    trigger = PullRequestNewFeedbackTriggerDefinition.model_validate(
+        {
+            "id": "trigger-pr-feedback-explicit",
+            "display_name": "PR feedback explicit",
+            "type": "trigger:pull-request:new-feedback",
+            "provider": "ado",
+            "repo": "org/repo",
+            "directory_path": "root/team-a",
+            "organization_url": " https://dev.azure.com/example-org/ ",
+            "project": " Example Project ",
+            "status": "active",
+            "creator_id": "creator-1",
+            "reviewer_id": "reviewer-1",
+            "source_ref_name": "refs/heads/feature",
+            "target_ref_name": "refs/heads/main",
+            "source_repository_id": "source-repo-1",
+            "repository_id": "repository-1",
+            "min_time": "2026-05-01T00:00:00Z",
+            "max_time": "2026-05-02T00:00:00Z",
+            "query_time_range_type": "created",
+            "include_links": True,
+            "max_comment_length": 5,
+            "tags": "needs-review",
+            "top": 1,
+            "skip": 0,
+            "cursor": "cursor-1",
+        }
+    )
+
+    monkeypatch.setattr(ado_worker, "_load_ado_pr_feedback_triggers", lambda _config: [trigger])
+    monkeypatch.setattr(
+        ado_worker,
+        "_load_ado_pr_feedback_session_bindings",
+        lambda **_kwargs: pytest.fail("explicit PR polling should not load pr-map bindings"),
+    )
+    monkeypatch.setattr(
+        ado_worker,
+        "_resolve_directory_worker_config",
+        lambda config, runtime_gateway_config, directory_path: WorkerConfig(
+            **{**worker_config.__dict__, "directory_path": directory_path}
+        ),
+    )
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
+
+    list_pull_request_calls: list[dict[str, object]] = []
+
+    def fake_list_pull_requests(self, **kwargs):
+        list_pull_request_calls.append(
+            {
+                "organization_url": self.organization_url,
+                "project": self.project,
+                "pat": self.pat,
+                "kwargs": kwargs,
+            }
+        )
+        assert kwargs == {
+            "repo": "org/repo",
+            "project": "Example Project",
+            "status": "active",
+            "creator_id": "creator-1",
+            "reviewer_id": "reviewer-1",
+            "source_ref_name": "refs/heads/feature",
+            "target_ref_name": "refs/heads/main",
+            "source_repository_id": "source-repo-1",
+            "repository_id": "repository-1",
+            "min_time": "2026-05-01T00:00:00Z",
+            "max_time": "2026-05-02T00:00:00Z",
+            "query_time_range_type": "created",
+            "include_links": True,
+            "max_comment_length": 5,
+            "tags": "needs-review",
+            "top": 1,
+            "skip": 0,
+            "cursor": "cursor-1",
+        }
+        return SimpleNamespace(
+            pull_requests=[
+                SimpleNamespace(provider="azure_devops", repo="org/repo", pr_id="6070")
+            ]
+        )
+
+    monkeypatch.setattr(
+        ado_worker.AzureDevOpsPrQueryProvider,
+        "list_pull_requests",
+        fake_list_pull_requests,
+    )
+
+    poll_calls: list[tuple[str, str, str, str | None]] = []
+
+    def fake_poll(self, *, client, repo, pr_id, cursor):
+        poll_calls.append((self.organization_url, self.project, repo, pr_id))
+        assert repo == "org/repo"
+        assert pr_id == "6070"
+        assert cursor is None
+        return SimpleNamespace(
+            feedback=[
+                FeedbackEnvelope(
+                    feedback_id="azure_devops:thread_comment:30830:1",
+                    provider="azure_devops",
+                    repo=repo,
+                    pr_id=pr_id,
+                    thread_id="30830",
+                    comment_id="1",
+                    author="jonathan",
+                    body="Please fix this",
+                    created_at="2026-04-08T05:33:41.433000Z",
+                )
+            ],
+            next_cursor="2026-04-08T05:33:41.433000Z",
+        )
+
+    monkeypatch.setattr(ado_worker.AzureDevOpsFeedbackAdapter, "poll", fake_poll)
+
+    with httpx.Client() as client:
+        published = _publish_directory_pr_feedback_events(
+            client=client,
+            config=WorkerConfig(**{**worker_config.__dict__, "directory_path": "root/team-a"}),
+            runtime_gateway_config=runtime_gateway_config,
+            directory_path="root/team-a",
+        )
+
+    assert published == 1
+    assert list_pull_request_calls == [
+        {
+            "organization_url": "https://dev.azure.com/example-org",
+            "project": "Example Project",
+            "pat": "secret-pat",
+            "kwargs": {
+                "repo": "org/repo",
+                "project": "Example Project",
+                "status": "active",
+                "creator_id": "creator-1",
+                "reviewer_id": "reviewer-1",
+                "source_ref_name": "refs/heads/feature",
+                "target_ref_name": "refs/heads/main",
+                "source_repository_id": "source-repo-1",
+                "repository_id": "repository-1",
+                "min_time": "2026-05-01T00:00:00Z",
+                "max_time": "2026-05-02T00:00:00Z",
+                "query_time_range_type": "created",
+                "include_links": True,
+                "max_comment_length": 5,
+                "tags": "needs-review",
+                "top": 1,
+                "skip": 0,
+                "cursor": "cursor-1",
+            },
+        }
+    ]
+    assert poll_calls == [
+        ("https://dev.azure.com/example-org", "Example Project", "org/repo", "6070")
+    ]
+    assert not (worker_config.runtime_dir / "pr-map.json").exists()
+    queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
+    events = queue.list_pending(trigger_id="trigger-pr-feedback-explicit")
+    assert len(events) == 1
+    assert "session_id" not in events[0].payload
+    assert events[0].payload["pr"] == {
+        "provider": "azure_devops",
+        "repo": "org/repo",
+        "pr_id": "6070",
+    }
+    cursor_payload = json.loads(
+        (worker_config.runtime_dir / "trigger-cursors-pr-feedback.json").read_text(encoding="utf-8")
+    )
+    assert (
+        cursor_payload["trigger-pr-feedback-explicit"]["stream_cursors"]["azure_devops:org/repo:6070"]
+        == "2026-04-08T05:33:41.433000Z"
+    )
+
+
+def test_publish_directory_pr_feedback_events_keeps_explicit_stream_unbound_with_legacy_trigger(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+
+    (worker_config.runtime_dir / "sessions.json").write_text(
+        json.dumps(
+            {
+                "session-6070": {
+                    "session_id": "session-6070",
+                    "directory_path": "root/team-a",
+                    "allowed_tools": [],
+                    "expires_at": "2026-05-16T00:00:00Z",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    pr_map_path = worker_config.runtime_dir / "pr-map.json"
+    pr_map_path.write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "azure_devops:org/repo:6070": {
+                        "provider": "azure_devops",
+                        "repo": "org/repo",
+                        "pr_id": "6070",
+                        "session_id": "session-6070",
+                        "directory_path": "root/team-a",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime_gateway_config = ado_worker.GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(worker_config.runtime_dir),
+            "session_store_path": str(worker_config.runtime_dir / "sessions.json"),
+            "approval_store_path": str(worker_config.runtime_dir / "approvals.json"),
+            "draft_store_path": str(worker_config.runtime_dir / "drafts.json"),
+            "email_store_path": str(worker_config.runtime_dir / "emails.json"),
+            "discord_command_store_path": str(worker_config.runtime_dir / "discord_commands.json"),
+            "audit_log_path": str(worker_config.runtime_dir / "audit.jsonl"),
+            "pr_map_path": str(pr_map_path),
+            "azure_devops_pr_pat_env": "AZURE_DEVOPS_PR_PAT",
+        }
+    )
+    legacy_trigger = PullRequestNewFeedbackTriggerDefinition.model_validate(
+        {
+            "id": "trigger-pr-feedback-legacy",
+            "display_name": "PR feedback legacy",
+            "type": "trigger:pull-request:new-feedback",
+            "provider": "ado",
+            "organization_url": "https://dev.azure.com/example-org",
+            "project": "Example Project",
+        }
+    )
+    explicit_trigger = PullRequestNewFeedbackTriggerDefinition.model_validate(
+        {
+            "id": "trigger-pr-feedback-explicit",
+            "display_name": "PR feedback explicit",
+            "type": "trigger:pull-request:new-feedback",
+            "provider": "ado",
+            "repo": "org/repo",
+            "directory_path": "root/team-a",
+            "organization_url": "https://dev.azure.com/example-org",
+            "project": "Example Project",
+            "status": "active",
+        }
+    )
+
+    monkeypatch.setattr(
+        ado_worker,
+        "_load_ado_pr_feedback_triggers",
+        lambda _config: [legacy_trigger, explicit_trigger],
+    )
+    monkeypatch.setattr(
+        ado_worker,
+        "_resolve_directory_worker_config",
+        lambda config, runtime_gateway_config, directory_path: WorkerConfig(
+            **{**worker_config.__dict__, "directory_path": directory_path}
+        ),
+    )
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
+
+    def fake_list_pull_requests(self, **kwargs):
+        assert kwargs["status"] == "active"
+        return SimpleNamespace(
+            pull_requests=[
+                SimpleNamespace(provider="azure_devops", repo="org/repo", pr_id="6070")
+            ]
+        )
+
+    monkeypatch.setattr(
+        ado_worker.AzureDevOpsPrQueryProvider,
+        "list_pull_requests",
+        fake_list_pull_requests,
+    )
+
+    def fake_poll(self, *, client, repo, pr_id, cursor):
+        assert repo == "org/repo"
+        assert pr_id == "6070"
+        return SimpleNamespace(
+            feedback=[
+                FeedbackEnvelope(
+                    feedback_id="azure_devops:thread_comment:30830:1",
+                    provider="azure_devops",
+                    repo=repo,
+                    pr_id=pr_id,
+                    thread_id="30830",
+                    comment_id="1",
+                    author="jonathan",
+                    body="Please fix this",
+                    created_at="2026-04-08T05:33:41.433000Z",
+                )
+            ],
+            next_cursor="2026-04-08T05:33:41.433000Z",
+        )
+
+    monkeypatch.setattr(ado_worker.AzureDevOpsFeedbackAdapter, "poll", fake_poll)
+
+    with httpx.Client() as client:
+        published = _publish_directory_pr_feedback_events(
+            client=client,
+            config=WorkerConfig(**{**worker_config.__dict__, "directory_path": "root/team-a"}),
+            runtime_gateway_config=runtime_gateway_config,
+            directory_path="root/team-a",
+        )
+
+    assert published == 2
+    queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
+    legacy_events = queue.list_pending(trigger_id="trigger-pr-feedback-legacy")
+    explicit_events = queue.list_pending(trigger_id="trigger-pr-feedback-explicit")
+    assert len(legacy_events) == 1
+    assert legacy_events[0].payload["session_id"] == "session-6070"
+    assert len(explicit_events) == 1
+    assert "session_id" not in explicit_events[0].payload
+
+
+def test_publish_directory_pr_completion_events_uses_explicit_pr_query_candidates_without_pr_map(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+
+    runtime_gateway_config = ado_worker.GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(worker_config.runtime_dir),
+            "session_store_path": str(worker_config.runtime_dir / "sessions.json"),
+            "approval_store_path": str(worker_config.runtime_dir / "approvals.json"),
+            "draft_store_path": str(worker_config.runtime_dir / "drafts.json"),
+            "email_store_path": str(worker_config.runtime_dir / "emails.json"),
+            "discord_command_store_path": str(worker_config.runtime_dir / "discord_commands.json"),
+            "audit_log_path": str(worker_config.runtime_dir / "audit.jsonl"),
+            "pr_map_path": str(worker_config.runtime_dir / "pr-map.json"),
+            "azure_devops_pr_pat_env": "AZURE_DEVOPS_PR_PAT",
+        }
+    )
+    trigger = PullRequestCompletedTriggerDefinition.model_validate(
+        {
+            "id": "trigger-pr-completed-explicit",
+            "display_name": "PR completed explicit",
+            "type": "trigger:pull-request:completed",
+            "provider": "ado",
+            "repo": "org/repo",
+            "directory_path": "root/team-a",
+            "organization_url": " https://dev.azure.com/example-org/ ",
+            "project": " Example Project ",
+            "status": "completed",
+            "creator_id": "creator-1",
+            "reviewer_id": "reviewer-1",
+            "source_ref_name": "refs/heads/feature",
+            "target_ref_name": "refs/heads/main",
+            "source_repository_id": "source-repo-1",
+            "repository_id": "repository-1",
+            "min_time": "2026-05-01T00:00:00Z",
+            "max_time": "2026-05-02T00:00:00Z",
+            "query_time_range_type": "completed",
+            "include_links": False,
+            "max_comment_length": 3,
+            "tags": "needs-review",
+            "top": 1,
+            "skip": 0,
+            "cursor": "cursor-2",
+        }
+    )
+
+    monkeypatch.setattr(ado_worker, "_load_ado_pr_completed_triggers", lambda _config: [trigger])
+    monkeypatch.setattr(
+        ado_worker,
+        "_load_ado_pr_feedback_session_bindings",
+        lambda **_kwargs: pytest.fail("explicit PR polling should not load pr-map bindings"),
+    )
+    monkeypatch.setattr(
+        ado_worker,
+        "_resolve_directory_worker_config",
+        lambda config, runtime_gateway_config, directory_path: WorkerConfig(
+            **{**worker_config.__dict__, "directory_path": directory_path}
+        ),
+    )
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
+
+    list_pull_request_calls: list[dict[str, object]] = []
+
+    def fake_list_pull_requests(self, **kwargs):
+        list_pull_request_calls.append(
+            {
+                "organization_url": self.organization_url,
+                "project": self.project,
+                "pat": self.pat,
+                "kwargs": kwargs,
+            }
+        )
+        assert kwargs == {
+            "repo": "org/repo",
+            "project": "Example Project",
+            "status": "completed",
+            "creator_id": "creator-1",
+            "reviewer_id": "reviewer-1",
+            "source_ref_name": "refs/heads/feature",
+            "target_ref_name": "refs/heads/main",
+            "source_repository_id": "source-repo-1",
+            "repository_id": "repository-1",
+            "min_time": "2026-05-01T00:00:00Z",
+            "max_time": "2026-05-02T00:00:00Z",
+            "query_time_range_type": "completed",
+            "include_links": False,
+            "max_comment_length": 3,
+            "tags": "needs-review",
+            "top": 1,
+            "skip": 0,
+            "cursor": "cursor-2",
+        }
+        return SimpleNamespace(
+            pull_requests=[
+                SimpleNamespace(provider="azure_devops", repo="org/repo", pr_id="6070")
+            ]
+        )
+
+    monkeypatch.setattr(
+        ado_worker.AzureDevOpsPrQueryProvider,
+        "list_pull_requests",
+        fake_list_pull_requests,
+    )
+
+    get_calls: list[tuple[str, str, str, str, bool | None, bool | None]] = []
+
+    def fake_get_pull_request(self, *, repo, pr_id, include_reviewers=None, include_commits=None):
+        get_calls.append(
+            (self.organization_url, self.project, repo, pr_id, include_reviewers, include_commits)
+        )
+        assert repo == "org/repo"
+        assert pr_id == "6070"
+        return GetPullRequestResponse(
+            provider="azure_devops",
+            repo=repo,
+            pr_id=pr_id,
+            title="Feature PR",
+            status="completed",
+            url="https://dev.azure.com/example-org/Example%20Project/_git/repo/pullrequest/6070",
+            source_branch="refs/heads/feature/6070",
+            target_branch="refs/heads/main",
+            source_commit="abc123",
+            target_commit="def456",
+            raw={"status": "completed", "closedDate": "2026-05-15T10:00:00Z"},
+        )
+
+    monkeypatch.setattr(
+        ado_worker.AzureDevOpsPrQueryProvider,
+        "get_pull_request",
+        fake_get_pull_request,
+    )
+
+    with httpx.Client() as client:
+        published = _publish_directory_pr_completion_events(
+            client=client,
+            config=WorkerConfig(**{**worker_config.__dict__, "directory_path": "root/team-a"}),
+            runtime_gateway_config=runtime_gateway_config,
+            directory_path="root/team-a",
+        )
+
+    assert published == 1
+    assert list_pull_request_calls == [
+        {
+            "organization_url": "https://dev.azure.com/example-org",
+            "project": "Example Project",
+            "pat": "secret-pat",
+            "kwargs": {
+                "repo": "org/repo",
+                "project": "Example Project",
+                "status": "completed",
+                "creator_id": "creator-1",
+                "reviewer_id": "reviewer-1",
+                "source_ref_name": "refs/heads/feature",
+                "target_ref_name": "refs/heads/main",
+                "source_repository_id": "source-repo-1",
+                "repository_id": "repository-1",
+                "min_time": "2026-05-01T00:00:00Z",
+                "max_time": "2026-05-02T00:00:00Z",
+                "query_time_range_type": "completed",
+                "include_links": False,
+                "max_comment_length": 3,
+                "tags": "needs-review",
+                "top": 1,
+                "skip": 0,
+                "cursor": "cursor-2",
+            },
+        }
+    ]
+    assert get_calls == [
+        (
+            "https://dev.azure.com/example-org",
+            "Example Project",
+            "org/repo",
+            "6070",
+            False,
+            False,
+        )
+    ]
+    assert not (worker_config.runtime_dir / "pr-map.json").exists()
+    queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
+    events = queue.list_pending(trigger_id="trigger-pr-completed-explicit")
+    assert len(events) == 1
+    assert "session_id" not in events[0].payload
+    assert events[0].payload["status"] == "completed"
+    assert events[0].payload["merged"] is True
+    assert events[0].payload["completed_at"] == "2026-05-15T10:00:00Z"
+    cursor_payload = json.loads(
+        (worker_config.runtime_dir / "trigger-cursors-pr-completed.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert (
+        cursor_payload["trigger-pr-completed-explicit"]["completed_streams"][
+            "azure_devops:org/repo:6070"
+        ]
+        == events[0].event_id
+    )
+    assert get_calls == [
+        (
+            "https://dev.azure.com/example-org",
+            "Example Project",
+            "org/repo",
+            "6070",
+            False,
+            False,
+        )
+    ]
+
+    with httpx.Client() as client:
+        republished = _publish_directory_pr_completion_events(
+            client=client,
+            config=WorkerConfig(**{**worker_config.__dict__, "directory_path": "root/team-a"}),
+            runtime_gateway_config=runtime_gateway_config,
+            directory_path="root/team-a",
+        )
+
+    assert republished == 0
+    assert get_calls == [
+        (
+            "https://dev.azure.com/example-org",
+            "Example Project",
+            "org/repo",
+            "6070",
+            False,
+            False,
+        )
+    ]
+
+
+def test_publish_directory_pr_completion_events_defaults_explicit_query_to_terminal_statuses(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_sandbox.daemons import ado_issue_worker as ado_worker
+
+    runtime_gateway_config = ado_worker.GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(worker_config.runtime_dir),
+            "session_store_path": str(worker_config.runtime_dir / "sessions.json"),
+            "approval_store_path": str(worker_config.runtime_dir / "approvals.json"),
+            "draft_store_path": str(worker_config.runtime_dir / "drafts.json"),
+            "email_store_path": str(worker_config.runtime_dir / "emails.json"),
+            "discord_command_store_path": str(worker_config.runtime_dir / "discord_commands.json"),
+            "audit_log_path": str(worker_config.runtime_dir / "audit.jsonl"),
+            "pr_map_path": str(worker_config.runtime_dir / "pr-map.json"),
+            "azure_devops_pr_pat_env": "AZURE_DEVOPS_PR_PAT",
+        }
+    )
+    trigger = PullRequestCompletedTriggerDefinition.model_validate(
+        {
+            "id": "trigger-pr-completed-explicit",
+            "display_name": "PR completed explicit",
+            "type": "trigger:pull-request:completed",
+            "provider": "ado",
+            "repo": "org/repo",
+            "directory_path": "root/team-a",
+            "organization_url": "https://dev.azure.com/example-org",
+            "project": "Example Project",
+        }
+    )
+
+    monkeypatch.setattr(ado_worker, "_load_ado_pr_completed_triggers", lambda _config: [trigger])
+    monkeypatch.setattr(
+        ado_worker,
+        "_resolve_directory_worker_config",
+        lambda config, runtime_gateway_config, directory_path: WorkerConfig(
+            **{**worker_config.__dict__, "directory_path": directory_path}
+        ),
+    )
+    monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
+
+    list_statuses: list[str | None] = []
+
+    def fake_list_pull_requests(self, **kwargs):
+        status = kwargs["status"]
+        list_statuses.append(status)
+        pr_id_by_status = {"completed": "6070", "abandoned": "6071"}
+        return SimpleNamespace(
+            pull_requests=[
+                SimpleNamespace(
+                    provider="azure_devops",
+                    repo="org/repo",
+                    pr_id=pr_id_by_status[status],
+                )
+            ]
+        )
+
+    monkeypatch.setattr(
+        ado_worker.AzureDevOpsPrQueryProvider,
+        "list_pull_requests",
+        fake_list_pull_requests,
+    )
+
+    def fake_get_pull_request(self, *, repo, pr_id, include_reviewers=None, include_commits=None):
+        pr_status = "completed" if pr_id == "6070" else "abandoned"
+        return GetPullRequestResponse(
+            provider="azure_devops",
+            repo=repo,
+            pr_id=pr_id,
+            title=f"Feature PR {pr_id}",
+            status=pr_status,
+            url=f"https://dev.azure.com/example-org/Example%20Project/_git/repo/pullrequest/{pr_id}",
+            source_branch=f"refs/heads/feature/{pr_id}",
+            target_branch="refs/heads/main",
+            source_commit="abc123",
+            target_commit="def456",
+            raw={"status": pr_status, "closedDate": "2026-05-15T10:00:00Z"},
+        )
+
+    monkeypatch.setattr(
+        ado_worker.AzureDevOpsPrQueryProvider,
+        "get_pull_request",
+        fake_get_pull_request,
+    )
+
+    with httpx.Client() as client:
+        published = _publish_directory_pr_completion_events(
+            client=client,
+            config=WorkerConfig(**{**worker_config.__dict__, "directory_path": "root/team-a"}),
+            runtime_gateway_config=runtime_gateway_config,
+            directory_path="root/team-a",
+        )
+
+    assert list_statuses == ["completed", "abandoned"]
+    assert published == 2
+    queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
+    events = queue.list_pending(trigger_id="trigger-pr-completed-explicit")
+    assert [event.payload["status"] for event in events] == ["completed", "abandoned"]
+    assert [event.payload["merged"] for event in events] == [True, False]
+
+
 def test_publish_directory_pr_feedback_events_uses_session_ado_project(
     worker_config: WorkerConfig,
     monkeypatch: pytest.MonkeyPatch,
@@ -2343,6 +3007,15 @@ def test_load_ado_pr_feedback_triggers_resolves_workflow_packs(worker_config: Wo
                             "provider": "ado",
                             "organization_url": "https://dev.azure.com/example-org",
                             "project": "Example Project",
+                        },
+                        {
+                            "id": "trigger-pr-feedback-disabled",
+                            "display_name": "Disabled PR feedback",
+                            "type": "trigger:pull-request:new-feedback",
+                            "provider": "ado",
+                            "organization_url": "https://dev.azure.com/example-org",
+                            "project": "Example Project",
+                            "enabled": False,
                         }
                     ],
                     "edges": [],
@@ -2390,6 +3063,15 @@ def test_load_ado_pr_completed_triggers_resolves_workflow_packs(
                             "provider": "ado",
                             "organization_url": "https://dev.azure.com/example-org",
                             "project": "Example Project",
+                        },
+                        {
+                            "id": "trigger-pr-completed-disabled",
+                            "display_name": "Disabled PR completed",
+                            "type": "trigger:pull-request:completed",
+                            "provider": "ado",
+                            "organization_url": "https://dev.azure.com/example-org",
+                            "project": "Example Project",
+                            "enabled": False,
                         }
                     ],
                     "edges": [],

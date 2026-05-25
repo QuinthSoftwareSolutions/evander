@@ -5,6 +5,7 @@ import hashlib
 import logging
 import os
 import random
+from datetime import UTC, datetime
 from uuid import uuid4
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,8 @@ from agent_sandbox.events.models import (
     TriggerEvent,
     validate_output_mapping_keys,
 )
+from agent_sandbox.events.internal import InternalEventBus, InternalEventSource
+from agent_sandbox.events.scheduled import ScheduledInternalEventStore
 from agent_sandbox.orchestration.adapters import (
     TriggerCompletionPublisherAdapter,
     TriggerDependencyResolverAdapter,
@@ -37,6 +40,7 @@ from agent_sandbox.workflow.runtime_config import (
     TriggerOrchestratorWorkerGlobalConfigReloader,
     load_trigger_orchestrator_worker_global_config,
 )
+from agent_sandbox.workflow.node_state import workflow_node_is_enabled
 from agent_sandbox.orchestration.host_polling import (
     HostFileLockManager,
     HostWakeNotifier,
@@ -163,6 +167,7 @@ class TriggerOrchestratorWorker:
                     wake_socket_path_for_lock(self.worker_config.effect_lock_path)
                 )
 
+        self._publish_due_scheduled_internal_events(active_config)
         configured_triggers = self._configured_triggers(active_config)
         providers = self._load_configured_providers(active_config, configured_triggers)
         events_discovered = 0
@@ -252,10 +257,46 @@ class TriggerOrchestratorWorker:
             next_sleep_seconds=next_sleep_seconds,
         )
 
+    def _publish_due_scheduled_internal_events(
+        self, worker_config: TriggerOrchestratorWorkerGlobalConfig
+    ) -> int:
+        scheduled_event_store = ScheduledInternalEventStore(
+            worker_config.scheduled_internal_event_store_path
+        )
+        due_events = scheduled_event_store.list_due(datetime.now(UTC))
+        if not due_events:
+            return 0
+
+        internal_event_bus = InternalEventBus(
+            worker_config.internal_event_store_path,
+            journal_path=worker_config.workflow_event_journal_path,
+        )
+        published_count = 0
+        for scheduled_event in due_events:
+            source = _scheduled_internal_event_source(scheduled_event.source)
+            published_event = internal_event_bus.publish(
+                event_type=scheduled_event.event_type,
+                payload=scheduled_event.payload,
+                correlation_key=scheduled_event.correlation_key,
+                source=source,
+                idempotency_key=f"scheduled-event:{scheduled_event.schedule_id}",
+            )
+            scheduled_event_store.mark_published(
+                scheduled_event.schedule_id,
+                published_event.event_id,
+                datetime.now(UTC),
+            )
+            published_count += 1
+        return published_count
+
     def _configured_triggers(
         self, worker_config: TriggerOrchestratorWorkerGlobalConfig
     ) -> list[TriggerDefinitionDiscriminated]:
-        return [trigger for trigger in worker_config.triggers if not _is_system_trigger(trigger)]
+        return [
+            trigger
+            for trigger in worker_config.triggers
+            if not _is_system_trigger(trigger) and workflow_node_is_enabled(trigger)
+        ]
 
     def _load_configured_providers(
         self,
@@ -295,6 +336,14 @@ def _normalize_trace_id(value: str | None) -> str:
         return str(uuid4())
     normalized = value.strip()
     return normalized or str(uuid4())
+
+
+def _scheduled_internal_event_source(
+    source: InternalEventSource | None,
+) -> InternalEventSource:
+    if source is None:
+        return InternalEventSource(source_type="scheduled_internal_event")
+    return source.model_copy(update={"source_type": "scheduled_internal_event"})
 
 
 def _acknowledge_provider_event_published(provider: Any | None, event: TriggerEvent) -> None:

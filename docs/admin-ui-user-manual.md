@@ -355,7 +355,8 @@ Specialized configuration areas:
 - **Contacts**: maintain named contact entries with descriptions, email addresses, and phone
   numbers for directory-scoped use.
 - **Communication targets**: declare inherited and explicit messaging targets used by workflow
-  notification/message effects.
+  notification/message effects and by the provider-neutral communication message trigger when the
+  target has `read` capability.
 - **Approval notification targets**: choose notify-capable communication targets for approval
   notifications.
 - **Directory override JSON**: copy the unified explicit overrides for review, diffing, or support.
@@ -457,10 +458,12 @@ Common editing tasks:
 7. Select a node to open the Inspector.
 8. Review the selected node's **Outputs** section to see declared or derived binding paths, schema
    types, and copyable binding expressions for downstream fields.
-9. Edit node ID, display name, and type-specific fields. Fields can support literal values,
-   bindings, templates, directory selectors, structured lists/maps, JSON, and catalog-backed
-   options. Agent/VM creation tool argument policies use a structured rule-and-constraint editor
-   for common policies, with raw JSON still available for advanced policy maps.
+9. Edit node ID, display name, and type-specific fields. Trigger nodes also expose an enabled
+   toggle; disabled triggers are ghosted on the graph and do not poll for new events. Fields can
+   support literal values, bindings, templates, directory selectors, structured lists/maps, JSON,
+   and catalog-backed options. Agent/VM creation tool argument policies use a structured
+   rule-and-constraint editor for common policies, with raw JSON still available for advanced
+   policy maps.
 10. Review diagnostics on dirty or invalid nodes.
 11. Use **Reset changes** for a selected dirty node when you want to return it to the saved
     version.

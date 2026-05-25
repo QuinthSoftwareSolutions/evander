@@ -264,14 +264,17 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
 
     models_by_type: dict[str, type[BaseModel]] = {
         "trigger:event": provider_models.EventTriggerDefinition,
+        "trigger:http:webhook": provider_models.WebhookTriggerDefinition,
         "trigger:cron": provider_models.CronTriggerDefinition,
         "trigger:ticket:created": provider_models.TicketCreatedTriggerDefinition,
         "trigger:ticket:changed": provider_models.TicketChangedTriggerDefinition,
         "trigger:issue:comment-created": provider_models.IssueCommentCreatedTriggerDefinition,
         "trigger:ado:work-item-matching": provider_models.AdoWorkItemMatchingTriggerDefinition,
         "trigger:script-run-request": provider_models.ScriptRunRequestTriggerDefinition,
+        "trigger:communication:new-message": provider_models.CommunicationNewMessageTriggerDefinition,
         "trigger:discord:new-message": provider_models.DiscordNewMessageTriggerDefinition,
         "trigger:teams:new-message": provider_models.TeamsNewMessageTriggerDefinition,
+        "trigger:teams:direct-message": provider_models.TeamsDirectMessageTriggerDefinition,
         "trigger:teams-meeting:new-transcript": (
             provider_models.TeamsMeetingNewTranscriptTriggerDefinition
         ),
@@ -320,6 +323,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:semantic:delete": provider_models.SemanticDeleteEffectDefinition,
         "effect:state:update": provider_models.StateUpdateEffectDefinition,
         "effect:bash:script": provider_models.BashScriptEffectDefinition,
+        "effect:http:request": provider_models.HttpRequestEffectDefinition,
         "effect:vm:exec": provider_models.VmExecEffectDefinition,
         "effect:vm:copy-files": provider_models.VmCopyFilesEffectDefinition,
         "effect:vm:delete-files": provider_models.VmDeleteFilesEffectDefinition,
@@ -341,6 +345,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         ),
         "effect:git:promote-agent-branch": provider_models.GitPromoteAgentBranchEffectDefinition,
         "effect:pr:create": provider_models.PrCreateEffectDefinition,
+        "effect:event:schedule": provider_models.EventScheduleEffectDefinition,
         "query:vm:run-state": provider_models.VmRunStateQueryDefinition,
         "query:git:pr-note": provider_models.GitPrNoteQueryDefinition,
         "query:session-context": provider_models.SessionContextQueryDefinition,

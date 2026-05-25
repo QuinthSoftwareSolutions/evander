@@ -11,8 +11,10 @@ from agent_sandbox.directories import DirectoryStore
 from agent_sandbox.messaging.targets import (
     communication_targets_db_path,
     known_communication_target_ids,
+    validate_communication_new_message_trigger_targets,
     validate_communication_target_refs,
 )
+from agent_sandbox.triggers.providers.schemas import CommunicationNewMessageTriggerDefinition
 from agent_sandbox.workflow.compiler import (
     compile_trigger_orchestrator_config,
     compile_trigger_orchestrator_config_with_diagnostics,
@@ -88,6 +90,9 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
         self._path = _worker_global_config_path(project_dir)
         self._project_dir = project_dir
         self._base_payload = _base_worker_global_payload(base_config)
+        self._base_config = base_config or GatewayConfig(
+            runtime_dir=Path(self._base_payload.get("runtime_dir") or "runtime")
+        )
         self._current_config = initial_config
         self._last_fingerprint = self._compute_fingerprint()
 
@@ -149,9 +154,8 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
         if not isinstance(raw, dict):
             raise ValueError(f"worker config file {self._path} must contain a JSON object")
         raw = _compose_configured_workflow_ir(project_dir=self._project_dir, payload=raw)
-        runtime_dir = Path(self._base_payload.get("runtime_dir") or "runtime")
         _validate_communication_targets(
-            base_config=GatewayConfig(runtime_dir=runtime_dir),
+            base_config=self._base_config,
             payload=raw,
         )
         return _compile_worker_global_config(
@@ -324,6 +328,29 @@ def _validate_communication_targets(
     validate_communication_target_refs(
         payload=payload, known_target_ids=known_target_ids
     )
+    if base_config is None:
+        return
+
+    directory_store = DirectoryStore(base_config.directories_store_path)
+    triggers = payload.get("triggers")
+    if not isinstance(triggers, list):
+        return
+    for entry in triggers:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("type") or "").strip() != "trigger:communication:new-message":
+            continue
+        trigger_payload = dict(entry)
+        config = trigger_payload.pop("config", None)
+        if isinstance(config, dict):
+            for key, value in config.items():
+                trigger_payload.setdefault(key, value)
+        trigger = CommunicationNewMessageTriggerDefinition.model_validate(trigger_payload)
+        validate_communication_new_message_trigger_targets(
+            trigger,
+            runtime_dir=base_config.runtime_dir,
+            directory_store=directory_store,
+        )
 
 
 class FixedTriggerOrchestratorWorkerGlobalConfigReloader:
