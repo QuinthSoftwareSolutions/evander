@@ -4520,6 +4520,10 @@ def test_workflow_webhook_ingress_publishes_internal_event_and_bypasses_auth(
         "node_id": "webhook-1",
         "node_type": "trigger:http:webhook",
     }
+    assert response.json()["payload"]["headers"]["content-type"] == "application/json"
+    assert response.json()["payload"]["headers"]["x-agent-sandbox-signature-256"] == headers[
+        "X-Agent-Sandbox-Signature-256"
+    ]
     assert response.json()["payload"]["slug"] == "build-notify"
     assert response.json()["payload"]["body"] == {"target": "demo", "options": {"dry_run": True}}
     assert response.json()["payload"]["query"] == {"source": "ci"}
