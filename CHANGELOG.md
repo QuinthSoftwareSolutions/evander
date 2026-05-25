@@ -5,6 +5,15 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - Workflow Editor Inspector Layout
+
+- Moved selected-node declared and derived output contracts below configuration
+  fields so large output lists no longer push configuration down the inspector.
+- Fixed the Configuration communications Teams channel lookup card so it uses
+  dark-mode surfaces, labels, disabled controls, and result rows.
+- Clarified that communication targets are provider-generic and the Teams channel
+  lookup is only an optional helper.
+
 ## 2026-05-25 - Workflow Tutorial Cleanup
 
 - Removed the obsolete workflow editor in-memory first-run walkthrough, its
@@ -13,6 +22,8 @@ material. Newer entries are added incrementally as changes land.
 - Moved Admin Web users to `runtime/admin-web.db` with one-time legacy JSON
   import, and stored workflow tutorial completion/skipped state as an
   account-scoped preference instead of browser-local state.
+- Marked the workflow editor first-steps tutorial complete when an operator
+  exits or resets from the final step, while preserving the explicit skip path.
 - Removed the obsolete duplicate issue-comment workflow trigger alias from the
   runtime, node catalogue, documentation, and tests.
 - Added internal wake sockets for trigger/effect orchestration so host-owned

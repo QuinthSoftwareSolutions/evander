@@ -1659,7 +1659,11 @@ export function ConfigurationScreen() {
     return (
       <div className="communication-targets-editor">
         <div className="contacts-editor-header">
-          <p className="muted-text">Targets are resolved through directory inheritance and used by workflow messaging effects.</p>
+          <p className="muted-text">
+            Targets are resolved through directory inheritance and used by workflow messaging effects.
+            Use Add target for Teams, Discord, email, GitHub, ADO, Jira, or Linear targets; the Teams
+            lookup only helps fill channel addresses.
+          </p>
           <div className="inline-actions contacts-editor-actions">
             <button
               type="button"
@@ -1685,7 +1689,7 @@ export function ConfigurationScreen() {
         </div>
         <div className="contact-subsection teams-channel-lookup">
           <div className="contact-subsection-header">
-            <strong>Teams channel lookup</strong>
+            <strong>Optional Teams channel lookup</strong>
             <div className="inline-actions compact-actions">
               <button
                 type="button"
@@ -1821,7 +1825,7 @@ export function ConfigurationScreen() {
                         })
                       }
                       disabled={disabled}
-                      placeholder="teams-primary"
+                      placeholder="target-primary"
                     />
                   </label>
                   <label className="field-stack">
