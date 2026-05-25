@@ -428,6 +428,8 @@ class CiRunCompletedTriggerDefinition(TriggerDefinition):
         if value is None:
             return list(_CI_RUN_COMPLETED_TERMINAL_CONCLUSIONS)
         normalized = normalize_string_list(value)
+        if not normalized:
+            return list(_CI_RUN_COMPLETED_TERMINAL_CONCLUSIONS)
         canonical: list[str] = []
         for item in normalized:
             token = _normalize_ci_conclusion_token(item)

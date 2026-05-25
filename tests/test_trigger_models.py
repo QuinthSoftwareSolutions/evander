@@ -264,6 +264,21 @@ def test_ci_run_completed_trigger_normalizes_ado_config() -> None:
     assert trigger.conclusions == ["failure", "skipped", "cancelled", "timed_out"]
 
 
+def test_ci_run_completed_trigger_treats_empty_conclusions_as_default() -> None:
+    trigger = CiRunCompletedTriggerDefinition.model_validate(
+        {
+            "id": "t-ci-empty-conclusions",
+            "display_name": "CI run completed",
+            "type": "trigger:ci:run:completed",
+            "provider": "github_actions",
+            "repo": "owner/repo",
+            "conclusions": [],
+        }
+    )
+
+    assert trigger.conclusions == ["success", "failure", "cancelled", "timed_out", "skipped"]
+
+
 def test_ci_run_completed_trigger_rejects_invalid_provider_conclusion_top_and_missing_provider() -> None:
     with pytest.raises(ValueError, match="Unsupported CI provider"):
         CiRunCompletedTriggerDefinition.model_validate(
