@@ -37,6 +37,8 @@ class _AdminServiceStub:
     pr_note_calls: list[dict[str, object]] | None = None
     issue_result: dict[str, object] | None = None
     issue_calls: list[dict[str, object]] | None = None
+    issue_list_result: list[dict[str, object]] | None = None
+    issue_list_calls: list[dict[str, object]] | None = None
     artifact_result: dict[str, object] | None = None
     artifact_calls: list[dict[str, object]] | None = None
 
@@ -57,6 +59,13 @@ class _AdminServiceStub:
         if self.issue_result is None:
             raise RuntimeError("issue_result not configured")
         return dict(self.issue_result)
+
+    def list_issues(self, **kwargs):
+        if self.issue_list_calls is not None:
+            self.issue_list_calls.append(kwargs)
+        if self.issue_list_result is None:
+            raise RuntimeError("issue_list_result not configured")
+        return [dict(issue) for issue in self.issue_list_result]
 
     def read_session_artifact_text(self, **kwargs):
         if self.artifact_calls is not None:
@@ -258,6 +267,66 @@ def test_issue_list_query_provider_can_be_built() -> None:
     provider = factory.build(query)
 
     assert provider.__class__.__name__ == "IssueListQueryProvider"
+
+
+def test_issue_list_query_provider_returns_issue_collection_payload() -> None:
+    query = IssueListQueryDefinition(
+        id="query-issues",
+        display_name="Issue list",
+        type="query:issue:list",
+        directory_path="root/team-a",
+        direct_only=False,
+        states=["Open"],
+        exclude_states=["Done"],
+    )
+    admin_service = _AdminServiceStub(
+        vms=[],
+        issue_list_result=[
+            {
+                "issue_id": "root::local::1",
+                "issue_number": "1",
+                "title": "Fix planner resume",
+                "body": "Body",
+                "description": "Body",
+                "reason": None,
+                "rejection_reason": None,
+                "yaml_path": "/tmp/1.yaml",
+                "directory_path": "root/team-a",
+                "repo_source": "repo-source",
+                "source_type": "local_manual",
+                "state": "Open",
+                "url": "https://example.test/issues/1",
+                "tags": ["triage"],
+                "comments": [],
+                "source": "local_gui",
+                "metadata": {"steps": ["analyze", "implement"]},
+                "created_at": "2026-05-18T12:00:00+00:00",
+                "updated_at": "2026-05-18T12:00:00+00:00",
+                "remote_reference": None,
+                "can_edit": True,
+                "can_delete": True,
+                "can_create_vm": True,
+            }
+        ],
+        issue_list_calls=[],
+    )
+
+    factory = QueryProviderFactory(
+        provider_config_resolver=_ResolverStub(), admin_service=admin_service
+    )
+    provider = factory.build(query)
+    output = provider.execute()
+
+    assert admin_service.issue_list_calls == [
+        {
+            "directory_path": None,
+            "direct_only": False,
+            "states": {"Open"},
+            "exclude_states": {"Done"},
+        }
+    ]
+    assert output["count"] == 1
+    assert output["issues"][0]["issue_id"] == "root::local::1"
 
 
 def test_agent_artifact_text_query_provider_returns_artifact_content() -> None:
