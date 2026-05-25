@@ -78,6 +78,8 @@ class WebhookTriggerDefinition(TriggerDefinition):
         if self.event_type is None:
             self.event_type = f"webhook.{self.slug}"
         else:
+            if self.event_type.startswith("external."):
+                raise ValueError("event_type must not include the reserved 'external.' prefix")
             self.event_type = validate_internal_event_type(self.event_type)
         self.config = {
             **self.config,

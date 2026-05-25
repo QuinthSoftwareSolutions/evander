@@ -4534,7 +4534,7 @@ def test_workflow_webhook_ingress_publishes_internal_event_and_bypasses_auth(
     events = InternalEventBus(tmp_path / "runtime" / "internal-events.json").list_events()
     assert len(events) == 1
     assert events[0].event_type == "external.webhook.build-notify"
-    assert events[0].idempotency_key == f"sha256={hashlib.sha256(body).hexdigest()}"
+    assert events[0].idempotency_key == headers["X-Agent-Sandbox-Signature-256"]
 
 
 @pytest.mark.parametrize(

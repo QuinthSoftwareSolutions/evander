@@ -134,6 +134,20 @@ def test_webhook_trigger_rejects_blank_secret_env() -> None:
         )
 
 
+def test_webhook_trigger_rejects_reserved_external_event_type() -> None:
+    with pytest.raises(ValueError, match="reserved 'external\\.' prefix"):
+        WebhookTriggerDefinition.model_validate(
+            {
+                "id": "webhook-4",
+                "display_name": "Webhook",
+                "type": "trigger:http:webhook",
+                "slug": "build-notify",
+                "secret_env": "WEBHOOK_SECRET",
+                "event_type": "external.webhook.build-notify",
+            }
+        )
+
+
 def test_email_trigger_validates_provider_enum() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 
