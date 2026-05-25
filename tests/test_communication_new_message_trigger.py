@@ -4,6 +4,8 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.events.provider_models import CommunicationNewMessageTriggerDefinition
 from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
@@ -278,6 +280,35 @@ def test_communication_trigger_matches_teams_chat_and_bare_discord_channel_targe
     assert teams_event.payload["target"] == "chat:19:abc@thread.v2"
     assert teams_event.payload["message"]["metadata"]["source"] == "teams_graph_api"
     assert "auth_profile_ref" not in teams_event.payload
+
+
+def test_communication_trigger_provider_rejects_teams_user_targets(
+    tmp_path: Path,
+) -> None:
+    context = _runtime_context(tmp_path)
+    runtime_dir = context.resolved_config.runtime_dir
+    repository = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(runtime_dir)
+    )
+    repository.write_overlay(
+        "root",
+        {
+            "targets": [
+                {
+                    "id": "teams-user",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "user:operator@example.com",
+                    "policy": {"capabilities": ["read"]},
+                }
+            ]
+        },
+    )
+
+    provider = CommunicationNewMessageTriggerProvider()
+
+    with pytest.raises(ValueError, match="Teams user target"):
+        provider.initialize(_trigger_definition(target_ids=["teams-user"]), context)
 
 
 def test_communication_trigger_applies_author_and_content_filters_case_insensitively_and_case_sensitively(

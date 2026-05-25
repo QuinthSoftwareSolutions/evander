@@ -24,6 +24,9 @@ material. Newer entries are added incrementally as changes land.
 - Added `trigger:communication:new-message`, a provider-neutral inbound chat
   trigger over read-capable Teams channel/chat and Discord communication
   targets, with Admin Web catalog support and normalized message outputs.
+- Tightened communication trigger reload/runtime validation so Teams `user:`
+  targets stay send-only and custom directory stores are preserved on workflow
+  config reloads.
 
 ## 2026-05-24 - Container Worker Manifest Persistence Fix
 

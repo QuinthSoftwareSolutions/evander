@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
@@ -24,9 +25,14 @@ def _node_ids(nodes: object) -> list[str]:
     return [str(getattr(node, "id")) for node in nodes]
 
 
-def _write_communication_targets(runtime_dir: Path, targets: list[dict[str, object]]) -> None:
+def _write_communication_targets(
+    runtime_dir: Path,
+    targets: list[dict[str, object]],
+    *,
+    directory_id: str = "root",
+) -> None:
     repository = SqliteCommunicationTargetsRepository(communication_targets_db_path(runtime_dir))
-    repository.write_overlay("root", {"targets": targets})
+    repository.write_overlay(directory_id, {"targets": targets})
 
 
 def _write_system_pack(packs_dir: Path, *, enqueue_display_name: str) -> None:
@@ -157,6 +163,86 @@ def test_reload_now_applies_new_valid_payload(tmp_path: Path) -> None:
 
     assert changed is True
     assert latest.poll_interval_seconds == 11
+
+
+def test_reload_preserves_custom_directory_store_for_communication_triggers(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    directories_store_path = tmp_path / "state" / "directories.json"
+    ops = DirectoryService(DirectoryStore(directories_store_path)).create(
+        parent="root", name="ops"
+    )
+    _write_communication_targets(
+        runtime_dir,
+        [
+            {
+                "id": "ops-teams",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team/channel",
+                "policy": {"capabilities": ["read"]},
+            }
+        ],
+        directory_id=ops.id,
+    )
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "poll_interval_seconds": 2,
+                "triggers": [
+                    {
+                        "id": "comm-1",
+                        "display_name": "Communication",
+                        "type": "trigger:communication:new-message",
+                        "directory_path": "root/ops",
+                        "communication_target_ids": ["ops-teams"],
+                    }
+                ],
+                "edges": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    base_config = GatewayConfig(
+        runtime_dir=runtime_dir,
+        directories_store_path=directories_store_path,
+    )
+    initial_config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=base_config
+    )
+    reloader = TriggerOrchestratorWorkerGlobalConfigReloader(
+        project_dir=project_dir,
+        initial_config=initial_config,
+        base_config=base_config,
+    )
+
+    path.write_text(
+        json.dumps(
+            {
+                "poll_interval_seconds": 13,
+                "triggers": [
+                    {
+                        "id": "comm-1",
+                        "display_name": "Communication",
+                        "type": "trigger:communication:new-message",
+                        "directory_path": "root/ops",
+                        "communication_target_ids": ["ops-teams"],
+                    }
+                ],
+                "edges": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    latest, changed = reloader.reload_now()
+
+    assert changed is True
+    assert latest.poll_interval_seconds == 13
 
 
 def test_get_latest_detects_config_file_replacement(tmp_path: Path) -> None:

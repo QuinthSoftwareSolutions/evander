@@ -18,7 +18,11 @@ from agent_sandbox.repositories.cursors import (
     JsonDiscordInboxCursorRepository,
     JsonTeamsInboxCursorRepository,
 )
-from agent_sandbox.services import normalize_teams_target, teams_target_from_message
+from agent_sandbox.services import (
+    normalize_teams_target,
+    parse_teams_target,
+    teams_target_from_message,
+)
 from agent_sandbox.triggers.providers._cursor_state import (
     TriggerCursorStore,
     latest_cursor_timestamp_text,
@@ -170,6 +174,11 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
                     f"{target_id!r} does not allow read capability"
                 )
             if target.provider == "teams":
+                if parse_teams_target(target.address).kind == "user":
+                    raise ValueError(
+                        "trigger:communication:new-message target "
+                        f"{target_id!r} is a Teams user target; only channel and chat targets are supported"
+                    )
                 teams_targets_by_address[normalize_teams_target(target.address)].append(target.id)
             elif target.provider == "discord":
                 discord_targets_by_channel_id[_discord_channel_id(target.address)].append(target.id)

@@ -89,6 +89,9 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
         self._path = _worker_global_config_path(project_dir)
         self._project_dir = project_dir
         self._base_payload = _base_worker_global_payload(base_config)
+        self._base_config = base_config or GatewayConfig(
+            runtime_dir=Path(self._base_payload.get("runtime_dir") or "runtime")
+        )
         self._current_config = initial_config
         self._last_fingerprint = self._compute_fingerprint()
 
@@ -150,9 +153,8 @@ class TriggerOrchestratorWorkerGlobalConfigReloader:
         if not isinstance(raw, dict):
             raise ValueError(f"worker config file {self._path} must contain a JSON object")
         raw = _compose_configured_workflow_ir(project_dir=self._project_dir, payload=raw)
-        runtime_dir = Path(self._base_payload.get("runtime_dir") or "runtime")
         _validate_communication_targets(
-            base_config=GatewayConfig(runtime_dir=runtime_dir),
+            base_config=self._base_config,
             payload=raw,
         )
         return _compile_worker_global_config(
