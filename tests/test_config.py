@@ -9,6 +9,7 @@ from agent_sandbox.config import (
     TeamsIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
+from agent_sandbox.events.models import materialize_node_definition
 from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.policy_config import EffectivePolicyConfig
 from agent_sandbox.effects.providers.agent_session import (
@@ -812,6 +813,161 @@ def test_trigger_orchestrator_filter_gate_accepts_string_operators() -> None:
             {"left": "${{trigger-1.branch_name}}", "contains": "/"},
         ]
     }
+
+
+def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "gates": [
+                {
+                    "id": "gate-switch",
+                    "display_name": "Route by state",
+                    "type": "gate:switch",
+                    "default_port": "fallback",
+                    "cases": [
+                        {
+                            "port": "ready",
+                            "label": "Ready path",
+                            "when": {
+                                "all": [
+                                    {"left": "${{trigger-1.state}}", "equals": "ready"}
+                                ]
+                            },
+                        },
+                        {
+                            "port": "ready",
+                            "match": {"state": "blocked"},
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+
+    gate = config.gates[0]
+    assert gate.type == "gate:switch"
+    assert gate.default_port == "fallback"
+    assert [case["port"] for case in gate.config["cases"]] == ["ready", "ready"]
+
+    materialized = materialize_node_definition(gate)
+    assert [case.port for case in materialized.cases] == ["ready", "ready"]
+    assert materialized.cases[0].label == "Ready path"
+    assert materialized.cases[0].when == {
+        "all": [{"left": "${{trigger-1.state}}", "equals": "ready"}]
+    }
+    assert materialized.cases[1].match == {"state": "blocked"}
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "gates": [
+                    {
+                        "id": "gate-switch",
+                        "display_name": "Route by state",
+                        "type": "gate:switch",
+                        "cases": [],
+                    }
+                ],
+            },
+            "gate:switch requires at least one case",
+        ),
+        (
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "gates": [
+                    {
+                        "id": "gate-switch",
+                        "display_name": "Route by state",
+                        "type": "gate:switch",
+                        "cases": [
+                            {
+                                "port": "   ",
+                                "when": {
+                                    "all": [
+                                        {"left": "${{trigger-1.state}}", "equals": "ready"}
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            "gate:switch case port must be a non-empty string",
+        ),
+        (
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "gates": [
+                    {
+                        "id": "gate-switch",
+                        "display_name": "Route by state",
+                        "type": "gate:switch",
+                        "default_port": "   ",
+                        "cases": [
+                            {
+                                "port": "ready",
+                                "when": {
+                                    "all": [
+                                        {"left": "${{trigger-1.state}}", "equals": "ready"}
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            "gate:switch default_port must be a non-empty string",
+        ),
+        (
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "gates": [
+                    {
+                        "id": "gate-switch",
+                        "display_name": "Route by state",
+                        "type": "gate:switch",
+                        "cases": [
+                            {
+                                "port": "ready",
+                                "when": {
+                                    "all": [
+                                        {"left": "${{trigger-1.state}}", "equals": "ready"}
+                                    ]
+                                },
+                                "match": {"state": "ready"},
+                            }
+                        ],
+                    }
+                ],
+            },
+            "mutually exclusive",
+        ),
+        (
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "gates": [
+                    {
+                        "id": "gate-switch",
+                        "display_name": "Route by state",
+                        "type": "gate:switch",
+                        "cases": [{"port": "ready"}],
+                    }
+                ],
+            },
+            "requires exactly one of when or match",
+        ),
+    ],
+)
+def test_trigger_orchestrator_switch_gate_rejects_invalid_cases(
+    payload: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(payload)
 
 
 def test_trigger_orchestrator_await_agent_gate_accepts_completion_trigger_reference() -> None:

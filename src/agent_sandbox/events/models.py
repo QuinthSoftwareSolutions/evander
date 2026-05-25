@@ -80,6 +80,76 @@ class GateFilterDefinition(GateDefinition):
         return self
 
 
+class GateSwitchCaseDefinition(BaseModel):
+    port: str
+    label: str | None = None
+    when: ConfigValue | None = None
+    match: ConfigValue | None = None
+
+    @field_validator("port", mode="before")
+    @classmethod
+    def validate_port(cls, value: object) -> str:
+        text = str(value).strip()
+        if not text:
+            raise ValueError("gate:switch case port must be a non-empty string")
+        return text
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def normalize_label(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("match")
+    @classmethod
+    def validate_match_is_object(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError("gate:switch case match must be a JSON object")
+        return value
+
+    @field_validator("when")
+    @classmethod
+    def validate_when_expression(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None:
+            return None
+        validate_filter_when_expression(value, context="gate:switch case when")
+        return value
+
+    @model_validator(mode="after")
+    def validate_exactly_one_predicate(self) -> "GateSwitchCaseDefinition":
+        if self.when is None and self.match is None:
+            raise ValueError("gate:switch case requires exactly one of when or match")
+        if self.when is not None and self.match is not None:
+            raise ValueError("gate:switch case when and match are mutually exclusive")
+        return self
+
+
+class GateSwitchDefinition(GateDefinition):
+    type: Literal["gate:switch"]
+    cases: list[GateSwitchCaseDefinition]
+    default_port: str | None = None
+
+    @field_validator("default_port", mode="before")
+    @classmethod
+    def validate_default_port(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            raise ValueError("gate:switch default_port must be a non-empty string")
+        return text
+
+    @model_validator(mode="after")
+    def validate_cases(self) -> "GateSwitchDefinition":
+        if not self.cases:
+            raise ValueError("gate:switch requires at least one case")
+        return self
+
+
 class GateMapDefinition(GateDefinition):
     type: Literal["gate:map"]
     template: ConfigValue
@@ -283,6 +353,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "trigger:agent:run:completed": provider_models.AgentRunCompletedTriggerDefinition,
         "trigger:agent:prompt:new": provider_models.AgentPromptNewTriggerDefinition,
         "gate:filter": GateFilterDefinition,
+        "gate:switch": GateSwitchDefinition,
         "gate:map": GateMapDefinition,
         "gate:deserialize": GateDeserializeDefinition,
         "gate:serialize": GateSerializeDefinition,
