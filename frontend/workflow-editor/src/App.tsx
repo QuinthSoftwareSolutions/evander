@@ -323,7 +323,6 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "trigger:ticket:created": "Start when a tracked ticket is created.",
   "trigger:ticket:changed": "Start when a tracked ticket changes state or metadata.",
   "trigger:issue:comment-created": "Start when a tracked issue receives a new comment.",
-  "trigger:issue:new-comment": "Start when a tracked issue receives a new comment.",
   "trigger:discord:new-message": "Start from new Discord messages that match the configured filters.",
   "trigger:teams:new-message": "Start from new Microsoft Teams messages that match the configured targets.",
   "trigger:email:new-message": "Start from newly ingested email messages for the configured mailbox scope.",
@@ -1426,7 +1425,7 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   if (kind === "trigger" && type === "trigger:ticket:changed") {
     return { id, display_name: "Ticket changed", type, directories: ["root"] };
   }
-  if (kind === "trigger" && (type === "trigger:issue:comment-created" || type === "trigger:issue:new-comment")) {
+  if (kind === "trigger" && type === "trigger:issue:comment-created") {
     return {
       id,
       display_name: "Issue comment",

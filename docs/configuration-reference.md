@@ -143,7 +143,7 @@ Type-specific keys:
 | `trigger:cron` | `expression` | — |
 | `trigger:ticket:created` | `directories` | — |
 | `trigger:ticket:changed` | `directories` | — |
-| `trigger:issue:comment-created` / `trigger:issue:new-comment` | — | `provider`, `organization_url`, `project`, `directories` |
+| `trigger:issue:comment-created` | — | `provider`, `organization_url`, `project`, `directories` |
 | `trigger:ado:work-item-matching` | — | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top` |
 | `trigger:script-run-request` | — | — |
 | `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |

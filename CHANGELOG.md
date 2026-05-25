@@ -10,6 +10,8 @@ material. Newer entries are added incrementally as changes land.
 - Removed the obsolete workflow editor in-memory first-run walkthrough, its
   sidebar controls, and its Admin Web API routes now that Tutorials owns the
   onboarding flow.
+- Removed the obsolete duplicate issue-comment workflow trigger alias from the
+  runtime, node catalogue, documentation, and tests.
 
 ## 2026-05-24 - Container Worker Manifest Persistence Fix
 

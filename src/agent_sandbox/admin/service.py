@@ -1528,7 +1528,6 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:ticket:created": "Start when a tracked ticket is created.",
     "trigger:ticket:changed": "Start when a tracked ticket changes state or metadata.",
     "trigger:issue:comment-created": "Start when a tracked issue receives a new comment.",
-    "trigger:issue:new-comment": "Start when a tracked issue receives a new comment.",
     "trigger:ado:work-item-matching": (
         "Start when an Azure DevOps work item first matches or advances its changed date."
     ),
@@ -1705,24 +1704,6 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         kind="trigger",
         type="trigger:issue:comment-created",
         label="Issue comment created",
-        fields=[
-            _field(
-                "provider",
-                "Provider",
-                "enum",
-                options=[
-                    _field_option("ado", "Azure DevOps"),
-                ],
-            ),
-            _field("organization_url", "Organization URL", "string"),
-            _field("project", "Project", "string"),
-            _field("directories", "Directories", "string_list", placeholder="root"),
-        ],
-    ),
-    WorkflowEditorNodeCatalogEntry(
-        kind="trigger",
-        type="trigger:issue:new-comment",
-        label="Issue new comment",
         fields=[
             _field(
                 "provider",

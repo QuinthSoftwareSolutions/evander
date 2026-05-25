@@ -524,15 +524,6 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "project",
         "directories",
     ]
-    issue_comment_alias = next(
-        node for node in catalog_payload["nodes"] if node["type"] == "trigger:issue:new-comment"
-    )
-    assert [field["key"] for field in issue_comment_alias["fields"]] == [
-        "provider",
-        "organization_url",
-        "project",
-        "directories",
-    ]
     teams_message = next(
         node for node in catalog_payload["nodes"] if node["type"] == "trigger:teams:new-message"
     )
