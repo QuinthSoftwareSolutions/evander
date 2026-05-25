@@ -102,6 +102,7 @@ from agent_sandbox.triggers.providers.pull_request_completed import (
 )
 from agent_sandbox.triggers.providers.review_new_request import ReviewNewRequestTriggerProvider
 from agent_sandbox.triggers.providers.script_run_request import ScriptRunRequestTriggerProvider
+from agent_sandbox.triggers.providers.teams_direct_message import TeamsDirectMessageTriggerProvider
 from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.teams_meeting_new_transcript import (
     TeamsMeetingNewTranscriptTriggerProvider,
@@ -122,6 +123,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "trigger:script-run-request": ScriptRunRequestTriggerProvider,
             "trigger:discord:new-message": DiscordNewMessageTriggerProvider,
             "trigger:teams:new-message": TeamsNewMessageTriggerProvider,
+            "trigger:teams:direct-message": TeamsDirectMessageTriggerProvider,
             "trigger:teams-meeting:new-transcript": TeamsMeetingNewTranscriptTriggerProvider,
             "trigger:email:new-message": EmailNewMessageTriggerProvider,
             "trigger:pull-request:new-feedback": PullRequestNewFeedbackTriggerProvider,

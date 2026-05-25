@@ -198,9 +198,9 @@ from agent_sandbox.workflow.validation import (
     validate_workflow_binding_diagnostics,
 )
 from agent_sandbox.services import (
-    normalize_teams_chat_targets,
-    normalize_teams_target,
-    normalize_teams_user_target,
+    normalize_teams_chat_or_target_refs,
+    normalize_teams_channel_or_target_refs,
+    normalize_teams_user_or_target_refs,
 )
 from agent_sandbox.worker.security import sanitize_text
 
@@ -1540,6 +1540,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:teams:new-message": (
         "Start from new Microsoft Teams messages that match the configured targets."
     ),
+    "trigger:teams:direct-message": (
+        "Start from allowlisted one-on-one Microsoft Teams direct messages."
+    ),
     "trigger:email:new-message": (
         "Start from newly ingested email messages for the configured mailbox scope."
     ),
@@ -1797,6 +1800,26 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 ],
             ),
             _field("user_ids", "User IDs", "string_list"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:teams:direct-message",
+        label="Teams direct message",
+        fields=[
+            _field(
+                "sender_user_ids",
+                "Sender user IDs",
+                "string_list",
+                required=True,
+                description="Microsoft Graph user IDs allowed to wake this workflow from one-on-one Teams chats.",
+            ),
+            _field(
+                "message_filter",
+                "Message filter",
+                "json",
+                description='Optional wake filter, for example {"content":{"contains":"literal text","case_sensitive":false}}.',
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
@@ -4923,7 +4946,7 @@ def _build_issue_session_manifest(
         teams_channel_allowlist=_normalize_teams_channel_allowlist(
             teams_channel_allowlist or [], field_name="teams_channel_allowlist"
         ),
-        teams_chat_allowlist=normalize_teams_chat_targets(teams_chat_allowlist),
+        teams_chat_allowlist=normalize_teams_chat_or_target_refs(teams_chat_allowlist),
         teams_user_allowlist=_normalize_teams_user_allowlist(
             teams_user_allowlist or [], field_name="teams_user_allowlist"
         ),
@@ -5039,31 +5062,15 @@ def _normalize_plain_string_list(value: object, *, field_name: str) -> list[str]
 
 
 def _normalize_teams_channel_allowlist(value: object, *, field_name: str) -> list[str]:
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for target in _normalize_plain_string_list(value, field_name=field_name):
-        normalized_target = normalize_teams_target(target)
-        if normalized_target.startswith("user:"):
-            raise ValueError(
-                f"{field_name} accepts channel/chat targets only; use teams_user_allowlist for user targets"
-            )
-        if normalized_target in seen:
-            continue
-        seen.add(normalized_target)
-        normalized.append(normalized_target)
-    return normalized
+    return normalize_teams_channel_or_target_refs(
+        _normalize_plain_string_list(value, field_name=field_name)
+    )
 
 
 def _normalize_teams_user_allowlist(value: object, *, field_name: str) -> list[str]:
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for target in _normalize_plain_string_list(value, field_name=field_name):
-        normalized_target = normalize_teams_user_target(target)
-        if normalized_target in seen:
-            continue
-        seen.add(normalized_target)
-        normalized.append(normalized_target)
-    return normalized
+    return normalize_teams_user_or_target_refs(
+        _normalize_plain_string_list(value, field_name=field_name)
+    )
 
 
 COMMUNICATION_FILE_SESSION_POLICY_FIELDS: tuple[str, ...] = (
@@ -5191,7 +5198,7 @@ def _session_policy_update_from_payload(
             field_name=teams_field,
         )
     if "teams_chat_allowlist" in payload:
-        update["teams_chat_allowlist"] = normalize_teams_chat_targets(
+        update["teams_chat_allowlist"] = normalize_teams_chat_or_target_refs(
             _normalize_plain_string_list(
                 payload.get("teams_chat_allowlist"), field_name="teams_chat_allowlist"
             )

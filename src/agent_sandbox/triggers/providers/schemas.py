@@ -224,6 +224,17 @@ class TeamsNewMessageTriggerDefinition(TriggerDefinition):
         return normalize_string_list(value)
 
 
+class TeamsDirectMessageTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:teams:direct-message"]
+    sender_user_ids: list[str] = Field(min_length=1)
+    message_filter: TeamsMessageFilterDefinition | None = None
+
+    @field_validator("sender_user_ids", mode="before")
+    @classmethod
+    def normalize_sender_user_ids(cls, value: object) -> object:
+        return normalize_string_list(value)
+
+
 class TeamsMeetingNewTranscriptTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:teams-meeting:new-transcript"]
     session_ids: list[str] = Field(default_factory=list)

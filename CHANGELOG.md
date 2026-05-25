@@ -5,6 +5,29 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - Container Worker Browser Env
+
+- Exported `CHROME_BIN` and `CHROMIUM_BIN` from Playwright-enabled
+  `container_worker_vm` sessions so Karma-style browser test launchers can use
+  the seeded Chromium binary mounted from the worker cache.
+
+## 2026-05-25 - Workflow Trigger Disable Toggle
+
+- Added an `enabled: false` workflow trigger state that skips trigger polling and
+  the legacy ADO/Git direct publishers while preserving already queued work.
+- Added a Workflow editor trigger toggle and ghosted disabled-trigger styling.
+
+## 2026-05-25 - Teams Direct Message Trigger
+
+- Added `trigger:teams:direct-message` for allowlisted one-on-one Microsoft
+  Teams direct messages to the delegated Teams identity, backed by host-side
+  Teams ingest polling.
+- Documented the Teams direct-message trigger and updated example Truman packs
+  with a separate direct-message prompt path.
+- Fixed Teams direct-message ingest so enabled triggers poll on cold start
+  without active sessions, disabled triggers are ignored, and one-on-one chats
+  already allowlisted for normal Teams reads still publish DM trigger events.
+
 ## 2026-05-25 - Workflow HTTP Request Effect
 
 - Added the host-side `effect:http:request` workflow effect with Pydantic
@@ -26,6 +49,9 @@ material. Newer entries are added incrementally as changes land.
   dark-mode surfaces, labels, disabled controls, and result rows.
 - Clarified that communication targets are provider-generic and the Teams channel
   lookup is only an optional helper.
+- Allowed session Teams/Discord communication allowlists, inbound polling routes,
+  and guest messaging tools to use directory-scoped communication target IDs while
+  preserving raw legacy IDs and enforcing target capabilities per operation.
 
 ## 2026-05-25 - Workflow Tutorial Cleanup
 

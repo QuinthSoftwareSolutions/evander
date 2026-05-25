@@ -1927,6 +1927,8 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert "PLAYWRIGHT_MCP_EXECUTABLE_PATH" in bootstrap_by_path[
         "/home/agent/.profile"
     ]["content"]
+    assert "CHROME_BIN" in bootstrap_by_path["/home/agent/.profile"]["content"]
+    assert "CHROMIUM_BIN" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "/home/agent/.dotnet-cli/.keep" not in bootstrap_by_path
     assert "/home/agent/.nuget/NuGet/NuGet.Config" in bootstrap_by_path
     nuget_config = bootstrap_by_path["/home/agent/.nuget/NuGet/NuGet.Config"]["content"]

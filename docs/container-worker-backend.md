@@ -127,8 +127,10 @@ Playwright reads `HOST_PLAYWRIGHT_NODE_MODULES` or the repo frontend `node_modul
 `HOST_PLAYWRIGHT_BROWSERS` or `~/.cache/ms-playwright`; set the Playwright archive variables to copy
 prebuilt tarballs instead. Playwright-enabled container sessions export
 `PLAYWRIGHT_MCP_EXECUTABLE_PATH` from that mounted browser cache and
-`PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`, so `playwright-cli` uses the seeded Chromium binary instead of
-looking for system Chrome under `/opt/google/chrome` or downloading a browser at task time.
+`PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`, and also set `CHROME_BIN` and `CHROMIUM_BIN` to the same
+seeded Chromium executable for Karma-style browser launchers. This lets browser tools use the seeded
+binary instead of looking for system Chrome under `/opt/google/chrome` or downloading a browser at
+task time.
 Project-specific NuGet fallback packages remain operator-controlled and
 are not baked into the image. Secrets are not mounted. When `--container-user` is numeric, the worker daemon writes a per-session
 `/etc/passwd` and `/etc/group` bind mount so tools such as OpenSSH can resolve the active uid
@@ -286,6 +288,8 @@ all fetch and push traffic goes through the private restricted-SSH mirror.
 locations, and NuGet config when `nuget=true`. The Codex config points at the session-scoped OpenAI
 relay URL and MCP gateway URL. If `dotnet=true` or `playwright=true`, the profile points at the
 read-only worker cache mounts and keeps writable per-session cache paths under `/home/agent`.
+With `playwright=true`, the profile resolves the seeded Playwright Chromium binary and exports it as
+`PLAYWRIGHT_MCP_EXECUTABLE_PATH`, `CHROME_BIN`, and `CHROMIUM_BIN`.
 
 SQL Server for container workers is a controlled provisioning capability, not an automatic
 `effect:agent:create` bootstrap. Requests that set `mssql=true` or `mssql_init_root` still fail

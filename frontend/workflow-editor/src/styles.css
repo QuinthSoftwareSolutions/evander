@@ -1713,6 +1713,10 @@ select {
   width: auto;
 }
 
+.trigger-enable-control {
+  margin: 0.55rem 0 0.2rem;
+}
+
 .option-checkbox-list {
   display: grid;
   gap: 0.45rem;
@@ -2612,7 +2616,8 @@ select {
 .runtime-run-state,
 .node-runtime-badge,
 .node-diagnostic-badge,
-.node-unsaved-badge {
+.node-unsaved-badge,
+.node-disabled-badge {
   padding: 0.2rem 0.5rem;
   border-radius: 999px;
   font-family: "Avenir Next Condensed", "Franklin Gothic Medium", sans-serif;
@@ -2636,6 +2641,15 @@ select {
   background: #f7e1ba;
   color: #7a4a00;
   border: 1px solid rgba(122, 74, 0, 0.22);
+}
+
+.node-disabled-badge {
+  white-space: nowrap;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  background: #ece7dd;
+  color: #6f6354;
+  border: 1px solid rgba(91, 67, 37, 0.18);
 }
 
 .node-runtime-badge.compact {
@@ -3347,6 +3361,16 @@ select {
 
 .node-card.inspect-ghost.selected {
   opacity: 0.62;
+}
+
+.node-card.trigger-disabled {
+  opacity: 0.42;
+  filter: grayscale(0.35) saturate(0.64);
+  box-shadow: none;
+}
+
+.node-card.trigger-disabled.selected {
+  opacity: 0.72;
 }
 
 .workflow-editor-shell.is-inspect-mode .node-drag-surface {
@@ -7864,6 +7888,16 @@ select {
 }
 
 :root[data-theme="dark"] .node-card.inspect-ghost.selected {
+  opacity: 0.68;
+}
+
+:root[data-theme="dark"] .node-card.trigger-disabled {
+  opacity: 0.36;
+  filter: grayscale(0.42) saturate(0.58);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .node-card.trigger-disabled.selected {
   opacity: 0.68;
 }
 

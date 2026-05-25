@@ -562,6 +562,15 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         node for node in catalog_payload["nodes"] if node["type"] == "trigger:teams:new-message"
     )
     assert [field["key"] for field in teams_message["fields"]] == ["targets", "user_ids"]
+    teams_direct_message = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "trigger:teams:direct-message"
+    )
+    assert [field["key"] for field in teams_direct_message["fields"]] == [
+        "sender_user_ids",
+        "message_filter",
+    ]
     deserialize_gate = next(
         node for node in catalog_payload["nodes"] if node["type"] == "gate:deserialize"
     )

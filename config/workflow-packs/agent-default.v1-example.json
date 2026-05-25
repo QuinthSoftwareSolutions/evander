@@ -133,6 +133,14 @@
         "target_id": "effect-agent-enqueue-prompt-1"
       },
       {
+        "source_id": "trigger-teams-direct-message-1",
+        "target_id": "query-session-context-teams-dm-1"
+      },
+      {
+        "source_id": "query-session-context-teams-dm-1",
+        "target_id": "effect-agent-enqueue-prompt-teams-dm-1"
+      },
+      {
         "source_id": "trigger-review-new-request-1",
         "target_id": "effect-vm-create-2"
       },
@@ -279,6 +287,16 @@
         "display_name": "Teams message",
         "id": "trigger-teams-new-message-2",
         "type": "trigger:teams:new-message"
+      },
+      {
+        "config": {
+          "sender_user_ids": [
+            "00000000-0000-0000-0000-000000000000"
+          ]
+        },
+        "display_name": "Teams direct message",
+        "id": "trigger-teams-direct-message-1",
+        "type": "trigger:teams:direct-message"
       },
       {
         "config": {},
@@ -1278,6 +1296,20 @@
       },
       {
         "config": {
+          "model": "gpt-5.4-mini",
+          "queue_key": "teams:${{trigger-teams-direct-message-1.channel_target}}:${{trigger-teams-direct-message-1.message_id ?? trigger-teams-direct-message-1.cursor}}",
+          "prompt": "You are Truman, a helpful assistant in an agent orchestration and control plane. If you haven't already, please read your AGENTS.md file in your home directory. You've just received a one-on-one Teams direct message on channel_target=\"${{trigger-teams-direct-message-1.channel_target}}\" with cursor=\"${{trigger-teams-direct-message-1.cursor}}\" and message_id=\"${{trigger-teams-direct-message-1.message_id}}\". The triggering Teams direct message content is:\n${{trigger-teams-direct-message-1.message.content}}\nTreat that content as the current user request, and do not continue an earlier task unless this triggering content asks you to. If Teams tools are available for this direct-message chat, acknowledge the triggering message with add_message_reaction using provider=\"teams\", the triggering message_id, and channel_target=\"${{trigger-teams-direct-message-1.channel_target}}\". Respond to the user in the same Teams chat with teams_post_status using channel_target=\"${{trigger-teams-direct-message-1.channel_target}}\" and omit thread_id. If a user asks you to do something that takes time, respond to the user first so they know their message has been seen. Then you can respond to them again once the task is complete.",
+          "resume_thread_metadata_key": "teams:${{trigger-teams-direct-message-1.channel_target}}:agent_thread_id",
+          "target": "vm-example-receptionist",
+          "vm_name": "vm-example-receptionist",
+          "vm_user": "agent"
+        },
+        "display_name": "Enqueue Teams Direct Message Prompt",
+        "id": "effect-agent-enqueue-prompt-teams-dm-1",
+        "type": "effect:agent:enqueue-prompt"
+      },
+      {
+        "config": {
           "allowed_tools": [
             "post_pr_comment",
             "post_pr_inline_comment",
@@ -1537,6 +1569,14 @@
         },
         "display_name": "Session context",
         "id": "query-session-context-3",
+        "type": "query:session-context"
+      },
+      {
+        "config": {
+          "target": "vm-example-receptionist"
+        },
+        "display_name": "Teams DM session context",
+        "id": "query-session-context-teams-dm-1",
         "type": "query:session-context"
       },
       {

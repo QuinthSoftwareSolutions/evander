@@ -100,6 +100,10 @@ import {
   workflowCommunicationTargetInspectorState,
 } from "./workflowCommunicationTargets";
 import {
+  workflowTriggerEnabled,
+  workflowTriggerEnabledValue,
+} from "./workflowTriggerState";
+import {
   toolArgumentPolicyDraftRowsFromValue,
   toolArgumentPolicyDraftRowsToValue,
   type ToolArgumentPolicyConstraintDraftRow,
@@ -138,6 +142,7 @@ type GraphNodeData = {
   diagnosticCount: number;
   hasDiagnostics: boolean;
   hasUnsavedChanges: boolean;
+  isDisabled: boolean;
   isInspectGhost?: boolean;
   pendingConnectionRole?: PendingConnectionRole | null;
   tutorialHighlight?: boolean;
@@ -325,6 +330,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "trigger:issue:comment-created": "Start when a tracked issue receives a new comment.",
   "trigger:discord:new-message": "Start from new Discord messages that match the configured filters.",
   "trigger:teams:new-message": "Start from new Microsoft Teams messages that match the configured targets.",
+  "trigger:teams:direct-message": "Start from allowlisted one-on-one Microsoft Teams direct messages.",
   "trigger:email:new-message": "Start from newly ingested email messages for the configured mailbox scope.",
   "trigger:pull-request:new-feedback": "Start when new pull-request feedback arrives from the configured provider.",
   "trigger:pull-request:completed": "Start when a tracked pull request reaches a terminal state.",
@@ -498,7 +504,7 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
         nodeData.dominantStatus ? ` runtime-${nodeData.dominantStatus}` : ""
       }${nodeData.hasDiagnostics ? " invalid" : ""}${
         nodeData.pendingConnectionRole ? ` connection-${nodeData.pendingConnectionRole}` : ""
-      }${nodeData.hasUnsavedChanges ? " unsaved" : ""}${nodeData.isInspectGhost ? " inspect-ghost" : ""}${
+      }${nodeData.hasUnsavedChanges ? " unsaved" : ""}${nodeData.isDisabled ? " trigger-disabled" : ""}${nodeData.isInspectGhost ? " inspect-ghost" : ""}${
         nodeData.tutorialHighlight ? ` tutorial-highlight tutorial-highlight-${nodeData.tutorialHighlightMode ?? "pulse"}` : ""
       }${nodeData.tutorialBlocked ? " tutorial-blocked" : ""}`}
     >
@@ -527,6 +533,13 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
               <Tooltip content="Unsaved changes">
                 <div className="node-unsaved-badge" aria-label="Unsaved changes">
                   Unsaved changes
+                </div>
+              </Tooltip>
+            ) : null}
+            {nodeData.isDisabled ? (
+              <Tooltip content="Trigger disabled">
+                <div className="node-disabled-badge" aria-label="Trigger disabled">
+                  Disabled
                 </div>
               </Tooltip>
             ) : null}
@@ -839,6 +852,7 @@ function buildNodes(
         diagnosticCount,
         hasDiagnostics: diagnosticCount > 0,
         hasUnsavedChanges: dirtyNodeIds.has(node.id),
+        isDisabled: kind === "trigger" && !workflowTriggerEnabled(node),
         isInspectGhost: ghostNodeIds.has(node.id),
       },
     };
@@ -1444,6 +1458,15 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       type,
       targets: [],
       user_ids: [],
+    };
+  }
+  if (kind === "trigger" && type === "trigger:teams:direct-message") {
+    return {
+      id,
+      display_name: "Teams direct message",
+      type,
+      sender_user_ids: [],
+      message_filter: null,
     };
   }
   if (kind === "trigger" && type === "trigger:email:new-message") {
@@ -4338,6 +4361,9 @@ export default function App() {
 
     const { id: _id, display_name: _displayName, type: _type, ...extras } = nextNode;
     const knownFieldKeys = new Set((nextCatalogEntry?.fields ?? []).map((field) => field.key));
+    if (nextNode.type.startsWith("trigger:")) {
+      knownFieldKeys.add("enabled");
+    }
     const nextKnownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => knownFieldKeys.has(key)));
     const nextUnknownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => !knownFieldKeys.has(key)));
     const nextJsonDrafts: Record<string, string> = {};
@@ -5339,6 +5365,9 @@ export default function App() {
     }
 
     const nextKnownValues = { ...draft.knownValues };
+    if (selectedNode.type.startsWith("trigger:") && nextKnownValues.enabled !== false) {
+      delete nextKnownValues.enabled;
+    }
     if (hasCollapsedTargetUi) {
       const activeTargetKey = activeEffectTargetKey(nextKnownValues);
       for (const key of EFFECT_TARGET_KEYS) {
@@ -5724,6 +5753,16 @@ export default function App() {
     }
   }
 
+  function updateSelectedTriggerEnabled(nextEnabled: boolean) {
+    if (!selectedNode || !selectedNode.type.startsWith("trigger:")) return;
+    const next = { ...inspectorKnownValues, enabled: workflowTriggerEnabledValue(nextEnabled) };
+    if (next.enabled === undefined) {
+      delete next.enabled;
+    }
+    setInspectorKnownValues(next);
+    stageInspectorDraft({ knownValues: next });
+  }
+
   function updateKnownField(key: string, value: unknown) {
     const next = { ...inspectorKnownValues, [key]: value };
     let nextJsonDrafts = inspectorJsonDrafts;
@@ -6058,6 +6097,27 @@ export default function App() {
             <span className="workflow-field-tooltip-icon" aria-hidden="true">i</span>
           </Tooltip>
         ) : null}
+      </div>
+    );
+  }
+
+  function renderSelectedTriggerToggle() {
+    if (!selectedNode || !selectedNode.type.startsWith("trigger:")) return null;
+    const enabled = inspectorKnownValues.enabled === undefined
+      ? workflowTriggerEnabled(selectedNode)
+      : inspectorKnownValues.enabled !== false;
+    return (
+      <div className="trigger-enable-control">
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(event) => updateSelectedTriggerEnabled(event.target.checked)}
+            disabled={workflowEditLocked}
+            aria-label="Trigger enabled"
+          />
+          <span>{enabled ? "Trigger enabled" : "Trigger disabled"}</span>
+        </label>
       </div>
     );
   }
@@ -7986,6 +8046,7 @@ export default function App() {
                     </div>
                   ) : null}
                   <button onClick={selectDownstreamBranch}>Select downstream branch</button>
+                  {renderSelectedTriggerToggle()}
                   <label className="inspector-label">
                     <span>Node id</span>
                     <input
@@ -8442,6 +8503,7 @@ export default function App() {
                 <button onClick={selectDownstreamBranch} disabled={workflowEditLocked}>
                   Select downstream branch
                 </button>
+                {renderSelectedTriggerToggle()}
                 <label className="inspector-label">
                   <span>Node id</span>
                   <input
