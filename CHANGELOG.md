@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - Workflow HTTP Request Effect
+
+- Added the host-side `effect:http:request` workflow effect with Pydantic
+  schema, runtime provider, registry wiring, and admin/workflow editor
+  exposure.
+- Returned request metadata and response outputs including status, headers,
+  body text, parsed JSON when available, content type, and elapsed time.
+- Kept the effect JSON-body-only, disabled redirects by default, and preserved
+  the default non-2xx success semantics unless `check` is enabled.
+
 ## 2026-05-24 - Container Worker Manifest Persistence Fix
 
 - Delayed workflow container-agent session manifest persistence until worker
