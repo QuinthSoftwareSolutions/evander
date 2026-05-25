@@ -328,6 +328,142 @@ def test_collect_domain_validation_diagnostics_reports_body_for_gate_without_loo
     )
 
 
+def test_collect_domain_validation_diagnostics_reports_switch_port_issues(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-switch-1",
+                    "display_name": "Route work",
+                    "type": "gate:switch",
+                    "default_port": "fallback",
+                    "cases": [
+                        {"port": "ready", "when": {"left": "ready", "equals": "ready"}},
+                        {"port": "ready", "match": {"state": "ready"}},
+                        {"port": "blocked", "match": {"state": "blocked"}},
+                    ],
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-ready",
+                    "display_name": "Ready",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "ready",
+                },
+                {
+                    "id": "effect-missing",
+                    "display_name": "Missing port",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "missing",
+                },
+                {
+                    "id": "effect-invalid",
+                    "display_name": "Invalid port",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "invalid",
+                },
+            ],
+            "edges": [
+                {"source_id": "cron-1", "target_id": "gate-switch-1"},
+                {
+                    "source_id": "gate-switch-1",
+                    "target_id": "effect-ready",
+                    "source_port": "ready",
+                },
+                {"source_id": "gate-switch-1", "target_id": "effect-missing"},
+                {
+                    "source_id": "gate-switch-1",
+                    "target_id": "effect-invalid",
+                    "source_port": "other",
+                },
+            ],
+        }
+    )
+
+    diagnostics = collect_domain_validation_diagnostics(worker_config)
+
+    assert any(
+        item.code == "node_capability"
+        and item.node_id == "gate-switch-1"
+        and item.node_type == "gate:switch"
+        and "outbound edges require source_port" in item.message
+        for item in diagnostics
+    )
+    assert any(
+        item.code == "node_capability"
+        and item.node_id == "gate-switch-1"
+        and item.node_type == "gate:switch"
+        and "uses invalid source_port value(s): other" in item.message
+        for item in diagnostics
+    )
+
+
+def test_collect_domain_validation_diagnostics_reports_switch_bad_inbound_count(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-switch-1",
+                    "display_name": "Route work",
+                    "type": "gate:switch",
+                    "cases": [
+                        {"port": "ready", "when": {"left": "ready", "equals": "ready"}}
+                    ],
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Effect one",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "one",
+                }
+            ],
+            "edges": [
+                {"source_id": "cron-1", "target_id": "gate-switch-1"},
+                {"source_id": "effect-1", "target_id": "gate-switch-1"},
+            ],
+        }
+    )
+
+    _, diagnostics = compile_trigger_orchestrator_config_with_diagnostics(worker_config)
+
+    assert any(
+        item.code == "node_capability"
+        and "must have at most 1 inbound edge(s), found 2" in item.message
+        for item in diagnostics
+    )
+
+
 def test_collect_domain_validation_diagnostics_allows_body_for_gate_with_loopback(
     tmp_path: Path,
 ) -> None:

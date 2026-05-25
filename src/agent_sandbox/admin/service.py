@@ -1615,6 +1615,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:git:push": "Start from Git push events captured by the host-side bare-repo hook.",
     "trigger:agent:run:completed": "Start when an agent run completion event is recorded.",
     "gate:filter": "Allow only matching events to continue downstream.",
+    "gate:switch": "Route each activation to the first matching branch or a default route.",
     "gate:debounce": "Wait for a quiet period, then forward the latest activation.",
     "gate:map": "Project upstream outputs into a new payload shape.",
     "gate:deserialize": (
@@ -2144,6 +2145,53 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "json",
                 read_only=True,
                 description="Derived from the single upstream node and validated automatically.",
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="gate",
+        type="gate:switch",
+        label="Switch",
+        fields=[
+            _field(
+                "cases",
+                "Cases",
+                "object_list",
+                required=True,
+                description=(
+                    "Ordered routes. The first matching case wins; duplicate ports are allowed."
+                ),
+                item_fields=[
+                    _field("port", "Port", "string", required=True),
+                    _field("label", "Label", "string"),
+                    _field(
+                        "when",
+                        "When",
+                        "json",
+                        bindable=True,
+                        description='Structured predicate using bindings, for example {"all":[{"left":"${{effect-1.success}}","equals":true}]} or {"left":"${{query-1.count}}","greater_than":8}. Mutually exclusive with Match.',
+                    ),
+                    _field(
+                        "match",
+                        "Match",
+                        "json",
+                        bindable=True,
+                        description="Recursive subset match against the immediate incoming payload. Mutually exclusive with When.",
+                    ),
+                ],
+            ),
+            _field(
+                "default_port",
+                "Default port",
+                "string",
+                description="Fallback route when no case matches.",
+            ),
+            _field(
+                "outputs",
+                "Outputs",
+                "json",
+                read_only=True,
+                description="Derived from the single upstream node and passed through unchanged on the selected route.",
             ),
         ],
     ),
@@ -15922,6 +15970,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "gate:serialize",
                 "gate:map",
                 "gate:dedupe",
+                "gate:switch",
                 "gate:await-agent",
                 "gate:for",
                 "gate:merge",

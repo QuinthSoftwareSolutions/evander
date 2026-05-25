@@ -821,6 +821,27 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         {"key": "body", "label": "Body", "description": "Loop body path while items remain."},
         {"key": "done", "label": "Done", "description": "Exit path after the final item."},
     ]
+    switch_gate = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:switch")
+    assert switch_gate["output_ports"] == []
+    assert [field["key"] for field in switch_gate["fields"]] == [
+        "cases",
+        "default_port",
+        "outputs",
+    ]
+    switch_case_fields = {field["key"]: field for field in switch_gate["fields"][0]["item_fields"]}
+    assert switch_gate["fields"][0]["kind"] == "object_list"
+    assert switch_gate["fields"][0]["required"]
+    assert [field["key"] for field in switch_gate["fields"][0]["item_fields"]] == [
+        "port",
+        "label",
+        "when",
+        "match",
+    ]
+    assert switch_case_fields["port"]["required"]
+    assert switch_case_fields["when"]["bindable"]
+    assert switch_case_fields["match"]["bindable"]
+    assert not switch_gate["fields"][1]["required"]
+    assert switch_gate["fields"][2]["read_only"]
     issue_get = next(node for node in catalog_payload["nodes"] if node["type"] == "query:issue:get")
     assert [field["key"] for field in issue_get["fields"]] == ["issue_id"]
     semantic_status = next(
@@ -2405,6 +2426,76 @@ def test_admin_web_validate_preserves_domain_diagnostics_for_for_gate(
         "code": "node_capability",
         "message": "gate:for gate-for-1 uses invalid source_port value(s): other",
     } in diagnostics
+
+
+def test_admin_web_validate_exposes_backend_output_schemas_for_switch_gate(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = {
+        "config": {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "trigger-ticket-created-main",
+                    "display_name": "Ticket created",
+                    "type": "trigger:ticket:created",
+                    "directories": ["root"],
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-switch-1",
+                    "display_name": "Route ticket",
+                    "type": "gate:switch",
+                    "default_port": "fallback",
+                    "cases": [
+                        {
+                            "port": "ready",
+                            "label": "Ready route",
+                            "when": {
+                                "left": "${{trigger-ticket-created-main.ticket.state}}",
+                                "equals": "ready",
+                            },
+                        },
+                        {
+                            "port": "ready",
+                            "label": "Ready match",
+                            "match": {"ticket": {"state": "ready"}},
+                        },
+                    ],
+                }
+            ],
+            "effects": [
+                {
+                    "id": "prompt-agent",
+                    "display_name": "Prompt agent",
+                    "type": "effect:agent:prompt",
+                    "session_id": "session-1",
+                    "prompt": "Review ${{gate-switch-1.ticket.body}}",
+                }
+            ],
+            "edges": [
+                {"source_id": "trigger-ticket-created-main", "target_id": "gate-switch-1"},
+                {
+                    "source_id": "gate-switch-1",
+                    "source_port": "ready",
+                    "target_id": "prompt-agent",
+                },
+            ],
+        },
+        "layout": {"nodes": {}},
+        "graphs": [],
+    }
+
+    response = client.post("/api/workflow-editor/validate", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["validation_diagnostics"] == []
+    assert body["output_schemas"]["gate-switch-1"]["ticket"]["properties"]["body"] == {
+        "type": "string"
+    }
 
 
 def test_admin_web_validate_exposes_backend_output_schemas_for_agent_effects(
@@ -4373,6 +4464,59 @@ def test_admin_web_load_normalizes_for_gate_outputs(tmp_path: Path) -> None:
     gate = response.json()["config"]["gates"][0]
     assert gate["outputs"]["current_index"] == {"type": "integer"}
     assert gate["outputs"]["item_count"] == {"type": "integer"}
+
+
+def test_admin_web_load_normalizes_switch_gate_outputs(tmp_path: Path) -> None:
+    config_root = tmp_path / "config" / "trigger-orchestrator"
+    config_root.mkdir(parents=True, exist_ok=True)
+    (config_root / "config.json").write_text(
+        """
+{
+  "runtime_dir": "runtime",
+  "triggers": [
+    {
+      "id": "trigger-ticket-created-1",
+      "display_name": "Ticket created",
+      "type": "trigger:ticket:created",
+      "directories": ["root/team-a"]
+    }
+  ],
+  "gates": [
+    {
+      "id": "gate-switch-1",
+      "display_name": "Route ticket",
+      "type": "gate:switch",
+      "default_port": "fallback",
+      "outputs": {
+        "incorrect": {"type": "string"}
+      },
+      "cases": [
+        {
+          "port": "ready",
+          "when": {
+            "left": "${{trigger-ticket-created-1.ticket.state}}",
+            "equals": "ready"
+          }
+        }
+      ]
+    }
+  ],
+  "effects": [],
+  "queries": [],
+  "edges": [
+    { "source_id": "trigger-ticket-created-1", "target_id": "gate-switch-1" }
+  ]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    response = client.get("/api/workflow-editor/document")
+
+    assert response.status_code == 200
+    gate = response.json()["config"]["gates"][0]
+    assert gate["outputs"]["ticket"]["properties"]["body"] == {"type": "string"}
 
 
 def test_admin_web_session_endpoint_reports_auth_disabled_by_default(tmp_path: Path) -> None:

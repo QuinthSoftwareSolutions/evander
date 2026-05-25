@@ -71,6 +71,7 @@ from agent_sandbox.gates.providers.for_gate import ForGateProvider
 from agent_sandbox.gates.providers.map_gate import MapGateProvider
 from agent_sandbox.gates.providers.merge_gate import MergeGateProvider
 from agent_sandbox.gates.providers.serialize_gate import SerializeGateProvider
+from agent_sandbox.gates.providers.switch_gate import SwitchGateProvider
 from agent_sandbox.queries.providers.agent_artifact_text import AgentArtifactTextQueryProvider
 from agent_sandbox.queries.providers.ado_work_items import AdoWorkItemsQueryProvider
 from agent_sandbox.queries.providers.git_pr_note import GitPrNoteQueryProvider
@@ -154,6 +155,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "gate:map": MapGateProvider,
             "gate:merge": MergeGateProvider,
             "gate:serialize": SerializeGateProvider,
+            "gate:switch": SwitchGateProvider,
         },
         effect_providers={
             "effect:event:emit": EventEmitEffectProvider,

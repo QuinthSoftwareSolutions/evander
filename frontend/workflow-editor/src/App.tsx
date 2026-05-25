@@ -75,6 +75,8 @@ import {
   normalizeWorkflowSourcePort,
   workflowConnectionRouteOptions,
   workflowEdgeRouteLabel,
+  workflowOutputPortsForNode,
+  humanizeWorkflowRouteKey,
   workflowRouteClass,
   type WorkflowConnectionRouteOption,
 } from "./workflowRoutes";
@@ -93,6 +95,7 @@ import {
 import {
   declaredOutputsForNode,
   deriveWorkflowOutputSchemas,
+  isPassThroughGateType,
   selectedNodeOutputContract as workflowNodeOutputContract,
   upstreamBindingOptions,
 } from "./workflowNodeOutputs";
@@ -344,6 +347,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "gate:deserialize": "Parse a JSON or YAML string into object properties for downstream bindings.",
   "gate:serialize": "Serialize a bindable value as JSON or YAML text for downstream nodes.",
   "gate:merge": "Merge compatible inbound event streams into one downstream path.",
+  "gate:switch": "Route activations to one of several downstream branches.",
   "gate:debounce": "Wait for a quiet period, then forward the latest activation.",
   "gate:dedupe": "Suppress duplicate activations for the same key until a TTL expires.",
   "gate:await-agent": "Pause the workflow until a selected agent session completes.",
@@ -837,6 +841,7 @@ function buildNodes(
     const position = currentPositions[node.id] ?? layout.nodes[node.id] ?? fallbackPosition(index);
     const activity = nodeActivity[node.id];
     const catalogEntry = getCatalogEntry(catalog, node.type);
+    const outputPorts = workflowOutputPortsForNode(node, catalogEntry?.output_ports ?? []);
     const diagnosticCount = diagnostics.filter((diagnostic) => diagnostic.node_id === node.id).length;
     return {
       id: node.id,
@@ -852,7 +857,7 @@ function buildNodes(
           ? nodeTypeDescription(catalogEntry)
           : NODE_TYPE_DESCRIPTIONS[node.type] || `${node.type} node.`,
         inputPorts: catalogEntry?.input_ports ?? [],
-        outputPorts: catalogEntry?.output_ports ?? [],
+        outputPorts,
         dominantStatus: dominantNodeStatus(activity),
         statusBadges: nodeStatusBadges(activity),
         diagnosticCount,
@@ -895,17 +900,33 @@ function buildEdges(config: WorkflowConfig, catalog: WorkflowEditorCatalog): Edg
   return config.edges.map((edge) => {
     const sourceNode = nodeById(config, edge.source_id);
     const sourceCatalogEntry = sourceNode ? getCatalogEntry(catalog, sourceNode.type) : undefined;
+    const sourceOutputPorts = sourceNode
+      ? workflowOutputPortsForNode(sourceNode, sourceCatalogEntry?.output_ports ?? [])
+      : sourceCatalogEntry?.output_ports ?? [];
     const routeClass = workflowRouteClass(edge.source_port);
     return {
       id: edgeId(edge),
       source: edge.source_id,
       sourceHandle: edge.source_port,
       target: edge.target_id,
-      label: workflowEdgeRouteLabel(edge.source_port, sourceCatalogEntry?.output_ports ?? []),
+      label: workflowSwitchEdgeRouteLabel(sourceNode, edge.source_port, sourceOutputPorts),
       animated: Boolean(edge.allow_cycle),
       className: `workflow-edge workflow-edge-route-${routeClass}`,
     };
   });
+}
+
+function workflowSwitchEdgeRouteLabel(
+  sourceNode: WorkflowNodeConfig | undefined,
+  sourcePort: string | null | undefined,
+  outputPorts: ReadonlyArray<WorkflowEditorNodePortDefinition>,
+): string | undefined {
+  const routeLabel = workflowEdgeRouteLabel(sourcePort, outputPorts);
+  if (routeLabel !== undefined || sourceNode?.type !== "gate:switch") {
+    return routeLabel;
+  }
+  const normalizedSourcePort = normalizeWorkflowSourcePort(sourcePort);
+  return normalizedSourcePort ? humanizeWorkflowRouteKey(normalizedSourcePort) : undefined;
 }
 
 function renderStringInput(
@@ -1558,6 +1579,22 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   if (kind === "gate" && type === "gate:merge") {
     return { id, display_name: "New merge", type, outputs: {} };
   }
+  if (kind === "gate" && type === "gate:switch") {
+    return {
+      id,
+      display_name: "Switch",
+      type,
+      cases: [
+        {
+          port: "matched",
+          when: { left: "${{trigger-1.status}}", equals: "ready" },
+          label: "Matched",
+        },
+      ],
+      default_port: "default",
+      outputs: {},
+    };
+  }
   if (kind === "gate" && type === "gate:debounce") {
     return {
       id,
@@ -1930,8 +1967,11 @@ function validateConnection(
   if (!sourceNode) return "Source node does not exist.";
   if (!targetNode) return "Target node does not exist.";
   const sourceCatalogEntry = getCatalogEntry(catalog, sourceNode.type);
-  const allowedPorts = sourceCatalogEntry?.output_ports ?? [];
-  if (allowedPorts.length > 0 && !allowedPorts.some((port) => port.key === sourcePort)) {
+  const allowedPorts = workflowOutputPortsForNode(sourceNode, sourceCatalogEntry?.output_ports ?? []);
+  if (sourceNode.type === "gate:switch" && allowedPorts.length === 0) {
+    return `Node ${sourceId} does not have any configured output ports.`;
+  }
+  if ((sourceNode.type === "gate:switch" || allowedPorts.length > 0) && !allowedPorts.some((port) => port.key === sourcePort)) {
     return `Node ${sourceId} requires selecting one of its named output ports.`;
   }
   const limit = inboundLimit(targetNode);
@@ -2626,7 +2666,7 @@ function normalizeDerivedNodeFields(
   const nextConfig = cloneConfig(config);
   const outputSchemas = deriveWorkflowOutputSchemas(nextConfig, baseOutputSchemas);
   for (const gate of nextConfig.gates ?? []) {
-    if (gate.type === "gate:filter" || gate.type === "gate:debounce") {
+    if (isPassThroughGateType(gate.type)) {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
     } else if (gate.type === "gate:map") {
       gate.outputs = declaredOutputsForNode(gate, outputSchemas);
@@ -3306,9 +3346,12 @@ export default function App() {
   const selectedEdgeSourceCatalogEntry = selectedEdgeSourceNode
     ? getCatalogEntry(activeWorkflowCatalog, selectedEdgeSourceNode.type)
     : undefined;
+  const selectedEdgeSourceOutputPorts = selectedEdgeSourceNode
+    ? workflowOutputPortsForNode(selectedEdgeSourceNode, selectedEdgeSourceCatalogEntry?.output_ports ?? [])
+    : selectedEdgeSourceCatalogEntry?.output_ports ?? [];
   const selectedEdgeRouteLabel = selectedEdge
-    ? workflowEdgeRouteLabel(selectedEdge.source_port, selectedEdgeSourceCatalogEntry?.output_ports ?? [])
-      ?? (selectedEdge.source_port ? selectedEdge.source_port : "Default")
+    ? workflowEdgeRouteLabel(selectedEdge.source_port, selectedEdgeSourceOutputPorts)
+      ?? (selectedEdge.source_port ? humanizeWorkflowRouteKey(selectedEdge.source_port) : "Default")
     : null;
   const selectedGraph = selectedGraphId
     ? visibleWorkflowGraphs.find((graph) => graph.id === selectedGraphId)
@@ -4937,7 +4980,9 @@ export default function App() {
       nodeId: node.id,
       position,
       sourcePoint: nodeCenterCanvasPoint(node),
-      routes: workflowConnectionRouteOptions(node.data.outputPorts),
+      routes: node.data.type === "gate:switch" && node.data.outputPorts.length === 0
+        ? []
+        : workflowConnectionRouteOptions(node.data.outputPorts),
       failedCount: node.data.statusBadges.find((badge) => badge.status === "failed")?.count ?? 0,
     });
     setPendingConnection(null);

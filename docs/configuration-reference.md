@@ -312,13 +312,14 @@ Each gate entry requires the shared envelope keys:
 - `id` (string, required, unique across all gates)
 - `display_name` (string, required)
 - `type` (required discriminator)
-- `gate_type` (string, required; one of `filter`, `map`, `merge`, `debounce`, `dedupe`)
+- `gate_type` (string, required; one of `filter`, `map`, `merge`, `debounce`, `dedupe`, `switch`)
 
 Type-specific keys:
 
 | `type` | Required keys | Optional keys |
 |---|---|---|
 | `gate:filter` | `predicate` | `outputs` |
+| `gate:switch` | `cases` | `default_port`, `outputs` |
 | `gate:map` | `mapping` | `outputs` |
 | `gate:deserialize` | `content` | `format`, `outputs` |
 | `gate:serialize` | `value` | `format`, `outputs` |
@@ -331,6 +332,16 @@ nodes, then atomically records the key for the ISO-8601 `ttl` window (for exampl
 or `PT1H`). The first activation for a key is forwarded; duplicate activations inside the
 TTL are recorded as dropped and do not publish downstream completion events. Expired keys are
 cleaned up opportunistically during later dedupe checks.
+
+`gate:switch` evaluates its `cases` in list order and forwards the first case whose `when` or
+`match` condition matches the inbound payload. Each case must define a non-blank `port`, optional
+`label`, and exactly one of `when` or `match`. `when` uses the same filter-expression object shape
+as `gate:filter`, while `match` uses the same recursive JSON-object subset matcher as
+`gate:filter.match`. Duplicate case ports are allowed, so several cases can intentionally route
+to the same downstream branch. When no case matches, `default_port` receives the activation if it
+is present; otherwise the gate records the activation as dropped. The runtime passes through the
+upstream payload unchanged apart from runtime-only bookkeeping fields, and branch selection is
+published downstream through `source_port`.
 
 `gate:deserialize` resolves `content` with workflow bindings, parses it as JSON or YAML
 (`format` defaults to `auto`), and emits the decoded object's top-level keys as downstream
@@ -358,8 +369,9 @@ Example edge shape:
 
 ```json
 {
-  "from": "ticket-created",
-  "to": "effect-provision"
+  "source_id": "ticket-created",
+  "target_id": "effect-provision",
+  "source_port": "ready"
 }
 ```
 
@@ -618,6 +630,105 @@ Map graph:
   "edges": [
     {"from": "ticket-created", "to": "normalize-ticket"},
     {"from": "normalize-ticket", "to": "effect-resume"}
+  ]
+}
+```
+
+Switch graph:
+
+```json
+{
+  "triggers": [
+    {
+      "id": "ticket-created",
+      "display_name": "Ticket created",
+      "type": "trigger:ticket:created",
+      "directories": ["root/team-a"]
+    }
+  ],
+  "gates": [
+    {
+      "id": "normalize-ticket",
+      "display_name": "Normalize ticket fields",
+      "type": "gate:map",
+      "gate_type": "map",
+      "mapping": {
+        "session_id": "${{trigger.ticket_session_id}}",
+        "state": "${{trigger.state}}",
+        "ticket_number": "${{trigger.ticket_id}}"
+      }
+    },
+    {
+      "id": "route-ticket",
+      "display_name": "Route ticket",
+      "type": "gate:switch",
+      "cases": [
+        {
+          "port": "ready",
+          "label": "Ready path",
+          "when": {
+            "left": "${{normalize-ticket.state}}",
+            "equals": "ready"
+          }
+        },
+        {
+          "port": "blocked",
+          "label": "Blocked path",
+          "match": {
+            "state": "blocked"
+          }
+        }
+      ],
+      "default_port": "fallback"
+    }
+  ],
+  "effects": [
+    {
+      "id": "effect-ready",
+      "display_name": "Ready effect",
+      "type": "effect:agent:prompt",
+      "session_id": "session-1",
+      "prompt": "Ready: ${{normalize-ticket.ticket_number}}"
+    },
+    {
+      "id": "effect-blocked",
+      "display_name": "Blocked effect",
+      "type": "effect:agent:prompt",
+      "session_id": "session-1",
+      "prompt": "Blocked: ${{normalize-ticket.ticket_number}}"
+    },
+    {
+      "id": "effect-fallback",
+      "display_name": "Fallback effect",
+      "type": "effect:agent:prompt",
+      "session_id": "session-1",
+      "prompt": "Fallback: ${{normalize-ticket.ticket_number}}"
+    }
+  ],
+  "edges": [
+    {
+      "source_id": "ticket-created",
+      "target_id": "normalize-ticket"
+    },
+    {
+      "source_id": "normalize-ticket",
+      "target_id": "route-ticket"
+    },
+    {
+      "source_id": "route-ticket",
+      "source_port": "ready",
+      "target_id": "effect-ready"
+    },
+    {
+      "source_id": "route-ticket",
+      "source_port": "blocked",
+      "target_id": "effect-blocked"
+    },
+    {
+      "source_id": "route-ticket",
+      "source_port": "fallback",
+      "target_id": "effect-fallback"
+    }
   ]
 }
 ```
