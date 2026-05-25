@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - Admin Sign-In Branding
+
+- Moved sign-in branding into a top bar with the company logo on the left,
+  the theme toggle centered, and a smaller evander logo on the right.
+
 ## 2026-05-25 - Communication Messages Query
 
 - Added the `query:communication:messages` workflow query for reading

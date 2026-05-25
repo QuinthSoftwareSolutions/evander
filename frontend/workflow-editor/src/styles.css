@@ -89,13 +89,6 @@ body {
   min-height: 0;
 }
 
-.admin-login-toolbar {
-  position: fixed;
-  top: 1.25rem;
-  right: 1.25rem;
-  z-index: 5;
-}
-
 .admin-shell-header {
   display: flex;
   align-items: center;
@@ -1075,7 +1068,7 @@ body {
   min-height: 100%;
   display: grid;
   place-items: center;
-  padding: 2rem;
+  padding: 7rem 2rem 2rem;
   position: relative;
   overflow: hidden;
   background: var(--admin-login-bg);
@@ -1141,29 +1134,46 @@ body {
   justify-items: center;
 }
 
-.admin-login-logo-layer {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  z-index: 0;
-  width: auto;
-  height: min(88vh, 56rem);
-  transform: translate(-50%, -56%);
-  pointer-events: none;
+.admin-login-brandbar {
+  position: fixed;
+  top: clamp(0.75rem, 2vw, 1.35rem);
+  left: clamp(0.75rem, 2vw, 1.35rem);
+  right: clamp(0.75rem, 2vw, 1.35rem);
+  z-index: 5;
   display: grid;
-  place-items: center;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 1rem;
+  pointer-events: none;
 }
 
-.admin-login-logo-hero {
+.admin-login-brandbar > * {
+  pointer-events: auto;
+}
+
+.admin-login-company-logo,
+.admin-login-truman-logo {
   display: block;
-  width: auto;
-  height: 100%;
-  max-width: min(92vw, 72rem);
-  opacity: var(--admin-login-logo-opacity);
+  object-fit: contain;
   filter: var(--admin-login-logo-filter);
-  transition:
-    opacity 420ms ease,
-    filter 420ms ease;
+  transition: filter 420ms ease;
+}
+
+.admin-login-company-logo {
+  justify-self: start;
+  width: clamp(3.25rem, 6vw, 4.75rem);
+  height: clamp(3.25rem, 6vw, 4.75rem);
+}
+
+.admin-login-truman-logo {
+  justify-self: end;
+  width: clamp(8rem, 14vw, 11rem);
+  height: clamp(3rem, 5vw, 4.25rem);
+}
+
+.admin-login-theme-toggle {
+  justify-self: center;
+  min-width: 8.5rem;
 }
 
 .admin-login-card {
@@ -8084,8 +8094,55 @@ select {
 }
 
 @media (max-width: 980px) {
-  .admin-login-toolbar {
-    top: 0.85rem;
-    right: 0.85rem;
+  .admin-login-shell {
+    padding: 6.25rem 1rem 1rem;
+  }
+
+  .admin-login-brandbar {
+    gap: 0.75rem;
+  }
+
+  .admin-login-company-logo {
+    width: clamp(2.75rem, 11vw, 4rem);
+    height: clamp(2.75rem, 11vw, 4rem);
+  }
+
+  .admin-login-truman-logo {
+    width: clamp(6.75rem, 25vw, 9rem);
+    height: clamp(2.5rem, 9vw, 3.5rem);
+  }
+
+  .admin-login-theme-toggle {
+    min-width: 7.25rem;
+    min-height: 2.8rem;
+    padding: 0.65rem 0.9rem;
+    font-size: 0.9rem;
+  }
+}
+
+@media (max-width: 640px) {
+  .admin-login-shell {
+    padding-top: 5.8rem;
+  }
+
+  .admin-login-brandbar {
+    gap: 0.5rem;
+  }
+
+  .admin-login-company-logo {
+    width: 2.45rem;
+    height: 2.45rem;
+  }
+
+  .admin-login-truman-logo {
+    width: 5.75rem;
+    height: 2.5rem;
+  }
+
+  .admin-login-theme-toggle {
+    min-width: 6.5rem;
+    min-height: 2.6rem;
+    padding: 0.55rem 0.7rem;
+    font-size: 0.82rem;
   }
 }
