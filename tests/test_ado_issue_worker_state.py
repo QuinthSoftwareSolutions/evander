@@ -2230,6 +2230,29 @@ def test_publish_directory_pr_completion_events_uses_explicit_pr_query_candidate
     assert events[0].payload["status"] == "completed"
     assert events[0].payload["merged"] is True
     assert events[0].payload["completed_at"] == "2026-05-15T10:00:00Z"
+    cursor_payload = json.loads(
+        (worker_config.runtime_dir / "trigger-cursors-pr-completed.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert (
+        cursor_payload["trigger-pr-completed-explicit"]["completed_streams"][
+            "azure_devops:org/repo:6070"
+        ]
+        == events[0].event_id
+    )
+    assert get_calls == [("org/repo", "6070", False, False)]
+
+    with httpx.Client() as client:
+        republished = _publish_directory_pr_completion_events(
+            client=client,
+            config=WorkerConfig(**{**worker_config.__dict__, "directory_path": "root/team-a"}),
+            runtime_gateway_config=runtime_gateway_config,
+            directory_path="root/team-a",
+        )
+
+    assert republished == 0
+    assert get_calls == [("org/repo", "6070", False, False)]
 
 
 def test_publish_directory_pr_feedback_events_uses_session_ado_project(

@@ -2024,10 +2024,25 @@ def _publish_directory_pr_completion_events(
     )
     pr_map_store = PrMapStore(runtime_gateway_config.pr_map_path)
     audit_logger = AuditLogger(runtime_gateway_config.audit_log_path)
+    completion_cursor_store: TriggerCursorStore | None = None
+    if any(_trigger_has_explicit_pr_criteria(trigger) for trigger in triggers):
+        completion_cursor_store = TriggerCursorStore(
+            config.runtime_dir / "trigger-cursors-pr-completed.json"
+        )
     published_count = 0
 
     for trigger in triggers:
-        if _trigger_has_explicit_pr_criteria(trigger):
+        explicit_pr_criteria = _trigger_has_explicit_pr_criteria(trigger)
+        completed_streams: dict[str, Any] = {}
+        if explicit_pr_criteria and completion_cursor_store is not None:
+            state = completion_cursor_store.get(trigger.id)
+            cursor_streams = (
+                state.get("completed_streams", {}) if isinstance(state, dict) else {}
+            )
+            if isinstance(cursor_streams, dict):
+                completed_streams = dict(cursor_streams)
+
+        if explicit_pr_criteria:
             candidates = _list_explicit_ado_trigger_pull_requests(
                 trigger=trigger,
                 config=config,
@@ -2043,7 +2058,10 @@ def _publish_directory_pr_completion_events(
         for candidate in candidates:
             repo = candidate.repo
             pr_id = candidate.pr_id
-            binding = legacy_bindings.get((repo, pr_id), {})
+            stream_key = _stream_key("azure_devops", repo, pr_id)
+            if explicit_pr_criteria and stream_key in completed_streams:
+                continue
+            binding = {} if explicit_pr_criteria else legacy_bindings.get((repo, pr_id), {})
             provider = AzureDevOpsPrQueryProvider(
                 organization_url=trigger.organization_url or config.organization_url,
                 project=_ado_project_for_feedback_stream(
@@ -2079,7 +2097,7 @@ def _publish_directory_pr_completion_events(
             snapshot = status_snapshot_from_pull_request(response, repo=repo, pr_id=pr_id)
             if not is_pr_completed(snapshot):
                 continue
-            if _trigger_has_explicit_pr_criteria(trigger):
+            if explicit_pr_criteria:
                 event_entry = snapshot
                 mark_published = False
             else:
@@ -2110,6 +2128,12 @@ def _publish_directory_pr_completion_events(
                         pr_id=event_entry["pr_id"],
                         trigger_id=trigger.id,
                         event_id=event.event_id,
+                    )
+                if explicit_pr_criteria:
+                    completed_streams[stream_key] = event.event_id
+                    completion_cursor_store.put(
+                        trigger.id,
+                        {"completed_streams": completed_streams},
                     )
                 audit_logger.log_decision(
                     event_type=AuditEventType.PR_COMPLETION_DETECTED,
