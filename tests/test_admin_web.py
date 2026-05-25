@@ -576,6 +576,27 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         {"key": "body", "label": "Body", "description": "Loop body path while items remain."},
         {"key": "done", "label": "Done", "description": "Exit path after the final item."},
     ]
+    switch_gate = next(node for node in catalog_payload["nodes"] if node["type"] == "gate:switch")
+    assert switch_gate["output_ports"] == []
+    assert [field["key"] for field in switch_gate["fields"]] == [
+        "cases",
+        "default_port",
+        "outputs",
+    ]
+    switch_case_fields = {field["key"]: field for field in switch_gate["fields"][0]["item_fields"]}
+    assert switch_gate["fields"][0]["kind"] == "object_list"
+    assert switch_gate["fields"][0]["required"]
+    assert [field["key"] for field in switch_gate["fields"][0]["item_fields"]] == [
+        "port",
+        "label",
+        "when",
+        "match",
+    ]
+    assert switch_case_fields["port"]["required"]
+    assert switch_case_fields["when"]["bindable"]
+    assert switch_case_fields["match"]["bindable"]
+    assert not switch_gate["fields"][1]["required"]
+    assert switch_gate["fields"][2]["read_only"]
     issue_get = next(node for node in catalog_payload["nodes"] if node["type"] == "query:issue:get")
     assert [field["key"] for field in issue_get["fields"]] == ["issue_id"]
     semantic_status = next(
