@@ -13,8 +13,9 @@ test("admin save requests include expected revisions", () => {
     "utf8",
   );
 
-  assert.match(app, /expected_revision:\s*document\.revision/);
-  assert.match(app, /saved\.revision/);
+  assert.match(app, /const expectedRevision = savedDocument\?\.revision \?\? document\.revision/);
+  assert.match(app, /expected_revision:\s*expectedRevision/);
+  assert.match(app, /setSavedDocument\(normalizedSavedDocument\)/);
   assert.match(workers, /expected_revision:\s*detail\?\.config\.revision/);
   assert.match(configuration, /expected_revision:\s*snapshot\.revision/);
 });

@@ -64,6 +64,8 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   const requestedEndpoints = [];
   const pageErrors = [];
   const consoleErrors = [];
+  const consoleErrorDetails = [];
+  const failedResponses = [];
   const saveRequests = [];
   const tabConfirmMessages = [];
   const directoryConfirmMessages = [];
@@ -121,7 +123,7 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
       validation_diagnostics: [],
     },
   };
-  const workflowDocument = {
+  let workflowDocument = {
     config_path: "workflow.json",
     layout_path: "workflow-layout.json",
     config_exists: true,
@@ -261,6 +263,14 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
       return;
     }
 
+    if (pathname === "/api/admin/user-preferences/workflow-tutorial-progress") {
+      await route.fulfill(jsonResponse({
+        completed_tutorial_ids: [],
+        skipped_tutorial_ids: [],
+      }));
+      return;
+    }
+
     if (pathname === "/api/configuration/state") {
       assert.equal(url.searchParams.get("directory_path"), "root");
       await route.fulfill(jsonResponse(configurationStateResponse));
@@ -271,19 +281,23 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
       if (route.request().method() === "PUT") {
         const body = JSON.parse(route.request().postData() ?? "{}");
         saveRequests.push(body);
-        assert.equal(body.expected_revision, "rev-1");
-        assert.equal(body.config.effects[0].display_name, "Dispatch agent v2");
-        assert.equal(body.config.effects[0].prompt, "Handle escalations");
-        await route.fulfill(
-          jsonResponse({
-            config: body.config,
-            layout: body.layout,
-            graphs: body.graphs,
-            output_schemas: {},
-            validation_diagnostics: [],
-            revision: "rev-2",
-          }),
-        );
+        const nextRevision = saveRequests.length === 1 ? "rev-2" : "rev-3";
+        assert.equal(body.expected_revision, workflowDocument.revision);
+        if (saveRequests.length === 1) {
+          assert.equal(body.config.effects[0].display_name, "Dispatch agent v2");
+          assert.equal(body.config.effects[0].prompt, "Handle escalations");
+        } else {
+          assert.equal(body.config.effects[0].display_name, "Dispatch agent v3");
+          assert.equal(body.config.effects[0].prompt, "Handle renewals");
+        }
+        workflowDocument = {
+          ...workflowDocument,
+          config: body.config,
+          layout: body.layout,
+          graphs: body.graphs,
+          revision: nextRevision,
+        };
+        await route.fulfill(jsonResponse(workflowDocument));
         return;
       }
 
@@ -332,6 +346,17 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   page.on("console", (message) => {
     if (message.type() === "error") {
       consoleErrors.push(message.text());
+      consoleErrorDetails.push({
+        text: message.text(),
+        url: message.location().url,
+        line: message.location().lineNumber,
+        column: message.location().columnNumber,
+      });
+    }
+  });
+  page.on("response", (response) => {
+    if (response.status() === 404) {
+      failedResponses.push(response.url());
     }
   });
   page.on("dialog", async (dialog) => {
@@ -456,8 +481,32 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   assert.equal(await displayNameInput.inputValue(), "Dispatch agent v2");
   assert.equal(await promptInput.inputValue(), "Handle escalations");
 
+  await displayNameInput.fill("Dispatch agent v3");
+  await promptInput.fill("Handle renewals");
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === "Dispatch agent v3"),
+  );
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 1);
+  assert.equal(await saveStatus.filter({ hasText: "Unsaved workflow changes" }).count(), 1);
+  assert.equal(await saveStatus.filter({ hasText: "1 edited node: Dispatch agent v3" }).count(), 1);
+
+  await page.getByRole("button", { name: "Save workflow" }).click();
+  await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
+
+  assert.equal(saveRequests.length, 2);
+  assert.equal(saveRequests[1].expected_revision, "rev-2");
+  assert.equal(await page.getByLabel("Unsaved changes").count(), 0);
+  assert.equal(await saveStatus.filter({ hasText: "Unsaved workflow changes" }).count(), 0);
+  assert.equal(await saveStatus.filter({ hasText: "Workflow saved" }).count(), 1);
+  assert.equal(await page.locator(".save-error-box").count(), 0);
+  assert.equal(await effectNode.locator(".node-card.unsaved").count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 0);
+  assert.equal(await displayNameInput.inputValue(), "Dispatch agent v3");
+  assert.equal(await promptInput.inputValue(), "Handle renewals");
+
   assert.deepEqual(pageErrors, []);
-  assert.deepEqual(consoleErrors, []);
+  assert.deepEqual(consoleErrors, [], JSON.stringify(consoleErrorDetails));
+  assert.deepEqual(failedResponses, []);
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/auth/session"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/deployment-status"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/state?directory_path=root"));
