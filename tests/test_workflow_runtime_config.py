@@ -365,6 +365,18 @@ def test_load_config_composes_workflow_pack_ir(tmp_path: Path) -> None:
             {
                 "pack_id": "synthetic-trivial",
                 "pack_version": "v1",
+                "graphs": [
+                    {
+                        "id": "graph-synthetic-trivial",
+                        "name": "Synthetic graph",
+                        "directory_paths": ["root/team-a"],
+                        "user_ids": ["alice"],
+                        "node_ids": [
+                            "trigger-cron-synthetic",
+                            "effect-log-synthetic",
+                        ],
+                    }
+                ],
                 "ir": {
                     "version": "v1",
                     "nodes": [
@@ -413,6 +425,8 @@ def test_load_config_composes_workflow_pack_ir(tmp_path: Path) -> None:
             "system.chat_assistant.enqueue_prompt",
         ),
     ]
+    assert [graph.id for graph in config.workflow_graphs] == ["graph-synthetic-trivial"]
+    assert config.workflow_graphs[0].directory_paths == ["root/team-a"]
 
 
 def test_load_config_composes_hidden_system_pack_without_operator_packs(
@@ -442,7 +456,7 @@ def test_load_config_composes_hidden_system_pack_without_operator_packs(
     ]
 
 
-def test_load_config_ignores_editor_workflow_graph_metadata(tmp_path: Path) -> None:
+def test_load_config_preserves_editor_workflow_graph_metadata(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     project_dir = tmp_path
     path = _config_path(project_dir)
@@ -480,6 +494,8 @@ def test_load_config_ignores_editor_workflow_graph_metadata(tmp_path: Path) -> N
     )
 
     assert _node_ids(config.triggers) == ["trigger-cron", "system.chat_assistant"]
+    assert [graph.id for graph in config.workflow_graphs] == ["graph-cron"]
+    assert config.workflow_graphs[0].directory_paths == ["root"]
 
 
 def test_load_config_composes_configured_pack_with_hidden_system_pack(

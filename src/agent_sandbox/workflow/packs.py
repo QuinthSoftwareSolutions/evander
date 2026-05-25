@@ -69,6 +69,7 @@ class WorkflowPack(BaseModel):
 
 
 class WorkflowIRCompositionResult(BaseModel):
+    graphs: list[WorkflowPackGraph] = Field(default_factory=list)
     triggers: list[dict[str, Any]] = Field(default_factory=list)
     gates: list[dict[str, Any]] = Field(default_factory=list)
     effects: list[dict[str, Any]] = Field(default_factory=list)
@@ -137,16 +138,19 @@ def compose_workflow_ir(
     built_in_workflow_packs: list[str] | tuple[str, ...] | None = None,
     inline_ir: dict[str, Any] | None = None,
 ) -> WorkflowIRCompositionResult:
+    graphs: list[WorkflowPackGraph] = []
     nodes: list[WorkflowIRNode] = []
     edges: list[EdgeDefinition] = []
 
     for pack_reference in workflow_packs or []:
         pack = load_workflow_pack(project_dir, pack_reference)
+        graphs.extend(pack.graphs)
         nodes.extend(pack.ir.nodes)
         edges.extend(pack.ir.edges)
 
     for pack_reference in built_in_workflow_packs or []:
         pack = load_workflow_pack(project_dir, pack_reference)
+        graphs.extend(pack.graphs)
         nodes.extend(pack.ir.nodes)
         edges.extend(pack.ir.edges)
 
@@ -185,6 +189,7 @@ def compose_workflow_ir(
             raise ValueError(f"Unsupported workflow IR node type: {node_type!r}")
 
     return WorkflowIRCompositionResult(
+        graphs=graphs,
         triggers=triggers,
         gates=gates,
         effects=effects,

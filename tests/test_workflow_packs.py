@@ -22,6 +22,15 @@ def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
             {
                 "pack_id": "pack-a",
                 "pack_version": "v1",
+                "graphs": [
+                    {
+                        "id": "graph-a",
+                        "name": "Graph A",
+                        "directory_paths": "root",
+                        "user_ids": "alice",
+                        "node_ids": "trigger-a",
+                    }
+                ],
                 "ir": {
                     "version": "v1",
                     "nodes": [
@@ -43,6 +52,15 @@ def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
             {
                 "pack_id": "pack-b",
                 "pack_version": "v1",
+                "graphs": [
+                    {
+                        "id": "graph-b",
+                        "name": "Graph B",
+                        "directory_paths": ["root/team-a"],
+                        "user_ids": ["bob"],
+                        "node_ids": ["effect-b"],
+                    }
+                ],
                 "ir": {
                     "version": "v1",
                     "nodes": [
@@ -64,6 +82,8 @@ def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
 
     assert [trigger["id"] for trigger in composed.triggers] == ["trigger-a"]
     assert [effect["id"] for effect in composed.effects] == ["effect-b"]
+    assert [graph.id for graph in composed.graphs] == ["graph-a", "graph-b"]
+    assert [graph.directory_paths for graph in composed.graphs] == [["root"], ["root/team-a"]]
     assert composed.edges == [
         {
             "source_id": "trigger-a",

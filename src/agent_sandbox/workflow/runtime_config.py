@@ -24,6 +24,7 @@ from agent_sandbox.workflow.packs import (
     BUILTIN_HIDDEN_WORKFLOW_PACKS,
     _pack_path,
     compose_workflow_ir,
+    WorkflowPackGraph,
 )
 
 logger = logging.getLogger(__name__)
@@ -202,6 +203,7 @@ def _compose_configured_workflow_ir(
 ) -> dict[str, Any]:
     payload = migrate_agent_prompt_lifecycle_ports(payload)
     configured_packs = payload.get("workflow_packs")
+    inline_graphs = payload.get("workflow_graphs")
     inline_ir = payload.get("workflow_ir")
     has_configured_packs = isinstance(configured_packs, list) and bool(configured_packs)
     has_inline_ir = isinstance(inline_ir, dict)
@@ -213,6 +215,10 @@ def _compose_configured_workflow_ir(
         workflow_packs=configured_packs if has_configured_packs else [],
         inline_ir=inline_ir if has_inline_ir else None,
     )
+    merged_graphs = _merge_workflow_graphs(inline_graphs, composition.graphs)
+    if merged_graphs:
+        payload = dict(payload)
+        payload["workflow_graphs"] = merged_graphs
     return _append_builtin_hidden_workflows(
         project_dir=project_dir,
         payload=payload,
@@ -275,6 +281,17 @@ def _append_builtin_hidden_workflows(
     editable_edges.extend(composition.edges)
     merged["edges"] = editable_edges
     return migrate_agent_prompt_lifecycle_ports(merged)
+
+
+def _merge_workflow_graphs(
+    existing_graphs: object, additional_graphs: list[WorkflowPackGraph]
+) -> list[dict[str, Any]]:
+    merged_graphs: list[dict[str, Any]] = []
+    if isinstance(existing_graphs, list):
+        for graph in existing_graphs:
+            merged_graphs.append(WorkflowPackGraph.model_validate(graph).model_dump(mode="json"))
+    merged_graphs.extend(graph.model_dump(mode="json") for graph in additional_graphs)
+    return merged_graphs
 
 
 def _workflow_node_id(entry: dict[str, Any]) -> str:
