@@ -36,10 +36,13 @@ _TOOL_DESCRIPTIONS: dict[ToolName, str] = {
         "List directory-configured contact ids without exposing addresses or phone numbers."
     ),
     ToolName.MAKE_PHONE_CALL: (
-        "Start Retell phone calls to directory-configured contact ids."
+        "Start host-side phone calls to directory-configured contact ids."
     ),
     ToolName.GET_PHONE_CALL_RESULT: (
-        "Read Retell phone call status and transcripts for calls owned by the session."
+        "Read phone call status and transcripts for calls owned by the session."
+    ),
+    ToolName.SUBMIT_VOICE_QUERY_RESPONSE: (
+        "Answer delegated live voice questions for phone calls projected from this session."
     ),
 }
 

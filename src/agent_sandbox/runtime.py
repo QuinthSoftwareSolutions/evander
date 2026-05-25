@@ -83,6 +83,13 @@ from agent_sandbox.teams_meeting import (
     TeamsMeetingStore,
     build_teams_meeting_bridge_client,
 )
+from agent_sandbox.voice_sessions import (
+    OpenAIRealtimePhoneCallService,
+    PhoneCallRouterService,
+    VoiceMediaBridgeClient,
+    VoiceSessionReconciler,
+    VoiceSessionStore,
+)
 
 CAPABILITY_PROFILE_ALLOWED_TOOLS: dict[str, tuple[ToolName, ...]] = {
     "read-only": (
@@ -150,6 +157,8 @@ class RuntimeContext:
     agent_prompt_store: AgentPromptStore
     script_run_request_store: ScriptRunRequestRepository
     retell_phone_call_store: RetellPhoneCallStore
+    voice_session_store: VoiceSessionStore
+    voice_session_reconciler: VoiceSessionReconciler
     teams_meeting_store: TeamsMeetingStore
     teams_meeting_bridge_client: TeamsMeetingBridgeClient
     tool_approval_leases: SessionToolApprovalLeaseRepository | None = None
@@ -223,6 +232,32 @@ class RuntimeContext:
             store=self.retell_phone_call_store,
         )
 
+    def phone_call_service_for_session(self, session_id: str) -> PhoneCallRouterService:
+        resolved_config = self.resolve_provider_config_for_session(session_id)
+        contacts_config = self.provider_config.resolve_contacts_for_session_id(session_id)
+        retell_service = RetellPhoneCallService(
+            config=resolved_config,
+            contacts_config=contacts_config,
+            store=self.retell_phone_call_store,
+        )
+        realtime_service = OpenAIRealtimePhoneCallService(
+            config=resolved_config,
+            contacts_config=contacts_config,
+            store=self.voice_session_store,
+            bridge_client=VoiceMediaBridgeClient(
+                base_url=resolved_config.didww_sip_bridge_url,
+                token_env=resolved_config.didww_sip_bridge_token_env,
+                timeout_seconds=resolved_config.voice_media_controller_request_timeout_seconds,
+            ),
+            reconciler=self.voice_session_reconciler,
+        )
+        return PhoneCallRouterService(
+            backend=resolved_config.phone_call_backend,
+            retell_service=retell_service,
+            realtime_service=realtime_service,
+            voice_store=self.voice_session_store,
+        )
+
     def teams_service_for_session(self, session_id: str) -> TeamsService:
         if not isinstance(self.teams_service, (StubTeamsService, GraphTeamsService)):
             return self.teams_service
@@ -292,6 +327,11 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
     retell_phone_call_store = RetellPhoneCallStore(
         config.runtime_dir / "retell-phone-calls-store.json"
     )
+    voice_session_store = VoiceSessionStore(config.runtime_dir / "voice-sessions-store.json")
+    voice_session_reconciler = VoiceSessionReconciler(
+        store=voice_session_store,
+        wake_store=wake_store,
+    )
     teams_meeting_store = TeamsMeetingStore(config.teams_meeting_store_path)
     teams_meeting_bridge_client = build_teams_meeting_bridge_client(config)
     root_provider_config = provider_config.resolve_for_directory("root")
@@ -348,6 +388,8 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         agent_prompt_store=agent_prompt_store,
         script_run_request_store=script_run_request_store,
         retell_phone_call_store=retell_phone_call_store,
+        voice_session_store=voice_session_store,
+        voice_session_reconciler=voice_session_reconciler,
         teams_meeting_store=teams_meeting_store,
         teams_meeting_bridge_client=teams_meeting_bridge_client,
         tool_approval_leases=tool_approval_leases,

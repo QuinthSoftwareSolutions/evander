@@ -15,6 +15,11 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from agent_sandbox.directories import DirectoryService
 from agent_sandbox.models import DirectoryPath, SessionManifest, ToolName, utc_now
+from agent_sandbox.voice_sessions import (
+    VoiceProjectionService,
+    realtime_session_config,
+    sanitize_voice_metadata,
+)
 
 MeetingBindingStatus = Literal["active", "stopped", "failed"]
 MeetingEventType = Literal["transcript", "speech_status", "error", "meeting_status"]
@@ -302,6 +307,8 @@ class TeamsMeetingBridgeClient:
         external_meeting_id: str,
         default_voice: str | None = None,
         metadata: dict[str, Any] | None = None,
+        realtime: dict[str, Any] | None = None,
+        projection: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload = {
             "join_url": join_url,
@@ -309,6 +316,10 @@ class TeamsMeetingBridgeClient:
             "default_voice": default_voice,
             "metadata": dict(metadata or {}),
         }
+        if realtime is not None:
+            payload["realtime"] = sanitize_voice_metadata(realtime)
+        if projection is not None:
+            payload["projection"] = sanitize_voice_metadata(projection)
         return self._request("POST", "/meetings/join", json=payload)
 
     def get_events(self, *, meeting_id: str, after_sequence: int = 0) -> list[TeamsMeetingBridgeEvent]:
@@ -389,6 +400,8 @@ class TeamsMeetingService:
         model: str | None,
         session_id: str | None = None,
         ttl_hours: int | None = None,
+        origin_session_id: str | None = None,
+        prompt: str | None = None,
     ) -> TeamsMeetingStartResult:
         normalized_join_url = str(join_url or "").strip()
         if not normalized_join_url:
@@ -413,15 +426,80 @@ class TeamsMeetingService:
 
         external_meeting_id = f"meeting-{uuid4().hex}"
         default_voice = str(getattr(self.config, "teams_meeting_default_voice", "") or "").strip()
-        bridge_response = self.bridge_client.join(
-            join_url=normalized_join_url,
-            external_meeting_id=external_meeting_id,
-            default_voice=default_voice or None,
-            metadata={"session_id": resolved_session_id, "directory_path": normalized_directory},
-        )
+        origin_session = self._resolve_origin_session(origin_session_id)
+        voice_record = None
+        voice_projection: dict[str, Any] | None = None
+        if origin_session is not None:
+            voice_prompt = (
+                str(prompt or "").strip()
+                or "Join this Teams meeting as a projected live voice session for the originating Truman agent."
+            )
+            voice_projection = VoiceProjectionService().build_projection(
+                session=origin_session,
+                prompt=voice_prompt,
+                channel="teams_meeting",
+                metadata={
+                    "meeting_session_id": resolved_session_id,
+                    "join_url_sha256": _sha256(normalized_join_url),
+                },
+            )
+            voice_record, _created = self.runtime.voice_session_store.prepare_session(
+                origin_session_id=origin_session.session_id,
+                directory_path=origin_session.directory_path,
+                channel="teams_meeting",
+                request_id=f"teams-meeting:{resolved_session_id}",
+                prompt_metadata={
+                    "sha256": _sha256(voice_prompt),
+                    "length": len(voice_prompt),
+                },
+                projection=voice_projection,
+                caller_metadata={
+                    "meeting_session_id": resolved_session_id,
+                    "join_url_sha256": _sha256(normalized_join_url),
+                },
+            )
+        bridge_metadata = {
+            "session_id": resolved_session_id,
+            "directory_path": normalized_directory,
+        }
+        if origin_session is not None and voice_record is not None:
+            bridge_metadata.update(
+                {
+                    "origin_session_id": origin_session.session_id,
+                    "voice_session_id": voice_record.voice_session_id,
+                }
+            )
+        try:
+            bridge_response = self.bridge_client.join(
+                join_url=normalized_join_url,
+                external_meeting_id=external_meeting_id,
+                default_voice=default_voice or None,
+                metadata=bridge_metadata,
+                realtime=realtime_session_config(self.config) if voice_record is not None else None,
+                projection=voice_projection,
+            )
+        except Exception as exc:
+            if voice_record is not None:
+                self.runtime.voice_session_store.complete_session(
+                    voice_record.voice_session_id,
+                    status="failed",
+                    error=str(exc),
+                )
+            raise
         meeting_id = str(bridge_response.get("meeting_id") or external_meeting_id).strip()
         if not meeting_id:
             raise ValueError("media bridge join response did not include a meeting_id")
+        if voice_record is not None:
+            voice_record = self.runtime.voice_session_store.attach_bridge_session(
+                voice_record.voice_session_id,
+                bridge_session_id=meeting_id,
+                status=str(bridge_response.get("status") or "active"),
+                bridge_metadata=_redact_bridge_response(bridge_response),
+                realtime_metadata=bridge_response.get("realtime")
+                if isinstance(bridge_response.get("realtime"), dict)
+                else {},
+                meeting_id=meeting_id,
+            )
 
         ttl_seconds = (
             int(ttl_hours) * 3600
@@ -449,6 +527,14 @@ class TeamsMeetingService:
                     "status": "active",
                     "started_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                     "join_url_sha256": _sha256(normalized_join_url),
+                    **(
+                        {
+                            "origin_session_id": origin_session.session_id,
+                            "voice_session_id": voice_record.voice_session_id,
+                        }
+                        if origin_session is not None and voice_record is not None
+                        else {}
+                    ),
                 }
             },
         )
@@ -458,7 +544,17 @@ class TeamsMeetingService:
             directory_path=normalized_directory,
             join_url_sha256=_sha256(normalized_join_url),
             default_voice=default_voice or None,
-            metadata={"bridge": _redact_bridge_response(bridge_response)},
+            metadata={
+                "bridge": _redact_bridge_response(bridge_response),
+                **(
+                    {
+                        "origin_session_id": origin_session.session_id,
+                        "voice_session_id": voice_record.voice_session_id,
+                    }
+                    if origin_session is not None and voice_record is not None
+                    else {}
+                ),
+            },
         )
         self.runtime.session_repository.upsert_session(manifest)
         self.store.upsert_binding(binding)
@@ -489,6 +585,7 @@ class TeamsMeetingService:
             speech_status="stopped",
             metadata={"bridge": _redact_bridge_response(response)},
         )
+        self._complete_bound_voice_session(binding)
         manifest = self.runtime.session_repository.get_session(session_id)
         if manifest is not None:
             metadata = dict(manifest.metadata or {})
@@ -500,6 +597,31 @@ class TeamsMeetingService:
                 manifest.model_copy(update={"metadata": metadata})
             )
         return {"status": "stopped", "meeting_id": binding.meeting_id, "bridge": response}
+
+    def _resolve_origin_session(self, origin_session_id: str | None) -> SessionManifest | None:
+        normalized = str(origin_session_id or "").strip()
+        if not normalized:
+            return None
+        session = self.runtime.session_repository.get_session(normalized)
+        if session is None:
+            raise ValueError(f"Origin session does not exist: {normalized}")
+        return session
+
+    def _complete_bound_voice_session(self, binding: TeamsMeetingBinding) -> None:
+        voice_session_id = str(binding.metadata.get("voice_session_id") or "").strip()
+        if not voice_session_id or not hasattr(self.runtime, "voice_session_store"):
+            return
+        events = self.store.list_events_for_session(binding.session_id, since_sequence=0, limit=10_000)
+        transcript = voice_session_transcript_from_teams_events(events)
+        self.runtime.voice_session_store.complete_session(
+            voice_session_id,
+            status="ended",
+            transcript=transcript,
+            summary="Teams meeting ended; review the transcript for decisions and follow-up.",
+        )
+        reconciler = getattr(self.runtime, "voice_session_reconciler", None)
+        if reconciler is not None:
+            reconciler.schedule_reconciliation(voice_session_id)
 
 
 def build_teams_meeting_bridge_client(config: Any) -> TeamsMeetingBridgeClient:
@@ -563,6 +685,34 @@ def _bridge_event_text(event: TeamsMeetingBridgeEvent) -> str | None:
     if event.error:
         return event.error
     return None
+
+
+def voice_session_transcript_entries_from_teams_events(
+    events: list[TeamsMeetingEvent],
+) -> list[tuple[TeamsMeetingEvent, str | None, str]]:
+    entries: list[tuple[TeamsMeetingEvent, str | None, str]] = []
+    for event in sorted(events, key=lambda item: item.sequence):
+        text = _normalize_optional_text(event.text)
+        if text is None:
+            continue
+        if event.event_type == "transcript":
+            entries.append((event, None, text))
+            continue
+        if event.event_type == "speech_status" and _is_completed_speech_status(event):
+            entries.append((event, "assistant", text))
+    return entries
+
+
+def voice_session_transcript_from_teams_events(events: list[TeamsMeetingEvent]) -> str | None:
+    lines: list[str] = []
+    for _event, speaker, text in voice_session_transcript_entries_from_teams_events(events):
+        prefix = f"{speaker}: " if speaker else ""
+        lines.append(f"{prefix}{text}")
+    return "\n".join(lines) if lines else None
+
+
+def _is_completed_speech_status(event: TeamsMeetingEvent) -> bool:
+    return str(event.speech_status or "").strip().lower() == "completed"
 
 
 def _normalize_optional_text(value: str | None) -> str | None:

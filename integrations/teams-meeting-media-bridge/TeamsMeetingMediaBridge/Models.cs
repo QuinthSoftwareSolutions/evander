@@ -5,8 +5,10 @@ namespace TeamsMeetingMediaBridge;
 public sealed record JoinMeetingRequest(
     [property: JsonPropertyName("join_url")] string JoinUrl,
     [property: JsonPropertyName("external_meeting_id")] string ExternalMeetingId,
-    [property: JsonPropertyName("default_voice")] string? DefaultVoice,
-    [property: JsonPropertyName("metadata")] Dictionary<string, object>? Metadata);
+    [property: JsonPropertyName("default_voice")] string? DefaultVoice = null,
+    [property: JsonPropertyName("metadata")] Dictionary<string, object>? Metadata = null,
+    [property: JsonPropertyName("realtime")] Dictionary<string, object>? Realtime = null,
+    [property: JsonPropertyName("projection")] Dictionary<string, object>? Projection = null);
 
 public sealed record JoinMeetingResponse(
     [property: JsonPropertyName("meeting_id")] string MeetingId,
@@ -50,7 +52,9 @@ public sealed record MediaJoinResult(
 
 public sealed record SpeechPlaybackResult(
     string Status,
-    int FramesQueued);
+    int FramesQueued,
+    string? OperationId = null,
+    Dictionary<string, object>? Metadata = null);
 
 public sealed record MediaTranscriptReceivedEvent(
     string MeetingId,
@@ -65,6 +69,17 @@ public sealed record MediaSpeechStatusEvent(
     string OperationId,
     string Status,
     string? Text = null);
+
+public sealed record MeetingSpeechStartRequest(
+    string MeetingId,
+    string? DefaultVoice,
+    IMeetingAudioSession? AudioSession,
+    IReadOnlyDictionary<string, object>? Metadata,
+    IReadOnlyDictionary<string, object>? Realtime,
+    IReadOnlyDictionary<string, object>? Projection,
+    Func<string, CancellationToken, Task> OnFinalTranscript,
+    Func<string, CancellationToken, Task> OnError,
+    SpeechStatusCallback OnSpeechStatus);
 
 public sealed record OnlineMeetingCoordinates(
     string ChatInfo,

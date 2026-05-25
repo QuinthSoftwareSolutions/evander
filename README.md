@@ -6,6 +6,8 @@
 
 - A Python MCP gateway with policy-gated Discord and email tool surfaces
 - A host-side OpenAI relay that keeps the API key on the host and exposes an OpenAI-compatible endpoint to guests
+- An optional host-side DIDWW SIP/OpenAI Realtime bridge for projected phone calls
+- An optional Teams meeting media bridge with Azure Speech or OpenAI Realtime speech modes
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
 - A host-side Azure DevOps PR feedback/completion worker plus workflow ADO work-item intake nodes
 - A host-side workflow orchestrator that polls provider triggers, evaluates gates, and persists durable queue events for downstream workers/hooks
@@ -107,6 +109,15 @@ Directory-scoped config is rooted at `root`:
    agent-sandbox-gateway --runtime-dir runtime
    agent-sandbox-openai-relay --runtime-dir runtime
    ```
+
+   Optional DIDWW/OpenAI Realtime phone calls require Asterisk with a DIDWW PJSIP
+   trunk plus `agent-sandbox-didww-sip-bridge --runtime-dir runtime`. The bridge
+   keeps SIP, RTP, and OpenAI credentials on the host and is only reached by the
+   gateway through `phone_call_backend=openai_realtime_didww`.
+
+   Optional Teams meeting voice sessions require the Windows-hosted bridge in
+   `integrations/teams-meeting-media-bridge`. Set `BRIDGE_ADAPTER_MODE=Graph`
+   and choose `BRIDGE_SPEECH_MODE=AzureSpeech` or `OpenAIRealtime`.
 
 7. Download the base image and launch VMs from a libvirt-accessible storage path:
 
@@ -218,6 +229,7 @@ sudo systemctl start agent-sandbox-admin-web.service
 sudo systemctl start agent-sandbox-firewall.service
 sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
+sudo systemctl start agent-sandbox-didww-sip-bridge.service
 sudo systemctl start agent-sandbox-nuget-relay.service
 sudo systemctl start agent-sandbox-ado-worker.service
 sudo systemctl start agent-sandbox-proxy-issue-sync.service

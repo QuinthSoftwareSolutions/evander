@@ -685,11 +685,11 @@ Example MCP call:
   - Grant `respond_to_agent` only to responder sessions.
   - Keep `directory_path` boundaries narrow so prompt routing cannot cross unrelated teams.
 
-## Host-Side Retell Phone Calls
+## Host-Side Phone Calls
 
-Use this only when agents should call configured directory contacts. The gateway owns the Retell API
-key, contact resolution, API requests, webhook verification, and transcript store. Guests never
-receive raw phone numbers or Retell credentials.
+Use this only when agents should call configured directory contacts. The gateway owns contact
+resolution, provider requests, webhook/result state, and transcript storage. Guests never receive
+raw phone numbers or phone-provider credentials.
 
 - Gateway tool names:
   - `list_contacts`
@@ -701,9 +701,13 @@ receive raw phone numbers or Retell credentials.
     summaries.
   - Add `make_phone_call` to the session manifest `allowed_tools` to start calls.
   - Add `get_phone_call_result` to read call status and transcripts.
+  - Add `submit_voice_query_response` to let the originating agent answer live delegated questions
+    from a Realtime call.
   - `get_phone_call_result` only returns calls owned by the same session and directory path.
   - Add `update_ado_backlog_tags` only for sessions that may change ADO item tags.
 - Provider config with defaults:
+  - `phone_call_backend` defaults to `retell`. Set it to `openai_realtime_didww` to use the
+    projected OpenAI Realtime/DIDWW bridge backend.
   - `retell_api_base_url` defaults to `https://api.retellai.com`; leave the default in the GUI or
     omit the key from JSON unless Retell gives you a different endpoint or you intentionally route
     through a host-side proxy/mock.
@@ -724,6 +728,7 @@ receive raw phone numbers or Retell credentials.
     uses that value where the configured Retell prompt references the dynamic variable.
 - Runtime state:
   - `runtime/retell-phone-calls-store.json`
+  - `runtime/voice-sessions-store.json` for projected OpenAI Realtime phone and meeting sessions
 - Webhook endpoint:
   - `POST /retell/webhook`
   - Verifies `X-Retell-Signature` with the configured Retell API key against the raw request body.
@@ -738,6 +743,60 @@ Example directory-scoped `providers.json` overlay:
   "retell_default_agent_id": "agent_123"
 }
 ```
+
+For the `openai_realtime_didww` backend, configure:
+
+```json
+{
+  "phone_call_backend": "openai_realtime_didww",
+  "openai_realtime_model": "gpt-realtime-2",
+  "openai_realtime_api_key_env": "OPENAI_API_KEY",
+  "voice_media_controller_url": "http://127.0.0.1:8000",
+  "voice_media_controller_token_env": "VOICE_MEDIA_CONTROLLER_TOKEN",
+  "didww_sip_bridge_url": "https://your-phone-bridge.example",
+  "didww_sip_bridge_token_env": "DIDWW_SIP_BRIDGE_TOKEN",
+  "didww_from_number": "+15551230000"
+}
+```
+
+The DIDWW bridge receives a projected voice-session prompt, the selected contact phone number, and
+Realtime connection metadata. It owns SIP trunk origination and raw audio forwarding. When the bridge
+returns a terminal call state, the control plane schedules a same-context wake for the originating
+agent with the transcript, summary, decisions, and follow-up actions.
+
+When `voice_media_controller_url` is configured, the Realtime voice agent also gets a
+`query_origin_agent` function tool. It uses that tool when the caller asks for files, repository
+state, live tools, or memory that is not in the projected context. The bridge creates a pending
+voice query through the gateway, the gateway schedules a same-context wake for the originating
+agent, and the origin agent answers with `submit_voice_query_response`. The voice call keeps going
+while that answer is pending; when the answer arrives, the bridge injects it back into the Realtime
+conversation.
+
+### DIDWW SIP/OpenAI Realtime bridge
+
+The built-in bridge service is `agent-sandbox-didww-sip-bridge`. It runs on the control-plane host
+and exposes the bridge API consumed by `didww_sip_bridge_url`:
+
+- `POST /phone-calls` starts a projected outbound call.
+- `GET /voice-sessions/{voice_session_id}` returns status, transcript events, summary, decisions,
+  and action items.
+- `POST /voice-sessions/{voice_session_id}/hangup` ends a live call for operator cleanup.
+
+The bridge uses Asterisk ARI instead of implementing SIP in Python. Asterisk handles DIDWW PJSIP
+trunk registration/auth, outbound SIP dialogs, RTP, NAT, and hangups. Asterisk itself is open-source;
+there is no Asterisk license fee, but DIDWW call/trunk usage and OpenAI Realtime usage still apply.
+
+Minimum host setup:
+
+1. Install and configure Asterisk with ARI enabled.
+2. Configure a DIDWW PJSIP trunk in Asterisk.
+3. Copy `config/didww-sip-bridge.env.example` to `config/didww-sip-bridge.env`.
+4. Put `DIDWW_SIP_BRIDGE_TOKEN`, `VOICE_MEDIA_CONTROLLER_TOKEN`, `OPENAI_API_KEY`, and
+   `ASTERISK_ARI_PASSWORD` in `secrets.env` or the systemd service manager environment.
+5. Set `didww_sip_bridge_url` to the bridge listener, for example `http://127.0.0.1:11888`.
+
+The bridge creates `runtime/didww-sip-bridge-store.json`. It stores redacted phone numbers, ARI
+channel IDs, RTP port metadata, transcripts, and terminal summaries; it does not persist raw audio.
 
 Example directory-scoped `contacts.json` overlay:
 
@@ -1726,6 +1785,7 @@ This creates:
 - `agent-sandbox-firewall.service`
 - `agent-sandbox-gateway.service`
 - `agent-sandbox-openai-relay.service`
+- `agent-sandbox-didww-sip-bridge.service`
 - `agent-sandbox-nuget-relay.service`
 - `agent-sandbox-http-target-relay.service`
 - `agent-sandbox-ado-worker.service`
@@ -1745,7 +1805,8 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
    automation settings.
 3. Ensure the needed service env vars are available. The rendered units will load optional
    per-service `config/*.env` files and optional repo-root `secrets.env`.
-4. Ensure `OPENAI_API_KEY` is available for the OpenAI relay and `AZURE_ARTIFACTS_PAT` when the
+4. Ensure `OPENAI_API_KEY` is available for the OpenAI relay and DIDWW SIP bridge, and
+   `AZURE_ARTIFACTS_PAT` when the
    NuGet relay needs private Azure Artifacts access. Additional directory-specific key env vars
    should be supplied through `config/admin-web.env`, `secrets.env`, or the service manager
    environment. The HTTP
@@ -1761,6 +1822,7 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
 sudo systemctl start agent-sandbox-firewall.service
 sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
+sudo systemctl start agent-sandbox-didww-sip-bridge.service
 sudo systemctl start agent-sandbox-nuget-relay.service
 sudo systemctl start agent-sandbox-http-target-relay.service
 sudo systemctl start agent-sandbox-ado-worker.service
@@ -1775,6 +1837,7 @@ sudo systemctl start agent-sandbox-trigger-orchestrator.service
 sudo systemctl status agent-sandbox-firewall.service
 sudo systemctl status agent-sandbox-gateway.service
 sudo systemctl status agent-sandbox-openai-relay.service
+sudo systemctl status agent-sandbox-didww-sip-bridge.service
 sudo systemctl status agent-sandbox-nuget-relay.service
 sudo systemctl status agent-sandbox-http-target-relay.service
 sudo systemctl status agent-sandbox-ado-worker.service
