@@ -313,6 +313,7 @@ Type-specific keys:
 | `effect:semantic:delete` | `collection_name`, `point_ids` | `directory_path`, `wait`, `outputs` |
 | `effect:agent:destroy` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `execution_backend`, `directory_path`, `outputs` |
 | `effect:bash:script` | `script_path` | `args`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
+| `effect:http:request` | `url` | `method`, `payload`, `headers`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:issue:update-state` | `issue_id`, `state` | `sync_proxy_cache`, `outputs` |
@@ -323,6 +324,12 @@ Type-specific keys:
 | `effect:session:approve-mcp-tools-for-run` | one of `target`, `session_id`, `vm_name`; `tools` | `expires_in_seconds`, `outputs` |
 | `effect:session:renew-if-expired` | one of `target`, `session_id`, `vm_name` | `extend_by`, `directory_path`, `outputs` |
 | `effect:pr:create` | `host_repo_path` | `local_branch`, `origin_branch`, `canonical_origin_url`, `provider`, `base_branch`, `session_id`, `work_item_id`, `title`, `body`, `body_file`, `body_artifact_ids`, `draft`, `fill`, `outputs` |
+
+`effect:http:request` performs a host-side raw HTTP or HTTPS request from the
+effect orchestrator. It supports `GET`, `POST`, and `PUT`; sends `payload` as a
+JSON request body when present; treats non-2xx responses as normal workflow
+outputs by default; and raises on non-2xx only when `check` is true. This effect
+does not use the guest HTTP target relay or its destination allowlist.
 
 `effect:pr:create` preflights the destination branch before pushing. If the
 destination branch exists and its tip is not contained in the local branch, the

@@ -107,6 +107,12 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       prefixes: ["effect:bash:"],
     },
     {
+      key: "http",
+      label: "HTTP",
+      description: "Perform host-side HTTP requests and expose upstream responses.",
+      prefixes: ["effect:http:"],
+    },
+    {
       key: "semantic",
       label: "Semantic store",
       description: "Manage semantic collections and points.",
