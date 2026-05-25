@@ -66,6 +66,36 @@ class SessionListQueryDefinition(QueryDefinition):
         raise ValueError("query:session:list metadata_exists must be a string, array, or object")
 
 
+class IssueListQueryDefinition(QueryDefinition):
+    type: Literal["query:issue:list"]
+    directory_path: ConfigValue | None = None
+    direct_only: ConfigValue | None = None
+    states: ConfigValue | None = None
+    exclude_states: ConfigValue | None = None
+    source: ConfigValue | None = None
+    source_type: ConfigValue | None = None
+    tags_any: ConfigValue | None = None
+    tags_all: ConfigValue | None = None
+    metadata_equals: ConfigValue | None = None
+    metadata_exists: ConfigValue | None = None
+    metadata_prefix: ConfigValue | None = None
+    limit: ConfigValue | None = None
+
+    @field_validator("metadata_equals", "metadata_prefix")
+    @classmethod
+    def validate_metadata_map(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (dict, str)):
+            return value
+        raise ValueError("query:issue:list metadata filters must be JSON objects")
+
+    @field_validator("metadata_exists")
+    @classmethod
+    def validate_metadata_exists(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None or isinstance(value, (str, list, dict)):
+            return value
+        raise ValueError("query:issue:list metadata_exists must be a string, array, or object")
+
+
 class AgentArtifactTextQueryDefinition(QueryDefinition):
     type: Literal["query:agent:artifact-text"]
     session_id: ConfigValue

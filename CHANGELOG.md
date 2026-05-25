@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - Issue List Workflow Query
+
+- Added the `query:issue:list` workflow query node for listing tracked local and
+  proxy issues with state, source, tag, directory, and metadata filters.
+
 ## 2026-05-25 - CI Run Completed Trigger Fixes
 
 - Persisted initialized empty CI run cursors on first polls when history

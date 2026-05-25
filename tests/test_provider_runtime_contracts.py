@@ -10,10 +10,12 @@ from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.events.provider_models import (
     AgentEnqueuePromptEffectDefinition,
     IssueGetQueryDefinition,
+    IssueListQueryDefinition,
     VmRunStateQueryDefinition,
 )
-from agent_sandbox.models import SessionManifest, ToolName, VmSummary
+from agent_sandbox.models import LocalIssueRecord, SessionManifest, ToolName, VmSummary
 from agent_sandbox.queries.providers.issue_get import IssueGetQueryProvider
+from agent_sandbox.queries.providers.issue_list import IssueListQueryProvider
 from agent_sandbox.queries.providers.vm_run_state import VmRunStateQueryProvider
 from agent_sandbox.queries.providers.base import QueryRuntimeContext
 
@@ -89,6 +91,21 @@ class _FakeQueryServices:
     def get_issue(self, **kwargs: Any) -> dict[str, Any]:
         return {"issue_id": kwargs["issue_id"], "title": "Synthetic issue"}
 
+    def list_issues(self, **kwargs: Any) -> list[LocalIssueRecord]:
+        del kwargs
+        return [
+            LocalIssueRecord(
+                issue_id="root::local::7",
+                issue_number="7",
+                title="Synthetic issue list entry",
+                body="Body",
+                yaml_path="/tmp/issue-7.yaml",
+                directory_path="root/team-a",
+                state="Open",
+                source="local_gui",
+            )
+        ]
+
 
 def test_query_providers_can_run_with_fake_contract_implementations() -> None:
     services = _FakeQueryServices()
@@ -118,3 +135,20 @@ def test_query_providers_can_run_with_fake_contract_implementations() -> None:
     )
     issue_output = issue_provider.execute()
     assert issue_output["issue_id"] == "root:issue-7"
+
+    issue_list_provider = IssueListQueryProvider()
+    issue_list_provider.initialize(
+        IssueListQueryDefinition(
+            id="query-issues",
+            display_name="issues",
+            type="query:issue:list",
+        ),
+        QueryRuntimeContext(
+            provider_config={},
+            issue_reader=services,
+            metadata={"directory_path": "root/team-a"},
+        ),
+    )
+    issue_list_output = issue_list_provider.execute()
+    assert issue_list_output["count"] == 1
+    assert issue_list_output["issues"][0]["issue_id"] == "root::local::7"

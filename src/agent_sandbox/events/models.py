@@ -353,6 +353,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "query:session:list": provider_models.SessionListQueryDefinition,
         "query:agent:artifact-text": provider_models.AgentArtifactTextQueryDefinition,
         "query:issue:get": provider_models.IssueGetQueryDefinition,
+        "query:issue:list": provider_models.IssueListQueryDefinition,
         "query:ado:work-items": provider_models.AdoWorkItemsQueryDefinition,
         "query:pull-request:list": provider_models.PullRequestListQueryDefinition,
         "query:pull-request:feedback": provider_models.PullRequestFeedbackQueryDefinition,
