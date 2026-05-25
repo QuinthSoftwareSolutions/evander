@@ -1627,6 +1627,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "query:session:list": "List sessions by generic manifest metadata.",
     "query:agent:artifact-text": "Read a UTF-8 text file from an agent session artifacts folder.",
     "query:issue:get": "Read a local issue record by id.",
+    "query:issue:list": "List tracked local and proxy issues from the local issue store.",
     "query:ado:work-items": "Query Azure DevOps work items.",
     "query:semantic:store-status": "Read Qdrant health and semantic collection status.",
     "query:semantic:search": "Search a semantic collection with an embedded text query.",
@@ -3301,6 +3302,30 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         label="Issue get",
         fields=[
             _field("issue_id", "Issue ID", "string", required=True, bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:issue:list",
+        label="Issue list",
+        fields=[
+            _field("directory_path", "Directory path", "string", bindable=True),
+            _field(
+                "direct_only",
+                "Direct only",
+                "boolean",
+                bindable=True,
+            ),
+            _field("states", "States", "string_list", bindable=True),
+            _field("exclude_states", "Exclude states", "string_list", bindable=True),
+            _field("source", "Source", "string", bindable=True),
+            _field("source_type", "Source type", "string", bindable=True),
+            _field("tags_any", "Tags any", "string_list", bindable=True),
+            _field("tags_all", "Tags all", "string_list", bindable=True),
+            _field("metadata_equals", "Metadata equals", "json", bindable=True),
+            _field("metadata_exists", "Metadata exists", "json", bindable=True),
+            _field("metadata_prefix", "Metadata prefix", "json", bindable=True),
+            _field("limit", "Limit", "number", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
