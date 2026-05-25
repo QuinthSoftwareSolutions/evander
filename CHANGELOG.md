@@ -28,6 +28,19 @@ material. Newer entries are added incrementally as changes land.
   without active sessions, disabled triggers are ignored, and one-on-one chats
   already allowlisted for normal Teams reads still publish DM trigger events.
 
+## 2026-05-25 - Workflow HTTP Request Effect
+
+- Added the host-side `effect:http:request` workflow effect with Pydantic
+  schema, runtime provider, registry wiring, and admin/workflow editor
+  exposure.
+- Returned request metadata and response outputs including status, headers,
+  body text, parsed JSON when available, content type, and elapsed time.
+- Kept the effect JSON-body-only, disabled redirects by default, and preserved
+  the default non-2xx success semantics unless `check` is enabled.
+- Added per-effect `allowed_url_patterns` URL allowlist enforcement, defaulting
+  to `["*"]`, and preserved response outputs when checked non-2xx responses fail
+  the run.
+
 ## 2026-05-25 - Workflow Editor Inspector Layout
 
 - Moved selected-node declared and derived output contracts below configuration

@@ -63,4 +63,5 @@ def test_load_provider_plugins_can_include_builtin_explicitly() -> None:
     )
 
     assert "trigger:cron" in catalog.trigger_providers
+    assert "effect:http:request" in catalog.effect_providers
     assert "agent_sandbox.providers.builtin" in catalog.loaded_plugins

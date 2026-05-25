@@ -233,6 +233,10 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         == "Run a host-side Bash script from the effect orchestrator."
     )
     assert (
+        descriptions_by_type["effect:http:request"]
+        == "Perform a host-side raw HTTP GET, POST, or PUT request with URL allowlist control."
+    )
+    assert (
         descriptions_by_type["effect:agent:exec"]
         == "Run a shell command inside an agent session workspace."
     )
@@ -499,6 +503,31 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "timeout_seconds",
         "check",
     ]
+    http_request = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:http:request"
+    )
+    assert [field["key"] for field in http_request["fields"]] == [
+        "method",
+        "url",
+        "allowed_url_patterns",
+        "payload",
+        "headers",
+        "timeout_seconds",
+        "check",
+    ]
+    http_request_fields = {field["key"]: field for field in http_request["fields"]}
+    assert [option["value"] for option in http_request_fields["method"]["options"]] == [
+        "GET",
+        "POST",
+        "PUT",
+    ]
+    assert http_request_fields["method"]["default_value"] == "GET"
+    assert http_request_fields["url"]["required"] and http_request_fields["url"]["bindable"]
+    assert http_request_fields["allowed_url_patterns"]["kind"] == "string_list"
+    assert http_request_fields["allowed_url_patterns"]["default_value"] == ["*"]
+    assert http_request_fields["payload"]["json_value_type"] == "object"
+    assert http_request_fields["headers"]["json_value_type"] == "object"
+    assert http_request_fields["check"]["default_value"] is False
     ticket_created = next(
         node for node in catalog_payload["nodes"] if node["type"] == "trigger:ticket:created"
     )

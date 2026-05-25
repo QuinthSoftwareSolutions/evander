@@ -21,6 +21,7 @@ from agent_sandbox.effects.providers.agent_session import (
     container_thread_id_from_logs,
     selected_execution_backend_for_target,
 )
+from agent_sandbox.effects.providers.http_request import HttpRequestEffectProvider
 from agent_sandbox.effects.providers.base import EffectProviderBase, EffectRuntimeContext
 from agent_sandbox.effects.registry import (
     DEFAULT_EFFECT_PROVIDER_REGISTRY,
@@ -312,6 +313,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:semantic:upsert",
         "effect:semantic:delete",
         "effect:bash:script",
+        "effect:http:request",
         "effect:event:emit",
         "effect:vm:exec",
         "effect:vm:copy-files",
@@ -329,6 +331,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:pr:create",
         "effect:pull-request:update",
     }
+    assert DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:http:request"] is HttpRequestEffectProvider
 
 
 def test_factory_initializes_provider_with_runtime_context() -> None:
