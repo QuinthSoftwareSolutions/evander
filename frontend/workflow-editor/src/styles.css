@@ -3606,6 +3606,11 @@ select {
   margin-bottom: 1rem;
 }
 
+.sidebar-divider {
+  margin: 1rem 0;
+  border-top: 1px solid rgba(71, 56, 37, 0.12);
+}
+
 .feature-content {
   padding: 1.25rem;
   display: flex;

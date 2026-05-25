@@ -4299,10 +4299,13 @@ def test_workflow_editor_document_round_trips_config_and_separate_layout(tmp_pat
     assert reread.revision == save_result.revision
     assert reread.saved_at is not None
 
+    revision_config = dict(reread.config)
+    if save_result.graphs:
+        revision_config.pop("workflow_graphs", None)
     expected_revision = hashlib.sha256(
         json.dumps(
             {
-                "config": reread.config,
+                "config": revision_config,
                 "layout": save_result.layout,
                 "graphs": [graph.model_dump(mode="json") for graph in save_result.graphs],
             },

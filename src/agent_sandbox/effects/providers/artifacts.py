@@ -7,12 +7,15 @@ from collections.abc import Mapping
 from typing import Any
 
 from agent_sandbox.events.provider_models import (
+    AgentCopyFilesEffectDefinition,
     AgentExecEffectDefinition,
+    ArtifactImportPublishedEffectDefinition,
     ArtifactPublishArtifactsEffectDefinition,
     ArtifactStageEffectDefinition,
 )
 from agent_sandbox.published_artifacts import PublishedArtifactStore, validate_artifact_key
 
+from .agent_copy_files import AgentCopyFilesEffectProvider
 from .agent_exec import AgentExecEffectProvider
 from .agent_session import (
     effective_config_for_directory,
@@ -180,6 +183,106 @@ except Exception as exc:
     raise SystemExit(2)
 """.strip()
 
+_IMPORT_SCRIPT = r"""
+import json
+import os
+import pathlib
+import sys
+import tarfile
+
+BEGIN = "__AGENT_SANDBOX_ARTIFACT_EFFECT_JSON_BEGIN__"
+END = "__AGENT_SANDBOX_ARTIFACT_EFFECT_JSON_END__"
+
+def normalize_destination(value):
+    text = str(value or "").strip().replace("\\", "/")
+    if not text:
+        return ""
+    path = pathlib.PurePosixPath(text)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise ValueError("destination_path must be relative and stay inside /artifacts")
+    return path.as_posix()
+
+def normalize_member(name):
+    text = str(name or "").strip().replace("\\", "/")
+    if not text or "\x00" in text:
+        raise ValueError("archive member path is empty or invalid")
+    path = pathlib.PurePosixPath(text)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise ValueError(f"archive member path is unsafe: {name}")
+    return path.as_posix()
+
+def resolve_destination(root, prefix, member_name):
+    member = normalize_member(member_name)
+    relative = pathlib.PurePosixPath(prefix) / member if prefix else pathlib.PurePosixPath(member)
+    destination = (root / pathlib.Path(relative.as_posix())).resolve()
+    destination.relative_to(root)
+    return relative.as_posix(), destination
+
+try:
+    archive_arg = sys.argv[1] if len(sys.argv) > 1 else ""
+    destination_arg = sys.argv[2] if len(sys.argv) > 2 else ""
+    overwrite = (sys.argv[3] if len(sys.argv) > 3 else "").strip().lower() in {"1", "true", "yes"}
+    archive_path = pathlib.Path(archive_arg)
+    if not archive_path.is_file():
+        raise ValueError("published artifact archive is not available in the session")
+    artifacts_root = pathlib.Path(os.environ.get("AGENT_SANDBOX_ARTIFACTS_DIR") or "/artifacts")
+    artifacts_root = artifacts_root.resolve(strict=True)
+    prefix = normalize_destination(destination_arg)
+
+    planned = []
+    with tarfile.open(archive_path, "r:gz") as tar:
+        for member in tar.getmembers():
+            relative, destination = resolve_destination(artifacts_root, prefix, member.name)
+            if member.isdir():
+                planned.append((member, relative, destination))
+                continue
+            if not member.isfile():
+                raise ValueError(f"refusing to import non-regular archive member: {member.name}")
+            planned.append((member, relative, destination))
+
+        collisions = [
+            relative
+            for member, relative, destination in planned
+            if member.isfile() and destination.exists() and not overwrite
+        ]
+        if collisions:
+            raise FileExistsError("import destination already exists: " + ", ".join(collisions))
+
+        imported_paths = []
+        imported_count = 0
+        imported_bytes = 0
+        for member, relative, destination in planned:
+            if member.isdir():
+                destination.mkdir(parents=True, exist_ok=True)
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source = tar.extractfile(member)
+            if source is None:
+                raise ValueError(f"archive member could not be read: {member.name}")
+            with source, destination.open("wb") as handle:
+                content = source.read()
+                handle.write(content)
+            imported_paths.append(relative)
+            imported_count += 1
+            imported_bytes += len(content)
+
+    payload = {
+        "success": True,
+        "artifacts_root": str(artifacts_root),
+        "destination_path": prefix or None,
+        "imported_file_count": imported_count,
+        "imported_paths": imported_paths,
+        "source_byte_count": imported_bytes,
+        "overwrite": overwrite,
+    }
+    print(BEGIN)
+    print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    print(END)
+except Exception as exc:
+    print(f"effect:artifact:import-published: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+""".strip()
+
 
 class ArtifactStageEffectProvider(EffectProviderBase):
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -320,6 +423,120 @@ class ArtifactPublishArtifactsEffectProvider(EffectProviderBase):
         return self.runtime_context
 
 
+class ArtifactImportPublishedEffectProvider(EffectProviderBase):
+    def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        effect = self._effect()
+        context = self._context()
+        payload = {
+            "target": effect.target,
+            "session_id": effect.session_id,
+            "vm_name": effect.vm_name,
+            "key": effect.key,
+            "destination_path": effect.destination_path,
+            "overwrite": effect.overwrite,
+            "vm_user": effect.vm_user,
+        }
+        if resolved_config:
+            payload.update(dict(resolved_config))
+
+        key = validate_artifact_key(_required_text(payload.get("key"), "artifact key is required"))
+        destination_path = normalize_optional_string(payload.get("destination_path")) or ""
+        overwrite = _optional_bool(payload.get("overwrite"), default=False)
+        artifact = PublishedArtifactStore(context.config_path("runtime_dir")).get(key)
+        staged_archive = (
+            f"/home/agent/.agent-sandbox/artifact-imports/{artifact.metadata.storage_id}.tar.gz"
+        )
+        copy_result = _copy_file_to_agent(
+            context,
+            payload,
+            effect_id=effect.id,
+            source_path=str(artifact.blob_path),
+            destination_path=staged_archive,
+        )
+        exec_result = _run_agent_exec(
+            context,
+            payload,
+            effect_id=effect.id,
+            display_name="Import published artifact",
+            command=_python_stdin_command(
+                _IMPORT_SCRIPT,
+                staged_archive,
+                destination_path,
+                "1" if overwrite else "0",
+            ),
+            timeout_seconds=1800,
+        )
+        script_payload = _parse_script_payload(
+            str(exec_result.get("stdout") or ""),
+            effect_type="effect:artifact:import-published",
+        )
+        return {
+            "success": True,
+            "action": "artifact_import_published",
+            "message": (
+                f"Imported {script_payload.get('imported_file_count', 0)} file(s) "
+                f"from {key}"
+            ),
+            "key": artifact.metadata.key,
+            "session_id": exec_result.get("session_id") or copy_result.get("session_id"),
+            "vm_name": exec_result.get("vm_name") or copy_result.get("vm_name"),
+            "execution_backend": exec_result.get("execution_backend")
+            or copy_result.get("execution_backend")
+            or artifact.metadata.execution_backend,
+            "archive_format": artifact.metadata.archive_format,
+            "filename": artifact.metadata.filename,
+            "mime_type": artifact.metadata.mime_type,
+            "byte_count": artifact.metadata.byte_count,
+            "sha256": artifact.metadata.sha256,
+            **script_payload,
+        }
+
+    def _effect(self) -> ArtifactImportPublishedEffectDefinition:
+        if not isinstance(self.effect_definition, ArtifactImportPublishedEffectDefinition):
+            raise RuntimeError(
+                "ArtifactImportPublishedEffectProvider initialized with a non-artifact-import definition"
+            )
+        return self.effect_definition
+
+    def _context(self) -> EffectRuntimeContext:
+        if self.runtime_context is None:
+            raise RuntimeError("ArtifactImportPublishedEffectProvider has no runtime context")
+        return self.runtime_context
+
+
+def _copy_file_to_agent(
+    context: EffectRuntimeContext,
+    payload: Mapping[str, Any],
+    *,
+    effect_id: str,
+    source_path: str,
+    destination_path: str,
+) -> dict[str, Any]:
+    exec_payload = _agent_exec_target_payload(context, payload)
+    effect = AgentCopyFilesEffectDefinition(
+        id=f"{effect_id}-agent-copy-files",
+        display_name="Copy published artifact archive",
+        type="effect:agent:copy-files",
+        target=exec_payload.get("target"),
+        session_id=exec_payload.get("session_id"),
+        vm_name=exec_payload.get("vm_name"),
+        vm_user=normalize_optional_string(payload.get("vm_user")),
+        files=[
+            {
+                "source_path": source_path,
+                "destination_path": destination_path,
+                "overwrite": True,
+            }
+        ],
+    )
+    provider = AgentCopyFilesEffectProvider()
+    provider.initialize(effect_definition=effect, runtime_context=context)
+    result = provider.execute()
+    if not isinstance(result, Mapping):
+        raise RuntimeError("artifact import copy did not return a mapping")
+    return dict(result)
+
+
 def _run_agent_exec(
     context: EffectRuntimeContext,
     payload: Mapping[str, Any],
@@ -410,6 +627,19 @@ def _required_text(value: Any, message: str) -> str:
     if text is None:
         raise ValueError(message)
     return text
+
+
+def _optional_bool(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"boolean value expected: {value!r}")
 
 
 def _url_quote_key(key: str) -> str:

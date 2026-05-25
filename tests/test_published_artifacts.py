@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+import tarfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -69,6 +71,28 @@ def test_published_artifact_store_lists_by_time_with_cursor_inputs(tmp_path: Pat
         for item in store.list_metadata(published_after=new - timedelta(seconds=1))
     ] == ["new"]
     assert [item.key for item in store.list_metadata(key="old")] == ["old"]
+
+
+def test_published_artifact_store_publishes_single_file_upload(tmp_path: Path) -> None:
+    store = PublishedArtifactStore(tmp_path)
+
+    record = store.publish_single_file(
+        key="manuals/reviewed/run-1",
+        session_id="manual-upload",
+        filename="reviewed.docx",
+        artifact_path="input/reviewed.docx",
+        content=b"docx-bytes",
+    )
+    artifact = store.get(record.key)
+
+    assert record.source_file_count == 1
+    assert record.source_byte_count == len(b"docx-bytes")
+    assert record.metadata["source"] == "manual_upload"
+    assert record.metadata["artifact_path"] == "input/reviewed.docx"
+    with tarfile.open(fileobj=io.BytesIO(artifact.blob_path.read_bytes()), mode="r:gz") as archive:
+        member = archive.extractfile("input/reviewed.docx")
+        assert member is not None
+        assert member.read() == b"docx-bytes"
 
 
 def test_published_artifact_keys_are_not_filesystem_paths() -> None:

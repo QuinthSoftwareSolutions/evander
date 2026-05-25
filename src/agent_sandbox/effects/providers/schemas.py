@@ -528,6 +528,26 @@ class ArtifactPublishArtifactsEffectDefinition(EffectDefinition):
         return self
 
 
+class ArtifactImportPublishedEffectDefinition(EffectDefinition):
+    type: Literal["effect:artifact:import-published"]
+    target: ConfigValue | None = None
+    session_id: ConfigValue | None = None
+    vm_name: ConfigValue | None = None
+    key: ConfigValue
+    destination_path: ConfigValue | None = None
+    overwrite: ConfigValue | None = False
+    vm_user: ConfigValue | None = None
+
+    @model_validator(mode="after")
+    def validate_target_selector(self) -> "ArtifactImportPublishedEffectDefinition":
+        selectors = [self.target, self.session_id, self.vm_name]
+        if not any(value is not None for value in selectors):
+            raise ValueError(
+                "effect:artifact:import-published requires target, session_id, or vm_name"
+            )
+        return self
+
+
 class VmDeleteFilesEffectDefinition(EffectDefinition):
     type: Literal["effect:vm:delete-files"]
     target: ConfigValue | None = None

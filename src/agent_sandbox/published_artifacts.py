@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import fcntl
+import io
 import json
 import re
+import tarfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -169,6 +171,42 @@ class PublishedArtifactStore:
             except FileNotFoundError:
                 pass
 
+    def publish_single_file(
+        self,
+        *,
+        key: str,
+        session_id: str,
+        filename: str,
+        content: bytes,
+        artifact_path: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        published_at: datetime | None = None,
+    ) -> PublishedArtifactMetadata:
+        normalized_artifact_path = normalize_artifact_member_path(
+            artifact_path or filename_for_upload(filename)
+        )
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w:gz", format=tarfile.PAX_FORMAT) as tar:
+            info = tarfile.TarInfo(normalized_artifact_path)
+            info.size = len(content)
+            info.mtime = int((published_at or utc_now()).timestamp())
+            tar.addfile(info, io.BytesIO(content))
+        return self.publish_bytes(
+            key=key,
+            session_id=session_id,
+            content=archive.getvalue(),
+            source_artifacts_root="/artifacts",
+            source_file_count=1,
+            source_byte_count=len(content),
+            metadata={
+                **dict(metadata or {}),
+                "source": "manual_upload",
+                "original_filename": filename_for_upload(filename),
+                "artifact_path": normalized_artifact_path,
+            },
+            published_at=published_at,
+        )
+
     def get(self, key: str) -> PublishedArtifact:
         normalized_key = validate_artifact_key(key)
         storage_id = storage_id_for_key(normalized_key)
@@ -233,6 +271,23 @@ def validate_artifact_key(value: str | None) -> str:
         raise ValueError("artifact key must be 512 characters or fewer")
     if any(ord(char) < 32 or ord(char) == 127 for char in text):
         raise ValueError("artifact key must not contain control characters")
+    return text
+
+
+def normalize_artifact_member_path(value: str | None) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    if not text or "\x00" in text:
+        raise ValueError("artifact path is required")
+    path = PurePosixPath(text)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise ValueError("artifact path must be relative and must not contain dot segments")
+    return path.as_posix()
+
+
+def filename_for_upload(value: str | None) -> str:
+    text = Path(str(value or "").strip()).name
+    if not text:
+        raise ValueError("upload filename is required")
     return text
 
 

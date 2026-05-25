@@ -195,7 +195,8 @@ The Artifacts tab resolves and downloads published agent artifact archives.
 
 ![Artifacts](assets/admin-ui/manual-artifacts.png)
 
-Use it when a workflow or agent has published `/artifacts` as an immutable archive.
+Use it when a workflow or agent has published `/artifacts` as an immutable archive, or when an
+operator needs to upload a single local file into the same artifact store for a later workflow.
 
 Common tasks:
 
@@ -206,6 +207,8 @@ Common tasks:
 5. Select an archive row to inspect session ID, backend, byte counts, source file counts,
    source artifacts root, SHA-256, and metadata.
 6. Use the download button to download the selected archive.
+7. To upload a local file, enter a new artifact key, choose an artifact path such as
+   `input/reviewed.docx`, select the file, and click **Upload**.
 
 Artifact keys are durable identifiers. Prefer resolving by key when a workflow, tool call, or run
 detail links to an artifact directly.

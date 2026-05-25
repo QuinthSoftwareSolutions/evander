@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
-import { DownloadIcon } from "../admin/PageActionIcons";
+import { DownloadIcon, UploadIcon } from "../admin/PageActionIcons";
 
 type PublishedArtifact = {
   key: string;
@@ -36,6 +36,7 @@ type ArtifactFilters = {
 };
 
 const DEFAULT_LIMIT = 50;
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
 function toIsoTimestamp(value: string): string | null {
   const trimmed = value.trim();
@@ -95,8 +96,14 @@ export function ArtifactsPage() {
   const [resolvedArtifact, setResolvedArtifact] = useState<PublishedArtifact | null>(null);
   const [loading, setLoading] = useState(false);
   const [lookupLoading, setLookupLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lookupError, setLookupError] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadMessage, setUploadMessage] = useState<string | null>(null);
+  const [uploadKey, setUploadKey] = useState("");
+  const [uploadArtifactPath, setUploadArtifactPath] = useState("");
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
 
   const items = response?.items ?? [];
   const selectedArtifact = resolvedArtifact ?? items.find((item) => item.key === selectedKey) ?? items[0] ?? null;
@@ -172,6 +179,45 @@ export function ArtifactsPage() {
     window.location.assign(artifactDownloadUrl(key));
   }
 
+  async function uploadArtifact() {
+    const key = uploadKey.trim();
+    if (!key) {
+      setUploadError("Artifact key is required.");
+      return;
+    }
+    if (!uploadFile) {
+      setUploadError("File is required.");
+      return;
+    }
+    const formData = new FormData();
+    formData.set("key", key);
+    formData.set("file", uploadFile);
+    const artifactPath = uploadArtifactPath.trim();
+    if (artifactPath) formData.set("artifact_path", artifactPath);
+    setUploading(true);
+    setUploadError(null);
+    setUploadMessage(null);
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/artifacts/uploads`, {
+        method: "POST",
+        body: formData,
+      });
+      const payload = (await response.json()) as PublishedArtifact & { error?: string };
+      if (!response.ok) throw new Error(payload.error || `${response.status} ${response.statusText}`);
+      setUploadMessage(`Uploaded ${payload.key}.`);
+      setUploadKey("");
+      setUploadArtifactPath("");
+      setUploadFile(null);
+      await loadArtifacts(null);
+      setSelectedKey(payload.key);
+      setResolvedArtifact(payload);
+    } catch (reason) {
+      setUploadError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setUploading(false);
+    }
+  }
+
   return (
     <div className="feature-page artifacts-page">
       <section className="feature-sidebar">
@@ -230,6 +276,44 @@ export function ArtifactsPage() {
             onChange={(event) => setFilters((current) => ({ ...current, limit: event.target.value }))}
           />
         </label>
+
+        <div className="sidebar-divider" />
+
+        <label className="field-stack">
+          <span>Upload key</span>
+          <input
+            value={uploadKey}
+            onChange={(event) => setUploadKey(event.target.value)}
+            placeholder="manuals/true-app/reviewed/run-1"
+          />
+        </label>
+        <label className="field-stack">
+          <span>Artifact path</span>
+          <input
+            value={uploadArtifactPath}
+            onChange={(event) => setUploadArtifactPath(event.target.value)}
+            placeholder="input/reviewed.docx"
+          />
+        </label>
+        <label className="field-stack">
+          <span>File</span>
+          <input
+            type="file"
+            onChange={(event) => {
+              const file = event.target.files?.[0] ?? null;
+              setUploadFile(file);
+              if (file && !uploadArtifactPath.trim()) setUploadArtifactPath(file.name);
+            }}
+          />
+        </label>
+        <div className="inline-actions artifact-lookup-actions">
+          <button type="button" onClick={() => void uploadArtifact()} disabled={uploading}>
+            <UploadIcon />
+            {uploading ? "Uploading..." : "Upload"}
+          </button>
+        </div>
+        {uploadError ? <div className="callout error-callout">{uploadError}</div> : null}
+        {uploadMessage ? <div className="callout success-callout">{uploadMessage}</div> : null}
       </section>
 
       <section className="feature-content">

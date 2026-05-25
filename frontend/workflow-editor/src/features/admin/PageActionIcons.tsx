@@ -37,6 +37,16 @@ export function DownloadIcon() {
   );
 }
 
+export function UploadIcon() {
+  return (
+    <ActionIcon>
+      <path d="M12 19.5v-9" />
+      <path d="M8.5 13.5L12 10l3.5 3.5" />
+      <path d="M5.5 5.5h13" />
+    </ActionIcon>
+  );
+}
+
 export function EditIcon() {
   return (
     <ActionIcon>

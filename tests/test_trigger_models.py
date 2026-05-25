@@ -15,6 +15,7 @@ from agent_sandbox.events.provider_models import (
     AgentEnqueuePromptEffectDefinition,
     AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
+    ArtifactImportPublishedEffectDefinition,
     ArtifactPublishArtifactsEffectDefinition,
     ArtifactStageEffectDefinition,
     CiRunCompletedTriggerDefinition,
@@ -1208,9 +1209,19 @@ def test_artifact_effects_validate_target_selectors() -> None:
             "key": "runs/session-1/report",
         }
     )
+    artifact_import = ArtifactImportPublishedEffectDefinition.model_validate(
+        {
+            "id": "effect-artifact-import",
+            "display_name": "Import artifact",
+            "type": "effect:artifact:import-published",
+            "session_id": "session-1",
+            "key": "runs/session-1/report",
+        }
+    )
 
     assert stage.path == "repos/project/report.html"
     assert publish.key == "runs/session-1/report"
+    assert artifact_import.overwrite is False
     with pytest.raises(ValueError, match="target, session_id, or vm_name"):
         ArtifactStageEffectDefinition.model_validate(
             {
@@ -1226,6 +1237,15 @@ def test_artifact_effects_validate_target_selectors() -> None:
                 "id": "effect-artifact-publish",
                 "display_name": "Publish artifacts",
                 "type": "effect:artifact:publish-artifacts",
+                "key": "report",
+            }
+        )
+    with pytest.raises(ValueError, match="target, session_id, or vm_name"):
+        ArtifactImportPublishedEffectDefinition.model_validate(
+            {
+                "id": "effect-artifact-import",
+                "display_name": "Import artifact",
+                "type": "effect:artifact:import-published",
                 "key": "report",
             }
         )
