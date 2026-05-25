@@ -355,13 +355,14 @@ def test_factory_initializes_provider_with_runtime_context() -> None:
         admin_service=admin_service,
         env={"API_TOKEN": "top-secret"},
     )
-    provider = factory.build(effect, directory_path="root/team-a")
+    provider = factory.build(effect, directory_path="root/team-a", graph_id="graph-1")
 
     assert isinstance(provider, _RecordingProvider)
     assert provider.effect_definition == effect
     assert provider.runtime_context is not None
     assert provider.runtime_context.resolve_secret("API_TOKEN") == "top-secret"
     assert provider.runtime_context.metadata["directory_path"] == "root/team-a"
+    assert provider.runtime_context.metadata["graph_id"] == "graph-1"
 
 
 def test_pull_request_update_effect_provider_resolves_ado_config_and_tags(

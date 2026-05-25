@@ -87,11 +87,15 @@ class EffectProviderFactory:
         effect_definition: EffectDefinitionDiscriminated,
         *,
         directory_path: str | None = None,
+        graph_id: str | None = None,
     ) -> EffectProviderBase:
         provider_class = self.registry.resolve(effect_definition.type)
         resolved_config = _resolve_effect_provider_config(
             self.provider_config_resolver, directory_path
         )
+        metadata: dict[str, Any] = {"directory_path": directory_path or "root"}
+        if graph_id is not None:
+            metadata["graph_id"] = graph_id
         runtime_context = EffectRuntimeContext(
             provider_config=effect_provider_config_blob(resolved_config),
             provider_config_resolver=self.provider_config_resolver,
@@ -114,7 +118,7 @@ class EffectProviderFactory:
             admin_service=self._admin_adapter,
             env=self.env,
             secret_resolver=self.secret_resolver,
-            metadata={"directory_path": directory_path or "root"},
+            metadata=metadata,
         )
         provider = provider_class()
         validated_definition = _validate_effect_definition(provider_class, effect_definition)

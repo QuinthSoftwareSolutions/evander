@@ -98,7 +98,7 @@ class _Factory:
         self.outputs_by_effect_id = outputs_by_effect_id
         self.wait_on_by_effect_id = wait_on_by_effect_id or {}
 
-    def build(self, effect):
+    def build(self, effect, **kwargs):
         return _Provider(
             self.outputs_by_effect_id.get(effect.id, {}),
             wait_on=self.wait_on_by_effect_id.get(effect.id),
@@ -109,8 +109,10 @@ class _CountingFactory:
     def __init__(self, outputs_by_effect_id: dict[str, dict[str, object]]) -> None:
         self.outputs_by_effect_id = outputs_by_effect_id
         self.execute_calls: list[dict[str, object]] = []
+        self.build_calls: list[dict[str, object]] = []
 
-    def build(self, effect):
+    def build(self, effect, **kwargs):
+        self.build_calls.append({"effect_id": effect.id, **dict(kwargs)})
         return _CountingProvider(
             self.outputs_by_effect_id.get(effect.id, {}),
             self.execute_calls,
@@ -128,7 +130,7 @@ class _ImmediateExecutor:
 
 
 class _FailingFactory:
-    def build(self, effect):
+    def build(self, effect, **kwargs):
         return _FailingProvider({})
 
 
@@ -339,6 +341,90 @@ def test_build_execution_graph_resolves_state_workflow_graph_metadata() -> None:
     assert graph.node_graph_metadata_by_id["trigger-state"].graph_id == "graph-state"
     assert graph.node_graph_metadata_by_id["effect-state-update"].directory_path == "root/team-a"
     assert graph.node_graph_metadata_by_id["query-state-get"].graph_id == "graph-state"
+
+
+def test_effect_orchestrator_threads_graph_metadata_into_provider_contexts(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "prompt": "hello",
+                }
+            ],
+            "queries": [
+                {
+                    "id": "query-1",
+                    "display_name": "VM state",
+                    "type": "query:vm:run-state",
+                    "session_id": "session-1",
+                }
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+                _edge("trigger-1", "query-1"),
+            ],
+            "workflow_graphs": [
+                {
+                    "id": "graph-1",
+                    "name": "Graph 1",
+                    "directory_paths": ["root/team-a"],
+                    "node_ids": ["trigger-1", "effect-1", "query-1"],
+                }
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker._executor = _ImmediateExecutor()  # type: ignore[assignment]
+    effect_factory = _CountingFactory({"effect-1": {"success": True}})
+    query_factory = _CountingFactory({"query-1": {"state_code": "running"}})
+    worker.provider_factory = effect_factory
+    worker.query_provider_factory = query_factory
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-graph-metadata",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    worker.run_once()
+
+    assert effect_factory.build_calls
+    assert all(call == {
+        "effect_id": "effect-1",
+        "directory_path": "root/team-a",
+        "graph_id": "graph-1",
+    } for call in effect_factory.build_calls)
+    assert query_factory.build_calls == [
+        {
+            "effect_id": "query-1",
+            "directory_path": "root/team-a",
+            "graph_id": "graph-1",
+        }
+    ]
+    assert effect_factory.execute_calls[0]["execution_context"]["graph_id"] == "graph-1"
+    assert effect_factory.execute_calls[0]["execution_context"]["directory_path"] == "root/team-a"
 
 
 def test_effect_orchestrator_main_help_does_not_crash(monkeypatch: pytest.MonkeyPatch) -> None:
