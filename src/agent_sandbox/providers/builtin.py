@@ -88,6 +88,7 @@ from agent_sandbox.triggers.providers.ado_work_item_matching import (
     AdoWorkItemMatchingTriggerProvider,
 )
 from agent_sandbox.triggers.providers.cron import CronTriggerProvider
+from agent_sandbox.triggers.providers.ci_run_completed import CiRunCompletedTriggerProvider
 from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.event import EventTriggerProvider
@@ -127,6 +128,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "trigger:pull-request:completed": PullRequestCompletedTriggerProvider,
             "trigger:review:new-request": ReviewNewRequestTriggerProvider,
             "trigger:git:push": GitPushTriggerProvider,
+            "trigger:ci:run:completed": CiRunCompletedTriggerProvider,
             "trigger:agent:prompt:new": AgentPromptNewTriggerProvider,
             "trigger:agent:run:completed": AgentRunCompletedTriggerProvider,
         },

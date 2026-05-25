@@ -193,6 +193,20 @@ def _trigger_adapter() -> _MaterializingTriggerAdapter:
         ),
         (
             {
+                "id": "ci",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "github-actions",
+                "repo": " owner/repo ",
+                "workflow": " build.yml ",
+                "branches": [" main "],
+                "conclusions": [" succeeded ", "canceled", "timedOut"],
+            },
+            "trigger:ci:run:completed",
+            "repo",
+        ),
+        (
+            {
                 "id": "review-request",
                 "display_name": "Review request",
                 "type": "trigger:review:new-request",
@@ -231,6 +245,10 @@ def test_conformance_schema_accepts_required_trigger_shapes(
 
     assert trigger.type == expected_type
     assert getattr(trigger, required_field) is not None
+    if expected_type == "trigger:ci:run:completed":
+        assert trigger.provider == "github_actions"
+        assert trigger.branches == ["main"]
+        assert trigger.conclusions == ["success", "cancelled", "timed_out"]
     _record_result(
         report_collector,
         requirement_id=f"schema:{expected_type}",
@@ -297,6 +315,50 @@ def test_conformance_schema_accepts_required_trigger_shapes(
             },
             "organization_url is required",
             "trigger:pull-request:completed",
+        ),
+        (
+            {
+                "id": "ci-bad-github",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "github_actions",
+            },
+            "repo is required",
+            "trigger:ci:run:completed",
+        ),
+        (
+            {
+                "id": "ci-bad-conclusion",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "github_actions",
+                "repo": "owner/repo",
+                "conclusions": ["unknown"],
+            },
+            "Unsupported CI conclusion",
+            "trigger:ci:run:completed",
+        ),
+        (
+            {
+                "id": "ci-bad-top",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "github_actions",
+                "repo": "owner/repo",
+                "top": 0,
+            },
+            "greater than or equal to 1",
+            "trigger:ci:run:completed",
+        ),
+        (
+            {
+                "id": "ci-bad-provider",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "repo": "owner/repo",
+            },
+            "provider",
+            "trigger:ci:run:completed",
         ),
         (
             {
@@ -1762,9 +1824,13 @@ def test_conformance_traceability_matrix_and_report(
             "schema:trigger:email:new-message",
             "schema:trigger:pull-request:new-feedback",
             "schema:trigger:pull-request:completed",
+            "schema:trigger:ci:run:completed",
             "schema:trigger:review:new-request",
             "schema:trigger:git:push",
             "schema:duplicate-ids",
+        ],
+        "task_trigger_schema_invalid": [
+            "schema:invalid:trigger:ci:run:completed",
         ],
         "task_trigger_event_contract": [
             "event-contract:provider-payload-shape",
