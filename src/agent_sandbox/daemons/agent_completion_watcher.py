@@ -10,6 +10,7 @@ from uuid import uuid4
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.models import VmSummary
+from agent_sandbox.orchestration.host_polling import notify_wake_socket_for_lock
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
 
 logger = logging.getLogger(__name__)
@@ -127,7 +128,10 @@ def await_agent_completion_and_publish(
                 session_id=session_id,
                 directory_path=directory_path,
             )
-            event_queue.publish(event, idempotency_key=f"{trigger_id}:{dispatch_id}")
+            already_queued = event_queue.contains(event.event_id)
+            record = event_queue.publish(event, idempotency_key=f"{trigger_id}:{dispatch_id}")
+            if not already_queued and record.event_id == event.event_id:
+                notify_wake_socket_for_lock(runtime_dir / "effect-orchestrator.lock")
             return True
         time.sleep(max(0.1, poll_interval_seconds))
     return False

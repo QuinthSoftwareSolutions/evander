@@ -1569,6 +1569,11 @@ Failure recovery:
   - queue: `runtime/trigger-orchestrator-events.json`
   - cursor: `runtime/trigger-orchestrator-cursors.json`
   - lock: `runtime/trigger-orchestrator.lock`
+  - wake socket: `runtime/trigger-orchestrator.wake.sock`
+- The trigger and effect workers remain separate processes, but host-owned ingress sends best-effort
+  wake signals over derived Unix sockets (`runtime/trigger-orchestrator.wake.sock` and
+  `runtime/effect-orchestrator.wake.sock`). The durable trigger queue remains the source of truth; a
+  missing wake socket falls back to the normal polling interval.
 
 Run one cycle for validation/debug:
 

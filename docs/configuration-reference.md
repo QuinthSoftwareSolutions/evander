@@ -127,6 +127,10 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `provider_loader.provider_modules` | `config/trigger-orchestrator/config.json` | Additional provider plugin Python modules to load after selected profile modules. |
 | `provider_loader.provider_entry_points_enabled` | `config/trigger-orchestrator/config.json` | Enables provider plugin discovery via Python entry points. |
 
+Wake sockets are internal runtime artifacts, not operator-facing config fields. The trigger worker
+listens on the path derived from `lock_path` with `.wake.sock`, and the effect worker listens on the
+path derived from `effect_lock_path` with `.wake.sock`.
+
 ### Trigger definition schema keys
 
 Each trigger entry requires the shared envelope keys:

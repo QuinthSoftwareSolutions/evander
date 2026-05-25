@@ -191,6 +191,7 @@ from agent_sandbox.triggers.queue import (
     TriggerEventQueue,
     TriggerQueueRecord,
 )
+from agent_sandbox.orchestration.host_polling import notify_wake_socket_for_lock
 from agent_sandbox.workflow.validation import (
     WorkflowValidationDiagnostic,
     derive_workflow_output_schemas,
@@ -838,6 +839,7 @@ class WorkflowRunDetailPayload(BaseModel):
 
 
 WORKFLOW_RUN_DETAIL_AUDIT_SCAN_LIMIT = 20_000
+
 
 class ToolCallAuditRelatedLinkPayload(BaseModel):
     kind: str
@@ -10721,7 +10723,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "assistant_capability_mode": normalized_capability_mode,
             },
         )
+        already_queued = queue.contains(event_id)
         record = queue.publish(event, idempotency_key=event_id)
+        if not already_queued and record.event_id == event_id:
+            notify_wake_socket_for_lock(worker_config.effect_lock_path)
         return record.model_dump(mode="json")
 
     def publish_external_workflow_event(
@@ -10759,6 +10764,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             source=source,
             idempotency_key=idempotency_key,
         )
+        notify_wake_socket_for_lock(worker_config.lock_path)
         return event.model_dump(mode="json")
 
     def _workflow_editor_default_layout_path(self) -> Path:
@@ -13033,6 +13039,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             queue_store.publish(resume_event)
         else:
             TriggerEventQueue(event_queue_store_path).publish(resume_event)
+        notify_wake_socket_for_lock(stores["effect_lock_path"])
         self._workflow_event_journal().append(
             "workflow.run.resumed",
             source="workflow_editor",
@@ -13100,6 +13107,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             value=worker_config.get("workflow_config_snapshot_store_path"),
             fallback=runtime_dir / "workflow-config-snapshots.json",
         )
+        effect_lock_path = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=worker_config.get("effect_lock_path"),
+            fallback=runtime_dir / "effect-orchestrator.lock",
+        )
         if (
             backend == "sqlite"
             and not backend_explicit
@@ -13123,6 +13135,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "event_queue_store_path": event_queue_store_path,
             "effect_execution_store_path": effect_execution_store_path,
             "gate_execution_store_path": gate_execution_store_path,
+            "effect_lock_path": effect_lock_path,
             "workflow_config_snapshot_store_path": workflow_config_snapshot_store_path,
             "await_agent_store_path": runtime_dir
             / "providers"

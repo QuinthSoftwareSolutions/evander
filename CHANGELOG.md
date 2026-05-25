@@ -15,6 +15,9 @@ material. Newer entries are added incrementally as changes land.
   account-scoped preference instead of browser-local state.
 - Removed the obsolete duplicate issue-comment workflow trigger alias from the
   runtime, node catalogue, documentation, and tests.
+- Added internal wake sockets for trigger/effect orchestration so host-owned
+  trigger ingress and direct queue publishers can hot-drain without waiting for
+  the next poll interval.
 
 ## 2026-05-24 - Container Worker Manifest Persistence Fix
 

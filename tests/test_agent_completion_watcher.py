@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import agent_sandbox.daemons.agent_completion_watcher as watcher
 from agent_sandbox.events.models import TriggerEvent
@@ -90,14 +91,23 @@ def test_await_agent_completion_publishes_when_dispatch_settles(
         def __init__(self, path: Path) -> None:
             self.path = path
 
+        def contains(self, event_id: str) -> bool:
+            return False
+
         def publish(self, event: TriggerEvent, *, idempotency_key: str | None = None):
             published["event"] = event
             published["idempotency_key"] = idempotency_key
-            return None
+            return SimpleNamespace(event_id=event.event_id)
 
     monkeypatch.setattr(watcher, "AdminService", _AdminServiceStub)
     monkeypatch.setattr(watcher, "TriggerEventQueue", _QueueStub)
     monkeypatch.setattr(watcher.time, "sleep", lambda _: None)
+    wake_paths: list[Path] = []
+    monkeypatch.setattr(
+        watcher,
+        "notify_wake_socket_for_lock",
+        lambda lock_path: wake_paths.append(Path(lock_path)) or True,
+    )
 
     result = watcher.await_agent_completion_and_publish(
         runtime_dir=tmp_path / "runtime",
@@ -111,6 +121,7 @@ def test_await_agent_completion_publishes_when_dispatch_settles(
     )
 
     assert result is True
+    assert wake_paths == [tmp_path / "runtime" / "effect-orchestrator.lock"]
     assert published["idempotency_key"] == "__await-agent-completion__:dispatch-123"
     event = published["event"]
     assert isinstance(event, TriggerEvent)
@@ -148,10 +159,13 @@ def test_await_agent_completion_uses_configured_event_queue_path(
         def __init__(self, path: Path) -> None:
             published["path"] = path
 
+        def contains(self, event_id: str) -> bool:
+            return False
+
         def publish(self, event: TriggerEvent, *, idempotency_key: str | None = None):
             published["event"] = event
             published["idempotency_key"] = idempotency_key
-            return None
+            return SimpleNamespace(event_id=event.event_id)
 
     monkeypatch.setattr(watcher, "AdminService", _AdminServiceStub)
     monkeypatch.setattr(watcher, "TriggerEventQueue", _QueueStub)
