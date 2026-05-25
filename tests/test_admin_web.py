@@ -69,6 +69,7 @@ from agent_sandbox.models import (
     VmSummary,
     WorkerSummary,
 )
+from agent_sandbox.orchestration.host_polling import wake_socket_path_for_lock
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
 from agent_sandbox.worker.models import WorkerSessionRecord
 
@@ -154,7 +155,11 @@ def _set_azure_sso_env(
 
 
 def _admin_web_user_store(tmp_path: Path) -> AdminWebUserStore:
-    return AdminWebUserStore(tmp_path / "runtime" / "admin-web-users.json")
+    runtime_dir = tmp_path / "runtime"
+    return AdminWebUserStore(
+        runtime_dir / "admin-web.db",
+        legacy_json_path=runtime_dir / "admin-web-users.json",
+    )
 
 
 def _complete_azure_login(
@@ -4202,11 +4207,18 @@ def test_workflow_event_api_token_from_azure_session_publishes_user_metadata(
 
 
 def test_workflow_event_api_published_event_is_consumed_by_event_trigger(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     service = AdminService(write_config(tmp_path))
     client = TestClient(create_app(service))
+    wake_paths: list[Path] = []
+
+    def _fake_notify(lock_path: Path) -> bool:
+        wake_paths.append(wake_socket_path_for_lock(lock_path))
+        return True
+
+    monkeypatch.setattr("agent_sandbox.admin.service.notify_wake_socket_for_lock", _fake_notify)
     token = client.post("/api/workflow-events/token").json()["access_token"]
     publish_response = client.post(
         "/api/workflow-events",
@@ -4241,6 +4253,7 @@ def test_workflow_event_api_published_event_is_consumed_by_event_trigger(
     )
 
     assert publish_response.status_code == 202
+    assert wake_paths == [wake_socket_path_for_lock(worker_config.lock_path)]
     assert result.events_published == 1
     assert len(pending) == 1
     assert pending[0].trigger_type == "trigger:event"
@@ -4826,6 +4839,90 @@ def test_admin_web_user_api_rejects_regular_azure_user(tmp_path: Path, monkeypat
     assert allowed_api.status_code == 200
     assert list_users.status_code == 403
     assert create_user.status_code == 403
+
+
+def test_admin_web_workflow_tutorial_preference_defaults_and_persists(
+    tmp_path: Path,
+) -> None:
+    app = create_app(AdminService(write_config(tmp_path)))
+    client = TestClient(app)
+
+    initial = client.get("/api/admin/user-preferences/workflow-tutorial-progress")
+    saved = client.put(
+        "/api/admin/user-preferences/workflow-tutorial-progress",
+        json={
+            "completed_tutorial_ids": ["unknown", "first-steps", "first-steps"],
+            "skipped_tutorial_ids": ["first-steps", "unknown"],
+        },
+    )
+    loaded = client.get("/api/admin/user-preferences/workflow-tutorial-progress")
+
+    assert initial.status_code == 200
+    assert initial.json() == {"completed_tutorial_ids": [], "skipped_tutorial_ids": []}
+    assert saved.status_code == 200
+    assert saved.json() == {
+        "completed_tutorial_ids": ["first-steps"],
+        "skipped_tutorial_ids": [],
+    }
+    assert loaded.json() == saved.json()
+    assert app.state.admin_user_store.get_user_preference(
+        "admin", "workflow_tutorial_progress"
+    ) == saved.json()
+
+
+def test_admin_web_workflow_tutorial_preference_uses_local_password_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    app = create_app(AdminService(write_config(tmp_path)))
+    client = TestClient(app)
+
+    unauthenticated = client.get("/api/admin/user-preferences/workflow-tutorial-progress")
+    login = client.post(
+        "/api/auth/login", json={"username": "admin", "password": "swordfish"}
+    )
+    saved = client.put(
+        "/api/admin/user-preferences/workflow-tutorial-progress",
+        json={"skippedTutorialIds": ["first-steps"]},
+    )
+
+    assert unauthenticated.status_code == 401
+    assert login.status_code == 200
+    assert saved.status_code == 200
+    assert saved.json() == {
+        "completed_tutorial_ids": [],
+        "skipped_tutorial_ids": ["first-steps"],
+    }
+    assert app.state.admin_user_store.get_user_preference(
+        "admin", "workflow_tutorial_progress"
+    ) == saved.json()
+
+
+def test_admin_web_workflow_tutorial_preference_uses_azure_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _set_azure_sso_env(monkeypatch, allowed_users="operator@example.com,other@example.com")
+    app = create_app(AdminService(write_config(tmp_path)))
+    client = TestClient(app)
+
+    callback = _complete_azure_login(app, client, login="operator@example.com")
+    saved = client.put(
+        "/api/admin/user-preferences/workflow-tutorial-progress",
+        json={"completed_tutorial_ids": ["first-steps"]},
+    )
+
+    assert callback.status_code == 303
+    assert saved.status_code == 200
+    assert app.state.admin_user_store.get_user_preference(
+        "operator@example.com", "workflow_tutorial_progress"
+    ) == saved.json()
+    assert (
+        app.state.admin_user_store.get_user_preference(
+            "other@example.com", "workflow_tutorial_progress"
+        )
+        is None
+    )
 
 
 def test_admin_web_exposes_admin_domain_smoke_endpoints(

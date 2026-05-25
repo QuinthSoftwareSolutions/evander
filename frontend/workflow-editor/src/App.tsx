@@ -390,7 +390,7 @@ const NODE_STATUS_ORDER = [
   "skipped",
 ] as const;
 const WORKFLOW_SIDEBAR_WIDTH_STORAGE_KEY = "workflow-editor:sidebar-width";
-const WORKFLOW_TUTORIAL_PROGRESS_STORAGE_KEY = "workflow-editor:tutorial-progress:v1";
+const WORKFLOW_TUTORIAL_PROGRESS_API_PATH = "/api/admin/user-preferences/workflow-tutorial-progress";
 const WORKFLOW_SIDEBAR_DEFAULT_WIDTH = 320;
 const WORKFLOW_SIDEBAR_MIN_WIDTH = 320;
 const WORKFLOW_SIDEBAR_MAX_WIDTH = 760;
@@ -438,24 +438,16 @@ function normalizeWorkflowTutorialProgress(value: unknown): WorkflowTutorialProg
     return { completedTutorialIds: [], skippedTutorialIds: [] };
   }
   return {
-    completedTutorialIds: workflowTutorialProgressIds(value.completedTutorialIds),
-    skippedTutorialIds: workflowTutorialProgressIds(value.skippedTutorialIds),
+    completedTutorialIds: workflowTutorialProgressIds(value.completedTutorialIds ?? value.completed_tutorial_ids),
+    skippedTutorialIds: workflowTutorialProgressIds(value.skippedTutorialIds ?? value.skipped_tutorial_ids),
   };
 }
 
-function readStoredWorkflowTutorialProgress(): WorkflowTutorialProgress {
-  if (typeof window === "undefined") {
-    return { completedTutorialIds: [], skippedTutorialIds: [] };
-  }
-  const raw = window.localStorage.getItem(WORKFLOW_TUTORIAL_PROGRESS_STORAGE_KEY);
-  if (!raw) {
-    return { completedTutorialIds: [], skippedTutorialIds: [] };
-  }
-  try {
-    return normalizeWorkflowTutorialProgress(JSON.parse(raw));
-  } catch {
-    return { completedTutorialIds: [], skippedTutorialIds: [] };
-  }
+function workflowTutorialProgressApiPayload(progress: WorkflowTutorialProgress): Record<string, string[]> {
+  return {
+    completed_tutorial_ids: progress.completedTutorialIds,
+    skipped_tutorial_ids: progress.skippedTutorialIds,
+  };
 }
 
 function readStoredWorkflowSidebarWidth(): number {
@@ -2973,7 +2965,7 @@ export default function App() {
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
   const [workflowTutorialChooserOpen, setWorkflowTutorialChooserOpen] = useState(false);
   const [workflowTutorialProgress, setWorkflowTutorialProgress] = useState<WorkflowTutorialProgress>(
-    () => readStoredWorkflowTutorialProgress(),
+    () => ({ completedTutorialIds: [], skippedTutorialIds: [] }),
   );
   const [activeWorkflowTutorial, setActiveWorkflowTutorial] = useState<WorkflowTutorialSession | null>(null);
   const [workflowTutorialHint, setWorkflowTutorialHint] = useState<string | null>(null);
@@ -3345,9 +3337,20 @@ export default function App() {
   }, [sidebarWidth]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(WORKFLOW_TUTORIAL_PROGRESS_STORAGE_KEY, JSON.stringify(workflowTutorialProgress));
-  }, [workflowTutorialProgress]);
+    let cancelled = false;
+    fetchJson<unknown>(WORKFLOW_TUTORIAL_PROGRESS_API_PATH)
+      .then((payload) => {
+        if (cancelled) return;
+        setWorkflowTutorialProgress(normalizeWorkflowTutorialProgress(payload));
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        setError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -3490,8 +3493,6 @@ export default function App() {
       cancelled = true;
     };
   }, []);
-
-
 
   const documentLoaded = document !== null;
 
@@ -3748,20 +3749,40 @@ export default function App() {
     );
   }
 
+  async function saveWorkflowTutorialProgress(nextProgress: WorkflowTutorialProgress) {
+    try {
+      const payload = await fetchJson<unknown>(WORKFLOW_TUTORIAL_PROGRESS_API_PATH, {
+        method: "PUT",
+        body: JSON.stringify(workflowTutorialProgressApiPayload(nextProgress)),
+      });
+      setWorkflowTutorialProgress(normalizeWorkflowTutorialProgress(payload));
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  function workflowTutorialProgressWithStatus(
+    current: WorkflowTutorialProgress,
+    tutorialId: string,
+    status: "completed" | "skipped" | null,
+  ): WorkflowTutorialProgress {
+    const completedTutorialIds = current.completedTutorialIds.filter((id) => id !== tutorialId);
+    const skippedTutorialIds = current.skippedTutorialIds.filter((id) => id !== tutorialId);
+    if (status === "completed") {
+      completedTutorialIds.push(tutorialId);
+    } else if (status === "skipped") {
+      skippedTutorialIds.push(tutorialId);
+    }
+    return { completedTutorialIds, skippedTutorialIds };
+  }
+
   function updateWorkflowTutorialProgressStatus(
     tutorialId: string,
     status: "completed" | "skipped" | null,
   ) {
-    setWorkflowTutorialProgress((current) => {
-      const completedTutorialIds = current.completedTutorialIds.filter((id) => id !== tutorialId);
-      const skippedTutorialIds = current.skippedTutorialIds.filter((id) => id !== tutorialId);
-      if (status === "completed") {
-        completedTutorialIds.push(tutorialId);
-      } else if (status === "skipped") {
-        skippedTutorialIds.push(tutorialId);
-      }
-      return { completedTutorialIds, skippedTutorialIds };
-    });
+    const nextProgress = workflowTutorialProgressWithStatus(workflowTutorialProgress, tutorialId, status);
+    setWorkflowTutorialProgress(nextProgress);
+    void saveWorkflowTutorialProgress(nextProgress);
   }
 
   function clearWorkflowTutorialProgressStatus(tutorialId: string) {

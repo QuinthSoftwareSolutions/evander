@@ -109,7 +109,11 @@ test("workflow editor tutorial chooser starts, skips, and exits tutorials", asyn
 
   const requestedEndpoints = [];
   const documentPutRequests = [];
-  const tutorialProgressKey = "workflow-editor:tutorial-progress:v1";
+  const tutorialProgressPutRequests = [];
+  let tutorialProgress = {
+    completed_tutorial_ids: [],
+    skipped_tutorial_ids: [],
+  };
   const pageErrors = [];
   const consoleErrors = [];
 
@@ -283,6 +287,19 @@ test("workflow editor tutorial chooser starts, skips, and exits tutorials", asyn
       return;
     }
 
+    if (pathname === "/api/admin/user-preferences/workflow-tutorial-progress") {
+      if (route.request().method() === "PUT") {
+        const payload = JSON.parse(route.request().postData() ?? "{}");
+        tutorialProgressPutRequests.push(payload);
+        tutorialProgress = {
+          completed_tutorial_ids: Array.isArray(payload.completed_tutorial_ids) ? payload.completed_tutorial_ids : [],
+          skipped_tutorial_ids: Array.isArray(payload.skipped_tutorial_ids) ? payload.skipped_tutorial_ids : [],
+        };
+      }
+      await route.fulfill(jsonResponse(tutorialProgress));
+      return;
+    }
+
     if (pathname === "/api/configuration/state") {
       assert.equal(url.searchParams.get("directory_path"), "root");
       await route.fulfill(jsonResponse(configurationStateResponse));
@@ -368,19 +385,15 @@ test("workflow editor tutorial chooser starts, skips, and exits tutorials", asyn
   await page.waitForFunction(() => !document.querySelector(".workflow-tutorial-chooser-backdrop"));
   await page.waitForFunction(() => !document.querySelector(".workflow-tutorial-bubble"));
   await page.waitForFunction(() => document.querySelector(".workflow-tutorial-launcher-button.is-complete") !== null);
-  await page.waitForFunction((storageKey) => {
-    try {
-      const raw = window.localStorage.getItem(storageKey);
-      if (!raw) return false;
-      const progress = JSON.parse(raw);
-      return Array.isArray(progress.skippedTutorialIds) &&
-        progress.skippedTutorialIds.includes("first-steps") &&
-        Array.isArray(progress.completedTutorialIds) &&
-        progress.completedTutorialIds.length === 0;
-    } catch {
-      return false;
-    }
-  }, tutorialProgressKey);
+  await waitForCondition(
+    () => tutorialProgressPutRequests.some((payload) =>
+      Array.isArray(payload.skipped_tutorial_ids) &&
+      payload.skipped_tutorial_ids.includes("first-steps") &&
+      Array.isArray(payload.completed_tutorial_ids) &&
+      payload.completed_tutorial_ids.length === 0,
+    ),
+    "expected skipped tutorial progress to be saved",
+  );
   assert.match((await tutorialsButton.getAttribute("class")) ?? "", /is-complete/);
   assert.doesNotMatch((await tutorialsButton.getAttribute("class")) ?? "", /needs-attention/);
 
@@ -423,19 +436,15 @@ test("workflow editor tutorial chooser starts, skips, and exits tutorials", asyn
     await finishDialog.waitFor({ state: "visible" });
   }
   await page.waitForFunction(() => document.querySelector(".workflow-tutorial-launcher-button.is-complete") !== null);
-  await page.waitForFunction((storageKey) => {
-    try {
-      const raw = window.localStorage.getItem(storageKey);
-      if (!raw) return false;
-      const progress = JSON.parse(raw);
-      return Array.isArray(progress.completedTutorialIds) &&
-        progress.completedTutorialIds.includes("first-steps") &&
-        Array.isArray(progress.skippedTutorialIds) &&
-        progress.skippedTutorialIds.length === 0;
-    } catch {
-      return false;
-    }
-  }, tutorialProgressKey);
+  await waitForCondition(
+    () => tutorialProgressPutRequests.some((payload) =>
+      Array.isArray(payload.completed_tutorial_ids) &&
+      payload.completed_tutorial_ids.includes("first-steps") &&
+      Array.isArray(payload.skipped_tutorial_ids) &&
+      payload.skipped_tutorial_ids.length === 0,
+    ),
+    "expected completed tutorial progress to be saved",
+  );
   await page.getByRole("button", { name: "Exit" }).click();
   await page.waitForFunction(() => !document.querySelector(".workflow-tutorial-bubble"));
   await page.locator('.react-flow__node[data-id="trigger-1"]').waitFor({ state: "visible" });
@@ -447,9 +456,11 @@ test("workflow editor tutorial chooser starts, skips, and exits tutorials", asyn
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
   assert.deepEqual(documentPutRequests, []);
+  assert.equal(await page.evaluate(() => window.localStorage.getItem("workflow-editor:tutorial-progress:v1")), null);
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/auth/session"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/deployment-status"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/state?directory_path=root"));
+  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/user-preferences/workflow-tutorial-progress"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/configuration/state?directory_path=root"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/document"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/catalog?directory_path=root"));

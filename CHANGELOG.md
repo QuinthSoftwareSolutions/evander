@@ -10,6 +10,9 @@ material. Newer entries are added incrementally as changes land.
 - Removed the obsolete workflow editor in-memory first-run walkthrough, its
   sidebar controls, and its Admin Web API routes now that Tutorials owns the
   onboarding flow.
+- Moved Admin Web users to `runtime/admin-web.db` with one-time legacy JSON
+  import, and stored workflow tutorial completion/skipped state as an
+  account-scoped preference instead of browser-local state.
 - Removed the obsolete duplicate issue-comment workflow trigger alias from the
   runtime, node catalogue, documentation, and tests.
 

@@ -477,6 +477,13 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
       }));
       return;
     }
+    if (pathname === "/api/admin/user-preferences/workflow-tutorial-progress") {
+      await route.fulfill(jsonResponse({
+        completed_tutorial_ids: [],
+        skipped_tutorial_ids: [],
+      }));
+      return;
+    }
     if (pathname === "/api/configuration/state") {
       await route.fulfill(jsonResponse({
         directory_scoped_config_enabled: false,
