@@ -70,6 +70,9 @@ from agent_sandbox.gates.providers.merge_gate import MergeGateProvider
 from agent_sandbox.gates.providers.serialize_gate import SerializeGateProvider
 from agent_sandbox.queries.providers.agent_artifact_text import AgentArtifactTextQueryProvider
 from agent_sandbox.queries.providers.ado_work_items import AdoWorkItemsQueryProvider
+from agent_sandbox.queries.providers.communication_messages import (
+    CommunicationMessagesQueryProvider,
+)
 from agent_sandbox.queries.providers.git_pr_note import GitPrNoteQueryProvider
 from agent_sandbox.queries.providers.issue_get import IssueGetQueryProvider
 from agent_sandbox.queries.providers.pull_request_feedback import (
@@ -192,6 +195,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:ado:work-items": AdoWorkItemsQueryProvider,
             "query:pull-request:list": PullRequestListQueryProvider,
             "query:pull-request:feedback": PullRequestFeedbackQueryProvider,
+            "query:communication:messages": CommunicationMessagesQueryProvider,
             "query:semantic:store-status": SemanticStoreStatusQueryProvider,
             "query:semantic:search": SemanticSearchQueryProvider,
             "query:semantic:get": SemanticGetQueryProvider,

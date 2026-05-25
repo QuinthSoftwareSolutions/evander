@@ -59,6 +59,7 @@ from agent_sandbox.queries.providers.schemas import (
     SessionContextQueryDefinition,
     SessionListQueryDefinition,
     VmRunStateQueryDefinition,
+    CommunicationMessagesQueryDefinition,
 )
 from agent_sandbox.triggers.providers.schemas import (
     AdoWorkItemMatchingTriggerDefinition,
@@ -104,6 +105,7 @@ __all__ = [
     "BashScriptEffectDefinition",
     "ChatAssistantEnsureSessionEffectDefinition",
     "CommunicationSendMessageEffectDefinition",
+    "CommunicationMessagesQueryDefinition",
     "CronTriggerDefinition",
     "DiscordNewMessageTriggerDefinition",
     "EmailNewMessageTriggerDefinition",
