@@ -263,15 +263,18 @@ def test_pr_triggers_accept_ado_without_repo(
     | type[PullRequestCompletedTriggerDefinition],
     trigger_type: str,
 ) -> None:
-    trigger = trigger_cls.model_validate(
-        {
-            "id": "t-pr-legacy",
-            "display_name": "PR legacy",
-            "type": trigger_type,
-            "provider": "ado",
-        }
+    trigger = materialize_node_definition(
+        TypeAdapter(TriggerDefinitionDiscriminated).validate_python(
+            {
+                "id": "t-pr-legacy",
+                "display_name": "PR legacy",
+                "type": trigger_type,
+                "provider": "ado",
+            }
+        )
     )
 
+    assert isinstance(trigger, trigger_cls)
     assert trigger.provider == "ado"
     assert trigger.repo is None
     assert trigger.organization_url is None

@@ -256,8 +256,8 @@ class _PullRequestTriggerDefinition(TriggerDefinition):
     provider: PrFeedbackProvider
     repo: ConfigValue | None = None
     directory_path: ConfigValue | None = None
-    organization_url: str | None = None
-    project: str | None = None
+    organization_url: ConfigValue | None = None
+    project: ConfigValue | None = None
     status: ConfigValue | None = None
     creator_id: ConfigValue | None = None
     reviewer_id: ConfigValue | None = None
@@ -285,6 +285,8 @@ class _PullRequestTriggerDefinition(TriggerDefinition):
     def normalize_organization_url(cls, value: object) -> object:
         if value is None:
             return None
+        if not isinstance(value, str):
+            return value
         text = str(value).strip().rstrip("/")
         return text or None
 
@@ -293,6 +295,8 @@ class _PullRequestTriggerDefinition(TriggerDefinition):
     def normalize_project(cls, value: object) -> object:
         if value is None:
             return None
+        if not isinstance(value, str):
+            return value
         text = str(value).strip()
         return text or None
 
@@ -301,7 +305,7 @@ class _PullRequestTriggerDefinition(TriggerDefinition):
     def normalize_tags(cls, value: object) -> object:
         if value is None or isinstance(value, str):
             return value
-        raise ValueError("query:pull-request:list tags must be a string")
+        raise ValueError("trigger:pull-request:* tags must be a string")
 
 
 class PullRequestNewFeedbackTriggerDefinition(_PullRequestTriggerDefinition):
