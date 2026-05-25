@@ -4,6 +4,7 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
 import random
 import time
@@ -12,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -125,6 +126,8 @@ WorkflowNodeDefinition = (
     | EffectDefinitionDiscriminated
     | QueryDefinitionDiscriminated
 )
+_ScheduledInternalEventStoreGetter = Callable[[], ScheduledInternalEventStore]
+_ScheduledInternalEventStoreCache = tuple[Path, ScheduledInternalEventStore] | None
 
 
 def _record_has_pending_completion(record: Any) -> bool:
@@ -285,8 +288,26 @@ class EventEmitEffectExecutor:
 
 
 class EventScheduleEffectExecutor:
-    def __init__(self, *, scheduled_internal_event_store: ScheduledInternalEventStore) -> None:
-        self.scheduled_internal_event_store = scheduled_internal_event_store
+    def __init__(
+        self,
+        *,
+        scheduled_internal_event_store: ScheduledInternalEventStore | None = None,
+        scheduled_internal_event_store_getter: _ScheduledInternalEventStoreGetter | None = None,
+    ) -> None:
+        if scheduled_internal_event_store is None and scheduled_internal_event_store_getter is None:
+            raise ValueError(
+                "EventScheduleEffectExecutor requires a scheduled event store or getter"
+            )
+        self._scheduled_internal_event_store = scheduled_internal_event_store
+        self._scheduled_internal_event_store_getter = scheduled_internal_event_store_getter
+
+    @property
+    def scheduled_internal_event_store(self) -> ScheduledInternalEventStore:
+        if self._scheduled_internal_event_store_getter is not None:
+            return self._scheduled_internal_event_store_getter()
+        if self._scheduled_internal_event_store is None:
+            raise RuntimeError("scheduled internal event store is not configured")
+        return self._scheduled_internal_event_store
 
     def prepare_resolved_config(self, **kwargs: Any) -> dict[str, Any]:
         resolved_config = dict(kwargs.get("resolved_config") or {})
@@ -319,6 +340,8 @@ class EventScheduleEffectExecutor:
             run_at = _normalize_datetime_value(run_at_value, field_name="run_at")
         else:
             delay_seconds = _normalize_delay_seconds(delay_seconds_value)
+            if not _delay_seconds_within_datetime_range(started_at, delay_seconds):
+                raise ValueError("delay_seconds is outside the supported datetime range")
             resolved_config["delay_seconds"] = delay_seconds
             run_at = started_at + timedelta(seconds=delay_seconds)
         resolved_config["run_at"] = run_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
@@ -426,6 +449,7 @@ class EffectOrchestratorWorker:
         self._last_graph_revision: str | None = None
         self._last_graph_node_count = 0
         self._last_graph_edge_count = 0
+        self._scheduled_internal_event_store_cache: _ScheduledInternalEventStoreCache = None
         self.provider_factory = resolved_wiring.provider_factory
         self.query_provider_factory = resolved_wiring.query_provider_factory
         self.gate_provider_factory = resolved_wiring.gate_provider_factory
@@ -870,13 +894,19 @@ class EffectOrchestratorWorker:
         self.effect_executor_registry.register(
             "effect:event:schedule",
             EventScheduleEffectExecutor(
-                scheduled_internal_event_store=ScheduledInternalEventStore(
-                    self.worker_config.scheduled_internal_event_store_path
-                )
+                scheduled_internal_event_store_getter=self._get_scheduled_internal_event_store
             ),
         )
         for query_type in self.query_provider_factory.registry.registered_types():
             self.query_executor_registry.register(query_type, provider_query_executor)
+
+    def _get_scheduled_internal_event_store(self) -> ScheduledInternalEventStore:
+        store_path = self.worker_config.scheduled_internal_event_store_path
+        cached = self._scheduled_internal_event_store_cache
+        if cached is None or cached[0] != store_path:
+            cached = (store_path, ScheduledInternalEventStore(store_path))
+            self._scheduled_internal_event_store_cache = cached
+        return cached[1]
 
     def _effect_provider_class(self, effect_type: str) -> Any | None:
         registry = getattr(self.provider_factory, "registry", None)
@@ -2760,15 +2790,30 @@ def _normalize_datetime_value(value: Any, *, field_name: str) -> datetime:
 def _normalize_delay_seconds(value: Any) -> float:
     if isinstance(value, bool):
         raise ValueError("delay_seconds must be a number")
-    if isinstance(value, (int, float)):
-        return float(value)
-    text = _normalize_optional_string(value)
-    if text is None:
-        raise ValueError("delay_seconds must be a number")
     try:
-        return float(text)
+        if isinstance(value, (int, float)):
+            delay_seconds = float(value)
+        else:
+            text = _normalize_optional_string(value)
+            if text is None:
+                raise ValueError("delay_seconds must be a number")
+            delay_seconds = float(text)
+    except OverflowError as exc:
+        raise ValueError("delay_seconds must be a finite number") from exc
     except ValueError as exc:
         raise ValueError("delay_seconds must be a number") from exc
+    if not math.isfinite(delay_seconds):
+        raise ValueError("delay_seconds must be a finite number")
+    return delay_seconds
+
+
+def _delay_seconds_within_datetime_range(started_at: datetime, delay_seconds: float) -> bool:
+    started_at = _normalize_started_at(started_at)
+    if delay_seconds >= 0:
+        max_delay_seconds = (datetime.max.replace(tzinfo=UTC) - started_at).total_seconds()
+        return delay_seconds <= max_delay_seconds
+    min_delay_seconds = (started_at - datetime.min.replace(tzinfo=UTC)).total_seconds()
+    return -delay_seconds <= min_delay_seconds
 
 
 def _resolve_worker_path(

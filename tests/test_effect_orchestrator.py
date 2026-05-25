@@ -344,6 +344,76 @@ def test_effect_orchestrator_run_once_uses_reloaded_worker_config_for_sleep(tmp_
     assert result.next_sleep_seconds == 13
 
 
+def test_event_schedule_effect_uses_reloaded_scheduled_store_path(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    old_store_path = runtime_dir / "old-scheduled-events.json"
+    new_store_path = runtime_dir / "new-scheduled-events.json"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    base_worker_config = {
+        "runtime_dir": runtime_dir,
+        "poll_interval_seconds": 1,
+        "jitter_seconds": 0,
+        "triggers": [
+            {
+                "id": "trigger-1",
+                "display_name": "Trigger",
+                "type": "trigger:cron",
+                "expression": "* * * * *",
+            }
+        ],
+        "effects": [
+            {
+                "id": "schedule-plan",
+                "display_name": "Schedule plan",
+                "type": "effect:event:schedule",
+                "event_type": "custom.operator_event",
+                "payload": {"value": "ok"},
+                "run_at": "2026-05-25T12:05:00Z",
+            }
+        ],
+        "edges": [_edge("trigger-1", "schedule-plan")],
+    }
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            **base_worker_config,
+            "scheduled_internal_event_store_path": old_store_path,
+        }
+    )
+    updated_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            **base_worker_config,
+            "scheduled_internal_event_store_path": new_store_path,
+        }
+    )
+    worker = EffectOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        config_reloader=_StaticReloader(updated_config, changed=True),
+        runtime=None,  # type: ignore[arg-type]
+    )
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="input-event-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime.now(timezone.utc),
+            trace_id="trace-1",
+            payload={},
+        )
+    )
+
+    worker.run_once()
+    worker._wait_for_inflight_completion(timeout_seconds=2)
+    worker.run_once()
+
+    assert not old_store_path.exists()
+    scheduled_events = json.loads(new_store_path.read_text(encoding="utf-8"))
+    scheduled = next(iter(scheduled_events.values()))
+    assert scheduled["event_type"] == "custom.operator_event"
+    assert scheduled["payload"] == {"value": "ok"}
+    assert scheduled["run_at"] == "2026-05-25T12:05:00Z"
+
+
 def test_effect_orchestrator_uses_shared_host_lock_manager(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)
@@ -7310,6 +7380,30 @@ def test_event_schedule_effect_prepare_resolved_config_normalizes_delay_seconds(
                 "delay_seconds": "not-a-number",
             },
             "delay_seconds must be a number",
+        ),
+        (
+            {
+                "event_type": "custom.operator_event",
+                "payload": {},
+                "delay_seconds": "1e309",
+            },
+            "delay_seconds must be a finite number",
+        ),
+        (
+            {
+                "event_type": "custom.operator_event",
+                "payload": {},
+                "delay_seconds": "nan",
+            },
+            "delay_seconds must be a finite number",
+        ),
+        (
+            {
+                "event_type": "custom.operator_event",
+                "payload": {},
+                "delay_seconds": "1e20",
+            },
+            "delay_seconds is outside the supported datetime range",
         ),
         (
             {
