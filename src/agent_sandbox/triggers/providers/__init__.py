@@ -6,6 +6,7 @@ from typing import Any
 __all__ = [
     "AgentRunCompletedTriggerProvider",
     "CronTriggerProvider",
+    "CommunicationNewMessageTriggerProvider",
     "DiscordNewMessageTriggerProvider",
     "EmailNewMessageTriggerProvider",
     "GitPushTriggerProvider",
@@ -25,6 +26,7 @@ __all__ = [
 _EXPORT_MODULES = {
     "AgentRunCompletedTriggerProvider": ".agent_run_completed",
     "CronTriggerProvider": ".cron",
+    "CommunicationNewMessageTriggerProvider": ".communication_new_message",
     "DiscordNewMessageTriggerProvider": ".discord_new_message",
     "EmailNewMessageTriggerProvider": ".email_new_message",
     "GitPushTriggerProvider": ".git_push",

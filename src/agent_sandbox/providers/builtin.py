@@ -87,6 +87,9 @@ from agent_sandbox.triggers.providers.agent_run_completed import AgentRunComplet
 from agent_sandbox.triggers.providers.ado_work_item_matching import (
     AdoWorkItemMatchingTriggerProvider,
 )
+from agent_sandbox.triggers.providers.communication_new_message import (
+    CommunicationNewMessageTriggerProvider,
+)
 from agent_sandbox.triggers.providers.cron import CronTriggerProvider
 from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
@@ -107,8 +110,6 @@ from agent_sandbox.triggers.providers.teams_meeting_new_transcript import (
 )
 from agent_sandbox.triggers.providers.ticket_changed import TicketChangedTriggerProvider
 from agent_sandbox.triggers.providers.ticket_created import TicketCreatedTriggerProvider
-from agent_sandbox.triggers.providers.base import TriggerProviderBase
-
 
 def register_providers() -> dict[str, dict[str, type]]:
     return dict(
@@ -121,7 +122,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "trigger:issue:new-comment": IssueCommentCreatedTriggerProvider,
             "trigger:ado:work-item-matching": AdoWorkItemMatchingTriggerProvider,
             "trigger:script-run-request": ScriptRunRequestTriggerProvider,
-            "trigger:communication:new-message": TriggerProviderBase,
+            "trigger:communication:new-message": CommunicationNewMessageTriggerProvider,
             "trigger:discord:new-message": DiscordNewMessageTriggerProvider,
             "trigger:teams:new-message": TeamsNewMessageTriggerProvider,
             "trigger:teams-meeting:new-transcript": TeamsMeetingNewTranscriptTriggerProvider,
