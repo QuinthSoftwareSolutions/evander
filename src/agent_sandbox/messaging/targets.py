@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import sqlite3
 from collections import Counter
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -140,6 +141,12 @@ class CommunicationTargetsConfig(BaseModel):
 
     def by_id(self) -> dict[str, CommunicationTargetDefinition]:
         return {target.id: target for target in self.targets}
+
+
+@dataclass(frozen=True, slots=True)
+class CommunicationTargetResolution:
+    target: CommunicationTargetDefinition
+    address: str
 
 
 class CommunicationTargetOverlayDefinition(BaseModel):
@@ -403,6 +410,37 @@ def load_communication_targets_config(
         directory_store, repository=repository
     )
     return resolver.resolve_config(directory_path)
+
+
+def resolve_communication_target_ref(
+    *,
+    runtime_dir: Path,
+    directory_store: DirectoryStore,
+    directory_path: str,
+    reference: str,
+    provider: CommunicationTargetProvider | None = None,
+    capability: CommunicationTargetCapability | None = None,
+) -> CommunicationTargetResolution | None:
+    normalized_ref = str(reference or "").strip().lower()
+    if not normalized_ref:
+        return None
+    target = load_communication_targets_config(
+        runtime_dir=runtime_dir,
+        directory_store=directory_store,
+        directory_path=directory_path,
+    ).by_id().get(normalized_ref)
+    if target is None:
+        return None
+    if provider is not None and target.provider != provider:
+        raise ValueError(
+            f"communication target {target.id!r} uses provider {target.provider!r}, "
+            f"not {provider!r}"
+        )
+    if capability is not None and capability not in set(target.policy.capabilities):
+        raise ValueError(
+            f"communication target {target.id!r} does not allow {capability} capability"
+        )
+    return CommunicationTargetResolution(target=target, address=target.address)
 
 
 def known_communication_target_ids(

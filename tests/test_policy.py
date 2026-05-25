@@ -6,6 +6,10 @@ import pytest
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.directory_config import DirectoryConfigStore
 from agent_sandbox.directories import DirectoryStore
+from agent_sandbox.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 from agent_sandbox.models import (
     ApprovalRequest,
     ApprovalStatus,
@@ -60,6 +64,15 @@ def write_root_policy_overlay(config: GatewayConfig, payload: dict[str, object])
         domain="policy",
         payload=payload,
     )
+
+
+def write_root_communication_targets(config: GatewayConfig, targets: list[dict[str, object]]) -> None:
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    repository = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(config.runtime_dir)
+    )
+    repository.write_overlay("root", {"targets": targets})
 
 
 def make_ado_tool_policy_engine(tmp_path: Path) -> tuple[PolicyEngine, SessionManifest]:
@@ -751,6 +764,64 @@ def test_require_discord_channel_rejects_unrestricted_target(tmp_path: Path) -> 
         engine.require_discord_channel(session, "chan-unrestricted")
 
 
+def test_require_discord_channel_allows_communication_target_refs(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    write_root_communication_targets(
+        engine.config,
+        [
+            {
+                "id": "discord-ops",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "123456789012345678",
+                "policy": {"capabilities": ["read", "write", "reply"]},
+            }
+        ],
+    )
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.DISCORD_POST_STATUS],
+        discord_channel_allowlist=["discord-ops"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    assert (
+        engine.require_discord_channel(session, "discord-ops", capability="write")
+        == "123456789012345678"
+    )
+    assert (
+        engine.require_discord_channel(session, "123456789012345678", capability="write")
+        == "123456789012345678"
+    )
+
+
+def test_require_discord_channel_enforces_target_capability(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    write_root_communication_targets(
+        engine.config,
+        [
+            {
+                "id": "discord-read",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "123456789012345678",
+                "policy": {"capabilities": ["read"]},
+            }
+        ],
+    )
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.DISCORD_POST_STATUS],
+        discord_channel_allowlist=["discord-read"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    with pytest.raises(PolicyError, match="does not allow write capability"):
+        engine.require_discord_channel(session, "discord-read", capability="write")
+    with pytest.raises(PolicyError, match="not allowlisted"):
+        engine.require_discord_channel(session, "123456789012345678", capability="write")
+
+
 def test_require_discord_command_source_rejects_unrestricted_polling_target(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     session = SessionManifest(
@@ -773,6 +844,65 @@ def test_require_discord_command_source_rejects_unrestricted_polling_target(tmp_
 
     with pytest.raises(PolicyError, match="source is not allowlisted"):
         engine.require_discord_command_source(session, command)
+
+
+def test_require_discord_command_source_allows_communication_target_refs(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    write_root_communication_targets(
+        engine.config,
+        [
+            {
+                "id": "discord-inbox",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "123456789012345678",
+                "policy": {"capabilities": ["read"]},
+            }
+        ],
+    )
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.DISCORD_GET_COMMANDS],
+        discord_channel_allowlist=["discord-inbox"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    command = DiscordCommandEnvelope(
+        command_id="cmd1",
+        author_id="user-unknown",
+        channel_id="123456789012345678",
+        content="!run",
+        metadata={
+            "source": "discord_bot_api",
+            "channel_id": "123456789012345678",
+            "author_id": "user-unknown",
+        },
+    )
+
+    engine.require_discord_command_source(session, command)
+
+
+def test_discord_inbox_routes_resolve_communication_target_refs(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    write_root_communication_targets(
+        engine.config,
+        [
+            {
+                "id": "discord-inbox",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "123456789012345678",
+                "policy": {"capabilities": ["read"]},
+            }
+        ],
+    )
+    write_root_policy_overlay(
+        engine.config,
+        {"discord_inbox_routes": {"discord-inbox": ["session-a"]}},
+    )
+
+    assert engine.policy_config.discord_inbox_routes_for_directory("root") == {
+        "123456789012345678": ["session-a"]
+    }
 
 
 def test_require_teams_message_source_allows_session_channel(tmp_path: Path) -> None:
@@ -854,6 +984,45 @@ def test_require_teams_message_source_allows_session_chat(tmp_path: Path) -> Non
     engine.require_teams_message_source(session, message)
 
 
+def test_require_teams_message_source_allows_communication_target_refs(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    write_root_communication_targets(
+        engine.config,
+        [
+            {
+                "id": "teams-inbox",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["read"]},
+            }
+        ],
+    )
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+        teams_channel_allowlist=["teams-inbox"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    message = TeamsMessageEnvelope(
+        cursor="team-a/channel-1/msg-1",
+        message_id="msg-1",
+        author_id="user-1",
+        team_id="team-a",
+        channel_id="channel-1",
+        thread_id="msg-1",
+        content="hello",
+        metadata={
+            "source": "teams_graph_api",
+            "team_id": "team-a",
+            "channel_id": "channel-1",
+            "author_id": "user-1",
+        },
+    )
+
+    engine.require_teams_message_source(session, message)
+
+
 def test_require_teams_channel_target_validates_allowlist_and_shape(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     session = SessionManifest(
@@ -882,6 +1051,82 @@ def test_require_teams_channel_target_allows_chat_allowlist_entries(tmp_path: Pa
     )
 
     assert engine.require_teams_channel_target(session, "chat:chat-1") == "chat:chat-1"
+
+
+def test_require_teams_targets_allow_communication_target_refs(tmp_path: Path) -> None:
+    engine = make_engine(tmp_path)
+    write_root_communication_targets(
+        engine.config,
+        [
+            {
+                "id": "teams-ops",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["read", "write", "reply"]},
+            },
+            {
+                "id": "teams-user",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "user:operator@example.com",
+                "policy": {"capabilities": ["write"]},
+            },
+        ],
+    )
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.TEAMS_POST_STATUS],
+        teams_channel_allowlist=["teams-ops"],
+        teams_user_allowlist=["teams-user"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    assert engine.require_teams_channel_target(session, "teams-ops") == "team-a/channel-1"
+    assert engine.require_teams_send_target(session, "teams-ops") == "team-a/channel-1"
+    assert engine.require_teams_send_target(session, "teams-user") == (
+        "user:operator@example.com"
+    )
+    assert engine.require_teams_send_target(session, "team-a/channel-1") == "team-a/channel-1"
+
+
+def test_require_teams_targets_enforce_communication_target_capabilities(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    write_root_communication_targets(
+        engine.config,
+        [
+            {
+                "id": "teams-write",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["write"]},
+            },
+            {
+                "id": "teams-user-readable",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "user:operator@example.com",
+                "policy": {"capabilities": ["read", "write"]},
+            },
+        ],
+    )
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+        teams_channel_allowlist=["teams-write"],
+        teams_user_allowlist=["teams-user-readable"],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    with pytest.raises(PolicyError, match="does not allow read capability"):
+        engine.require_teams_channel_target(session, "teams-write")
+    with pytest.raises(PolicyError, match="not allowlisted"):
+        engine.require_teams_channel_target(session, "team-a/channel-1")
+    with pytest.raises(PolicyError, match="only supported for send operations"):
+        engine.require_teams_channel_target(session, "teams-user-readable")
 
 
 def test_require_teams_send_target_allows_declared_user_targets(tmp_path: Path) -> None:

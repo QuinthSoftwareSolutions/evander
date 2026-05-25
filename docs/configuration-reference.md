@@ -138,12 +138,18 @@ Each trigger entry requires the shared envelope keys:
 - `id` (string, required, unique across all triggers)
 - `display_name` (string, required)
 - `type` (required discriminator)
+- `enabled` (boolean, optional; only `false` disables the trigger)
+
+Disabled triggers remain in the graph for editing, but trigger polling and the legacy ADO/Git
+direct publishers skip them. Events already queued before a trigger is disabled are still processed
+by the effect worker.
 
 Type-specific keys:
 
 | `type` | Required keys | Optional keys |
 |---|---|---|
 | `trigger:event` | `event_type` | `correlation_key` |
+| `trigger:http:webhook` | `slug`, `secret_env` | `event_type` |
 | `trigger:cron` | `expression` | — |
 | `trigger:ticket:created` | `directories` | — |
 | `trigger:ticket:changed` | `directories` | — |
@@ -152,6 +158,8 @@ Type-specific keys:
 | `trigger:script-run-request` | — | — |
 | `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |
 | `trigger:communication:new-message` | `communication_target_ids` | `directory_path`, `author_ids`, `content_contains`, `case_sensitive` |
+| `trigger:teams:new-message` | `targets` | `user_ids` |
+| `trigger:teams:direct-message` | `sender_user_ids` | `message_filter` |
 | `trigger:email:new-message` | `provider`, `account_identifier`, `mailbox_ids` | `auth_secret_refs` |
 | `trigger:pull-request:new-feedback` | `provider` | `organization_url`, `project` (but `organization_url` becomes required when `provider=ado`) |
 | `trigger:pull-request:completed` | `provider` | `organization_url`, `project` (but `organization_url` becomes required when `provider=ado`) |
@@ -184,9 +192,24 @@ configured as comma-separated `source-name:token` entries; the matching source n
 the published event. Token values must not contain commas or colons. The ingress accepts arbitrary
 JSON-object payloads for workflow-specific data.
 
-The current trigger set also includes `trigger:teams:new-message`, `trigger:review:new-request`,
-and `trigger:script-run-request`. Teams is fed by a host-side ingest worker that reads the same
-delegated Teams auth settings described above. Review requests are fed from the host-owned
+`trigger:http:webhook` exposes a public `POST /api/workflow-webhooks/{slug}` ingress for a single
+active webhook trigger. The configured `slug` must match `[A-Za-z0-9_.-]+`, be unique across the
+active composed config, and is used as the public path segment. `secret_env` names the host
+environment variable that contains the HMAC secret. `event_type` is optional and defaults to
+`webhook.<slug>`. Requests must include
+`X-Agent-Sandbox-Signature-256: sha256=<hex>` and the signature must be computed over the exact raw
+request body bytes using HMAC-SHA256. The webhook ingress accepts JSON object bodies only. The
+durable event stored for the trigger is `external.<event_type>`, and downstream trigger output is
+the webhook envelope with `slug`, `headers`, `query`, `body`, `received_at`, `remote_addr`, and
+`signature_header`.
+
+Use `gate:filter`, `gate:map`, `gate:deserialize`, and `gate:dedupe` downstream when you need to
+reshape or suppress webhook deliveries after the trigger fires.
+
+The current trigger set also includes `trigger:teams:new-message`,
+`trigger:teams:direct-message`, `trigger:review:new-request`, and `trigger:script-run-request`.
+Teams is fed by a host-side ingest worker that reads the same delegated Teams auth settings
+described above. Review requests are fed from the host-owned
 `runtime/review-request-store.json` inbox populated by `request_pr_review(...)`. Script run
 requests are fed from `runtime/script-run-requests-store.json`, which the `run_script(...)` MCP
 tool appends to after validating that the calling session is allowed to invoke the requested
@@ -206,9 +229,9 @@ the existing host-owned Teams and Discord inbox stores and emits `provider`,
 `created_at`, `received_at`, `target`, and a nested `message` object with safe provider metadata;
 communication target `policy.auth_profile_ref` values are not emitted.
 
-These trigger flows are independent from the wake workers; Discord inbox waking and scheduled
-resumes are covered by the dedicated wake workers while PR/Discord feedback wakeups remain
-separate.
+These flows are independent from the wake workers. Discord inbox waking and scheduled resumes are
+covered by dedicated wake workers, while Azure DevOps PR feedback and completion pickup live in the
+ADO worker.
 
 Example:
 
@@ -240,6 +263,13 @@ Example:
       "display_name": "Repo push",
       "type": "trigger:git:push",
       "path_to_repo": "/var/lib/git/my-repo.git"
+    },
+    {
+      "id": "deploy-webhook",
+      "display_name": "Deploy webhook",
+      "type": "trigger:http:webhook",
+      "slug": "deploy",
+      "secret_env": "WEBHOOK_SECRET"
     }
   ]
 }
@@ -332,6 +362,7 @@ Type-specific keys:
 | `effect:semantic:delete` | `collection_name`, `point_ids` | `directory_path`, `wait`, `outputs` |
 | `effect:agent:destroy` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `execution_backend`, `directory_path`, `outputs` |
 | `effect:bash:script` | `script_path` | `args`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
+| `effect:http:request` | `url` | `method`, `allowed_url_patterns`, `payload`, `headers`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:issue:update-state` | `issue_id`, `state` | `sync_proxy_cache`, `outputs` |
@@ -342,6 +373,18 @@ Type-specific keys:
 | `effect:session:approve-mcp-tools-for-run` | one of `target`, `session_id`, `vm_name`; `tools` | `expires_in_seconds`, `outputs` |
 | `effect:session:renew-if-expired` | one of `target`, `session_id`, `vm_name` | `extend_by`, `directory_path`, `outputs` |
 | `effect:pr:create` | `host_repo_path` | `local_branch`, `origin_branch`, `canonical_origin_url`, `provider`, `base_branch`, `session_id`, `work_item_id`, `title`, `body`, `body_file`, `body_artifact_ids`, `draft`, `fill`, `outputs` |
+
+`effect:http:request` performs a host-side raw HTTP or HTTPS request from the
+effect orchestrator. It supports `GET`, `POST`, and `PUT`; sends `payload` as a
+JSON request body when present; treats non-2xx responses as normal workflow
+outputs by default; and raises on non-2xx only when `check` is true. When
+`check` raises, response outputs are still recorded on the failed run.
+`allowed_url_patterns` defaults to `["*"]` and is checked before the host request
+is opened. Patterns are shell-style globs matched against either the full URL or
+origin when they include a scheme, for example `https://api.example.test/*`, and
+against the host or `host:port` when they do not, for example `*.example.test`.
+This effect does not use the guest HTTP target relay or its destination
+allowlist.
 
 `effect:pr:create` preflights the destination branch before pushing. If the
 destination branch exists and its tip is not contained in the local branch, the
@@ -1002,12 +1045,22 @@ overlays can bind a subtree to that host-managed Teams identity, while the legac
 mode remains supported for compatibility through `teams_graph_access_token_env` (default
 `GRAPH_TEAMS_ACCESS_TOKEN`).
 The same delegated Teams identity/configuration is also used by the host-side Teams ingest worker
-that feeds `trigger:teams:new-message` for both channel threads and group chats.
+that feeds `trigger:teams:new-message` for both channel threads and group chats, plus
+`trigger:teams:direct-message` for one-on-one direct messages sent by configured sender user ids.
 
-Session and `effect:agent:create` manifests declare Teams channel targets with
-`teams_channel_allowlist` and Teams chat targets with `teams_chat_allowlist`. One-on-one user
-send targets stay separate in `teams_user_allowlist`; they are not valid for Teams reads,
-reactions, attachment downloads, or ingest polling.
+Session and `effect:agent:create` manifests can use either legacy raw Teams/Discord IDs or
+directory-scoped communication target IDs in their communication allowlists. Declared target IDs are
+resolved at use time from the session directory, take precedence over raw IDs when a value collides,
+and must expose the capability required by the operation: `read` for message reads, inbound
+trigger polling, and attachment list/download; `write` for top-level sends; and `reply` for thread
+replies and reactions. Raw legacy IDs keep the existing allowlist behavior.
+
+Teams channel targets can still be declared directly with `teams_channel_allowlist`, Teams chat
+targets with `teams_chat_allowlist`, and one-on-one user send targets with
+`teams_user_allowlist`. Teams `user:` communication targets are send-only; they are not valid for
+Teams reads, reactions, attachment downloads, or `trigger:teams:new-message` polling.
+Direct-message trigger polling is configured with `sender_user_ids` on
+`trigger:teams:direct-message`.
 
 Key delegated Teams provider settings now include:
 

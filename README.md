@@ -9,7 +9,8 @@
 - A host-side NuGet relay that proxies nuget.org and private Azure Artifacts feeds for guests
 - A host-side Azure DevOps PR feedback/completion worker plus workflow ADO work-item intake nodes
 - A host-side workflow orchestrator that polls provider triggers, evaluates gates, and persists durable queue events for downstream workers/hooks
-- A host-side Teams ingest worker that polls Microsoft Graph and feeds `trigger:teams:new-message` orchestration
+- A host-side Teams ingest worker that polls Microsoft Graph and feeds `trigger:teams:new-message`
+  and `trigger:teams:direct-message` orchestration
 - A host-side shared NuGet cache that can be mounted read-only into guests for faster cold restores
 - Optional host-local Qdrant semantic store primitives for workflow-visible health, collection setup, and explicit-ID text point upsert/search/get/delete
 - File-backed session, approval, audit, and draft storage for local development
@@ -327,7 +328,8 @@ The scaffold includes `agent-sandbox-trigger-orchestrator`, a host-side worker t
 - evaluates gate nodes and routes events through explicit edges
 - persists discovered events into a durable queue (`runtime/trigger-orchestrator-events.json` by default)
 - records per-trigger cursor/checkpoint metadata (`runtime/trigger-orchestrator-cursors.json` by default)
-- also accepts `trigger:teams:new-message` events, which are sourced from host-side Teams ingest
+- also accepts `trigger:teams:new-message` and `trigger:teams:direct-message` events, which are
+  sourced from host-side Teams ingest
   polling rather than from the wake workers
 
 One-shot cycle execution is supported for ops/debugging:
@@ -448,6 +450,43 @@ machine-authenticated events. Token values must not contain commas or colons.
 Workflow-specific payloads are intentionally not schema-validated by the HTTP API beyond
 requiring a JSON object. Downstream nodes read custom fields from the trigger output payload, for
 example `${{trigger-external-deploy.payload.target}}`.
+
+### Signed Workflow Webhooks
+
+For public inbound workflows, configure `trigger:http:webhook` and POST to
+`/api/workflow-webhooks/{slug}`. The request body must be a JSON object, and the signature header
+must be `X-Agent-Sandbox-Signature-256: sha256=<hex>`, where the HMAC-SHA256 is computed over the
+exact raw request body bytes with the configured secret.
+
+The webhook trigger stores the durable event as `external.webhook.<slug>` by default, exposes the
+webhook envelope downstream, and leaves payload shaping to gates such as `gate:filter`,
+`gate:map`, `gate:deserialize`, and `gate:dedupe`.
+
+```bash
+WEBHOOK_BODY='{"target":"demo"}'
+WEBHOOK_SECRET='replace-with-your-secret'
+SIG="$(
+  printf '%s' "$WEBHOOK_BODY" |
+    openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex |
+    awk '{print $2}'
+)"
+
+curl -X POST http://127.0.0.1:8100/api/workflow-webhooks/deploy \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-Sandbox-Signature-256: sha256=${SIG}" \
+  -d "$WEBHOOK_BODY"
+```
+
+```python
+import hashlib
+import hmac
+import os
+
+body = b'{"target":"demo"}'
+secret = os.environ["WEBHOOK_SECRET"].encode()
+signature = hmac.new(secret, body, hashlib.sha256).hexdigest()
+print(signature)
+```
 
 ## Local Git Remotes
 
@@ -715,6 +754,9 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   target type, and a normalized `message` object for the corresponding message, not just the
   latest matching message in the batch. Agents that need surrounding context should call
   `teams_get_messages` with that `channel_target`.
+- `trigger:teams:direct-message` emits one event per new one-on-one Teams direct message sent to
+  the configured Teams identity by an explicitly allowlisted Graph sender user id. It reuses the
+  same host-side Teams ingest worker and emits `channel_target` as the resolved `chat:<chat-id>`.
 - `trigger:teams:new-message` defines `targets`, where each target can optionally narrow wakes
   with its own `message_filter`.
 - The initial supported filter shape is content substring matching:
@@ -727,6 +769,9 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   `case_sensitive`, and listens only to read-capable Teams channel/chat or Discord channel targets.
   It reuses the host-owned Teams and Discord inbox stores and does not expose communication target
   auth profile references in trigger outputs.
+- Direct-message triggers use a separate sender allowlist:
+  - `{"type":"trigger:teams:direct-message","sender_user_ids":["<graph-user-id>"]}`
+  - optional `message_filter` with the same content or mention filter shape
 - Session manifests opt into Teams access explicitly:
 
   ```json
@@ -743,6 +788,7 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
 - The Teams adapter polls:
   - `GET /teams/{team-id}/channels/{channel-id}/messages` for channel threads
   - `GET /chats/{chat-id}/messages` for group chats
+  - `GET /me/chats` plus `GET /chats/{chat-id}/messages` for allowlisted direct-message triggers
   It stores both top-level messages and any expanded replies in `runtime/teams_messages.json`.
 - `teams_get_messages` accepts optional `channel_target`, `since_cursor`, `before_cursor`, and
   `limit` arguments. Cursorless reads are bounded recent reads: the gateway defaults the call to

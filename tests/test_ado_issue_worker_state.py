@@ -2343,6 +2343,15 @@ def test_load_ado_pr_feedback_triggers_resolves_workflow_packs(worker_config: Wo
                             "provider": "ado",
                             "organization_url": "https://dev.azure.com/example-org",
                             "project": "Example Project",
+                        },
+                        {
+                            "id": "trigger-pr-feedback-disabled",
+                            "display_name": "Disabled PR feedback",
+                            "type": "trigger:pull-request:new-feedback",
+                            "provider": "ado",
+                            "organization_url": "https://dev.azure.com/example-org",
+                            "project": "Example Project",
+                            "enabled": False,
                         }
                     ],
                     "edges": [],
@@ -2390,6 +2399,15 @@ def test_load_ado_pr_completed_triggers_resolves_workflow_packs(
                             "provider": "ado",
                             "organization_url": "https://dev.azure.com/example-org",
                             "project": "Example Project",
+                        },
+                        {
+                            "id": "trigger-pr-completed-disabled",
+                            "display_name": "Disabled PR completed",
+                            "type": "trigger:pull-request:completed",
+                            "provider": "ado",
+                            "organization_url": "https://dev.azure.com/example-org",
+                            "project": "Example Project",
+                            "enabled": False,
                         }
                     ],
                     "edges": [],

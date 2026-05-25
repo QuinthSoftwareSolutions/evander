@@ -21,6 +21,7 @@ from agent_sandbox.events.provider_models import (
     CommunicationNewMessageTriggerDefinition,
     GitPromoteAgentBranchEffectDefinition,
     GitPushTriggerDefinition,
+    HttpRequestEffectDefinition,
     IssueUpdateStateEffectDefinition,
     NotificationSendEffectDefinition,
     PrCreateEffectDefinition,
@@ -32,6 +33,7 @@ from agent_sandbox.events.provider_models import (
     SessionApproveMcpToolsForRunEffectDefinition,
     SessionRenewIfExpiredEffectDefinition,
     SessionUpdateMetadataEffectDefinition,
+    WebhookTriggerDefinition,
 )
 from agent_sandbox.workflow.contracts import effective_node_output_schema
 
@@ -76,6 +78,77 @@ def test_issue_comment_trigger_normalizes_ado_config() -> None:
     assert trigger.organization_url == "https://dev.azure.com/example"
     assert trigger.project == "APP"
     assert trigger.directories == ["root/team-a"]
+
+
+def test_webhook_trigger_defaults_event_type_from_slug() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    trigger = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "webhook-1",
+                "display_name": "Webhook",
+                "type": "trigger:http:webhook",
+                "slug": "build-notify",
+                "secret_env": "WEBHOOK_SECRET",
+            }
+        )
+    )
+
+    assert isinstance(trigger, WebhookTriggerDefinition)
+    assert trigger.slug == "build-notify"
+    assert trigger.secret_env == "WEBHOOK_SECRET"
+    assert trigger.event_type == "webhook.build-notify"
+    assert trigger.config["slug"] == "build-notify"
+    assert trigger.config["secret_env"] == "WEBHOOK_SECRET"
+    assert trigger.config["event_type"] == "webhook.build-notify"
+
+
+@pytest.mark.parametrize(
+    "slug, expected_error",
+    [
+        ("", "slug must be a non-empty string"),
+        ("not a slug", r"slug must match \[A-Za-z0-9_.-\]\+"),
+    ],
+)
+def test_webhook_trigger_rejects_invalid_slug(slug: str, expected_error: str) -> None:
+    with pytest.raises(ValueError, match=expected_error):
+        WebhookTriggerDefinition.model_validate(
+            {
+                "id": "webhook-2",
+                "display_name": "Webhook",
+                "type": "trigger:http:webhook",
+                "slug": slug,
+                "secret_env": "WEBHOOK_SECRET",
+            }
+        )
+
+
+def test_webhook_trigger_rejects_blank_secret_env() -> None:
+    with pytest.raises(ValueError, match="secret_env must be a non-empty string"):
+        WebhookTriggerDefinition.model_validate(
+            {
+                "id": "webhook-3",
+                "display_name": "Webhook",
+                "type": "trigger:http:webhook",
+                "slug": "build-notify",
+                "secret_env": "   ",
+            }
+        )
+
+
+def test_webhook_trigger_rejects_reserved_external_event_type() -> None:
+    with pytest.raises(ValueError, match="reserved 'external\\.' prefix"):
+        WebhookTriggerDefinition.model_validate(
+            {
+                "id": "webhook-4",
+                "display_name": "Webhook",
+                "type": "trigger:http:webhook",
+                "slug": "build-notify",
+                "secret_env": "WEBHOOK_SECRET",
+                "event_type": "external.webhook.build-notify",
+            }
+        )
 
 
 def test_email_trigger_validates_provider_enum() -> None:
@@ -141,7 +214,6 @@ def test_teams_trigger_accepts_per_target_message_filter() -> None:
         "143e5b02-868f-4f0c-a262-cf509b6c09e5"
     ]
 
-
 def test_communication_trigger_normalizes_targets_and_authors() -> None:
     trigger = CommunicationNewMessageTriggerDefinition.model_validate(
         {
@@ -181,6 +253,36 @@ def test_communication_trigger_normalizes_targets_and_authors() -> None:
 def test_communication_trigger_requires_target_ids(payload: dict[str, object]) -> None:
     with pytest.raises(ValueError, match="communication_target_ids"):
         CommunicationNewMessageTriggerDefinition.model_validate(payload)
+
+
+def test_teams_direct_message_trigger_requires_sender_user_ids() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    trigger = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "t-teams-dm",
+                "display_name": "Teams direct message",
+                "type": "trigger:teams:direct-message",
+                "sender_user_ids": [" 143e5b02-868f-4f0c-a262-cf509b6c09e5 "],
+                "message_filter": {"content": {"contains": "hello"}},
+            }
+        )
+    )
+
+    assert trigger.sender_user_ids == ["143e5b02-868f-4f0c-a262-cf509b6c09e5"]
+    assert trigger.message_filter is not None
+    assert trigger.message_filter.content is not None
+    assert trigger.message_filter.content.contains == "hello"
+
+    with pytest.raises(ValueError, match="sender_user_ids"):
+        adapter.validate_python(
+            {
+                "id": "t-teams-dm-missing",
+                "display_name": "Teams direct message",
+                "type": "trigger:teams:direct-message",
+            }
+        )
 
 
 def test_teams_trigger_message_filter_requires_content_or_mentions() -> None:
@@ -438,6 +540,91 @@ def test_effect_discriminated_union_accepts_output_reference_interpolation() -> 
 
     assert effect.type == "effect:agent:prompt"
     assert effect.model == "${{trigger.model}}"
+
+
+def test_http_request_effect_accepts_bindings_and_static_headers() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+    effect = adapter.validate_python(
+        {
+            "id": "effect-http",
+            "display_name": "HTTP request",
+            "type": "effect:http:request",
+            "method": "GET",
+            "url": "https://example.test/api",
+            "allowed_url_patterns": ["https://example.test/*"],
+            "headers": {"Accept": "application/json"},
+            "payload": {"ticket_id": "${{trigger.ticket_id}}"},
+            "check": "${{trigger.check}}",
+        }
+    )
+
+    assert effect.type == "effect:http:request"
+    assert effect.method == "GET"
+    assert effect.url == "https://example.test/api"
+    assert effect.allowed_url_patterns == ["https://example.test/*"]
+    assert effect.headers == {"Accept": "application/json"}
+    assert effect.payload == {"ticket_id": "${{trigger.ticket_id}}"}
+    assert effect.check == "${{trigger.check}}"
+
+
+def test_http_request_effect_defaults_to_allow_any_url_pattern() -> None:
+    effect = HttpRequestEffectDefinition.model_validate(
+        {
+            "id": "effect-http",
+            "display_name": "HTTP request",
+            "type": "effect:http:request",
+            "url": "https://example.test/api",
+        }
+    )
+
+    assert effect.allowed_url_patterns == ["*"]
+
+
+def test_http_request_effect_rejects_invalid_static_method() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+
+    with pytest.raises(ValueError, match="effect:http:request method must be GET, POST, or PUT"):
+        adapter.validate_python(
+            {
+                "id": "effect-http",
+                "display_name": "HTTP request",
+                "type": "effect:http:request",
+                "method": "delete",
+                "url": "https://example.test/api",
+            }
+        )
+
+
+def test_http_request_effect_rejects_invalid_static_url() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+
+    with pytest.raises(ValueError, match="effect:http:request url must be a non-empty http or https URL"):
+        adapter.validate_python(
+            {
+                "id": "effect-http",
+                "display_name": "HTTP request",
+                "type": "effect:http:request",
+                "url": "ftp://example.test/api",
+            }
+        )
+
+
+def test_http_request_effect_rejects_invalid_allowed_url_patterns() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+
+    with pytest.raises(
+        ValueError,
+        match="effect:http:request allowed_url_patterns must be a string, string list, or binding",
+    ):
+        adapter.validate_python(
+            {
+                "id": "effect-http",
+                "display_name": "HTTP request",
+                "type": "effect:http:request",
+                "url": "https://example.test/api",
+                "allowed_url_patterns": [42],
+            }
+        )
 
 
 def test_agent_run_completed_trigger_accepts_default_vm_user() -> None:

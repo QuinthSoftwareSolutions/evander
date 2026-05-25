@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import subprocess
 from datetime import datetime, timedelta, timezone
@@ -69,6 +71,7 @@ from agent_sandbox.models import (
     VmSummary,
     WorkerSummary,
 )
+from agent_sandbox.events.internal import InternalEventBus
 from agent_sandbox.orchestration.host_polling import wake_socket_path_for_lock
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
 from agent_sandbox.worker.models import WorkerSessionRecord
@@ -193,6 +196,59 @@ def _complete_azure_login(
     )
 
 
+def _write_workflow_webhook_config(
+    tmp_path: Path,
+    *,
+    slug: str = "build-notify",
+    secret_env: str = "WEBHOOK_SECRET",
+    event_type: str | None = None,
+    duplicate: bool = False,
+) -> None:
+    config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    triggers = [
+        {
+            "id": "webhook-1",
+            "display_name": "Webhook 1",
+            "type": "trigger:http:webhook",
+            "slug": slug,
+            "secret_env": secret_env,
+        }
+    ]
+    if event_type is not None:
+        triggers[0]["event_type"] = event_type
+    if duplicate:
+        triggers.append(
+            {
+                "id": "webhook-2",
+                "display_name": "Webhook 2",
+                "type": "trigger:http:webhook",
+                "slug": slug,
+                "secret_env": secret_env,
+            }
+        )
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "poll_interval_seconds": 1,
+                "jitter_seconds": 0,
+                "triggers": triggers,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _signed_webhook_headers(body: bytes, *, secret: str) -> dict[str, str]:
+    digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return {
+        "Content-Type": "application/json",
+        "X-Agent-Sandbox-Signature-256": f"sha256={digest}",
+    }
+
+
 def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
 
@@ -231,6 +287,10 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert (
         descriptions_by_type["effect:bash:script"]
         == "Run a host-side Bash script from the effect orchestrator."
+    )
+    assert (
+        descriptions_by_type["effect:http:request"]
+        == "Perform a host-side raw HTTP GET, POST, or PUT request with URL allowlist control."
     )
     assert (
         descriptions_by_type["effect:agent:exec"]
@@ -499,6 +559,31 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "timeout_seconds",
         "check",
     ]
+    http_request = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:http:request"
+    )
+    assert [field["key"] for field in http_request["fields"]] == [
+        "method",
+        "url",
+        "allowed_url_patterns",
+        "payload",
+        "headers",
+        "timeout_seconds",
+        "check",
+    ]
+    http_request_fields = {field["key"]: field for field in http_request["fields"]}
+    assert [option["value"] for option in http_request_fields["method"]["options"]] == [
+        "GET",
+        "POST",
+        "PUT",
+    ]
+    assert http_request_fields["method"]["default_value"] == "GET"
+    assert http_request_fields["url"]["required"] and http_request_fields["url"]["bindable"]
+    assert http_request_fields["allowed_url_patterns"]["kind"] == "string_list"
+    assert http_request_fields["allowed_url_patterns"]["default_value"] == ["*"]
+    assert http_request_fields["payload"]["json_value_type"] == "object"
+    assert http_request_fields["headers"]["json_value_type"] == "object"
+    assert http_request_fields["check"]["default_value"] is False
     ticket_created = next(
         node for node in catalog_payload["nodes"] if node["type"] == "trigger:ticket:created"
     )
@@ -517,6 +602,22 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
     assert [field["key"] for field in internal_event["fields"]] == [
         "event_type",
         "correlation_key",
+    ]
+    webhook_trigger = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "trigger:http:webhook"
+    )
+    assert webhook_trigger["description"] == (
+        "Start from a signed HTTP webhook delivered to a public endpoint."
+    )
+    assert [field["key"] for field in webhook_trigger["fields"]] == [
+        "slug",
+        "secret_env",
+        "event_type",
+    ]
+    assert [field["required"] for field in webhook_trigger["fields"]] == [
+        True,
+        True,
+        False,
     ]
     issue_comment = next(
         node
@@ -550,6 +651,15 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         for field in communication_message["fields"]
         if field["key"] == "communication_target_ids"
     )["kind"] == "string_list"
+    teams_direct_message = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "trigger:teams:direct-message"
+    )
+    assert [field["key"] for field in teams_direct_message["fields"]] == [
+        "sender_user_ids",
+        "message_filter",
+    ]
     deserialize_gate = next(
         node for node in catalog_payload["nodes"] if node["type"] == "gate:deserialize"
     )
@@ -4350,6 +4460,267 @@ def test_workflow_event_api_published_event_is_consumed_by_event_trigger(
     assert pending[0].payload["event_id"] == publish_response.json()["event_id"]
     assert pending[0].payload["event_type"] == "external.deploy_requested"
     assert pending[0].payload["payload"] == {"target": "demo"}
+
+
+def test_workflow_webhook_ingress_publishes_internal_event_and_bypasses_auth(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "operator")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
+    _write_workflow_webhook_config(tmp_path)
+
+    service = AdminService(write_config(tmp_path))
+    client = TestClient(create_app(service))
+
+    body = json.dumps(
+        {"target": "demo", "options": {"dry_run": True}},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    headers = _signed_webhook_headers(body, secret="webhook-secret")
+
+    response = client.post(
+        "/api/workflow-webhooks/build-notify?source=ci",
+        content=body,
+        headers=headers,
+    )
+    repeat = client.post(
+        "/api/workflow-webhooks/build-notify?source=ci",
+        content=body,
+        headers=headers,
+    )
+    auth_required = client.post("/api/workflow-events/token")
+
+    assert response.status_code == 202
+    assert repeat.status_code == 202
+    assert auth_required.status_code == 401
+    assert response.json()["event_id"] != repeat.json()["event_id"]
+    assert response.json()["event_type"] == "external.webhook.build-notify"
+    assert response.json()["correlation_key"] == "webhook:build-notify"
+    assert response.json()["source"] == {
+        "source_type": "webhook",
+        "source_name": "build-notify",
+        "user_id": None,
+        "user_login": None,
+        "workflow_run_id": None,
+        "workflow_event_id": None,
+        "workflow_trace_id": None,
+        "node_id": "webhook-1",
+        "node_type": "trigger:http:webhook",
+    }
+    assert response.json()["payload"]["headers"]["content-type"] == "application/json"
+    assert response.json()["payload"]["headers"]["x-agent-sandbox-signature-256"] == headers[
+        "X-Agent-Sandbox-Signature-256"
+    ]
+    assert response.json()["payload"]["slug"] == "build-notify"
+    assert response.json()["payload"]["body"] == {"target": "demo", "options": {"dry_run": True}}
+    assert response.json()["payload"]["query"] == {"source": "ci"}
+    assert response.json()["payload"]["signature_header"] == headers["X-Agent-Sandbox-Signature-256"]
+    assert response.json()["payload"]["received_at"].endswith("Z")
+    assert response.json()["payload"]["remote_addr"]
+
+    events = InternalEventBus(tmp_path / "runtime" / "internal-events.json").list_events()
+    assert len(events) == 2
+    assert {event.event_id for event in events} == {
+        response.json()["event_id"],
+        repeat.json()["event_id"],
+    }
+    assert {event.event_type for event in events} == {"external.webhook.build-notify"}
+    assert [event.idempotency_key for event in events] == [None, None]
+
+
+def test_workflow_webhook_ingress_does_not_dedupe_same_body_across_slugs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
+    config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "poll_interval_seconds": 1,
+                "jitter_seconds": 0,
+                "triggers": [
+                    {
+                        "id": "webhook-build",
+                        "display_name": "Build webhook",
+                        "type": "trigger:http:webhook",
+                        "slug": "build-notify",
+                        "secret_env": "WEBHOOK_SECRET",
+                    },
+                    {
+                        "id": "webhook-deploy",
+                        "display_name": "Deploy webhook",
+                        "type": "trigger:http:webhook",
+                        "slug": "deploy-notify",
+                        "secret_env": "WEBHOOK_SECRET",
+                    },
+                ],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    body = b"{\"target\":\"demo\"}"
+    headers = _signed_webhook_headers(body, secret="webhook-secret")
+    build_response = client.post(
+        "/api/workflow-webhooks/build-notify",
+        content=body,
+        headers=headers,
+    )
+    deploy_response = client.post(
+        "/api/workflow-webhooks/deploy-notify",
+        content=body,
+        headers=headers,
+    )
+
+    assert build_response.status_code == 202
+    assert deploy_response.status_code == 202
+    assert build_response.json()["event_id"] != deploy_response.json()["event_id"]
+
+    events = InternalEventBus(tmp_path / "runtime" / "internal-events.json").list_events()
+    assert len(events) == 2
+    assert {event.event_id for event in events} == {
+        build_response.json()["event_id"],
+        deploy_response.json()["event_id"],
+    }
+    assert {event.event_type for event in events} == {
+        "external.webhook.build-notify",
+        "external.webhook.deploy-notify",
+    }
+    assert {event.source.source_name for event in events if event.source is not None} == {
+        "build-notify",
+        "deploy-notify",
+    }
+    assert [event.idempotency_key for event in events] == [None, None]
+
+
+@pytest.mark.parametrize(
+    "header_value, expected_error",
+    [
+        (None, "Webhook signature is invalid or missing"),
+        ("invalid", "Webhook signature is invalid or missing"),
+    ],
+)
+def test_workflow_webhook_ingress_rejects_missing_or_malformed_signature(
+    tmp_path: Path, header_value: str | None, expected_error: str, monkeypatch
+) -> None:
+    monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
+    _write_workflow_webhook_config(tmp_path)
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    body = b"{\"target\":\"demo\"}"
+    headers = {"Content-Type": "application/json"}
+    if header_value is not None:
+        headers["X-Agent-Sandbox-Signature-256"] = header_value
+
+    response = client.post("/api/workflow-webhooks/build-notify", content=body, headers=headers)
+
+    assert response.status_code == 401
+    assert response.json()["error"] == expected_error
+
+
+def test_workflow_webhook_ingress_rejects_bad_hmac(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
+    _write_workflow_webhook_config(tmp_path)
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    body = b"{\"target\":\"demo\"}"
+    response = client.post(
+        "/api/workflow-webhooks/build-notify",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Agent-Sandbox-Signature-256": "sha256=" + ("0" * 64),
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"] == "Webhook signature is invalid or missing"
+
+
+def test_workflow_webhook_ingress_rejects_invalid_json_and_non_object_body(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
+    _write_workflow_webhook_config(tmp_path)
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    invalid_json = client.post(
+        "/api/workflow-webhooks/build-notify",
+        content=b"not-json",
+        headers={
+            "Content-Type": "application/json",
+            "X-Agent-Sandbox-Signature-256": "sha256=" + ("1" * 64),
+        },
+    )
+    non_object_json = client.post(
+        "/api/workflow-webhooks/build-notify",
+        content=b"[1,2,3]",
+        headers={
+            "Content-Type": "application/json",
+            "X-Agent-Sandbox-Signature-256": "sha256=" + ("1" * 64),
+        },
+    )
+
+    assert invalid_json.status_code == 400
+    assert invalid_json.json()["error"] == "Request body must be valid JSON"
+    assert non_object_json.status_code == 400
+    assert non_object_json.json()["error"] == "Request body must be a JSON object"
+
+
+def test_workflow_webhook_ingress_rejects_missing_secret_and_unknown_slug(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_workflow_webhook_config(tmp_path, secret_env="MISSING_WEBHOOK_SECRET")
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    body = b"{\"target\":\"demo\"}"
+    response_missing_secret = client.post(
+        "/api/workflow-webhooks/build-notify",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Agent-Sandbox-Signature-256": "sha256=" + ("1" * 64),
+        },
+    )
+
+    _write_workflow_webhook_config(tmp_path, slug="other-slug", secret_env="WEBHOOK_SECRET")
+    monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
+    response_unknown_slug = client.post(
+        "/api/workflow-webhooks/build-notify",
+        content=body,
+        headers=_signed_webhook_headers(body, secret="webhook-secret"),
+    )
+
+    assert response_missing_secret.status_code == 500
+    assert "MISSING_WEBHOOK_SECRET" in response_missing_secret.json()["error"]
+    assert response_unknown_slug.status_code == 404
+    assert response_unknown_slug.json()["error"] == "Webhook trigger not found for slug: build-notify"
+
+
+def test_workflow_webhook_ingress_rejects_duplicate_active_slug(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("WEBHOOK_SECRET", "webhook-secret")
+    _write_workflow_webhook_config(tmp_path, duplicate=True)
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    body = b"{\"target\":\"demo\"}"
+    response = client.post(
+        "/api/workflow-webhooks/build-notify",
+        content=body,
+        headers=_signed_webhook_headers(body, secret="webhook-secret"),
+    )
+
+    assert response.status_code == 409
+    assert "Webhook trigger slugs must be globally unique across active config" in response.json()[
+        "error"
+    ]
 
 
 def test_admin_web_config_defaults_to_none_without_password(monkeypatch) -> None:
