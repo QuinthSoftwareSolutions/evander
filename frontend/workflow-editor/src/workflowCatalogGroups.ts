@@ -57,8 +57,8 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
     {
       key: "git",
       label: "Git",
-      description: "Start from repository events.",
-      prefixes: ["trigger:git:"],
+      description: "Start from repository or CI activity.",
+      prefixes: ["trigger:git:", "trigger:ci:"],
     },
   ],
   gate: [

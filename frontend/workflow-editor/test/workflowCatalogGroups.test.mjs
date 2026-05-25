@@ -84,6 +84,7 @@ test("groups trigger node types into domain families", () => {
     catalogNode("trigger", "trigger:ticket:created", "Ticket created"),
     catalogNode("trigger", "trigger:cron", "Cron"),
     catalogNode("trigger", "trigger:event", "Internal event"),
+    catalogNode("trigger", "trigger:ci:run:completed", "CI run completed"),
     catalogNode("trigger", "trigger:git:push", "Git push"),
   ], "trigger");
 
@@ -93,6 +94,11 @@ test("groups trigger node types into domain families", () => {
     "Tickets & reviews",
     "Communications",
     "Git",
+  ]);
+  const gitGroup = groups.find((group) => group.label === "Git");
+  assert.deepEqual(gitGroup?.entries.map((entry) => entry.type), [
+    "trigger:ci:run:completed",
+    "trigger:git:push",
   ]);
 });
 
