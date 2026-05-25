@@ -47,8 +47,9 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
     {
       key: "communications",
       label: "Communications",
-      description: "Start from inbound chat, Teams, Discord, or email activity.",
+      description: "Start from inbound chat, provider-neutral communication targets, Teams, Discord, or email activity.",
       prefixes: [
+        "trigger:communication:",
         "trigger:discord:",
         "trigger:teams:",
         "trigger:email:",

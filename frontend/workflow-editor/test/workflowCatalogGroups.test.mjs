@@ -80,20 +80,49 @@ test("groups effect node types by related functionality", () => {
 
 test("groups trigger node types into domain families", () => {
   const groups = groupWorkflowNodeCatalogEntries([
+    catalogNode("trigger", "trigger:communication:new-message", "Communication message"),
+    catalogNode("trigger", "trigger:discord:new-message", "Discord message"),
     catalogNode("trigger", "trigger:teams:new-message", "Teams message"),
+    catalogNode("trigger", "trigger:email:new-message", "Email message"),
     catalogNode("trigger", "trigger:ticket:created", "Ticket created"),
     catalogNode("trigger", "trigger:cron", "Cron"),
     catalogNode("trigger", "trigger:event", "Internal event"),
     catalogNode("trigger", "trigger:git:push", "Git push"),
   ], "trigger");
 
-  assert.deepEqual(groups.map((group) => group.label), [
-    "Scheduled",
-    "Platform events",
-    "Tickets & reviews",
-    "Communications",
-    "Git",
-  ]);
+  assert.deepEqual(
+    groups.map((group) => ({
+      label: group.label,
+      types: group.entries.map((entry) => entry.type),
+    })),
+    [
+      {
+        label: "Scheduled",
+        types: ["trigger:cron"],
+      },
+      {
+        label: "Platform events",
+        types: ["trigger:event"],
+      },
+      {
+        label: "Tickets & reviews",
+        types: ["trigger:ticket:created"],
+      },
+      {
+        label: "Communications",
+        types: [
+          "trigger:communication:new-message",
+          "trigger:discord:new-message",
+          "trigger:email:new-message",
+          "trigger:teams:new-message",
+        ],
+      },
+      {
+        label: "Git",
+        types: ["trigger:git:push"],
+      },
+    ],
+  );
 });
 
 test("groups pull request query nodes with git metadata", () => {
