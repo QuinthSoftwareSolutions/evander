@@ -33,6 +33,7 @@ from agent_sandbox.events.models import (
     EffectDefinitionDiscriminated,
     GateDefinitionDiscriminated,
     QueryDefinitionDiscriminated,
+    materialize_node_definition,
     TriggerDefinitionDiscriminated,
 )
 from agent_sandbox.schema_bootstrap import bootstrap_default_node_schemas
@@ -817,6 +818,21 @@ class OrchestrationCoreConfig(BaseModel):
             duplicate_list = ", ".join(duplicates)
             raise ValueError(
                 f"Node IDs must be globally unique across triggers, gates, effects, and queries: {duplicate_list}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_unique_webhook_trigger_slugs(self) -> OrchestrationCoreConfig:
+        slugs = [
+            str(getattr(materialize_node_definition(trigger), "slug")).strip()
+            for trigger in self.triggers
+            if str(trigger.type).strip() == "trigger:http:webhook"
+        ]
+        duplicates = sorted(slug for slug, count in Counter(slugs).items() if count > 1)
+        if duplicates:
+            duplicate_list = ", ".join(duplicates)
+            raise ValueError(
+                f"Webhook trigger slugs must be globally unique across active config: {duplicate_list}"
             )
         return self
 

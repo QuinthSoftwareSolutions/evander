@@ -1558,6 +1558,7 @@ def _field(
 _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:cron": "Start a workflow on a recurring cron schedule.",
     "trigger:event": "Start when an internal workflow event is emitted.",
+    "trigger:http:webhook": "Start from a signed HTTP webhook delivered to a public endpoint.",
     "trigger:ticket:created": "Start when a tracked ticket is created.",
     "trigger:ticket:changed": "Start when a tracked ticket changes state or metadata.",
     "trigger:issue:comment-created": "Start when a tracked issue receives a new comment.",
@@ -1716,6 +1717,36 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         fields=[
             _field("event_type", "Event type", "string", required=True),
             _field("correlation_key", "Correlation key", "string"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:http:webhook",
+        label="Webhook",
+        fields=[
+            _field(
+                "slug",
+                "Slug",
+                "string",
+                required=True,
+                description="Public webhook path segment. Must match [A-Za-z0-9_.-]+.",
+                placeholder="build-notify",
+            ),
+            _field(
+                "secret_env",
+                "Secret env",
+                "string",
+                required=True,
+                description="Environment variable that stores the shared webhook HMAC secret.",
+                placeholder="WEBHOOK_SECRET",
+            ),
+            _field(
+                "event_type",
+                "Event type",
+                "string",
+                description="Defaults to webhook.<slug> when omitted.",
+                placeholder="webhook.build-notify",
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

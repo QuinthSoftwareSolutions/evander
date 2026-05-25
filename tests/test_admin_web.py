@@ -521,6 +521,22 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "event_type",
         "correlation_key",
     ]
+    webhook_trigger = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "trigger:http:webhook"
+    )
+    assert webhook_trigger["description"] == (
+        "Start from a signed HTTP webhook delivered to a public endpoint."
+    )
+    assert [field["key"] for field in webhook_trigger["fields"]] == [
+        "slug",
+        "secret_env",
+        "event_type",
+    ]
+    assert [field["required"] for field in webhook_trigger["fields"]] == [
+        True,
+        True,
+        False,
+    ]
     issue_comment = next(
         node
         for node in catalog_payload["nodes"]

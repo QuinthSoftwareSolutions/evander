@@ -84,6 +84,7 @@ test("groups trigger node types into domain families", () => {
     catalogNode("trigger", "trigger:ticket:created", "Ticket created"),
     catalogNode("trigger", "trigger:cron", "Cron"),
     catalogNode("trigger", "trigger:event", "Internal event"),
+    catalogNode("trigger", "trigger:http:webhook", "Webhook"),
     catalogNode("trigger", "trigger:git:push", "Git push"),
   ], "trigger");
 
@@ -94,6 +95,11 @@ test("groups trigger node types into domain families", () => {
     "Communications",
     "Git",
   ]);
+  assert.ok(
+    groups
+      .find((group) => group.label === "Platform events")
+      ?.entries.some((entry) => entry.type === "trigger:http:webhook"),
+  );
 });
 
 test("groups pull request query nodes with git metadata", () => {

@@ -322,6 +322,7 @@ const NODE_KIND_DESCRIPTIONS: Record<WorkflowNodeKind, string> = {
 const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "trigger:cron": "Start a workflow on a recurring cron schedule.",
   "trigger:event": "Start when an internal workflow event is emitted.",
+  "trigger:http:webhook": "Start from a signed HTTP webhook delivered to a public endpoint.",
   "trigger:ticket:created": "Start when a tracked ticket is created.",
   "trigger:ticket:changed": "Start when a tracked ticket changes state or metadata.",
   "trigger:issue:comment-created": "Start when a tracked issue receives a new comment.",
@@ -1421,6 +1422,16 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   }
   if (kind === "trigger" && type === "trigger:event") {
     return { id, display_name: "Internal event", type, event_type: "custom.operator_event" };
+  }
+  if (kind === "trigger" && type === "trigger:http:webhook") {
+    return {
+      id,
+      display_name: "Webhook",
+      type,
+      slug: `webhook-${id}`,
+      secret_env: "WEBHOOK_SECRET",
+      event_type: `webhook.webhook-${id}`,
+    };
   }
   if (kind === "trigger" && type === "trigger:ticket:created") {
     return { id, display_name: "Ticket created", type, directories: ["root"] };
