@@ -14,15 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
-from agent_sandbox.admin.service import (
-    AdminService,
-    SAMPLE_APPROVAL_BOUNDARY_NODE_ID,
-    SAMPLE_AGENT_PROMPT_NODE_ID,
-    SAMPLE_SAFE_STOP_NODE_ID,
-    SAMPLE_TRIGGER_NODE_ID,
-    SAMPLE_WORKFLOW_RUN_ID,
-    SAMPLE_WORKFLOW_TRACE_ID,
-)
+from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.service import (
     CapacityControlPlanePayload,
     CapacityControlPlaneStoragePayload,
@@ -77,6 +69,7 @@ from agent_sandbox.models import (
     VmSummary,
     WorkerSummary,
 )
+from agent_sandbox.orchestration.host_polling import wake_socket_path_for_lock
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
 from agent_sandbox.worker.models import WorkerSessionRecord
 
@@ -162,7 +155,11 @@ def _set_azure_sso_env(
 
 
 def _admin_web_user_store(tmp_path: Path) -> AdminWebUserStore:
-    return AdminWebUserStore(tmp_path / "runtime" / "admin-web-users.json")
+    runtime_dir = tmp_path / "runtime"
+    return AdminWebUserStore(
+        runtime_dir / "admin-web.db",
+        legacy_json_path=runtime_dir / "admin-web-users.json",
+    )
 
 
 def _complete_azure_login(
@@ -527,15 +524,6 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         if node["type"] == "trigger:issue:comment-created"
     )
     assert [field["key"] for field in issue_comment["fields"]] == [
-        "provider",
-        "organization_url",
-        "project",
-        "directories",
-    ]
-    issue_comment_alias = next(
-        node for node in catalog_payload["nodes"] if node["type"] == "trigger:issue:new-comment"
-    )
-    assert [field["key"] for field in issue_comment_alias["fields"]] == [
         "provider",
         "organization_url",
         "project",
@@ -906,139 +894,6 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "codex_skills",
         "directory_path",
     }
-
-
-def test_admin_service_sample_workflow_launch_and_reset_are_idempotent(
-    tmp_path: Path,
-) -> None:
-    service = AdminService(write_config(tmp_path))
-
-    initial_state = service.read_workflow_sample_state()
-    assert initial_state.active is False
-    assert initial_state.launched_at is None
-    assert initial_state.run is None
-    assert initial_state.detail is None
-    assert initial_state.current_step is not None
-    assert initial_state.current_step.step_id == "launch"
-
-    launched_once = service.launch_workflow_sample()
-    launched_twice = service.launch_workflow_sample()
-    assert launched_once.active is True
-    assert launched_once.launched_at is not None
-    assert launched_twice.active is True
-    assert launched_twice.launched_at == launched_once.launched_at
-    assert launched_once.run is not None
-    assert launched_once.detail is not None
-    assert launched_once.run.event_id == SAMPLE_WORKFLOW_RUN_ID
-    assert launched_once.detail.event_id == SAMPLE_WORKFLOW_RUN_ID
-    assert launched_once.detail.trace_id == SAMPLE_WORKFLOW_TRACE_ID
-    assert launched_once.current_step is not None
-    assert launched_once.current_step.step_id == "inspect"
-
-    reset_once = service.reset_workflow_sample()
-    reset_twice = service.reset_workflow_sample()
-    assert reset_once.active is False
-    assert reset_once.launched_at is None
-    assert reset_once.run is None
-    assert reset_once.detail is None
-    assert reset_once.current_step is not None
-    assert reset_once.current_step.step_id == "launch"
-    assert reset_twice.active is False
-    assert reset_twice.launched_at is None
-
-
-def test_admin_web_sample_workflow_routes_are_in_memory_and_side_effect_free(
-    tmp_path: Path,
-) -> None:
-    service = AdminService(write_config(tmp_path))
-    runtime_dir = service.config.runtime_dir
-    with TestClient(create_app(service)) as client:
-        before_files = _snapshot_runtime_files(runtime_dir)
-
-        inactive_response = client.get("/api/workflow-editor/sample-workflow")
-        assert inactive_response.status_code == 200
-        inactive_payload = inactive_response.json()
-        assert inactive_payload["active"] is False
-        assert inactive_payload["launched_at"] is None
-        assert inactive_payload["run"] is None
-        assert inactive_payload["detail"] is None
-        assert [step["step_id"] for step in inactive_payload["tutorial_steps"]] == [
-            "launch",
-            "inspect",
-            "approval",
-            "safe-stop",
-            "reset",
-        ]
-        assert inactive_payload["current_step"]["step_id"] == "launch"
-
-        launch_response = client.post("/api/workflow-editor/sample-workflow/launch")
-        assert launch_response.status_code == 200
-        launch_payload = launch_response.json()
-        assert launch_payload["active"] is True
-        assert launch_payload["launched_at"] is not None
-        assert launch_payload["run"]["event_id"] == SAMPLE_WORKFLOW_RUN_ID
-        assert launch_payload["run"]["trace_id"] == SAMPLE_WORKFLOW_TRACE_ID
-        assert launch_payload["detail"]["event_id"] == SAMPLE_WORKFLOW_RUN_ID
-        assert launch_payload["detail"]["trace_id"] == SAMPLE_WORKFLOW_TRACE_ID
-        assert launch_payload["current_step"]["step_id"] == "inspect"
-        assert launch_payload["tutorial_steps"][0]["status"] == "completed"
-        assert launch_payload["tutorial_steps"][1]["status"] == "active"
-
-        repeat_launch_response = client.post("/api/workflow-editor/sample-workflow/launch")
-        assert repeat_launch_response.status_code == 200
-        assert repeat_launch_response.json()["launched_at"] == launch_payload["launched_at"]
-
-        detail_queries = [
-            ("event_id", {"event_id": SAMPLE_WORKFLOW_RUN_ID}, "event_id"),
-            ("run_id", {"run_id": SAMPLE_WORKFLOW_RUN_ID}, "run_id"),
-            ("trace_id", {"trace_id": SAMPLE_WORKFLOW_TRACE_ID}, "trace_id"),
-        ]
-        for lookup_key, params, matched_by in detail_queries:
-            detail_response = client.get("/api/workflow-editor/run-detail", params=params)
-            assert detail_response.status_code == 200
-            detail_payload = detail_response.json()
-            assert detail_payload["event_id"] == SAMPLE_WORKFLOW_RUN_ID
-            assert detail_payload["trace_id"] == SAMPLE_WORKFLOW_TRACE_ID
-            assert detail_payload["matched_by"] == [matched_by]
-            assert detail_payload["lookup"][lookup_key] == params[lookup_key]
-            assert [node["node_id"] for node in detail_payload["nodes"]] == [
-                SAMPLE_TRIGGER_NODE_ID,
-                SAMPLE_AGENT_PROMPT_NODE_ID,
-                SAMPLE_APPROVAL_BOUNDARY_NODE_ID,
-                SAMPLE_SAFE_STOP_NODE_ID,
-            ]
-            assert detail_payload["graph"]["snapshot"]["revision"] == "sample:first-run:revision"
-            assert detail_payload["graph"]["snapshot"]["snapshot_type"] == "simulated_in_memory_sample"
-            trigger_node = detail_payload["nodes"][0]
-            agent_node = detail_payload["nodes"][1]
-            approval_node = detail_payload["nodes"][2]
-            safe_stop_node = detail_payload["nodes"][3]
-            assert trigger_node["node_type"] == "trigger:event"
-            assert agent_node["node_type"] == "effect:agent:prompt"
-            assert approval_node["node_type"] == "gate:await-agent"
-            assert safe_stop_node["node_type"] == "effect:notification:send"
-            assert agent_node["tool_call_links"][0]["status"] == "simulated_in_memory"
-            assert agent_node["agent_links"][0]["session_status"] == "session_missing"
-            assert approval_node["approval_links"][0]["status"] == "pending"
-            assert safe_stop_node["error"] == "Simulated safe stop: the sample never touches runtime stores."
-            assert safe_stop_node["outputs"]["safe_stop"] is True
-            assert detail_payload["tool_call_links"][0]["workflow_run_id"] == SAMPLE_WORKFLOW_RUN_ID
-            assert detail_payload["tool_call_links"][0]["status"] == "simulated_in_memory"
-
-        reset_response = client.delete("/api/workflow-editor/sample-workflow")
-        assert reset_response.status_code == 200
-        reset_payload = reset_response.json()
-        assert reset_payload["active"] is False
-        assert reset_payload["launched_at"] is None
-        assert reset_payload["run"] is None
-        assert reset_payload["detail"] is None
-        assert reset_payload["current_step"]["step_id"] == "launch"
-
-        repeat_reset_response = client.delete("/api/workflow-editor/sample-workflow")
-        assert repeat_reset_response.status_code == 200
-        assert repeat_reset_response.json()["active"] is False
-
-        assert _snapshot_runtime_files(runtime_dir) == before_files
 
 
 def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
@@ -4352,11 +4207,18 @@ def test_workflow_event_api_token_from_azure_session_publishes_user_metadata(
 
 
 def test_workflow_event_api_published_event_is_consumed_by_event_trigger(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime_dir = tmp_path / "runtime"
     service = AdminService(write_config(tmp_path))
     client = TestClient(create_app(service))
+    wake_paths: list[Path] = []
+
+    def _fake_notify(lock_path: Path) -> bool:
+        wake_paths.append(wake_socket_path_for_lock(lock_path))
+        return True
+
+    monkeypatch.setattr("agent_sandbox.admin.service.notify_wake_socket_for_lock", _fake_notify)
     token = client.post("/api/workflow-events/token").json()["access_token"]
     publish_response = client.post(
         "/api/workflow-events",
@@ -4391,6 +4253,7 @@ def test_workflow_event_api_published_event_is_consumed_by_event_trigger(
     )
 
     assert publish_response.status_code == 202
+    assert wake_paths == [wake_socket_path_for_lock(worker_config.lock_path)]
     assert result.events_published == 1
     assert len(pending) == 1
     assert pending[0].trigger_type == "trigger:event"
@@ -4976,6 +4839,90 @@ def test_admin_web_user_api_rejects_regular_azure_user(tmp_path: Path, monkeypat
     assert allowed_api.status_code == 200
     assert list_users.status_code == 403
     assert create_user.status_code == 403
+
+
+def test_admin_web_workflow_tutorial_preference_defaults_and_persists(
+    tmp_path: Path,
+) -> None:
+    app = create_app(AdminService(write_config(tmp_path)))
+    client = TestClient(app)
+
+    initial = client.get("/api/admin/user-preferences/workflow-tutorial-progress")
+    saved = client.put(
+        "/api/admin/user-preferences/workflow-tutorial-progress",
+        json={
+            "completed_tutorial_ids": ["unknown", "first-steps", "first-steps"],
+            "skipped_tutorial_ids": ["first-steps", "unknown"],
+        },
+    )
+    loaded = client.get("/api/admin/user-preferences/workflow-tutorial-progress")
+
+    assert initial.status_code == 200
+    assert initial.json() == {"completed_tutorial_ids": [], "skipped_tutorial_ids": []}
+    assert saved.status_code == 200
+    assert saved.json() == {
+        "completed_tutorial_ids": ["first-steps"],
+        "skipped_tutorial_ids": [],
+    }
+    assert loaded.json() == saved.json()
+    assert app.state.admin_user_store.get_user_preference(
+        "admin", "workflow_tutorial_progress"
+    ) == saved.json()
+
+
+def test_admin_web_workflow_tutorial_preference_uses_local_password_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    app = create_app(AdminService(write_config(tmp_path)))
+    client = TestClient(app)
+
+    unauthenticated = client.get("/api/admin/user-preferences/workflow-tutorial-progress")
+    login = client.post(
+        "/api/auth/login", json={"username": "admin", "password": "swordfish"}
+    )
+    saved = client.put(
+        "/api/admin/user-preferences/workflow-tutorial-progress",
+        json={"skippedTutorialIds": ["first-steps"]},
+    )
+
+    assert unauthenticated.status_code == 401
+    assert login.status_code == 200
+    assert saved.status_code == 200
+    assert saved.json() == {
+        "completed_tutorial_ids": [],
+        "skipped_tutorial_ids": ["first-steps"],
+    }
+    assert app.state.admin_user_store.get_user_preference(
+        "admin", "workflow_tutorial_progress"
+    ) == saved.json()
+
+
+def test_admin_web_workflow_tutorial_preference_uses_azure_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _set_azure_sso_env(monkeypatch, allowed_users="operator@example.com,other@example.com")
+    app = create_app(AdminService(write_config(tmp_path)))
+    client = TestClient(app)
+
+    callback = _complete_azure_login(app, client, login="operator@example.com")
+    saved = client.put(
+        "/api/admin/user-preferences/workflow-tutorial-progress",
+        json={"completed_tutorial_ids": ["first-steps"]},
+    )
+
+    assert callback.status_code == 303
+    assert saved.status_code == 200
+    assert app.state.admin_user_store.get_user_preference(
+        "operator@example.com", "workflow_tutorial_progress"
+    ) == saved.json()
+    assert (
+        app.state.admin_user_store.get_user_preference(
+            "other@example.com", "workflow_tutorial_progress"
+        )
+        is None
+    )
 
 
 def test_admin_web_exposes_admin_domain_smoke_endpoints(

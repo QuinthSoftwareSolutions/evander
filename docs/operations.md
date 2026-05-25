@@ -255,12 +255,13 @@ Azure SSO enabling sequence:
    `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS`.
 6. Restart `agent-sandbox-admin-web`.
 
-Azure SSO users are stored in `runtime/admin-web-users.json`, keyed by normalized login/email.
-When that file is missing or empty, `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS` seeds those
-users with the `admin` role. After that first bootstrap, the runtime store is the source of truth.
-Admins manage membership and the `admin` / `regular` role from the Admin Web Users tab. Removing an
-Azure user from the runtime store invalidates their existing local admin session on the next
-authenticated request.
+Azure SSO users are stored in `runtime/admin-web.db`, keyed by normalized login/email. When the
+SQLite user table is empty, `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS` seeds those users with the
+`admin` role. A legacy `runtime/admin-web-users.json` file is imported once when the SQLite table is
+empty. After that first bootstrap, the SQLite runtime store is the source of truth. Admins manage
+membership and the `admin` / `regular` role from the Admin Web Users tab. Removing an Azure user
+from the runtime store invalidates their existing local admin session on the next authenticated
+request.
 
 The admin backend performs the token exchange server-side, validates issuer/audience/tenant, then mints the same local signed session cookie used by the password flow. Privileged lock/unlock behavior remains tied to that local admin session rather than the upstream Azure token.
 
@@ -1568,6 +1569,11 @@ Failure recovery:
   - queue: `runtime/trigger-orchestrator-events.json`
   - cursor: `runtime/trigger-orchestrator-cursors.json`
   - lock: `runtime/trigger-orchestrator.lock`
+  - wake socket: `runtime/trigger-orchestrator.wake.sock`
+- The trigger and effect workers remain separate processes, but host-owned ingress sends best-effort
+  wake signals over derived Unix sockets (`runtime/trigger-orchestrator.wake.sock` and
+  `runtime/effect-orchestrator.wake.sock`). The durable trigger queue remains the source of truth; a
+  missing wake socket falls back to the normal polling interval.
 
 Run one cycle for validation/debug:
 

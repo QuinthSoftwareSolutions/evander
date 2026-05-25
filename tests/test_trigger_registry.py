@@ -49,7 +49,6 @@ def test_default_registry_includes_all_known_trigger_types() -> None:
         "trigger:ticket:created",
         "trigger:ticket:changed",
         "trigger:issue:comment-created",
-        "trigger:issue:new-comment",
         "trigger:ado:work-item-matching",
         "trigger:script-run-request",
         "trigger:communication:new-message",

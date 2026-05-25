@@ -119,7 +119,6 @@ def register_providers() -> dict[str, dict[str, type]]:
             "trigger:ticket:created": TicketCreatedTriggerProvider,
             "trigger:ticket:changed": TicketChangedTriggerProvider,
             "trigger:issue:comment-created": IssueCommentCreatedTriggerProvider,
-            "trigger:issue:new-comment": IssueCommentCreatedTriggerProvider,
             "trigger:ado:work-item-matching": AdoWorkItemMatchingTriggerProvider,
             "trigger:script-run-request": ScriptRunRequestTriggerProvider,
             "trigger:communication:new-message": CommunicationNewMessageTriggerProvider,

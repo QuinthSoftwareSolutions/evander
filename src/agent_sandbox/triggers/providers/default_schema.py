@@ -33,7 +33,6 @@ _TRIGGER_MODEL_BY_TYPE = {
     "trigger:ticket:created": TicketCreatedTriggerDefinition,
     "trigger:ticket:changed": TicketChangedTriggerDefinition,
     "trigger:issue:comment-created": IssueCommentCreatedTriggerDefinition,
-    "trigger:issue:new-comment": IssueCommentCreatedTriggerDefinition,
     "trigger:ado:work-item-matching": AdoWorkItemMatchingTriggerDefinition,
     "trigger:script-run-request": ScriptRunRequestTriggerDefinition,
     "trigger:communication:new-message": CommunicationNewMessageTriggerDefinition,

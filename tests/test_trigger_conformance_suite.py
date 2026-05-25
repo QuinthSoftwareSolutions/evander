@@ -1747,7 +1747,7 @@ def test_conformance_orchestrator_integration_locking_jitter_and_idempotency(
         sleep_calls.append(value)
         raise RuntimeError("stop-loop")
 
-    monkeypatch.setattr("agent_sandbox.daemons.trigger_orchestrator.time.sleep", _fake_sleep)
+    monkeypatch.setattr(worker._kernel._sleeper, "sleep", _fake_sleep)
     monkeypatch.setattr(
         "agent_sandbox.daemons.trigger_orchestrator.random.uniform", lambda _a, _b: 1.25
     )
