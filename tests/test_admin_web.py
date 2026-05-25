@@ -686,6 +686,31 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "project",
         "cursor",
     ]
+    communication_messages = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "query:communication:messages"
+    )
+    assert [field["key"] for field in communication_messages["fields"]] == [
+        "communication_target_id",
+        "limit",
+        "cursor",
+        "before_cursor",
+        "thread_id",
+        "directory_path",
+    ]
+    communication_messages_fields = {
+        field["key"]: field for field in communication_messages["fields"]
+    }
+    assert communication_messages_fields["communication_target_id"]["kind"] == "enum"
+    assert "read-capable Teams or Discord" in communication_messages_fields[
+        "communication_target_id"
+    ]["description"]
+    assert communication_messages_fields["limit"]["default_value"] == 50
+    assert "Maximum 200" in communication_messages_fields["limit"]["description"]
+    assert "Discord targets reject thread_id" in communication_messages_fields["thread_id"][
+        "description"
+    ]
     vm_create = next(
         node for node in catalog_payload["nodes"] if node["type"] == "effect:vm:create"
     )
@@ -912,7 +937,7 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
                     "provider": "teams",
                     "kind": "teams",
                     "address": "team/channel",
-                    "policy": {"capabilities": ["write"]},
+                    "policy": {"capabilities": ["write", "read"]},
                 },
                 {
                     "id": "root-notify",
@@ -933,7 +958,7 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
                     "provider": "discord",
                     "kind": "discord",
                     "address": "123456789012345681",
-                    "policy": {"capabilities": ["reply"]},
+                    "policy": {"capabilities": ["reply", "read"]},
                 },
                 {
                     "id": "mail-write",
@@ -956,14 +981,14 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
                     "provider": "teams",
                     "kind": "teams",
                     "address": "team/ops",
-                    "policy": {"capabilities": ["reply"]},
+                    "policy": {"capabilities": ["reply", "read"]},
                 },
                 {
                     "id": "ops-discord",
                     "provider": "discord",
                     "kind": "discord",
                     "address": "123456789012345678",
-                    "policy": {"capabilities": ["write"]},
+                    "policy": {"capabilities": ["write", "read"]},
                 },
                 {
                     "id": "ops-email-notify",
@@ -1036,6 +1061,8 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     send_ops = get_options(ops_payload, "effect:communication:send-message")
     notify_root = get_options(root_payload, "effect:notification:send")
     notify_ops = get_options(ops_payload, "effect:notification:send")
+    read_root = get_options(root_payload, "query:communication:messages")
+    read_ops = get_options(ops_payload, "query:communication:messages")
 
     send_target_description = get_field(
         root_payload, "effect:communication:send-message", "communication_target_id"
@@ -1059,12 +1086,16 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     assert set(send_ops) == {"ops-chat", "ops-discord"}
     assert set(notify_root) == {"root-notify", "root-email-notify"}
     assert set(notify_ops) == {"root-notify", "root-email-notify", "ops-email-notify"}
+    assert set(read_root) == {"root-chat", "root-discord-reply-only"}
+    assert set(read_ops) == {"root-discord-reply-only", "ops-chat", "ops-discord"}
 
     root_chat = send_root["root-chat"]
     assert root_chat["metadata"]["provider"] == "teams"
     assert root_chat["metadata"]["address"] == "team/channel"
     assert root_chat["metadata"]["target_shape"] == "teams_channel"
-    assert root_chat["metadata"]["policy_capabilities"] == ["write"]
+    read_root_chat = read_root["root-chat"]
+    assert read_root_chat["metadata"]["policy_capabilities"] == ["read", "write"]
+    assert root_chat["metadata"]["policy_capabilities"] == ["read", "write"]
     assert root_chat["metadata"]["thread_id"]["top_level"]["supported"] is True
     assert root_chat["metadata"]["thread_id"]["reply"]["supported"] is False
     assert root_chat["metadata"]["thread_id"]["reply"]["supported_target_shapes"] == [
@@ -1074,14 +1105,14 @@ def test_admin_web_workflow_catalog_lists_directory_communication_send_targets(
     ops_chat = send_ops["ops-chat"]
     assert ops_chat["metadata"]["provider"] == "teams"
     assert ops_chat["metadata"]["target_shape"] == "teams_channel"
-    assert ops_chat["metadata"]["policy_capabilities"] == ["reply"]
+    assert ops_chat["metadata"]["policy_capabilities"] == ["read", "reply"]
     assert ops_chat["metadata"]["thread_id"]["top_level"]["supported"] is False
     assert ops_chat["metadata"]["thread_id"]["reply"]["supported"] is True
 
     ops_discord = send_ops["ops-discord"]
     assert ops_discord["metadata"]["provider"] == "discord"
     assert ops_discord["metadata"]["target_shape"] == "discord_channel"
-    assert ops_discord["metadata"]["policy_capabilities"] == ["write"]
+    assert ops_discord["metadata"]["policy_capabilities"] == ["read", "write"]
     assert ops_discord["metadata"]["thread_id"]["top_level"]["supported"] is True
     assert ops_discord["metadata"]["thread_id"]["reply"]["supported"] is False
 

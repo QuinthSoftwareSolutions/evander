@@ -158,6 +158,12 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       prefixes: ["query:issue:", "query:ado:"],
     },
     {
+      key: "communications",
+      label: "Communications",
+      description: "Read messages from Teams or Discord communication targets.",
+      prefixes: ["query:communication:"],
+    },
+    {
       key: "git-pr",
       label: "Git & PRs",
       description: "Read Git or pull request metadata.",

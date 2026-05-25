@@ -101,6 +101,7 @@ test("groups pull request query nodes with git metadata", () => {
     catalogNode("query", "query:pull-request:list", "Pull request list"),
     catalogNode("query", "query:git:pr-note", "Git PR note"),
     catalogNode("query", "query:issue:get", "Issue get"),
+    catalogNode("query", "query:communication:messages", "Communication messages"),
   ], "query");
 
   assert.deepEqual(
@@ -112,6 +113,10 @@ test("groups pull request query nodes with git metadata", () => {
       {
         label: "Work tracking",
         types: ["query:issue:get"],
+      },
+      {
+        label: "Communications",
+        types: ["query:communication:messages"],
       },
       {
         label: "Git & PRs",
