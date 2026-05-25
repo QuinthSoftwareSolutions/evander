@@ -107,6 +107,7 @@ from agent_sandbox.triggers.providers.teams_meeting_new_transcript import (
 )
 from agent_sandbox.triggers.providers.ticket_changed import TicketChangedTriggerProvider
 from agent_sandbox.triggers.providers.ticket_created import TicketCreatedTriggerProvider
+from agent_sandbox.triggers.providers.base import TriggerProviderBase
 
 
 def register_providers() -> dict[str, dict[str, type]]:
@@ -120,6 +121,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "trigger:issue:new-comment": IssueCommentCreatedTriggerProvider,
             "trigger:ado:work-item-matching": AdoWorkItemMatchingTriggerProvider,
             "trigger:script-run-request": ScriptRunRequestTriggerProvider,
+            "trigger:communication:new-message": TriggerProviderBase,
             "trigger:discord:new-message": DiscordNewMessageTriggerProvider,
             "trigger:teams:new-message": TeamsNewMessageTriggerProvider,
             "trigger:teams-meeting:new-transcript": TeamsMeetingNewTranscriptTriggerProvider,

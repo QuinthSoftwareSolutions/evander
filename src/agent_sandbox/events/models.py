@@ -271,6 +271,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "trigger:issue:new-comment": provider_models.IssueCommentCreatedTriggerDefinition,
         "trigger:ado:work-item-matching": provider_models.AdoWorkItemMatchingTriggerDefinition,
         "trigger:script-run-request": provider_models.ScriptRunRequestTriggerDefinition,
+        "trigger:communication:new-message": provider_models.CommunicationNewMessageTriggerDefinition,
         "trigger:discord:new-message": provider_models.DiscordNewMessageTriggerDefinition,
         "trigger:teams:new-message": provider_models.TeamsNewMessageTriggerDefinition,
         "trigger:teams-meeting:new-transcript": (
