@@ -5,6 +5,15 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - Workflow State Runtime Coverage
+
+- Added end-to-end regression coverage for persisted workflow-state reads and
+  writes across multiple graph IDs, including the fast-fail path when state
+  nodes do not have persisted graph metadata.
+- Documented the graph-local workflow-state file, scoping tuple, merge-patch
+  behavior, and optimistic-concurrency conflict handling in the configuration
+  reference.
+
 ## 2026-05-25 - Workflow Tutorial Cleanup
 
 - Removed the obsolete workflow editor in-memory first-run walkthrough, its
