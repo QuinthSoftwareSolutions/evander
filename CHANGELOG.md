@@ -85,6 +85,9 @@ material. Newer entries are added incrementally as changes land.
 - Woke await-agent completion drains through the trigger worker's configured
   effect lock path, so custom workflow runtime directories still hot-drain
   effect work.
+- Fixed explicit Azure DevOps PR trigger polling so completion triggers without
+  a status scan terminal PR states, and explicit feedback events stay unbound in
+  mixed legacy/explicit configurations.
 
 ## 2026-05-24 - Container Worker Manifest Persistence Fix
 

@@ -275,26 +275,141 @@ def test_teams_trigger_requires_targets() -> None:
         )
 
 
-def test_pr_feedback_trigger_requires_org_url_for_ado() -> None:
-    with pytest.raises(ValueError, match="organization_url is required"):
-        PullRequestNewFeedbackTriggerDefinition.model_validate(
+@pytest.mark.parametrize(
+    ("trigger_cls", "trigger_type"),
+    [
+        (
+            PullRequestNewFeedbackTriggerDefinition,
+            "trigger:pull-request:new-feedback",
+        ),
+        (
+            PullRequestCompletedTriggerDefinition,
+            "trigger:pull-request:completed",
+        ),
+    ],
+)
+def test_pr_triggers_accept_full_criteria_and_preserve_materialized_fields(
+    trigger_cls: type[PullRequestNewFeedbackTriggerDefinition]
+    | type[PullRequestCompletedTriggerDefinition],
+    trigger_type: str,
+) -> None:
+    trigger = materialize_node_definition(
+        TypeAdapter(TriggerDefinitionDiscriminated).validate_python(
             {
-                "id": "t-3",
-                "display_name": "PR feedback",
-                "type": "trigger:pull-request:new-feedback",
+                "id": "t-pr",
+                "display_name": "PR",
+                "type": trigger_type,
+                "provider": "ado",
+                "repo": "repo-1",
+                "directory_path": " root/team-a ",
+                "organization_url": " https://dev.azure.com/example/ ",
+                "project": " Sandbox ",
+                "status": "active",
+                "creator_id": "creator-1",
+                "reviewer_id": "reviewer-1",
+                "source_ref_name": "refs/heads/feature",
+                "target_ref_name": "refs/heads/main",
+                "source_repository_id": "source-repo-1",
+                "repository_id": "repository-1",
+                "min_time": "2026-05-01T00:00:00Z",
+                "max_time": "2026-05-02T00:00:00Z",
+                "query_time_range_type": "created",
+                "include_links": False,
+                "max_comment_length": 0,
+                "tags": "needs-review",
+                "top": 25,
+                "skip": 5,
+                "cursor": "cursor-1",
+            }
+        )
+    )
+
+    assert isinstance(trigger, trigger_cls)
+    assert trigger.provider == "ado"
+    assert trigger.repo == "repo-1"
+    assert trigger.directory_path == " root/team-a "
+    assert trigger.organization_url == "https://dev.azure.com/example"
+    assert trigger.project == "Sandbox"
+    assert trigger.status == "active"
+    assert trigger.creator_id == "creator-1"
+    assert trigger.reviewer_id == "reviewer-1"
+    assert trigger.source_ref_name == "refs/heads/feature"
+    assert trigger.target_ref_name == "refs/heads/main"
+    assert trigger.source_repository_id == "source-repo-1"
+    assert trigger.repository_id == "repository-1"
+    assert trigger.min_time == "2026-05-01T00:00:00Z"
+    assert trigger.max_time == "2026-05-02T00:00:00Z"
+    assert trigger.query_time_range_type == "created"
+    assert trigger.include_links is False
+    assert trigger.max_comment_length == 0
+    assert trigger.tags == "needs-review"
+    assert trigger.top == 25
+    assert trigger.skip == 5
+    assert trigger.cursor == "cursor-1"
+
+
+@pytest.mark.parametrize(
+    ("trigger_cls", "trigger_type"),
+    [
+        (
+            PullRequestNewFeedbackTriggerDefinition,
+            "trigger:pull-request:new-feedback",
+        ),
+        (
+            PullRequestCompletedTriggerDefinition,
+            "trigger:pull-request:completed",
+        ),
+    ],
+)
+def test_pr_triggers_accept_ado_without_repo(
+    trigger_cls: type[PullRequestNewFeedbackTriggerDefinition]
+    | type[PullRequestCompletedTriggerDefinition],
+    trigger_type: str,
+) -> None:
+    trigger = materialize_node_definition(
+        TypeAdapter(TriggerDefinitionDiscriminated).validate_python(
+            {
+                "id": "t-pr-legacy",
+                "display_name": "PR legacy",
+                "type": trigger_type,
                 "provider": "ado",
             }
         )
+    )
+
+    assert isinstance(trigger, trigger_cls)
+    assert trigger.provider == "ado"
+    assert trigger.repo is None
+    assert trigger.organization_url is None
+    assert trigger.project is None
 
 
-def test_pr_completed_trigger_requires_org_url_for_ado() -> None:
-    with pytest.raises(ValueError, match="organization_url is required"):
-        PullRequestCompletedTriggerDefinition.model_validate(
+@pytest.mark.parametrize(
+    ("trigger_cls", "trigger_type"),
+    [
+        (
+            PullRequestNewFeedbackTriggerDefinition,
+            "trigger:pull-request:new-feedback",
+        ),
+        (
+            PullRequestCompletedTriggerDefinition,
+            "trigger:pull-request:completed",
+        ),
+    ],
+)
+def test_pr_triggers_reject_non_string_tags(
+    trigger_cls: type[PullRequestNewFeedbackTriggerDefinition]
+    | type[PullRequestCompletedTriggerDefinition],
+    trigger_type: str,
+) -> None:
+    with pytest.raises(ValueError, match="tags must be a string"):
+        trigger_cls.model_validate(
             {
-                "id": "t-pr-done",
-                "display_name": "PR completed",
-                "type": "trigger:pull-request:completed",
+                "id": "t-pr-tags",
+                "display_name": "PR tags",
+                "type": trigger_type,
                 "provider": "ado",
+                "tags": ["needs-review"],
             }
         )
 

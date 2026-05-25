@@ -630,6 +630,41 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "project",
         "directories",
     ]
+    pr_trigger_field_keys = [
+        "provider",
+        "repo",
+        "directory_path",
+        "organization_url",
+        "project",
+        "status",
+        "creator_id",
+        "reviewer_id",
+        "source_ref_name",
+        "target_ref_name",
+        "source_repository_id",
+        "repository_id",
+        "min_time",
+        "max_time",
+        "query_time_range_type",
+        "include_links",
+        "max_comment_length",
+        "tags",
+        "top",
+        "skip",
+        "cursor",
+    ]
+    pr_feedback_trigger = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "trigger:pull-request:new-feedback"
+    )
+    assert [field["key"] for field in pr_feedback_trigger["fields"]] == pr_trigger_field_keys
+    pr_completed_trigger = next(
+        node
+        for node in catalog_payload["nodes"]
+        if node["type"] == "trigger:pull-request:completed"
+    )
+    assert [field["key"] for field in pr_completed_trigger["fields"]] == pr_trigger_field_keys
     teams_message = next(
         node for node in catalog_payload["nodes"] if node["type"] == "trigger:teams:new-message"
     )

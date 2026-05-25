@@ -160,8 +160,8 @@ Type-specific keys:
 | `trigger:teams:new-message` | `targets` | `user_ids` |
 | `trigger:teams:direct-message` | `sender_user_ids` | `message_filter` |
 | `trigger:email:new-message` | `provider`, `account_identifier`, `mailbox_ids` | `auth_secret_refs` |
-| `trigger:pull-request:new-feedback` | `provider` | `organization_url`, `project` (but `organization_url` becomes required when `provider=ado`) |
-| `trigger:pull-request:completed` | `provider` | `organization_url`, `project` (but `organization_url` becomes required when `provider=ado`) |
+| `trigger:pull-request:new-feedback` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor` |
+| `trigger:pull-request:completed` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor` |
 | `trigger:review:new-request` | — | — |
 | `trigger:git:push` | `path_to_repo` | — |
 
@@ -176,6 +176,13 @@ trigger to a higher frequency still does not replay historical runs.
 normalized `pr` object when the tracked PR reaches a terminal state such as merged, completed,
 closed, or abandoned. Wire `session_id` into `effect:agent:destroy.session_id` when a workflow
 should delete the agent after the tracked PR is terminal.
+
+For Azure DevOps PR triggers, `repo` is the explicit polling mode switch. When `repo` is set,
+`agent-sandbox-ado-worker` lists candidate PRs with the same criteria surface as
+`query:pull-request:list` and stores trigger-owned cursors under the runtime trigger cursor files.
+When `repo` is omitted, the trigger stays in legacy `runtime/pr-map.json` compatibility mode.
+Explicit-mode events include normalized `pr` plus feedback/completion payloads and do not attach a
+`session_id`; route to sessions with `query:session:list` metadata filters when needed.
 
 `trigger:ado:work-item-matching` uses the same filter/query surface as `query:ado:work-items`
 without writing local issue state. It emits `work_item` on first match and again when the remote
