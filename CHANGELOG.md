@@ -91,6 +91,9 @@ material. Newer entries are added incrementally as changes land.
 - Tightened communication trigger reload/runtime validation so Teams `user:`
   targets stay send-only and custom directory stores are preserved on workflow
   config reloads.
+- Fixed explicit Azure DevOps PR trigger polling so completion triggers without
+  a status scan terminal PR states, and explicit feedback events stay unbound in
+  mixed legacy/explicit configurations.
 
 ## 2026-05-24 - Container Worker Manifest Persistence Fix
 

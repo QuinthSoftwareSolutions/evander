@@ -1227,12 +1227,18 @@ without exposing provider credentials in the VM.
 
 ### Cron-driven pull request polling
 
-Use `trigger:cron` with `query:pull-request:list` when a workflow needs to find
-open pull requests by provider state, branch, time window, or review labels, then
-use `effect:pull-request:update` to claim or release work by changing PR tags or
-metadata. For Azure DevOps, set `provider` to `azure_devops` or `ado`; the node
-uses the directory-scoped ADO organization, project, and PAT unless
-`organization_url` or `project` is supplied on the node.
+Use `trigger:cron` with `query:pull-request:list` when a workflow needs one-shot
+query control over open pull requests by provider state, branch, time window, or
+review labels, then use `effect:pull-request:update` to claim or release work by
+changing PR tags or metadata. For Azure DevOps, set `provider` to
+`azure_devops` or `ado`; the node uses the directory-scoped ADO organization,
+project, and PAT unless `organization_url` or `project` is supplied on the node.
+
+Use `trigger:pull-request:new-feedback` or `trigger:pull-request:completed`
+with `provider=ado` and `repo` when the Azure DevOps PR worker should own
+polling directly. Setting `repo` enables explicit trigger criteria. Omitting
+`repo` keeps the legacy `runtime/pr-map.json` compatibility path for existing
+agent-created PR streams.
 
 Azure DevOps exposes PR labels through separate endpoints, so the `tags`
 expression is applied after listing candidate PRs. The expression supports tag
@@ -1248,21 +1254,25 @@ common metadata conventions are keys such as `owns_pr`, `reviewing_pr`,
 the platform. A cron workflow can list active sessions by generic metadata,
 poll one stream with `query:pull-request:feedback`, store its cursor in
 workflow-owned state, and enqueue prompts to every matched owner or reviewer
-session. Existing guest tools still require `metadata.pr_feedback_streams` on
-sessions that should call `list_unread_feedback`, `list_all_feedback`, or
-`post_pr_feedback_reply`.
+session. An explicit ADO PR trigger can use the same downstream routing pattern:
+it emits normalized `pr` and feedback/completion payloads without `session_id`,
+leaving session selection to workflow metadata queries. Existing guest tools
+still require `metadata.pr_feedback_streams` on sessions that should call
+`list_unread_feedback`, `list_all_feedback`, or `post_pr_feedback_reply`.
 
 ### Wake workers
 
 - `agent-sandbox-cli discord-wake` owns Discord inbox wakeups and resumes.
 - `agent-sandbox-cli scheduled-wake` owns scheduled resume dispatch.
 - Existing Azure DevOps PR feedback ingestion and PR completion polling are
-  still owned by `agent-sandbox-ado-worker`. It writes
+  still owned by `agent-sandbox-ado-worker`. Legacy trigger mode writes
   `runtime/pr-feedback-store.json`, updates `runtime/pr-map.json` PR status
   fields, and publishes `trigger:pull-request:new-feedback` plus
-  `trigger:pull-request:completed` events directly. New workflow-owned polling
-  paths should use `query:session:list` and `query:pull-request:feedback`; keep
-  `pr-map.json` compatibility until a later cleanup removes the older path.
+  `trigger:pull-request:completed` events directly. Explicit trigger mode is
+  selected by setting `repo` on the PR trigger; it lists candidate PRs from ADO
+  using the trigger criteria, stores trigger-owned cursors outside
+  `pr-map.json`, and emits normalized PR events without session bindings.
+  Keep `pr-map.json` compatibility until a later cleanup removes the older path.
 - Recommended service lifecycle commands:
   - `sudo systemctl start agent-sandbox-discord-wake.service`
   - `sudo systemctl stop agent-sandbox-discord-wake.service`
@@ -1470,8 +1480,11 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
 - The scaffold includes `agent-sandbox-ado-worker` and the equivalent foreground CLI command
   `agent-sandbox-cli poll-ado-backlog`.
 - The worker owns Azure DevOps PR feedback ingestion and PR completion polling for configured PR
-  streams. It updates `runtime/pr-feedback-store.json`, records PR status in `runtime/pr-map.json`,
-  and publishes `trigger:pull-request:new-feedback` plus `trigger:pull-request:completed` events.
+  streams. Legacy triggers without `repo` use `runtime/pr-map.json`, update
+  `runtime/pr-feedback-store.json`, record PR status in `runtime/pr-map.json`, and publish
+  `trigger:pull-request:new-feedback` plus `trigger:pull-request:completed` events. PR triggers
+  with `repo` use explicit ADO list criteria, keep cursor ownership in trigger cursor stores, and
+  do not require or update `runtime/pr-map.json`.
 - The worker no longer polls Azure DevOps work items, writes backlog YAML, checks processed work
   item state, or requires the work-item PAT just to run PR feedback/completion paths.
 - Azure DevOps work-item intake is now workflow-owned. Use `trigger:ado:work-item-matching` for
@@ -1479,8 +1492,10 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
   `System.ChangedDate` advances, or use `query:ado:work-items` for explicit one-shot queries.
   Wire either output into `effect:issue:upsert-ado-proxy` to write or refresh
   `runtime/local-issues.json` and `runtime/ado-work-items/work-item-*.yaml`.
-- For terminal-PR cleanup workflows, wire `trigger:pull-request:completed.session_id` into
-  `effect:agent:destroy.session_id`.
+- For terminal-PR cleanup workflows using legacy PR-map mode, wire
+  `trigger:pull-request:completed.session_id` into `effect:agent:destroy.session_id`. For explicit
+  PR trigger mode, route with `query:session:list` against session metadata and pass the selected
+  session id downstream.
 - A workflow-upserted ADO work item is represented in the unified local issue store as a proxy issue
   (`source: proxy_azure_devops`) keyed by local issue number with remote linkage in
   `metadata.remote` and a last-seen cache in `metadata.proxy_cache`.
