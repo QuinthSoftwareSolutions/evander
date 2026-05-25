@@ -62,6 +62,7 @@ from agent_sandbox.workflow.runtime_config import load_trigger_orchestrator_work
 _LOG = logging.getLogger(__name__)
 _ADO_WORKER_CONFIG_RELATIVE_PATH = Path("config") / "ado-worker" / "config.json"
 _MIN_ADO_DATETIME = datetime.min.replace(tzinfo=timezone.utc)
+_ADO_PR_COMPLETED_DEFAULT_STATUSES = ("completed", "abandoned")
 
 
 @dataclass(frozen=True)
@@ -1635,6 +1636,17 @@ def _trigger_has_explicit_pr_criteria(
     return _normalize_optional_text(trigger.repo) is not None
 
 
+def _explicit_ado_trigger_pull_request_statuses(
+    trigger: PullRequestNewFeedbackTriggerDefinition | PullRequestCompletedTriggerDefinition,
+) -> tuple[str | None, ...]:
+    status = _normalize_optional_text(trigger.status)
+    if status:
+        return (status,)
+    if trigger.type == "trigger:pull-request:completed":
+        return _ADO_PR_COMPLETED_DEFAULT_STATUSES
+    return (None,)
+
+
 def _trigger_effective_directory_path(
     trigger: PullRequestNewFeedbackTriggerDefinition | PullRequestCompletedTriggerDefinition,
     current_directory_path: str,
@@ -1709,30 +1721,36 @@ def _list_explicit_ado_trigger_pull_requests(
         pat=pat,
         timeout_seconds=30.0,
     )
-    response = provider.list_pull_requests(
-        repo=repo,
-        project=project,
-        status=trigger.status,
-        creator_id=trigger.creator_id,
-        reviewer_id=trigger.reviewer_id,
-        source_ref_name=trigger.source_ref_name,
-        target_ref_name=trigger.target_ref_name,
-        source_repository_id=trigger.source_repository_id,
-        repository_id=trigger.repository_id,
-        min_time=trigger.min_time,
-        max_time=trigger.max_time,
-        query_time_range_type=trigger.query_time_range_type,
-        include_links=trigger.include_links,
-        max_comment_length=trigger.max_comment_length,
-        tags=trigger.tags,
-        top=trigger.top,
-        skip=trigger.skip,
-        cursor=trigger.cursor,
-    )
+    pull_requests_by_key: dict[tuple[str, str, str], PullRequestItem] = {}
+    for status in _explicit_ado_trigger_pull_request_statuses(trigger):
+        response = provider.list_pull_requests(
+            repo=repo,
+            project=project,
+            status=status,
+            creator_id=trigger.creator_id,
+            reviewer_id=trigger.reviewer_id,
+            source_ref_name=trigger.source_ref_name,
+            target_ref_name=trigger.target_ref_name,
+            source_repository_id=trigger.source_repository_id,
+            repository_id=trigger.repository_id,
+            min_time=trigger.min_time,
+            max_time=trigger.max_time,
+            query_time_range_type=trigger.query_time_range_type,
+            include_links=trigger.include_links,
+            max_comment_length=trigger.max_comment_length,
+            tags=trigger.tags,
+            top=trigger.top,
+            skip=trigger.skip,
+            cursor=trigger.cursor,
+        )
+        for pull_request in response.pull_requests:
+            pull_requests_by_key[
+                (pull_request.provider, pull_request.repo, pull_request.pr_id)
+            ] = pull_request
     return _ExplicitAdoPrCandidates(
         organization_url=organization_url or "",
         project=project or "",
-        pull_requests=list(response.pull_requests),
+        pull_requests=list(pull_requests_by_key.values()),
     )
 
 
@@ -1920,7 +1938,7 @@ def _publish_directory_pr_feedback_events(
             state_cursors = {}
         previous_cursors = dict(state_cursors)
         next_cursors = dict(state_cursors)
-        discovered: list[tuple[dict[str, str], PrFeedbackItem]] = []
+        discovered: list[tuple[dict[str, str], dict[str, str], PrFeedbackItem]] = []
 
         for stream, binding, organization_url, project in streams:
             repo = stream["repo"]
@@ -1961,6 +1979,7 @@ def _publish_directory_pr_feedback_events(
                             "repo": envelope.repo,
                             "pr_id": envelope.pr_id,
                         },
+                        binding,
                         PrFeedbackItem.model_validate(pr_feedback_item_payload(envelope)),
                     )
                 )
@@ -1968,14 +1987,13 @@ def _publish_directory_pr_feedback_events(
                 next_cursors.get(stream_key), result.next_cursor
             )
 
-        discovered.sort(key=lambda item: item[1].created_at)
-        for stream, feedback in discovered:
+        discovered.sort(key=lambda item: item[2].created_at)
+        for stream, binding, feedback in discovered:
             stream_key = _stream_key(stream["provider"], stream["repo"], stream["pr_id"])
             previous = _parse_dt(previous_cursors.get(stream_key))
             if previous is not None and feedback.created_at <= previous:
                 continue
 
-            binding = legacy_bindings.get((stream["repo"], stream["pr_id"]), {})
             stored = feedback_store.add_feedback_if_new(
                 FeedbackEnvelope.model_validate(feedback.model_dump(mode="json"))
             )
