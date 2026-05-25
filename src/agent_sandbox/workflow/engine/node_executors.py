@@ -61,7 +61,12 @@ class ProviderEffectNodeExecutor:
 
     def prepare_resolved_config(self, **kwargs: Any) -> dict[str, Any]:
         effect = kwargs["effect"]
-        provider = self.provider_factory.build(effect)
+        provider = _build_provider_with_graph_metadata(
+            self.provider_factory,
+            effect,
+            graph_metadata=kwargs.get("graph_metadata"),
+            execution_context=kwargs.get("execution_context"),
+        )
         resolved_config = kwargs.get("resolved_config")
         normalize = getattr(provider, "normalize_resolved_config", None)
         if callable(normalize):
@@ -71,7 +76,12 @@ class ProviderEffectNodeExecutor:
     def execute(self, **kwargs: Any) -> dict[str, Any]:
         effect = kwargs["effect"]
         resolved_config = kwargs.get("resolved_config")
-        provider = self.provider_factory.build(effect)
+        provider = _build_provider_with_graph_metadata(
+            self.provider_factory,
+            effect,
+            graph_metadata=kwargs.get("graph_metadata"),
+            execution_context=kwargs.get("execution_context"),
+        )
         execute_kwargs: dict[str, Any] = {"resolved_config": dict(resolved_config or {})}
         if "execution_context" in inspect.signature(provider.execute).parameters:
             execute_kwargs["execution_context"] = dict(kwargs.get("execution_context") or {})
@@ -101,5 +111,84 @@ class ProviderQueryNodeExecutor:
     def execute(self, **kwargs: Any) -> dict[str, Any]:
         query = kwargs["query"]
         resolved_config = kwargs.get("resolved_config")
-        provider = self.provider_factory.build(query)
+        provider = _build_provider_with_graph_metadata(
+            self.provider_factory,
+            query,
+            graph_metadata=kwargs.get("graph_metadata"),
+            execution_context=kwargs.get("execution_context"),
+        )
         return dict(provider.execute(resolved_config=dict(resolved_config or {})) or {})
+
+
+def _build_provider_with_graph_metadata(
+    provider_factory: Any,
+    node_definition: Any,
+    *,
+    graph_metadata: Any | None = None,
+    execution_context: Mapping[str, Any] | None = None,
+) -> Any:
+    build = provider_factory.build
+    graph_id, directory_path = _resolve_graph_metadata_values(
+        graph_metadata=graph_metadata, execution_context=execution_context
+    )
+    build_kwargs = _build_provider_kwargs(build, directory_path=directory_path, graph_id=graph_id)
+    try:
+        return build(node_definition, **build_kwargs)
+    except TypeError as exc:
+        if build_kwargs and _is_unexpected_keyword_type_error(exc):
+            return build(node_definition)
+        raise
+
+
+def _resolve_graph_metadata_values(
+    *,
+    graph_metadata: Any | None,
+    execution_context: Mapping[str, Any] | None,
+) -> tuple[str | None, str | None]:
+    graph_id = _graph_metadata_value(graph_metadata, "graph_id")
+    directory_path = _graph_metadata_value(graph_metadata, "directory_path")
+    if isinstance(execution_context, Mapping):
+        graph_id = graph_id or _normalize_text(execution_context.get("graph_id"))
+        directory_path = directory_path or _normalize_text(execution_context.get("directory_path"))
+        nested_metadata = execution_context.get("graph_metadata")
+        if graph_id is None:
+            graph_id = _graph_metadata_value(nested_metadata, "graph_id")
+        if directory_path is None:
+            directory_path = _graph_metadata_value(nested_metadata, "directory_path")
+    return graph_id, directory_path
+
+
+def _graph_metadata_value(value: Any, key: str) -> str | None:
+    if isinstance(value, Mapping):
+        return _normalize_text(value.get(key))
+    return _normalize_text(getattr(value, key, None))
+
+
+def _build_provider_kwargs(
+    build: Any, *, directory_path: str | None, graph_id: str | None
+) -> dict[str, Any]:
+    try:
+        signature = inspect.signature(build)
+    except (TypeError, ValueError):
+        return {}
+    accepts_var_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()
+    )
+    kwargs: dict[str, Any] = {}
+    if directory_path is not None and (
+        "directory_path" in signature.parameters or accepts_var_kwargs
+    ):
+        kwargs["directory_path"] = directory_path
+    if graph_id is not None and ("graph_id" in signature.parameters or accepts_var_kwargs):
+        kwargs["graph_id"] = graph_id
+    return kwargs
+
+
+def _is_unexpected_keyword_type_error(error: TypeError) -> bool:
+    message = str(error)
+    return "unexpected keyword argument" in message or "got an unexpected keyword argument" in message
+
+
+def _normalize_text(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text or None

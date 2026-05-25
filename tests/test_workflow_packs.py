@@ -22,6 +22,15 @@ def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
             {
                 "pack_id": "pack-a",
                 "pack_version": "v1",
+                "graphs": [
+                    {
+                        "id": "graph-a",
+                        "name": "Graph A",
+                        "directory_paths": "root",
+                        "user_ids": "alice",
+                        "node_ids": "trigger-a",
+                    }
+                ],
                 "ir": {
                     "version": "v1",
                     "nodes": [
@@ -43,6 +52,15 @@ def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
             {
                 "pack_id": "pack-b",
                 "pack_version": "v1",
+                "graphs": [
+                    {
+                        "id": "graph-b",
+                        "name": "Graph B",
+                        "directory_paths": ["root/team-a"],
+                        "user_ids": ["bob"],
+                        "node_ids": ["effect-b"],
+                    }
+                ],
                 "ir": {
                     "version": "v1",
                     "nodes": [
@@ -64,6 +82,10 @@ def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
 
     assert [trigger["id"] for trigger in composed.triggers] == ["trigger-a"]
     assert [effect["id"] for effect in composed.effects] == ["effect-b"]
+    assert [graph.id for graph in composed.graphs] == ["graph-a", "graph-b"]
+    assert [graph.directory_paths for graph in composed.graphs] == [["root"], ["root/team-a"]]
+    assert [graph.user_ids for graph in composed.graphs] == [["alice"], ["bob"]]
+    assert [graph.node_ids for graph in composed.graphs] == [["trigger-a"], ["effect-b"]]
     assert composed.edges == [
         {
             "source_id": "trigger-a",
@@ -98,6 +120,39 @@ def test_compose_workflow_ir_accepts_inline_overlay_with_ir_metadata(tmp_path: P
     )
 
     assert [trigger["id"] for trigger in composed.triggers] == ["trigger-inline"]
+
+
+def test_compose_workflow_ir_preserves_disabled_trigger_flag(tmp_path: Path) -> None:
+    composed = compose_workflow_ir(
+        project_dir=tmp_path,
+        workflow_packs=[],
+        inline_ir={
+            "version": "v1",
+            "nodes": [
+                {
+                    "id": "trigger-disabled",
+                    "display_name": "disabled tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "enabled": False,
+                }
+            ],
+            "edges": [],
+        },
+    )
+
+    assert composed.triggers == [
+        {
+            "id": "trigger-disabled",
+            "display_name": "disabled tick",
+            "type": "trigger:cron",
+            "config": {
+                "expression": "* * * * *",
+                "enabled": False,
+            },
+            "outputs": None,
+        }
+    ]
 
 
 def test_hidden_system_workflow_pack_contains_chat_assistant_graph() -> None:
@@ -292,6 +347,24 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         assert effects["effect-agent-enqueue-prompt-1"]["config"][
             "resume_thread_metadata_key"
         ] == "teams:${{trigger-teams-new-message-2.channel_target}}:agent_thread_id"
+        teams_dm_prompt = effects["effect-agent-enqueue-prompt-teams-dm-1"]["config"]["prompt"]
+        assert "${{trigger-teams-direct-message-1.message.content}}" in teams_dm_prompt
+        assert effects["effect-agent-enqueue-prompt-teams-dm-1"]["config"]["queue_key"] == (
+            "teams:${{trigger-teams-direct-message-1.channel_target}}:"
+            "${{trigger-teams-direct-message-1.message_id ?? "
+            "trigger-teams-direct-message-1.cursor}}"
+        )
+        assert effects["effect-agent-enqueue-prompt-teams-dm-1"]["config"][
+            "resume_thread_metadata_key"
+        ] == "teams:${{trigger-teams-direct-message-1.channel_target}}:agent_thread_id"
+    assert (
+        ("trigger-teams-direct-message-1", "query-session-context-teams-dm-1")
+        in default_edges
+    )
+    assert (
+        ("trigger-teams-direct-message-1", "query-session-context-teams-dm-1")
+        in container_edges
+    )
     assert (
         default_effects["effect-agent-enqueue-prompt-2"]["type"]
         == "effect:agent:enqueue-prompt"

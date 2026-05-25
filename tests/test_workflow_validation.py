@@ -114,6 +114,153 @@ def test_semantic_management_outputs_are_bindable() -> None:
     assert diagnostics == []
 
 
+def test_issue_list_outputs_are_bindable() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-cron-1",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "*/15 * * * *",
+            }
+        ],
+        "queries": [
+            {
+                "id": "query-issues-1",
+                "display_name": "Issue list",
+                "type": "query:issue:list",
+                "directory_path": "root/team-a",
+                "direct_only": True,
+                "states": ["Open", "In Progress"],
+                "exclude_states": ["Done"],
+                "source": "local_gui",
+                "source_type": "local_manual",
+                "tags_any": ["triage"],
+                "tags_all": ["team-a"],
+                "metadata_equals": {"priority": "high"},
+                "metadata_exists": ["owner"],
+                "metadata_prefix": {"fields.title": "Fix"},
+                "limit": 10,
+            }
+        ],
+        "effects": [
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": "Found ${{query-issues-1.count}} issues in ${{query-issues-1.issues}}",
+            }
+        ],
+        "edges": [
+            {"source_id": "trigger-cron-1", "target_id": "query-issues-1"},
+            {"source_id": "query-issues-1", "target_id": "prompt-agent"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["query-issues-1"]["issues"]["type"] == "array"
+    assert output_schemas["query-issues-1"]["count"] == {"type": "integer"}
+    assert diagnostics == []
+
+
+def test_schedule_event_outputs_are_bindable() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-cron-1",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "*/15 * * * *",
+            }
+        ],
+        "effects": [
+            {
+                "id": "schedule-event-1",
+                "display_name": "Schedule event",
+                "type": "effect:event:schedule",
+                "event_type": "custom.operator_event",
+                "payload": {"source": "workflow"},
+                "delay_seconds": 60,
+            },
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": (
+                    "Scheduled ${{schedule-event-1.schedule_id}} for "
+                    "${{schedule-event-1.run_at}} with status ${{schedule-event-1.status}}"
+                ),
+            },
+        ],
+        "queries": [],
+        "edges": [
+            {"source_id": "trigger-cron-1", "target_id": "schedule-event-1"},
+            {"source_id": "schedule-event-1", "target_id": "prompt-agent"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["schedule-event-1"] == {
+        "success": {"type": "boolean"},
+        "created": {"type": "boolean"},
+        "schedule_id": {"type": "string"},
+        "event_type": {"type": "string"},
+        "correlation_key": {"type": ["string", "null"]},
+        "run_at": {"type": "string"},
+        "status": {"type": "string"},
+        "payload": {"type": "object"},
+    }
+    assert diagnostics == []
+
+
+def test_http_request_outputs_are_bindable() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-cron-1",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "*/15 * * * *",
+            }
+        ],
+        "effects": [
+            {
+                "id": "effect-http-1",
+                "display_name": "HTTP request",
+                "type": "effect:http:request",
+                "method": "GET",
+                "url": "https://api.example.test/items/42",
+            },
+            {
+                "id": "effect-prompt-1",
+                "display_name": "Prompt",
+                "type": "effect:agent:prompt",
+                "prompt": (
+                    "HTTP returned ${{effect-http-1.status_code}} and item "
+                    "${{effect-http-1.body_json.id}}"
+                ),
+            },
+        ],
+        "edges": [
+            {"source_id": "trigger-cron-1", "target_id": "effect-http-1"},
+            {"source_id": "effect-http-1", "target_id": "effect-prompt-1"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["effect-http-1"]["status_code"] == {"type": "integer"}
+    assert output_schemas["effect-http-1"]["body_json"] == {"type": "object"}
+    assert diagnostics == []
+
+
 def test_binding_diagnostics_accept_filter_derived_outputs() -> None:
     config = {
         "triggers": [
@@ -158,6 +305,72 @@ def test_binding_diagnostics_accept_filter_derived_outputs() -> None:
     diagnostics = validate_workflow_binding_diagnostics(config)
 
     assert output_schemas["gate-filter-1"]["ticket"]["properties"]["body"] == {
+        "type": "string"
+    }
+    assert diagnostics == []
+
+
+def test_binding_diagnostics_accept_switch_derived_outputs_with_duplicate_case_ports() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-ticket-created-main",
+                "display_name": "Ticket created",
+                "type": "trigger:ticket:created",
+                "directories": ["root"],
+            }
+        ],
+        "gates": [
+            {
+                "id": "gate-switch-1",
+                "display_name": "Route ticket",
+                "type": "gate:switch",
+                "default_port": "fallback",
+                "cases": [
+                    {
+                        "port": "ready",
+                        "label": "Ready route",
+                        "when": {
+                            "left": "${{trigger-ticket-created-main.ticket.state}}",
+                            "equals": "ready",
+                        },
+                    },
+                    {
+                        "port": "ready",
+                        "label": "Ready match",
+                        "match": {"ticket": {"state": "ready"}},
+                    },
+                    {
+                        "port": "blocked",
+                        "label": "Blocked route",
+                        "match": {"ticket": {"state": "blocked"}},
+                    },
+                ],
+            }
+        ],
+        "effects": [
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": "Review ${{gate-switch-1.ticket.body}}",
+            }
+        ],
+        "edges": [
+            {"source_id": "trigger-ticket-created-main", "target_id": "gate-switch-1"},
+            {
+                "source_id": "gate-switch-1",
+                "source_port": "ready",
+                "target_id": "prompt-agent",
+            },
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["gate-switch-1"]["ticket"]["properties"]["body"] == {
         "type": "string"
     }
     assert diagnostics == []
@@ -229,6 +442,48 @@ def test_binding_diagnostics_accept_merge_derived_outputs() -> None:
         "ticket": {"type": "object"},
         "route": {"type": "string"},
     }
+    assert diagnostics == []
+
+
+def test_ci_run_completed_outputs_are_bindable() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-ci-1",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "github_actions",
+                "repo": "owner/repo",
+                "workflow": "build.yml",
+                "branches": ["main"],
+            }
+        ],
+        "effects": [
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": "CI ${{trigger-ci-1.repo}} ran as ${{trigger-ci-1.workflow_name}}",
+            }
+        ],
+        "edges": [
+            {"source_id": "trigger-ci-1", "target_id": "prompt-agent"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["trigger-ci-1"]["provider"] == {"type": "string"}
+    assert output_schemas["trigger-ci-1"]["repo"] == {"type": "string"}
+    assert output_schemas["trigger-ci-1"]["workflow_id"] == {"type": ["string", "null"]}
+    assert output_schemas["trigger-ci-1"]["pipeline_id"] == {"type": ["integer", "null"]}
+    assert output_schemas["trigger-ci-1"]["pull_requests"] == {
+        "type": "array",
+        "items": {"type": "object"},
+    }
+    assert output_schemas["trigger-ci-1"]["metadata"] == {"type": "object"}
     assert diagnostics == []
 
 
@@ -484,6 +739,44 @@ def test_output_schema_derivation_exposes_static_serialize_outputs() -> None:
     assert output_schemas["gate-serialize-1"] == {
         "content": {"type": "string"},
         "format": {"type": "string"},
+    }
+    assert diagnostics == []
+
+
+def test_output_schema_derivation_exposes_webhook_envelope_outputs() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-webhook-1",
+                "display_name": "Webhook",
+                "type": "trigger:http:webhook",
+                "slug": "build-notify",
+                "secret_env": "WEBHOOK_SECRET",
+            }
+        ],
+        "effects": [
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": "Webhook ${{trigger-webhook-1.slug}} via ${{trigger-webhook-1.signature_header}}",
+            }
+        ],
+        "edges": [{"source_id": "trigger-webhook-1", "target_id": "prompt-agent"}],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["trigger-webhook-1"] == {
+        "slug": {"type": "string"},
+        "headers": {"type": "object"},
+        "query": {"type": "object"},
+        "body": {"type": "object"},
+        "received_at": {"type": "string"},
+        "remote_addr": {"type": "string"},
+        "signature_header": {"type": "string"},
     }
     assert diagnostics == []
 

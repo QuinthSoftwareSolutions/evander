@@ -56,6 +56,11 @@ function createWorkflowConfig() {
         type: "gate:debounce",
       },
       {
+        id: "gate-switch-1",
+        display_name: "Switch tickets",
+        type: "gate:switch",
+      },
+      {
         id: "gate-merge-1",
         display_name: "Merge streams",
         type: "gate:merge",
@@ -83,6 +88,7 @@ function createWorkflowConfig() {
     edges: [
       { source_id: "trigger-1", target_id: "gate-filter-1" },
       { source_id: "gate-filter-1", target_id: "gate-debounce-1" },
+      { source_id: "gate-debounce-1", target_id: "gate-switch-1" },
       { source_id: "gate-debounce-1", target_id: "effect-1" },
       { source_id: "trigger-1", target_id: "gate-merge-1" },
       { source_id: "trigger-2", target_id: "gate-merge-1" },
@@ -116,12 +122,13 @@ test("flattens object and array output paths with stable nested paths", () => {
   ]);
 });
 
-test("derives pass-through outputs for filter and debounce gates", () => {
+test("derives pass-through outputs for filter, debounce, and switch gates", () => {
   const config = createWorkflowConfig();
   const outputSchemas = deriveWorkflowOutputSchemas(config);
 
   assert.deepEqual(outputSchemas["gate-filter-1"], outputSchemas["trigger-1"]);
   assert.deepEqual(outputSchemas["gate-debounce-1"], outputSchemas["trigger-1"]);
+  assert.deepEqual(outputSchemas["gate-switch-1"], outputSchemas["trigger-1"]);
 });
 
 test("builds a selected-node output contract for declared outputs", () => {
@@ -162,6 +169,11 @@ test("builds a selected-node output contract for pass-through and merge gates", 
   const debounceContract = selectedNodeOutputContract(config, "gate-debounce-1", outputSchemas);
   assert.equal(debounceContract.state, "derived");
   assert.equal(debounceContract.note, "Pass-through gate: outputs are derived from gate-filter-1.");
+
+  const switchContract = selectedNodeOutputContract(config, "gate-switch-1", outputSchemas);
+  assert.equal(switchContract.state, "derived");
+  assert.equal(switchContract.note, "Pass-through gate: outputs are derived from gate-debounce-1.");
+  assert.deepEqual(switchContract.sourceNodeIds, ["gate-debounce-1"]);
 
   const mergeContract = selectedNodeOutputContract(config, "gate-merge-1", outputSchemas);
   assert.equal(mergeContract.state, "empty");
@@ -234,4 +246,93 @@ test("declared outputs fall back to node outputs when no derived schema exists",
   assert.deepEqual(declaredOutputsForNode(node, {}), {
     ticket: { type: "object" },
   });
+});
+
+test("state node output schemas expose graph-local bindings", () => {
+  const config = {
+    triggers: [
+      {
+        id: "trigger-1",
+        display_name: "State trigger",
+        type: "trigger:manual",
+      },
+    ],
+    gates: [],
+    effects: [
+      {
+        id: "effect-state-update",
+        display_name: "Update workflow state",
+        type: "effect:state:update",
+        namespace: "workflow",
+        key: "cursor",
+        operation: "set",
+        value: { cursor: "abc-123" },
+      },
+    ],
+    queries: [
+      {
+        id: "query-state-get",
+        display_name: "Read workflow state",
+        type: "query:state:get",
+        namespace: "workflow",
+        key: "cursor",
+      },
+    ],
+    edges: [
+      { source_id: "trigger-1", target_id: "effect-state-update" },
+      { source_id: "effect-state-update", target_id: "query-state-get" },
+    ],
+  };
+  const backendOutputSchemas = {
+    "effect-state-update": {
+      success: { type: "boolean" },
+      found: { type: "boolean" },
+      directory_path: { type: "string" },
+      graph_id: { type: "string" },
+      namespace: { type: "string" },
+      key: { type: "string" },
+      value: {
+        type: "object",
+        properties: {
+          cursor: { type: "string" },
+        },
+      },
+      version: { type: "integer" },
+      created_at: { type: "string" },
+      updated_at: { type: "string" },
+    },
+    "query-state-get": {
+      success: { type: "boolean" },
+      found: { type: "boolean" },
+      directory_path: { type: "string" },
+      graph_id: { type: "string" },
+      namespace: { type: "string" },
+      key: { type: "string" },
+      value: {
+        type: "object",
+        properties: {
+          cursor: { type: "string" },
+        },
+      },
+      version: { type: "integer" },
+      created_at: { type: "string" },
+      updated_at: { type: "string" },
+    },
+  };
+  const outputSchemas = deriveWorkflowOutputSchemas(config, backendOutputSchemas);
+
+  const updateContract = selectedNodeOutputContract(config, "effect-state-update", outputSchemas);
+  assert.equal(updateContract.state, "declared");
+  assert.ok(updateContract.rows.some((row) => row.path === "graph_id"));
+  assert.ok(updateContract.rows.some((row) => row.path === "value"));
+  assert.ok(updateContract.rows.some((row) => row.path === "value.cursor"));
+  assert.ok(updateContract.rows.some((row) => row.path === "version"));
+
+  const bindingOptions = upstreamBindingOptions(config, "query-state-get", outputSchemas);
+  assert.ok(bindingOptions.some((option) => option.value === "${{effect-state-update.graph_id}}"));
+  assert.ok(bindingOptions.some((option) => option.value === "${{effect-state-update.value}}"));
+  assert.ok(
+    bindingOptions.some((option) => option.value === "${{effect-state-update.value.cursor}}"),
+  );
+  assert.ok(bindingOptions.some((option) => option.value === "${{effect-state-update.version}}"));
 });

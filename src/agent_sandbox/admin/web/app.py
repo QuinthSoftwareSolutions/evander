@@ -34,6 +34,7 @@ from agent_sandbox.admin.web.users import admin_user_routes
 from agent_sandbox.admin.web.vms_issues import vm_issue_routes
 from agent_sandbox.admin.web.workflow import workflow_routes, workflow_run_events
 from agent_sandbox.admin.web.workflow_events import workflow_event_routes
+from agent_sandbox.admin.web.workflow_webhooks import workflow_webhook_routes
 from agent_sandbox.admin.web.workers_config import worker_config_routes
 
 
@@ -96,6 +97,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             or path == "/api/admin/deployment-status"
             or path.startswith("/api/auth/")
             or (path == "/api/workflow-events" and request.method == "POST")
+            or (path.startswith("/api/workflow-webhooks/") and request.method == "POST")
         ):
             return await call_next(request)
         if path.startswith("/api/"):
@@ -353,6 +355,7 @@ def create_app(service: AdminService) -> Starlette:
     routes.extend(teams_auth_routes(service, auth))
     routes.extend(chat_routes(service, auth))
     routes.extend(workflow_event_routes(service, auth))
+    routes.extend(workflow_webhook_routes(service))
     routes.extend(artifact_routes(service))
     if dist_dir.exists():
         routes.append(Mount("/", app=StaticFiles(directory=dist_dir, html=True)))

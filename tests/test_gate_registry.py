@@ -78,4 +78,5 @@ def test_default_registry_includes_all_known_gate_types() -> None:
         "gate:map",
         "gate:merge",
         "gate:serialize",
+        "gate:switch",
     }

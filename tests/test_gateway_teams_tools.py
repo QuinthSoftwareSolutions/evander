@@ -9,6 +9,10 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.gateway import create_server
+from agent_sandbox.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 from agent_sandbox.models import SessionManifest, TeamsMessageEnvelope, ToolName
 from agent_sandbox.runtime import build_runtime
 from agent_sandbox.messaging.teams_auth import JsonTeamsIdentityCredentialStore
@@ -178,6 +182,14 @@ def call_tool(server, name: str, arguments: dict[str, object]):
 def read_audit_events(path: Path) -> list[dict[str, object]]:
     lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     return [json.loads(line) for line in lines]
+
+
+def write_root_communication_targets(context, targets: list[dict[str, object]]) -> None:
+    context.directories.ensure_root()
+    repository = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(context.config.runtime_dir)
+    )
+    repository.write_overlay("root", {"targets": targets})
 
 
 def patch_httpx_client(
@@ -1148,6 +1160,49 @@ def test_teams_post_status_posts_to_allowlisted_channel_and_thread(tmp_path: Pat
         {
             "session_id": "session-1",
             "channel_target": "team-a/channel-1",
+            "message": "Host relay is healthy.",
+            "thread_id": "msg-root",
+        },
+    )
+
+    assert result["status"] == "posted"
+    assert fake_teams.post_calls == [
+        ("Host relay is healthy.", "team-a/channel-1", "session-1", "msg-root"),
+    ]
+
+
+def test_teams_post_status_resolves_communication_target_id(tmp_path: Path) -> None:
+    context = make_context(tmp_path)
+    write_root_communication_targets(
+        context,
+        [
+            {
+                "id": "teams-ops",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["write", "reply"]},
+            }
+        ],
+    )
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.TEAMS_POST_STATUS],
+            teams_channel_allowlist=["teams-ops"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    fake_teams = FakeTeamsService(messages=[])
+    context.teams_service = fake_teams
+    server = create_server(context)
+
+    result = call_tool(
+        server,
+        "teams_post_status",
+        {
+            "session_id": "session-1",
+            "channel_target": "teams-ops",
             "message": "Host relay is healthy.",
             "thread_id": "msg-root",
         },

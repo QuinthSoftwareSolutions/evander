@@ -156,6 +156,7 @@ test("workflow editor shows selected-node output contracts and copies binding ex
           id: "trigger-1",
           display_name: "Incoming ticket",
           type: "trigger:manual",
+          source: "support inbox",
         },
       ],
       gates: [
@@ -233,7 +234,21 @@ test("workflow editor shows selected-node output contracts and copies binding ex
         kind: "trigger",
         type: "trigger:manual",
         label: "Manual",
-        fields: [],
+        fields: [
+          {
+            key: "source",
+            label: "Source",
+            kind: "string",
+            required: false,
+            bindable: false,
+            read_only: false,
+            multiline: false,
+            description: null,
+            placeholder: null,
+            options: [],
+            item_fields: [],
+          },
+        ],
         input_ports: [],
         output_ports: [{ key: "completed", label: "Completed" }],
       },
@@ -306,6 +321,14 @@ test("workflow editor shows selected-node output contracts and copies binding ex
       return;
     }
 
+    if (pathname === "/api/admin/user-preferences/workflow-tutorial-progress") {
+      await route.fulfill(jsonResponse({
+        completed_tutorial_ids: [],
+        skipped_tutorial_ids: [],
+      }));
+      return;
+    }
+
     if (pathname === "/api/configuration/state") {
       assert.equal(url.searchParams.get("directory_path"), "root");
       await route.fulfill(jsonResponse(configurationStateResponse));
@@ -370,6 +393,15 @@ test("workflow editor shows selected-node output contracts and copies binding ex
 
   const triggerOutputPanel = page.locator(".output-contract-panel");
   await triggerOutputPanel.waitFor({ state: "visible" });
+  const triggerSourceField = page.locator(".sidebar-section.inspector .inspector-field").filter({ hasText: "Source" });
+  const triggerSourceFieldBox = await triggerSourceField.boundingBox();
+  const triggerOutputPanelBox = await triggerOutputPanel.boundingBox();
+  assert.ok(triggerSourceFieldBox, "expected trigger Source field bounds");
+  assert.ok(triggerOutputPanelBox, "expected trigger output panel bounds");
+  assert.ok(
+    triggerOutputPanelBox.y > triggerSourceFieldBox.y,
+    "expected selected-node output contract to render after configuration fields",
+  );
   await assert.equal(
     await triggerOutputPanel.getByText("Pass-through gate: outputs are derived from trigger-1.").count(),
     0,

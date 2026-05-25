@@ -5,6 +5,131 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - Workflow Switch Lazy Routing Fix
+
+- Fixed `gate:switch` routing so cases are resolved in order and later
+  case/default binding errors cannot prevent an earlier matching branch from
+  running.
+
+## 2026-05-25 - Workflow Switch Documentation
+
+- Documented `gate:switch` in the configuration reference with ordered cases,
+  `default_port`, `source_port`-based branch wiring, and pass-through payload
+  behavior.
+- Added a switch workflow example that uses current `source_id`/`target_id`
+  edges and shows ready, blocked, and fallback routing.
+- Clarified the architecture notes so `dropped` now covers filter, dedupe, and
+  switch suppressions in the workflow runtime.
+
+## 2026-05-25 - Issue List Workflow Query
+
+- Added the `query:issue:list` workflow query node for listing tracked local and
+  proxy issues with state, source, tag, directory, and metadata filters.
+
+## 2026-05-25 - CI Run Completed Trigger Fixes
+
+- Persisted initialized empty CI run cursors on first polls when history
+  suppression is enabled, so the first later completed run is emitted.
+- Rejected CI runs with unknown conclusions when applying configured conclusion
+  allowlists.
+
+## 2026-05-25 - CI Run Completed Trigger Documentation
+
+- Documented `trigger:ci:run:completed` in the configuration reference,
+  operations runbook, trigger conformance guide, and changelog, including the
+  polling cursor file and first-poll history suppression behavior.
+
+## 2026-05-25 - Workflow State Runtime Coverage
+
+- Added end-to-end regression coverage for persisted workflow-state reads and
+  writes across multiple graph IDs, including the fast-fail path when state
+  nodes do not have persisted graph metadata.
+- Registered workflow state node schemas in runtime config materialization and
+  rejected duplicate persisted workflow graph IDs before state scope resolution.
+- Documented the graph-local workflow-state file, scoping tuple, merge-patch
+  behavior, and optimistic-concurrency conflict handling in the configuration
+  reference.
+
+## 2026-05-25 - Scheduled Event Hot Reload Fixes
+
+- Fixed `effect:event:schedule` so hot-reloaded
+  `scheduled_internal_event_store_path` values are honored without restarting
+  the effect orchestrator.
+- Rejected non-finite or out-of-range `delay_seconds` values before schedule
+  timestamp construction so invalid workflow input records a failed effect
+  instead of aborting the worker cycle.
+
+## 2026-05-25 - Scheduled Internal Event Documentation
+
+- Documented `effect:event:schedule` as a one-shot scheduled internal event
+  effect with `event_type`, `payload`, and exactly one of `run_at` or
+  `delay_seconds`.
+- Clarified the durable `scheduled_internal_event_store_path` default and noted
+  that the trigger orchestrator publishes due schedule records during its
+  normal poll cycle.
+
+## 2026-05-25 - Workflow Webhook Idempotency Fix
+
+- Changed signed workflow webhook ingress to publish every valid delivery as a
+  fresh internal event instead of using the body HMAC signature as a global
+  idempotency key, avoiding repeated-payload and shared-secret cross-slug
+  suppression.
+
+## 2026-05-25 - Signed Workflow Webhook Docs
+
+- Documented the `trigger:http:webhook` trigger shape, public ingress path,
+  signature header format, and raw-body HMAC requirements.
+- Added an operator-facing signed request example and noted that webhook
+  deliveries should be reshaped downstream with the standard gate nodes.
+
+## 2026-05-25 - Container Worker Browser Env
+
+- Exported `CHROME_BIN` and `CHROMIUM_BIN` from Playwright-enabled
+  `container_worker_vm` sessions so Karma-style browser test launchers can use
+  the seeded Chromium binary mounted from the worker cache.
+
+## 2026-05-25 - Workflow Trigger Disable Toggle
+
+- Added an `enabled: false` workflow trigger state that skips trigger polling and
+  the legacy ADO/Git direct publishers while preserving already queued work.
+- Added a Workflow editor trigger toggle and ghosted disabled-trigger styling.
+
+## 2026-05-25 - Teams Direct Message Trigger
+
+- Added `trigger:teams:direct-message` for allowlisted one-on-one Microsoft
+  Teams direct messages to the delegated Teams identity, backed by host-side
+  Teams ingest polling.
+- Documented the Teams direct-message trigger and updated example Truman packs
+  with a separate direct-message prompt path.
+- Fixed Teams direct-message ingest so enabled triggers poll on cold start
+  without active sessions, disabled triggers are ignored, and one-on-one chats
+  already allowlisted for normal Teams reads still publish DM trigger events.
+
+## 2026-05-25 - Workflow HTTP Request Effect
+
+- Added the host-side `effect:http:request` workflow effect with Pydantic
+  schema, runtime provider, registry wiring, and admin/workflow editor
+  exposure.
+- Returned request metadata and response outputs including status, headers,
+  body text, parsed JSON when available, content type, and elapsed time.
+- Kept the effect JSON-body-only, disabled redirects by default, and preserved
+  the default non-2xx success semantics unless `check` is enabled.
+- Added per-effect `allowed_url_patterns` URL allowlist enforcement, defaulting
+  to `["*"]`, and preserved response outputs when checked non-2xx responses fail
+  the run.
+
+## 2026-05-25 - Workflow Editor Inspector Layout
+
+- Moved selected-node declared and derived output contracts below configuration
+  fields so large output lists no longer push configuration down the inspector.
+- Fixed the Configuration communications Teams channel lookup card so it uses
+  dark-mode surfaces, labels, disabled controls, and result rows.
+- Clarified that communication targets are provider-generic and the Teams channel
+  lookup is only an optional helper.
+- Allowed session Teams/Discord communication allowlists, inbound polling routes,
+  and guest messaging tools to use directory-scoped communication target IDs while
+  preserving raw legacy IDs and enforcing target capabilities per operation.
+
 ## 2026-05-25 - Workflow Tutorial Cleanup
 
 - Removed the obsolete workflow editor in-memory first-run walkthrough, its
@@ -13,6 +138,8 @@ material. Newer entries are added incrementally as changes land.
 - Moved Admin Web users to `runtime/admin-web.db` with one-time legacy JSON
   import, and stored workflow tutorial completion/skipped state as an
   account-scoped preference instead of browser-local state.
+- Marked the workflow editor first-steps tutorial complete when an operator
+  exits or resets from the final step, while preserving the explicit skip path.
 - Removed the obsolete duplicate issue-comment workflow trigger alias from the
   runtime, node catalogue, documentation, and tests.
 - Added internal wake sockets for trigger/effect orchestration so host-owned
@@ -21,6 +148,15 @@ material. Newer entries are added incrementally as changes land.
 - Woke await-agent completion drains through the trigger worker's configured
   effect lock path, so custom workflow runtime directories still hot-drain
   effect work.
+- Added `trigger:communication:new-message`, a provider-neutral inbound chat
+  trigger over read-capable Teams channel/chat and Discord communication
+  targets, with Admin Web catalog support and normalized message outputs.
+- Tightened communication trigger reload/runtime validation so Teams `user:`
+  targets stay send-only and custom directory stores are preserved on workflow
+  config reloads.
+- Fixed explicit Azure DevOps PR trigger polling so completion triggers without
+  a status scan terminal PR states, and explicit feedback events stay unbound in
+  mixed legacy/explicit configurations.
 
 ## 2026-05-24 - Container Worker Manifest Persistence Fix
 

@@ -9,6 +9,7 @@ from agent_sandbox.config import (
     TeamsIngestWorkerGlobalConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
+from agent_sandbox.events.models import materialize_node_definition
 from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.policy_config import EffectivePolicyConfig
 from agent_sandbox.effects.providers.agent_session import (
@@ -643,6 +644,10 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
         == "/tmp/agent-sandbox-runtime/workflow-events.jsonl"
     )
     assert (
+        str(config.scheduled_internal_event_store_path)
+        == "/tmp/agent-sandbox-runtime/scheduled-internal-events.json"
+    )
+    assert (
         str(config.gate_execution_store_path)
         == "/tmp/agent-sandbox-runtime/gate-orchestrator-executions.json"
     )
@@ -812,6 +817,231 @@ def test_trigger_orchestrator_filter_gate_accepts_string_operators() -> None:
             {"left": "${{trigger-1.branch_name}}", "contains": "/"},
         ]
     }
+
+
+def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() -> None:
+    config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": "/tmp/agent-sandbox-runtime",
+            "gates": [
+                {
+                    "id": "gate-switch",
+                    "display_name": "Route by state",
+                    "type": "gate:switch",
+                    "default_port": "fallback",
+                    "cases": [
+                        {
+                            "port": "ready",
+                            "label": "Ready path",
+                            "when": {
+                                "all": [
+                                    {"left": "${{trigger-1.state}}", "equals": "ready"}
+                                ]
+                            },
+                        },
+                        {
+                            "port": "ready",
+                            "match": {"state": "blocked"},
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+
+    gate = config.gates[0]
+    assert gate.type == "gate:switch"
+    assert gate.default_port == "fallback"
+    assert [case["port"] for case in gate.config["cases"]] == ["ready", "ready"]
+
+    materialized = materialize_node_definition(gate)
+    assert [case.port for case in materialized.cases] == ["ready", "ready"]
+    assert materialized.cases[0].label == "Ready path"
+    assert materialized.cases[0].when == {
+        "all": [{"left": "${{trigger-1.state}}", "equals": "ready"}]
+    }
+    assert materialized.cases[1].match == {"state": "blocked"}
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "gates": [
+                    {
+                        "id": "gate-switch",
+                        "display_name": "Route by state",
+                        "type": "gate:switch",
+                        "cases": [],
+                    }
+                ],
+            },
+            "gate:switch requires at least one case",
+        ),
+        (
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "gates": [
+                    {
+                        "id": "gate-switch",
+                        "display_name": "Route by state",
+                        "type": "gate:switch",
+                        "cases": [
+                            {
+                                "port": "   ",
+                                "when": {
+                                    "all": [
+                                        {"left": "${{trigger-1.state}}", "equals": "ready"}
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            "gate:switch case port must be a non-empty string",
+        ),
+        (
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "gates": [
+                    {
+                        "id": "gate-switch",
+                        "display_name": "Route by state",
+                        "type": "gate:switch",
+                        "cases": [
+                            {
+                                "port": None,
+                                "when": {
+                                    "all": [
+                                        {"left": "${{trigger-1.state}}", "equals": "ready"}
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            "gate:switch case port must be a non-empty string",
+        ),
+        (
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "gates": [
+                    {
+                        "id": "gate-switch",
+                        "display_name": "Route by state",
+                        "type": "gate:switch",
+                        "cases": [
+                            {
+                                "port": 123,
+                                "when": {
+                                    "all": [
+                                        {"left": "${{trigger-1.state}}", "equals": "ready"}
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            "gate:switch case port must be a non-empty string",
+        ),
+        (
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "gates": [
+                    {
+                        "id": "gate-switch",
+                        "display_name": "Route by state",
+                        "type": "gate:switch",
+                        "default_port": "   ",
+                        "cases": [
+                            {
+                                "port": "ready",
+                                "when": {
+                                    "all": [
+                                        {"left": "${{trigger-1.state}}", "equals": "ready"}
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            "gate:switch default_port must be a non-empty string",
+        ),
+        (
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "gates": [
+                    {
+                        "id": "gate-switch",
+                        "display_name": "Route by state",
+                        "type": "gate:switch",
+                        "default_port": 123,
+                        "cases": [
+                            {
+                                "port": "ready",
+                                "when": {
+                                    "all": [
+                                        {"left": "${{trigger-1.state}}", "equals": "ready"}
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            "gate:switch default_port must be a non-empty string",
+        ),
+        (
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "gates": [
+                    {
+                        "id": "gate-switch",
+                        "display_name": "Route by state",
+                        "type": "gate:switch",
+                        "cases": [
+                            {
+                                "port": "ready",
+                                "when": {
+                                    "all": [
+                                        {"left": "${{trigger-1.state}}", "equals": "ready"}
+                                    ]
+                                },
+                                "match": {"state": "ready"},
+                            }
+                        ],
+                    }
+                ],
+            },
+            "mutually exclusive",
+        ),
+        (
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "gates": [
+                    {
+                        "id": "gate-switch",
+                        "display_name": "Route by state",
+                        "type": "gate:switch",
+                        "cases": [{"port": "ready"}],
+                    }
+                ],
+            },
+            "requires exactly one of when or match",
+        ),
+    ],
+)
+def test_trigger_orchestrator_switch_gate_rejects_invalid_cases(
+    payload: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(payload)
 
 
 def test_trigger_orchestrator_await_agent_gate_accepts_completion_trigger_reference() -> None:
@@ -1196,6 +1426,33 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_trigger_ids
         )
 
 
+def test_trigger_orchestrator_worker_global_config_rejects_duplicate_webhook_slugs() -> None:
+    with pytest.raises(
+        ValueError,
+        match="Webhook trigger slugs must be globally unique across active config: build-notify",
+    ):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {
+                "triggers": [
+                    {
+                        "id": "webhook-1",
+                        "display_name": "Webhook 1",
+                        "type": "trigger:http:webhook",
+                        "slug": "build-notify",
+                        "secret_env": "WEBHOOK_SECRET",
+                    },
+                    {
+                        "id": "webhook-2",
+                        "display_name": "Webhook 2",
+                        "type": "trigger:http:webhook",
+                        "slug": "build-notify",
+                        "secret_env": "WEBHOOK_SECRET_2",
+                    },
+                ]
+            }
+        )
+
+
 def test_trigger_orchestrator_worker_global_config_rejects_duplicate_effect_ids() -> None:
     with pytest.raises(
         ValueError,
@@ -1226,6 +1483,86 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_effect_ids(
                     },
                 ],
                 "edges": [{"source_id": "trigger-1", "target_id": "effect-dup"}],
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("state_effect", "state_query", "message"),
+    [
+        (
+            {
+                "id": "effect-state-update",
+                "display_name": "Update state",
+                "type": "effect:state:update",
+                "namespace": "workflow",
+                "key": "cursor",
+                "operation": "replace",
+                "value": {"counter": 1},
+            },
+            {
+                "id": "query-state-get",
+                "display_name": "Read state",
+                "type": "query:state:get",
+                "namespace": "workflow",
+                "key": "cursor",
+            },
+            "effect:state:update operation must be set, patch, or delete",
+        ),
+        (
+            {
+                "id": "effect-state-update",
+                "display_name": "Update state",
+                "type": "effect:state:update",
+                "namespace": "workflow",
+                "key": "cursor",
+                "operation": "set",
+                "value": {"counter": 1},
+            },
+            {
+                "id": "query-state-get",
+                "display_name": "Read state",
+                "type": "query:state:get",
+                "namespace": "workflow",
+            },
+            "key",
+        ),
+    ],
+)
+def test_trigger_orchestrator_worker_global_config_validates_state_node_schemas(
+    state_effect: dict[str, object],
+    state_query: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {
+                "triggers": [
+                    {
+                        "id": "trigger-state",
+                        "display_name": "State trigger",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "effects": [state_effect],
+                "queries": [state_query],
+                "edges": [
+                    {"source_id": "trigger-state", "target_id": "effect-state-update"},
+                    {"source_id": "effect-state-update", "target_id": "query-state-get"},
+                ],
+                "workflow_graphs": [
+                    {
+                        "id": "graph-state",
+                        "name": "State graph",
+                        "directory_paths": ["root/team-a"],
+                        "node_ids": [
+                            "trigger-state",
+                            "effect-state-update",
+                            "query-state-get",
+                        ],
+                    }
+                ],
             }
         )
 

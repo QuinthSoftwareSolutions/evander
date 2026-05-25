@@ -80,6 +80,80 @@ class GateFilterDefinition(GateDefinition):
         return self
 
 
+class GateSwitchCaseDefinition(BaseModel):
+    port: str
+    label: str | None = None
+    when: ConfigValue | None = None
+    match: ConfigValue | None = None
+
+    @field_validator("port", mode="before")
+    @classmethod
+    def validate_port(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("gate:switch case port must be a non-empty string")
+        text = str(value).strip()
+        if not text:
+            raise ValueError("gate:switch case port must be a non-empty string")
+        return text
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def normalize_label(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("match")
+    @classmethod
+    def validate_match_is_object(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError("gate:switch case match must be a JSON object")
+        return value
+
+    @field_validator("when")
+    @classmethod
+    def validate_when_expression(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None:
+            return None
+        validate_filter_when_expression(value, context="gate:switch case when")
+        return value
+
+    @model_validator(mode="after")
+    def validate_exactly_one_predicate(self) -> "GateSwitchCaseDefinition":
+        if self.when is None and self.match is None:
+            raise ValueError("gate:switch case requires exactly one of when or match")
+        if self.when is not None and self.match is not None:
+            raise ValueError("gate:switch case when and match are mutually exclusive")
+        return self
+
+
+class GateSwitchDefinition(GateDefinition):
+    type: Literal["gate:switch"]
+    cases: list[GateSwitchCaseDefinition]
+    default_port: str | None = None
+
+    @field_validator("default_port", mode="before")
+    @classmethod
+    def validate_default_port(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("gate:switch default_port must be a non-empty string")
+        text = str(value).strip()
+        if not text:
+            raise ValueError("gate:switch default_port must be a non-empty string")
+        return text
+
+    @model_validator(mode="after")
+    def validate_cases(self) -> "GateSwitchDefinition":
+        if not self.cases:
+            raise ValueError("gate:switch requires at least one case")
+        return self
+
+
 class GateMapDefinition(GateDefinition):
     type: Literal["gate:map"]
     template: ConfigValue
@@ -264,14 +338,17 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
 
     models_by_type: dict[str, type[BaseModel]] = {
         "trigger:event": provider_models.EventTriggerDefinition,
+        "trigger:http:webhook": provider_models.WebhookTriggerDefinition,
         "trigger:cron": provider_models.CronTriggerDefinition,
         "trigger:ticket:created": provider_models.TicketCreatedTriggerDefinition,
         "trigger:ticket:changed": provider_models.TicketChangedTriggerDefinition,
         "trigger:issue:comment-created": provider_models.IssueCommentCreatedTriggerDefinition,
         "trigger:ado:work-item-matching": provider_models.AdoWorkItemMatchingTriggerDefinition,
         "trigger:script-run-request": provider_models.ScriptRunRequestTriggerDefinition,
+        "trigger:communication:new-message": provider_models.CommunicationNewMessageTriggerDefinition,
         "trigger:discord:new-message": provider_models.DiscordNewMessageTriggerDefinition,
         "trigger:teams:new-message": provider_models.TeamsNewMessageTriggerDefinition,
+        "trigger:teams:direct-message": provider_models.TeamsDirectMessageTriggerDefinition,
         "trigger:teams-meeting:new-transcript": (
             provider_models.TeamsMeetingNewTranscriptTriggerDefinition
         ),
@@ -280,9 +357,11 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "trigger:pull-request:completed": provider_models.PullRequestCompletedTriggerDefinition,
         "trigger:review:new-request": provider_models.ReviewNewRequestTriggerDefinition,
         "trigger:git:push": provider_models.GitPushTriggerDefinition,
+        "trigger:ci:run:completed": provider_models.CiRunCompletedTriggerDefinition,
         "trigger:agent:run:completed": provider_models.AgentRunCompletedTriggerDefinition,
         "trigger:agent:prompt:new": provider_models.AgentPromptNewTriggerDefinition,
         "gate:filter": GateFilterDefinition,
+        "gate:switch": GateSwitchDefinition,
         "gate:map": GateMapDefinition,
         "gate:deserialize": GateDeserializeDefinition,
         "gate:serialize": GateSerializeDefinition,
@@ -318,7 +397,9 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         ),
         "effect:semantic:upsert": provider_models.SemanticUpsertEffectDefinition,
         "effect:semantic:delete": provider_models.SemanticDeleteEffectDefinition,
+        "effect:state:update": provider_models.StateUpdateEffectDefinition,
         "effect:bash:script": provider_models.BashScriptEffectDefinition,
+        "effect:http:request": provider_models.HttpRequestEffectDefinition,
         "effect:vm:exec": provider_models.VmExecEffectDefinition,
         "effect:vm:copy-files": provider_models.VmCopyFilesEffectDefinition,
         "effect:vm:delete-files": provider_models.VmDeleteFilesEffectDefinition,
@@ -340,16 +421,19 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         ),
         "effect:git:promote-agent-branch": provider_models.GitPromoteAgentBranchEffectDefinition,
         "effect:pr:create": provider_models.PrCreateEffectDefinition,
+        "effect:event:schedule": provider_models.EventScheduleEffectDefinition,
         "query:vm:run-state": provider_models.VmRunStateQueryDefinition,
         "query:git:pr-note": provider_models.GitPrNoteQueryDefinition,
         "query:session-context": provider_models.SessionContextQueryDefinition,
         "query:session:list": provider_models.SessionListQueryDefinition,
         "query:agent:artifact-text": provider_models.AgentArtifactTextQueryDefinition,
         "query:issue:get": provider_models.IssueGetQueryDefinition,
+        "query:issue:list": provider_models.IssueListQueryDefinition,
         "query:ado:work-items": provider_models.AdoWorkItemsQueryDefinition,
         "query:pull-request:list": provider_models.PullRequestListQueryDefinition,
         "query:pull-request:feedback": provider_models.PullRequestFeedbackQueryDefinition,
         "query:communication:messages": provider_models.CommunicationMessagesQueryDefinition,
+        "query:state:get": provider_models.StateGetQueryDefinition,
         "query:semantic:store-status": provider_models.SemanticStoreStatusQueryDefinition,
         "query:semantic:search": provider_models.SemanticSearchQueryDefinition,
         "query:semantic:get": provider_models.SemanticGetQueryDefinition,
