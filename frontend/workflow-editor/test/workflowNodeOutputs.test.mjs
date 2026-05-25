@@ -56,6 +56,11 @@ function createWorkflowConfig() {
         type: "gate:debounce",
       },
       {
+        id: "gate-switch-1",
+        display_name: "Switch tickets",
+        type: "gate:switch",
+      },
+      {
         id: "gate-merge-1",
         display_name: "Merge streams",
         type: "gate:merge",
@@ -83,6 +88,7 @@ function createWorkflowConfig() {
     edges: [
       { source_id: "trigger-1", target_id: "gate-filter-1" },
       { source_id: "gate-filter-1", target_id: "gate-debounce-1" },
+      { source_id: "gate-debounce-1", target_id: "gate-switch-1" },
       { source_id: "gate-debounce-1", target_id: "effect-1" },
       { source_id: "trigger-1", target_id: "gate-merge-1" },
       { source_id: "trigger-2", target_id: "gate-merge-1" },
@@ -116,12 +122,13 @@ test("flattens object and array output paths with stable nested paths", () => {
   ]);
 });
 
-test("derives pass-through outputs for filter and debounce gates", () => {
+test("derives pass-through outputs for filter, debounce, and switch gates", () => {
   const config = createWorkflowConfig();
   const outputSchemas = deriveWorkflowOutputSchemas(config);
 
   assert.deepEqual(outputSchemas["gate-filter-1"], outputSchemas["trigger-1"]);
   assert.deepEqual(outputSchemas["gate-debounce-1"], outputSchemas["trigger-1"]);
+  assert.deepEqual(outputSchemas["gate-switch-1"], outputSchemas["trigger-1"]);
 });
 
 test("builds a selected-node output contract for declared outputs", () => {
@@ -162,6 +169,11 @@ test("builds a selected-node output contract for pass-through and merge gates", 
   const debounceContract = selectedNodeOutputContract(config, "gate-debounce-1", outputSchemas);
   assert.equal(debounceContract.state, "derived");
   assert.equal(debounceContract.note, "Pass-through gate: outputs are derived from gate-filter-1.");
+
+  const switchContract = selectedNodeOutputContract(config, "gate-switch-1", outputSchemas);
+  assert.equal(switchContract.state, "derived");
+  assert.equal(switchContract.note, "Pass-through gate: outputs are derived from gate-debounce-1.");
+  assert.deepEqual(switchContract.sourceNodeIds, ["gate-debounce-1"]);
 
   const mergeContract = selectedNodeOutputContract(config, "gate-merge-1", outputSchemas);
   assert.equal(mergeContract.state, "empty");

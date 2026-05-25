@@ -27,6 +27,10 @@ export type WorkflowNodeOutputContract = {
   rows: WorkflowNodeOutputContractRow[];
 };
 
+export function isPassThroughGateType(type: string | null | undefined): boolean {
+  return type === "gate:filter" || type === "gate:dedupe" || type === "gate:debounce" || type === "gate:switch";
+}
+
 const SYSTEM_BINDING_OPTIONS: ReadonlyArray<WorkflowBindingOption> = [
   { value: "${{system.now.utc_timestamp}}", label: "[System] now.utc_timestamp" },
   { value: "${{system.now.utc_timestamp_compact}}", label: "[System] now.utc_timestamp_compact" },
@@ -90,7 +94,7 @@ export function deriveWorkflowOutputSchemas(
 
     visiting.add(nodeId);
     let schema: Record<string, unknown>;
-    if (node.type === "gate:filter" || node.type === "gate:dedupe" || node.type === "gate:debounce") {
+    if (isPassThroughGateType(node.type)) {
       schema = copyOutputSchema(resolve(directUpstreamNodeIds(config, node.id)[0] ?? ""));
     } else if (node.type === "gate:merge") {
       schema = mergeDeclaredOutputIntersection(
@@ -173,7 +177,7 @@ export function selectedNodeOutputContract(
   const derivedOutputSchemas = deriveWorkflowOutputSchemas(config, outputSchemas);
   const nodeOutputs = declaredOutputsForNode(node, derivedOutputSchemas);
 
-  if (node.type === "gate:filter" || node.type === "gate:dedupe" || node.type === "gate:debounce") {
+  if (isPassThroughGateType(node.type)) {
     const sourceNodeId = directUpstreamNodeIds(config, node.id)[0] ?? null;
     if (!sourceNodeId) {
       return {

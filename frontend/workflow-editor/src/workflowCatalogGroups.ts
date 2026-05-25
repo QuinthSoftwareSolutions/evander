@@ -77,8 +77,8 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
     {
       key: "flow-control",
       label: "Flow control",
-      description: "Join, pause, or loop workflow paths.",
-      types: ["gate:merge", "gate:await-agent", "gate:for"],
+      description: "Join, branch, pause, or loop workflow paths.",
+      types: ["gate:merge", "gate:switch", "gate:await-agent", "gate:for"],
     },
     {
       key: "timing",
