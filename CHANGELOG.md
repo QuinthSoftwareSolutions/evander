@@ -9,6 +9,10 @@ material. Newer entries are added incrementally as changes land.
 
 - Moved selected-node declared and derived output contracts below configuration
   fields so large output lists no longer push configuration down the inspector.
+- Fixed the Configuration communications Teams channel lookup card so it uses
+  dark-mode surfaces, labels, disabled controls, and result rows.
+- Clarified that communication targets are provider-generic and the Teams channel
+  lookup is only an optional helper.
 
 ## 2026-05-25 - Workflow Tutorial Cleanup
 
