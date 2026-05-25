@@ -14,6 +14,7 @@ __all__ = [
     "SemanticGetQueryProvider",
     "SemanticSearchQueryProvider",
     "SemanticStoreStatusQueryProvider",
+    "StateGetQueryProvider",
     "VmRunStateQueryProvider",
     "SessionListQueryProvider",
 ]
@@ -29,6 +30,7 @@ _EXPORT_MODULES = {
     "SemanticGetQueryProvider": ".semantic_get",
     "SemanticSearchQueryProvider": ".semantic_search",
     "SemanticStoreStatusQueryProvider": ".semantic_store_status",
+    "StateGetQueryProvider": ".state_get",
     "VmRunStateQueryProvider": ".vm_run_state",
     "SessionListQueryProvider": ".session_list",
 }

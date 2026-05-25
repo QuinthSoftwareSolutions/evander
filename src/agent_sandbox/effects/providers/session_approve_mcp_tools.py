@@ -38,7 +38,6 @@ class SessionApproveMcpToolsForRunEffectProvider(EffectProviderBase):
         if resolved_config:
             payload.update(dict(resolved_config))
 
-        context = self._context()
         session_id, session = self._resolve_session(payload)
         tools = normalize_tool_names(payload.get("tools"), field_name="tools")
         if not tools:

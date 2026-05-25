@@ -643,6 +643,10 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
         == "/tmp/agent-sandbox-runtime/workflow-events.jsonl"
     )
     assert (
+        str(config.scheduled_internal_event_store_path)
+        == "/tmp/agent-sandbox-runtime/scheduled-internal-events.json"
+    )
+    assert (
         str(config.gate_execution_store_path)
         == "/tmp/agent-sandbox-runtime/gate-orchestrator-executions.json"
     )
@@ -1196,6 +1200,33 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_trigger_ids
         )
 
 
+def test_trigger_orchestrator_worker_global_config_rejects_duplicate_webhook_slugs() -> None:
+    with pytest.raises(
+        ValueError,
+        match="Webhook trigger slugs must be globally unique across active config: build-notify",
+    ):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {
+                "triggers": [
+                    {
+                        "id": "webhook-1",
+                        "display_name": "Webhook 1",
+                        "type": "trigger:http:webhook",
+                        "slug": "build-notify",
+                        "secret_env": "WEBHOOK_SECRET",
+                    },
+                    {
+                        "id": "webhook-2",
+                        "display_name": "Webhook 2",
+                        "type": "trigger:http:webhook",
+                        "slug": "build-notify",
+                        "secret_env": "WEBHOOK_SECRET_2",
+                    },
+                ]
+            }
+        )
+
+
 def test_trigger_orchestrator_worker_global_config_rejects_duplicate_effect_ids() -> None:
     with pytest.raises(
         ValueError,
@@ -1226,6 +1257,86 @@ def test_trigger_orchestrator_worker_global_config_rejects_duplicate_effect_ids(
                     },
                 ],
                 "edges": [{"source_id": "trigger-1", "target_id": "effect-dup"}],
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("state_effect", "state_query", "message"),
+    [
+        (
+            {
+                "id": "effect-state-update",
+                "display_name": "Update state",
+                "type": "effect:state:update",
+                "namespace": "workflow",
+                "key": "cursor",
+                "operation": "replace",
+                "value": {"counter": 1},
+            },
+            {
+                "id": "query-state-get",
+                "display_name": "Read state",
+                "type": "query:state:get",
+                "namespace": "workflow",
+                "key": "cursor",
+            },
+            "effect:state:update operation must be set, patch, or delete",
+        ),
+        (
+            {
+                "id": "effect-state-update",
+                "display_name": "Update state",
+                "type": "effect:state:update",
+                "namespace": "workflow",
+                "key": "cursor",
+                "operation": "set",
+                "value": {"counter": 1},
+            },
+            {
+                "id": "query-state-get",
+                "display_name": "Read state",
+                "type": "query:state:get",
+                "namespace": "workflow",
+            },
+            "key",
+        ),
+    ],
+)
+def test_trigger_orchestrator_worker_global_config_validates_state_node_schemas(
+    state_effect: dict[str, object],
+    state_query: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {
+                "triggers": [
+                    {
+                        "id": "trigger-state",
+                        "display_name": "State trigger",
+                        "type": "trigger:cron",
+                        "expression": "* * * * *",
+                    }
+                ],
+                "effects": [state_effect],
+                "queries": [state_query],
+                "edges": [
+                    {"source_id": "trigger-state", "target_id": "effect-state-update"},
+                    {"source_id": "effect-state-update", "target_id": "query-state-get"},
+                ],
+                "workflow_graphs": [
+                    {
+                        "id": "graph-state",
+                        "name": "State graph",
+                        "directory_paths": ["root/team-a"],
+                        "node_ids": [
+                            "trigger-state",
+                            "effect-state-update",
+                            "query-state-get",
+                        ],
+                    }
+                ],
             }
         )
 

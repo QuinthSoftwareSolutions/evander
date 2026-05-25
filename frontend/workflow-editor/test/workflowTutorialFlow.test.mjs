@@ -435,6 +435,9 @@ test("workflow editor tutorial chooser starts, skips, and exits tutorials", asyn
     await bindingSelect.selectOption("${{tutorial-trigger.completed}}");
     await finishDialog.waitFor({ state: "visible" });
   }
+  tutorialProgressPutRequests.length = 0;
+  await page.getByRole("button", { name: "Exit" }).click();
+  await page.waitForFunction(() => !document.querySelector(".workflow-tutorial-bubble"));
   await page.waitForFunction(() => document.querySelector(".workflow-tutorial-launcher-button.is-complete") !== null);
   await waitForCondition(
     () => tutorialProgressPutRequests.some((payload) =>
@@ -445,8 +448,6 @@ test("workflow editor tutorial chooser starts, skips, and exits tutorials", asyn
     ),
     "expected completed tutorial progress to be saved",
   );
-  await page.getByRole("button", { name: "Exit" }).click();
-  await page.waitForFunction(() => !document.querySelector(".workflow-tutorial-bubble"));
   await page.locator('.react-flow__node[data-id="trigger-1"]').waitFor({ state: "visible" });
   await page.locator('.react-flow__node[data-id="effect-1"]').waitFor({ state: "visible" });
   assert.equal(await page.locator('.react-flow__node[data-id="tutorial-trigger"]').count(), 0);

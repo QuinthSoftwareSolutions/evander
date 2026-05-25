@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from agent_sandbox.events.models import TriggerDefinition
+from agent_sandbox.events.models import ConfigValue, TriggerDefinition
 from agent_sandbox.events.internal import validate_internal_event_type
 from agent_sandbox.events.provider_types import (
     EmailProvider,
@@ -13,6 +14,8 @@ from agent_sandbox.events.provider_types import (
     validate_pr_feedback_provider,
 )
 from agent_sandbox.workflow.contracts import normalize_directory_paths, normalize_string_list
+
+_WEBHOOK_SLUG_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 class EventTriggerDefinition(TriggerDefinition):
@@ -32,6 +35,59 @@ class EventTriggerDefinition(TriggerDefinition):
             return None
         text = str(value).strip()
         return text or None
+
+
+class WebhookTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:http:webhook"]
+    slug: str = Field(min_length=1)
+    secret_env: str = Field(min_length=1)
+    event_type: str | None = None
+
+    @field_validator("slug", mode="before")
+    @classmethod
+    def normalize_slug(cls, value: object) -> str:
+        if value is None:
+            raise ValueError("slug must be a non-empty string")
+        text = str(value).strip()
+        if not text:
+            raise ValueError("slug must be a non-empty string")
+        if not _WEBHOOK_SLUG_RE.fullmatch(text):
+            raise ValueError("slug must match [A-Za-z0-9_.-]+")
+        return text
+
+    @field_validator("secret_env", mode="before")
+    @classmethod
+    def normalize_secret_env(cls, value: object) -> str:
+        if value is None:
+            raise ValueError("secret_env must be a non-empty string")
+        text = str(value).strip()
+        if not text:
+            raise ValueError("secret_env must be a non-empty string")
+        return text
+
+    @field_validator("event_type", mode="before")
+    @classmethod
+    def normalize_event_type(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @model_validator(mode="after")
+    def sync_event_type_config(self) -> "WebhookTriggerDefinition":
+        if self.event_type is None:
+            self.event_type = f"webhook.{self.slug}"
+        else:
+            if self.event_type.startswith("external."):
+                raise ValueError("event_type must not include the reserved 'external.' prefix")
+            self.event_type = validate_internal_event_type(self.event_type)
+        self.config = {
+            **self.config,
+            "slug": self.slug,
+            "secret_env": self.secret_env,
+            "event_type": self.event_type,
+        }
+        return self
 
 
 class CronTriggerDefinition(TriggerDefinition):
@@ -155,6 +211,45 @@ class ScriptRunRequestTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:script-run-request"]
 
 
+def _normalize_lower_string_list(value: object) -> object:
+    normalized = normalize_string_list(value)
+    if not isinstance(normalized, list):
+        return normalized
+    return [item.lower() for item in normalized]
+
+
+class CommunicationNewMessageTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:communication:new-message"]
+    communication_target_ids: list[str] = Field(min_length=1)
+    directory_path: str | None = "root"
+    author_ids: list[str] = Field(default_factory=list)
+    content_contains: str | None = None
+    case_sensitive: bool = False
+
+    @field_validator("communication_target_ids", mode="before")
+    @classmethod
+    def normalize_communication_target_ids(cls, value: object) -> object:
+        normalized = _normalize_lower_string_list(value)
+        if isinstance(normalized, list) and not normalized:
+            raise ValueError("communication_target_ids must contain at least one target")
+        return normalized
+
+    @field_validator("directory_path", "content_contains", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value: object, info) -> object:
+        if value is None:
+            return "root" if info.field_name == "directory_path" else None
+        text = str(value).strip()
+        if info.field_name == "directory_path":
+            return text or "root"
+        return text or None
+
+    @field_validator("author_ids", mode="before")
+    @classmethod
+    def normalize_author_ids(cls, value: object) -> object:
+        return _normalize_lower_string_list(value)
+
+
 class DiscordNewMessageTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:discord:new-message"]
     discord_bot_token_env: str = Field(min_length=1)
@@ -224,6 +319,17 @@ class TeamsNewMessageTriggerDefinition(TriggerDefinition):
         return normalize_string_list(value)
 
 
+class TeamsDirectMessageTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:teams:direct-message"]
+    sender_user_ids: list[str] = Field(min_length=1)
+    message_filter: TeamsMessageFilterDefinition | None = None
+
+    @field_validator("sender_user_ids", mode="before")
+    @classmethod
+    def normalize_sender_user_ids(cls, value: object) -> object:
+        return normalize_string_list(value)
+
+
 class TeamsMeetingNewTranscriptTriggerDefinition(TriggerDefinition):
     type: Literal["trigger:teams-meeting:new-transcript"]
     session_ids: list[str] = Field(default_factory=list)
@@ -252,50 +358,157 @@ class EmailNewMessageTriggerDefinition(TriggerDefinition):
         return normalize_string_list(value)
 
 
-class PullRequestNewFeedbackTriggerDefinition(TriggerDefinition):
+class _PullRequestTriggerDefinition(TriggerDefinition):
+    provider: PrFeedbackProvider
+    repo: ConfigValue | None = None
+    directory_path: ConfigValue | None = None
+    organization_url: ConfigValue | None = None
+    project: ConfigValue | None = None
+    status: ConfigValue | None = None
+    creator_id: ConfigValue | None = None
+    reviewer_id: ConfigValue | None = None
+    source_ref_name: ConfigValue | None = None
+    target_ref_name: ConfigValue | None = None
+    source_repository_id: ConfigValue | None = None
+    repository_id: ConfigValue | None = None
+    min_time: ConfigValue | None = None
+    max_time: ConfigValue | None = None
+    query_time_range_type: ConfigValue | None = None
+    include_links: ConfigValue | None = None
+    max_comment_length: ConfigValue | None = None
+    tags: ConfigValue | None = None
+    top: ConfigValue | None = None
+    skip: ConfigValue | None = None
+    cursor: ConfigValue | None = None
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def validate_provider(cls, value: object) -> str:
+        return validate_pr_feedback_provider(value)
+
+    @field_validator("organization_url", mode="before")
+    @classmethod
+    def normalize_organization_url(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        text = str(value).strip().rstrip("/")
+        return text or None
+
+    @field_validator("project", mode="before")
+    @classmethod
+    def normalize_project(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def normalize_tags(cls, value: object) -> object:
+        if value is None or isinstance(value, str):
+            return value
+        raise ValueError("trigger:pull-request:* tags must be a string")
+
+
+class PullRequestNewFeedbackTriggerDefinition(_PullRequestTriggerDefinition):
     type: Literal["trigger:pull-request:new-feedback"]
-    provider: PrFeedbackProvider
-    organization_url: str | None = None
-    project: str | None = None
-
-    @field_validator("provider", mode="before")
-    @classmethod
-    def validate_provider(cls, value: object) -> str:
-        return validate_pr_feedback_provider(value)
-
-    @field_validator("organization_url", mode="before")
-    @classmethod
-    def normalize_organization_url(cls, value: object) -> object:
-        if value is None:
-            return None
-        text = str(value).strip().rstrip("/")
-        return text or None
-
-    @field_validator("project", mode="before")
-    @classmethod
-    def normalize_project(cls, value: object) -> object:
-        if value is None:
-            return None
-        text = str(value).strip()
-        return text or None
-
-    @model_validator(mode="after")
-    def validate_provider_specific_fields(self) -> "PullRequestNewFeedbackTriggerDefinition":
-        if self.provider == "ado" and not self.organization_url:
-            raise ValueError("organization_url is required when provider is 'ado'")
-        return self
 
 
-class PullRequestCompletedTriggerDefinition(TriggerDefinition):
+class PullRequestCompletedTriggerDefinition(_PullRequestTriggerDefinition):
     type: Literal["trigger:pull-request:completed"]
-    provider: PrFeedbackProvider
+
+
+_CI_RUN_COMPLETED_PROVIDER_ALIASES = {
+    "ado": "ado_pipelines",
+    "ado_pipelines": "ado_pipelines",
+    "azure_devops": "ado_pipelines",
+    "azure_pipelines": "ado_pipelines",
+    "github": "github_actions",
+    "github_actions": "github_actions",
+}
+
+_CI_RUN_COMPLETED_TERMINAL_CONCLUSIONS = (
+    "success",
+    "failure",
+    "cancelled",
+    "timed_out",
+    "skipped",
+)
+
+_CI_RUN_COMPLETED_CONCLUSION_ALIASES = {
+    "cancelled": "cancelled",
+    "canceled": "cancelled",
+    "failed": "failure",
+    "failure": "failure",
+    "partiallysucceeded": "failure",
+    "skipped": "skipped",
+    "success": "success",
+    "succeeded": "success",
+    "timedout": "timed_out",
+    "timeout": "timed_out",
+    "timed_out": "timed_out",
+}
+
+
+def _normalize_ci_token(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    return re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+
+
+def _normalize_ci_conclusion_token(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+class CiRunCompletedTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:ci:run:completed"]
+    provider: Literal["github_actions", "ado_pipelines"]
+    repo: str | None = None
+    workflow: str | None = None
     organization_url: str | None = None
     project: str | None = None
+    pipeline_id: int | None = None
+    pipeline_name: str | None = None
+    branches: list[str] = Field(default_factory=list)
+    conclusions: list[str] = Field(
+        default_factory=lambda: list(_CI_RUN_COMPLETED_TERMINAL_CONCLUSIONS)
+    )
+    top: int = Field(default=50, ge=1, le=100)
+    include_existing: bool = False
 
     @field_validator("provider", mode="before")
     @classmethod
-    def validate_provider(cls, value: object) -> str:
-        return validate_pr_feedback_provider(value)
+    def normalize_provider(cls, value: object) -> str:
+        token = _normalize_ci_token(value)
+        if token is None:
+            raise ValueError("provider is required")
+        canonical = _CI_RUN_COMPLETED_PROVIDER_ALIASES.get(token)
+        if canonical is None:
+            allowed = ", ".join(sorted(_CI_RUN_COMPLETED_PROVIDER_ALIASES))
+            raise ValueError(
+                f"Unsupported CI provider: {token!r}. Allowed providers: {allowed}"
+            )
+        return canonical
+
+    @field_validator("repo", "workflow", "project", "pipeline_name", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
     @field_validator("organization_url", mode="before")
     @classmethod
@@ -305,18 +518,37 @@ class PullRequestCompletedTriggerDefinition(TriggerDefinition):
         text = str(value).strip().rstrip("/")
         return text or None
 
-    @field_validator("project", mode="before")
+    @field_validator("branches", mode="before")
     @classmethod
-    def normalize_project(cls, value: object) -> object:
+    def normalize_branches(cls, value: object) -> object:
+        return normalize_string_list(value)
+
+    @field_validator("conclusions", mode="before")
+    @classmethod
+    def normalize_conclusions(cls, value: object) -> list[str]:
         if value is None:
-            return None
-        text = str(value).strip()
-        return text or None
+            return list(_CI_RUN_COMPLETED_TERMINAL_CONCLUSIONS)
+        normalized = normalize_string_list(value)
+        if not normalized:
+            return list(_CI_RUN_COMPLETED_TERMINAL_CONCLUSIONS)
+        canonical: list[str] = []
+        for item in normalized:
+            token = _normalize_ci_conclusion_token(item)
+            if token is None:
+                continue
+            conclusion = _CI_RUN_COMPLETED_CONCLUSION_ALIASES.get(token)
+            if conclusion is None:
+                allowed = ", ".join(_CI_RUN_COMPLETED_TERMINAL_CONCLUSIONS)
+                raise ValueError(
+                    f"Unsupported CI conclusion: {item!r}. Allowed conclusions: {allowed}"
+                )
+            canonical.append(conclusion)
+        return list(dict.fromkeys(canonical))
 
     @model_validator(mode="after")
-    def validate_provider_specific_fields(self) -> "PullRequestCompletedTriggerDefinition":
-        if self.provider == "ado" and not self.organization_url:
-            raise ValueError("organization_url is required when provider is 'ado'")
+    def validate_provider_specific_fields(self) -> "CiRunCompletedTriggerDefinition":
+        if self.provider == "github_actions" and not self.repo:
+            raise ValueError("repo is required when provider is 'github_actions'")
         return self
 
 

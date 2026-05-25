@@ -4,8 +4,10 @@ from importlib import import_module
 from typing import Any
 
 __all__ = [
+    "CiRunCompletedTriggerProvider",
     "AgentRunCompletedTriggerProvider",
     "CronTriggerProvider",
+    "CommunicationNewMessageTriggerProvider",
     "DiscordNewMessageTriggerProvider",
     "EmailNewMessageTriggerProvider",
     "GitPushTriggerProvider",
@@ -14,8 +16,10 @@ __all__ = [
     "PullRequestNewFeedbackTriggerProvider",
     "ScriptRunRequestTriggerProvider",
     "PushTriggerProvider",
+    "TeamsDirectMessageTriggerProvider",
     "TicketChangedTriggerProvider",
     "TicketCreatedTriggerProvider",
+    "WebhookTriggerProvider",
     "TriggerHookHandler",
     "TriggerProvider",
     "TriggerProviderBase",
@@ -23,8 +27,10 @@ __all__ = [
 ]
 
 _EXPORT_MODULES = {
+    "CiRunCompletedTriggerProvider": ".ci_run_completed",
     "AgentRunCompletedTriggerProvider": ".agent_run_completed",
     "CronTriggerProvider": ".cron",
+    "CommunicationNewMessageTriggerProvider": ".communication_new_message",
     "DiscordNewMessageTriggerProvider": ".discord_new_message",
     "EmailNewMessageTriggerProvider": ".email_new_message",
     "GitPushTriggerProvider": ".git_push",
@@ -33,8 +39,10 @@ _EXPORT_MODULES = {
     "PullRequestNewFeedbackTriggerProvider": ".pull_request_new_feedback",
     "PushTriggerProvider": ".base",
     "ScriptRunRequestTriggerProvider": ".script_run_request",
+    "TeamsDirectMessageTriggerProvider": ".teams_direct_message",
     "TicketChangedTriggerProvider": ".ticket_changed",
     "TicketCreatedTriggerProvider": ".ticket_created",
+    "WebhookTriggerProvider": ".webhook",
     "TriggerHookHandler": ".base",
     "TriggerProvider": ".base",
     "TriggerProviderBase": ".base",

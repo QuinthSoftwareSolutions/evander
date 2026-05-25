@@ -17,9 +17,12 @@ from agent_sandbox.events.provider_models import (
     AgentRunCompletedTriggerDefinition,
     ArtifactPublishArtifactsEffectDefinition,
     ArtifactStageEffectDefinition,
+    CiRunCompletedTriggerDefinition,
+    CommunicationNewMessageTriggerDefinition,
     CommunicationSendMessageEffectDefinition,
     GitPromoteAgentBranchEffectDefinition,
     GitPushTriggerDefinition,
+    HttpRequestEffectDefinition,
     IssueUpdateStateEffectDefinition,
     NotificationSendEffectDefinition,
     PrCreateEffectDefinition,
@@ -31,7 +34,9 @@ from agent_sandbox.events.provider_models import (
     SessionApproveMcpToolsForRunEffectDefinition,
     SessionRenewIfExpiredEffectDefinition,
     SessionUpdateMetadataEffectDefinition,
+    WebhookTriggerDefinition,
 )
+from agent_sandbox.workflow.contracts import effective_node_output_schema
 
 
 def test_ticket_created_trigger_normalizes_directories() -> None:
@@ -74,6 +79,77 @@ def test_issue_comment_trigger_normalizes_ado_config() -> None:
     assert trigger.organization_url == "https://dev.azure.com/example"
     assert trigger.project == "APP"
     assert trigger.directories == ["root/team-a"]
+
+
+def test_webhook_trigger_defaults_event_type_from_slug() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    trigger = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "webhook-1",
+                "display_name": "Webhook",
+                "type": "trigger:http:webhook",
+                "slug": "build-notify",
+                "secret_env": "WEBHOOK_SECRET",
+            }
+        )
+    )
+
+    assert isinstance(trigger, WebhookTriggerDefinition)
+    assert trigger.slug == "build-notify"
+    assert trigger.secret_env == "WEBHOOK_SECRET"
+    assert trigger.event_type == "webhook.build-notify"
+    assert trigger.config["slug"] == "build-notify"
+    assert trigger.config["secret_env"] == "WEBHOOK_SECRET"
+    assert trigger.config["event_type"] == "webhook.build-notify"
+
+
+@pytest.mark.parametrize(
+    "slug, expected_error",
+    [
+        ("", "slug must be a non-empty string"),
+        ("not a slug", r"slug must match \[A-Za-z0-9_.-\]\+"),
+    ],
+)
+def test_webhook_trigger_rejects_invalid_slug(slug: str, expected_error: str) -> None:
+    with pytest.raises(ValueError, match=expected_error):
+        WebhookTriggerDefinition.model_validate(
+            {
+                "id": "webhook-2",
+                "display_name": "Webhook",
+                "type": "trigger:http:webhook",
+                "slug": slug,
+                "secret_env": "WEBHOOK_SECRET",
+            }
+        )
+
+
+def test_webhook_trigger_rejects_blank_secret_env() -> None:
+    with pytest.raises(ValueError, match="secret_env must be a non-empty string"):
+        WebhookTriggerDefinition.model_validate(
+            {
+                "id": "webhook-3",
+                "display_name": "Webhook",
+                "type": "trigger:http:webhook",
+                "slug": "build-notify",
+                "secret_env": "   ",
+            }
+        )
+
+
+def test_webhook_trigger_rejects_reserved_external_event_type() -> None:
+    with pytest.raises(ValueError, match="reserved 'external\\.' prefix"):
+        WebhookTriggerDefinition.model_validate(
+            {
+                "id": "webhook-4",
+                "display_name": "Webhook",
+                "type": "trigger:http:webhook",
+                "slug": "build-notify",
+                "secret_env": "WEBHOOK_SECRET",
+                "event_type": "external.webhook.build-notify",
+            }
+        )
 
 
 def test_email_trigger_validates_provider_enum() -> None:
@@ -139,6 +215,76 @@ def test_teams_trigger_accepts_per_target_message_filter() -> None:
         "143e5b02-868f-4f0c-a262-cf509b6c09e5"
     ]
 
+def test_communication_trigger_normalizes_targets_and_authors() -> None:
+    trigger = CommunicationNewMessageTriggerDefinition.model_validate(
+        {
+            "id": "comm-1",
+            "display_name": "Communication",
+            "type": "trigger:communication:new-message",
+            "communication_target_ids": [" TEAM-A/CHANNEL-1 ", "discord:CHAN-2", ""],
+            "directory_path": " root/team-a ",
+            "author_ids": [" AUTHOR-A ", "Author-B", ""],
+            "content_contains": "  Hello there  ",
+        }
+    )
+
+    assert trigger.communication_target_ids == ["team-a/channel-1", "discord:chan-2"]
+    assert trigger.directory_path == "root/team-a"
+    assert trigger.author_ids == ["author-a", "author-b"]
+    assert trigger.content_contains == "Hello there"
+    assert trigger.case_sensitive is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "id": "comm-missing",
+            "display_name": "Communication",
+            "type": "trigger:communication:new-message",
+        },
+        {
+            "id": "comm-empty",
+            "display_name": "Communication",
+            "type": "trigger:communication:new-message",
+            "communication_target_ids": ["  ", ""],
+        },
+    ],
+)
+def test_communication_trigger_requires_target_ids(payload: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match="communication_target_ids"):
+        CommunicationNewMessageTriggerDefinition.model_validate(payload)
+
+
+def test_teams_direct_message_trigger_requires_sender_user_ids() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    trigger = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "t-teams-dm",
+                "display_name": "Teams direct message",
+                "type": "trigger:teams:direct-message",
+                "sender_user_ids": [" 143e5b02-868f-4f0c-a262-cf509b6c09e5 "],
+                "message_filter": {"content": {"contains": "hello"}},
+            }
+        )
+    )
+
+    assert trigger.sender_user_ids == ["143e5b02-868f-4f0c-a262-cf509b6c09e5"]
+    assert trigger.message_filter is not None
+    assert trigger.message_filter.content is not None
+    assert trigger.message_filter.content.contains == "hello"
+
+    with pytest.raises(ValueError, match="sender_user_ids"):
+        adapter.validate_python(
+            {
+                "id": "t-teams-dm-missing",
+                "display_name": "Teams direct message",
+                "type": "trigger:teams:direct-message",
+            }
+        )
+
 
 def test_teams_trigger_message_filter_requires_content_or_mentions() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
@@ -172,26 +318,269 @@ def test_teams_trigger_requires_targets() -> None:
         )
 
 
-def test_pr_feedback_trigger_requires_org_url_for_ado() -> None:
-    with pytest.raises(ValueError, match="organization_url is required"):
-        PullRequestNewFeedbackTriggerDefinition.model_validate(
+@pytest.mark.parametrize(
+    ("trigger_cls", "trigger_type"),
+    [
+        (
+            PullRequestNewFeedbackTriggerDefinition,
+            "trigger:pull-request:new-feedback",
+        ),
+        (
+            PullRequestCompletedTriggerDefinition,
+            "trigger:pull-request:completed",
+        ),
+    ],
+)
+def test_pr_triggers_accept_full_criteria_and_preserve_materialized_fields(
+    trigger_cls: type[PullRequestNewFeedbackTriggerDefinition]
+    | type[PullRequestCompletedTriggerDefinition],
+    trigger_type: str,
+) -> None:
+    trigger = materialize_node_definition(
+        TypeAdapter(TriggerDefinitionDiscriminated).validate_python(
             {
-                "id": "t-3",
-                "display_name": "PR feedback",
-                "type": "trigger:pull-request:new-feedback",
+                "id": "t-pr",
+                "display_name": "PR",
+                "type": trigger_type,
                 "provider": "ado",
+                "repo": "repo-1",
+                "directory_path": " root/team-a ",
+                "organization_url": " https://dev.azure.com/example/ ",
+                "project": " Sandbox ",
+                "status": "active",
+                "creator_id": "creator-1",
+                "reviewer_id": "reviewer-1",
+                "source_ref_name": "refs/heads/feature",
+                "target_ref_name": "refs/heads/main",
+                "source_repository_id": "source-repo-1",
+                "repository_id": "repository-1",
+                "min_time": "2026-05-01T00:00:00Z",
+                "max_time": "2026-05-02T00:00:00Z",
+                "query_time_range_type": "created",
+                "include_links": False,
+                "max_comment_length": 0,
+                "tags": "needs-review",
+                "top": 25,
+                "skip": 5,
+                "cursor": "cursor-1",
+            }
+        )
+    )
+
+    assert isinstance(trigger, trigger_cls)
+    assert trigger.provider == "ado"
+    assert trigger.repo == "repo-1"
+    assert trigger.directory_path == " root/team-a "
+    assert trigger.organization_url == "https://dev.azure.com/example"
+    assert trigger.project == "Sandbox"
+    assert trigger.status == "active"
+    assert trigger.creator_id == "creator-1"
+    assert trigger.reviewer_id == "reviewer-1"
+    assert trigger.source_ref_name == "refs/heads/feature"
+    assert trigger.target_ref_name == "refs/heads/main"
+    assert trigger.source_repository_id == "source-repo-1"
+    assert trigger.repository_id == "repository-1"
+    assert trigger.min_time == "2026-05-01T00:00:00Z"
+    assert trigger.max_time == "2026-05-02T00:00:00Z"
+    assert trigger.query_time_range_type == "created"
+    assert trigger.include_links is False
+    assert trigger.max_comment_length == 0
+    assert trigger.tags == "needs-review"
+    assert trigger.top == 25
+    assert trigger.skip == 5
+    assert trigger.cursor == "cursor-1"
+
+
+@pytest.mark.parametrize(
+    ("trigger_cls", "trigger_type"),
+    [
+        (
+            PullRequestNewFeedbackTriggerDefinition,
+            "trigger:pull-request:new-feedback",
+        ),
+        (
+            PullRequestCompletedTriggerDefinition,
+            "trigger:pull-request:completed",
+        ),
+    ],
+)
+def test_pr_triggers_accept_ado_without_repo(
+    trigger_cls: type[PullRequestNewFeedbackTriggerDefinition]
+    | type[PullRequestCompletedTriggerDefinition],
+    trigger_type: str,
+) -> None:
+    trigger = materialize_node_definition(
+        TypeAdapter(TriggerDefinitionDiscriminated).validate_python(
+            {
+                "id": "t-pr-legacy",
+                "display_name": "PR legacy",
+                "type": trigger_type,
+                "provider": "ado",
+            }
+        )
+    )
+
+    assert isinstance(trigger, trigger_cls)
+    assert trigger.provider == "ado"
+    assert trigger.repo is None
+    assert trigger.organization_url is None
+    assert trigger.project is None
+
+
+@pytest.mark.parametrize(
+    ("trigger_cls", "trigger_type"),
+    [
+        (
+            PullRequestNewFeedbackTriggerDefinition,
+            "trigger:pull-request:new-feedback",
+        ),
+        (
+            PullRequestCompletedTriggerDefinition,
+            "trigger:pull-request:completed",
+        ),
+    ],
+)
+def test_pr_triggers_reject_non_string_tags(
+    trigger_cls: type[PullRequestNewFeedbackTriggerDefinition]
+    | type[PullRequestCompletedTriggerDefinition],
+    trigger_type: str,
+) -> None:
+    with pytest.raises(ValueError, match="tags must be a string"):
+        trigger_cls.model_validate(
+            {
+                "id": "t-pr-tags",
+                "display_name": "PR tags",
+                "type": trigger_type,
+                "provider": "ado",
+                "tags": ["needs-review"],
             }
         )
 
 
-def test_pr_completed_trigger_requires_org_url_for_ado() -> None:
-    with pytest.raises(ValueError, match="organization_url is required"):
-        PullRequestCompletedTriggerDefinition.model_validate(
+def test_ci_run_completed_trigger_normalizes_aliases_and_defaults() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    trigger = materialize_node_definition(
+        adapter.validate_python(
             {
-                "id": "t-pr-done",
-                "display_name": "PR completed",
-                "type": "trigger:pull-request:completed",
-                "provider": "ado",
+                "id": "t-ci",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "github-actions",
+                "repo": " owner/repo ",
+                "workflow": " build.yml ",
+                "branches": [" main ", "", "release/v1"],
+                "conclusions": [" succeeded ", "partiallySucceeded", "canceled", "timedOut"],
+            }
+        )
+    )
+
+    assert isinstance(trigger, CiRunCompletedTriggerDefinition)
+    assert trigger.provider == "github_actions"
+    assert trigger.repo == "owner/repo"
+    assert trigger.workflow == "build.yml"
+    assert trigger.branches == ["main", "release/v1"]
+    assert trigger.conclusions == ["success", "failure", "cancelled", "timed_out"]
+    assert trigger.top == 50
+    assert trigger.include_existing is False
+
+
+def test_ci_run_completed_trigger_requires_repo_for_github() -> None:
+    with pytest.raises(ValueError, match="repo is required when provider is 'github_actions'"):
+        CiRunCompletedTriggerDefinition.model_validate(
+            {
+                "id": "t-ci-github",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "github",
+            }
+        )
+
+
+def test_ci_run_completed_trigger_normalizes_ado_config() -> None:
+    trigger = CiRunCompletedTriggerDefinition.model_validate(
+        {
+            "id": "t-ci-ado",
+            "display_name": "CI run completed",
+            "type": "trigger:ci:run:completed",
+            "provider": "azure-pipelines",
+            "organization_url": " https://dev.azure.com/example/ ",
+            "project": " APP ",
+            "repo": " ",
+            "pipeline_id": "42",
+            "pipeline_name": " nightly ",
+            "branches": " release/* ",
+            "conclusions": ["partiallySucceeded", "skipped", "canceled", "timedOut"],
+        }
+    )
+
+    assert trigger.provider == "ado_pipelines"
+    assert trigger.organization_url == "https://dev.azure.com/example"
+    assert trigger.project == "APP"
+    assert trigger.repo is None
+    assert trigger.pipeline_id == 42
+    assert trigger.pipeline_name == "nightly"
+    assert trigger.branches == ["release/*"]
+    assert trigger.conclusions == ["failure", "skipped", "cancelled", "timed_out"]
+
+
+def test_ci_run_completed_trigger_treats_empty_conclusions_as_default() -> None:
+    trigger = CiRunCompletedTriggerDefinition.model_validate(
+        {
+            "id": "t-ci-empty-conclusions",
+            "display_name": "CI run completed",
+            "type": "trigger:ci:run:completed",
+            "provider": "github_actions",
+            "repo": "owner/repo",
+            "conclusions": [],
+        }
+    )
+
+    assert trigger.conclusions == ["success", "failure", "cancelled", "timed_out", "skipped"]
+
+
+def test_ci_run_completed_trigger_rejects_invalid_provider_conclusion_top_and_missing_provider() -> None:
+    with pytest.raises(ValueError, match="Unsupported CI provider"):
+        CiRunCompletedTriggerDefinition.model_validate(
+            {
+                "id": "t-ci-provider",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "circleci",
+            }
+        )
+
+    with pytest.raises(ValueError, match="Unsupported CI conclusion"):
+        CiRunCompletedTriggerDefinition.model_validate(
+            {
+                "id": "t-ci-conclusion",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "github_actions",
+                "repo": "owner/repo",
+                "conclusions": ["unknown"],
+            }
+        )
+
+    with pytest.raises(ValueError, match="greater than or equal to 1"):
+        CiRunCompletedTriggerDefinition.model_validate(
+            {
+                "id": "t-ci-top",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "github_actions",
+                "repo": "owner/repo",
+                "top": 0,
+            }
+        )
+
+    with pytest.raises(ValueError, match="provider"):
+        CiRunCompletedTriggerDefinition.model_validate(
+            {
+                "id": "t-ci-missing-provider",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "repo": "owner/repo",
             }
         )
 
@@ -297,6 +686,28 @@ def test_agent_prompt_new_trigger_validates() -> None:
     assert trigger.type == "trigger:agent:prompt:new"
 
 
+def test_communication_trigger_output_schema_exposes_normalized_payload_fields() -> None:
+    schema = effective_node_output_schema({"type": "trigger:communication:new-message"})
+
+    assert schema["provider"] == {"type": "string"}
+    assert schema["communication_target_id"] == {"type": "string"}
+    assert schema["message_id"] == {"type": "string"}
+    assert schema["thread_id"] == {"type": ["string", "null"]}
+    assert schema["author_id"] == {"type": "string"}
+    assert schema["author_name"] == {"type": "string"}
+    assert schema["content"] == {"type": "string"}
+    assert schema["created_at"] == {"type": "string"}
+    assert schema["received_at"] == {"type": "string"}
+    assert schema["target"] == {"type": "string"}
+    assert schema["message"]["properties"]["provider"] == {"type": "string"}
+    assert schema["message"]["properties"]["communication_target_id"] == {
+        "type": "string"
+    }
+    assert schema["message"]["properties"]["message_id"] == {"type": "string"}
+    assert schema["message"]["properties"]["target"] == {"type": "string"}
+    assert schema["message"]["properties"]["metadata"] == {"type": "object"}
+
+
 def test_await_agent_gate_requires_session_id_or_vm_name() -> None:
     adapter = TypeAdapter(GateDefinitionDiscriminated)
 
@@ -373,6 +784,91 @@ def test_effect_discriminated_union_accepts_output_reference_interpolation() -> 
 
     assert effect.type == "effect:agent:prompt"
     assert effect.model == "${{trigger.model}}"
+
+
+def test_http_request_effect_accepts_bindings_and_static_headers() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+    effect = adapter.validate_python(
+        {
+            "id": "effect-http",
+            "display_name": "HTTP request",
+            "type": "effect:http:request",
+            "method": "GET",
+            "url": "https://example.test/api",
+            "allowed_url_patterns": ["https://example.test/*"],
+            "headers": {"Accept": "application/json"},
+            "payload": {"ticket_id": "${{trigger.ticket_id}}"},
+            "check": "${{trigger.check}}",
+        }
+    )
+
+    assert effect.type == "effect:http:request"
+    assert effect.method == "GET"
+    assert effect.url == "https://example.test/api"
+    assert effect.allowed_url_patterns == ["https://example.test/*"]
+    assert effect.headers == {"Accept": "application/json"}
+    assert effect.payload == {"ticket_id": "${{trigger.ticket_id}}"}
+    assert effect.check == "${{trigger.check}}"
+
+
+def test_http_request_effect_defaults_to_allow_any_url_pattern() -> None:
+    effect = HttpRequestEffectDefinition.model_validate(
+        {
+            "id": "effect-http",
+            "display_name": "HTTP request",
+            "type": "effect:http:request",
+            "url": "https://example.test/api",
+        }
+    )
+
+    assert effect.allowed_url_patterns == ["*"]
+
+
+def test_http_request_effect_rejects_invalid_static_method() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+
+    with pytest.raises(ValueError, match="effect:http:request method must be GET, POST, or PUT"):
+        adapter.validate_python(
+            {
+                "id": "effect-http",
+                "display_name": "HTTP request",
+                "type": "effect:http:request",
+                "method": "delete",
+                "url": "https://example.test/api",
+            }
+        )
+
+
+def test_http_request_effect_rejects_invalid_static_url() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+
+    with pytest.raises(ValueError, match="effect:http:request url must be a non-empty http or https URL"):
+        adapter.validate_python(
+            {
+                "id": "effect-http",
+                "display_name": "HTTP request",
+                "type": "effect:http:request",
+                "url": "ftp://example.test/api",
+            }
+        )
+
+
+def test_http_request_effect_rejects_invalid_allowed_url_patterns() -> None:
+    adapter = TypeAdapter(EffectDefinitionDiscriminated)
+
+    with pytest.raises(
+        ValueError,
+        match="effect:http:request allowed_url_patterns must be a string, string list, or binding",
+    ):
+        adapter.validate_python(
+            {
+                "id": "effect-http",
+                "display_name": "HTTP request",
+                "type": "effect:http:request",
+                "url": "https://example.test/api",
+                "allowed_url_patterns": [42],
+            }
+        )
 
 
 def test_agent_run_completed_trigger_accepts_default_vm_user() -> None:

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier, Thread
 
 from pytest import MonkeyPatch
 
 from agent_sandbox.events.internal import InternalEventBus
+from agent_sandbox.events.scheduled import ScheduledInternalEventStore
 from agent_sandbox.storage import JsonStore
 
 
@@ -74,3 +76,93 @@ def test_concurrent_internal_event_publish_preserves_both_events(
     assert [event["event_type"] for event in journal_events].count(
         "workflow.internal_event.published"
     ) == 2
+
+
+def test_scheduled_internal_event_store_uses_single_store_update(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    store = ScheduledInternalEventStore(tmp_path / "scheduled-internal-events.json")
+
+    def fail_write_all(*args, **kwargs) -> None:
+        raise AssertionError("schedule_event must not use split read/write store updates")
+
+    monkeypatch.setattr(store._store, "write_all", fail_write_all)
+
+    scheduled, created = store.schedule_event(
+        event_type="custom.operator_event",
+        payload={"value": "ok"},
+        run_at=datetime.now(UTC),
+        idempotency_key="schedule-1",
+    )
+    published = store.mark_published(
+        scheduled.schedule_id,
+        "evt-1",
+        datetime.now(UTC),
+    )
+
+    assert created is True
+    assert published.status == "published"
+    assert published.published_event_id == "evt-1"
+
+
+def test_duplicate_schedule_idempotency_returns_original_record_without_mutation(
+    tmp_path: Path,
+) -> None:
+    store = ScheduledInternalEventStore(tmp_path / "scheduled-internal-events.json")
+    run_at = datetime(2030, 1, 1, 12, 0, tzinfo=UTC)
+
+    original, created = store.schedule_event(
+        event_type="custom.operator_event",
+        payload={"value": "original"},
+        correlation_key="corr-1",
+        run_at=run_at,
+        idempotency_key="schedule-1",
+        created_at=datetime(2030, 1, 1, 11, 0, tzinfo=UTC),
+    )
+    duplicate, duplicate_created = store.schedule_event(
+        event_type="custom.changed_event",
+        payload={"value": "changed"},
+        correlation_key="corr-2",
+        run_at=run_at + timedelta(hours=1),
+        idempotency_key="schedule-1",
+        created_at=datetime(2030, 1, 1, 11, 30, tzinfo=UTC),
+    )
+
+    assert created is True
+    assert duplicate_created is False
+    assert duplicate == original
+    assert duplicate.event_type == "custom.operator_event"
+    assert duplicate.payload == {"value": "original"}
+    assert duplicate.correlation_key == "corr-1"
+    assert duplicate.run_at == run_at
+
+
+def test_due_scheduled_events_are_sorted_by_run_at_then_created_at(tmp_path: Path) -> None:
+    store = ScheduledInternalEventStore(tmp_path / "scheduled-internal-events.json")
+    now = datetime(2030, 1, 1, 12, 0, tzinfo=UTC)
+
+    store.schedule_event(
+        event_type="custom.operator_event",
+        payload={"value": "third"},
+        run_at=now - timedelta(minutes=15),
+        idempotency_key="third",
+        created_at=now - timedelta(minutes=30),
+    )
+    store.schedule_event(
+        event_type="custom.operator_event",
+        payload={"value": "first"},
+        run_at=now - timedelta(minutes=10),
+        idempotency_key="first",
+        created_at=now - timedelta(minutes=20),
+    )
+    store.schedule_event(
+        event_type="custom.operator_event",
+        payload={"value": "second"},
+        run_at=now - timedelta(minutes=10),
+        idempotency_key="second",
+        created_at=now - timedelta(minutes=10),
+    )
+
+    due = store.list_due(now)
+
+    assert [event.payload["value"] for event in due] == ["third", "first", "second"]

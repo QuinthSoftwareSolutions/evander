@@ -26,9 +26,10 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
     {
       key: "platform",
       label: "Platform events",
-      description: "Start from internal workflow events, agent lifecycle signals, or operator requests.",
+      description: "Start from internal workflow events, webhook deliveries, agent lifecycle signals, or operator requests.",
       types: [
         "trigger:event",
+        "trigger:http:webhook",
         "trigger:script-run-request",
         "trigger:agent:run:completed",
       ],
@@ -47,8 +48,9 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
     {
       key: "communications",
       label: "Communications",
-      description: "Start from inbound chat, Teams, Discord, or email activity.",
+      description: "Start from inbound chat, provider-neutral communication targets, Teams, Discord, or email activity.",
       prefixes: [
+        "trigger:communication:",
         "trigger:discord:",
         "trigger:teams:",
         "trigger:email:",
@@ -57,8 +59,8 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
     {
       key: "git",
       label: "Git",
-      description: "Start from repository events.",
-      prefixes: ["trigger:git:"],
+      description: "Start from repository or CI activity.",
+      prefixes: ["trigger:git:", "trigger:ci:"],
     },
   ],
   gate: [
@@ -107,10 +109,22 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       prefixes: ["effect:bash:"],
     },
     {
+      key: "http",
+      label: "HTTP",
+      description: "Perform allowlisted host-side HTTP requests and expose upstream responses.",
+      prefixes: ["effect:http:"],
+    },
+    {
       key: "semantic",
       label: "Semantic store",
       description: "Manage semantic collections and points.",
       prefixes: ["effect:semantic:"],
+    },
+    {
+      key: "runtime-state",
+      label: "Runtime state",
+      description: "Read or modify graph-local workflow state.",
+      prefixes: ["effect:state:"],
     },
     {
       key: "artifacts",
@@ -147,9 +161,9 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
     {
       key: "runtime",
       label: "Runtime state",
-      description: "Read VM, session, or agent runtime state.",
+      description: "Read VM, session, agent, or workflow runtime state.",
       types: ["query:session-context"],
-      prefixes: ["query:vm:", "query:agent:"],
+      prefixes: ["query:vm:", "query:agent:", "query:state:"],
     },
     {
       key: "work-tracking",
@@ -188,6 +202,7 @@ const NAMESPACE_LABELS: Record<string, string> = {
   pr: "PR",
   pull: "Pull",
   semantic: "Semantic",
+  state: "State",
   session: "Session",
   teams: "Teams",
   ticket: "Ticket",

@@ -384,10 +384,10 @@ Storage layout for directory config:
 - Guests never need direct Microsoft Graph credentials or internet access; Teams API access
   happens only in the host-side gateway process, and the token must cover the Teams channels or
   chats you intend to read and write.
-- Teams message arrival for `trigger:teams:new-message` comes from host-side ingest polling on the
-  host, using the same delegated Teams identity/configuration. That polling path is separate from
-  PR and chat wakeups, which are handled by the ADO worker, Discord wake worker, and scheduled wake
-  worker.
+- Teams message arrival for `trigger:teams:new-message` and
+  `trigger:teams:direct-message` comes from host-side ingest polling on the host, using the same
+  delegated Teams identity/configuration. That polling path is separate from PR and chat wakeups,
+  which are handled by the ADO worker, Discord wake worker, and scheduled wake worker.
 - Teams targets can be channel threads, group chats, or explicitly allowlisted one-on-one users:
   - channel targets use `team-id/channel-id` and should be declared in `session.teams_channel_allowlist`
   - chat targets use `chat:<chat-id>` and should be declared in `session.teams_chat_allowlist`
@@ -395,9 +395,14 @@ Storage layout for directory config:
     `chat:<chat-id>` before sending. User targets require `session.teams_user_allowlist` or a
     declared communication target; they are not valid for message reads, reactions, or attachment
     downloads.
+- Session communication allowlists can also contain directory-scoped communication target IDs. A
+  target ID is resolved from the session directory at use time and must expose `read`, `write`, or
+  `reply` to match the attempted read/poll/download, top-level send, or reply/reaction operation.
+  Raw Teams and Discord IDs remain supported.
 - The host-side Teams adapter reads channel threads from
   `GET /teams/{team-id}/channels/{channel-id}/messages` and group chats from
-  `GET /chats/{chat-id}/messages`.
+  `GET /chats/{chat-id}/messages`. Direct-message triggers discover one-on-one chats with
+  `GET /me/chats` and only persist messages from configured sender user ids.
 - The host-side Teams adapter creates or reuses one-on-one chats with `POST /chats`. The default
   delegated `Chat.ReadWrite` scope is sufficient; a narrower deployment can grant `Chat.Create`
   for first-contact one-on-one chat creation.
@@ -848,14 +853,17 @@ Audit/result behavior:
   3. Otherwise, if `author_id` is in global `discord_operator_user_allowlist`, allow it.
   4. Otherwise deny and audit as denied.
 - Posting precedence for `discord_post_status`:
-  - Destination `channel_id` must be in `session.discord_channel_allowlist`.
+  - Destination `channel_id` must be in `session.discord_channel_allowlist`, either directly or
+    through a communication target ID with `write`.
   - `discord_operator_user_allowlist` does not override post destination checks.
 - Reaction precedence for `add_message_reaction`:
-  - `provider=discord` requires `channel_id` in `session.discord_channel_allowlist`.
+  - `provider=discord` requires `channel_id` in `session.discord_channel_allowlist`, either
+    directly or through a communication target ID with `reply`.
   - `provider=teams` requires `channel_target` in the effective Teams channel/chat allowlist:
     `session.teams_channel_allowlist` for channel targets or `session.teams_chat_allowlist` for
-    chat targets. Send tools can also target entries declared in `session.teams_user_allowlist`
-    with `user:<user-id-or-upn>`.
+    chat targets. Communication target IDs with `reply` can be used in the same fields. Send tools
+    can also target entries declared in `session.teams_user_allowlist` with
+    `user:<user-id-or-upn>` or a `write`-capable Teams user communication target.
   - Message reads do not apply automatic read reactions; agents must call this tool explicitly.
 - Retry/backoff and failure handling:
   - The Discord `bot_api` adapter retries transient failures with exponential backoff and jitter.
@@ -1219,12 +1227,18 @@ without exposing provider credentials in the VM.
 
 ### Cron-driven pull request polling
 
-Use `trigger:cron` with `query:pull-request:list` when a workflow needs to find
-open pull requests by provider state, branch, time window, or review labels, then
-use `effect:pull-request:update` to claim or release work by changing PR tags or
-metadata. For Azure DevOps, set `provider` to `azure_devops` or `ado`; the node
-uses the directory-scoped ADO organization, project, and PAT unless
-`organization_url` or `project` is supplied on the node.
+Use `trigger:cron` with `query:pull-request:list` when a workflow needs one-shot
+query control over open pull requests by provider state, branch, time window, or
+review labels, then use `effect:pull-request:update` to claim or release work by
+changing PR tags or metadata. For Azure DevOps, set `provider` to
+`azure_devops` or `ado`; the node uses the directory-scoped ADO organization,
+project, and PAT unless `organization_url` or `project` is supplied on the node.
+
+Use `trigger:pull-request:new-feedback` or `trigger:pull-request:completed`
+with `provider=ado` and `repo` when the Azure DevOps PR worker should own
+polling directly. Setting `repo` enables explicit trigger criteria. Omitting
+`repo` keeps the legacy `runtime/pr-map.json` compatibility path for existing
+agent-created PR streams.
 
 Azure DevOps exposes PR labels through separate endpoints, so the `tags`
 expression is applied after listing candidate PRs. The expression supports tag
@@ -1240,21 +1254,25 @@ common metadata conventions are keys such as `owns_pr`, `reviewing_pr`,
 the platform. A cron workflow can list active sessions by generic metadata,
 poll one stream with `query:pull-request:feedback`, store its cursor in
 workflow-owned state, and enqueue prompts to every matched owner or reviewer
-session. Existing guest tools still require `metadata.pr_feedback_streams` on
-sessions that should call `list_unread_feedback`, `list_all_feedback`, or
-`post_pr_feedback_reply`.
+session. An explicit ADO PR trigger can use the same downstream routing pattern:
+it emits normalized `pr` and feedback/completion payloads without `session_id`,
+leaving session selection to workflow metadata queries. Existing guest tools
+still require `metadata.pr_feedback_streams` on sessions that should call
+`list_unread_feedback`, `list_all_feedback`, or `post_pr_feedback_reply`.
 
 ### Wake workers
 
 - `agent-sandbox-cli discord-wake` owns Discord inbox wakeups and resumes.
 - `agent-sandbox-cli scheduled-wake` owns scheduled resume dispatch.
 - Existing Azure DevOps PR feedback ingestion and PR completion polling are
-  still owned by `agent-sandbox-ado-worker`. It writes
+  still owned by `agent-sandbox-ado-worker`. Legacy trigger mode writes
   `runtime/pr-feedback-store.json`, updates `runtime/pr-map.json` PR status
   fields, and publishes `trigger:pull-request:new-feedback` plus
-  `trigger:pull-request:completed` events directly. New workflow-owned polling
-  paths should use `query:session:list` and `query:pull-request:feedback`; keep
-  `pr-map.json` compatibility until a later cleanup removes the older path.
+  `trigger:pull-request:completed` events directly. Explicit trigger mode is
+  selected by setting `repo` on the PR trigger; it lists candidate PRs from ADO
+  using the trigger criteria, stores trigger-owned cursors outside
+  `pr-map.json`, and emits normalized PR events without session bindings.
+  Keep `pr-map.json` compatibility until a later cleanup removes the older path.
 - Recommended service lifecycle commands:
   - `sudo systemctl start agent-sandbox-discord-wake.service`
   - `sudo systemctl stop agent-sandbox-discord-wake.service`
@@ -1462,8 +1480,11 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
 - The scaffold includes `agent-sandbox-ado-worker` and the equivalent foreground CLI command
   `agent-sandbox-cli poll-ado-backlog`.
 - The worker owns Azure DevOps PR feedback ingestion and PR completion polling for configured PR
-  streams. It updates `runtime/pr-feedback-store.json`, records PR status in `runtime/pr-map.json`,
-  and publishes `trigger:pull-request:new-feedback` plus `trigger:pull-request:completed` events.
+  streams. Legacy triggers without `repo` use `runtime/pr-map.json`, update
+  `runtime/pr-feedback-store.json`, record PR status in `runtime/pr-map.json`, and publish
+  `trigger:pull-request:new-feedback` plus `trigger:pull-request:completed` events. PR triggers
+  with `repo` use explicit ADO list criteria, keep cursor ownership in trigger cursor stores, and
+  do not require or update `runtime/pr-map.json`.
 - The worker no longer polls Azure DevOps work items, writes backlog YAML, checks processed work
   item state, or requires the work-item PAT just to run PR feedback/completion paths.
 - Azure DevOps work-item intake is now workflow-owned. Use `trigger:ado:work-item-matching` for
@@ -1471,8 +1492,10 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
   `System.ChangedDate` advances, or use `query:ado:work-items` for explicit one-shot queries.
   Wire either output into `effect:issue:upsert-ado-proxy` to write or refresh
   `runtime/local-issues.json` and `runtime/ado-work-items/work-item-*.yaml`.
-- For terminal-PR cleanup workflows, wire `trigger:pull-request:completed.session_id` into
-  `effect:agent:destroy.session_id`.
+- For terminal-PR cleanup workflows using legacy PR-map mode, wire
+  `trigger:pull-request:completed.session_id` into `effect:agent:destroy.session_id`. For explicit
+  PR trigger mode, route with `query:session:list` against session metadata and pass the selected
+  session id downstream.
 - A workflow-upserted ADO work item is represented in the unified local issue store as a proxy issue
   (`source: proxy_azure_devops`) keyed by local issue number with remote linkage in
   `metadata.remote` and a last-seen cache in `metadata.proxy_cache`.
@@ -1559,6 +1582,20 @@ Failure recovery:
   ```
 
 
+### CI run completion polling
+
+- `trigger:ci:run:completed` is a host-side polling trigger for CI run completion events.
+- GitHub Actions polling resolves the token from the trigger provider's configured
+  `github_token_env`; Azure DevOps polling resolves the PAT from the configured
+  `azure_devops_pr_pat_env`.
+- The provider stores its durable cursor in `runtime/trigger-cursors-ci-runs.json` and suppresses
+  historical runs on the first poll unless `include_existing=true`.
+- The first implementation only reads completed runs. It does not fetch logs, jobs, artifacts,
+  or queue reruns.
+- When operators need backfill behavior, set `include_existing=true` explicitly and narrow the
+  trigger with `branches`, `conclusions`, and provider-specific repo or pipeline selectors.
+
+
 ## Host-Side Trigger Orchestrator
 
 - The scaffold includes `agent-sandbox-trigger-orchestrator`, a singleton host worker that polls
@@ -1627,10 +1664,17 @@ You can run the wrapper directly on the host for validation:
 
 ### Teams ingest worker
 
-- `trigger:teams:new-message` events are produced by a host-side Teams ingest worker that polls
-  Microsoft Graph on the host and writes into the Teams message store consumed by trigger
-  orchestration.
+- `trigger:teams:new-message` and `trigger:teams:direct-message` events are produced by a
+  host-side Teams ingest worker that polls Microsoft Graph on the host and writes into the Teams
+  message store consumed by trigger orchestration.
 - The ingest worker uses the same delegated Teams auth settings described above.
+- `trigger:communication:new-message` is the provider-neutral inbound chat trigger for declared
+  communication targets. Configure it with explicit `communication_target_ids`; each selected
+  target must be a read-capable Teams channel/chat or Discord channel target in the trigger's
+  `directory_path`. The trigger consumes the existing Teams and Discord inbox stores, so no
+  separate ingest worker or provider credential is configured for this node.
+- Direct-message triggers require `sender_user_ids` so only configured one-on-one senders can wake
+  workflows.
 - This polling path is independent from the wake workers; Discord/scheduled wake behavior now stays with
   `agent-sandbox-discord-wake` and `agent-sandbox-scheduled-wake` while Azure DevOps PR feedback ingestion stays with
   `agent-sandbox-ado-worker`.

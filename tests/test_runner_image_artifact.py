@@ -221,7 +221,7 @@ def test_runner_build_script_writes_manifest_and_reuses_cached_archive(
     assert archive_path.read_text(encoding="utf-8") == "fake image\n"
     assert manifest_path.is_file()
     assert first.stdout.splitlines() == [
-        f"Built agent-sandbox-runner:latest",
+        "Built agent-sandbox-runner:latest",
         f"Saved {archive_path}",
     ]
     assert _docker_invocations(docker_log_path) == ["build", "save"]
