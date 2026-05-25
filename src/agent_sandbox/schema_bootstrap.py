@@ -44,6 +44,32 @@ _ISSUE_COMMENT_OUTPUT_SCHEMA = {
     "metadata": {"type": "object"},
 }
 
+_ISSUE_LIST_ITEM_OUTPUT_SCHEMA = {
+    "issue_id": {"type": "string"},
+    "issue_number": {"type": "string"},
+    "title": {"type": "string"},
+    "body": {"type": "string"},
+    "description": {"type": "string"},
+    "reason": {"type": "string"},
+    "rejection_reason": {"type": "string"},
+    "yaml_path": {"type": "string"},
+    "directory_path": {"type": "string"},
+    "repo_source": {"type": "string"},
+    "source_type": {"type": "string"},
+    "state": {"type": "string"},
+    "url": {"type": "string"},
+    "tags": {"type": "array", "items": {"type": "string"}},
+    "comments": {"type": "array"},
+    "source": {"type": "string"},
+    "metadata": {"type": "object"},
+    "created_at": {"type": "string"},
+    "updated_at": {"type": "string"},
+    "remote_reference": {"type": "object"},
+    "can_edit": {"type": "boolean"},
+    "can_delete": {"type": "boolean"},
+    "can_create_vm": {"type": "boolean"},
+}
+
 _TRIGGER_OUTPUT_SCHEMAS = {
     "trigger:event": {
         "event_id": {"type": "string"},
@@ -308,6 +334,28 @@ _TRIGGER_OUTPUT_SCHEMAS = {
         "trusted_repo_path": {"type": "string"},
         "base_branch": {"type": "string"},
         "canonical_origin_url": {"type": "string"},
+    },
+    "trigger:ci:run:completed": {
+        "provider": {"type": "string"},
+        "repo": {"type": "string"},
+        "run_id": {"type": "string"},
+        "run_number": {"type": ["string", "null"]},
+        "attempt": {"type": "integer"},
+        "workflow_id": {"type": ["string", "null"]},
+        "workflow_name": {"type": ["string", "null"]},
+        "pipeline_id": {"type": ["integer", "null"]},
+        "pipeline_name": {"type": ["string", "null"]},
+        "branch": {"type": ["string", "null"]},
+        "commit_sha": {"type": ["string", "null"]},
+        "status": {"type": "string"},
+        "conclusion": {"type": ["string", "null"]},
+        "run_url": {"type": ["string", "null"]},
+        "started_at": {"type": ["string", "null"]},
+        "completed_at": {"type": "string"},
+        "duration_seconds": {"type": ["number", "null"]},
+        "actor": {"type": ["string", "null"]},
+        "pull_requests": {"type": "array", "items": {"type": "object"}},
+        "metadata": {"type": "object"},
     },
     "trigger:agent:prompt:new": {
         "session_id": {"type": "string"},
@@ -900,6 +948,16 @@ _QUERY_OUTPUT_SCHEMAS = {
         "comments": {"type": "array"},
         "created_at": {"type": "string"},
         "updated_at": {"type": "string"},
+    },
+    "query:issue:list": {
+        "issues": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": _ISSUE_LIST_ITEM_OUTPUT_SCHEMA,
+            },
+        },
+        "count": {"type": "integer"},
     },
     "query:ado:work-items": {
         "provider": {"type": "string"},

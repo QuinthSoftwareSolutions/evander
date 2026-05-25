@@ -21,6 +21,24 @@ material. Newer entries are added incrementally as changes land.
 - Clarified the architecture notes so `dropped` now covers filter, dedupe, and
   switch suppressions in the workflow runtime.
 
+## 2026-05-25 - Issue List Workflow Query
+
+- Added the `query:issue:list` workflow query node for listing tracked local and
+  proxy issues with state, source, tag, directory, and metadata filters.
+
+## 2026-05-25 - CI Run Completed Trigger Fixes
+
+- Persisted initialized empty CI run cursors on first polls when history
+  suppression is enabled, so the first later completed run is emitted.
+- Rejected CI runs with unknown conclusions when applying configured conclusion
+  allowlists.
+
+## 2026-05-25 - CI Run Completed Trigger Documentation
+
+- Documented `trigger:ci:run:completed` in the configuration reference,
+  operations runbook, trigger conformance guide, and changelog, including the
+  polling cursor file and first-poll history suppression behavior.
+
 ## 2026-05-25 - Workflow State Runtime Coverage
 
 - Added end-to-end regression coverage for persisted workflow-state reads and

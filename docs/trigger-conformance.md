@@ -4,8 +4,8 @@ The trigger conformance suite validates that the trigger implementation still ma
 contract across schema validation, provider behavior, event envelopes, and orchestrator
 integration.
 
-Current coverage includes inbox-backed review request dispatch for `trigger:review:new-request`
-alongside the existing provider-backed trigger set.
+Current coverage includes inbox-backed review request dispatch for `trigger:review:new-request`,
+CI completion polling for `trigger:ci:run:completed`, and the existing provider-backed trigger set.
 
 The Admin Web Reports tab reads the generated trigger artifact alongside the paired effect report;
 see [conformance-reports.md](conformance-reports.md) for the shared operator view, report states,

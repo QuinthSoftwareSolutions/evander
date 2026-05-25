@@ -8,6 +8,7 @@ from agent_sandbox.triggers.providers.schemas import (
     AdoWorkItemMatchingTriggerDefinition,
     AgentPromptNewTriggerDefinition,
     AgentRunCompletedTriggerDefinition,
+    CiRunCompletedTriggerDefinition,
     CronTriggerDefinition,
     EventTriggerDefinition,
     CommunicationNewMessageTriggerDefinition,
@@ -48,6 +49,7 @@ _TRIGGER_MODEL_BY_TYPE = {
     "trigger:pull-request:completed": PullRequestCompletedTriggerDefinition,
     "trigger:review:new-request": ReviewNewRequestTriggerDefinition,
     "trigger:git:push": GitPushTriggerDefinition,
+    "trigger:ci:run:completed": CiRunCompletedTriggerDefinition,
     "trigger:agent:run:completed": AgentRunCompletedTriggerDefinition,
     "trigger:agent:prompt:new": AgentPromptNewTriggerDefinition,
 }

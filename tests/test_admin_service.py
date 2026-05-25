@@ -4299,11 +4299,10 @@ def test_workflow_editor_document_round_trips_config_and_separate_layout(tmp_pat
     assert reread.revision == save_result.revision
     assert reread.saved_at is not None
 
-    normalized_config = json.loads(Path(save_result.config_path).read_text(encoding="utf-8"))
     expected_revision = hashlib.sha256(
         json.dumps(
             {
-                "config": normalized_config,
+                "config": reread.config,
                 "layout": save_result.layout,
                 "graphs": [graph.model_dump(mode="json") for graph in save_result.graphs],
             },

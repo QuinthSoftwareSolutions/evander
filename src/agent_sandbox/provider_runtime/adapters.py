@@ -79,6 +79,9 @@ class AdminServiceProviderAdapter:
     def get_issue(self, **kwargs: Any) -> Any:
         return self._admin_service.get_issue(**kwargs)
 
+    def list_issues(self, **kwargs: Any) -> Any:
+        return self._admin_service.list_issues(**kwargs)
+
     def session_context_query(self, **kwargs: Any) -> Any:
         return self._admin_service.session_context_query(**kwargs)
 

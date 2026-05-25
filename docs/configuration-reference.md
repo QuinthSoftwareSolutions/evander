@@ -164,6 +164,7 @@ Type-specific keys:
 | `trigger:email:new-message` | `provider`, `account_identifier`, `mailbox_ids` | `auth_secret_refs` |
 | `trigger:pull-request:new-feedback` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor` |
 | `trigger:pull-request:completed` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor` |
+| `trigger:ci:run:completed` | `provider` | `repo` (required when `provider=github_actions`), `workflow`, `organization_url`, `project`, `pipeline_id`, `pipeline_name`, `branches`, `conclusions`, `top`, `include_existing` |
 | `trigger:review:new-request` | — | — |
 | `trigger:git:push` | `path_to_repo` | — |
 
@@ -185,6 +186,24 @@ For Azure DevOps PR triggers, `repo` is the explicit polling mode switch. When `
 When `repo` is omitted, the trigger stays in legacy `runtime/pr-map.json` compatibility mode.
 Explicit-mode events include normalized `pr` plus feedback/completion payloads and do not attach a
 `session_id`; route to sessions with `query:session:list` metadata filters when needed.
+
+`trigger:ci:run:completed` is the polling-only CI completion trigger. It accepts canonical
+providers `github_actions` and `ado_pipelines`, plus aliases such as `github`, `github-actions`,
+`github_actions`, `ado`, `azure_devops`, `azure-devops`, `ado_pipelines`, and `azure-pipelines`.
+GitHub Actions configs require `repo`; Azure DevOps configs may omit `organization_url` and
+`project` when directory provider config can resolve them. Blank strings normalize to `null`,
+branch selectors are stored as plain branch names, and conclusions normalize to
+`success`, `failure`, `cancelled`, `timed_out`, and `skipped` with provider-specific spellings
+folded into those canonical values. The default conclusion filter includes all terminal outcomes,
+and `include_existing` defaults to `false` so the first poll suppresses historical runs unless an
+operator explicitly opts into backfill.
+
+Normalized CI completion events expose the following fields for downstream bindings:
+`provider`, `repo`, `run_id`, `run_number`, `attempt`, `workflow_id`, `workflow_name`,
+`pipeline_id`, `pipeline_name`, `branch`, `commit_sha`, `status`, `conclusion`, `run_url`,
+`started_at`, `completed_at`, `duration_seconds`, `actor`, `pull_requests`, and `metadata`.
+Provider-specific fields that do not apply to a given source remain `null`, and the provider keeps
+its cursor state in `runtime/trigger-cursors-ci-runs.json`.
 
 `trigger:ado:work-item-matching` uses the same filter/query surface as `query:ado:work-items`
 without writing local issue state. It emits `work_item` on first match and again when the remote
@@ -474,6 +493,7 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:ado:work-items` | _none beyond envelope_ | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top`, `skip`, `outputs` |
 | `query:git:pr-note` | `host_repo_path`, `local_branch` | `remote_name`, `notes_ref`, `outputs` |
 | `query:issue:get` | `issue_id` | `outputs` |
+| `query:issue:list` | _none beyond envelope_ | `directory_path`, `direct_only`, `states`, `exclude_states`, `source`, `source_type`, `tags_any`, `tags_all`, `metadata_equals`, `metadata_exists`, `metadata_prefix`, `limit`, `outputs` |
 | `query:pull-request:feedback` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `cursor`, `outputs` |
 | `query:pull-request:list` | `provider`, `repo` | `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `outputs` |
 | `query:semantic:store-status` | _none beyond envelope_ | `collection_name`, `directory_path`, `outputs` |
@@ -492,6 +512,12 @@ session metadata. `metadata_equals` and `metadata_prefix` are JSON objects keyed
 by metadata key or dotted metadata path. `metadata_exists` may be a string, array,
 or object of key -> boolean. `directory_path` scopes to that directory and its
 descendants. `active_only=true` or `state=active` excludes expired sessions.
+
+`query:issue:list` reads tracked local and proxy issues from the local issue
+store. It defaults to the workflow runtime directory and `direct_only=true`,
+returns `issues` plus `count`, and uses the same directory and metadata filter
+semantics as `query:session:list`. Use `query:ado:work-items` for remote Azure
+DevOps discovery.
 
 `query:pull-request:list`, `query:pull-request:feedback`, and
 `effect:pull-request:update` accept Azure DevOps `provider` as `azure_devops`,
