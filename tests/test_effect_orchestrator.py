@@ -18,7 +18,10 @@ from agent_sandbox.execution import ExecutionStatusKind
 from agent_sandbox.effects.providers.agent_enqueue_prompt import AgentEnqueuePromptEffectProvider
 from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
 from agent_sandbox.effects.providers.lifecycle_hooks import AgentEnqueuePromptQueueDispatchHook
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
+from agent_sandbox.effects.providers.base import (
+    EffectProviderExecutionError,
+    EffectRuntimeContext,
+)
 from agent_sandbox.effects.providers.vm_copy_files import VmCopyFilesEffectProvider
 from agent_sandbox.daemons.effect_orchestrator import (
     AwaitAgentPendingRecord,
@@ -61,6 +64,18 @@ class _Provider:
 class _FailingProvider(_Provider):
     def execute(self, *, resolved_config=None):
         raise RuntimeError("provider boom")
+
+
+class _FailingWithOutputsProvider(_Provider):
+    def execute(self, *, resolved_config=None):
+        raise EffectProviderExecutionError(
+            "checked provider boom",
+            outputs={
+                "success": False,
+                "status_code": 502,
+                "body_text": "bad gateway",
+            },
+        )
 
 
 class _CountingProvider:
@@ -129,6 +144,11 @@ class _ImmediateExecutor:
 class _FailingFactory:
     def build(self, effect):
         return _FailingProvider({})
+
+
+class _FailingWithOutputsFactory:
+    def build(self, effect):
+        return _FailingWithOutputsProvider({})
 
 
 class _StaticReloader:
@@ -1992,6 +2012,61 @@ def test_effect_orchestrator_marks_provider_failure_failed(tmp_path: Path) -> No
 
     queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
     assert queue_payload["event-provider-failure-1"]["delivery_state"] == "delivered"
+
+
+def test_effect_orchestrator_records_provider_failure_outputs(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Create VM",
+                    "type": "effect:vm:create",
+                    "vm_name": "vm-1",
+                }
+            ],
+            "edges": [_edge("trigger-1", "effect-1")],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker._executor = _ImmediateExecutor()  # type: ignore[assignment]
+    worker.provider_factory = _FailingWithOutputsFactory()
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-provider-failure-outputs-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    worker.run_once()
+
+    execution_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    record = next(iter(execution_payload.values()))
+    assert record["status"] == "failed"
+    assert record["error"] == "checked provider boom"
+    assert record["outputs"] == {
+        "success": False,
+        "status_code": 502,
+        "body_text": "bad gateway",
+    }
 
 
 def test_effect_orchestrator_marks_completion_publish_failure_pending(

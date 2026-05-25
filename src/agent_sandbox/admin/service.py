@@ -1583,6 +1583,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:semantic:upsert": "Embed one text string and upsert it as one Qdrant point.",
     "effect:semantic:delete": "Delete semantic points by explicit point IDs.",
     "effect:bash:script": "Run a host-side Bash script from the effect orchestrator.",
+    "effect:http:request": (
+        "Perform a host-side raw HTTP GET, POST, or PUT request with URL allowlist control."
+    ),
     "effect:vm:exec": "Run a shell command inside a VM-backed agent target.",
     "effect:vm:copy-files": "Copy rendered file content into a VM-backed agent target.",
     "effect:vm:delete-files": "Delete files from a VM-backed agent target.",
@@ -2890,6 +2893,72 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("stdin", "Stdin", "string", bindable=True, multiline=True),
             _field("timeout_seconds", "Timeout seconds", "number", bindable=True),
             _field("check", "Check exit code", "boolean", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:http:request",
+        label="HTTP request",
+        fields=[
+            _field(
+                "method",
+                "Method",
+                "enum",
+                bindable=True,
+                default_value="GET",
+                options=[
+                    _field_option("GET", "GET"),
+                    _field_option("POST", "POST"),
+                    _field_option("PUT", "PUT"),
+                ],
+            ),
+            _field(
+                "url",
+                "URL",
+                "string",
+                required=True,
+                bindable=True,
+                placeholder="https://api.example.test/items",
+            ),
+            _field(
+                "allowed_url_patterns",
+                "Allowed URL patterns",
+                "string_list",
+                bindable=True,
+                default_value=["*"],
+                placeholder="https://api.example.test/*",
+                description=(
+                    "Shell-style URL or host patterns allowed for this request. "
+                    "Use '*' to allow any HTTP or HTTPS target."
+                ),
+            ),
+            _field(
+                "payload",
+                "Payload",
+                "json",
+                bindable=True,
+                json_value_type="object",
+                description="Optional JSON request body sent for POST or PUT requests.",
+            ),
+            _field(
+                "headers",
+                "Headers",
+                "json",
+                bindable=True,
+                json_value_type="object",
+                description="Optional request headers as a JSON object.",
+            ),
+            _field("timeout_seconds", "Timeout seconds", "number", bindable=True),
+            _field(
+                "check",
+                "Check status",
+                "boolean",
+                bindable=True,
+                default_value=False,
+                description=(
+                    "When enabled, non-2xx responses raise after response details are captured."
+                ),
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
