@@ -289,7 +289,8 @@ def _merge_workflow_graphs(
     merged_graphs: list[dict[str, Any]] = []
     if isinstance(existing_graphs, list):
         for graph in existing_graphs:
-            merged_graphs.append(WorkflowPackGraph.model_validate(graph).model_dump(mode="json"))
+            validated_graph = WorkflowPackGraph.model_validate(graph)
+            merged_graphs.append(validated_graph.model_dump(mode="json"))
     merged_graphs.extend(graph.model_dump(mode="json") for graph in additional_graphs)
     return merged_graphs
 
