@@ -1559,6 +1559,20 @@ Failure recovery:
   ```
 
 
+### CI run completion polling
+
+- `trigger:ci:run:completed` is a host-side polling trigger for CI run completion events.
+- GitHub Actions polling resolves the token from the trigger provider's configured
+  `github_token_env`; Azure DevOps polling resolves the PAT from the configured
+  `azure_devops_pr_pat_env`.
+- The provider stores its durable cursor in `runtime/trigger-cursors-ci-runs.json` and suppresses
+  historical runs on the first poll unless `include_existing=true`.
+- The first implementation only reads completed runs. It does not fetch logs, jobs, artifacts,
+  or queue reruns.
+- When operators need backfill behavior, set `include_existing=true` explicitly and narrow the
+  trigger with `branches`, `conclusions`, and provider-specific repo or pipeline selectors.
+
+
 ## Host-Side Trigger Orchestrator
 
 - The scaffold includes `agent-sandbox-trigger-orchestrator`, a singleton host worker that polls

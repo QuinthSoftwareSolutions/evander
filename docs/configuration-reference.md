@@ -154,6 +154,7 @@ Type-specific keys:
 | `trigger:email:new-message` | `provider`, `account_identifier`, `mailbox_ids` | `auth_secret_refs` |
 | `trigger:pull-request:new-feedback` | `provider` | `organization_url`, `project` (but `organization_url` becomes required when `provider=ado`) |
 | `trigger:pull-request:completed` | `provider` | `organization_url`, `project` (but `organization_url` becomes required when `provider=ado`) |
+| `trigger:ci:run:completed` | `provider` | `repo` (required when `provider=github_actions`), `workflow`, `organization_url`, `project`, `pipeline_id`, `pipeline_name`, `branches`, `conclusions`, `top`, `include_existing` |
 | `trigger:review:new-request` | — | — |
 | `trigger:git:push` | `path_to_repo` | — |
 
@@ -168,6 +169,24 @@ trigger to a higher frequency still does not replay historical runs.
 normalized `pr` object when the tracked PR reaches a terminal state such as merged, completed,
 closed, or abandoned. Wire `session_id` into `effect:agent:destroy.session_id` when a workflow
 should delete the agent after the tracked PR is terminal.
+
+`trigger:ci:run:completed` is the polling-only CI completion trigger. It accepts canonical
+providers `github_actions` and `ado_pipelines`, plus aliases such as `github`, `github-actions`,
+`github_actions`, `ado`, `azure_devops`, `azure-devops`, `ado_pipelines`, and `azure-pipelines`.
+GitHub Actions configs require `repo`; Azure DevOps configs may omit `organization_url` and
+`project` when directory provider config can resolve them. Blank strings normalize to `null`,
+branch selectors are stored as plain branch names, and conclusions normalize to
+`success`, `failure`, `cancelled`, `timed_out`, and `skipped` with provider-specific spellings
+folded into those canonical values. The default conclusion filter includes all terminal outcomes,
+and `include_existing` defaults to `false` so the first poll suppresses historical runs unless an
+operator explicitly opts into backfill.
+
+Normalized CI completion events expose the following fields for downstream bindings:
+`provider`, `repo`, `run_id`, `run_number`, `attempt`, `workflow_id`, `workflow_name`,
+`pipeline_id`, `pipeline_name`, `branch`, `commit_sha`, `status`, `conclusion`, `run_url`,
+`started_at`, `completed_at`, `duration_seconds`, `actor`, `pull_requests`, and `metadata`.
+Provider-specific fields that do not apply to a given source remain `null`, and the provider keeps
+its cursor state in `runtime/trigger-cursors-ci-runs.json`.
 
 `trigger:ado:work-item-matching` uses the same filter/query surface as `query:ado:work-items`
 without writing local issue state. It emits `work_item` on first match and again when the remote
