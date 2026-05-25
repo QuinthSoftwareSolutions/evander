@@ -170,6 +170,24 @@ test("groups pull request query nodes with git metadata", () => {
   );
 });
 
+test("groups switch gate types with flow control", () => {
+  const groups = groupWorkflowNodeCatalogEntries([
+    catalogNode("gate", "gate:await-agent", "Await agent"),
+    catalogNode("gate", "gate:for", "For each item"),
+    catalogNode("gate", "gate:merge", "Merge"),
+    catalogNode("gate", "gate:switch", "Switch"),
+  ], "gate");
+
+  const flowControl = groups.find((group) => group.label === "Flow control");
+  assert.ok(flowControl);
+  assert.deepEqual(flowControl.entries.map((entry) => entry.type), [
+    "gate:await-agent",
+    "gate:for",
+    "gate:merge",
+    "gate:switch",
+  ]);
+});
+
 test("falls back to namespace groups for unknown node types", () => {
   const groups = groupWorkflowNodeCatalogEntries([
     catalogNode("query", "query:cloud-run:job", "Cloud job"),

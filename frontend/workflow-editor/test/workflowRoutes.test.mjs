@@ -5,6 +5,7 @@ import {
   normalizeWorkflowSourcePort,
   workflowConnectionRouteOptions,
   workflowEdgeRouteLabel,
+  workflowOutputPortsForNode,
   workflowRouteClass,
 } from "../src/workflowRoutes.ts";
 
@@ -47,6 +48,31 @@ test("error routes are always labeled", () => {
 
 test("unknown non-default routes fall back to a humanized label", () => {
   assert.equal(workflowEdgeRouteLabel("custom-route", []), "Custom Route");
+});
+
+test("switch route ports are derived from cases and default branches", () => {
+  const node = {
+    id: "gate-switch-1",
+    display_name: "Route tickets",
+    type: "gate:switch",
+    cases: [
+      { port: "ready", label: "Ready" },
+      { port: "blocked" },
+      { port: "ready", label: "Duplicate label" },
+      { port: "   ", label: "Ignored" },
+    ],
+    default_port: "default",
+  };
+
+  assert.deepEqual(workflowOutputPortsForNode(node, []), [
+    { key: "ready", label: "Ready" },
+    { key: "blocked", label: "Blocked" },
+    {
+      key: "default",
+      label: "Default",
+      description: "Standard downstream path.",
+    },
+  ]);
 });
 
 test("route options use named ports when present and default otherwise", () => {

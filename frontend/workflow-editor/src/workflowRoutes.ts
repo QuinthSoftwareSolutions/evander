@@ -1,4 +1,4 @@
-import type { WorkflowEditorNodePortDefinition } from "./types";
+import type { WorkflowEditorNodePortDefinition, WorkflowNodeConfig } from "./types";
 
 export type WorkflowConnectionRouteOption = {
   sourcePort: string | null;
@@ -34,6 +34,42 @@ export function workflowConnectionRouteOptions(
   }));
 }
 
+export function workflowOutputPortsForNode(
+  node: WorkflowNodeConfig,
+  catalogEntryOutputPorts: ReadonlyArray<WorkflowEditorNodePortDefinition>,
+): WorkflowEditorNodePortDefinition[] {
+  if (node.type !== "gate:switch") {
+    return catalogEntryOutputPorts.map((port) => ({ ...port }));
+  }
+
+  const outputPorts: WorkflowEditorNodePortDefinition[] = [];
+  const seenPorts = new Set<string>();
+
+  for (const switchCase of Array.isArray(node.cases) ? node.cases : []) {
+    if (!isRecord(switchCase)) continue;
+    const portKey = readWorkflowPortKey(switchCase.port);
+    if (!portKey || seenPorts.has(portKey)) continue;
+    seenPorts.add(portKey);
+    const label = typeof switchCase.label === "string" ? switchCase.label.trim() : "";
+    outputPorts.push({
+      key: portKey,
+      label: label || humanizeWorkflowRouteKey(portKey),
+    });
+  }
+
+  const defaultPort = readWorkflowPortKey(node.default_port);
+  if (defaultPort && !seenPorts.has(defaultPort)) {
+    seenPorts.add(defaultPort);
+    outputPorts.push({
+      key: defaultPort,
+      label: "Default",
+      description: "Standard downstream path.",
+    });
+  }
+
+  return outputPorts;
+}
+
 export function workflowEdgeRouteLabel(
   sourcePort: string | null | undefined,
   outputPorts: ReadonlyArray<WorkflowEditorNodePortDefinition>,
@@ -42,7 +78,7 @@ export function workflowEdgeRouteLabel(
   if (!normalized) return undefined;
 
   const port = outputPorts.find((candidate) => candidate.key === normalized);
-  const fallbackLabel = port?.label || humanizeRouteKey(normalized);
+  const fallbackLabel = port?.label || humanizeWorkflowRouteKey(normalized);
   if (isErrorRoute(normalized)) return fallbackLabel;
   if (!port) return fallbackLabel;
 
@@ -63,14 +99,22 @@ export function workflowRouteClass(sourcePort: string | null | undefined): strin
   return "named";
 }
 
-function isErrorRoute(sourcePort: string): boolean {
-  return sourcePort.toLowerCase() === "error";
-}
-
-function humanizeRouteKey(sourcePort: string): string {
+export function humanizeWorkflowRouteKey(sourcePort: string): string {
   return sourcePort
     .split(/[-_:]+/g)
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ") || sourcePort;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readWorkflowPortKey(value: unknown): string | null {
+  return typeof value === "string" ? normalizeWorkflowSourcePort(value) : null;
+}
+
+function isErrorRoute(sourcePort: string): boolean {
+  return sourcePort.toLowerCase() === "error";
 }

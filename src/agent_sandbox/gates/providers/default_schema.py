@@ -14,6 +14,7 @@ from agent_sandbox.events.models import (
     GateMapDefinition,
     GateMergeDefinition,
     GateSerializeDefinition,
+    GateSwitchDefinition,
 )
 from agent_sandbox.schema_bootstrap import _GATE_OUTPUT_SCHEMAS
 from agent_sandbox.workflow.contracts import WorkflowNodeEnvelope, register_node_output_schema
@@ -28,6 +29,7 @@ _GATE_MODEL_BY_TYPE = {
     "gate:dedupe": GateDedupeDefinition,
     "gate:await-agent": GateAwaitAgentDefinition,
     "gate:for": GateForDefinition,
+    "gate:switch": GateSwitchDefinition,
 }
 
 
