@@ -19,6 +19,7 @@ function catalogNode(kind, type, label) {
 test("groups effect node types by related functionality", () => {
   const groups = groupWorkflowNodeCatalogEntries([
     catalogNode("effect", "effect:semantic:upsert", "Semantic upsert"),
+    catalogNode("effect", "effect:state:update", "State update"),
     catalogNode("effect", "effect:agent:prompt", "Agent prompt"),
     catalogNode("effect", "effect:vm:start", "VM start"),
     catalogNode("effect", "effect:agent:exec", "Agent exec"),
@@ -53,6 +54,10 @@ test("groups effect node types by related functionality", () => {
       {
         label: "Semantic store",
         types: ["effect:semantic:upsert"],
+      },
+      {
+        label: "Runtime state",
+        types: ["effect:state:update"],
       },
       {
         label: "Artifacts",
@@ -101,6 +106,7 @@ test("groups pull request query nodes with git metadata", () => {
     catalogNode("query", "query:pull-request:list", "Pull request list"),
     catalogNode("query", "query:git:pr-note", "Git PR note"),
     catalogNode("query", "query:issue:get", "Issue get"),
+    catalogNode("query", "query:state:get", "State get"),
   ], "query");
 
   assert.deepEqual(
@@ -109,6 +115,10 @@ test("groups pull request query nodes with git metadata", () => {
       types: group.entries.map((entry) => entry.type),
     })),
     [
+      {
+        label: "Runtime state",
+        types: ["query:state:get"],
+      },
       {
         label: "Work tracking",
         types: ["query:issue:get"],

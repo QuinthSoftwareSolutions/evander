@@ -113,6 +113,12 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
       prefixes: ["effect:semantic:"],
     },
     {
+      key: "runtime-state",
+      label: "Runtime state",
+      description: "Read or modify graph-local workflow state.",
+      prefixes: ["effect:state:"],
+    },
+    {
       key: "artifacts",
       label: "Artifacts",
       description: "Stage and publish agent artifacts.",
@@ -147,9 +153,9 @@ const NODE_SUBGROUPS: Record<WorkflowNodeKind, readonly WorkflowNodeCatalogSubgr
     {
       key: "runtime",
       label: "Runtime state",
-      description: "Read VM, session, or agent runtime state.",
+      description: "Read VM, session, agent, or workflow runtime state.",
       types: ["query:session-context"],
-      prefixes: ["query:vm:", "query:agent:"],
+      prefixes: ["query:vm:", "query:agent:", "query:state:"],
     },
     {
       key: "work-tracking",
@@ -188,6 +194,7 @@ const NAMESPACE_LABELS: Record<string, string> = {
   pr: "PR",
   pull: "Pull",
   semantic: "Semantic",
+  state: "State",
   session: "Session",
   teams: "Teams",
   ticket: "Ticket",
