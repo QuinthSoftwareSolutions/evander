@@ -7,8 +7,15 @@ from starlette.routing import BaseRoute, Route
 
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.shared import AdminWebAuth, json_error, json_ok
-from agent_sandbox.admin.web.user_store import AdminWebUserRole, AdminWebUserStore
+from agent_sandbox.admin.web.user_store import (
+    AdminWebUserRole,
+    AdminWebUserStore,
+    normalize_admin_web_login,
+)
 from agent_sandbox.directory_config import ContactDirectoryConfig
+
+WORKFLOW_TUTORIAL_PROGRESS_PREFERENCE_KEY = "workflow_tutorial_progress"
+WORKFLOW_TUTORIAL_IDS = frozenset({"first-steps"})
 
 
 def _user_payload(
@@ -63,6 +70,53 @@ async def _json_body(request: Request) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("Request body must be a JSON object")
     return payload
+
+
+def _current_preference_login(auth: AdminWebAuth, request: Request) -> str:
+    session = auth.require(request)
+    login = normalize_admin_web_login(session.get("login"))
+    if login is None:
+        raise PermissionError("Authentication required")
+    return login
+
+
+def _normalized_workflow_tutorial_ids(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    seen: set[str] = set()
+    result: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str):
+            continue
+        tutorial_id = entry.strip()
+        if (
+            not tutorial_id
+            or tutorial_id not in WORKFLOW_TUTORIAL_IDS
+            or tutorial_id in seen
+        ):
+            continue
+        seen.add(tutorial_id)
+        result.append(tutorial_id)
+    return result
+
+
+def _workflow_tutorial_progress_payload(payload: object) -> dict[str, list[str]]:
+    source = payload if isinstance(payload, dict) else {}
+    completed = _normalized_workflow_tutorial_ids(
+        source.get("completed_tutorial_ids", source.get("completedTutorialIds"))
+    )
+    completed_set = set(completed)
+    skipped = [
+        tutorial_id
+        for tutorial_id in _normalized_workflow_tutorial_ids(
+            source.get("skipped_tutorial_ids", source.get("skippedTutorialIds"))
+        )
+        if tutorial_id not in completed_set
+    ]
+    return {
+        "completed_tutorial_ids": completed,
+        "skipped_tutorial_ids": skipped,
+    }
 
 
 def _require_user_manager(auth: AdminWebAuth, request: Request) -> None:
@@ -282,11 +336,46 @@ def admin_user_routes(
             return json_error(str(exc))
         return json_ok({"user": _user_payload(user)})
 
+    async def get_workflow_tutorial_progress(request: Request):
+        try:
+            login = _current_preference_login(auth, request)
+            payload = user_store.get_user_preference(
+                login, WORKFLOW_TUTORIAL_PROGRESS_PREFERENCE_KEY
+            )
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=401)
+        return json_ok(_workflow_tutorial_progress_payload(payload))
+
+    async def put_workflow_tutorial_progress(request: Request):
+        try:
+            login = _current_preference_login(auth, request)
+            payload = _workflow_tutorial_progress_payload(await _json_body(request))
+            user_store.put_user_preference(
+                login,
+                WORKFLOW_TUTORIAL_PROGRESS_PREFERENCE_KEY,
+                payload,
+            )
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=401)
+        except ValueError as exc:
+            return json_error(str(exc))
+        return json_ok(payload)
+
     return [
         Route("/api/admin/users", list_users, methods=["GET"]),
         Route("/api/admin/users", upsert_user, methods=["POST"]),
         Route("/api/admin/users/{login}", update_user, methods=["PATCH"]),
         Route("/api/admin/users/{login}", delete_user, methods=["DELETE"]),
+        Route(
+            "/api/admin/user-preferences/workflow-tutorial-progress",
+            get_workflow_tutorial_progress,
+            methods=["GET"],
+        ),
+        Route(
+            "/api/admin/user-preferences/workflow-tutorial-progress",
+            put_workflow_tutorial_progress,
+            methods=["PUT"],
+        ),
     ]
 
 

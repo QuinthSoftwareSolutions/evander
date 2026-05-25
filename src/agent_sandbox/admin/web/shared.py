@@ -243,7 +243,7 @@ class AdminWebAuth:
                 raise ValueError(
                     "Azure SSO admin auth has no configured users; set "
                     "AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS for first startup "
-                    "or populate runtime/admin-web-users.json"
+                    "or populate runtime/admin-web.db"
                 )
             if not any(user.role == "admin" for user in users):
                 raise ValueError("Azure SSO admin auth requires at least one admin user")

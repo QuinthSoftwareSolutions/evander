@@ -208,15 +208,6 @@ test("workflow editor graph metadata helper copy is visible in the graph inspect
     runs: [],
     node_activity: {},
   };
-  const sampleWorkflow = {
-    active: false,
-    launched_at: null,
-    run: null,
-    detail: null,
-    tutorial_steps: [],
-    current_step: null,
-  };
-
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const { pathname } = url;
@@ -267,11 +258,6 @@ test("workflow editor graph metadata helper copy is visible in the graph inspect
 
     if (pathname === "/api/workflow-editor/runs") {
       await route.fulfill(jsonResponse(workflowRuns));
-      return;
-    }
-
-    if (pathname === "/api/workflow-editor/sample-workflow") {
-      await route.fulfill(jsonResponse(sampleWorkflow));
       return;
     }
 
@@ -332,6 +318,5 @@ test("workflow editor graph metadata helper copy is visible in the graph inspect
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/document"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/catalog?directory_path=root"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/runs"));
-  assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/sample-workflow"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/workflow-editor/runs/stream"));
 });

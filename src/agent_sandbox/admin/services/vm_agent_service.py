@@ -1726,6 +1726,11 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
             value=trigger_worker_config.get("workflow_event_journal_path"),
             fallback=_admin_service.workflow_event_journal_path(workflow_runtime_dir),
         )
+        effect_lock_path = _admin_service._resolve_path_setting(
+            base_dir=self._deps.project_dir,
+            value=trigger_worker_config.get("effect_lock_path"),
+            fallback=workflow_runtime_dir / "effect-orchestrator.lock",
+        )
         orchestration_backend = (
             str(trigger_worker_config.get("orchestration_store_backend") or "sqlite")
             .strip()
@@ -1743,6 +1748,7 @@ printf 'terminated pid=%s state_files=%s\n' "${TARGET_PID}" "${#matched_states[@
         )
         watcher_cmd.extend(["--event-queue-store-path", str(event_queue_store_path)])
         watcher_cmd.extend(["--workflow-event-journal-path", str(workflow_event_journal)])
+        watcher_cmd.extend(["--effect-lock-path", str(effect_lock_path)])
         watcher_cmd.extend(["--orchestration-store-backend", orchestration_backend])
         watcher_cmd.extend(["--orchestration-store-path", str(orchestration_store_path)])
         if orchestration_retention_days is not None:

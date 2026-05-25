@@ -191,6 +191,7 @@ from agent_sandbox.triggers.queue import (
     TriggerEventQueue,
     TriggerQueueRecord,
 )
+from agent_sandbox.orchestration.host_polling import notify_wake_socket_for_lock
 from agent_sandbox.workflow.validation import (
     WorkflowValidationDiagnostic,
     derive_workflow_output_schemas,
@@ -837,39 +838,7 @@ class WorkflowRunDetailPayload(BaseModel):
     )
 
 
-SAMPLE_WORKFLOW_RUN_ID = "sample:first-run:run"
-SAMPLE_WORKFLOW_TRACE_ID = "sample:first-run:trace"
-SAMPLE_WORKFLOW_APPROVAL_REQUEST_ID = "sample:first-run:approval"
-SAMPLE_WORKFLOW_SESSION_ID = "sample:first-run:session"
-SAMPLE_WORKFLOW_DISPATCH_ID = "sample:first-run:dispatch"
-SAMPLE_WORKFLOW_THREAD_ID = "sample:first-run:thread"
-SAMPLE_WORKFLOW_REQUEST_ID = "sample:first-run:request"
-SAMPLE_WORKFLOW_EXECUTION_ID = "sample:first-run:execution"
-SAMPLE_WORKFLOW_ARTIFACT_ID = "comm_0123456789abcdef0123456789abcdef"
-SAMPLE_WORKFLOW_GRAPH_ID = "sample:first-run:graph"
-SAMPLE_WORKFLOW_REVISION = "sample:first-run:revision"
 WORKFLOW_RUN_DETAIL_AUDIT_SCAN_LIMIT = 20_000
-SAMPLE_TRIGGER_NODE_ID = "sample-trigger"
-SAMPLE_AGENT_PROMPT_NODE_ID = "sample-agent-prompt"
-SAMPLE_APPROVAL_BOUNDARY_NODE_ID = "sample-approval-boundary"
-SAMPLE_SAFE_STOP_NODE_ID = "sample-safe-stop"
-
-
-class WorkflowSampleTutorialStepPayload(BaseModel):
-    step_id: str
-    title: str
-    body: str
-    status: str = "pending"
-    node_id: str | None = None
-
-
-class WorkflowSampleStatePayload(BaseModel):
-    active: bool = False
-    launched_at: datetime | None = None
-    run: WorkflowRunSummaryPayload | None = None
-    detail: WorkflowRunDetailPayload | None = None
-    tutorial_steps: list[WorkflowSampleTutorialStepPayload] = Field(default_factory=list)
-    current_step: WorkflowSampleTutorialStepPayload | None = None
 
 
 class ToolCallAuditRelatedLinkPayload(BaseModel):
@@ -1561,7 +1530,6 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:ticket:created": "Start when a tracked ticket is created.",
     "trigger:ticket:changed": "Start when a tracked ticket changes state or metadata.",
     "trigger:issue:comment-created": "Start when a tracked issue receives a new comment.",
-    "trigger:issue:new-comment": "Start when a tracked issue receives a new comment.",
     "trigger:ado:work-item-matching": (
         "Start when an Azure DevOps work item first matches or advances its changed date."
     ),
@@ -1738,24 +1706,6 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         kind="trigger",
         type="trigger:issue:comment-created",
         label="Issue comment created",
-        fields=[
-            _field(
-                "provider",
-                "Provider",
-                "enum",
-                options=[
-                    _field_option("ado", "Azure DevOps"),
-                ],
-            ),
-            _field("organization_url", "Organization URL", "string"),
-            _field("project", "Project", "string"),
-            _field("directories", "Directories", "string_list", placeholder="root"),
-        ],
-    ),
-    WorkflowEditorNodeCatalogEntry(
-        kind="trigger",
-        type="trigger:issue:new-comment",
-        label="Issue new comment",
         fields=[
             _field(
                 "provider",
@@ -5380,9 +5330,6 @@ class AdminService:
         )
         self.local_issue_yaml_dir = self.config.runtime_dir / "issues"
         self.local_issue_yaml_dir.mkdir(parents=True, exist_ok=True)
-        self._workflow_sample_lock = threading.RLock()
-        self._workflow_sample_active = False
-        self._workflow_sample_launched_at: datetime | None = None
         self._workflow_generation_lock = threading.Lock()
         self._workflow_generation_in_flight = False
         self._workflow_generation_last_finished_at_monotonic: float | None = None
@@ -9689,6 +9636,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             value=trigger_worker_config.get("workflow_event_journal_path"),
             fallback=workflow_event_journal_path(workflow_runtime_dir),
         )
+        effect_lock_path = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=trigger_worker_config.get("effect_lock_path"),
+            fallback=workflow_runtime_dir / "effect-orchestrator.lock",
+        )
         orchestration_backend = (
             str(trigger_worker_config.get("orchestration_store_backend") or "sqlite")
             .strip()
@@ -9704,6 +9656,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         orchestration_retention_days = trigger_worker_config.get("orchestration_retention_days")
         watcher_cmd.extend(["--event-queue-store-path", str(event_queue_store_path)])
         watcher_cmd.extend(["--workflow-event-journal-path", str(workflow_event_journal)])
+        watcher_cmd.extend(["--effect-lock-path", str(effect_lock_path)])
         watcher_cmd.extend(["--orchestration-store-backend", orchestration_backend])
         watcher_cmd.extend(["--orchestration-store-path", str(orchestration_store_path)])
         if orchestration_retention_days is not None:
@@ -10533,36 +10486,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             artifact_id=artifact_id,
         )
 
-    def read_workflow_sample_state(self) -> WorkflowSampleStatePayload:
-        with self._workflow_sample_lock:
-            active = self._workflow_sample_active
-            launched_at = self._workflow_sample_launched_at
-        return self._workflow_sample_state_payload(
-            active=active,
-            launched_at=launched_at,
-        )
-
-    def launch_workflow_sample(self) -> WorkflowSampleStatePayload:
-        with self._workflow_sample_lock:
-            if not self._workflow_sample_active or self._workflow_sample_launched_at is None:
-                self._workflow_sample_active = True
-                self._workflow_sample_launched_at = _utc_now()
-            active = self._workflow_sample_active
-            launched_at = self._workflow_sample_launched_at
-        return self._workflow_sample_state_payload(
-            active=active,
-            launched_at=launched_at,
-        )
-
-    def reset_workflow_sample(self) -> WorkflowSampleStatePayload:
-        with self._workflow_sample_lock:
-            self._workflow_sample_active = False
-            self._workflow_sample_launched_at = None
-        return self._workflow_sample_state_payload(
-            active=False,
-            launched_at=None,
-        )
-
     def read_workflow_run_search(
         self,
         *,
@@ -10806,7 +10729,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 "assistant_capability_mode": normalized_capability_mode,
             },
         )
+        already_queued = queue.contains(event_id)
         record = queue.publish(event, idempotency_key=event_id)
+        if not already_queued and record.event_id == event_id:
+            notify_wake_socket_for_lock(worker_config.effect_lock_path)
         return record.model_dump(mode="json")
 
     def publish_external_workflow_event(
@@ -10844,6 +10770,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             source=source,
             idempotency_key=idempotency_key,
         )
+        notify_wake_socket_for_lock(worker_config.lock_path)
         return event.model_dump(mode="json")
 
     def _workflow_editor_default_layout_path(self) -> Path:
@@ -13118,6 +13045,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             queue_store.publish(resume_event)
         else:
             TriggerEventQueue(event_queue_store_path).publish(resume_event)
+        notify_wake_socket_for_lock(stores["effect_lock_path"])
         self._workflow_event_journal().append(
             "workflow.run.resumed",
             source="workflow_editor",
@@ -13185,6 +13113,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             value=worker_config.get("workflow_config_snapshot_store_path"),
             fallback=runtime_dir / "workflow-config-snapshots.json",
         )
+        effect_lock_path = _resolve_path_setting(
+            base_dir=self.project_dir,
+            value=worker_config.get("effect_lock_path"),
+            fallback=runtime_dir / "effect-orchestrator.lock",
+        )
         if (
             backend == "sqlite"
             and not backend_explicit
@@ -13208,6 +13141,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "event_queue_store_path": event_queue_store_path,
             "effect_execution_store_path": effect_execution_store_path,
             "gate_execution_store_path": gate_execution_store_path,
+            "effect_lock_path": effect_lock_path,
             "workflow_config_snapshot_store_path": workflow_config_snapshot_store_path,
             "await_agent_store_path": runtime_dir
             / "providers"
@@ -14044,828 +13978,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def _published_artifact_store(self) -> PublishedArtifactStore:
         return PublishedArtifactStore(self.config.runtime_dir)
 
-    def _workflow_sample_lookup_matches(self, lookup: WorkflowRunLookupPayload) -> bool:
-        return any(
-            value == SAMPLE_WORKFLOW_RUN_ID
-            for value in (lookup.run_id, lookup.event_id, lookup.trigger_event_id)
-        ) or (
-            lookup.trace_id == SAMPLE_WORKFLOW_TRACE_ID
-        )
-
-    def _workflow_sample_matched_by(self, lookup: WorkflowRunLookupPayload) -> list[str]:
-        matched_by: list[str] = []
-        for field_name, value in (
-            ("run_id", lookup.run_id),
-            ("event_id", lookup.event_id),
-            ("trigger_event_id", lookup.trigger_event_id),
-        ):
-            if value == SAMPLE_WORKFLOW_RUN_ID and field_name not in matched_by:
-                matched_by.append(field_name)
-        if lookup.trace_id == SAMPLE_WORKFLOW_TRACE_ID:
-            matched_by.append("trace_id")
-        return matched_by
-
-    def _workflow_sample_tutorial_steps(
-        self, *, active: bool
-    ) -> tuple[list[WorkflowSampleTutorialStepPayload], WorkflowSampleTutorialStepPayload]:
-        launch_status = "completed" if active else "active"
-        inspect_status = "active" if active else "pending"
-        steps = [
-            WorkflowSampleTutorialStepPayload(
-                step_id="launch",
-                title="Launch the sample",
-                body="Create the guided in-memory run without touching runtime stores.",
-                status=launch_status,
-            ),
-            WorkflowSampleTutorialStepPayload(
-                step_id="inspect",
-                title="Inspect the run",
-                body="Open the existing inspector and review the simulated graph.",
-                status=inspect_status,
-                node_id=SAMPLE_WORKFLOW_RUN_ID,
-            ),
-            WorkflowSampleTutorialStepPayload(
-                step_id="approval",
-                title="Review the approval boundary",
-                body="The gate stays visibly pending so the safety boundary is easy to inspect.",
-                status="pending",
-                node_id=SAMPLE_APPROVAL_BOUNDARY_NODE_ID,
-            ),
-            WorkflowSampleTutorialStepPayload(
-                step_id="safe-stop",
-                title="Review the safe stop",
-                body="The final effect fails safely and remains resumable in-memory.",
-                status="pending",
-                node_id=SAMPLE_SAFE_STOP_NODE_ID,
-            ),
-            WorkflowSampleTutorialStepPayload(
-                step_id="reset",
-                title="Reset the sample",
-                body="Clear the sample back to an idle in-memory state.",
-                status="pending",
-            ),
-        ]
-        current_step = steps[1] if active else steps[0]
-        return steps, current_step
-
-    def _workflow_sample_run_summary(
-        self, *, launched_at: datetime
-    ) -> WorkflowRunSummaryPayload:
-        trigger_started_at = launched_at
-        trigger_finished_at = launched_at + timedelta(seconds=1)
-        agent_started_at = launched_at + timedelta(seconds=2)
-        agent_finished_at = launched_at + timedelta(seconds=4)
-        approval_started_at = launched_at + timedelta(seconds=5)
-        safe_stop_started_at = launched_at + timedelta(seconds=7)
-        safe_stop_finished_at = launched_at + timedelta(seconds=8)
-        return WorkflowRunSummaryPayload(
-            event_id=SAMPLE_WORKFLOW_RUN_ID,
-            run_state="errored",
-            trace_id=SAMPLE_WORKFLOW_TRACE_ID,
-            source_node_id=SAMPLE_TRIGGER_NODE_ID,
-            source_trigger_type="trigger:event",
-            delivery_state="delivered",
-            occurred_at=trigger_started_at,
-            latest_activity_at=safe_stop_finished_at,
-            active_nodes=[
-                WorkflowRunNodeActivityPayload(
-                    node_id=SAMPLE_TRIGGER_NODE_ID,
-                    status="delivered",
-                    count=1,
-                    source="sample",
-                    started_at=trigger_started_at,
-                    finished_at=trigger_finished_at,
-                ),
-                WorkflowRunNodeActivityPayload(
-                    node_id=SAMPLE_AGENT_PROMPT_NODE_ID,
-                    status="succeeded",
-                    count=1,
-                    source="sample",
-                    started_at=agent_started_at,
-                    finished_at=agent_finished_at,
-                    dispatch_id=SAMPLE_WORKFLOW_DISPATCH_ID,
-                ),
-                WorkflowRunNodeActivityPayload(
-                    node_id=SAMPLE_APPROVAL_BOUNDARY_NODE_ID,
-                    status="waiting",
-                    count=1,
-                    source="sample",
-                    started_at=approval_started_at,
-                ),
-                WorkflowRunNodeActivityPayload(
-                    node_id=SAMPLE_SAFE_STOP_NODE_ID,
-                    status="failed",
-                    count=1,
-                    source="sample",
-                    started_at=safe_stop_started_at,
-                    finished_at=safe_stop_finished_at,
-                    error="Simulated safe stop: the sample never touches runtime stores.",
-                ),
-            ],
-            failed_node_id=SAMPLE_SAFE_STOP_NODE_ID,
-            failed_node_status="failed",
-            failed_at=safe_stop_finished_at,
-            error="Simulated safe stop: the sample never touches runtime stores.",
-            resumable=True,
-        )
-
-    def _workflow_sample_detail(
-        self,
-        *,
-        launched_at: datetime,
-        lookup: WorkflowRunLookupPayload,
-    ) -> WorkflowRunDetailPayload:
-        trigger_started_at = launched_at
-        trigger_finished_at = launched_at + timedelta(seconds=1)
-        agent_started_at = launched_at + timedelta(seconds=2)
-        agent_finished_at = launched_at + timedelta(seconds=4)
-        approval_started_at = launched_at + timedelta(seconds=5)
-        safe_stop_started_at = launched_at + timedelta(seconds=7)
-        safe_stop_finished_at = launched_at + timedelta(seconds=8)
-        approval_expires_at = launched_at + timedelta(days=1)
-        matched_by = self._workflow_sample_matched_by(lookup)
-        if not matched_by:
-            matched_by = ["event_id"]
-
-        trigger_event = WorkflowRunTriggerEventPayload(
-            event_id=SAMPLE_WORKFLOW_RUN_ID,
-            trigger_id=SAMPLE_TRIGGER_NODE_ID,
-            trigger_type="trigger:event",
-            trace_id=SAMPLE_WORKFLOW_TRACE_ID,
-            occurred_at=trigger_started_at,
-            delivery_state="delivered",
-            inflight_at=trigger_started_at,
-            delivered_at=trigger_finished_at,
-            idempotency_key="sample:first-run:idempotency",
-            payload={
-                "event_type": "sample:first-run",
-                "correlation_key": SAMPLE_WORKFLOW_TRACE_ID,
-                "message": "Launch the guided in-memory sample.",
-            },
-        )
-
-        approval_link = WorkflowRunApprovalLinkPayload(
-            request_id=SAMPLE_WORKFLOW_APPROVAL_REQUEST_ID,
-            session_id=SAMPLE_WORKFLOW_SESSION_ID,
-            action_type="effect:agent:prompt",
-            tool_name="prompt_agent",
-            directory_path="root",
-            payload_digest="sample:first-run:digest",
-            status="pending",
-            human_summary="Approve the simulated prompt before a real agent would be contacted.",
-            expires_at=approval_expires_at,
-        )
-
-        artifact_link = WorkflowRunCommunicationArtifactLinkPayload(
-            artifact_id=SAMPLE_WORKFLOW_ARTIFACT_ID,
-            session_id=SAMPLE_WORKFLOW_SESSION_ID,
-            provider="sample",
-            original_filename="sample-agent-prompt.txt",
-            filename="sample-agent-prompt.txt",
-            mime_type="text/plain",
-            created_at=agent_finished_at,
-            staged_at=agent_finished_at,
-            status="simulated_in_memory",
-            metadata={
-                "source": "admin.sample_workflow",
-                "note": "In-memory artifact reference only.",
-            },
-        )
-
-        tool_call_link = WorkflowRunToolCallLinkPayload(
-            created_at=agent_started_at,
-            node_id=SAMPLE_AGENT_PROMPT_NODE_ID,
-            tool_name="prompt_agent",
-            request_id=SAMPLE_WORKFLOW_REQUEST_ID,
-            correlation_id=SAMPLE_WORKFLOW_DISPATCH_ID,
-            approval_request_id=SAMPLE_WORKFLOW_APPROVAL_REQUEST_ID,
-            workflow_run_id=SAMPLE_WORKFLOW_RUN_ID,
-            trace_id=SAMPLE_WORKFLOW_TRACE_ID,
-            session_id=SAMPLE_WORKFLOW_SESSION_ID,
-            decision="allowed",
-            status="simulated_in_memory",
-            href="#tool-calls?q=sample:first-run:request",
-            args_summary="Prompt a simulated agent with the sample trigger payload.",
-            result_summary="The in-memory agent acknowledged the prompt without touching runtime stores.",
-            result_status="simulated_in_memory",
-            result_empty=False,
-            args={
-                "prompt": "Launch the guided sample run.",
-                "trigger_event_id": SAMPLE_WORKFLOW_RUN_ID,
-                "session_id": SAMPLE_WORKFLOW_SESSION_ID,
-            },
-            result={
-                "status": "simulated_in_memory",
-                "dispatch_id": SAMPLE_WORKFLOW_DISPATCH_ID,
-                "thread_id": SAMPLE_WORKFLOW_THREAD_ID,
-            },
-            redacted_args={
-                "prompt": "Launch the guided sample run.",
-                "trigger_event_id": SAMPLE_WORKFLOW_RUN_ID,
-                "session_id": SAMPLE_WORKFLOW_SESSION_ID,
-            },
-            redacted_result={
-                "status": "simulated_in_memory",
-                "dispatch_id": SAMPLE_WORKFLOW_DISPATCH_ID,
-                "thread_id": SAMPLE_WORKFLOW_THREAD_ID,
-            },
-        )
-
-        agent_link = WorkflowRunAgentLinkPayload(
-            node_id=SAMPLE_AGENT_PROMPT_NODE_ID,
-            node_type="effect:agent:prompt",
-            session_id=SAMPLE_WORKFLOW_SESSION_ID,
-            agent_id="sample:first-run:agent",
-            backend="simulated_in_memory",
-            agent_backend="simulated_in_memory",
-            agent_available=False,
-            agent_status="simulated_in_memory",
-            agent_missing_reason="No real agent was launched for the in-memory sample.",
-            target_name="sample-first-run",
-            prompt="Launch the guided sample run.",
-            prompt_summary="Simulated prompt for the sample workflow.",
-            prompt_status="simulated_in_memory",
-            dispatch_id=SAMPLE_WORKFLOW_DISPATCH_ID,
-            thread_id=SAMPLE_WORKFLOW_THREAD_ID,
-            execution_id=SAMPLE_WORKFLOW_EXECUTION_ID,
-            artifact_ids=[SAMPLE_WORKFLOW_ARTIFACT_ID],
-            status="simulated_in_memory",
-            waiting=False,
-            completed=True,
-            session_status="session_missing",
-            session_available=False,
-            session_missing_reason="No real session was created for the in-memory sample.",
-            log_status="session_missing",
-            log_available=False,
-            log_missing_reason="No log file exists for the in-memory sample.",
-            result_summary="The in-memory agent acknowledged the prompt.",
-            result_status="simulated_in_memory",
-            result_empty=False,
-        )
-
-        trigger_node = WorkflowRunNodeDetailPayload(
-            node_id=SAMPLE_TRIGGER_NODE_ID,
-            node_type="trigger:event",
-            display_name="Sample trigger",
-            source_kind="trigger_event",
-            event_id=SAMPLE_WORKFLOW_RUN_ID,
-            trace_id=SAMPLE_WORKFLOW_TRACE_ID,
-            status="delivered",
-            started_at=trigger_started_at,
-            finished_at=trigger_finished_at,
-            duration_ms=1000,
-            occurred_at=trigger_started_at,
-            delivery_state="delivered",
-            resolved_config={
-                "event_type": "sample:first-run",
-                "correlation_key": SAMPLE_WORKFLOW_TRACE_ID,
-            },
-            binding_trace={
-                "consumed_output_keys": [],
-                "entries": [],
-            },
-            input_payload={
-                "event_type": "sample:first-run",
-                "correlation_key": SAMPLE_WORKFLOW_TRACE_ID,
-                "message": "Launch the guided in-memory sample.",
-            },
-            outputs={
-                "event_type": "sample:first-run",
-                "correlation_key": SAMPLE_WORKFLOW_TRACE_ID,
-            },
-            error=None,
-            config_revision=SAMPLE_WORKFLOW_REVISION,
-            missing_fields=[],
-            records=[
-                WorkflowRunNodeRecordPayload(
-                    record_kind="trigger_event",
-                    event_id=SAMPLE_WORKFLOW_RUN_ID,
-                    trace_id=SAMPLE_WORKFLOW_TRACE_ID,
-                    node_id=SAMPLE_TRIGGER_NODE_ID,
-                    node_type="trigger:event",
-                    status="delivered",
-                    started_at=trigger_started_at,
-                    finished_at=trigger_finished_at,
-                    duration_ms=1000,
-                    source_trigger_type="trigger:event",
-                    occurred_at=trigger_started_at,
-                    input_payload={
-                        "event_type": "sample:first-run",
-                        "correlation_key": SAMPLE_WORKFLOW_TRACE_ID,
-                        "message": "Launch the guided in-memory sample.",
-                    },
-                    outputs={
-                        "event_type": "sample:first-run",
-                        "correlation_key": SAMPLE_WORKFLOW_TRACE_ID,
-                    },
-                    resolved_config={
-                        "event_type": "sample:first-run",
-                        "correlation_key": SAMPLE_WORKFLOW_TRACE_ID,
-                    },
-                    binding_trace={
-                        "consumed_output_keys": [],
-                        "entries": [],
-                    },
-                    config_revision=SAMPLE_WORKFLOW_REVISION,
-                )
-            ],
-        )
-
-        agent_node = WorkflowRunNodeDetailPayload(
-            node_id=SAMPLE_AGENT_PROMPT_NODE_ID,
-            node_type="effect:agent:prompt",
-            display_name="Prompt simulated agent",
-            source_kind="effect_execution",
-            execution_id=SAMPLE_WORKFLOW_EXECUTION_ID,
-            event_id=SAMPLE_WORKFLOW_RUN_ID,
-            trace_id=SAMPLE_WORKFLOW_TRACE_ID,
-            status="succeeded",
-            started_at=agent_started_at,
-            finished_at=agent_finished_at,
-            duration_ms=2000,
-            occurred_at=agent_started_at,
-            resolved_config={
-                "session_id": SAMPLE_WORKFLOW_SESSION_ID,
-                "vm_name": "sample-in-memory",
-                "prompt": "Launch the guided sample run.",
-                "dispatch_id": SAMPLE_WORKFLOW_DISPATCH_ID,
-                "thread_id": SAMPLE_WORKFLOW_THREAD_ID,
-                "execution_id": SAMPLE_WORKFLOW_EXECUTION_ID,
-                "artifact_ids": [SAMPLE_WORKFLOW_ARTIFACT_ID],
-                "request_id": SAMPLE_WORKFLOW_APPROVAL_REQUEST_ID,
-            },
-            binding_trace={
-                "consumed_output_keys": ["sample-trigger.event_type"],
-                "entries": [
-                    {
-                        "config_path": "$.prompt",
-                        "expression": "${{sample-trigger.event_type}}",
-                        "reference": "sample-trigger.event_type",
-                        "source_node_id": SAMPLE_TRIGGER_NODE_ID,
-                        "output_path": "event_type",
-                        "fallback_used": False,
-                        "status": "resolved",
-                        "resolved_value_preview": '"sample:first-run"',
-                        "value_type": "str",
-                        "error": None,
-                    }
-                ],
-            },
-            input_payload={
-                "event_type": "sample:first-run",
-                "correlation_key": SAMPLE_WORKFLOW_TRACE_ID,
-                "request_id": SAMPLE_WORKFLOW_APPROVAL_REQUEST_ID,
-            },
-            outputs={
-                "dispatch_id": SAMPLE_WORKFLOW_DISPATCH_ID,
-                "thread_id": SAMPLE_WORKFLOW_THREAD_ID,
-                "execution_id": SAMPLE_WORKFLOW_EXECUTION_ID,
-                "prompt_summary": "The sample prompt was handled in memory.",
-            },
-            config_revision=SAMPLE_WORKFLOW_REVISION,
-            approval_links=[],
-            agent_links=[agent_link],
-            communication_artifact_links=[artifact_link],
-            tool_call_links=[tool_call_link],
-            missing_fields=[],
-            records=[
-                WorkflowRunNodeRecordPayload(
-                    record_kind="effect_execution",
-                    execution_id=SAMPLE_WORKFLOW_EXECUTION_ID,
-                    event_id=SAMPLE_WORKFLOW_RUN_ID,
-                    trace_id=SAMPLE_WORKFLOW_TRACE_ID,
-                    node_id=SAMPLE_AGENT_PROMPT_NODE_ID,
-                    node_type="effect:agent:prompt",
-                    status="succeeded",
-                    started_at=agent_started_at,
-                    finished_at=agent_finished_at,
-                    duration_ms=2000,
-                    source_node_id=SAMPLE_TRIGGER_NODE_ID,
-                    source_trigger_type="trigger:event",
-                    occurred_at=agent_started_at,
-                    input_payload={
-                        "event_type": "sample:first-run",
-                        "correlation_key": SAMPLE_WORKFLOW_TRACE_ID,
-                        "request_id": SAMPLE_WORKFLOW_APPROVAL_REQUEST_ID,
-                    },
-                    outputs={
-                        "dispatch_id": SAMPLE_WORKFLOW_DISPATCH_ID,
-                        "thread_id": SAMPLE_WORKFLOW_THREAD_ID,
-                        "execution_id": SAMPLE_WORKFLOW_EXECUTION_ID,
-                        "prompt_summary": "The sample prompt was handled in memory.",
-                    },
-                    resolved_config={
-                        "session_id": SAMPLE_WORKFLOW_SESSION_ID,
-                        "vm_name": "sample-in-memory",
-                        "prompt": "Launch the guided sample run.",
-                        "dispatch_id": SAMPLE_WORKFLOW_DISPATCH_ID,
-                        "thread_id": SAMPLE_WORKFLOW_THREAD_ID,
-                        "execution_id": SAMPLE_WORKFLOW_EXECUTION_ID,
-                        "artifact_ids": [SAMPLE_WORKFLOW_ARTIFACT_ID],
-                        "request_id": SAMPLE_WORKFLOW_APPROVAL_REQUEST_ID,
-                    },
-                    binding_trace={
-                        "consumed_output_keys": ["sample-trigger.event_type"],
-                        "entries": [
-                            {
-                                "config_path": "$.prompt",
-                                "expression": "${{sample-trigger.event_type}}",
-                                "reference": "sample-trigger.event_type",
-                                "source_node_id": SAMPLE_TRIGGER_NODE_ID,
-                                "output_path": "event_type",
-                                "fallback_used": False,
-                                "status": "resolved",
-                                "resolved_value_preview": '"sample:first-run"',
-                                "value_type": "str",
-                                "error": None,
-                            }
-                        ],
-                    },
-                    config_revision=SAMPLE_WORKFLOW_REVISION,
-                )
-            ],
-        )
-
-        approval_node = WorkflowRunNodeDetailPayload(
-            node_id=SAMPLE_APPROVAL_BOUNDARY_NODE_ID,
-            node_type="gate:await-agent",
-            display_name="Await approval",
-            source_kind="gate_execution",
-            execution_id="sample:first-run:gate-execution",
-            event_id=SAMPLE_WORKFLOW_RUN_ID,
-            trace_id=SAMPLE_WORKFLOW_TRACE_ID,
-            status="waiting",
-            started_at=approval_started_at,
-            occurred_at=approval_started_at,
-            resolved_config={
-                "session_id": SAMPLE_WORKFLOW_SESSION_ID,
-                "dispatch_id": SAMPLE_WORKFLOW_DISPATCH_ID,
-                "prompt": "Launch the guided sample run.",
-            },
-            binding_trace={
-                "consumed_output_keys": ["sample-agent-prompt.dispatch_id"],
-                "entries": [
-                    {
-                        "config_path": "$.dispatch_id",
-                        "expression": "${{sample-agent-prompt.dispatch_id}}",
-                        "reference": "sample-agent-prompt.dispatch_id",
-                        "source_node_id": SAMPLE_AGENT_PROMPT_NODE_ID,
-                        "output_path": "dispatch_id",
-                        "fallback_used": False,
-                        "status": "resolved",
-                        "resolved_value_preview": '"sample:first-run:dispatch"',
-                        "value_type": "str",
-                        "error": None,
-                    }
-                ],
-            },
-            input_payload={
-                "session_id": SAMPLE_WORKFLOW_SESSION_ID,
-                "dispatch_id": SAMPLE_WORKFLOW_DISPATCH_ID,
-                "approval_request_id": SAMPLE_WORKFLOW_APPROVAL_REQUEST_ID,
-            },
-            outputs={
-                "status": "pending",
-                "approval_request_id": SAMPLE_WORKFLOW_APPROVAL_REQUEST_ID,
-            },
-            config_revision=SAMPLE_WORKFLOW_REVISION,
-            approval_links=[approval_link],
-            missing_fields=[],
-            records=[
-                WorkflowRunNodeRecordPayload(
-                    record_kind="gate_execution",
-                    execution_id="sample:first-run:gate-execution",
-                    event_id=SAMPLE_WORKFLOW_RUN_ID,
-                    trace_id=SAMPLE_WORKFLOW_TRACE_ID,
-                    node_id=SAMPLE_APPROVAL_BOUNDARY_NODE_ID,
-                    node_type="gate:await-agent",
-                    status="waiting",
-                    started_at=approval_started_at,
-                    source_node_id=SAMPLE_AGENT_PROMPT_NODE_ID,
-                    source_trigger_type="effect:agent:prompt",
-                    occurred_at=approval_started_at,
-                    input_payload={
-                        "session_id": SAMPLE_WORKFLOW_SESSION_ID,
-                        "dispatch_id": SAMPLE_WORKFLOW_DISPATCH_ID,
-                        "approval_request_id": SAMPLE_WORKFLOW_APPROVAL_REQUEST_ID,
-                    },
-                    outputs={
-                        "status": "pending",
-                        "approval_request_id": SAMPLE_WORKFLOW_APPROVAL_REQUEST_ID,
-                    },
-                    resolved_config={
-                        "session_id": SAMPLE_WORKFLOW_SESSION_ID,
-                        "dispatch_id": SAMPLE_WORKFLOW_DISPATCH_ID,
-                        "prompt": "Launch the guided sample run.",
-                    },
-                    binding_trace={
-                        "consumed_output_keys": ["sample-agent-prompt.dispatch_id"],
-                        "entries": [
-                            {
-                                "config_path": "$.dispatch_id",
-                                "expression": "${{sample-agent-prompt.dispatch_id}}",
-                                "reference": "sample-agent-prompt.dispatch_id",
-                                "source_node_id": SAMPLE_AGENT_PROMPT_NODE_ID,
-                                "output_path": "dispatch_id",
-                                "fallback_used": False,
-                                "status": "resolved",
-                                "resolved_value_preview": '"sample:first-run:dispatch"',
-                                "value_type": "str",
-                                "error": None,
-                            }
-                        ],
-                    },
-                    config_revision=SAMPLE_WORKFLOW_REVISION,
-                )
-            ],
-        )
-
-        safe_stop_node = WorkflowRunNodeDetailPayload(
-            node_id=SAMPLE_SAFE_STOP_NODE_ID,
-            node_type="effect:notification:send",
-            display_name="Safe stop notification",
-            source_kind="effect_execution",
-            execution_id="sample:first-run:safe-stop-execution",
-            event_id=SAMPLE_WORKFLOW_RUN_ID,
-            trace_id=SAMPLE_WORKFLOW_TRACE_ID,
-            status="failed",
-            started_at=safe_stop_started_at,
-            finished_at=safe_stop_finished_at,
-            duration_ms=1000,
-            occurred_at=safe_stop_started_at,
-            error="Simulated safe stop: the sample never touches runtime stores.",
-            binding_trace={
-                "consumed_output_keys": ["sample-approval-boundary.status"],
-                "entries": [
-                    {
-                        "config_path": "$.status",
-                        "expression": "${{sample-approval-boundary.status}}",
-                        "reference": "sample-approval-boundary.status",
-                        "source_node_id": SAMPLE_APPROVAL_BOUNDARY_NODE_ID,
-                        "output_path": "status",
-                        "fallback_used": False,
-                        "status": "resolved",
-                        "resolved_value_preview": '"pending"',
-                        "value_type": "str",
-                        "error": None,
-                    }
-                ],
-            },
-            input_payload={
-                "reason": "pending approval boundary",
-                "source_node_id": SAMPLE_APPROVAL_BOUNDARY_NODE_ID,
-                "source_trigger_type": "gate:await-agent",
-                "trace_id": SAMPLE_WORKFLOW_TRACE_ID,
-            },
-            outputs={
-                "notification_status": "suppressed",
-                "safe_stop": True,
-                "result_summary": "The sample stopped safely in memory.",
-            },
-            resolved_config={
-                "channel": "operator-console",
-                "message": "Safe stop reached for the guided sample.",
-                "trace_id": SAMPLE_WORKFLOW_TRACE_ID,
-            },
-            config_revision=SAMPLE_WORKFLOW_REVISION,
-            retry_resume_eligible=True,
-            retry_resume_reason="Failed node has a resumable input payload.",
-            missing_fields=[],
-            records=[
-                WorkflowRunNodeRecordPayload(
-                    record_kind="effect_execution",
-                    execution_id="sample:first-run:safe-stop-execution",
-                    event_id=SAMPLE_WORKFLOW_RUN_ID,
-                    trace_id=SAMPLE_WORKFLOW_TRACE_ID,
-                    node_id=SAMPLE_SAFE_STOP_NODE_ID,
-                    node_type="effect:notification:send",
-                    status="failed",
-                    started_at=safe_stop_started_at,
-                    finished_at=safe_stop_finished_at,
-                    duration_ms=1000,
-                    source_node_id=SAMPLE_APPROVAL_BOUNDARY_NODE_ID,
-                    source_trigger_type="gate:await-agent",
-                    occurred_at=safe_stop_started_at,
-                    input_payload={
-                        "reason": "pending approval boundary",
-                        "source_node_id": SAMPLE_APPROVAL_BOUNDARY_NODE_ID,
-                        "source_trigger_type": "gate:await-agent",
-                        "trace_id": SAMPLE_WORKFLOW_TRACE_ID,
-                    },
-                    outputs={
-                        "notification_status": "suppressed",
-                        "safe_stop": True,
-                        "result_summary": "The sample stopped safely in memory.",
-                    },
-                    resolved_config={
-                        "channel": "operator-console",
-                        "message": "Safe stop reached for the guided sample.",
-                        "trace_id": SAMPLE_WORKFLOW_TRACE_ID,
-                    },
-                    binding_trace={
-                        "consumed_output_keys": ["sample-approval-boundary.status"],
-                        "entries": [
-                            {
-                                "config_path": "$.status",
-                                "expression": "${{sample-approval-boundary.status}}",
-                                "reference": "sample-approval-boundary.status",
-                                "source_node_id": SAMPLE_APPROVAL_BOUNDARY_NODE_ID,
-                                "output_path": "status",
-                                "fallback_used": False,
-                                "status": "resolved",
-                                "resolved_value_preview": '"pending"',
-                                "value_type": "str",
-                                "error": None,
-                            }
-                        ],
-                    },
-                    error="Simulated safe stop: the sample never touches runtime stores.",
-                    published_event_id="sample:first-run:safe-stop-notification",
-                    completion_event_enqueued_at=safe_stop_finished_at,
-                    config_revision=SAMPLE_WORKFLOW_REVISION,
-                )
-            ],
-        )
-
-        graph_snapshot = WorkflowRunGraphSnapshotPayload(
-            revision=SAMPLE_WORKFLOW_REVISION,
-            captured_at=launched_at,
-            snapshot_type="simulated_in_memory_sample",
-            source="admin.sample_workflow",
-            node_count=4,
-            edge_count=3,
-            triggers=[
-                {
-                    "id": SAMPLE_TRIGGER_NODE_ID,
-                    "type": "trigger:event",
-                    "display_name": "Sample trigger",
-                }
-            ],
-            gates=[
-                {
-                    "id": SAMPLE_APPROVAL_BOUNDARY_NODE_ID,
-                    "type": "gate:await-agent",
-                    "display_name": "Await approval",
-                }
-            ],
-            effects=[
-                {
-                    "id": SAMPLE_AGENT_PROMPT_NODE_ID,
-                    "type": "effect:agent:prompt",
-                    "display_name": "Prompt simulated agent",
-                },
-                {
-                    "id": SAMPLE_SAFE_STOP_NODE_ID,
-                    "type": "effect:notification:send",
-                    "display_name": "Safe stop notification",
-                },
-            ],
-            queries=[],
-            edges=[
-                {
-                    "id": "sample-edge-trigger-agent",
-                    "source": SAMPLE_TRIGGER_NODE_ID,
-                    "target": SAMPLE_AGENT_PROMPT_NODE_ID,
-                },
-                {
-                    "id": "sample-edge-agent-approval",
-                    "source": SAMPLE_AGENT_PROMPT_NODE_ID,
-                    "target": SAMPLE_APPROVAL_BOUNDARY_NODE_ID,
-                },
-                {
-                    "id": "sample-edge-approval-stop",
-                    "source": SAMPLE_APPROVAL_BOUNDARY_NODE_ID,
-                    "target": SAMPLE_SAFE_STOP_NODE_ID,
-                },
-            ],
-            workflow_graphs=[
-                {
-                    "id": SAMPLE_WORKFLOW_GRAPH_ID,
-                    "name": "Sample first run",
-                    "description": "Deterministic in-memory guided sample workflow.",
-                    "directory_paths": ["root"],
-                    "user_ids": ["operator"],
-                    "node_ids": [
-                        SAMPLE_TRIGGER_NODE_ID,
-                        SAMPLE_AGENT_PROMPT_NODE_ID,
-                        SAMPLE_APPROVAL_BOUNDARY_NODE_ID,
-                        SAMPLE_SAFE_STOP_NODE_ID,
-                    ],
-                }
-            ],
-        )
-
-        summary = self._workflow_sample_run_summary(launched_at=launched_at)
-        candidate_match = WorkflowRunCandidateMatchPayload(
-            event_id=SAMPLE_WORKFLOW_RUN_ID,
-            trace_id=SAMPLE_WORKFLOW_TRACE_ID,
-            run_state=summary.run_state,
-            latest_activity_at=summary.latest_activity_at,
-            source_node_id=summary.source_node_id,
-            source_trigger_type=summary.source_trigger_type,
-            delivery_state=summary.delivery_state,
-            matched_by=matched_by,
-        )
-        recovery = WorkflowRunRecoveryPayload(
-            clear=WorkflowRunRecoveryActionPayload(
-                eligible=True,
-                reason="The guided sample can be cleared from in-memory state.",
-                event_id=SAMPLE_WORKFLOW_RUN_ID,
-                source_event_id=SAMPLE_WORKFLOW_RUN_ID,
-            ),
-            resume=WorkflowRunRecoveryActionPayload(
-                eligible=True,
-                reason="The failed safe-stop node has a resumable in-memory payload.",
-                event_id=SAMPLE_WORKFLOW_RUN_ID,
-                target_node_id=SAMPLE_SAFE_STOP_NODE_ID,
-                source_node_id=SAMPLE_APPROVAL_BOUNDARY_NODE_ID,
-                source_trigger_type="gate:await-agent",
-                source_event_id=SAMPLE_WORKFLOW_RUN_ID,
-            ),
-        )
-
-        return WorkflowRunDetailPayload(
-            generated_at=_utc_now(),
-            lookup=lookup,
-            candidate_matches=[candidate_match],
-            lookup_candidates=[candidate_match],
-            matched_by=matched_by,
-            event_id=SAMPLE_WORKFLOW_RUN_ID,
-            trace_id=SAMPLE_WORKFLOW_TRACE_ID,
-            source_node_id=SAMPLE_TRIGGER_NODE_ID,
-            source_trigger_type="trigger:event",
-            delivery_state="delivered",
-            occurred_at=launched_at,
-            latest_activity_at=summary.latest_activity_at,
-            run_state=summary.run_state,
-            active_nodes=summary.active_nodes,
-            failed_node_id=summary.failed_node_id,
-            failed_node_status=summary.failed_node_status,
-            failed_at=summary.failed_at,
-            error=summary.error,
-            resumable=summary.resumable,
-            recovery=recovery,
-            trigger_event=trigger_event,
-            graph=WorkflowRunGraphPayload(
-                config_revision=SAMPLE_WORKFLOW_REVISION,
-                config={
-                    "sample": {
-                        "enabled": True,
-                        "mode": "guided_first_run",
-                    }
-                },
-                snapshot=graph_snapshot,
-            ),
-            nodes=[trigger_node, agent_node, approval_node, safe_stop_node],
-            tool_call_links=[tool_call_link],
-        )
-
-    def _workflow_sample_state_payload(
-        self,
-        *,
-        active: bool,
-        launched_at: datetime | None,
-        lookup: WorkflowRunLookupPayload | None = None,
-    ) -> WorkflowSampleStatePayload:
-        tutorial_steps, current_step = self._workflow_sample_tutorial_steps(active=active)
-        if not active or launched_at is None:
-            return WorkflowSampleStatePayload(
-                active=False,
-                launched_at=None,
-                run=None,
-                detail=None,
-                tutorial_steps=tutorial_steps,
-                current_step=current_step,
-            )
-        sample_lookup = lookup or WorkflowRunLookupPayload(
-            run_id=SAMPLE_WORKFLOW_RUN_ID,
-            event_id=SAMPLE_WORKFLOW_RUN_ID,
-            trace_id=SAMPLE_WORKFLOW_TRACE_ID,
-        )
-        detail = self._workflow_sample_detail(
-            launched_at=launched_at,
-            lookup=sample_lookup,
-        )
-        return WorkflowSampleStatePayload(
-            active=True,
-            launched_at=launched_at,
-            run=self._workflow_sample_run_summary(launched_at=launched_at),
-            detail=detail,
-            tutorial_steps=tutorial_steps,
-            current_step=current_step,
-        )
-
-    def _workflow_sample_detail_if_active(
-        self, *, lookup: WorkflowRunLookupPayload
-    ) -> WorkflowRunDetailPayload | None:
-        with self._workflow_sample_lock:
-            if not self._workflow_sample_active or self._workflow_sample_launched_at is None:
-                return None
-            launched_at = self._workflow_sample_launched_at
-        if not self._workflow_sample_lookup_matches(lookup):
-            return None
-        return self._workflow_sample_detail(launched_at=launched_at, lookup=lookup)
-
     def _read_workflow_run_detail(
         self,
         *,
@@ -14910,10 +14022,6 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             raise ValueError(
                 "Workflow run detail lookup requires run_id, event_id, trigger_event_id, trace_id, session_id, or artifact_id."
             )
-
-        sample_detail = self._workflow_sample_detail_if_active(lookup=lookup)
-        if sample_detail is not None:
-            return sample_detail
 
         stores = self._workflow_run_store_paths()
         sqlite_records = self._workflow_run_detail_sqlite_records(stores, lookup)

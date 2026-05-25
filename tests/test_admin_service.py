@@ -2548,6 +2548,57 @@ def test_resume_agent_passes_explicit_resume_thread_id(tmp_path: Path, monkeypat
     assert "receptionist-session" in watcher["cmd"]
 
 
+def test_resume_agent_watcher_uses_configured_effect_lock_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_dir = tmp_path / "config" / "trigger-orchestrator"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "runtime_dir": "custom-workflow-runtime",
+                "effect_lock_path": "locks/custom-effect-orchestrator.lock",
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="receptionist-session",
+            vm_id="agent-sandbox-receptionist-vm",
+            expires_at=datetime(2026, 4, 7, 12, 0, tzinfo=UTC),
+            allowed_tools=[],
+            model="gpt-5.4",
+        ),
+    )
+
+    watcher: dict[str, object] = {}
+
+    def fake_run_subprocess(cmd: list[str], **kwargs: object):
+        return subprocess.CompletedProcess(cmd, 0, stdout="thread_id=thread-1\nok\n", stderr="")
+
+    class _PopenStub:
+        def __init__(self, cmd: list[str], **kwargs: object) -> None:
+            watcher["cmd"] = cmd
+
+    monkeypatch.setattr("agent_sandbox.admin.service._run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr("agent_sandbox.admin.service.subprocess.Popen", _PopenStub)
+
+    result = service.resume_agent(
+        "agent-sandbox-receptionist-vm",
+        "Resume now",
+        dispatch_id="dispatch-custom-lock",
+    )
+
+    assert result.success is True
+    assert "--effect-lock-path" in watcher["cmd"]
+    lock_index = watcher["cmd"].index("--effect-lock-path")
+    assert watcher["cmd"][lock_index + 1] == str(
+        tmp_path / "locks" / "custom-effect-orchestrator.lock"
+    )
+
+
 def test_resume_agent_passes_mcp_gateway_url(tmp_path: Path, monkeypatch) -> None:
     service = AdminService(write_config(tmp_path))
     service.runtime.session_repository.upsert_session(

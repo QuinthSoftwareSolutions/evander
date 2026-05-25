@@ -216,26 +216,6 @@ function createWorkflowCatalog() {
   };
 }
 
-function createSampleState(active) {
-  const tutorialSteps = [
-    {
-      step_id: "launch",
-      title: "Launch the sample",
-      body: "Create the guided in-memory sample workflow.",
-      status: active ? "completed" : "active",
-      node_id: null,
-    },
-  ];
-  return {
-    active,
-    launched_at: active ? "2026-05-16T12:00:00Z" : null,
-    run: null,
-    detail: null,
-    tutorial_steps: tutorialSteps,
-    current_step: tutorialSteps[0],
-  };
-}
-
 function assertResetSavePayload(body) {
   assert.equal(body.config.triggers.length, 1);
   assert.equal(body.config.gates.length, 1);
@@ -416,21 +396,6 @@ test("workflow editor resets a renamed node id and restores downstream bindings 
     if (pathname === "/api/configuration/state") {
       assert.equal(url.searchParams.get("directory_path"), "root");
       await route.fulfill(jsonResponse(configurationStateResponse));
-      return;
-    }
-
-    if (pathname === "/api/workflow-editor/sample-workflow") {
-      if (route.request().method() === "DELETE") {
-        await route.fulfill(jsonResponse(createSampleState(false)));
-        return;
-      }
-      await route.fulfill(jsonResponse(createSampleState(false)));
-      return;
-    }
-
-    if (pathname === "/api/workflow-editor/sample-workflow/launch") {
-      assert.equal(route.request().method(), "POST");
-      await route.fulfill(jsonResponse(createSampleState(true)));
       return;
     }
 
