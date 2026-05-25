@@ -432,6 +432,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "query:ado:work-items": provider_models.AdoWorkItemsQueryDefinition,
         "query:pull-request:list": provider_models.PullRequestListQueryDefinition,
         "query:pull-request:feedback": provider_models.PullRequestFeedbackQueryDefinition,
+        "query:pull-request:get": provider_models.PullRequestGetQueryDefinition,
         "query:state:get": provider_models.StateGetQueryDefinition,
         "query:semantic:store-status": provider_models.SemanticStoreStatusQueryDefinition,
         "query:semantic:search": provider_models.SemanticSearchQueryDefinition,

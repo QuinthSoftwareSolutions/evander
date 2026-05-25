@@ -325,9 +325,7 @@ def test_create_server_injects_approval_request_id_and_strips_before_dispatch(
     server = create_server(context)
     tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
 
-    approval_schema = tools["get_workflow_snapshot"].parameters["properties"][
-        "approval_request_id"
-    ]
+    approval_schema = tools["get_workflow_snapshot"].parameters["properties"]["approval_request_id"]
     assert approval_schema["anyOf"] == [{"type": "string"}, {"type": "null"}]
     assert approval_schema["default"] is None
     assert approval_schema["title"] == "Approval Request Id"
@@ -557,9 +555,7 @@ def test_get_workflow_snapshot_returns_current_config_and_optional_runs(tmp_path
     assert result["revision"]
     assert result["config"]["triggers"][0]["id"] == "cron-15m"
     assert result["config"]["effects"][0]["id"] == "prompt-agent"
-    assert result["config"]["edges"] == [
-        {"source_id": "cron-15m", "target_id": "prompt-agent"}
-    ]
+    assert result["config"]["edges"] == [{"source_id": "cron-15m", "target_id": "prompt-agent"}]
     assert result["layout"]["nodes"]["cron-15m"] == {"x": 120.0, "y": 80.0}
     assert result["graphs"][0]["node_ids"] == ["cron-15m", "prompt-agent"]
     assert "runs" not in result
@@ -858,7 +854,8 @@ def test_mssql_tools_reuse_mapped_transport_session(
         event
         for event in audit_events
         if event.get("event_type") == "tool_call"
-        and event.get("tool_name") in {
+        and event.get("tool_name")
+        in {
             ToolName.MSSQL_PROVISION_DATABASE.value,
             ToolName.MSSQL_LIST_DATABASES.value,
             ToolName.MSSQL_DROP_DATABASE.value,
@@ -1046,9 +1043,7 @@ def test_assistant_read_config_returns_directory_global_and_worker_config(
     assert directory_result["directory_path"] == "root/team"
     assert directory_result["raw"]["exists"] is True
     assert directory_result["raw"]["config"] == {"approval_ttl_seconds": 222}
-    assert (
-        directory_result["effective"]["config"]["default_session_ttl_seconds"] == 111
-    )
+    assert directory_result["effective"]["config"]["default_session_ttl_seconds"] == 111
     assert directory_result["effective"]["config"]["approval_ttl_seconds"] == 222
 
     global_result = _call_tool(
@@ -1690,6 +1685,63 @@ def test_get_pull_request_allows_repo_scoped_pr_lookup(
     )
 
     assert result["pr_id"] == "99"
+
+
+def test_get_pull_request_supports_github_without_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        audit_log_path=tmp_path / "audit.jsonl",
+        session_store_path=tmp_path / "sessions.json",
+        approval_store_path=tmp_path / "approvals.json",
+        draft_store_path=tmp_path / "drafts.json",
+        email_store_path=tmp_path / "emails.json",
+        discord_command_store_path=tmp_path / "discord.json",
+    )
+    monkeypatch.delenv(config.github_token_env, raising=False)
+    monkeypatch.delenv(config.azure_devops_pr_pat_env, raising=False)
+    context = build_runtime(config)
+    context.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            allowed_tools=[ToolName.GET_PULL_REQUEST],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    server = create_server(context)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "api.github.com"
+        assert request.url.path == "/repos/org/repo/pulls/17"
+        assert "authorization" not in request.headers
+        return httpx.Response(
+            200,
+            json={
+                "number": 17,
+                "title": "GitHub PR",
+                "state": "open",
+                "html_url": "https://github.com/org/repo/pull/17",
+                "head": {"ref": "feature", "sha": "abc123"},
+                "base": {"ref": "main", "sha": "def456"},
+                "user": {"login": "agent-user"},
+            },
+        )
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        "agent_sandbox.services.httpx.Client",
+        lambda timeout: real_client(timeout=timeout, transport=httpx.MockTransport(handler)),
+    )
+
+    result = _call_tool(
+        server,
+        "get_pull_request",
+        {"session_id": "session-1", "provider": "github", "repo": "org/repo", "pr_id": "17"},
+    )
+
+    assert result["provider"] == "github"
+    assert result["pr_id"] == "17"
 
 
 def test_schedule_resume_enforces_tool_policy_and_validates_args(tmp_path) -> None:

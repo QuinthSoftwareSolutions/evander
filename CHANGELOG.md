@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - Pull Request Get Workflow Query
+
+- Added `query:pull-request:get` for normalized provider pull request snapshots,
+  including GitHub PR get support.
+- Paginated optional GitHub PR commit and review detail fetches before
+  populating normalized `commits`, `reviewers`, and `raw` data.
+
 ## 2026-05-25 - Workflow Switch Lazy Routing Fix
 
 - Fixed `gate:switch` routing so cases are resolved in order and later

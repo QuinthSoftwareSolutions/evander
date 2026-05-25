@@ -494,6 +494,7 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:git:pr-note` | `host_repo_path`, `local_branch` | `remote_name`, `notes_ref`, `outputs` |
 | `query:issue:get` | `issue_id` | `outputs` |
 | `query:issue:list` | _none beyond envelope_ | `directory_path`, `direct_only`, `states`, `exclude_states`, `source`, `source_type`, `tags_any`, `tags_all`, `metadata_equals`, `metadata_exists`, `metadata_prefix`, `limit`, `outputs` |
+| `query:pull-request:get` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `include_reviewers`, `include_commits`, `outputs` |
 | `query:pull-request:feedback` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `cursor`, `outputs` |
 | `query:pull-request:list` | `provider`, `repo` | `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `outputs` |
 | `query:semantic:store-status` | _none beyond envelope_ | `collection_name`, `directory_path`, `outputs` |
@@ -519,13 +520,22 @@ returns `issues` plus `count`, and uses the same directory and metadata filter
 semantics as `query:session:list`. Use `query:ado:work-items` for remote Azure
 DevOps discovery.
 
-`query:pull-request:list`, `query:pull-request:feedback`, and
-`effect:pull-request:update` accept Azure DevOps `provider` as `azure_devops`,
-`azure-devops`, or `ado`. `query:pull-request:feedback` fetches normalized
-feedback for one provider/repo/PR stream and returns `feedback` plus
-`next_cursor`; workflows own where that cursor is stored. For Azure DevOps,
-`project` can be explicit, read from directory provider config, or derived from
-a composite repo slug such as `organization/project/repo`.
+`query:pull-request:get`, `query:pull-request:list`, `query:pull-request:feedback`,
+and `effect:pull-request:update` accept Azure DevOps `provider` as
+`azure_devops`, `azure-devops`, or `ado`. `query:pull-request:get` also accepts
+GitHub `provider` as `github`. It returns normalized pull request metadata and
+does not store cursor or workflow state. For Azure DevOps, `project` can be
+explicit, read from directory provider config, or derived from a composite repo
+slug such as `organization/project/repo`. For `query:pull-request:get`,
+Azure DevOps uses the directory-scoped `azure_devops_organization_url`,
+`azure_devops_project`, and `azure_devops_pr_pat_env` unless `organization_url`
+or `project` is supplied on the node. GitHub uses directory-scoped
+`github_token_env` when configured and can fetch public data without a token.
+Set `include_commits=true` to fetch commit details and `include_reviewers=true`
+to fetch review API data; `include_reviewers=false` returns an empty reviewer
+list. `query:pull-request:feedback` fetches normalized feedback for one
+provider/repo/PR stream and returns `feedback` plus `next_cursor`; workflows own
+where that cursor is stored.
 
 Azure DevOps PR tag filters are applied client-side after the PR list call. The
 `tags` filter accepts tag names with case-insensitive `and`, `or`, `not`, and
@@ -1025,7 +1035,7 @@ environment.
 | Key | Found in | Consumed by |
 |---|---|---|
 | `pr_reply_require_approval` | legacy gateway YAML | `src/agent_sandbox/gateway.py` PR-reply approval gate. |
-| `github_token_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/reviews/request_service.py`, and PR feedback trigger providers. |
+| `github_token_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/reviews/request_service.py`, PR feedback trigger providers, and GitHub PR get query providers. |
 | `azure_devops_pr_pat_env` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/daemons/ado_issue_worker.py`, `src/agent_sandbox/reviews/request_service.py`, and PR feedback/completion trigger providers. |
 | `azure_devops_organization_url` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/daemons/ado_issue_worker.py`, `src/agent_sandbox/issues/service.py`, and PR feedback trigger providers. |
 | `azure_devops_project` | legacy gateway YAML | `src/agent_sandbox/runtime.py`, `src/agent_sandbox/daemons/ado_issue_worker.py`, `src/agent_sandbox/issues/service.py`, and PR feedback trigger providers. |

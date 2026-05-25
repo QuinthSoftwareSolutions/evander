@@ -142,6 +142,7 @@ test("groups trigger node types into domain families", () => {
 test("groups pull request query nodes with git metadata", () => {
   const groups = groupWorkflowNodeCatalogEntries([
     catalogNode("query", "query:pull-request:list", "Pull request list"),
+    catalogNode("query", "query:pull-request:get", "Pull request get"),
     catalogNode("query", "query:git:pr-note", "Git PR note"),
     catalogNode("query", "query:issue:get", "Issue get"),
     catalogNode("query", "query:state:get", "State get"),
@@ -163,7 +164,7 @@ test("groups pull request query nodes with git metadata", () => {
       },
       {
         label: "Git & PRs",
-        types: ["query:git:pr-note", "query:pull-request:list"],
+        types: ["query:git:pr-note", "query:pull-request:get", "query:pull-request:list"],
       },
     ],
   );
