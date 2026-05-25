@@ -797,6 +797,131 @@ def test_load_config_rejects_unknown_communication_target_ref(tmp_path: Path) ->
         )
 
 
+def test_load_config_accepts_read_capable_communication_targets(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    _write_communication_targets(
+        runtime_dir,
+        [
+            {
+                "id": "teams-primary",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team/channel",
+                "policy": {"capabilities": ["read"]},
+            },
+            {
+                "id": "discord-ops",
+                "provider": "discord",
+                "kind": "discord",
+                "address": "123456789012345678",
+                "policy": {"capabilities": ["read"]},
+            },
+        ],
+    )
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "triggers": [
+                    {
+                        "id": "comm-1",
+                        "display_name": "Communication",
+                        "type": "trigger:communication:new-message",
+                        "communication_target_ids": ["teams-primary", "discord-ops"],
+                    }
+                ],
+                "edges": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_trigger_orchestrator_worker_global_config(
+        project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+    )
+
+    trigger = next(trigger for trigger in config.triggers if trigger.id == "comm-1")
+    assert trigger.communication_target_ids == ["teams-primary", "discord-ops"]
+
+
+@pytest.mark.parametrize(
+    ("targets", "error_match"),
+    [
+        (
+            [
+                {
+                    "id": "teams-notify",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team/channel",
+                    "policy": {"capabilities": ["notify"]},
+                }
+            ],
+            "read capability",
+        ),
+        (
+            [
+                {
+                    "id": "email-primary",
+                    "provider": "email",
+                    "kind": "email",
+                    "address": "ops@example.com",
+                    "policy": {"capabilities": ["read"]},
+                }
+            ],
+            "only teams and discord are supported",
+        ),
+        (
+            [
+                {
+                    "id": "teams-user",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "user:operator@example.com",
+                    "policy": {"capabilities": ["read"]},
+                }
+            ],
+            "Teams user target",
+        ),
+    ],
+)
+def test_load_config_rejects_invalid_communication_targets_for_triggers(
+    tmp_path: Path,
+    targets: list[dict[str, object]],
+    error_match: str,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    project_dir = tmp_path
+    _write_communication_targets(runtime_dir, targets)
+    path = _config_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "triggers": [
+                    {
+                        "id": "comm-1",
+                        "display_name": "Communication",
+                        "type": "trigger:communication:new-message",
+                        "communication_target_ids": [targets[0]["id"]],
+                    }
+                ],
+                "edges": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=error_match):
+        load_trigger_orchestrator_worker_global_config(
+            project_dir, base_config=GatewayConfig(runtime_dir=runtime_dir)
+        )
+
+
 def test_load_config_accepts_notification_effect_communication_target_ref(
     tmp_path: Path,
 ) -> None:

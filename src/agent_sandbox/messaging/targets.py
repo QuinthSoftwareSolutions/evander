@@ -16,7 +16,8 @@ from agent_sandbox.directory_config import (
     DirectoryConfigValueSource,
 )
 from agent_sandbox.models import DirectoryInfo
-from agent_sandbox.services import normalize_teams_target
+from agent_sandbox.services import normalize_teams_target, parse_teams_target
+from agent_sandbox.triggers.providers.schemas import CommunicationNewMessageTriggerDefinition
 
 CommunicationTargetProvider = Literal[
     "teams", "discord", "email", "github", "ado", "jira", "linear"
@@ -411,6 +412,43 @@ def known_communication_target_ids(
 ) -> set[str]:
     repository = SqliteCommunicationTargetsRepository(communication_targets_db_path(runtime_dir))
     return repository.list_all_target_ids()
+
+
+def validate_communication_new_message_trigger_targets(
+    trigger: CommunicationNewMessageTriggerDefinition,
+    *,
+    runtime_dir: Path,
+    directory_store: DirectoryStore,
+) -> None:
+    targets = load_communication_targets_config(
+        runtime_dir=runtime_dir,
+        directory_store=directory_store,
+        directory_path=trigger.directory_path or "root",
+    ).by_id()
+    for target_id in trigger.communication_target_ids:
+        target = targets.get(target_id)
+        if target is None:
+            raise ValueError(
+                "trigger:communication:new-message target "
+                f"{target_id!r} is not defined for directory {trigger.directory_path or 'root'!r}"
+            )
+        if target.provider not in {"teams", "discord"}:
+            raise ValueError(
+                "trigger:communication:new-message target "
+                f"{target_id!r} uses provider {target.provider!r}; only teams and discord are supported"
+            )
+        if target.provider == "teams":
+            parsed_target = parse_teams_target(target.address)
+            if parsed_target.kind == "user":
+                raise ValueError(
+                    "trigger:communication:new-message target "
+                    f"{target_id!r} is a Teams user target; only channel and chat targets are supported"
+                )
+        if "read" not in set(target.policy.capabilities):
+            raise ValueError(
+                "trigger:communication:new-message target "
+                f"{target_id!r} does not allow read capability"
+            )
 
 
 def validate_communication_target_refs(

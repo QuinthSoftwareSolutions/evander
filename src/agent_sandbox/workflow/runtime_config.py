@@ -11,8 +11,10 @@ from agent_sandbox.directories import DirectoryStore
 from agent_sandbox.messaging.targets import (
     communication_targets_db_path,
     known_communication_target_ids,
+    validate_communication_new_message_trigger_targets,
     validate_communication_target_refs,
 )
+from agent_sandbox.triggers.providers.schemas import CommunicationNewMessageTriggerDefinition
 from agent_sandbox.workflow.compiler import (
     compile_trigger_orchestrator_config,
     compile_trigger_orchestrator_config_with_diagnostics,
@@ -306,6 +308,29 @@ def _validate_communication_targets(
     validate_communication_target_refs(
         payload=payload, known_target_ids=known_target_ids
     )
+    if base_config is None:
+        return
+
+    directory_store = DirectoryStore(base_config.directories_store_path)
+    triggers = payload.get("triggers")
+    if not isinstance(triggers, list):
+        return
+    for entry in triggers:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("type") or "").strip() != "trigger:communication:new-message":
+            continue
+        trigger_payload = dict(entry)
+        config = trigger_payload.pop("config", None)
+        if isinstance(config, dict):
+            for key, value in config.items():
+                trigger_payload.setdefault(key, value)
+        trigger = CommunicationNewMessageTriggerDefinition.model_validate(trigger_payload)
+        validate_communication_new_message_trigger_targets(
+            trigger,
+            runtime_dir=base_config.runtime_dir,
+            directory_store=directory_store,
+        )
 
 
 class FixedTriggerOrchestratorWorkerGlobalConfigReloader:

@@ -60,6 +60,29 @@ class TriggerProviderBase:
     ) -> None:
         if type(trigger_definition) is WorkflowNodeEnvelope:
             trigger_definition = self.validate_definition(trigger_definition)
+        if getattr(trigger_definition, "type", None) == "trigger:communication:new-message":
+            from agent_sandbox.directories import DirectoryStore
+            from agent_sandbox.messaging.targets import (
+                validate_communication_new_message_trigger_targets,
+            )
+
+            directory_path = str(runtime_context.metadata.get("directory_path") or "root")
+            resolved_config = runtime_context.resolved_config
+            if getattr(resolved_config, "directories_store_path", None) is None:
+                resolver = runtime_context.provider_config_resolver
+                if resolver is None:
+                    raise RuntimeError("TriggerProviderBase has no provider config resolver")
+                resolve_for_directory = getattr(resolver, "resolve_for_directory", None)
+                if not callable(resolve_for_directory):
+                    raise RuntimeError(
+                        "TriggerProviderBase provider config resolver cannot resolve directories"
+                    )
+                resolved_config = resolve_for_directory(directory_path)
+            validate_communication_new_message_trigger_targets(
+                trigger_definition,
+                runtime_dir=resolved_config.runtime_dir,
+                directory_store=DirectoryStore(resolved_config.directories_store_path),
+            )
         self.trigger_definition = trigger_definition
         self.runtime_context = runtime_context
 
