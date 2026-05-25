@@ -6,11 +6,13 @@ from pathlib import Path
 import pytest
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.events.models import materialize_node_definition
 from agent_sandbox.events.provider_models import (
     AdoWorkItemsQueryDefinition,
     AgentArtifactTextQueryDefinition,
     GitPrNoteQueryDefinition,
     IssueGetQueryDefinition,
+    PullRequestGetQueryDefinition,
     PullRequestListQueryDefinition,
     SessionContextQueryDefinition,
     VmRunStateQueryDefinition,
@@ -22,6 +24,7 @@ from agent_sandbox.queries.registry import (
     QueryProviderFactory,
     QueryProviderRegistry,
 )
+from agent_sandbox.workflow.contracts import WorkflowNodeEnvelope
 
 
 class _ResolverStub:
@@ -80,10 +83,31 @@ def test_default_registry_includes_known_query_types() -> None:
         "query:ado:work-items",
         "query:pull-request:list",
         "query:pull-request:feedback",
+        "query:pull-request:get",
         "query:semantic:store-status",
         "query:semantic:search",
         "query:semantic:get",
     }
+
+
+def test_pull_request_get_query_definition_materializes_and_normalizes_provider() -> None:
+    node = WorkflowNodeEnvelope(
+        id="query-pr-get-1",
+        display_name="PR get",
+        type="query:pull-request:get",
+        config={
+            "provider": "ado",
+            "repo": "repo-1",
+            "pr_id": "17",
+        },
+    )
+
+    materialized = materialize_node_definition(node)
+
+    assert isinstance(materialized, PullRequestGetQueryDefinition)
+    assert materialized.provider == "azure_devops"
+    assert materialized.repo == "repo-1"
+    assert materialized.pr_id == "17"
 
 
 def test_factory_initializes_query_provider_with_runtime_context() -> None:
