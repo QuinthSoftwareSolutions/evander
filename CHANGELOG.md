@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - Workflow Editor Inspector Layout
+
+- Moved selected-node declared and derived output contracts below configuration
+  fields so large output lists no longer push configuration down the inspector.
+
 ## 2026-05-25 - Workflow Tutorial Cleanup
 
 - Removed the obsolete workflow editor in-memory first-run walkthrough, its

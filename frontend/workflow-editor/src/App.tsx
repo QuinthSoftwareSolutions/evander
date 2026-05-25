@@ -8427,7 +8427,6 @@ export default function App() {
                     </div>
                   </div>
                 ) : null}
-                {renderSelectedNodeOutputContract()}
                 <button onClick={selectDownstreamBranch} disabled={workflowEditLocked}>
                   Select downstream branch
                 </button>
@@ -8468,6 +8467,8 @@ export default function App() {
                 ) : null}
 
                 {inspectorOutputFields.map((field) => renderField(field))}
+
+                {renderSelectedNodeOutputContract()}
 
                 {selectedNodeHasUnsavedChanges ? (
                   <button className="primary" onClick={resetSelectedNodeChanges} disabled={workflowEditLocked}>
