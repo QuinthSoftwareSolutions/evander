@@ -69,8 +69,6 @@ from agent_sandbox.services import (
     StubDiscordService,
     StubTeamsService,
     TeamsService,
-    effective_teams_channel_targets,
-    normalize_teams_user_target,
 )
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.messaging.teams_auth import (
@@ -242,12 +240,14 @@ class RuntimeContext:
                 _resolve_allowed_teams_channel_targets_for_session(
                     self.session_repository,
                     session_id,
+                    policy_config=self.policy_config,
                 )
             ),
             allowed_user_targets_provider=lambda: (
                 _resolve_allowed_teams_user_targets_for_session(
                     self.session_repository,
                     session_id,
+                    policy_config=self.policy_config,
                 )
             ),
             user_chat_cache=self.teams_user_chat_cache,
@@ -302,6 +302,7 @@ def _build_runtime_context(config: GatewayConfig) -> RuntimeContext:
         teams_messages,
         session_repository,
         directory_path="root",
+        policy_config=policy_config,
         user_chat_cache=teams_user_chat_cache,
     )
 
@@ -489,6 +490,7 @@ def _build_teams_service(
     sessions: SessionManifestRepository,
     *,
     directory_path: str | None = None,
+    policy_config: PolicyConfigResolver | None = None,
     allowed_channel_targets_provider: Callable[[], list[str]] | None = None,
     allowed_user_targets_provider: Callable[[], list[str]] | None = None,
     user_chat_cache: dict[str, str] | None = None,
@@ -523,7 +525,12 @@ def _build_teams_service(
             retry_base_backoff_seconds=config.teams_retry_base_backoff_seconds,
             retry_max_backoff_seconds=config.teams_retry_max_backoff_seconds,
             allowed_channel_targets_provider=allowed_channel_targets_provider
-            or (lambda: _resolve_allowed_teams_channel_targets(sessions)),
+            or (
+                lambda: _resolve_allowed_teams_channel_targets(
+                    sessions,
+                    policy_config=policy_config,
+                )
+            ),
             allowed_user_targets_provider=allowed_user_targets_provider or (lambda: []),
             user_chat_cache=user_chat_cache,
             user_chat_cache_namespace=(
@@ -545,7 +552,12 @@ def _build_teams_service(
             retry_base_backoff_seconds=config.teams_retry_base_backoff_seconds,
             retry_max_backoff_seconds=config.teams_retry_max_backoff_seconds,
             allowed_channel_targets_provider=allowed_channel_targets_provider
-            or (lambda: _resolve_allowed_teams_channel_targets(sessions)),
+            or (
+                lambda: _resolve_allowed_teams_channel_targets(
+                    sessions,
+                    policy_config=policy_config,
+                )
+            ),
             allowed_user_targets_provider=allowed_user_targets_provider or (lambda: []),
             user_chat_cache=user_chat_cache,
             user_chat_cache_namespace=(
@@ -678,6 +690,8 @@ def _resolve_allowed_discord_channel_ids(
 
 def _resolve_allowed_teams_channel_targets(
     session_store: SessionManifestRepository,
+    *,
+    policy_config: PolicyConfigResolver | None = None,
 ) -> list[str]:
     session_store = as_session_manifest_repository(session_store)
     now = datetime.now(UTC)
@@ -685,13 +699,24 @@ def _resolve_allowed_teams_channel_targets(
     for session in session_store.list_active_sessions(now=now):
         if ToolName.TEAMS_GET_MESSAGES not in session.allowed_tools:
             continue
-        targets.update(effective_teams_channel_targets(session, skip_user_targets=True))
+        if policy_config is not None:
+            targets.update(
+                policy_config.resolved_teams_channel_targets_for_session(
+                    session,
+                    capability="read",
+                )
+            )
+        else:
+            targets.update(session.teams_channel_allowlist)
+            targets.update(session.teams_chat_allowlist)
     return sorted(targets)
 
 
 def _resolve_allowed_teams_channel_targets_for_session(
     session_store: SessionManifestRepository,
     session_id: str,
+    *,
+    policy_config: PolicyConfigResolver | None = None,
 ) -> list[str]:
     session_store = as_session_manifest_repository(session_store)
     session = session_store.get_session(session_id)
@@ -701,12 +726,25 @@ def _resolve_allowed_teams_channel_targets_for_session(
         return []
     if ToolName.TEAMS_GET_MESSAGES not in session.allowed_tools:
         return []
-    return sorted(effective_teams_channel_targets(session, skip_user_targets=True))
+    if policy_config is not None:
+        return policy_config.resolved_teams_channel_targets_for_session(
+            session,
+            capability="read",
+        )
+    return sorted(
+        {
+            target.strip()
+            for target in list(session.teams_channel_allowlist) + list(session.teams_chat_allowlist)
+            if target.strip()
+        }
+    )
 
 
 def _resolve_allowed_teams_user_targets_for_session(
     session_store: SessionManifestRepository,
     session_id: str,
+    *,
+    policy_config: PolicyConfigResolver | None = None,
 ) -> list[str]:
     session_store = as_session_manifest_repository(session_store)
     session = session_store.get_session(session_id)
@@ -714,10 +752,9 @@ def _resolve_allowed_teams_user_targets_for_session(
         return []
     if session.expires_at <= datetime.now(UTC):
         return []
-    return sorted(
-        {
-            normalize_teams_user_target(target)
-            for target in session.teams_user_allowlist
-            if target.strip()
-        }
-    )
+    if policy_config is not None:
+        return policy_config.resolved_teams_user_targets_for_session(
+            session,
+            capability="write",
+        )
+    return sorted(target.strip() for target in session.teams_user_allowlist if target.strip())

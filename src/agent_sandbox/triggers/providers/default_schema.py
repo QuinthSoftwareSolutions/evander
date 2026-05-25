@@ -10,6 +10,7 @@ from agent_sandbox.triggers.providers.schemas import (
     AgentRunCompletedTriggerDefinition,
     CronTriggerDefinition,
     EventTriggerDefinition,
+    CommunicationNewMessageTriggerDefinition,
     DiscordNewMessageTriggerDefinition,
     EmailNewMessageTriggerDefinition,
     GitPushTriggerDefinition,
@@ -18,10 +19,12 @@ from agent_sandbox.triggers.providers.schemas import (
     PullRequestNewFeedbackTriggerDefinition,
     ReviewNewRequestTriggerDefinition,
     ScriptRunRequestTriggerDefinition,
+    TeamsDirectMessageTriggerDefinition,
     TeamsNewMessageTriggerDefinition,
     TeamsMeetingNewTranscriptTriggerDefinition,
     TicketChangedTriggerDefinition,
     TicketCreatedTriggerDefinition,
+    WebhookTriggerDefinition,
 )
 from agent_sandbox.schema_bootstrap import _TRIGGER_OUTPUT_SCHEMAS
 from agent_sandbox.workflow.contracts import WorkflowNodeEnvelope, register_node_output_schema
@@ -34,8 +37,11 @@ _TRIGGER_MODEL_BY_TYPE = {
     "trigger:issue:comment-created": IssueCommentCreatedTriggerDefinition,
     "trigger:ado:work-item-matching": AdoWorkItemMatchingTriggerDefinition,
     "trigger:script-run-request": ScriptRunRequestTriggerDefinition,
+    "trigger:communication:new-message": CommunicationNewMessageTriggerDefinition,
+    "trigger:http:webhook": WebhookTriggerDefinition,
     "trigger:discord:new-message": DiscordNewMessageTriggerDefinition,
     "trigger:teams:new-message": TeamsNewMessageTriggerDefinition,
+    "trigger:teams:direct-message": TeamsDirectMessageTriggerDefinition,
     "trigger:teams-meeting:new-transcript": TeamsMeetingNewTranscriptTriggerDefinition,
     "trigger:email:new-message": EmailNewMessageTriggerDefinition,
     "trigger:pull-request:new-feedback": PullRequestNewFeedbackTriggerDefinition,

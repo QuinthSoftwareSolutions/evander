@@ -1253,6 +1253,71 @@ def normalize_teams_chat_targets(value: list[str] | None) -> list[str]:
     )
 
 
+def _normalize_teams_or_target_refs(
+    value: list[str] | None,
+    *,
+    field_name: str,
+    allowed_kind: str | None = None,
+    forbid_user_targets: bool = True,
+) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_target in value or []:
+        text = str(raw_target).strip()
+        if not text:
+            continue
+        try:
+            target = normalize_teams_target(text)
+        except ValueError:
+            target = text
+        else:
+            parsed_target = parse_teams_target(target)
+            if allowed_kind is not None and parsed_target.kind != allowed_kind:
+                if allowed_kind == "chat":
+                    raise ValueError(
+                        f"{field_name} accepts chat targets only; use teams_channel_allowlist "
+                        "for channel targets and teams_user_allowlist for user targets"
+                    )
+                raise ValueError(f"{field_name} accepts {allowed_kind} targets only")
+            if forbid_user_targets and parsed_target.kind == "user":
+                raise ValueError(
+                    f"{field_name} accepts channel/chat targets only; use teams_user_allowlist "
+                    "for user targets"
+                )
+        if target in seen:
+            continue
+        seen.add(target)
+        normalized.append(target)
+    return normalized
+
+
+def normalize_teams_channel_or_target_refs(value: list[str] | None) -> list[str]:
+    return _normalize_teams_or_target_refs(value, field_name="teams_channel_allowlist")
+
+
+def normalize_teams_chat_or_target_refs(value: list[str] | None) -> list[str]:
+    return _normalize_teams_or_target_refs(
+        value,
+        field_name="teams_chat_allowlist",
+        allowed_kind="chat",
+    )
+
+
+def normalize_teams_user_or_target_refs(value: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_target in value or []:
+        text = str(raw_target).strip()
+        if not text:
+            continue
+        target = normalize_teams_user_target(text) if text.startswith("user:") or "@" in text else text
+        if target in seen:
+            continue
+        seen.add(target)
+        normalized.append(target)
+    return normalized
+
+
 def effective_teams_channel_targets(
     session: SessionManifest,
     *,
@@ -1938,6 +2003,45 @@ class GraphTeamsService:
             payload = response.json()
             for message_payload in payload.get("value", []):
                 yield message_payload
+            raw_next_url = payload.get("@odata.nextLink")
+            next_url = str(raw_next_url).strip() if raw_next_url else ""
+            params = None
+
+    def _iter_one_on_one_chats(
+        self,
+        client: httpx.Client,
+        *,
+        budget: _TeamsGraphPaginationBudget | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        if budget is None:
+            budget = self.new_pagination_budget()
+        next_url = f"{self.api_base_url}/me/chats"
+        params: dict[str, Any] | None = {
+            "$filter": "chatType eq 'oneOnOne'",
+            "$top": self.poll_limit,
+        }
+        seen_urls: set[str] = set()
+        while next_url:
+            if not budget.can_request_page():
+                break
+            remaining_seconds = budget.remaining_seconds()
+            if remaining_seconds <= 0:
+                break
+            if next_url in seen_urls:
+                raise RuntimeError("Teams Graph pagination loop detected for one-on-one chats")
+            seen_urls.add(next_url)
+            response = self._request_with_retries(
+                client,
+                "GET",
+                next_url,
+                params=params,
+                timeout_seconds=min(self.timeout_seconds, remaining_seconds),
+            )
+            budget.record_page()
+            payload = response.json()
+            for chat_payload in payload.get("value", []):
+                if isinstance(chat_payload, dict):
+                    yield chat_payload
             raw_next_url = payload.get("@odata.nextLink")
             next_url = str(raw_next_url).strip() if raw_next_url else ""
             params = None

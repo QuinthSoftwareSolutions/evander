@@ -668,6 +668,15 @@ def test_handle_git_push_trigger_resolves_git_push_triggers_from_workflow_packs(
                             "config": {
                                 "path_to_repo": str(repo_path),
                             },
+                        },
+                        {
+                            "id": "git-pack-trigger-disabled",
+                            "display_name": "Disabled Git push",
+                            "type": "trigger:git:push",
+                            "enabled": False,
+                            "config": {
+                                "path_to_repo": str(repo_path),
+                            },
                         }
                     ],
                     "edges": [],

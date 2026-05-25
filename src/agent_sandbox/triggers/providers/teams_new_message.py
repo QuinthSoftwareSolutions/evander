@@ -125,16 +125,21 @@ def _message_channel_target(message: TeamsInboxMessage) -> str:
     )
 
 
-def _message_payload(message: TeamsInboxMessage) -> dict[str, object]:
+def _message_payload(
+    message: TeamsInboxMessage,
+    *,
+    target_type: str | None = None,
+) -> dict[str, object]:
     channel_target = _message_channel_target(message)
     parsed_target = parse_teams_target(channel_target)
+    resolved_target_type = target_type or parsed_target.kind
     created_at = message.created_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
     message_payload: dict[str, object] = {
         "cursor": message.cursor,
         "message_id": message.message_id,
         "channel_target": channel_target,
         "target": channel_target,
-        "target_type": parsed_target.kind,
+        "target_type": resolved_target_type,
         "team_id": message.team_id,
         "channel_id": message.channel_id,
         "chat_id": message.chat_id,
@@ -148,7 +153,7 @@ def _message_payload(message: TeamsInboxMessage) -> dict[str, object]:
     return {
         "channel_target": channel_target,
         "target": channel_target,
-        "target_type": parsed_target.kind,
+        "target_type": resolved_target_type,
         "cursor": message.cursor,
         "message_id": message.message_id,
         "thread_id": message.thread_id,

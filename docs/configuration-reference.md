@@ -107,6 +107,7 @@ For orchestration-only deployments, use `config/trigger-orchestrator/orchestrati
 | `event_queue_store_path` | `config/trigger-orchestrator/config.json` | Legacy JSON trigger queue path used when `orchestration_store_backend` is `json` and as the migration source. |
 | `event_queue_cursor_store_path` | `config/trigger-orchestrator/config.json` | Trigger orchestrator event queue cursor/checkpoint store path. |
 | `workflow_event_journal_path` | `config/trigger-orchestrator/config.json` | Legacy JSONL workflow event journal path used when `orchestration_store_backend` is `json` and as the migration source. |
+| `scheduled_internal_event_store_path` | `config/trigger-orchestrator/config.json` | Durable one-shot scheduled internal event store path used by `effect:event:schedule`. Defaults to `runtime/scheduled-internal-events.json`. |
 | `workflow_packs` | `config/trigger-orchestrator/config.json` | Ordered workflow-pack filenames under `config/workflow-packs/` to compose into executable IR. |
 | `workflow_ir` | `config/trigger-orchestrator/config.json` | Optional inline IR overlay (`version`, `nodes`, `edges`) merged after pack composition. |
 | `workflow_graphs` | `config/trigger-orchestrator/config.json` | Optional editor metadata for connected graphs when using inline/non-pack workflows (`id`, `name`, `description`, `directory_paths`, `user_ids`, `node_ids`). `user_ids` are ownership/audit metadata, not a visibility boundary. Pack-backed workflows store the same metadata as `graphs` inside the pack file. |
@@ -138,12 +139,18 @@ Each trigger entry requires the shared envelope keys:
 - `id` (string, required, unique across all triggers)
 - `display_name` (string, required)
 - `type` (required discriminator)
+- `enabled` (boolean, optional; only `false` disables the trigger)
+
+Disabled triggers remain in the graph for editing, but trigger polling and the legacy ADO/Git
+direct publishers skip them. Events already queued before a trigger is disabled are still processed
+by the effect worker.
 
 Type-specific keys:
 
 | `type` | Required keys | Optional keys |
 |---|---|---|
 | `trigger:event` | `event_type` | `correlation_key` |
+| `trigger:http:webhook` | `slug`, `secret_env` | `event_type` |
 | `trigger:cron` | `expression` | — |
 | `trigger:ticket:created` | `directories` | — |
 | `trigger:ticket:changed` | `directories` | — |
@@ -151,9 +158,12 @@ Type-specific keys:
 | `trigger:ado:work-item-matching` | — | `directory_path`, `project`, `wiql`, `current_iteration`, `team`, `iteration`, `area_path`, `states`, `types`, `tags_any`, `text_search`, `top` |
 | `trigger:script-run-request` | — | — |
 | `trigger:discord:new-message` | `discord_bot_token_env` | `channel_ids`, `user_ids` |
+| `trigger:communication:new-message` | `communication_target_ids` | `directory_path`, `author_ids`, `content_contains`, `case_sensitive` |
+| `trigger:teams:new-message` | `targets` | `user_ids` |
+| `trigger:teams:direct-message` | `sender_user_ids` | `message_filter` |
 | `trigger:email:new-message` | `provider`, `account_identifier`, `mailbox_ids` | `auth_secret_refs` |
-| `trigger:pull-request:new-feedback` | `provider` | `organization_url`, `project` (but `organization_url` becomes required when `provider=ado`) |
-| `trigger:pull-request:completed` | `provider` | `organization_url`, `project` (but `organization_url` becomes required when `provider=ado`) |
+| `trigger:pull-request:new-feedback` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor` |
+| `trigger:pull-request:completed` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor` |
 | `trigger:review:new-request` | — | — |
 | `trigger:git:push` | `path_to_repo` | — |
 
@@ -169,6 +179,13 @@ normalized `pr` object when the tracked PR reaches a terminal state such as merg
 closed, or abandoned. Wire `session_id` into `effect:agent:destroy.session_id` when a workflow
 should delete the agent after the tracked PR is terminal.
 
+For Azure DevOps PR triggers, `repo` is the explicit polling mode switch. When `repo` is set,
+`agent-sandbox-ado-worker` lists candidate PRs with the same criteria surface as
+`query:pull-request:list` and stores trigger-owned cursors under the runtime trigger cursor files.
+When `repo` is omitted, the trigger stays in legacy `runtime/pr-map.json` compatibility mode.
+Explicit-mode events include normalized `pr` plus feedback/completion payloads and do not attach a
+`session_id`; route to sessions with `query:session:list` metadata filters when needed.
+
 `trigger:ado:work-item-matching` uses the same filter/query surface as `query:ado:work-items`
 without writing local issue state. It emits `work_item` on first match and again when the remote
 changed date advances. Use `effect:issue:upsert-ado-proxy` downstream when the workflow should
@@ -181,19 +198,51 @@ The HTTP ingress requires either a bearer token minted by a signed-in Admin Web 
 configured machine token from `AGENT_SANDBOX_WORKFLOW_EVENT_MACHINE_TOKENS`. Machine tokens are
 configured as comma-separated `source-name:token` entries; the matching source name is recorded on
 the published event. Token values must not contain commas or colons. The ingress accepts arbitrary
-JSON-object payloads for workflow-specific data.
+JSON-object payloads for workflow-specific data. Scheduled internal events are first written to
+`scheduled_internal_event_store_path` and then published into the normal internal event store by
+the trigger orchestrator when they become due, so the end-to-end delay is bounded by the trigger
+orchestrator poll interval.
 
-The current trigger set also includes `trigger:teams:new-message`, `trigger:review:new-request`,
-and `trigger:script-run-request`. Teams is fed by a host-side ingest worker that reads the same
-delegated Teams auth settings described above. Review requests are fed from the host-owned
+`trigger:http:webhook` exposes a public `POST /api/workflow-webhooks/{slug}` ingress for a single
+active webhook trigger. The configured `slug` must match `[A-Za-z0-9_.-]+`, be unique across the
+active composed config, and is used as the public path segment. `secret_env` names the host
+environment variable that contains the HMAC secret. `event_type` is optional and defaults to
+`webhook.<slug>`. Requests must include
+`X-Agent-Sandbox-Signature-256: sha256=<hex>` and the signature must be computed over the exact raw
+request body bytes using HMAC-SHA256. The webhook ingress accepts JSON object bodies only. The
+durable event stored for the trigger is `external.<event_type>`, and downstream trigger output is
+the webhook envelope with `slug`, `headers`, `query`, `body`, `received_at`, `remote_addr`, and
+`signature_header`.
+
+Use `gate:filter`, `gate:map`, `gate:deserialize`, and `gate:dedupe` downstream when you need to
+reshape or suppress webhook deliveries after the trigger fires.
+
+The current trigger set also includes `trigger:teams:new-message`,
+`trigger:teams:direct-message`, `trigger:review:new-request`, and `trigger:script-run-request`.
+Teams is fed by a host-side ingest worker that reads the same delegated Teams auth settings
+described above. Review requests are fed from the host-owned
 `runtime/review-request-store.json` inbox populated by `request_pr_review(...)`. Script run
 requests are fed from `runtime/script-run-requests-store.json`, which the `run_script(...)` MCP
 tool appends to after validating that the calling session is allowed to invoke the requested
 script name. The checked-in global workflow currently filters that trigger down to
 `provision_exampleindustry_app_demo_environment.sh`, which wraps the existing host-side Example
 Industry APP Azure provisioning script and resumes the originating session with the JSON result.
-All three flows are independent from the wake workers; Discord inbox waking and scheduled resumes are covered by the dedicated wake workers while
-PR/Discord feedback wakeups.
+
+`trigger:communication:new-message` is a provider-neutral chat trigger over declared
+directory-scoped communication targets. Its `communication_target_ids` list is required and must
+name at least one target from the selected `directory_path` (default `root`); omitted target IDs do
+not subscribe to all targets. Version 1 accepts only Teams channel/chat and Discord channel targets
+with the `read` capability, rejects Teams `user:` targets, and intentionally excludes email. The
+optional `author_ids` list filters by provider-native author/user ID, `content_contains` applies a
+substring filter to message content, and `case_sensitive` defaults to `false`. The trigger reads
+the existing host-owned Teams and Discord inbox stores and emits `provider`,
+`communication_target_id`, `message_id`, `thread_id`, `content`, `author_id`, `author_name`,
+`created_at`, `received_at`, `target`, and a nested `message` object with safe provider metadata;
+communication target `policy.auth_profile_ref` values are not emitted.
+
+These flows are independent from the wake workers. Discord inbox waking and scheduled resumes are
+covered by dedicated wake workers, while Azure DevOps PR feedback and completion pickup live in the
+ADO worker.
 
 Example:
 
@@ -225,6 +274,13 @@ Example:
       "display_name": "Repo push",
       "type": "trigger:git:push",
       "path_to_repo": "/var/lib/git/my-repo.git"
+    },
+    {
+      "id": "deploy-webhook",
+      "display_name": "Deploy webhook",
+      "type": "trigger:http:webhook",
+      "slug": "deploy",
+      "secret_env": "WEBHOOK_SECRET"
     }
   ]
 }
@@ -327,10 +383,13 @@ Type-specific keys:
 | `effect:semantic:ensure-collection` | `collection_name` | `directory_path`, `outputs` |
 | `effect:semantic:upsert` | `collection_name`, `point_id`, `text` | `payload`, `directory_path`, `wait`, `outputs` |
 | `effect:semantic:delete` | `collection_name`, `point_ids` | `directory_path`, `wait`, `outputs` |
+| `effect:state:update` | `namespace`, `key`, `operation` | `value`, `patch`, `expected_version`, `outputs` |
 | `effect:agent:destroy` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `execution_backend`, `directory_path`, `outputs` |
 | `effect:bash:script` | `script_path` | `args`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
+| `effect:http:request` | `url` | `method`, `allowed_url_patterns`, `payload`, `headers`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
+| `effect:event:schedule` | `event_type`, `payload`; exactly one of `run_at`, `delay_seconds` | `correlation_key`, `idempotency_key`, `outputs` |
 | `effect:issue:update-state` | `issue_id`, `state` | `sync_proxy_cache`, `outputs` |
 | `effect:issue:upsert-ado-proxy` | one of `item`, `items` | `directory_path`, `organization_url`, `project`, `repo_source`, `yaml_output_dir`, `outputs` |
 | `effect:pull-request:update` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `title`, `description`, `status`, `add_tags`, `remove_tags`, `expected_statuses`, `outputs` |
@@ -340,11 +399,32 @@ Type-specific keys:
 | `effect:session:renew-if-expired` | one of `target`, `session_id`, `vm_name` | `extend_by`, `directory_path`, `outputs` |
 | `effect:pr:create` | `host_repo_path` | `local_branch`, `origin_branch`, `canonical_origin_url`, `provider`, `base_branch`, `session_id`, `work_item_id`, `title`, `body`, `body_file`, `body_artifact_ids`, `draft`, `fill`, `outputs` |
 
+`effect:http:request` performs a host-side raw HTTP or HTTPS request from the
+effect orchestrator. It supports `GET`, `POST`, and `PUT`; sends `payload` as a
+JSON request body when present; treats non-2xx responses as normal workflow
+outputs by default; and raises on non-2xx only when `check` is true. When
+`check` raises, response outputs are still recorded on the failed run.
+`allowed_url_patterns` defaults to `["*"]` and is checked before the host request
+is opened. Patterns are shell-style globs matched against either the full URL or
+origin when they include a scheme, for example `https://api.example.test/*`, and
+against the host or `host:port` when they do not, for example `*.example.test`.
+This effect does not use the guest HTTP target relay or its destination
+allowlist.
+
 `effect:pr:create` preflights the destination branch before pushing. If the
 destination branch exists and its tip is not contained in the local branch, the
 effect returns `success: false` with `reason: destination_branch_ahead` and does
 not push. Use a downstream `gate:filter` on `success == false` when an agent
 should be prompted to fetch and merge the destination branch.
+
+`effect:event:schedule` stores a one-shot pending scheduled internal event
+instead of publishing immediately. It validates the event type, keeps the
+payload as a JSON object, and uses either an absolute `run_at` timestamp or a
+relative `delay_seconds` value to compute the due time. Duplicate
+`idempotency_key` values reuse the original schedule record unchanged, which
+keeps retries from mutating the first submission. The trigger orchestrator
+publishes due scheduled events during its normal cycle, so delivery latency is
+bounded by its `poll_interval_seconds`.
 
 `effect:agent:prompt` and `effect:agent:enqueue-prompt` have two named outgoing
 ports: `started` emits after the prompt is dispatched, and `completed` emits
@@ -399,6 +479,7 @@ Each query entry uses the same `id`, `display_name`, `type`, and optional
 | `query:semantic:store-status` | _none beyond envelope_ | `collection_name`, `directory_path`, `outputs` |
 | `query:semantic:search` | `collection_name`, `query_text` | `filter`, `limit`, `score_threshold`, `directory_path`, `outputs` |
 | `query:semantic:get` | `collection_name`, `point_ids` | `directory_path`, `outputs` |
+| `query:state:get` | `namespace`, `key` | `outputs` |
 | `query:session-context` | one of `target`, `session_id`, `vm_name` | `outputs` |
 | `query:session:list` | _none beyond envelope_ | `directory_path`, `metadata_equals`, `metadata_exists`, `metadata_prefix`, `state`, `active_only`, `limit`, `outputs` |
 | `query:vm:run-state` | one of `session_id`, `vm_name` | `outputs` |
@@ -434,6 +515,11 @@ include the `write` capability for a top-level message, or the `reply` capabilit
 when `thread_id` is set. Teams targets can address
 `team-id/channel-id`, `chat:<chat-id>`, or a declared one-on-one user as
 `user:<user-id-or-upn>`. Discord targets post to the configured channel.
+
+`trigger:communication:new-message` uses the same communication target store for inbound reads.
+Targets selected for this trigger must include `read`, must be Teams channel/chat or Discord
+channel targets, and are resolved for the trigger's `directory_path` before the provider polls the
+host-owned inbox stores.
 
 `effect:notification:send` delivers through a declared communication target in
 the same directory-scoped SQLite store. The target must include the `notify`
@@ -815,6 +901,24 @@ point IDs; filter-based delete is intentionally not supported. If an existing co
 different dimensions, distance, or named vectors, schema-sensitive operations fail and do not delete
 or recreate anything.
 
+### Workflow state
+
+`effect:state:update` and `query:state:get` persist graph-local workflow state in
+`runtime/workflow-state.json`. Records are scoped by the tuple
+`(directory_path, graph_id, namespace, key)`, so the same namespace/key pair can be reused safely
+in different persisted workflow graphs.
+
+`effect:state:update` supports `set`, `patch`, and `delete`. `set` replaces the stored JSON value
+and starts at version `1` when the record is new. `patch` applies JSON Merge Patch semantics, so
+`null` removes object members. `expected_version` is an optimistic-concurrency guard: when it does
+not match the current version, the write is rejected without mutating the file and the response
+reports the conflict. Missing records compare as version `0`.
+
+`query:state:get` returns `found: false` and `value: null` when no record exists for the current
+scope. Both nodes require persisted workflow graph metadata at runtime. The worker resolves
+`graph_id` from `workflow_graphs` in inline config or `graphs` in workflow packs and does not
+invent fallback graph IDs for state nodes.
+
 ### Retell phone-call keys
 
 | Key | Found in | Consumed by |
@@ -1093,12 +1197,22 @@ overlays can bind a subtree to that host-managed Teams identity, while the legac
 mode remains supported for compatibility through `teams_graph_access_token_env` (default
 `GRAPH_TEAMS_ACCESS_TOKEN`).
 The same delegated Teams identity/configuration is also used by the host-side Teams ingest worker
-that feeds `trigger:teams:new-message` for both channel threads and group chats.
+that feeds `trigger:teams:new-message` for both channel threads and group chats, plus
+`trigger:teams:direct-message` for one-on-one direct messages sent by configured sender user ids.
 
-Session and `effect:agent:create` manifests declare Teams channel targets with
-`teams_channel_allowlist` and Teams chat targets with `teams_chat_allowlist`. One-on-one user
-send targets stay separate in `teams_user_allowlist`; they are not valid for Teams reads,
-reactions, attachment downloads, or ingest polling.
+Session and `effect:agent:create` manifests can use either legacy raw Teams/Discord IDs or
+directory-scoped communication target IDs in their communication allowlists. Declared target IDs are
+resolved at use time from the session directory, take precedence over raw IDs when a value collides,
+and must expose the capability required by the operation: `read` for message reads, inbound
+trigger polling, and attachment list/download; `write` for top-level sends; and `reply` for thread
+replies and reactions. Raw legacy IDs keep the existing allowlist behavior.
+
+Teams channel targets can still be declared directly with `teams_channel_allowlist`, Teams chat
+targets with `teams_chat_allowlist`, and one-on-one user send targets with
+`teams_user_allowlist`. Teams `user:` communication targets are send-only; they are not valid for
+Teams reads, reactions, attachment downloads, or `trigger:teams:new-message` polling.
+Direct-message trigger polling is configured with `sender_user_ids` on
+`trigger:teams:direct-message`.
 
 Key delegated Teams provider settings now include:
 

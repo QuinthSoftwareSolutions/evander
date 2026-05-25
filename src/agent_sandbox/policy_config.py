@@ -15,6 +15,11 @@ from agent_sandbox.directory_config import (
     validate_effective_domain_payload,
 )
 from agent_sandbox.directories import DirectoryService, DirectoryStore
+from agent_sandbox.messaging.targets import (
+    CommunicationTargetCapability,
+    CommunicationTargetDefinition,
+    load_communication_targets_config,
+)
 from agent_sandbox.models import (
     SessionManifest,
     ToolArgumentPolicyRule,
@@ -27,6 +32,11 @@ from agent_sandbox.repositories.session_manifests import (
     JsonSessionManifestRepository,
     SessionManifestRepository,
     as_session_manifest_repository,
+)
+from agent_sandbox.services import (
+    normalize_teams_target,
+    normalize_teams_user_target,
+    parse_teams_target,
 )
 
 logger = logging.getLogger(__name__)
@@ -165,6 +175,111 @@ class PolicyConfigResolver:
         directories = self._active_session_directory_paths()
         return [self.resolve_for_directory(path) for path in sorted(directories)]
 
+    def resolve_communication_target_reference_for_directory(
+        self,
+        directory_path: str | None,
+        reference: str,
+        *,
+        provider: str | None = None,
+        capability: CommunicationTargetCapability | None = None,
+    ) -> CommunicationTargetDefinition | None:
+        normalized_reference = str(reference or "").strip().lower()
+        if not normalized_reference:
+            return None
+        normalized_path = self.directory_scope_resolver.resolve_directory_path(directory_path)
+        target = self._communication_targets_by_id_for_directory(normalized_path).get(
+            normalized_reference
+        )
+        if target is None:
+            return None
+        if provider is not None and target.provider != provider:
+            raise ValueError(
+                f"communication target {target.id!r} uses provider {target.provider!r}, "
+                f"not {provider!r}"
+            )
+        if capability is not None and capability not in set(target.policy.capabilities):
+            raise ValueError(
+                f"communication target {target.id!r} does not allow {capability} capability"
+            )
+        return target
+
+    def resolve_communication_target_reference_for_session(
+        self,
+        session: SessionManifest,
+        reference: str,
+        *,
+        provider: str | None = None,
+        capability: CommunicationTargetCapability | None = None,
+    ) -> CommunicationTargetDefinition | None:
+        directory_path = self.directory_scope_resolver.resolve_session_directory_path(
+            context="communication target",
+            session_id=session.session_id,
+            directory_path=session.directory_path,
+        )
+        return self.resolve_communication_target_reference_for_directory(
+            directory_path,
+            reference,
+            provider=provider,
+            capability=capability,
+        )
+
+    def resolved_discord_channel_ids_for_session(
+        self,
+        session: SessionManifest,
+        *,
+        capability: CommunicationTargetCapability,
+    ) -> list[str]:
+        directory_path = self.directory_scope_resolver.resolve_session_directory_path(
+            context="communication target",
+            session_id=session.session_id,
+            directory_path=session.directory_path,
+        )
+        return self._discord_channel_ids_from_refs(
+            directory_path,
+            session.discord_channel_allowlist,
+            capability=capability,
+            strict_target_capability=False,
+        )
+
+    def resolved_teams_channel_targets_for_session(
+        self,
+        session: SessionManifest,
+        *,
+        capability: CommunicationTargetCapability,
+    ) -> list[str]:
+        directory_path = self.directory_scope_resolver.resolve_session_directory_path(
+            context="communication target",
+            session_id=session.session_id,
+            directory_path=session.directory_path,
+        )
+        refs = list(session.teams_channel_allowlist or []) + list(
+            session.teams_chat_allowlist or []
+        )
+        return self._teams_channel_targets_from_refs(
+            directory_path,
+            refs,
+            capability=capability,
+            strict_target_capability=False,
+        )
+
+    def resolved_teams_user_targets_for_session(
+        self,
+        session: SessionManifest,
+        *,
+        capability: CommunicationTargetCapability,
+    ) -> list[str]:
+        directory_path = self.directory_scope_resolver.resolve_session_directory_path(
+            context="communication target",
+            session_id=session.session_id,
+            directory_path=session.directory_path,
+        )
+        return self._teams_user_targets_from_refs(
+            directory_path,
+            session.teams_user_allowlist,
+            capability=capability,
+            strict_target_capability=False,
+        )
+
     def allowed_discord_channel_ids_for_active_sessions(self) -> list[str]:
         resolved_sessions = self._active_sessions_with_resolved_directory_paths()
         directories = {"root"}
@@ -174,11 +289,20 @@ class PolicyConfigResolver:
         channel_ids: set[str] = set()
         for directory_path in sorted(directories):
             policy = self.resolve_for_directory(directory_path)
-            channel_ids.update(policy.discord_operator_channel_allowlist)
+            channel_ids.update(
+                self._discord_channel_ids_from_refs(
+                    directory_path,
+                    policy.discord_operator_channel_allowlist,
+                    capability="read",
+                    strict_target_capability=False,
+                )
+            )
         for session, _directory_path in resolved_sessions:
             if ToolName.DISCORD_GET_COMMANDS not in session.allowed_tools:
                 continue
-            channel_ids.update(session.discord_channel_allowlist)
+            channel_ids.update(
+                self.resolved_discord_channel_ids_for_session(session, capability="read")
+            )
         return sorted(channel_id.strip() for channel_id in channel_ids if channel_id.strip())
 
     def allowed_discord_channel_ids_for_session_id(self, session_id: str) -> list[str]:
@@ -186,9 +310,23 @@ class PolicyConfigResolver:
         if session is None:
             raise ValueError(f"unknown session: {session_id}")
         policy = self.resolve_for_session_manifest(session)
-        channel_ids = set(policy.discord_operator_channel_allowlist)
+        directory_path = self.directory_scope_resolver.resolve_session_directory_path(
+            context="policy config",
+            session_id=session.session_id,
+            directory_path=session.directory_path,
+        )
+        channel_ids = set(
+            self._discord_channel_ids_from_refs(
+                directory_path,
+                policy.discord_operator_channel_allowlist,
+                capability="read",
+                strict_target_capability=False,
+            )
+        )
         if ToolName.DISCORD_GET_COMMANDS in session.allowed_tools:
-            channel_ids.update(session.discord_channel_allowlist)
+            channel_ids.update(
+                self.resolved_discord_channel_ids_for_session(session, capability="read")
+            )
         return sorted(channel_id.strip() for channel_id in channel_ids if channel_id.strip())
 
     def operator_user_ids_for_active_sessions(self) -> list[str]:
@@ -212,23 +350,48 @@ class PolicyConfigResolver:
     def discord_inbox_routes_for_directory(
         self, directory_path: str | None
     ) -> dict[str, list[str]]:
+        normalized_path = self.directory_scope_resolver.resolve_directory_path(directory_path)
         policy = self.resolve_for_directory(directory_path)
-        return {
-            str(channel_id).strip(): [
-                str(session_id).strip() for session_id in session_ids if str(session_id).strip()
-            ]
-            for channel_id, session_ids in policy.discord_inbox_routes.items()
-            if str(channel_id).strip()
-        }
+        routes: dict[str, list[str]] = {}
+        for channel_id, session_ids in policy.discord_inbox_routes.items():
+            resolved_channel_id = self._discord_channel_id_from_ref(
+                normalized_path,
+                str(channel_id).strip(),
+                capability="read",
+                strict_target_capability=True,
+            )
+            if not resolved_channel_id:
+                continue
+            routes.setdefault(resolved_channel_id, [])
+            for session_id in session_ids:
+                normalized_session_id = str(session_id).strip()
+                if normalized_session_id:
+                    routes[resolved_channel_id].append(normalized_session_id)
+        return routes
 
     def discord_inbox_channel_ids_for_session_id(self, session_id: str) -> list[str]:
         routes = self.resolve_for_session_id(session_id).discord_inbox_routes
-        return sorted(
-            channel_id.strip()
-            for channel_id, target_session_ids in routes.items()
-            if channel_id.strip()
-            and session_id in {str(candidate).strip() for candidate in target_session_ids}
+        session = self.session_store.get_session(session_id)
+        if session is None:
+            raise ValueError(f"unknown session: {session_id}")
+        directory_path = self.directory_scope_resolver.resolve_session_directory_path(
+            context="policy config",
+            session_id=session.session_id,
+            directory_path=session.directory_path,
         )
+        channel_ids: set[str] = set()
+        for channel_id, target_session_ids in routes.items():
+            if session_id not in {str(candidate).strip() for candidate in target_session_ids}:
+                continue
+            resolved_channel_id = self._discord_channel_id_from_ref(
+                directory_path,
+                str(channel_id).strip(),
+                capability="read",
+                strict_target_capability=True,
+            )
+            if resolved_channel_id:
+                channel_ids.add(resolved_channel_id)
+        return sorted(channel_ids)
 
     def _active_session_directory_paths(self) -> list[str]:
         directories = {"root"}
@@ -258,3 +421,198 @@ class PolicyConfigResolver:
                 continue
             resolved_sessions.append((session, normalized_path))
         return resolved_sessions
+
+    def _communication_targets_by_id_for_directory(
+        self, directory_path: str
+    ) -> dict[str, CommunicationTargetDefinition]:
+        return load_communication_targets_config(
+            runtime_dir=self.config.runtime_dir,
+            directory_store=self.directory_store,
+            directory_path=directory_path,
+        ).by_id()
+
+    def _target_for_ref(
+        self,
+        directory_path: str,
+        reference: str,
+        *,
+        provider: str,
+    ) -> CommunicationTargetDefinition | None:
+        target = self._communication_targets_by_id_for_directory(directory_path).get(
+            str(reference or "").strip().lower()
+        )
+        if target is None:
+            return None
+        if target.provider != provider:
+            raise ValueError(
+                f"communication target {target.id!r} uses provider {target.provider!r}, "
+                f"not {provider!r}"
+            )
+        return target
+
+    @staticmethod
+    def _target_has_capability(
+        target: CommunicationTargetDefinition,
+        capability: CommunicationTargetCapability,
+    ) -> bool:
+        return capability in set(target.policy.capabilities)
+
+    def _discord_channel_id_from_ref(
+        self,
+        directory_path: str,
+        reference: str,
+        *,
+        capability: CommunicationTargetCapability,
+        strict_target_capability: bool,
+    ) -> str:
+        normalized = str(reference or "").strip()
+        if not normalized:
+            return ""
+        try:
+            target = self._target_for_ref(directory_path, normalized, provider="discord")
+        except ValueError:
+            if strict_target_capability:
+                raise
+            return ""
+        if target is None:
+            return normalized
+        if not self._target_has_capability(target, capability):
+            if strict_target_capability:
+                raise ValueError(
+                    f"communication target {target.id!r} does not allow {capability} capability"
+                )
+            return ""
+        return _discord_channel_id_from_address(target.address)
+
+    def _discord_channel_ids_from_refs(
+        self,
+        directory_path: str,
+        refs: list[str],
+        *,
+        capability: CommunicationTargetCapability,
+        strict_target_capability: bool,
+    ) -> list[str]:
+        channel_ids = {
+            self._discord_channel_id_from_ref(
+                directory_path,
+                ref,
+                capability=capability,
+                strict_target_capability=strict_target_capability,
+            )
+            for ref in refs
+            if str(ref or "").strip()
+        }
+        return sorted(channel_id for channel_id in channel_ids if channel_id)
+
+    def _teams_channel_target_from_ref(
+        self,
+        directory_path: str,
+        reference: str,
+        *,
+        capability: CommunicationTargetCapability,
+        strict_target_capability: bool,
+    ) -> str:
+        normalized = str(reference or "").strip()
+        if not normalized:
+            return ""
+        try:
+            target = self._target_for_ref(directory_path, normalized, provider="teams")
+        except ValueError:
+            if strict_target_capability:
+                raise
+            return ""
+        if target is not None:
+            if not self._target_has_capability(target, capability):
+                if strict_target_capability:
+                    raise ValueError(
+                        f"communication target {target.id!r} does not allow "
+                        f"{capability} capability"
+                    )
+                return ""
+            target_address = normalize_teams_target(target.address)
+            if parse_teams_target(target_address).kind == "user":
+                return ""
+            return target_address
+        try:
+            target_address = normalize_teams_target(normalized)
+        except ValueError:
+            return ""
+        if parse_teams_target(target_address).kind == "user":
+            return ""
+        return target_address
+
+    def _teams_channel_targets_from_refs(
+        self,
+        directory_path: str,
+        refs: list[str],
+        *,
+        capability: CommunicationTargetCapability,
+        strict_target_capability: bool,
+    ) -> list[str]:
+        targets = {
+            self._teams_channel_target_from_ref(
+                directory_path,
+                ref,
+                capability=capability,
+                strict_target_capability=strict_target_capability,
+            )
+            for ref in refs
+            if str(ref or "").strip()
+        }
+        return sorted(target for target in targets if target)
+
+    def _teams_user_target_from_ref(
+        self,
+        directory_path: str,
+        reference: str,
+        *,
+        capability: CommunicationTargetCapability,
+        strict_target_capability: bool,
+    ) -> str:
+        normalized = str(reference or "").strip()
+        if not normalized:
+            return ""
+        try:
+            target = self._target_for_ref(directory_path, normalized, provider="teams")
+        except ValueError:
+            if strict_target_capability:
+                raise
+            return ""
+        if target is not None:
+            if not self._target_has_capability(target, capability):
+                if strict_target_capability:
+                    raise ValueError(
+                        f"communication target {target.id!r} does not allow "
+                        f"{capability} capability"
+                    )
+                return ""
+            target_address = normalize_teams_target(target.address)
+            return target_address if parse_teams_target(target_address).kind == "user" else ""
+        try:
+            return normalize_teams_user_target(normalized)
+        except ValueError:
+            return ""
+
+    def _teams_user_targets_from_refs(
+        self,
+        directory_path: str,
+        refs: list[str],
+        *,
+        capability: CommunicationTargetCapability,
+        strict_target_capability: bool,
+    ) -> list[str]:
+        targets = {
+            self._teams_user_target_from_ref(
+                directory_path,
+                ref,
+                capability=capability,
+                strict_target_capability=strict_target_capability,
+            )
+            for ref in refs
+            if str(ref or "").strip()
+        }
+        return sorted(target for target in targets if target)
+
+
+def _discord_channel_id_from_address(address: str) -> str:
+    return str(address or "").strip().split("/")[-1].strip()

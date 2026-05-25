@@ -19,6 +19,7 @@ function catalogNode(kind, type, label) {
 test("groups effect node types by related functionality", () => {
   const groups = groupWorkflowNodeCatalogEntries([
     catalogNode("effect", "effect:semantic:upsert", "Semantic upsert"),
+    catalogNode("effect", "effect:state:update", "State update"),
     catalogNode("effect", "effect:agent:prompt", "Agent prompt"),
     catalogNode("effect", "effect:vm:start", "VM start"),
     catalogNode("effect", "effect:agent:exec", "Agent exec"),
@@ -27,6 +28,7 @@ test("groups effect node types by related functionality", () => {
     catalogNode("effect", "effect:issue:update-metadata", "Issue update metadata"),
     catalogNode("effect", "effect:ado:update-work-item", "ADO update work item"),
     catalogNode("effect", "effect:bash:script", "Bash script"),
+    catalogNode("effect", "effect:http:request", "HTTP request"),
     catalogNode("effect", "effect:artifact:publish-artifacts", "Publish artifacts"),
     catalogNode("effect", "effect:communication:send-message", "Send message"),
     catalogNode("effect", "effect:notification:send", "Send notification"),
@@ -51,8 +53,16 @@ test("groups effect node types by related functionality", () => {
         types: ["effect:bash:script"],
       },
       {
+        label: "HTTP",
+        types: ["effect:http:request"],
+      },
+      {
         label: "Semantic store",
         types: ["effect:semantic:upsert"],
+      },
+      {
+        label: "Runtime state",
+        types: ["effect:state:update"],
       },
       {
         label: "Artifacts",
@@ -80,20 +90,52 @@ test("groups effect node types by related functionality", () => {
 
 test("groups trigger node types into domain families", () => {
   const groups = groupWorkflowNodeCatalogEntries([
+    catalogNode("trigger", "trigger:communication:new-message", "Communication message"),
+    catalogNode("trigger", "trigger:discord:new-message", "Discord message"),
     catalogNode("trigger", "trigger:teams:new-message", "Teams message"),
+    catalogNode("trigger", "trigger:teams:direct-message", "Teams direct message"),
+    catalogNode("trigger", "trigger:email:new-message", "Email message"),
     catalogNode("trigger", "trigger:ticket:created", "Ticket created"),
     catalogNode("trigger", "trigger:cron", "Cron"),
     catalogNode("trigger", "trigger:event", "Internal event"),
+    catalogNode("trigger", "trigger:http:webhook", "Webhook"),
     catalogNode("trigger", "trigger:git:push", "Git push"),
   ], "trigger");
 
-  assert.deepEqual(groups.map((group) => group.label), [
-    "Scheduled",
-    "Platform events",
-    "Tickets & reviews",
-    "Communications",
-    "Git",
-  ]);
+  assert.deepEqual(
+    groups.map((group) => ({
+      label: group.label,
+      types: group.entries.map((entry) => entry.type),
+    })),
+    [
+      {
+        label: "Scheduled",
+        types: ["trigger:cron"],
+      },
+      {
+        label: "Platform events",
+        types: ["trigger:event", "trigger:http:webhook"],
+      },
+      {
+        label: "Tickets & reviews",
+        types: ["trigger:ticket:created"],
+      },
+      {
+        label: "Communications",
+        types: [
+          "trigger:communication:new-message",
+          "trigger:discord:new-message",
+          "trigger:email:new-message",
+          "trigger:teams:direct-message",
+          "trigger:teams:new-message",
+        ],
+      },
+      {
+        label: "Git",
+        types: ["trigger:git:push"],
+      },
+    ],
+  );
 });
 
 test("groups pull request query nodes with git metadata", () => {
@@ -101,6 +143,7 @@ test("groups pull request query nodes with git metadata", () => {
     catalogNode("query", "query:pull-request:list", "Pull request list"),
     catalogNode("query", "query:git:pr-note", "Git PR note"),
     catalogNode("query", "query:issue:get", "Issue get"),
+    catalogNode("query", "query:state:get", "State get"),
   ], "query");
 
   assert.deepEqual(
@@ -109,6 +152,10 @@ test("groups pull request query nodes with git metadata", () => {
       types: group.entries.map((entry) => entry.type),
     })),
     [
+      {
+        label: "Runtime state",
+        types: ["query:state:get"],
+      },
       {
         label: "Work tracking",
         types: ["query:issue:get"],
