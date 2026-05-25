@@ -94,6 +94,7 @@ def test_default_registry_includes_known_query_types() -> None:
         "query:ado:work-items",
         "query:pull-request:list",
         "query:pull-request:feedback",
+        "query:communication:messages",
         "query:pull-request:get",
         "query:semantic:store-status",
         "query:semantic:search",

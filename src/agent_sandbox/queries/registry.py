@@ -100,6 +100,7 @@ class QueryProviderFactory:
             session_lookup=self._provider_runtime_ports.session_lookup,
             session_context_reader=self._provider_runtime_ports.session_context_reader,
             session_artifact_reader=self._provider_runtime_ports.session_artifact_reader,
+            admin_service=self._admin_adapter,
             env=self.env,
             secret_resolver=self.secret_resolver,
             metadata=metadata,

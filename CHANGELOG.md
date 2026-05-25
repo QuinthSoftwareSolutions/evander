@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - Communication Messages Query
+
+- Added the `query:communication:messages` workflow query for reading
+  normalized Teams and Discord inbox messages through declared read-capable
+  communication targets.
+- Fixed Discord query pagination so messages that share the same `created_at`
+  timestamp are preserved across limited pages.
+
 ## 2026-05-25 - Pull Request Get Workflow Query
 
 - Added `query:pull-request:get` for normalized provider pull request snapshots,

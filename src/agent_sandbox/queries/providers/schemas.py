@@ -186,6 +186,35 @@ class PullRequestFeedbackQueryDefinition(QueryDefinition):
         return value
 
 
+class CommunicationMessagesQueryDefinition(QueryDefinition):
+    type: Literal["query:communication:messages"]
+    communication_target_id: str
+    limit: ConfigValue | None = None
+    cursor: ConfigValue | None = None
+    before_cursor: ConfigValue | None = None
+    thread_id: ConfigValue | None = None
+    directory_path: ConfigValue | None = None
+
+    @field_validator("communication_target_id", mode="before")
+    @classmethod
+    def normalize_communication_target_id(cls, value: object) -> str:
+        text = str(value or "").strip().lower()
+        if not text:
+            raise ValueError("query:communication:messages requires communication_target_id")
+        return text
+
+    @model_validator(mode="after")
+    def validate_cursor_filters(self) -> "CommunicationMessagesQueryDefinition":
+        if (
+            self.cursor is not None
+            and self.before_cursor is not None
+            and _is_static_config_value(self.cursor)
+            and _is_static_config_value(self.before_cursor)
+        ):
+            raise ValueError("query:communication:messages cursor and before_cursor are mutually exclusive")
+        return self
+
+
 class PullRequestGetQueryDefinition(QueryDefinition):
     type: Literal["query:pull-request:get"]
     provider: ConfigValue
@@ -228,3 +257,7 @@ class SemanticGetQueryDefinition(QueryDefinition):
     collection_name: ConfigValue
     point_ids: ConfigValue
     directory_path: ConfigValue | None = None
+
+
+def _is_static_config_value(value: ConfigValue | None) -> bool:
+    return not (isinstance(value, str) and "${{" in value)
