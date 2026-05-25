@@ -478,6 +478,126 @@ def test_github_query_provider_get_pull_request_honors_optional_flags_and_merges
     assert len(result.raw["reviews"]) == 3
 
 
+def test_github_query_provider_get_pull_request_paginates_optional_collections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[tuple[str, str | None, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(
+            (
+                request.url.path,
+                request.url.params.get("page"),
+                request.url.params.get("per_page"),
+            )
+        )
+        if request.url.path == "/repos/org/repo/pulls/17":
+            return httpx.Response(
+                200,
+                json={
+                    "number": 17,
+                    "title": "Fix race",
+                    "state": "open",
+                    "head": {"ref": "feature/fix-race", "sha": "abc123"},
+                    "base": {"ref": "main", "sha": "def456"},
+                    "user": {"login": "agent-user"},
+                    "requested_reviewers": [
+                        {"login": "reviewer-three"},
+                    ],
+                },
+            )
+
+        page = request.url.params.get("page", "1")
+        assert request.url.params["per_page"] == "100"
+        if request.url.path == "/repos/org/repo/pulls/17/commits":
+            if page == "1":
+                return httpx.Response(
+                    200,
+                    headers={
+                        "Link": (
+                            "<https://api.github.test/repos/org/repo/pulls/17/commits"
+                            "?page=2&per_page=100>; rel=\"next\""
+                        )
+                    },
+                    json=[
+                        {
+                            "sha": "abc123",
+                            "html_url": "https://github.test/org/repo/commit/abc123",
+                            "commit": {"message": "First commit"},
+                        }
+                    ],
+                )
+            if page == "2":
+                return httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "sha": "def456",
+                            "html_url": "https://github.test/org/repo/commit/def456",
+                            "commit": {"message": "Second commit"},
+                        }
+                    ],
+                )
+
+        if request.url.path == "/repos/org/repo/pulls/17/reviews":
+            if page == "1":
+                return httpx.Response(
+                    200,
+                    headers={
+                        "Link": (
+                            "<https://api.github.test/repos/org/repo/pulls/17/reviews"
+                            "?page=2&per_page=100>; rel=\"next\""
+                        )
+                    },
+                    json=[
+                        {
+                            "user": {"login": "reviewer-one"},
+                            "state": "APPROVED",
+                            "submitted_at": "2026-05-01T12:00:00Z",
+                        }
+                    ],
+                )
+            if page == "2":
+                return httpx.Response(
+                    200,
+                    json=[
+                        {
+                            "user": {"login": "reviewer-two"},
+                            "state": "COMMENTED",
+                            "submitted_at": "2026-05-01T13:00:00Z",
+                        }
+                    ],
+                )
+
+        pytest.fail(f"Unexpected request: {request.url}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    provider = GitHubPrQueryProvider(api_base_url="https://api.github.test")
+
+    result = provider.get_pull_request(
+        repo="org/repo",
+        pr_id="17",
+        include_reviewers=True,
+        include_commits=True,
+    )
+
+    assert requests == [
+        ("/repos/org/repo/pulls/17", None, None),
+        ("/repos/org/repo/pulls/17/commits", None, "100"),
+        ("/repos/org/repo/pulls/17/commits", "2", "100"),
+        ("/repos/org/repo/pulls/17/reviews", None, "100"),
+        ("/repos/org/repo/pulls/17/reviews", "2", "100"),
+    ]
+    assert [commit.commit_id for commit in result.commits] == ["abc123", "def456"]
+    assert [reviewer.reviewer_id for reviewer in result.reviewers] == [
+        "reviewer-one",
+        "reviewer-two",
+        "reviewer-three",
+    ]
+    assert [item["sha"] for item in result.raw["commits"]] == ["abc123", "def456"]
+    assert len(result.raw["reviews"]) == 2
+
+
 def test_pr_query_service_rejects_github_listing() -> None:
     provider = GitHubPrQueryProvider(api_base_url="https://api.github.test")
     service = PrQueryService(providers={"github": provider})

@@ -3744,32 +3744,18 @@ class GitHubPrQueryProvider:
 
             commits_payload: list[dict[str, Any]] = []
             if include_commits:
-                commits_response = client.get(
+                commits_payload = self._get_paginated_items(
+                    client,
                     f"{self.api_base_url}/repos/{repo}/pulls/{pr_id}/commits",
-                    headers=self._headers(),
                 )
-                commits_response.raise_for_status()
-                commits_raw = commits_response.json()
-                if isinstance(commits_raw, list):
-                    raw_items = commits_raw
-                elif isinstance(commits_raw, dict):
-                    raw_items = commits_raw.get("value")
-                else:
-                    raw_items = None
-                if isinstance(raw_items, list):
-                    commits_payload = [item for item in raw_items if isinstance(item, dict)]
                 raw_payload["commits"] = commits_payload
 
             review_payload: list[dict[str, Any]] = []
             if include_reviewers:
-                reviews_response = client.get(
+                review_payload = self._get_paginated_items(
+                    client,
                     f"{self.api_base_url}/repos/{repo}/pulls/{pr_id}/reviews",
-                    headers=self._headers(),
                 )
-                reviews_response.raise_for_status()
-                reviews_raw = reviews_response.json()
-                raw_items = reviews_raw if isinstance(reviews_raw, list) else []
-                review_payload = [item for item in raw_items if isinstance(item, dict)]
                 raw_payload["reviews"] = review_payload
 
         return GetPullRequestResponse(
@@ -3790,6 +3776,34 @@ class GitHubPrQueryProvider:
             commits=self._normalize_commits(commits_payload),
             raw=raw_payload,
         )
+
+    def _get_paginated_items(self, client: httpx.Client, url: str) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        next_url: str | None = url
+        params: dict[str, str] | None = {"per_page": "100"}
+        while next_url:
+            response = client.get(next_url, params=params, headers=self._headers())
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, list):
+                raw_items = payload
+            elif isinstance(payload, dict):
+                raw_items = payload.get("value")
+            else:
+                raw_items = []
+            if isinstance(raw_items, list):
+                items.extend(item for item in raw_items if isinstance(item, dict))
+            next_url = self._next_page_url(response)
+            params = None
+        return items
+
+    @staticmethod
+    def _next_page_url(response: httpx.Response) -> str | None:
+        next_link = response.links.get("next")
+        if not isinstance(next_link, dict):
+            return None
+        next_url = str(next_link.get("url") or "").strip()
+        return next_url or None
 
     def _normalize_status(self, payload: dict[str, Any]) -> str | None:
         merged = payload.get("merged")
