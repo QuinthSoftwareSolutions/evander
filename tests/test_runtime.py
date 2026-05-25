@@ -8,6 +8,10 @@ from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.config import GatewayConfig, MailboxConfig
 from agent_sandbox.email.gmail_provider import GmailEmailProvider
 from agent_sandbox.email.providers import MultiMailboxEmailProvider
+from agent_sandbox.messaging.targets import (
+    SqliteCommunicationTargetsRepository,
+    communication_targets_db_path,
+)
 from agent_sandbox.models import SessionManifest, ToolName
 from agent_sandbox.runtime import _resolve_allowed_discord_channel_ids, build_runtime
 from agent_sandbox.services import (
@@ -48,6 +52,18 @@ def write_provider_overlay(
     directory_store.ensure_root()
     config_store = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
     config_store.write(reference, domain="providers", payload=payload)
+
+
+def write_communication_targets(
+    config: GatewayConfig, reference: str, targets: list[dict[str, object]]
+) -> None:
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    directory = DirectoryService(directory_store).show(reference).directory
+    repository = SqliteCommunicationTargetsRepository(
+        communication_targets_db_path(config.runtime_dir)
+    )
+    repository.write_overlay(directory.id, {"targets": targets})
 
 
 def test_build_runtime_uses_stub_discord_backend_by_default(tmp_path: Path) -> None:
@@ -459,6 +475,83 @@ def test_runtime_teams_service_for_session_includes_chat_allowlist_targets(
 
     assert isinstance(teams_service, GraphTeamsService)
     assert teams_service._allowed_channel_targets() == ["chat:chat-1"]
+
+
+def test_runtime_teams_service_for_session_resolves_communication_target_allowlists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "root-token")
+    config = make_config(tmp_path, teams_backend="graph_api")
+    write_communication_targets(
+        config,
+        "root",
+        [
+            {
+                "id": "teams-inbox",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["read", "write"]},
+            },
+            {
+                "id": "teams-operator",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "user:operator@example.com",
+                "policy": {"capabilities": ["write"]},
+            },
+        ],
+    )
+    runtime = build_runtime(config)
+    runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-a",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["teams-inbox"],
+            teams_user_allowlist=["teams-operator"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    teams_service = runtime.teams_service_for_session("session-a")
+
+    assert isinstance(teams_service, GraphTeamsService)
+    assert teams_service._allowed_channel_targets() == ["team-a/channel-1"]
+    assert teams_service._allowed_user_targets() == ["user:operator@example.com"]
+
+
+def test_runtime_teams_service_for_session_skips_target_without_read_capability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "root-token")
+    config = make_config(tmp_path, teams_backend="graph_api")
+    write_communication_targets(
+        config,
+        "root",
+        [
+            {
+                "id": "teams-write-only",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["write"]},
+            }
+        ],
+    )
+    runtime = build_runtime(config)
+    runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-a",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["teams-write-only"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    teams_service = runtime.teams_service_for_session("session-a")
+
+    assert isinstance(teams_service, GraphTeamsService)
+    assert teams_service._allowed_channel_targets() == []
 
 
 def test_runtime_teams_service_for_session_uses_directory_delegated_credentials(

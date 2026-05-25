@@ -7,6 +7,7 @@ import logging
 import os
 import random
 import time
+from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -36,7 +37,11 @@ from agent_sandbox.gate_runtime import (
     GateRuntimeError,
     require_object_payload,
 )
-from agent_sandbox.orchestration.host_polling import HostFileLockManager, HostSleeper
+from agent_sandbox.orchestration.host_polling import (
+    HostFileLockManager,
+    HostWakeSleeper,
+    wake_socket_path_for_lock,
+)
 from agent_sandbox.orchestration.adapters import (
     EffectCompletionPublisherAdapter,
     EffectDependencyResolverAdapter,
@@ -136,6 +141,13 @@ def _store_has_inflight_execution_for_event(store: Any, event_id: str) -> bool:
         if _record_has_pending_completion(record):
             return True
     return False
+
+
+def _outputs_from_exception(exc: BaseException) -> dict[str, Any]:
+    outputs = getattr(exc, "outputs", None)
+    if isinstance(outputs, Mapping):
+        return dict(outputs)
+    return {}
 
 
 class EffectExecutionRecord(BaseModel):
@@ -351,6 +363,7 @@ class EffectOrchestratorWorker:
         self._lifecycle_reconciliation_hooks = resolved_wiring.lifecycle_reconciliation_hooks
         self._completion_dispatch_hooks = resolved_wiring.completion_dispatch_hooks
         self.event_queue.reset_inflight()
+        self._wake_sleeper = HostWakeSleeper(wake_socket_path_for_lock(self.lock_path))
         self._kernel = PollingOrchestratorKernel(
             config=PollingKernelConfig(
                 poll_interval_seconds=self.worker_config.poll_interval_seconds,
@@ -358,9 +371,10 @@ class EffectOrchestratorWorker:
                 lock_path=self.lock_path,
             ),
             lock_manager=HostFileLockManager(),
-            sleeper=HostSleeper(),
+            sleeper=self._wake_sleeper,
             run_cycle=self.run_once,
             get_sleep_seconds=lambda result: result.next_sleep_seconds,
+            on_start=self._wake_sleeper.start,
         )
 
     def run_forever(self) -> None:
@@ -468,6 +482,7 @@ class EffectOrchestratorWorker:
                         store_wiring.workflow_config_snapshot_store
                     )
                     self.queued_agent_prompt_store = store_wiring.queued_agent_prompt_store
+                    self._wake_sleeper.set_path(wake_socket_path_for_lock(self.lock_path))
                     self._kernel.config = PollingKernelConfig(
                         poll_interval_seconds=self.worker_config.poll_interval_seconds,
                         jitter_seconds=self.worker_config.jitter_seconds,
@@ -1612,6 +1627,7 @@ class EffectOrchestratorWorker:
                     self._update_event_delivery_state(record.event_id)
                     continue
             except Exception as exc:  # noqa: BLE001
+                outputs = _outputs_from_exception(exc)
                 logger.exception(
                     "Effect execution failed event_id=%s trace_id=%s effect_id=%s effect_type=%s",
                     record.event_id,
@@ -1621,6 +1637,7 @@ class EffectOrchestratorWorker:
                 )
                 record.status = "failed"
                 record.error = str(exc)
+                record.outputs = outputs
                 record.finished_at = finished_at
                 self.execution_store.record_execution(record)
                 self._update_event_delivery_state(record.event_id)

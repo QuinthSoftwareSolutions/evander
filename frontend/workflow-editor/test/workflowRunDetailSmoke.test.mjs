@@ -477,6 +477,13 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
       }));
       return;
     }
+    if (pathname === "/api/admin/user-preferences/workflow-tutorial-progress") {
+      await route.fulfill(jsonResponse({
+        completed_tutorial_ids: [],
+        skipped_tutorial_ids: [],
+      }));
+      return;
+    }
     if (pathname === "/api/configuration/state") {
       await route.fulfill(jsonResponse({
         directory_scoped_config_enabled: false,
@@ -510,38 +517,6 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
         generated_at: "2026-05-16T12:05:00Z",
         runs: [runSummary],
         node_activity: { "agent-1": { failed: 1 } },
-      }));
-      return;
-    }
-    if (pathname === "/api/workflow-editor/sample-workflow") {
-      await route.fulfill(jsonResponse({
-        active: false,
-        launched_at: null,
-        run: null,
-        detail: null,
-        tutorial_steps: [
-          {
-            step_id: "launch",
-            title: "Launch the sample",
-            body: "Create the guided in-memory run without touching runtime stores.",
-            status: "active",
-            node_id: null,
-          },
-          {
-            step_id: "inspect",
-            title: "Inspect the run",
-            body: "Open the existing inspector and review the simulated graph.",
-            status: "pending",
-            node_id: "sample:first-run:run",
-          },
-        ],
-        current_step: {
-          step_id: "launch",
-          title: "Launch the sample",
-          body: "Create the guided in-memory run without touching runtime stores.",
-          status: "active",
-          node_id: null,
-        },
       }));
       return;
     }

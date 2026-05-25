@@ -114,6 +114,48 @@ def test_semantic_management_outputs_are_bindable() -> None:
     assert diagnostics == []
 
 
+def test_http_request_outputs_are_bindable() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-cron-1",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "*/15 * * * *",
+            }
+        ],
+        "effects": [
+            {
+                "id": "effect-http-1",
+                "display_name": "HTTP request",
+                "type": "effect:http:request",
+                "method": "GET",
+                "url": "https://api.example.test/items/42",
+            },
+            {
+                "id": "effect-prompt-1",
+                "display_name": "Prompt",
+                "type": "effect:agent:prompt",
+                "prompt": (
+                    "HTTP returned ${{effect-http-1.status_code}} and item "
+                    "${{effect-http-1.body_json.id}}"
+                ),
+            },
+        ],
+        "edges": [
+            {"source_id": "trigger-cron-1", "target_id": "effect-http-1"},
+            {"source_id": "effect-http-1", "target_id": "effect-prompt-1"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["effect-http-1"]["status_code"] == {"type": "integer"}
+    assert output_schemas["effect-http-1"]["body_json"] == {"type": "object"}
+    assert diagnostics == []
+
+
 def test_binding_diagnostics_accept_filter_derived_outputs() -> None:
     config = {
         "triggers": [

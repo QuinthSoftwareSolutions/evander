@@ -172,12 +172,18 @@ def test_trigger_orchestrator_run_once_publishes_and_updates_cursor(tmp_path: Pa
         payload={"kind": "tick"},
     )
     worker.provider_factory.build = lambda trigger: _StaticProvider([event])  # type: ignore[assignment]
+    wake_calls: list[str] = []
+    worker._effect_wake_notifier = SimpleNamespace(  # type: ignore[attr-defined]
+        notify=lambda: wake_calls.append("effect") or True
+    )
 
     result = worker.run_once()
 
     assert result.configured_triggers == 1
     assert result.events_discovered == 1
     assert result.events_published == 1
+    assert result.next_sleep_seconds == 0.0
+    assert wake_calls == ["effect"]
 
     queue_payload = json.loads(worker_config.event_queue_store_path.read_text(encoding="utf-8"))
     assert list(queue_payload.keys()) == ["event-1"]
@@ -186,6 +192,94 @@ def test_trigger_orchestrator_run_once_publishes_and_updates_cursor(tmp_path: Pa
         worker_config.event_queue_cursor_store_path.read_text(encoding="utf-8")
     )
     assert cursor_payload["triggers"]["cron-1"]["last_event_id"] == "event-1"
+
+
+def test_trigger_orchestrator_skips_disabled_triggers(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "enabled": False,
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+    build_calls: list[str] = []
+
+    def build_provider(trigger):
+        build_calls.append(trigger.id)
+        return _StaticProvider([])
+
+    worker.provider_factory.build = build_provider  # type: ignore[assignment]
+    wake_calls: list[str] = []
+    worker._effect_wake_notifier = SimpleNamespace(  # type: ignore[attr-defined]
+        notify=lambda: wake_calls.append("effect") or True
+    )
+
+    result = worker.run_once()
+
+    assert result.configured_triggers == 0
+    assert result.events_discovered == 0
+    assert result.events_published == 0
+    assert build_calls == []
+    assert worker.event_queue.list_pending() == []
+    assert wake_calls == []
+
+
+def test_trigger_orchestrator_does_not_wake_effect_worker_for_duplicate_event(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "cron-1",
+                    "display_name": "Every minute",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+        }
+    )
+    worker = TriggerOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    event = TriggerEvent(
+        event_id="event-1",
+        trigger_id="cron-1",
+        trigger_type="trigger:cron",
+        occurred_at=datetime(2026, 4, 3, 12, 0, tzinfo=UTC),
+        payload={"kind": "tick"},
+    )
+    worker.event_queue.publish(event)
+    worker.provider_factory.build = lambda trigger: _StaticProvider([event])  # type: ignore[assignment]
+    wake_calls: list[str] = []
+    worker._effect_wake_notifier = SimpleNamespace(  # type: ignore[attr-defined]
+        notify=lambda: wake_calls.append("effect") or True
+    )
+
+    result = worker.run_once()
+
+    assert result.events_published == 0
+    assert result.next_sleep_seconds == 1
+    assert wake_calls == []
 
 
 def test_trigger_orchestrator_acknowledges_provider_after_queue_publish(

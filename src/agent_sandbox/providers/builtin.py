@@ -25,6 +25,7 @@ from agent_sandbox.effects.providers.chat_assistant import ChatAssistantEnsureSe
 from agent_sandbox.effects.providers.communication_send_message import (
     CommunicationSendMessageEffectProvider,
 )
+from agent_sandbox.effects.providers.http_request import HttpRequestEffectProvider
 from agent_sandbox.effects.providers.git_promote_agent_branch import (
     GitPromoteAgentBranchEffectProvider,
 )
@@ -101,6 +102,7 @@ from agent_sandbox.triggers.providers.pull_request_completed import (
 )
 from agent_sandbox.triggers.providers.review_new_request import ReviewNewRequestTriggerProvider
 from agent_sandbox.triggers.providers.script_run_request import ScriptRunRequestTriggerProvider
+from agent_sandbox.triggers.providers.teams_direct_message import TeamsDirectMessageTriggerProvider
 from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.teams_meeting_new_transcript import (
     TeamsMeetingNewTranscriptTriggerProvider,
@@ -118,12 +120,12 @@ def register_providers() -> dict[str, dict[str, type]]:
             "trigger:ticket:created": TicketCreatedTriggerProvider,
             "trigger:ticket:changed": TicketChangedTriggerProvider,
             "trigger:issue:comment-created": IssueCommentCreatedTriggerProvider,
-            "trigger:issue:new-comment": IssueCommentCreatedTriggerProvider,
             "trigger:ado:work-item-matching": AdoWorkItemMatchingTriggerProvider,
             "trigger:script-run-request": ScriptRunRequestTriggerProvider,
             "trigger:http:webhook": WebhookTriggerProvider,
             "trigger:discord:new-message": DiscordNewMessageTriggerProvider,
             "trigger:teams:new-message": TeamsNewMessageTriggerProvider,
+            "trigger:teams:direct-message": TeamsDirectMessageTriggerProvider,
             "trigger:teams-meeting:new-transcript": TeamsMeetingNewTranscriptTriggerProvider,
             "trigger:email:new-message": EmailNewMessageTriggerProvider,
             "trigger:pull-request:new-feedback": PullRequestNewFeedbackTriggerProvider,
@@ -164,6 +166,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:chat-assistant:ensure-session": ChatAssistantEnsureSessionEffectProvider,
             "effect:agent:exec": AgentExecEffectProvider,
             "effect:bash:script": BashScriptEffectProvider,
+            "effect:http:request": HttpRequestEffectProvider,
             "effect:vm:exec": VmExecEffectProvider,
             "effect:vm:copy-files": VmCopyFilesEffectProvider,
             "effect:vm:delete-files": VmDeleteFilesEffectProvider,

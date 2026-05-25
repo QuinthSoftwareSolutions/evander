@@ -33,6 +33,7 @@ from agent_sandbox.triggers.providers.pull_request_new_feedback import (
 from agent_sandbox.triggers.providers.pull_request_completed import (
     PullRequestCompletedTriggerProvider,
 )
+from agent_sandbox.triggers.providers.teams_direct_message import TeamsDirectMessageTriggerProvider
 from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.ticket_changed import TicketChangedTriggerProvider
 from agent_sandbox.triggers.providers.ticket_created import TicketCreatedTriggerProvider
@@ -169,6 +170,16 @@ def _trigger_adapter() -> _MaterializingTriggerAdapter:
         ),
         (
             {
+                "id": "teams-dm",
+                "display_name": "Teams direct message",
+                "type": "trigger:teams:direct-message",
+                "sender_user_ids": ["user-a"],
+            },
+            "trigger:teams:direct-message",
+            "sender_user_ids",
+        ),
+        (
+            {
                 "id": "pr",
                 "display_name": "PR",
                 "type": "trigger:pull-request:new-feedback",
@@ -277,6 +288,15 @@ def test_conformance_schema_accepts_required_trigger_shapes(
             },
             "targets",
             "trigger:teams:new-message",
+        ),
+        (
+            {
+                "id": "teams-dm-bad",
+                "display_name": "Teams direct message",
+                "type": "trigger:teams:direct-message",
+            },
+            "sender_user_ids",
+            "trigger:teams:direct-message",
         ),
         (
             {
@@ -446,6 +466,23 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
             metadata={"source": "teams_graph_api"},
         )
     )
+    teams_store.add_message_if_new(
+        TeamsInboxMessage(
+            cursor="chat:dm-chat/msg-1",
+            message_id="dm-msg-1",
+            author_id="user-a",
+            author_name="User A",
+            chat_id="dm-chat",
+            content="hello from Teams DM",
+            created_at=now,
+            metadata={
+                "source": "teams_graph_api",
+                "target": "chat:dm-chat",
+                "target_type": "direct_message",
+                "chat_type": "oneOnOne",
+            },
+        )
+    )
 
     pr_feedback_path = runtime_dir / "pr-feedback-store.json"
     pr_feedback_path.write_text(
@@ -538,6 +575,18 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
         ),
         TriggerRuntimeContext(resolved_config=config, env={}),
     )
+    teams_dm = TeamsDirectMessageTriggerProvider()
+    teams_dm.initialize(
+        _trigger_adapter().validate_python(
+            {
+                "id": "teams-dm",
+                "display_name": "Teams direct message",
+                "type": "trigger:teams:direct-message",
+                "sender_user_ids": ["user-a"],
+            }
+        ),
+        TriggerRuntimeContext(resolved_config=config, env={}),
+    )
     pr = PullRequestNewFeedbackTriggerProvider()
     pr.initialize(
         _trigger_adapter().validate_python(
@@ -557,6 +606,7 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
     discord_events = discord.poll()
     email_events = email.poll()
     teams_events = teams.poll()
+    teams_dm_events = teams_dm.poll()
     pr_events = pr.poll()
 
     assert list(ticket_created_events[0].payload.keys()) == ["ticket"]
@@ -565,6 +615,8 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
     assert list(email_events[0].payload.keys()) == ["message"]
     assert teams_events[0].payload["channel_target"] == "team-a/channel-1"
     assert teams_events[0].payload["message"]["message_id"] == "msg-1"
+    assert teams_dm_events[0].payload["target_type"] == "direct_message"
+    assert teams_dm_events[0].payload["message"]["message_id"] == "dm-msg-1"
     assert set(pr_events[0].payload.keys()) == {"pr", "feedback"}
 
     for line in caplog.messages:
@@ -1724,7 +1776,7 @@ def test_conformance_orchestrator_integration_locking_jitter_and_idempotency(
         sleep_calls.append(value)
         raise RuntimeError("stop-loop")
 
-    monkeypatch.setattr("agent_sandbox.daemons.trigger_orchestrator.time.sleep", _fake_sleep)
+    monkeypatch.setattr(worker._kernel._sleeper, "sleep", _fake_sleep)
     monkeypatch.setattr(
         "agent_sandbox.daemons.trigger_orchestrator.random.uniform", lambda _a, _b: 1.25
     )
@@ -1759,6 +1811,7 @@ def test_conformance_traceability_matrix_and_report(
             "schema:trigger:ticket:changed",
             "schema:trigger:discord:new-message",
             "schema:trigger:teams:new-message",
+            "schema:trigger:teams:direct-message",
             "schema:trigger:email:new-message",
             "schema:trigger:pull-request:new-feedback",
             "schema:trigger:pull-request:completed",

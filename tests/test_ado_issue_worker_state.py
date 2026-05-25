@@ -1661,6 +1661,12 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
 
     monkeypatch.setattr(ado_worker, "_load_ado_pr_feedback_triggers", lambda _config: [trigger])
     monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
+    wake_paths: list[Path] = []
+    monkeypatch.setattr(
+        ado_worker,
+        "notify_wake_socket_for_lock",
+        lambda lock_path: wake_paths.append(Path(lock_path)) or True,
+    )
 
     def fake_poll(self, *, client, repo, pr_id, cursor):
         assert repo == "org/repo"
@@ -1694,6 +1700,7 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
         )
 
     assert published == 1
+    assert wake_paths == [worker_config.runtime_dir / "effect-orchestrator.lock"]
     queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
     events = queue.list_pending(trigger_id="trigger-pr-feedback")
     assert len(events) == 1
@@ -2336,6 +2343,15 @@ def test_load_ado_pr_feedback_triggers_resolves_workflow_packs(worker_config: Wo
                             "provider": "ado",
                             "organization_url": "https://dev.azure.com/example-org",
                             "project": "Example Project",
+                        },
+                        {
+                            "id": "trigger-pr-feedback-disabled",
+                            "display_name": "Disabled PR feedback",
+                            "type": "trigger:pull-request:new-feedback",
+                            "provider": "ado",
+                            "organization_url": "https://dev.azure.com/example-org",
+                            "project": "Example Project",
+                            "enabled": False,
                         }
                     ],
                     "edges": [],
@@ -2383,6 +2399,15 @@ def test_load_ado_pr_completed_triggers_resolves_workflow_packs(
                             "provider": "ado",
                             "organization_url": "https://dev.azure.com/example-org",
                             "project": "Example Project",
+                        },
+                        {
+                            "id": "trigger-pr-completed-disabled",
+                            "display_name": "Disabled PR completed",
+                            "type": "trigger:pull-request:completed",
+                            "provider": "ado",
+                            "organization_url": "https://dev.azure.com/example-org",
+                            "project": "Example Project",
+                            "enabled": False,
                         }
                     ],
                     "edges": [],

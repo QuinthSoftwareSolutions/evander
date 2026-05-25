@@ -121,7 +121,7 @@ class TicketChangedTriggerDefinition(TriggerDefinition):
 
 
 class IssueCommentCreatedTriggerDefinition(TriggerDefinition):
-    type: Literal["trigger:issue:comment-created", "trigger:issue:new-comment"]
+    type: Literal["trigger:issue:comment-created"]
     provider: str | None = None
     organization_url: str | None = None
     project: str | None = None
@@ -277,6 +277,17 @@ class TeamsNewMessageTriggerDefinition(TriggerDefinition):
     @field_validator("user_ids", mode="before")
     @classmethod
     def normalize_optional_lists(cls, value: object) -> object:
+        return normalize_string_list(value)
+
+
+class TeamsDirectMessageTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:teams:direct-message"]
+    sender_user_ids: list[str] = Field(min_length=1)
+    message_filter: TeamsMessageFilterDefinition | None = None
+
+    @field_validator("sender_user_ids", mode="before")
+    @classmethod
+    def normalize_sender_user_ids(cls, value: object) -> object:
         return normalize_string_list(value)
 
 

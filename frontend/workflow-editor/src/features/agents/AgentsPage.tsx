@@ -1599,11 +1599,12 @@ export function AgentsPage() {
                     />
                   </label>
                   <label className="field-stack">
-                    <span>Discord channels</span>
+                    <span>Discord channels or targets</span>
                     <textarea
                       rows={4}
                       value={createForm.discordChannels}
                       onChange={(event) => setCreateForm((current) => ({ ...current, discordChannels: event.target.value }))}
+                      placeholder="channel-id or communication-target-id"
                     />
                   </label>
                   <label className="field-stack">
@@ -1749,11 +1750,12 @@ export function AgentsPage() {
                     />
                   </label>
                   <label className="field-stack">
-                    <span>Discord channels</span>
+                    <span>Discord channels or targets</span>
                     <textarea
                       rows={4}
                       value={editForm.discordChannels}
                       onChange={(event) => setEditForm((current) => ({ ...current, discordChannels: event.target.value }))}
+                      placeholder="channel-id or communication-target-id"
                     />
                   </label>
                   <label className="field-stack">
@@ -1762,7 +1764,7 @@ export function AgentsPage() {
                       rows={4}
                       value={editForm.teamsChannels}
                       onChange={(event) => setEditForm((current) => ({ ...current, teamsChannels: event.target.value }))}
-                      placeholder="team-id/channel-id or chat:<chat-id>"
+                      placeholder="communication-target-id, team-id/channel-id, or chat:<chat-id>"
                     />
                   </label>
                   <label className="field-stack">

@@ -199,6 +199,14 @@ class EffectProviderBase:
     capability = NodeCapability(min_inbound=1, max_inbound=1)
 
 
+class EffectProviderExecutionError(RuntimeError):
+    """Provider failure that still has terminal outputs worth recording."""
+
+    def __init__(self, message: str, *, outputs: Mapping[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.outputs = dict(outputs or {})
+
+
 class EffectLifecycleHook(Protocol):
     def on_post_completion_dispatch(self, *, worker: Any) -> int: ...
 

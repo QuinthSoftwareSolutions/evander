@@ -457,10 +457,12 @@ Common editing tasks:
 7. Select a node to open the Inspector.
 8. Review the selected node's **Outputs** section to see declared or derived binding paths, schema
    types, and copyable binding expressions for downstream fields.
-9. Edit node ID, display name, and type-specific fields. Fields can support literal values,
-   bindings, templates, directory selectors, structured lists/maps, JSON, and catalog-backed
-   options. Agent/VM creation tool argument policies use a structured rule-and-constraint editor
-   for common policies, with raw JSON still available for advanced policy maps.
+9. Edit node ID, display name, and type-specific fields. Trigger nodes also expose an enabled
+   toggle; disabled triggers are ghosted on the graph and do not poll for new events. Fields can
+   support literal values, bindings, templates, directory selectors, structured lists/maps, JSON,
+   and catalog-backed options. Agent/VM creation tool argument policies use a structured
+   rule-and-constraint editor for common policies, with raw JSON still available for advanced
+   policy maps.
 10. Review diagnostics on dirty or invalid nodes.
 11. Use **Reset changes** for a selected dirty node when you want to return it to the saved
     version.
@@ -479,22 +481,17 @@ Common runtime inspection tasks:
 1. Use **Tutorials** to open the walkthrough chooser. **First steps** teaches the workflow canvas
    basics in an isolated local tutorial graph; **Skip** marks the tutorial complete for the chooser
    attention state without launching it, and **Restart** can run it again later.
-2. Use **Sample run** when you want the in-memory first-run walkthrough. The sample creates a
-   simulated run with a trigger, agent/tool step, approval boundary, inspectable outputs, and a safe
-   stop without writing runtime files or starting an agent.
-3. Use **Inspect sample** to open the sample in the same run inspector used for real workflow
-   runs, then **Reset sample** to return it to a clean idle state.
-4. Use **Current runs** to inspect active workflow events and node activity.
-5. Enter an event ID, trace ID, session ID, or artifact ID when you need an exact run.
-6. Use **Inspect** to enter inspect mode for the selected run.
-7. In inspect mode, select nodes on the run graph to see node status, duration, started/finished
+2. Use **Current runs** to inspect active workflow events and node activity.
+3. Enter an event ID, trace ID, session ID, or artifact ID when you need an exact run.
+4. Use **Inspect** to enter inspect mode for the selected run.
+5. In inspect mode, select nodes on the run graph to see node status, duration, started/finished
    times, errors, binding errors, links, resolved inputs, outputs, input payload, inputs by source,
    binding trace, and raw records.
-8. Use **Latest runs** search to find recent runs by graph or node scope, including runs without
+6. Use **Latest runs** search to find recent runs by graph or node scope, including runs without
    session links and completed runs when those toggles are enabled.
-9. Use resume, clear/delete, or failure-dismiss controls only when you understand the runtime
+7. Use resume, clear/delete, or failure-dismiss controls only when you understand the runtime
    effect and have privileges unlocked.
-10. Exit inspect mode to return to graph editing.
+8. Exit inspect mode to return to graph editing.
 
 Workflow edits are staged in the browser until **Save workflow** succeeds. Leaving the workflow
 view or changing directory while there are unsaved workflow changes prompts for confirmation.

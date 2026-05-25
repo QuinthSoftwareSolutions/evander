@@ -5,7 +5,6 @@ import hashlib
 import logging
 import os
 import random
-import time
 from uuid import uuid4
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,7 +37,13 @@ from agent_sandbox.workflow.runtime_config import (
     TriggerOrchestratorWorkerGlobalConfigReloader,
     load_trigger_orchestrator_worker_global_config,
 )
-from agent_sandbox.orchestration.host_polling import HostFileLockManager
+from agent_sandbox.workflow.node_state import workflow_node_is_enabled
+from agent_sandbox.orchestration.host_polling import (
+    HostFileLockManager,
+    HostWakeNotifier,
+    HostWakeSleeper,
+    wake_socket_path_for_lock,
+)
 from agent_sandbox.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
 from agent_sandbox.orchestration.wiring import TriggerWorkerWiring, build_trigger_worker_wiring
 from agent_sandbox.orchestration.wiring.trigger import build_trigger_provider_runtime_wiring
@@ -53,11 +58,6 @@ class TriggerOrchestratorCycleResult:
     events_discovered: int
     events_published: int
     next_sleep_seconds: float
-
-
-class _TriggerOrchestratorSleeper:
-    def sleep(self, seconds: float) -> None:
-        time.sleep(seconds)
 
 
 class TriggerOrchestratorWorker:
@@ -100,6 +100,12 @@ class TriggerOrchestratorWorker:
         self.event_queue = resolved_wiring.event_queue
         self.provider_factory = resolved_wiring.provider_factory
         self.cursor_repository: GateCursorRepository = resolved_wiring.gate_cursor_repository
+        self._wake_sleeper = HostWakeSleeper(
+            wake_socket_path_for_lock(self.worker_config.lock_path)
+        )
+        self._effect_wake_notifier = HostWakeNotifier(
+            wake_socket_path_for_lock(self.worker_config.effect_lock_path)
+        )
         self._kernel = PollingOrchestratorKernel(
             config=PollingKernelConfig(
                 poll_interval_seconds=self.worker_config.poll_interval_seconds,
@@ -107,9 +113,10 @@ class TriggerOrchestratorWorker:
                 lock_path=self.worker_config.lock_path,
             ),
             lock_manager=HostFileLockManager(),
-            sleeper=_TriggerOrchestratorSleeper(),
+            sleeper=self._wake_sleeper,
             run_cycle=self.run_once,
             get_sleep_seconds=lambda result: result.next_sleep_seconds,
+            on_start=self._wake_sleeper.start,
         )
 
     def run_forever(self) -> None:
@@ -153,6 +160,9 @@ class TriggerOrchestratorWorker:
                     len(latest_config.triggers),
                 )
                 self.event_queue = _build_trigger_event_queue(self.worker_config)
+                self._effect_wake_notifier = HostWakeNotifier(
+                    wake_socket_path_for_lock(self.worker_config.effect_lock_path)
+                )
 
         configured_triggers = self._configured_triggers(active_config)
         providers = self._load_configured_providers(active_config, configured_triggers)
@@ -220,6 +230,7 @@ class TriggerOrchestratorWorker:
                     event.event_id,
                     trace_id,
                 )
+                self._effect_wake_notifier.notify()
                 return {"published": True}
             return None
 
@@ -230,7 +241,8 @@ class TriggerOrchestratorWorker:
         events_published = loop_result.executions_recorded
 
         sleep_config = previous_config if config_changed else latest_config
-        next_sleep_seconds = _compute_next_sleep_seconds(
+        next_sleep_seconds = _compute_trigger_cycle_sleep_seconds(
+            events_published=events_published,
             poll_interval_seconds=sleep_config.poll_interval_seconds,
             jitter_seconds=sleep_config.jitter_seconds,
         )
@@ -244,7 +256,11 @@ class TriggerOrchestratorWorker:
     def _configured_triggers(
         self, worker_config: TriggerOrchestratorWorkerGlobalConfig
     ) -> list[TriggerDefinitionDiscriminated]:
-        return [trigger for trigger in worker_config.triggers if not _is_system_trigger(trigger)]
+        return [
+            trigger
+            for trigger in worker_config.triggers
+            if not _is_system_trigger(trigger) and workflow_node_is_enabled(trigger)
+        ]
 
     def _load_configured_providers(
         self,
@@ -407,6 +423,20 @@ def _compute_next_sleep_seconds(*, poll_interval_seconds: float, jitter_seconds:
     if jitter_seconds > 0:
         delay += random.uniform(0.0, jitter_seconds)
     return max(0.0, delay)
+
+
+def _compute_trigger_cycle_sleep_seconds(
+    *,
+    events_published: int,
+    poll_interval_seconds: float,
+    jitter_seconds: float,
+) -> float:
+    if events_published > 0:
+        return 0.0
+    return _compute_next_sleep_seconds(
+        poll_interval_seconds=poll_interval_seconds,
+        jitter_seconds=jitter_seconds,
+    )
 
 
 def _compute_backoff_sleep_seconds(*, poll_interval_seconds: float, jitter_seconds: float) -> float:

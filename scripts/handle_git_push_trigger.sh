@@ -60,8 +60,10 @@ from pathlib import Path
 import fcntl
 
 from agent_sandbox.events.models import TriggerEvent
+from agent_sandbox.orchestration.host_polling import HostWakeNotifier, wake_socket_path_for_lock
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
 from agent_sandbox.triggers.providers.git_push import build_git_push_payloads, git_push_trigger_matches_repo
+from agent_sandbox.workflow.node_state import workflow_node_is_enabled
 from agent_sandbox.workflow.packs import compose_workflow_ir
 
 def _resolve_repo(path_text: str) -> Path:
@@ -124,6 +126,15 @@ def _resolve_orchestration_store_path(
     if store_path:
         return _resolve_config_path(store_path, config_path=config_path, project_dir=project_dir)
     return runtime_dir / "orchestration.db"
+
+
+def _resolve_effect_lock_path(
+    config: dict, *, runtime_dir: Path, config_path: Path, project_dir: Path
+) -> Path:
+    lock_path = config.get("effect_lock_path")
+    if lock_path:
+        return _resolve_config_path(lock_path, config_path=config_path, project_dir=project_dir)
+    return runtime_dir / "effect-orchestrator.lock"
 
 
 def _uses_sqlite_queue(config: dict) -> bool:
@@ -195,14 +206,20 @@ def _build_trigger_events(
     return events
 
 
-def _publish_sqlite_events(database_path: Path, events: list[TriggerEvent]) -> None:
+def _publish_sqlite_events(database_path: Path, events: list[TriggerEvent]) -> int:
     queue = SqliteTriggerEventQueue(database_path)
+    published = 0
     for event in events:
-        queue.publish(event)
+        already_queued = queue.contains(event.event_id)
+        record = queue.publish(event)
+        if not already_queued and record.event_id == event.event_id:
+            published += 1
+    return published
 
 
-def _publish_json_events(queue_store_path: Path, events: list[TriggerEvent]) -> None:
+def _publish_json_events(queue_store_path: Path, events: list[TriggerEvent]) -> int:
     queue_store_path.parent.mkdir(parents=True, exist_ok=True)
+    published = 0
     with _locked_queue(queue_store_path):
         hold_seconds = float(os.environ.get("AGENT_SANDBOX_TRIGGER_QUEUE_LOCK_HOLD_SECONDS", "0") or "0")
         if hold_seconds > 0:
@@ -220,6 +237,7 @@ def _publish_json_events(queue_store_path: Path, events: list[TriggerEvent]) -> 
         for event in events:
             if event.event_id in queue_payload:
                 continue
+            published += 1
             queue_payload[event.event_id] = {
                 "event_id": event.event_id,
                 "trigger_id": event.trigger_id,
@@ -246,6 +264,11 @@ def _publish_json_events(queue_store_path: Path, events: list[TriggerEvent]) -> 
                 os.unlink(temp_path)
             except FileNotFoundError:
                 pass
+    return published
+
+
+def _notify_effect_worker(effect_lock_path: Path) -> None:
+    HostWakeNotifier(wake_socket_path_for_lock(effect_lock_path)).notify()
 
 
 def main() -> int:
@@ -266,6 +289,9 @@ def main() -> int:
     orchestration_store_path = _resolve_orchestration_store_path(
         config, runtime_dir=runtime_dir, config_path=config_path, project_dir=project_dir
     )
+    effect_lock_path = _resolve_effect_lock_path(
+        config, runtime_dir=runtime_dir, config_path=config_path, project_dir=project_dir
+    )
 
     triggers = _resolve_git_push_triggers(config=config, project_dir=project_dir)
 
@@ -273,6 +299,7 @@ def main() -> int:
         trigger
         for trigger in triggers
         if isinstance(trigger, dict)
+        and workflow_node_is_enabled(trigger)
         and str(trigger.get("type", "")).strip() == "trigger:git:push"
         and str(trigger.get("id", "")).strip()
         and git_push_trigger_matches_repo(trigger, str(repo_path))
@@ -286,9 +313,11 @@ def main() -> int:
         git_push_triggers=git_push_triggers,
     )
     if _uses_sqlite_queue(config):
-        _publish_sqlite_events(orchestration_store_path, events)
+        published = _publish_sqlite_events(orchestration_store_path, events)
     else:
-        _publish_json_events(queue_store_path, events)
+        published = _publish_json_events(queue_store_path, events)
+    if published > 0:
+        _notify_effect_worker(effect_lock_path)
 
     return 0
 

@@ -19,6 +19,73 @@ material. Newer entries are added incrementally as changes land.
 - Added an operator-facing signed request example and noted that webhook
   deliveries should be reshaped downstream with the standard gate nodes.
 
+## 2026-05-25 - Container Worker Browser Env
+
+- Exported `CHROME_BIN` and `CHROMIUM_BIN` from Playwright-enabled
+  `container_worker_vm` sessions so Karma-style browser test launchers can use
+  the seeded Chromium binary mounted from the worker cache.
+
+## 2026-05-25 - Workflow Trigger Disable Toggle
+
+- Added an `enabled: false` workflow trigger state that skips trigger polling and
+  the legacy ADO/Git direct publishers while preserving already queued work.
+- Added a Workflow editor trigger toggle and ghosted disabled-trigger styling.
+
+## 2026-05-25 - Teams Direct Message Trigger
+
+- Added `trigger:teams:direct-message` for allowlisted one-on-one Microsoft
+  Teams direct messages to the delegated Teams identity, backed by host-side
+  Teams ingest polling.
+- Documented the Teams direct-message trigger and updated example Truman packs
+  with a separate direct-message prompt path.
+- Fixed Teams direct-message ingest so enabled triggers poll on cold start
+  without active sessions, disabled triggers are ignored, and one-on-one chats
+  already allowlisted for normal Teams reads still publish DM trigger events.
+
+## 2026-05-25 - Workflow HTTP Request Effect
+
+- Added the host-side `effect:http:request` workflow effect with Pydantic
+  schema, runtime provider, registry wiring, and admin/workflow editor
+  exposure.
+- Returned request metadata and response outputs including status, headers,
+  body text, parsed JSON when available, content type, and elapsed time.
+- Kept the effect JSON-body-only, disabled redirects by default, and preserved
+  the default non-2xx success semantics unless `check` is enabled.
+- Added per-effect `allowed_url_patterns` URL allowlist enforcement, defaulting
+  to `["*"]`, and preserved response outputs when checked non-2xx responses fail
+  the run.
+
+## 2026-05-25 - Workflow Editor Inspector Layout
+
+- Moved selected-node declared and derived output contracts below configuration
+  fields so large output lists no longer push configuration down the inspector.
+- Fixed the Configuration communications Teams channel lookup card so it uses
+  dark-mode surfaces, labels, disabled controls, and result rows.
+- Clarified that communication targets are provider-generic and the Teams channel
+  lookup is only an optional helper.
+- Allowed session Teams/Discord communication allowlists, inbound polling routes,
+  and guest messaging tools to use directory-scoped communication target IDs while
+  preserving raw legacy IDs and enforcing target capabilities per operation.
+
+## 2026-05-25 - Workflow Tutorial Cleanup
+
+- Removed the obsolete workflow editor in-memory first-run walkthrough, its
+  sidebar controls, and its Admin Web API routes now that Tutorials owns the
+  onboarding flow.
+- Moved Admin Web users to `runtime/admin-web.db` with one-time legacy JSON
+  import, and stored workflow tutorial completion/skipped state as an
+  account-scoped preference instead of browser-local state.
+- Marked the workflow editor first-steps tutorial complete when an operator
+  exits or resets from the final step, while preserving the explicit skip path.
+- Removed the obsolete duplicate issue-comment workflow trigger alias from the
+  runtime, node catalogue, documentation, and tests.
+- Added internal wake sockets for trigger/effect orchestration so host-owned
+  trigger ingress and direct queue publishers can hot-drain without waiting for
+  the next poll interval.
+- Woke await-agent completion drains through the trigger worker's configured
+  effect lock path, so custom workflow runtime directories still hot-drain
+  effect work.
+
 ## 2026-05-24 - Container Worker Manifest Persistence Fix
 
 - Delayed workflow container-agent session manifest persistence until worker
@@ -69,8 +136,8 @@ material. Newer entries are added incrementally as changes land.
   calls so browser request timing is not the only rate-control layer.
 - Remapped generated draft output schemas when imported node ids collide with
   existing workflow nodes.
-- Kept the guided sample controls visible while inspecting a sample run so the
-  first-run walkthrough can reset and complete from inspect mode.
+- Kept the first-run walkthrough controls visible while inspecting a walkthrough
+  run so onboarding can reset and complete from inspect mode.
 
 ## 2026-05-23 - Retry-Safe Workflow Completion Publication
 
@@ -138,9 +205,9 @@ material. Newer entries are added incrementally as changes land.
 
 ## 2026-05-22 - Unobtrusive Workflow Tutorial
 
-- Collapsed the workflow editor guided sample into a small tutorial launcher by
-  default, with a skip/mark-complete path that removes the first-run highlight
-  without launching the sample.
+- Collapsed the workflow editor first-run walkthrough into a small tutorial
+  launcher by default, with a skip/mark-complete path that removes the first-run
+  highlight without launching the walkthrough.
 
 ## 2026-05-22 - Explicit Agent Resume Threads
 

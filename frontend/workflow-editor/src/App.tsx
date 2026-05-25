@@ -54,8 +54,6 @@ import {
   type WorkflowRunToolCallLink,
   type WorkflowRunSnapshot,
   type WorkflowRunSummary,
-  type WorkflowSampleState,
-  type WorkflowSampleTutorialStep,
   type WorkflowValidationDiagnostic,
 } from "./types";
 import { ApiError } from "./features/admin/api";
@@ -102,6 +100,10 @@ import {
   workflowCommunicationTargetInspectorState,
 } from "./workflowCommunicationTargets";
 import {
+  workflowTriggerEnabled,
+  workflowTriggerEnabledValue,
+} from "./workflowTriggerState";
+import {
   toolArgumentPolicyDraftRowsFromValue,
   toolArgumentPolicyDraftRowsToValue,
   type ToolArgumentPolicyConstraintDraftRow,
@@ -140,6 +142,7 @@ type GraphNodeData = {
   diagnosticCount: number;
   hasDiagnostics: boolean;
   hasUnsavedChanges: boolean;
+  isDisabled: boolean;
   isInspectGhost?: boolean;
   pendingConnectionRole?: PendingConnectionRole | null;
   tutorialHighlight?: boolean;
@@ -326,9 +329,9 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "trigger:ticket:created": "Start when a tracked ticket is created.",
   "trigger:ticket:changed": "Start when a tracked ticket changes state or metadata.",
   "trigger:issue:comment-created": "Start when a tracked issue receives a new comment.",
-  "trigger:issue:new-comment": "Start when a tracked issue receives a new comment.",
   "trigger:discord:new-message": "Start from new Discord messages that match the configured filters.",
   "trigger:teams:new-message": "Start from new Microsoft Teams messages that match the configured targets.",
+  "trigger:teams:direct-message": "Start from allowlisted one-on-one Microsoft Teams direct messages.",
   "trigger:email:new-message": "Start from newly ingested email messages for the configured mailbox scope.",
   "trigger:pull-request:new-feedback": "Start when new pull-request feedback arrives from the configured provider.",
   "trigger:pull-request:completed": "Start when a tracked pull request reaches a terminal state.",
@@ -350,6 +353,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:semantic:ensure-collection": "Ensure a semantic collection exists with the configured vector schema.",
   "effect:semantic:upsert": "Embed one text string and upsert it as one semantic point.",
   "effect:semantic:delete": "Delete semantic points by explicit point IDs.",
+  "effect:http:request": "Perform a host-side raw HTTP GET, POST, or PUT request with URL allowlist control.",
   "effect:vm:create": "Create a VM for the workflow.",
   "effect:vm:clone-repo": "Clone a repository into a target VM.",
   "effect:vm:bootstrap-python": "Bootstrap a Python checkout and environment in a VM.",
@@ -394,7 +398,7 @@ const NODE_STATUS_ORDER = [
   "skipped",
 ] as const;
 const WORKFLOW_SIDEBAR_WIDTH_STORAGE_KEY = "workflow-editor:sidebar-width";
-const WORKFLOW_TUTORIAL_PROGRESS_STORAGE_KEY = "workflow-editor:tutorial-progress:v1";
+const WORKFLOW_TUTORIAL_PROGRESS_API_PATH = "/api/admin/user-preferences/workflow-tutorial-progress";
 const WORKFLOW_SIDEBAR_DEFAULT_WIDTH = 320;
 const WORKFLOW_SIDEBAR_MIN_WIDTH = 320;
 const WORKFLOW_SIDEBAR_MAX_WIDTH = 760;
@@ -442,24 +446,16 @@ function normalizeWorkflowTutorialProgress(value: unknown): WorkflowTutorialProg
     return { completedTutorialIds: [], skippedTutorialIds: [] };
   }
   return {
-    completedTutorialIds: workflowTutorialProgressIds(value.completedTutorialIds),
-    skippedTutorialIds: workflowTutorialProgressIds(value.skippedTutorialIds),
+    completedTutorialIds: workflowTutorialProgressIds(value.completedTutorialIds ?? value.completed_tutorial_ids),
+    skippedTutorialIds: workflowTutorialProgressIds(value.skippedTutorialIds ?? value.skipped_tutorial_ids),
   };
 }
 
-function readStoredWorkflowTutorialProgress(): WorkflowTutorialProgress {
-  if (typeof window === "undefined") {
-    return { completedTutorialIds: [], skippedTutorialIds: [] };
-  }
-  const raw = window.localStorage.getItem(WORKFLOW_TUTORIAL_PROGRESS_STORAGE_KEY);
-  if (!raw) {
-    return { completedTutorialIds: [], skippedTutorialIds: [] };
-  }
-  try {
-    return normalizeWorkflowTutorialProgress(JSON.parse(raw));
-  } catch {
-    return { completedTutorialIds: [], skippedTutorialIds: [] };
-  }
+function workflowTutorialProgressApiPayload(progress: WorkflowTutorialProgress): Record<string, string[]> {
+  return {
+    completed_tutorial_ids: progress.completedTutorialIds,
+    skipped_tutorial_ids: progress.skippedTutorialIds,
+  };
 }
 
 function readStoredWorkflowSidebarWidth(): number {
@@ -509,7 +505,7 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
         nodeData.dominantStatus ? ` runtime-${nodeData.dominantStatus}` : ""
       }${nodeData.hasDiagnostics ? " invalid" : ""}${
         nodeData.pendingConnectionRole ? ` connection-${nodeData.pendingConnectionRole}` : ""
-      }${nodeData.hasUnsavedChanges ? " unsaved" : ""}${nodeData.isInspectGhost ? " inspect-ghost" : ""}${
+      }${nodeData.hasUnsavedChanges ? " unsaved" : ""}${nodeData.isDisabled ? " trigger-disabled" : ""}${nodeData.isInspectGhost ? " inspect-ghost" : ""}${
         nodeData.tutorialHighlight ? ` tutorial-highlight tutorial-highlight-${nodeData.tutorialHighlightMode ?? "pulse"}` : ""
       }${nodeData.tutorialBlocked ? " tutorial-blocked" : ""}`}
     >
@@ -538,6 +534,13 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
               <Tooltip content="Unsaved changes">
                 <div className="node-unsaved-badge" aria-label="Unsaved changes">
                   Unsaved changes
+                </div>
+              </Tooltip>
+            ) : null}
+            {nodeData.isDisabled ? (
+              <Tooltip content="Trigger disabled">
+                <div className="node-disabled-badge" aria-label="Trigger disabled">
+                  Disabled
                 </div>
               </Tooltip>
             ) : null}
@@ -850,6 +853,7 @@ function buildNodes(
         diagnosticCount,
         hasDiagnostics: diagnosticCount > 0,
         hasUnsavedChanges: dirtyNodeIds.has(node.id),
+        isDisabled: kind === "trigger" && !workflowTriggerEnabled(node),
         isInspectGhost: ghostNodeIds.has(node.id),
       },
     };
@@ -1439,7 +1443,7 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   if (kind === "trigger" && type === "trigger:ticket:changed") {
     return { id, display_name: "Ticket changed", type, directories: ["root"] };
   }
-  if (kind === "trigger" && (type === "trigger:issue:comment-created" || type === "trigger:issue:new-comment")) {
+  if (kind === "trigger" && type === "trigger:issue:comment-created") {
     return {
       id,
       display_name: "Issue comment",
@@ -1465,6 +1469,15 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       type,
       targets: [],
       user_ids: [],
+    };
+  }
+  if (kind === "trigger" && type === "trigger:teams:direct-message") {
+    return {
+      id,
+      display_name: "Teams direct message",
+      type,
+      sender_user_ids: [],
+      message_filter: null,
     };
   }
   if (kind === "trigger" && type === "trigger:email:new-message") {
@@ -1573,6 +1586,17 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       type,
       collection_name: "agent_memory",
       point_ids: [SEMANTIC_SAMPLE_POINT_ID],
+    };
+  }
+  if (kind === "effect" && type === "effect:http:request") {
+    return {
+      id,
+      display_name: "HTTP request",
+      type,
+      method: "GET",
+      url: "https://api.example.test/items",
+      allowed_url_patterns: ["*"],
+      check: false,
     };
   }
   if (kind === "effect" && type === "effect:vm:create") {
@@ -2961,35 +2985,6 @@ function renderToolArgumentPolicyErrorMessages(messages: string[]) {
   );
 }
 
-function workflowSampleStepStatusClass(status: string): string {
-  return status.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-") || "unknown";
-}
-
-function workflowSampleStepLabel(step: WorkflowSampleTutorialStep, index: number): string {
-  return step.title.trim() || step.step_id.trim() || `Step ${index + 1}`;
-}
-
-function workflowSampleStepBody(step: WorkflowSampleTutorialStep): string {
-  return step.body.trim();
-}
-
-function workflowSampleStepStatus(
-  step: WorkflowSampleTutorialStep,
-  index: number,
-  currentStepId: string | null,
-  currentStepIndex: number,
-): string {
-  if (step.status.trim()) return step.status.trim();
-  if (!currentStepId) return index === 0 ? "active" : "pending";
-  if (step.step_id === currentStepId) return "active";
-  if (currentStepIndex >= 0) return index < currentStepIndex ? "completed" : "pending";
-  return index === 0 ? "active" : "pending";
-}
-
-function workflowSampleStepKey(step: WorkflowSampleTutorialStep, index: number): string {
-  return step.step_id.trim() || `step-${index}`;
-}
-
 export default function App() {
   const { privilegedUnlocked, selectedDirectoryPath, directoryTree, setWorkflowHasUnsavedChanges } = useAdminUi();
   const initialWorkflowRunLookup = workflowRunLookupFromHash();
@@ -3014,14 +3009,9 @@ export default function App() {
   const [workflowGeneratorModel, setWorkflowGeneratorModel] = useState<string | null>(null);
   const [workflowGeneratorReadyDescription, setWorkflowGeneratorReadyDescription] = useState<string | null>(null);
   const [runSnapshot, setRunSnapshot] = useState<WorkflowRunSnapshot | null>(null);
-  const [sampleWorkflow, setSampleWorkflow] = useState<WorkflowSampleState | null>(null);
-  const [sampleWorkflowLoading, setSampleWorkflowLoading] = useState(true);
-  const [sampleWorkflowError, setSampleWorkflowError] = useState<string | null>(null);
-  const [sampleWorkflowAction, setSampleWorkflowAction] = useState<"launch" | "reset" | null>(null);
-  const [sampleWorkflowPanelOpen, setSampleWorkflowPanelOpen] = useState(false);
   const [workflowTutorialChooserOpen, setWorkflowTutorialChooserOpen] = useState(false);
   const [workflowTutorialProgress, setWorkflowTutorialProgress] = useState<WorkflowTutorialProgress>(
-    () => readStoredWorkflowTutorialProgress(),
+    () => ({ completedTutorialIds: [], skippedTutorialIds: [] }),
   );
   const [activeWorkflowTutorial, setActiveWorkflowTutorial] = useState<WorkflowTutorialSession | null>(null);
   const [workflowTutorialHint, setWorkflowTutorialHint] = useState<string | null>(null);
@@ -3393,9 +3383,20 @@ export default function App() {
   }, [sidebarWidth]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(WORKFLOW_TUTORIAL_PROGRESS_STORAGE_KEY, JSON.stringify(workflowTutorialProgress));
-  }, [workflowTutorialProgress]);
+    let cancelled = false;
+    fetchJson<unknown>(WORKFLOW_TUTORIAL_PROGRESS_API_PATH)
+      .then((payload) => {
+        if (cancelled) return;
+        setWorkflowTutorialProgress(normalizeWorkflowTutorialProgress(payload));
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        setError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -3539,28 +3540,6 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    setSampleWorkflowLoading(true);
-    fetchJson<WorkflowSampleState>("/api/workflow-editor/sample-workflow")
-      .then((payload) => {
-        if (cancelled) return;
-        setSampleWorkflow(payload);
-        setSampleWorkflowError(null);
-      })
-      .catch((reason: unknown) => {
-        if (cancelled) return;
-        setSampleWorkflowError(reason instanceof Error ? reason.message : String(reason));
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setSampleWorkflowLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const documentLoaded = document !== null;
 
   useEffect(() => {
@@ -3644,44 +3623,6 @@ export default function App() {
         delete next[normalizedEventId];
         return next;
       });
-    }
-  }
-
-  async function launchWorkflowSample() {
-    if (sampleWorkflowAction !== null) return;
-    setSampleWorkflowAction("launch");
-    setSampleWorkflowError(null);
-    try {
-      const payload = await fetchJson<WorkflowSampleState>("/api/workflow-editor/sample-workflow/launch", {
-        method: "POST",
-      });
-      setSampleWorkflow(payload);
-    } catch (reason: unknown) {
-      setSampleWorkflowError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setSampleWorkflowAction(null);
-    }
-  }
-
-  async function resetWorkflowSample() {
-    if (sampleWorkflowAction !== null) return;
-    const inspectedSampleEventId = sampleWorkflow?.detail?.event_id ?? sampleWorkflow?.run?.event_id ?? null;
-    setSampleWorkflowAction("reset");
-    setSampleWorkflowError(null);
-    try {
-      const payload = await fetchJson<WorkflowSampleState>("/api/workflow-editor/sample-workflow", {
-        method: "DELETE",
-      });
-      setSampleWorkflow(payload);
-      if (inspectedSampleEventId && runDetail?.event_id === inspectedSampleEventId) {
-        exitInspectMode();
-        setRunDetailLookup("");
-        setRunDetailError(null);
-      }
-    } catch (reason: unknown) {
-      setSampleWorkflowError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setSampleWorkflowAction(null);
     }
   }
 
@@ -3854,20 +3795,40 @@ export default function App() {
     );
   }
 
+  async function saveWorkflowTutorialProgress(nextProgress: WorkflowTutorialProgress) {
+    try {
+      const payload = await fetchJson<unknown>(WORKFLOW_TUTORIAL_PROGRESS_API_PATH, {
+        method: "PUT",
+        body: JSON.stringify(workflowTutorialProgressApiPayload(nextProgress)),
+      });
+      setWorkflowTutorialProgress(normalizeWorkflowTutorialProgress(payload));
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  function workflowTutorialProgressWithStatus(
+    current: WorkflowTutorialProgress,
+    tutorialId: string,
+    status: "completed" | "skipped" | null,
+  ): WorkflowTutorialProgress {
+    const completedTutorialIds = current.completedTutorialIds.filter((id) => id !== tutorialId);
+    const skippedTutorialIds = current.skippedTutorialIds.filter((id) => id !== tutorialId);
+    if (status === "completed") {
+      completedTutorialIds.push(tutorialId);
+    } else if (status === "skipped") {
+      skippedTutorialIds.push(tutorialId);
+    }
+    return { completedTutorialIds, skippedTutorialIds };
+  }
+
   function updateWorkflowTutorialProgressStatus(
     tutorialId: string,
     status: "completed" | "skipped" | null,
   ) {
-    setWorkflowTutorialProgress((current) => {
-      const completedTutorialIds = current.completedTutorialIds.filter((id) => id !== tutorialId);
-      const skippedTutorialIds = current.skippedTutorialIds.filter((id) => id !== tutorialId);
-      if (status === "completed") {
-        completedTutorialIds.push(tutorialId);
-      } else if (status === "skipped") {
-        skippedTutorialIds.push(tutorialId);
-      }
-      return { completedTutorialIds, skippedTutorialIds };
-    });
+    const nextProgress = workflowTutorialProgressWithStatus(workflowTutorialProgress, tutorialId, status);
+    setWorkflowTutorialProgress(nextProgress);
+    void saveWorkflowTutorialProgress(nextProgress);
   }
 
   function clearWorkflowTutorialProgressStatus(tutorialId: string) {
@@ -3934,7 +3895,7 @@ export default function App() {
     updateWorkflowTutorialProgressStatus(definition.id, "skipped");
     setWorkflowTutorialChooserOpen(false);
     if (activeWorkflowTutorial?.tutorialId === definition.id) {
-      exitWorkflowTutorial();
+      exitWorkflowTutorial({ markCompleted: false });
     }
   }
 
@@ -3959,16 +3920,37 @@ export default function App() {
     }
   }
 
+  function workflowTutorialIsAtFinalStep(tutorial: WorkflowTutorialSession | null): boolean {
+    if (!tutorial) return false;
+    const definition = workflowTutorialDefinitionById(tutorial.tutorialId);
+    if (!definition) return false;
+    return tutorial.stepIndex >= definition.steps.length - 1;
+  }
+
+  function markActiveWorkflowTutorialCompletedIfFinished() {
+    if (!activeWorkflowTutorial || !workflowTutorialIsAtFinalStep(activeWorkflowTutorial)) return;
+    updateWorkflowTutorialProgressStatus(activeWorkflowTutorial.tutorialId, "completed");
+  }
+
   function advanceWorkflowTutorial() {
-    const currentTutorialId = activeWorkflowTutorial?.tutorialId ?? null;
-    let reachedFinalStep = false;
+    const currentTutorial = activeWorkflowTutorial;
+    const currentDefinition = currentTutorial ? workflowTutorialDefinitionById(currentTutorial.tutorialId) : null;
+    const currentNextStepIndex = currentTutorial && currentDefinition
+      ? Math.min(currentTutorial.stepIndex + 1, currentDefinition.steps.length - 1)
+      : null;
+    const reachedFinalStep = Boolean(
+      currentTutorial &&
+      currentDefinition &&
+      currentNextStepIndex !== null &&
+      currentNextStepIndex !== currentTutorial.stepIndex &&
+      currentNextStepIndex === currentDefinition.steps.length - 1,
+    );
     setActiveWorkflowTutorial((current) => {
       if (!current) return current;
       const definition = workflowTutorialDefinitionById(current.tutorialId);
       if (!definition) return current;
       const nextStepIndex = Math.min(current.stepIndex + 1, definition.steps.length - 1);
       if (nextStepIndex === current.stepIndex) return current;
-      reachedFinalStep = nextStepIndex === definition.steps.length - 1;
       hasAutoFitRef.current = false;
       setWorkflowTutorialHint(null);
       return {
@@ -3976,12 +3958,13 @@ export default function App() {
         stepIndex: nextStepIndex,
       };
     });
-    if (reachedFinalStep && currentTutorialId) {
-      updateWorkflowTutorialProgressStatus(currentTutorialId, "completed");
+    if (reachedFinalStep && currentTutorial) {
+      updateWorkflowTutorialProgressStatus(currentTutorial.tutorialId, "completed");
     }
   }
 
   function resetWorkflowTutorial() {
+    markActiveWorkflowTutorialCompletedIfFinished();
     setActiveWorkflowTutorial((current) => {
       if (!current) return current;
       const definition = workflowTutorialDefinitionById(current.tutorialId);
@@ -3998,7 +3981,10 @@ export default function App() {
     setSnapGuides([]);
   }
 
-  function exitWorkflowTutorial() {
+  function exitWorkflowTutorial(options: { markCompleted?: boolean } = {}) {
+    if (options.markCompleted !== false) {
+      markActiveWorkflowTutorialCompletedIfFinished();
+    }
     const snapshot = tutorialSnapshotRef.current;
     setActiveWorkflowTutorial(null);
     setWorkflowTutorialHint(null);
@@ -4386,6 +4372,9 @@ export default function App() {
 
     const { id: _id, display_name: _displayName, type: _type, ...extras } = nextNode;
     const knownFieldKeys = new Set((nextCatalogEntry?.fields ?? []).map((field) => field.key));
+    if (nextNode.type.startsWith("trigger:")) {
+      knownFieldKeys.add("enabled");
+    }
     const nextKnownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => knownFieldKeys.has(key)));
     const nextUnknownValues = Object.fromEntries(Object.entries(extras).filter(([key]) => !knownFieldKeys.has(key)));
     const nextJsonDrafts: Record<string, string> = {};
@@ -5387,6 +5376,9 @@ export default function App() {
     }
 
     const nextKnownValues = { ...draft.knownValues };
+    if (selectedNode.type.startsWith("trigger:") && nextKnownValues.enabled !== false) {
+      delete nextKnownValues.enabled;
+    }
     if (hasCollapsedTargetUi) {
       const activeTargetKey = activeEffectTargetKey(nextKnownValues);
       for (const key of EFFECT_TARGET_KEYS) {
@@ -5772,6 +5764,16 @@ export default function App() {
     }
   }
 
+  function updateSelectedTriggerEnabled(nextEnabled: boolean) {
+    if (!selectedNode || !selectedNode.type.startsWith("trigger:")) return;
+    const next = { ...inspectorKnownValues, enabled: workflowTriggerEnabledValue(nextEnabled) };
+    if (next.enabled === undefined) {
+      delete next.enabled;
+    }
+    setInspectorKnownValues(next);
+    stageInspectorDraft({ knownValues: next });
+  }
+
   function updateKnownField(key: string, value: unknown) {
     const next = { ...inspectorKnownValues, [key]: value };
     let nextJsonDrafts = inspectorJsonDrafts;
@@ -6106,6 +6108,27 @@ export default function App() {
             <span className="workflow-field-tooltip-icon" aria-hidden="true">i</span>
           </Tooltip>
         ) : null}
+      </div>
+    );
+  }
+
+  function renderSelectedTriggerToggle() {
+    if (!selectedNode || !selectedNode.type.startsWith("trigger:")) return null;
+    const enabled = inspectorKnownValues.enabled === undefined
+      ? workflowTriggerEnabled(selectedNode)
+      : inspectorKnownValues.enabled !== false;
+    return (
+      <div className="trigger-enable-control">
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(event) => updateSelectedTriggerEnabled(event.target.checked)}
+            disabled={workflowEditLocked}
+            aria-label="Trigger enabled"
+          />
+          <span>{enabled ? "Trigger enabled" : "Trigger disabled"}</span>
+        </label>
       </div>
     );
   }
@@ -7713,13 +7736,7 @@ export default function App() {
     );
   }
 
-  function renderWorkflowSamplePanel() {
-    const tutorialSteps = sampleWorkflow?.tutorial_steps ?? [];
-    const currentStepId = sampleWorkflow?.current_step?.step_id ?? null;
-    const currentStepIndex = currentStepId ? tutorialSteps.findIndex((step) => step.step_id === currentStepId) : -1;
-    const sampleRun = sampleWorkflow?.run ?? null;
-    const sampleEventId = sampleWorkflow?.detail?.event_id ?? sampleRun?.event_id ?? null;
-    const isBusy = sampleWorkflowLoading || sampleWorkflowAction !== null;
+  function renderWorkflowTutorialLauncher() {
     const tutorialLauncherHasAttention = hasUnfinishedUnskippedTutorials;
     const tutorialLauncherStatusLabel = tutorialLauncherHasAttention
       ? `${unfinishedUnskippedTutorialCount} available`
@@ -7727,122 +7744,21 @@ export default function App() {
     const tutorialLauncherAriaLabel = tutorialLauncherHasAttention
       ? `Open tutorials chooser, ${unfinishedUnskippedTutorialCount} tutorial${unfinishedUnskippedTutorialCount === 1 ? "" : "s"} available`
       : "Open tutorials chooser, all tutorials completed or skipped";
-    if (!sampleWorkflowPanelOpen) {
-      return (
-        <div className="guided-sample-launcher">
-          <button
-            type="button"
-            className={`guided-sample-launcher-button${tutorialLauncherHasAttention ? " needs-attention" : " is-complete"}`}
-            aria-haspopup="dialog"
-            aria-expanded={workflowTutorialChooserOpen}
-            aria-label={tutorialLauncherAriaLabel}
-            onClick={() => {
-              setWorkflowTutorialChooserOpen(true);
-            }}
-          >
-            <span>Tutorials</span>
-            <span className="guided-sample-launcher-status">{tutorialLauncherStatusLabel}</span>
-          </button>
-          <button
-            type="button"
-            className="subtle-button"
-            onClick={() => {
-              setWorkflowTutorialChooserOpen(false);
-              setSampleWorkflowPanelOpen(true);
-            }}
-          >
-            Sample run
-          </button>
-        </div>
-      );
-    }
     return (
-      <div className="sidebar-section guided-sample-section">
-        <div className="guided-sample-header">
-          <div>
-            <div className="section-label">Sample run</div>
-            <h2>In-memory walkthrough</h2>
-            <p>Launch an in-memory run, inspect the simulated graph, and reset it without touching runtime stores.</p>
-          </div>
-          <div className="guided-sample-header-actions">
-            <span className={`sample-state-pill state-${sampleWorkflow?.active ? "active" : "idle"}`}>
-              {sampleWorkflowLoading ? "Loading" : sampleWorkflow?.active ? "Active" : "Idle"}
-            </span>
-            <button type="button" className="subtle-button guided-sample-hide-button" onClick={() => setSampleWorkflowPanelOpen(false)}>
-              Hide
-            </button>
-          </div>
-        </div>
-        {sampleWorkflowError ? <div className="runtime-run-error">{sampleWorkflowError}</div> : null}
-        <div className="guided-sample-actions">
-          <button type="button" className="primary" onClick={() => void launchWorkflowSample()} disabled={isBusy}>
-            {sampleWorkflowAction === "launch" ? "Launching..." : "Launch sample"}
-          </button>
-          <button type="button" className="subtle-button" onClick={() => void resetWorkflowSample()} disabled={isBusy}>
-            {sampleWorkflowAction === "reset" ? "Resetting..." : "Reset sample"}
-          </button>
-        </div>
-        {sampleWorkflow?.current_step ? (
-          <div className="guided-sample-current-step">
-            <div className="section-label">Current step</div>
-            <strong>{sampleWorkflow.current_step.title}</strong>
-            <p>{sampleWorkflow.current_step.body}</p>
-          </div>
-        ) : null}
-        <div className="guided-sample-steps" aria-label="Sample tutorial steps">
-          {tutorialSteps.map((step, index) => {
-            const status = workflowSampleStepStatus(step, index, currentStepId, currentStepIndex);
-            const isCurrent = step.step_id === currentStepId;
-            return (
-              <div
-                key={workflowSampleStepKey(step, index)}
-                className={`guided-sample-step status-${workflowSampleStepStatusClass(status)}${isCurrent ? " is-current" : ""}`}
-              >
-                <div className="guided-sample-step-heading">
-                  <strong>{workflowSampleStepLabel(step, index)}</strong>
-                  <span>{status}</span>
-                </div>
-                <p>{workflowSampleStepBody(step)}</p>
-                {step.node_id ? <div className="guided-sample-step-node">Node {step.node_id}</div> : null}
-              </div>
-            );
-          })}
-        </div>
-        {sampleWorkflowLoading && tutorialSteps.length === 0 ? (
-          <p className="runtime-summary">Loading sample state...</p>
-        ) : null}
-        {sampleWorkflowError ? null : sampleRun ? (
-          <div className="runtime-run-card guided-sample-run-card">
-            <div className="runtime-run-header">
-              <div className="runtime-run-event">{sampleRun.event_id}</div>
-              <div
-                className={`runtime-run-state state-${sampleRun.run_state === "errored" ? "failed" : sampleRun.delivery_state ?? "active"}`}
-              >
-                {sampleRun.run_state === "errored" ? "errored" : sampleRun.delivery_state ?? "active"}
-              </div>
-            </div>
-            <div className="runtime-run-meta">Launched {formatRuntimeTimestamp(sampleWorkflow?.launched_at)}</div>
-            <div className="runtime-run-meta">Trace {sampleRun.trace_id ?? "missing"}</div>
-            <div className="runtime-run-meta">
-              {sampleWorkflow?.current_step ? `Current step ${sampleWorkflow.current_step.title}` : "Current step missing"}
-            </div>
-            {sampleWorkflow?.detail?.error ? <div className="runtime-run-error">{sampleWorkflow.detail.error}</div> : null}
-            <div className="runtime-run-actions">
-              <button
-                type="button"
-                className="subtle-button"
-                onClick={() => inspectWorkflowRun(sampleEventId ?? "")}
-                disabled={runDetailLoading || !sampleEventId || workflowEditLocked}
-              >
-                Inspect sample
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="callout warning-callout guided-sample-empty">
-            Idle sample. Launch it to create the in-memory walkthrough.
-          </div>
-        )}
+      <div className="workflow-tutorial-launcher">
+        <button
+          type="button"
+          className={`workflow-tutorial-launcher-button${tutorialLauncherHasAttention ? " needs-attention" : " is-complete"}`}
+          aria-haspopup="dialog"
+          aria-expanded={workflowTutorialChooserOpen}
+          aria-label={tutorialLauncherAriaLabel}
+          onClick={() => {
+            setWorkflowTutorialChooserOpen(true);
+          }}
+        >
+          <span>Tutorials</span>
+          <span className="workflow-tutorial-launcher-status">{tutorialLauncherStatusLabel}</span>
+        </button>
       </div>
     );
   }
@@ -8141,6 +8057,7 @@ export default function App() {
                     </div>
                   ) : null}
                   <button onClick={selectDownstreamBranch}>Select downstream branch</button>
+                  {renderSelectedTriggerToggle()}
                   <label className="inspector-label">
                     <span>Node id</span>
                     <input
@@ -8188,7 +8105,7 @@ export default function App() {
             </>
           ) : isInspectMode ? (
             <>
-              {renderWorkflowSamplePanel()}
+              {renderWorkflowTutorialLauncher()}
               {renderInspectedRunPanel()}
               {renderInspectedNodePanel()}
               {runDetailError ? <div className="runtime-run-error">{runDetailError}</div> : null}
@@ -8196,7 +8113,7 @@ export default function App() {
             </>
           ) : (
             <>
-              {renderWorkflowSamplePanel()}
+              {renderWorkflowTutorialLauncher()}
               {editLocked ? <div className="callout warning-callout workflow-lock-callout">Unlock privileged operations to modify workflow state or clear runtime runs.</div> : null}
 
               <div className="workflow-generator-launcher">
@@ -8594,10 +8511,10 @@ export default function App() {
                     </div>
                   </div>
                 ) : null}
-                {renderSelectedNodeOutputContract()}
                 <button onClick={selectDownstreamBranch} disabled={workflowEditLocked}>
                   Select downstream branch
                 </button>
+                {renderSelectedTriggerToggle()}
                 <label className="inspector-label">
                   <span>Node id</span>
                   <input
@@ -8635,6 +8552,8 @@ export default function App() {
                 ) : null}
 
                 {inspectorOutputFields.map((field) => renderField(field))}
+
+                {renderSelectedNodeOutputContract()}
 
                 {selectedNodeHasUnsavedChanges ? (
                   <button className="primary" onClick={resetSelectedNodeChanges} disabled={workflowEditLocked}>
@@ -8772,7 +8691,7 @@ export default function App() {
                     <button type="button" className="subtle-button" onClick={resetWorkflowTutorial}>
                       Reset
                     </button>
-                    <button type="button" className="subtle-button" onClick={exitWorkflowTutorial}>
+                    <button type="button" className="subtle-button" onClick={() => exitWorkflowTutorial()}>
                       Exit
                     </button>
                   </div>
