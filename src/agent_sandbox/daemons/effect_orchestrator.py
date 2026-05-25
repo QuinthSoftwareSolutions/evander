@@ -4,15 +4,17 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
 import random
 import time
+from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,7 +23,12 @@ from agent_sandbox.config import (
     OrchestrationCoreConfig,
     TriggerOrchestratorWorkerGlobalConfig,
 )
-from agent_sandbox.events.internal import InternalEventBus, InternalEventSource
+from agent_sandbox.events.internal import (
+    InternalEventBus,
+    InternalEventSource,
+    validate_internal_event_type,
+)
+from agent_sandbox.events.scheduled import ScheduledInternalEventStore
 from agent_sandbox.events.models import (
     EffectDefinitionDiscriminated,
     GateDefinitionDiscriminated,
@@ -70,6 +77,10 @@ from agent_sandbox.workflow.graph import (
     compute_downstream_depth,
     index_declared_outputs,
     would_form_cycle,
+)
+from agent_sandbox.workflow.graph_metadata import (
+    ResolvedWorkflowGraphMetadata,
+    resolve_workflow_graph_metadata,
 )
 from agent_sandbox.workflow.engine.node_executors import (
     NodeExecutorRegistry,
@@ -120,6 +131,8 @@ WorkflowNodeDefinition = (
     | EffectDefinitionDiscriminated
     | QueryDefinitionDiscriminated
 )
+_ScheduledInternalEventStoreGetter = Callable[[], ScheduledInternalEventStore]
+_ScheduledInternalEventStoreCache = tuple[Path, ScheduledInternalEventStore] | None
 
 
 def _record_has_pending_completion(record: Any) -> bool:
@@ -140,6 +153,13 @@ def _store_has_inflight_execution_for_event(store: Any, event_id: str) -> bool:
         if _record_has_pending_completion(record):
             return True
     return False
+
+
+def _outputs_from_exception(exc: BaseException) -> dict[str, Any]:
+    outputs = getattr(exc, "outputs", None)
+    if isinstance(outputs, Mapping):
+        return dict(outputs)
+    return {}
 
 
 class EffectExecutionRecord(BaseModel):
@@ -220,6 +240,9 @@ class ExecutionGraph:
     downstream_index: dict[str, tuple[str, ...]]
     inbound_index: dict[str, tuple[Any, ...]]
     declared_outputs: dict[str, dict[str, Any]]
+    node_graph_metadata_by_id: dict[str, ResolvedWorkflowGraphMetadata] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)
@@ -276,6 +299,110 @@ class EventEmitEffectExecutor:
             "correlation_key": event.correlation_key,
             "created_at": event.created_at.isoformat().replace("+00:00", "Z"),
             "payload": dict(event.payload),
+        }
+
+
+class EventScheduleEffectExecutor:
+    def __init__(
+        self,
+        *,
+        scheduled_internal_event_store: ScheduledInternalEventStore | None = None,
+        scheduled_internal_event_store_getter: _ScheduledInternalEventStoreGetter | None = None,
+    ) -> None:
+        if scheduled_internal_event_store is None and scheduled_internal_event_store_getter is None:
+            raise ValueError(
+                "EventScheduleEffectExecutor requires a scheduled event store or getter"
+            )
+        self._scheduled_internal_event_store = scheduled_internal_event_store
+        self._scheduled_internal_event_store_getter = scheduled_internal_event_store_getter
+
+    @property
+    def scheduled_internal_event_store(self) -> ScheduledInternalEventStore:
+        if self._scheduled_internal_event_store_getter is not None:
+            return self._scheduled_internal_event_store_getter()
+        if self._scheduled_internal_event_store is None:
+            raise RuntimeError("scheduled internal event store is not configured")
+        return self._scheduled_internal_event_store
+
+    def prepare_resolved_config(self, **kwargs: Any) -> dict[str, Any]:
+        resolved_config = dict(kwargs.get("resolved_config") or {})
+        started_at = _normalize_started_at(kwargs.get("started_at"))
+
+        payload = resolved_config.get("payload", {})
+        if not isinstance(payload, dict):
+            raise ValueError("effect:event:schedule payload must resolve to a JSON object")
+        resolved_config["payload"] = payload
+
+        resolved_config["event_type"] = validate_internal_event_type(
+            resolved_config.get("event_type")
+        )
+        resolved_config["correlation_key"] = _normalize_optional_string(
+            resolved_config.get("correlation_key")
+        )
+        resolved_config["idempotency_key"] = _normalize_optional_string(
+            resolved_config.get("idempotency_key")
+        )
+
+        run_at_value = resolved_config.get("run_at")
+        delay_seconds_value = resolved_config.get("delay_seconds")
+        has_run_at = run_at_value is not None
+        has_delay_seconds = delay_seconds_value is not None
+        if has_run_at == has_delay_seconds:
+            raise ValueError(
+                "effect:event:schedule requires exactly one of run_at or delay_seconds"
+            )
+        if has_run_at:
+            run_at = _normalize_datetime_value(run_at_value, field_name="run_at")
+        else:
+            delay_seconds = _normalize_delay_seconds(delay_seconds_value)
+            if not _delay_seconds_within_datetime_range(started_at, delay_seconds):
+                raise ValueError("delay_seconds is outside the supported datetime range")
+            resolved_config["delay_seconds"] = delay_seconds
+            run_at = started_at + timedelta(seconds=delay_seconds)
+        resolved_config["run_at"] = run_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        return resolved_config
+
+    def execute(self, **kwargs: Any) -> dict[str, Any]:
+        resolved_config = dict(kwargs.get("resolved_config") or {})
+        execution_context = dict(kwargs.get("execution_context") or {})
+
+        payload = resolved_config.get("payload", {})
+        if not isinstance(payload, dict):
+            raise ValueError("effect:event:schedule payload must resolve to a JSON object")
+        event_type = validate_internal_event_type(resolved_config.get("event_type"))
+        correlation_key = _normalize_optional_string(resolved_config.get("correlation_key"))
+        run_at = _normalize_datetime_value(resolved_config.get("run_at"), field_name="run_at")
+        idempotency_key = _normalize_optional_string(resolved_config.get("idempotency_key"))
+        if idempotency_key is None:
+            idempotency_key = _normalize_optional_string(execution_context.get("idempotency_key"))
+
+        source = InternalEventSource(
+            source_type="scheduled_internal_event",
+            workflow_run_id=_normalize_optional_string(execution_context.get("workflow_run_id")),
+            workflow_event_id=_normalize_optional_string(execution_context.get("workflow_event_id")),
+            workflow_trace_id=_normalize_optional_string(
+                execution_context.get("workflow_trace_id")
+            ),
+            node_id=_normalize_optional_string(execution_context.get("node_id")),
+            node_type=_normalize_optional_string(execution_context.get("node_type")),
+        )
+        scheduled_event, created = self.scheduled_internal_event_store.schedule_event(
+            event_type=event_type,
+            payload=payload,
+            correlation_key=correlation_key,
+            run_at=run_at,
+            idempotency_key=idempotency_key,
+            source=source,
+        )
+        return {
+            "success": True,
+            "created": created,
+            "schedule_id": scheduled_event.schedule_id,
+            "event_type": scheduled_event.event_type,
+            "correlation_key": scheduled_event.correlation_key,
+            "run_at": scheduled_event.run_at.isoformat().replace("+00:00", "Z"),
+            "status": scheduled_event.status,
+            "payload": dict(scheduled_event.payload),
         }
 
 
@@ -337,6 +464,7 @@ class EffectOrchestratorWorker:
         self._last_graph_revision: str | None = None
         self._last_graph_node_count = 0
         self._last_graph_edge_count = 0
+        self._scheduled_internal_event_store_cache: _ScheduledInternalEventStoreCache = None
         self.provider_factory = resolved_wiring.provider_factory
         self.query_provider_factory = resolved_wiring.query_provider_factory
         self.gate_provider_factory = resolved_wiring.gate_provider_factory
@@ -778,8 +906,22 @@ class EffectOrchestratorWorker:
                 )
             ),
         )
+        self.effect_executor_registry.register(
+            "effect:event:schedule",
+            EventScheduleEffectExecutor(
+                scheduled_internal_event_store_getter=self._get_scheduled_internal_event_store
+            ),
+        )
         for query_type in self.query_provider_factory.registry.registered_types():
             self.query_executor_registry.register(query_type, provider_query_executor)
+
+    def _get_scheduled_internal_event_store(self) -> ScheduledInternalEventStore:
+        store_path = self.worker_config.scheduled_internal_event_store_path
+        cached = self._scheduled_internal_event_store_cache
+        if cached is None or cached[0] != store_path:
+            cached = (store_path, ScheduledInternalEventStore(store_path))
+            self._scheduled_internal_event_store_cache = cached
+        return cached[1]
 
     def _effect_provider_class(self, effect_type: str) -> Any | None:
         registry = getattr(self.provider_factory, "registry", None)
@@ -1240,6 +1382,7 @@ class EffectOrchestratorWorker:
         config_revision: str,
     ) -> bool:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, query.id)
+        graph_metadata = graph.node_graph_metadata_by_id.get(query.id)
         existing = self.execution_store.find_execution_by_idempotency_key(idempotency_key)
         if existing is not None:
             if existing.status == "running":
@@ -1250,6 +1393,7 @@ class EffectOrchestratorWorker:
                     self._execute_query_provider,
                     query=query,
                     resolved_config=dict(existing.resolved_config),
+                    graph_metadata=graph_metadata,
                 )
                 with self._inflight_lock:
                     self._inflight[idempotency_key] = InflightExecution(
@@ -1320,7 +1464,10 @@ class EffectOrchestratorWorker:
         )
         self.execution_store.record_execution(record)
         future = self._executor.submit(
-            self._execute_query_provider, query=query, resolved_config=resolved_config
+            self._execute_query_provider,
+            query=query,
+            resolved_config=resolved_config,
+            graph_metadata=graph_metadata,
         )
         with self._inflight_lock:
             self._inflight[idempotency_key] = InflightExecution(
@@ -1337,6 +1484,7 @@ class EffectOrchestratorWorker:
         config_revision: str,
     ) -> bool:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, effect.id)
+        graph_metadata = graph.node_graph_metadata_by_id.get(effect.id)
         existing = self.execution_store.find_execution_by_idempotency_key(idempotency_key)
         if existing is not None:
             if existing.status == "running":
@@ -1347,10 +1495,12 @@ class EffectOrchestratorWorker:
                     self._execute_provider,
                     effect=effect,
                     resolved_config=dict(existing.resolved_config),
+                    graph_metadata=graph_metadata,
                     execution_context=_effect_execution_context(
                         idempotency_key=idempotency_key,
                         queue_record=queue_record,
                         effect=effect,
+                        graph_metadata=graph_metadata,
                     ),
                 )
                 with self._inflight_lock:
@@ -1417,6 +1567,7 @@ class EffectOrchestratorWorker:
             resolved_config = executor.prepare_resolved_config(
                 effect=effect,
                 resolved_config=resolved_config,
+                graph_metadata=graph_metadata,
                 upstream_payload=upstream_payload,
                 declared_upstream_output_names=upstream_output_names,
                 system_value_resolver=_system_value_resolver(
@@ -1425,6 +1576,7 @@ class EffectOrchestratorWorker:
                     event_id=queue_record.event_id,
                     node_id=effect.id,
                 ),
+                started_at=started_at,
             )
         except (BindingResolutionError, OSError, ValueError) as exc:
             self._write_failed_effect_record(
@@ -1461,10 +1613,12 @@ class EffectOrchestratorWorker:
             self._execute_provider,
             effect=effect,
             resolved_config=resolved_config,
+            graph_metadata=graph_metadata,
             execution_context=_effect_execution_context(
                 idempotency_key=idempotency_key,
                 queue_record=queue_record,
                 effect=effect,
+                graph_metadata=graph_metadata,
             ),
         )
         with self._inflight_lock:
@@ -1546,6 +1700,7 @@ class EffectOrchestratorWorker:
         *,
         effect: EffectDefinitionDiscriminated,
         resolved_config: dict[str, Any],
+        graph_metadata: ResolvedWorkflowGraphMetadata | None = None,
         execution_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         executor = self.effect_executor_registry.resolve(effect.type)
@@ -1553,6 +1708,7 @@ class EffectOrchestratorWorker:
             executor.execute(
                 effect=effect,
                 resolved_config=resolved_config,
+                graph_metadata=graph_metadata,
                 execution_context=dict(execution_context or {}),
             )
             or {}
@@ -1563,9 +1719,17 @@ class EffectOrchestratorWorker:
         *,
         query: QueryDefinitionDiscriminated,
         resolved_config: dict[str, Any],
+        graph_metadata: ResolvedWorkflowGraphMetadata | None = None,
     ) -> dict[str, Any]:
         executor = self.query_executor_registry.resolve(query.type)
-        return dict(executor.execute(query=query, resolved_config=resolved_config) or {})
+        return dict(
+            executor.execute(
+                query=query,
+                resolved_config=resolved_config,
+                graph_metadata=graph_metadata,
+            )
+            or {}
+        )
 
     def _list_vm_summaries_for_reconciliation(self) -> list[Any]:
         admin_service = getattr(self.provider_factory, "admin_service", None)
@@ -1619,6 +1783,7 @@ class EffectOrchestratorWorker:
                     self._update_event_delivery_state(record.event_id)
                     continue
             except Exception as exc:  # noqa: BLE001
+                outputs = _outputs_from_exception(exc)
                 logger.exception(
                     "Effect execution failed event_id=%s trace_id=%s effect_id=%s effect_type=%s",
                     record.event_id,
@@ -1628,6 +1793,7 @@ class EffectOrchestratorWorker:
                 )
                 record.status = "failed"
                 record.error = str(exc)
+                record.outputs = outputs
                 record.finished_at = finished_at
                 self.execution_store.record_execution(record)
                 self._update_event_delivery_state(record.event_id)
@@ -2145,6 +2311,11 @@ def _build_execution_graph(worker_config: TriggerOrchestratorWorkerGlobalConfig)
     }
     edges = list(worker_config.edges)
     acyclic_edges = [edge for edge in edges if not _edge_allows_cycle(edge)]
+    node_graph_metadata_by_id = resolve_workflow_graph_metadata(
+        nodes_by_id=nodes_by_id,
+        edges=edges,
+        workflow_graphs=worker_config.workflow_graphs,
+    )
 
     return ExecutionGraph(
         nodes_by_id=nodes_by_id,
@@ -2160,6 +2331,7 @@ def _build_execution_graph(worker_config: TriggerOrchestratorWorkerGlobalConfig)
             worker_config.effects,
             worker_config.queries,
         ),
+        node_graph_metadata_by_id=node_graph_metadata_by_id,
     )
 
 
@@ -2633,6 +2805,61 @@ def _normalize_optional_string(value: Any) -> str | None:
     return text or None
 
 
+def _normalize_started_at(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+    return datetime.now(UTC)
+
+
+def _normalize_datetime_value(value: Any, *, field_name: str) -> datetime:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+    text = _normalize_optional_string(value)
+    if text is None:
+        raise ValueError(f"{field_name} must be an ISO-8601 timestamp")
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _normalize_delay_seconds(value: Any) -> float:
+    if isinstance(value, bool):
+        raise ValueError("delay_seconds must be a number")
+    try:
+        if isinstance(value, (int, float)):
+            delay_seconds = float(value)
+        else:
+            text = _normalize_optional_string(value)
+            if text is None:
+                raise ValueError("delay_seconds must be a number")
+            delay_seconds = float(text)
+    except OverflowError as exc:
+        raise ValueError("delay_seconds must be a finite number") from exc
+    except ValueError as exc:
+        raise ValueError("delay_seconds must be a number") from exc
+    if not math.isfinite(delay_seconds):
+        raise ValueError("delay_seconds must be a finite number")
+    return delay_seconds
+
+
+def _delay_seconds_within_datetime_range(started_at: datetime, delay_seconds: float) -> bool:
+    started_at = _normalize_started_at(started_at)
+    if delay_seconds >= 0:
+        max_delay_seconds = (datetime.max.replace(tzinfo=UTC) - started_at).total_seconds()
+        return delay_seconds <= max_delay_seconds
+    min_delay_seconds = (started_at - datetime.min.replace(tzinfo=UTC)).total_seconds()
+    return -delay_seconds <= min_delay_seconds
+
+
 def _resolve_worker_path(
     worker_config: TriggerOrchestratorWorkerGlobalConfig, attribute: str, *, fallback: Path
 ) -> Path:
@@ -2678,6 +2905,7 @@ def _effect_execution_context(
     idempotency_key: str,
     queue_record: TriggerQueueRecord,
     effect: EffectDefinitionDiscriminated,
+    graph_metadata: ResolvedWorkflowGraphMetadata | None = None,
 ) -> dict[str, Any]:
     input_payload = dict(queue_record.payload)
     context = {
@@ -2689,6 +2917,13 @@ def _effect_execution_context(
         "node_type": effect.type,
         "input_payload": input_payload,
     }
+    if graph_metadata is not None:
+        context["graph_id"] = graph_metadata.graph_id
+        context["directory_path"] = graph_metadata.directory_path
+        context["graph_metadata"] = {
+            "graph_id": graph_metadata.graph_id,
+            "directory_path": graph_metadata.directory_path,
+        }
     if isinstance(input_payload.get(NODE_OUTPUTS_CONTEXT_KEY), dict):
         context[NODE_OUTPUTS_CONTEXT_KEY] = input_payload[NODE_OUTPUTS_CONTEXT_KEY]
     return context

@@ -18,6 +18,7 @@ from agent_sandbox.effects.providers.artifacts import (
     ArtifactStageEffectProvider,
 )
 from agent_sandbox.effects.providers.event_emit import EventEmitEffectProvider
+from agent_sandbox.effects.providers.event_schedule import EventScheduleEffectProvider
 from agent_sandbox.effects.providers.agent_exec import AgentExecEffectProvider
 from agent_sandbox.effects.providers.agent_prompt import AgentPromptEffectProvider
 from agent_sandbox.effects.providers.bash_script import BashScriptEffectProvider
@@ -25,6 +26,7 @@ from agent_sandbox.effects.providers.chat_assistant import ChatAssistantEnsureSe
 from agent_sandbox.effects.providers.communication_send_message import (
     CommunicationSendMessageEffectProvider,
 )
+from agent_sandbox.effects.providers.http_request import HttpRequestEffectProvider
 from agent_sandbox.effects.providers.git_promote_agent_branch import (
     GitPromoteAgentBranchEffectProvider,
 )
@@ -41,6 +43,7 @@ from agent_sandbox.effects.providers.semantic_ensure_collection import (
     SemanticEnsureCollectionEffectProvider,
 )
 from agent_sandbox.effects.providers.semantic_upsert import SemanticUpsertEffectProvider
+from agent_sandbox.effects.providers.state_update import StateUpdateEffectProvider
 from agent_sandbox.effects.providers.session_update_metadata import (
     SessionUpdateMetadataEffectProvider,
 )
@@ -72,6 +75,7 @@ from agent_sandbox.queries.providers.agent_artifact_text import AgentArtifactTex
 from agent_sandbox.queries.providers.ado_work_items import AdoWorkItemsQueryProvider
 from agent_sandbox.queries.providers.git_pr_note import GitPrNoteQueryProvider
 from agent_sandbox.queries.providers.issue_get import IssueGetQueryProvider
+from agent_sandbox.queries.providers.issue_list import IssueListQueryProvider
 from agent_sandbox.queries.providers.pull_request_feedback import (
     PullRequestFeedbackQueryProvider,
 )
@@ -80,6 +84,7 @@ from agent_sandbox.queries.providers.pull_request_list import PullRequestListQue
 from agent_sandbox.queries.providers.semantic_get import SemanticGetQueryProvider
 from agent_sandbox.queries.providers.semantic_search import SemanticSearchQueryProvider
 from agent_sandbox.queries.providers.semantic_store_status import SemanticStoreStatusQueryProvider
+from agent_sandbox.queries.providers.state_get import StateGetQueryProvider
 from agent_sandbox.queries.providers.session_context import SessionContextQueryProvider
 from agent_sandbox.queries.providers.session_list import SessionListQueryProvider
 from agent_sandbox.queries.providers.vm_run_state import VmRunStateQueryProvider
@@ -88,7 +93,11 @@ from agent_sandbox.triggers.providers.agent_run_completed import AgentRunComplet
 from agent_sandbox.triggers.providers.ado_work_item_matching import (
     AdoWorkItemMatchingTriggerProvider,
 )
+from agent_sandbox.triggers.providers.communication_new_message import (
+    CommunicationNewMessageTriggerProvider,
+)
 from agent_sandbox.triggers.providers.cron import CronTriggerProvider
+from agent_sandbox.triggers.providers.ci_run_completed import CiRunCompletedTriggerProvider
 from agent_sandbox.triggers.providers.discord_new_message import DiscordNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.email_new_message import EmailNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.event import EventTriggerProvider
@@ -102,13 +111,14 @@ from agent_sandbox.triggers.providers.pull_request_completed import (
 )
 from agent_sandbox.triggers.providers.review_new_request import ReviewNewRequestTriggerProvider
 from agent_sandbox.triggers.providers.script_run_request import ScriptRunRequestTriggerProvider
+from agent_sandbox.triggers.providers.teams_direct_message import TeamsDirectMessageTriggerProvider
 from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
 from agent_sandbox.triggers.providers.teams_meeting_new_transcript import (
     TeamsMeetingNewTranscriptTriggerProvider,
 )
 from agent_sandbox.triggers.providers.ticket_changed import TicketChangedTriggerProvider
 from agent_sandbox.triggers.providers.ticket_created import TicketCreatedTriggerProvider
-
+from agent_sandbox.triggers.providers.webhook import WebhookTriggerProvider
 
 def register_providers() -> dict[str, dict[str, type]]:
     return dict(
@@ -120,14 +130,18 @@ def register_providers() -> dict[str, dict[str, type]]:
             "trigger:issue:comment-created": IssueCommentCreatedTriggerProvider,
             "trigger:ado:work-item-matching": AdoWorkItemMatchingTriggerProvider,
             "trigger:script-run-request": ScriptRunRequestTriggerProvider,
+            "trigger:communication:new-message": CommunicationNewMessageTriggerProvider,
+            "trigger:http:webhook": WebhookTriggerProvider,
             "trigger:discord:new-message": DiscordNewMessageTriggerProvider,
             "trigger:teams:new-message": TeamsNewMessageTriggerProvider,
+            "trigger:teams:direct-message": TeamsDirectMessageTriggerProvider,
             "trigger:teams-meeting:new-transcript": TeamsMeetingNewTranscriptTriggerProvider,
             "trigger:email:new-message": EmailNewMessageTriggerProvider,
             "trigger:pull-request:new-feedback": PullRequestNewFeedbackTriggerProvider,
             "trigger:pull-request:completed": PullRequestCompletedTriggerProvider,
             "trigger:review:new-request": ReviewNewRequestTriggerProvider,
             "trigger:git:push": GitPushTriggerProvider,
+            "trigger:ci:run:completed": CiRunCompletedTriggerProvider,
             "trigger:agent:prompt:new": AgentPromptNewTriggerProvider,
             "trigger:agent:run:completed": AgentRunCompletedTriggerProvider,
         },
@@ -144,6 +158,7 @@ def register_providers() -> dict[str, dict[str, type]]:
         },
         effect_providers={
             "effect:event:emit": EventEmitEffectProvider,
+            "effect:event:schedule": EventScheduleEffectProvider,
             "effect:vm:create": VmCreateEffectProvider,
             "effect:vm:clone-repo": VmCloneRepoEffectProvider,
             "effect:vm:bootstrap-python": VmBootstrapPythonEffectProvider,
@@ -162,6 +177,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:chat-assistant:ensure-session": ChatAssistantEnsureSessionEffectProvider,
             "effect:agent:exec": AgentExecEffectProvider,
             "effect:bash:script": BashScriptEffectProvider,
+            "effect:http:request": HttpRequestEffectProvider,
             "effect:vm:exec": VmExecEffectProvider,
             "effect:vm:copy-files": VmCopyFilesEffectProvider,
             "effect:vm:delete-files": VmDeleteFilesEffectProvider,
@@ -182,6 +198,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:semantic:ensure-collection": SemanticEnsureCollectionEffectProvider,
             "effect:semantic:upsert": SemanticUpsertEffectProvider,
             "effect:semantic:delete": SemanticDeleteEffectProvider,
+            "effect:state:update": StateUpdateEffectProvider,
         },
         query_providers={
             "query:vm:run-state": VmRunStateQueryProvider,
@@ -190,6 +207,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:session:list": SessionListQueryProvider,
             "query:agent:artifact-text": AgentArtifactTextQueryProvider,
             "query:issue:get": IssueGetQueryProvider,
+            "query:issue:list": IssueListQueryProvider,
             "query:ado:work-items": AdoWorkItemsQueryProvider,
             "query:pull-request:list": PullRequestListQueryProvider,
             "query:pull-request:feedback": PullRequestFeedbackQueryProvider,
@@ -197,6 +215,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:semantic:store-status": SemanticStoreStatusQueryProvider,
             "query:semantic:search": SemanticSearchQueryProvider,
             "query:semantic:get": SemanticGetQueryProvider,
+            "query:state:get": StateGetQueryProvider,
         },
         node_definition_resolvers={
             **trigger_node_schema_resolvers(),
