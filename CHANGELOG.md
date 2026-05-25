@@ -18,6 +18,9 @@ material. Newer entries are added incrementally as changes land.
 - Added internal wake sockets for trigger/effect orchestration so host-owned
   trigger ingress and direct queue publishers can hot-drain without waiting for
   the next poll interval.
+- Woke await-agent completion drains through the trigger worker's configured
+  effect lock path, so custom workflow runtime directories still hot-drain
+  effect work.
 
 ## 2026-05-24 - Container Worker Manifest Persistence Fix
 

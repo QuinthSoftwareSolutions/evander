@@ -134,6 +134,7 @@ def test_await_agent_completion_uses_configured_event_queue_path(
 ) -> None:
     published: dict[str, object] = {}
     queue_path = tmp_path / "runtime" / "custom-events.json"
+    effect_lock_path = tmp_path / "locks" / "custom-effect.lock"
 
     class _AdminServiceStub:
         def __init__(self, runtime_dir: Path) -> None:
@@ -169,15 +170,23 @@ def test_await_agent_completion_uses_configured_event_queue_path(
 
     monkeypatch.setattr(watcher, "AdminService", _AdminServiceStub)
     monkeypatch.setattr(watcher, "TriggerEventQueue", _QueueStub)
+    wake_paths: list[Path] = []
+    monkeypatch.setattr(
+        watcher,
+        "notify_wake_socket_for_lock",
+        lambda lock_path: wake_paths.append(Path(lock_path)) or True,
+    )
 
     result = watcher.await_agent_completion_and_publish(
         runtime_dir=tmp_path / "runtime",
         vm_name="vm-issue-14724",
         dispatch_id="dispatch-123",
         event_queue_store_path=queue_path,
+        effect_lock_path=effect_lock_path,
         poll_interval_seconds=0.01,
         timeout_seconds=1.0,
     )
 
     assert result is True
     assert published["path"] == queue_path
+    assert wake_paths == [effect_lock_path]
