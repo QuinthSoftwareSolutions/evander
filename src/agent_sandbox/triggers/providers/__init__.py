@@ -4,6 +4,7 @@ from importlib import import_module
 from typing import Any
 
 __all__ = [
+    "CiRunCompletedTriggerProvider",
     "AgentRunCompletedTriggerProvider",
     "CronTriggerProvider",
     "DiscordNewMessageTriggerProvider",
@@ -23,6 +24,7 @@ __all__ = [
 ]
 
 _EXPORT_MODULES = {
+    "CiRunCompletedTriggerProvider": ".ci_run_completed",
     "AgentRunCompletedTriggerProvider": ".agent_run_completed",
     "CronTriggerProvider": ".cron",
     "DiscordNewMessageTriggerProvider": ".discord_new_message",
