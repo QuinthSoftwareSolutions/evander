@@ -385,6 +385,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "query:git:pr-note": "Read pull-request note context from a host checkout.",
   "query:pull-request:list": "List provider pull requests.",
   "query:communication:messages": "Read messages from a read-capable Teams or Discord target.",
+  "query:pull-request:get": "Get a provider pull request by id.",
   "query:session-context": "Read session context and metadata.",
   "query:state:get": "Read graph-local workflow state for the current persisted workflow graph.",
   "query:agent:artifact-text": "Read a UTF-8 text file from an agent session artifacts folder.",
@@ -1901,6 +1902,18 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       type,
       communication_target_id: "communication-target-id",
       limit: 50,
+    };
+  }
+  if (kind === "query" && type === "query:pull-request:get") {
+    return {
+      id,
+      display_name: "Pull request get",
+      type,
+      provider: "azure_devops",
+      repo: "repo-name",
+      pr_id: "123",
+      include_reviewers: false,
+      include_commits: false,
     };
   }
   if (kind === "query" && type === "query:semantic:store-status") {

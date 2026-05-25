@@ -61,6 +61,7 @@ from agent_sandbox.services import (
     EmailService,
     GraphTeamsService,
     GitHubPrReplyProvider,
+    GitHubPrQueryProvider,
     GitHubPrPublishProvider,
     PrFeedbackService,
     PrReplyService,
@@ -644,8 +645,14 @@ def _build_pr_publish_service(config: GatewayConfig) -> PrPublishService:
 
 
 def _build_pr_query_service(config: GatewayConfig) -> PrQueryService:
+    github_token = os.environ.get(config.github_token_env, "").strip() or None
     azure_pat = os.environ.get(config.azure_devops_pr_pat_env, "").strip()
-    providers = {}
+    providers = {
+        "github": GitHubPrQueryProvider(
+            token=github_token,
+            timeout_seconds=config.email_provider_timeout_seconds,
+        )
+    }
     if azure_pat:
         providers["azure_devops"] = AzureDevOpsPrQueryProvider(
             organization_url=config.azure_devops_organization_url,

@@ -1694,6 +1694,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "query:communication:messages": (
         "Read messages from a read-capable Teams or Discord communication target."
     ),
+    "query:pull-request:get": "Get a provider pull request by id without owning cursor state.",
     "query:session-context": "Read session context and metadata.",
     "query:state:get": "Read graph-local workflow state for the current persisted workflow graph.",
     "query:session:list": "List sessions by generic manifest metadata.",
@@ -3824,6 +3825,32 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("top", "Top", "number", bindable=True),
             _field("skip", "Skip", "number", bindable=True),
             _field("cursor", "Cursor", "string", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="query",
+        type="query:pull-request:get",
+        label="Pull request get",
+        fields=[
+            _field(
+                "provider",
+                "Provider",
+                "enum",
+                required=True,
+                bindable=True,
+                options=[
+                    _field_option("azure_devops", "Azure DevOps"),
+                    _field_option("ado", "ADO alias"),
+                    _field_option("github", "GitHub"),
+                ],
+            ),
+            _field("repo", "Repo", "string", required=True, bindable=True),
+            _field("pr_id", "PR ID", "string", required=True, bindable=True),
+            _field("directory_path", "Directory path", "string", bindable=True),
+            _field("organization_url", "Organization URL", "string", bindable=True),
+            _field("project", "Project", "string", bindable=True),
+            _field("include_reviewers", "Include reviewers", "boolean", bindable=True),
+            _field("include_commits", "Include commits", "boolean", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

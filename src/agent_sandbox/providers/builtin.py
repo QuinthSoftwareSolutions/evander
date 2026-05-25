@@ -83,6 +83,7 @@ from agent_sandbox.queries.providers.issue_list import IssueListQueryProvider
 from agent_sandbox.queries.providers.pull_request_feedback import (
     PullRequestFeedbackQueryProvider,
 )
+from agent_sandbox.queries.providers.pull_request_get import PullRequestGetQueryProvider
 from agent_sandbox.queries.providers.pull_request_list import PullRequestListQueryProvider
 from agent_sandbox.queries.providers.semantic_get import SemanticGetQueryProvider
 from agent_sandbox.queries.providers.semantic_search import SemanticSearchQueryProvider
@@ -216,6 +217,7 @@ def register_providers() -> dict[str, dict[str, type]]:
             "query:pull-request:list": PullRequestListQueryProvider,
             "query:pull-request:feedback": PullRequestFeedbackQueryProvider,
             "query:communication:messages": CommunicationMessagesQueryProvider,
+            "query:pull-request:get": PullRequestGetQueryProvider,
             "query:semantic:store-status": SemanticStoreStatusQueryProvider,
             "query:semantic:search": SemanticSearchQueryProvider,
             "query:semantic:get": SemanticGetQueryProvider,

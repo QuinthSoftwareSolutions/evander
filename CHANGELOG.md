@@ -13,6 +13,13 @@ material. Newer entries are added incrementally as changes land.
 - Fixed Discord query pagination so messages that share the same `created_at`
   timestamp are preserved across limited pages.
 
+## 2026-05-25 - Pull Request Get Workflow Query
+
+- Added `query:pull-request:get` for normalized provider pull request snapshots,
+  including GitHub PR get support.
+- Paginated optional GitHub PR commit and review detail fetches before
+  populating normalized `commits`, `reviewers`, and `raw` data.
+
 ## 2026-05-25 - Workflow Switch Lazy Routing Fix
 
 - Fixed `gate:switch` routing so cases are resolved in order and later

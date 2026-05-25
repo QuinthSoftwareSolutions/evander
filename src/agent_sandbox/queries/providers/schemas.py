@@ -215,6 +215,27 @@ class CommunicationMessagesQueryDefinition(QueryDefinition):
         return self
 
 
+class PullRequestGetQueryDefinition(QueryDefinition):
+    type: Literal["query:pull-request:get"]
+    provider: ConfigValue
+    repo: ConfigValue
+    pr_id: ConfigValue
+    directory_path: ConfigValue | None = None
+    organization_url: ConfigValue | None = None
+    project: ConfigValue | None = None
+    include_reviewers: ConfigValue | None = None
+    include_commits: ConfigValue | None = None
+
+    @field_validator("provider")
+    @classmethod
+    def normalize_static_provider(cls, value: ConfigValue) -> ConfigValue:
+        if isinstance(value, str) and "${{" not in value:
+            normalized = value.strip()
+            if normalized in {"ado", "azure-devops", "azure_devops"}:
+                return "azure_devops"
+        return value
+
+
 class SemanticStoreStatusQueryDefinition(QueryDefinition):
     type: Literal["query:semantic:store-status"]
     collection_name: ConfigValue | None = None

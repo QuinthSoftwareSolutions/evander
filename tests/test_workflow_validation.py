@@ -823,3 +823,48 @@ def test_pull_request_list_next_cursor_is_bindable() -> None:
 
     assert output_schemas["query-prs-1"]["next_cursor"] == {"type": ["string", "null"]}
     assert diagnostics == []
+
+
+def test_pull_request_get_outputs_are_bindable() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-cron-1",
+                "display_name": "Cron",
+                "type": "trigger:cron",
+                "expression": "*/5 * * * *",
+            }
+        ],
+        "queries": [
+            {
+                "id": "query-pr-get-1",
+                "display_name": "Get PR",
+                "type": "query:pull-request:get",
+                "provider": "ado",
+                "repo": "repo-1",
+                "pr_id": "17",
+            }
+        ],
+        "effects": [
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": "Inspect ${{query-pr-get-1.source_commit}}",
+            }
+        ],
+        "edges": [
+            {"source_id": "trigger-cron-1", "target_id": "query-pr-get-1"},
+            {"source_id": "query-pr-get-1", "target_id": "prompt-agent"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["query-pr-get-1"]["source_commit"] == {"type": ["string", "null"]}
+    assert output_schemas["query-pr-get-1"]["reviewers"] == {"type": "array"}
+    assert output_schemas["query-pr-get-1"]["commits"] == {"type": "array"}
+    assert output_schemas["query-pr-get-1"]["raw"] == {"type": "object"}
+    assert diagnostics == []
