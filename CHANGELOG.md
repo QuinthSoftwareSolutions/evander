@@ -18,6 +18,17 @@ material. Newer entries are added incrementally as changes land.
   operations runbook, trigger conformance guide, and changelog, including the
   polling cursor file and first-poll history suppression behavior.
 
+## 2026-05-25 - Workflow State Runtime Coverage
+
+- Added end-to-end regression coverage for persisted workflow-state reads and
+  writes across multiple graph IDs, including the fast-fail path when state
+  nodes do not have persisted graph metadata.
+- Registered workflow state node schemas in runtime config materialization and
+  rejected duplicate persisted workflow graph IDs before state scope resolution.
+- Documented the graph-local workflow-state file, scoping tuple, merge-patch
+  behavior, and optimistic-concurrency conflict handling in the configuration
+  reference.
+
 ## 2026-05-25 - Scheduled Event Hot Reload Fixes
 
 - Fixed `effect:event:schedule` so hot-reloaded

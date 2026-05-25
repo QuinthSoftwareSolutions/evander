@@ -39,6 +39,8 @@ from agent_sandbox.events.models import (
     materialize_node_definition,
     TriggerDefinitionDiscriminated,
 )
+from agent_sandbox.workflow.graph_metadata import resolve_workflow_graph_metadata
+from agent_sandbox.workflow.packs import WorkflowPackGraph
 from agent_sandbox.schema_bootstrap import bootstrap_default_node_schemas
 from agent_sandbox.workflow.validation import validate_workflow_graph
 
@@ -799,6 +801,7 @@ class OrchestrationCoreConfig(BaseModel):
     effect_lock_path: Path | None = None
     workflow_config_snapshot_store_path: Path | None = None
     workflow_packs: list[str] = Field(default_factory=list)
+    workflow_graphs: list[WorkflowPackGraph] = Field(default_factory=list)
     workflow_ir: dict[str, Any] | None = None
     workflow_transforms: list[str] = Field(default_factory=list)
     triggers: list[TriggerDefinitionDiscriminated] = Field(default_factory=list)
@@ -850,6 +853,18 @@ class OrchestrationCoreConfig(BaseModel):
         )
         if errors:
             raise ValueError("; ".join(errors))
+        return self
+
+    @model_validator(mode="after")
+    def validate_state_graph_metadata(self) -> OrchestrationCoreConfig:
+        resolve_workflow_graph_metadata(
+            nodes_by_id={
+                node.id: node
+                for node in (*self.triggers, *self.gates, *self.effects, *self.queries)
+            },
+            edges=self.edges,
+            workflow_graphs=self.workflow_graphs,
+        )
         return self
 
     @model_validator(mode="after")

@@ -355,6 +355,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:semantic:ensure-collection": "Ensure a semantic collection exists with the configured vector schema.",
   "effect:semantic:upsert": "Embed one text string and upsert it as one semantic point.",
   "effect:semantic:delete": "Delete semantic points by explicit point IDs.",
+  "effect:state:update": "Set, patch, or delete graph-local workflow state.",
   "effect:http:request": "Perform a host-side raw HTTP GET, POST, or PUT request with URL allowlist control.",
   "effect:vm:create": "Create a VM for the workflow.",
   "effect:vm:clone-repo": "Clone a repository into a target VM.",
@@ -380,6 +381,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "query:git:pr-note": "Read pull-request note context from a host checkout.",
   "query:pull-request:list": "List provider pull requests.",
   "query:session-context": "Read session context and metadata.",
+  "query:state:get": "Read graph-local workflow state for the current persisted workflow graph.",
   "query:agent:artifact-text": "Read a UTF-8 text file from an agent session artifacts folder.",
   "query:issue:get": "Read a local issue record by id.",
   "query:ado:work-items": "Query Azure DevOps work items.",
@@ -1615,6 +1617,17 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       point_ids: [SEMANTIC_SAMPLE_POINT_ID],
     };
   }
+  if (kind === "effect" && type === "effect:state:update") {
+    return {
+      id,
+      display_name: "Update workflow state",
+      type,
+      namespace: "workflow",
+      key: "cursor",
+      operation: "set",
+      value: {},
+    };
+  }
   if (kind === "effect" && type === "effect:http:request") {
     return {
       id,
@@ -1795,6 +1808,15 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       id,
       display_name: "Session context",
       type,
+    };
+  }
+  if (kind === "query" && type === "query:state:get") {
+    return {
+      id,
+      display_name: "Read workflow state",
+      type,
+      namespace: "workflow",
+      key: "cursor",
     };
   }
   if (kind === "query" && type === "query:agent:artifact-text") {

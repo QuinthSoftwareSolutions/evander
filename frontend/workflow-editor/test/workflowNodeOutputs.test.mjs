@@ -235,3 +235,92 @@ test("declared outputs fall back to node outputs when no derived schema exists",
     ticket: { type: "object" },
   });
 });
+
+test("state node output schemas expose graph-local bindings", () => {
+  const config = {
+    triggers: [
+      {
+        id: "trigger-1",
+        display_name: "State trigger",
+        type: "trigger:manual",
+      },
+    ],
+    gates: [],
+    effects: [
+      {
+        id: "effect-state-update",
+        display_name: "Update workflow state",
+        type: "effect:state:update",
+        namespace: "workflow",
+        key: "cursor",
+        operation: "set",
+        value: { cursor: "abc-123" },
+      },
+    ],
+    queries: [
+      {
+        id: "query-state-get",
+        display_name: "Read workflow state",
+        type: "query:state:get",
+        namespace: "workflow",
+        key: "cursor",
+      },
+    ],
+    edges: [
+      { source_id: "trigger-1", target_id: "effect-state-update" },
+      { source_id: "effect-state-update", target_id: "query-state-get" },
+    ],
+  };
+  const backendOutputSchemas = {
+    "effect-state-update": {
+      success: { type: "boolean" },
+      found: { type: "boolean" },
+      directory_path: { type: "string" },
+      graph_id: { type: "string" },
+      namespace: { type: "string" },
+      key: { type: "string" },
+      value: {
+        type: "object",
+        properties: {
+          cursor: { type: "string" },
+        },
+      },
+      version: { type: "integer" },
+      created_at: { type: "string" },
+      updated_at: { type: "string" },
+    },
+    "query-state-get": {
+      success: { type: "boolean" },
+      found: { type: "boolean" },
+      directory_path: { type: "string" },
+      graph_id: { type: "string" },
+      namespace: { type: "string" },
+      key: { type: "string" },
+      value: {
+        type: "object",
+        properties: {
+          cursor: { type: "string" },
+        },
+      },
+      version: { type: "integer" },
+      created_at: { type: "string" },
+      updated_at: { type: "string" },
+    },
+  };
+  const outputSchemas = deriveWorkflowOutputSchemas(config, backendOutputSchemas);
+
+  const updateContract = selectedNodeOutputContract(config, "effect-state-update", outputSchemas);
+  assert.equal(updateContract.state, "declared");
+  assert.ok(updateContract.rows.some((row) => row.path === "graph_id"));
+  assert.ok(updateContract.rows.some((row) => row.path === "value"));
+  assert.ok(updateContract.rows.some((row) => row.path === "value.cursor"));
+  assert.ok(updateContract.rows.some((row) => row.path === "version"));
+
+  const bindingOptions = upstreamBindingOptions(config, "query-state-get", outputSchemas);
+  assert.ok(bindingOptions.some((option) => option.value === "${{effect-state-update.graph_id}}"));
+  assert.ok(bindingOptions.some((option) => option.value === "${{effect-state-update.value}}"));
+  assert.ok(
+    bindingOptions.some((option) => option.value === "${{effect-state-update.value.cursor}}"),
+  );
+  assert.ok(bindingOptions.some((option) => option.value === "${{effect-state-update.version}}"));
+});

@@ -81,11 +81,15 @@ class QueryProviderFactory:
         query_definition: QueryDefinitionDiscriminated,
         *,
         directory_path: str | None = None,
+        graph_id: str | None = None,
     ) -> QueryProviderBase:
         provider_class = self.registry.resolve(query_definition.type)
         resolved_config = _resolve_query_provider_config(
             self.provider_config_resolver, directory_path
         )
+        metadata: dict[str, Any] = {"directory_path": directory_path or "root"}
+        if graph_id is not None:
+            metadata["graph_id"] = graph_id
         runtime_context = QueryRuntimeContext(
             provider_config=query_provider_config_blob(resolved_config),
             provider_config_resolver=self.provider_config_resolver,
@@ -98,7 +102,7 @@ class QueryProviderFactory:
             session_artifact_reader=self._provider_runtime_ports.session_artifact_reader,
             env=self.env,
             secret_resolver=self.secret_resolver,
-            metadata={"directory_path": directory_path or "root"},
+            metadata=metadata,
         )
         provider = provider_class()
         validated_definition = _validate_query_definition(provider_class, query_definition)

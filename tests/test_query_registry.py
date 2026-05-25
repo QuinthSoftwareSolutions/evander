@@ -83,6 +83,7 @@ def test_default_registry_includes_known_query_types() -> None:
         "query:semantic:store-status",
         "query:semantic:search",
         "query:semantic:get",
+        "query:state:get",
     }
 
 
@@ -103,11 +104,13 @@ def test_factory_initializes_query_provider_with_runtime_context() -> None:
         admin_service=admin_service,
         env={"API_TOKEN": "top-secret"},
     )
-    provider = factory.build(query)
+    provider = factory.build(query, directory_path="root/team-a", graph_id="graph-1")
 
     assert isinstance(provider, _RecordingProvider)
     assert provider.runtime_context is not None
     assert provider.runtime_context.resolve_secret("API_TOKEN") == "top-secret"
+    assert provider.runtime_context.metadata["directory_path"] == "root/team-a"
+    assert provider.runtime_context.metadata["graph_id"] == "graph-1"
 
 
 def test_vm_run_state_query_provider_returns_expected_state_code() -> None:

@@ -346,6 +346,47 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "directory_path",
         "wait",
     ]
+    state_update = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:state:update"
+    )
+    assert state_update["description"] == "Set, patch, or delete graph-local workflow state."
+    assert [field["key"] for field in state_update["fields"]] == [
+        "namespace",
+        "key",
+        "operation",
+        "value",
+        "patch",
+        "expected_version",
+    ]
+    state_update_fields = {field["key"]: field for field in state_update["fields"]}
+    assert state_update_fields["namespace"]["required"]
+    assert state_update_fields["namespace"]["bindable"]
+    assert state_update_fields["operation"]["kind"] == "enum"
+    assert [option["value"] for option in state_update_fields["operation"]["options"]] == [
+        "set",
+        "patch",
+        "delete",
+    ]
+    assert state_update_fields["value"]["kind"] == "json"
+    assert state_update_fields["value"]["json_value_type"] == "object"
+    assert state_update_fields["patch"]["kind"] == "json"
+    assert state_update_fields["patch"]["json_value_type"] == "object"
+    assert state_update_fields["expected_version"]["kind"] == "number"
+    state_get = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "query:state:get"
+    )
+    assert state_get["description"] == (
+        "Read graph-local workflow state for the current persisted workflow graph."
+    )
+    assert [field["key"] for field in state_get["fields"]] == [
+        "namespace",
+        "key",
+    ]
+    state_get_fields = {field["key"]: field for field in state_get["fields"]}
+    assert state_get_fields["namespace"]["required"]
+    assert state_get_fields["namespace"]["bindable"]
+    assert state_get_fields["key"]["required"]
+    assert state_get_fields["key"]["bindable"]
     agent_copy_files = next(
         node
         for node in catalog_payload["nodes"]
@@ -2381,6 +2422,80 @@ def test_admin_web_validate_exposes_backend_output_schemas_for_agent_effects(
     assert body["output_schemas"]["effect-agent-clone-repo-1"]["target_dir"] == {
         "type": "string"
     }
+
+
+def test_admin_web_validate_exposes_backend_output_schemas_for_state_nodes(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    payload = {
+        "config": {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "trigger-state",
+                    "display_name": "State trigger",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-state-update-1",
+                    "display_name": "Update workflow state",
+                    "type": "effect:state:update",
+                    "namespace": "workflow",
+                    "key": "cursor",
+                    "operation": "set",
+                    "value": {"step": 1},
+                }
+            ],
+            "queries": [
+                {
+                    "id": "query-state-get-1",
+                    "display_name": "Read workflow state",
+                    "type": "query:state:get",
+                    "namespace": "workflow",
+                    "key": "cursor",
+                }
+            ],
+            "edges": [
+                {"source_id": "trigger-state", "target_id": "effect-state-update-1"},
+                {"source_id": "effect-state-update-1", "target_id": "query-state-get-1"},
+            ],
+            "workflow_graphs": [
+                {
+                    "id": "graph-state",
+                    "name": "State graph",
+                    "directory_paths": ["root"],
+                    "node_ids": [
+                        "trigger-state",
+                        "effect-state-update-1",
+                        "query-state-get-1",
+                    ],
+                }
+            ],
+        },
+        "layout": {
+            "nodes": {
+                "trigger-state": {"x": 100, "y": 50},
+                "effect-state-update-1": {"x": 300, "y": 50},
+                "query-state-get-1": {"x": 500, "y": 50},
+            }
+        },
+    }
+
+    response = client.post("/api/workflow-editor/validate", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["validation_diagnostics"] == []
+    assert body["output_schemas"]["effect-state-update-1"]["graph_id"] == {"type": "string"}
+    assert body["output_schemas"]["effect-state-update-1"]["value"] == {"type": "object"}
+    assert body["output_schemas"]["effect-state-update-1"]["version"] == {"type": "integer"}
+    assert body["output_schemas"]["query-state-get-1"]["graph_id"] == {"type": "string"}
+    assert body["output_schemas"]["query-state-get-1"]["value"] == {"type": "object"}
+    assert body["output_schemas"]["query-state-get-1"]["version"] == {"type": "integer"}
 
 
 def test_admin_web_validate_scopes_binding_diagnostics_to_workflow_graphs(

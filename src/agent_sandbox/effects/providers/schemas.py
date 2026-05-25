@@ -303,6 +303,37 @@ class SemanticDeleteEffectDefinition(EffectDefinition):
     wait: ConfigValue | None = None
 
 
+class StateUpdateEffectDefinition(EffectDefinition):
+    type: Literal["effect:state:update"]
+    namespace: ConfigValue
+    key: ConfigValue
+    operation: ConfigValue
+    value: ConfigValue | None = None
+    patch: ConfigValue | None = None
+    expected_version: ConfigValue | None = None
+
+    @field_validator("operation")
+    @classmethod
+    def validate_operation(cls, value: ConfigValue) -> ConfigValue:
+        if isinstance(value, str) and "${{" not in value:
+            normalized = value.strip().lower()
+            if normalized not in {"set", "patch", "delete"}:
+                raise ValueError("effect:state:update operation must be set, patch, or delete")
+            return normalized
+        return value
+
+    @field_validator("patch")
+    @classmethod
+    def validate_patch(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None:
+            return value
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str) and "${{" in value:
+            return value
+        raise ValueError("effect:state:update patch must be a JSON object or binding")
+
+
 class BashScriptEffectDefinition(EffectDefinition):
     type: Literal["effect:bash:script"]
     script_path: ConfigValue

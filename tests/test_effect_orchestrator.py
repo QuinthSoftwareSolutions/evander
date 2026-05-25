@@ -33,6 +33,7 @@ from agent_sandbox.daemons.effect_orchestrator import (
     SqliteExecutionStore,
     SqliteGateExecutionStore,
     _await_agent_pending_target,
+    _build_execution_graph,
     _matching_outbound_edges,
     build_effect_orchestrator_worker,
     EffectExecutionRecord,
@@ -114,7 +115,7 @@ class _Factory:
         self.outputs_by_effect_id = outputs_by_effect_id
         self.wait_on_by_effect_id = wait_on_by_effect_id or {}
 
-    def build(self, effect):
+    def build(self, effect, **kwargs):
         return _Provider(
             self.outputs_by_effect_id.get(effect.id, {}),
             wait_on=self.wait_on_by_effect_id.get(effect.id),
@@ -125,8 +126,10 @@ class _CountingFactory:
     def __init__(self, outputs_by_effect_id: dict[str, dict[str, object]]) -> None:
         self.outputs_by_effect_id = outputs_by_effect_id
         self.execute_calls: list[dict[str, object]] = []
+        self.build_calls: list[dict[str, object]] = []
 
-    def build(self, effect):
+    def build(self, effect, **kwargs):
+        self.build_calls.append({"effect_id": effect.id, **dict(kwargs)})
         return _CountingProvider(
             self.outputs_by_effect_id.get(effect.id, {}),
             self.execute_calls,
@@ -144,7 +147,7 @@ class _ImmediateExecutor:
 
 
 class _FailingFactory:
-    def build(self, effect):
+    def build(self, effect, **kwargs):
         return _FailingProvider({})
 
 
@@ -302,6 +305,375 @@ def test_matching_outbound_edges_honors_resume_target_node() -> None:
     matched = _matching_outbound_edges(queue_record=queue_record, graph=graph)
 
     assert [edge["target_id"] for edge in matched] == ["effect-b"]
+
+
+def test_build_execution_graph_resolves_state_workflow_graph_metadata() -> None:
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": Path("runtime"),
+            "triggers": [
+                {
+                    "id": "trigger-state",
+                    "display_name": "State trigger",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-state-update",
+                    "display_name": "Update state",
+                    "type": "effect:state:update",
+                    "namespace": "workflow",
+                    "key": "cursor",
+                    "operation": "set",
+                    "value": {"counter": 1},
+                }
+            ],
+            "queries": [
+                {
+                    "id": "query-state-get",
+                    "display_name": "Read state",
+                    "type": "query:state:get",
+                    "namespace": "workflow",
+                    "key": "cursor",
+                }
+            ],
+            "edges": [
+                {"source_id": "trigger-state", "target_id": "effect-state-update"},
+                {"source_id": "effect-state-update", "target_id": "query-state-get"},
+            ],
+            "workflow_graphs": [
+                {
+                    "id": "graph-state",
+                    "name": "State graph",
+                    "directory_paths": ["root/team-a"],
+                    "node_ids": [
+                        "trigger-state",
+                        "effect-state-update",
+                        "query-state-get",
+                    ],
+                }
+            ],
+        }
+    )
+
+    graph = _build_execution_graph(worker_config)
+
+    assert graph.node_graph_metadata_by_id["trigger-state"].graph_id == "graph-state"
+    assert graph.node_graph_metadata_by_id["effect-state-update"].directory_path == "root/team-a"
+    assert graph.node_graph_metadata_by_id["query-state-get"].graph_id == "graph-state"
+
+
+def test_effect_orchestrator_executes_state_nodes_with_graph_isolation(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-alpha",
+                    "display_name": "Alpha tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                },
+                {
+                    "id": "trigger-beta",
+                    "display_name": "Beta tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                },
+            ],
+            "effects": [
+                {
+                    "id": "effect-alpha-state",
+                    "display_name": "Store alpha state",
+                    "type": "effect:state:update",
+                    "namespace": "workflow",
+                    "key": "cursor",
+                    "operation": "set",
+                    "value": {"counter": 1},
+                },
+                {
+                    "id": "effect-beta-state",
+                    "display_name": "Store beta state",
+                    "type": "effect:state:update",
+                    "namespace": "workflow",
+                    "key": "cursor",
+                    "operation": "set",
+                    "value": {"counter": 2},
+                },
+            ],
+            "queries": [
+                {
+                    "id": "query-alpha-state",
+                    "display_name": "Read alpha state",
+                    "type": "query:state:get",
+                    "namespace": "workflow",
+                    "key": "cursor",
+                },
+                {
+                    "id": "query-beta-state",
+                    "display_name": "Read beta state",
+                    "type": "query:state:get",
+                    "namespace": "workflow",
+                    "key": "cursor",
+                },
+            ],
+            "edges": [
+                _edge("trigger-alpha", "effect-alpha-state"),
+                _edge("effect-alpha-state", "query-alpha-state"),
+                _edge("trigger-beta", "effect-beta-state"),
+                _edge("effect-beta-state", "query-beta-state"),
+            ],
+            "workflow_graphs": [
+                {
+                    "id": "graph-alpha",
+                    "name": "Alpha graph",
+                    "directory_paths": ["root"],
+                    "node_ids": [
+                        "trigger-alpha",
+                        "effect-alpha-state",
+                        "query-alpha-state",
+                    ],
+                },
+                {
+                    "id": "graph-beta",
+                    "name": "Beta graph",
+                    "directory_paths": ["root"],
+                    "node_ids": [
+                        "trigger-beta",
+                        "effect-beta-state",
+                        "query-beta-state",
+                    ],
+                },
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-alpha",
+            trigger_id="trigger-alpha",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-beta",
+            trigger_id="trigger-beta",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 1, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    for _ in range(8):
+        worker.run_once()
+
+    execution_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    records_by_effect_id = {
+        record["effect_id"]: record for record in execution_payload.values()
+    }
+
+    alpha_effect = records_by_effect_id["effect-alpha-state"]
+    alpha_query = records_by_effect_id["query-alpha-state"]
+    beta_effect = records_by_effect_id["effect-beta-state"]
+    beta_query = records_by_effect_id["query-beta-state"]
+
+    assert alpha_effect["outputs"]["graph_id"] == "graph-alpha"
+    assert alpha_effect["outputs"]["value"] == {"counter": 1}
+    assert alpha_effect["outputs"]["version"] == 1
+    assert alpha_query["outputs"]["graph_id"] == "graph-alpha"
+    assert alpha_query["outputs"]["value"] == {"counter": 1}
+    assert alpha_query["outputs"]["found"] is True
+    assert beta_effect["outputs"]["graph_id"] == "graph-beta"
+    assert beta_effect["outputs"]["value"] == {"counter": 2}
+    assert beta_effect["outputs"]["version"] == 1
+    assert beta_query["outputs"]["graph_id"] == "graph-beta"
+    assert beta_query["outputs"]["value"] == {"counter": 2}
+    assert beta_query["outputs"]["found"] is True
+
+    state_payload = json.loads((runtime_dir / "workflow-state.json").read_text(encoding="utf-8"))
+    graph_state_records = state_payload["records"]["root"]
+    assert graph_state_records["graph-alpha"]["workflow"]["cursor"]["value"] == {
+        "counter": 1
+    }
+    assert graph_state_records["graph-beta"]["workflow"]["cursor"]["value"] == {
+        "counter": 2
+    }
+
+
+def test_effect_orchestrator_rejects_state_nodes_without_persisted_graph_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    state_path = runtime_dir / "workflow-state.json"
+    state_path.write_text("{\"sentinel\": true}", encoding="utf-8")
+
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    valid_worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-state",
+                    "display_name": "State trigger",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-state-update",
+                    "display_name": "Update state",
+                    "type": "effect:state:update",
+                    "namespace": "workflow",
+                    "key": "cursor",
+                    "operation": "set",
+                    "value": {"counter": 1},
+                }
+            ],
+            "queries": [
+                {
+                    "id": "query-state-get",
+                    "display_name": "Read state",
+                    "type": "query:state:get",
+                    "namespace": "workflow",
+                    "key": "cursor",
+                }
+            ],
+            "edges": [
+                {"source_id": "trigger-state", "target_id": "effect-state-update"},
+                {"source_id": "effect-state-update", "target_id": "query-state-get"},
+            ],
+            "workflow_graphs": [
+                {
+                    "id": "graph-state",
+                    "name": "State graph",
+                    "directory_paths": ["root"],
+                    "node_ids": [
+                        "trigger-state",
+                        "effect-state-update",
+                        "query-state-get",
+                    ],
+                }
+            ],
+        }
+    )
+    worker_config = valid_worker_config.model_copy(update={"workflow_graphs": []})
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-state-missing-1",
+            trigger_id="trigger-state",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    with pytest.raises(ValueError, match="persisted workflow graph metadata"):
+        worker.run_once()
+
+    assert state_path.read_text(encoding="utf-8") == "{\"sentinel\": true}"
+
+
+def test_effect_orchestrator_threads_graph_metadata_into_provider_contexts(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Tick",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-1",
+                    "display_name": "Prompt",
+                    "type": "effect:agent:prompt",
+                    "prompt": "hello",
+                }
+            ],
+            "queries": [
+                {
+                    "id": "query-1",
+                    "display_name": "VM state",
+                    "type": "query:vm:run-state",
+                    "session_id": "session-1",
+                }
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-1"),
+                _edge("trigger-1", "query-1"),
+            ],
+            "workflow_graphs": [
+                {
+                    "id": "graph-1",
+                    "name": "Graph 1",
+                    "directory_paths": ["root/team-a"],
+                    "node_ids": ["trigger-1", "effect-1", "query-1"],
+                }
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker._executor = _ImmediateExecutor()  # type: ignore[assignment]
+    effect_factory = _CountingFactory({"effect-1": {"success": True}})
+    query_factory = _CountingFactory({"query-1": {"state_code": "running"}})
+    worker.provider_factory = effect_factory
+    worker.query_provider_factory = query_factory
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-graph-metadata",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    worker.run_once()
+
+    assert effect_factory.build_calls
+    assert all(call == {
+        "effect_id": "effect-1",
+        "directory_path": "root/team-a",
+        "graph_id": "graph-1",
+    } for call in effect_factory.build_calls)
+    assert query_factory.build_calls == [
+        {
+            "effect_id": "query-1",
+            "directory_path": "root/team-a",
+            "graph_id": "graph-1",
+        }
+    ]
+    assert effect_factory.execute_calls[0]["execution_context"]["graph_id"] == "graph-1"
+    assert effect_factory.execute_calls[0]["execution_context"]["directory_path"] == "root/team-a"
 
 
 def test_effect_orchestrator_main_help_does_not_crash(monkeypatch: pytest.MonkeyPatch) -> None:
