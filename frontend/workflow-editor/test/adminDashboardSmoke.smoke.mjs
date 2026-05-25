@@ -1019,41 +1019,6 @@ test("admin shell defaults to the dashboard and preserves deep links", async (t)
       return;
     }
 
-    if (pathname === "/api/workflow-editor/sample-workflow") {
-      await route.fulfill(
-        jsonResponse({
-          active: false,
-          launched_at: null,
-          run: null,
-          detail: null,
-          tutorial_steps: [
-            {
-              step_id: "launch",
-              title: "Launch the sample",
-              body: "Create the guided in-memory run without touching runtime stores.",
-              status: "active",
-              node_id: null,
-            },
-            {
-              step_id: "inspect",
-              title: "Inspect the run",
-              body: "Open the existing inspector and review the simulated graph.",
-              status: "pending",
-              node_id: "sample:first-run:run",
-            },
-          ],
-          current_step: {
-            step_id: "launch",
-            title: "Launch the sample",
-            body: "Create the guided in-memory run without touching runtime stores.",
-            status: "active",
-            node_id: null,
-          },
-        }),
-      );
-      return;
-    }
-
     if (pathname === "/api/workflow-editor/document") {
       if (url.searchParams.has("_dashboard")) {
         assertDashboardCacheParams(url);

@@ -1661,6 +1661,12 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
 
     monkeypatch.setattr(ado_worker, "_load_ado_pr_feedback_triggers", lambda _config: [trigger])
     monkeypatch.setenv("AZURE_DEVOPS_PR_PAT", "secret-pat")
+    wake_paths: list[Path] = []
+    monkeypatch.setattr(
+        ado_worker,
+        "notify_wake_socket_for_lock",
+        lambda lock_path: wake_paths.append(Path(lock_path)) or True,
+    )
 
     def fake_poll(self, *, client, repo, pr_id, cursor):
         assert repo == "org/repo"
@@ -1694,6 +1700,7 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
         )
 
     assert published == 1
+    assert wake_paths == [worker_config.runtime_dir / "effect-orchestrator.lock"]
     queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
     events = queue.list_pending(trigger_id="trigger-pr-feedback")
     assert len(events) == 1

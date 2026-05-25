@@ -51,6 +51,7 @@ from agent_sandbox.pr_feedback.providers import (
 from agent_sandbox.pr_feedback.store import FeedbackEnvelope, PrFeedbackStore, _stream_key
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
+from agent_sandbox.orchestration.host_polling import notify_wake_socket_for_lock
 from agent_sandbox.services import AzureDevOpsPrQueryProvider, _normalize_ignored_feedback_payload
 from agent_sandbox.storage import JsonStore
 from agent_sandbox.triggers.providers._cursor_state import TriggerCursorStore
@@ -1712,6 +1713,15 @@ def _list_explicit_ado_trigger_pull_requests(
     return list(response.pull_requests)
 
 
+def _effect_lock_path_for_worker_config(
+    config: WorkerConfig,
+    worker_config: TriggerOrchestratorWorkerGlobalConfig | None,
+) -> Path:
+    if worker_config is not None:
+        return worker_config.effect_lock_path
+    return config.runtime_dir / "effect-orchestrator.lock"
+
+
 def _load_ado_pr_feedback_session_bindings(
     *,
     runtime_dir: Path,
@@ -1836,6 +1846,7 @@ def _publish_directory_pr_feedback_events(
     event_queue = _build_trigger_event_queue_for_worker_config(
         config, trigger_worker_config
     )
+    effect_wake_lock_path = _effect_lock_path_for_worker_config(config, trigger_worker_config)
     feedback_store = PrFeedbackStore(config.runtime_dir / "pr-feedback-store.json")
     audit_logger = AuditLogger(runtime_gateway_config.audit_log_path)
     ignored_feedback_ids = _read_ignored_feedback_ids(
@@ -1983,6 +1994,7 @@ def _publish_directory_pr_feedback_events(
             record = event_queue.publish(event)
             if not already_queued and record.event_id == event.event_id:
                 published_count += 1
+                notify_wake_socket_for_lock(effect_wake_lock_path)
         cursor_store.put(trigger.id, {"stream_cursors": next_cursors})
 
     return published_count
@@ -2022,6 +2034,7 @@ def _publish_directory_pr_completion_events(
     event_queue = _build_trigger_event_queue_for_worker_config(
         config, trigger_worker_config
     )
+    effect_wake_lock_path = _effect_lock_path_for_worker_config(config, trigger_worker_config)
     pr_map_store = PrMapStore(runtime_gateway_config.pr_map_path)
     audit_logger = AuditLogger(runtime_gateway_config.audit_log_path)
     completion_cursor_store: TriggerCursorStore | None = None
@@ -2151,6 +2164,7 @@ def _publish_directory_pr_completion_events(
                 )
             if not already_queued and record.event_id == event.event_id:
                 published_count += 1
+                notify_wake_socket_for_lock(effect_wake_lock_path)
 
     return published_count
 
