@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -317,6 +318,134 @@ class PullRequestCompletedTriggerDefinition(TriggerDefinition):
     def validate_provider_specific_fields(self) -> "PullRequestCompletedTriggerDefinition":
         if self.provider == "ado" and not self.organization_url:
             raise ValueError("organization_url is required when provider is 'ado'")
+        return self
+
+
+_CI_RUN_COMPLETED_PROVIDER_ALIASES = {
+    "ado": "ado_pipelines",
+    "ado_pipelines": "ado_pipelines",
+    "azure_devops": "ado_pipelines",
+    "azure_pipelines": "ado_pipelines",
+    "github": "github_actions",
+    "github_actions": "github_actions",
+}
+
+_CI_RUN_COMPLETED_TERMINAL_CONCLUSIONS = (
+    "success",
+    "failure",
+    "cancelled",
+    "timed_out",
+    "skipped",
+)
+
+_CI_RUN_COMPLETED_CONCLUSION_ALIASES = {
+    "cancelled": "cancelled",
+    "canceled": "cancelled",
+    "failed": "failure",
+    "failure": "failure",
+    "partiallysucceeded": "failure",
+    "skipped": "skipped",
+    "success": "success",
+    "succeeded": "success",
+    "timedout": "timed_out",
+    "timeout": "timed_out",
+    "timed_out": "timed_out",
+}
+
+
+def _normalize_ci_token(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    return re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+
+
+def _normalize_ci_conclusion_token(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+class CiRunCompletedTriggerDefinition(TriggerDefinition):
+    type: Literal["trigger:ci:run:completed"]
+    provider: Literal["github_actions", "ado_pipelines"]
+    repo: str | None = None
+    workflow: str | None = None
+    organization_url: str | None = None
+    project: str | None = None
+    pipeline_id: int | None = None
+    pipeline_name: str | None = None
+    branches: list[str] = Field(default_factory=list)
+    conclusions: list[str] = Field(
+        default_factory=lambda: list(_CI_RUN_COMPLETED_TERMINAL_CONCLUSIONS)
+    )
+    top: int = Field(default=50, ge=1, le=100)
+    include_existing: bool = False
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def normalize_provider(cls, value: object) -> str:
+        token = _normalize_ci_token(value)
+        if token is None:
+            raise ValueError("provider is required")
+        canonical = _CI_RUN_COMPLETED_PROVIDER_ALIASES.get(token)
+        if canonical is None:
+            allowed = ", ".join(sorted(_CI_RUN_COMPLETED_PROVIDER_ALIASES))
+            raise ValueError(
+                f"Unsupported CI provider: {token!r}. Allowed providers: {allowed}"
+            )
+        return canonical
+
+    @field_validator("repo", "workflow", "project", "pipeline_name", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("organization_url", mode="before")
+    @classmethod
+    def normalize_organization_url(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip().rstrip("/")
+        return text or None
+
+    @field_validator("branches", mode="before")
+    @classmethod
+    def normalize_branches(cls, value: object) -> object:
+        return normalize_string_list(value)
+
+    @field_validator("conclusions", mode="before")
+    @classmethod
+    def normalize_conclusions(cls, value: object) -> list[str]:
+        if value is None:
+            return list(_CI_RUN_COMPLETED_TERMINAL_CONCLUSIONS)
+        normalized = normalize_string_list(value)
+        canonical: list[str] = []
+        for item in normalized:
+            token = _normalize_ci_conclusion_token(item)
+            if token is None:
+                continue
+            conclusion = _CI_RUN_COMPLETED_CONCLUSION_ALIASES.get(token)
+            if conclusion is None:
+                allowed = ", ".join(_CI_RUN_COMPLETED_TERMINAL_CONCLUSIONS)
+                raise ValueError(
+                    f"Unsupported CI conclusion: {item!r}. Allowed conclusions: {allowed}"
+                )
+            canonical.append(conclusion)
+        return list(dict.fromkeys(canonical))
+
+    @model_validator(mode="after")
+    def validate_provider_specific_fields(self) -> "CiRunCompletedTriggerDefinition":
+        if self.provider == "github_actions" and not self.repo:
+            raise ValueError("repo is required when provider is 'github_actions'")
         return self
 
 

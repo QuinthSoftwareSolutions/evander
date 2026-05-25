@@ -280,6 +280,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "trigger:pull-request:completed": provider_models.PullRequestCompletedTriggerDefinition,
         "trigger:review:new-request": provider_models.ReviewNewRequestTriggerDefinition,
         "trigger:git:push": provider_models.GitPushTriggerDefinition,
+        "trigger:ci:run:completed": provider_models.CiRunCompletedTriggerDefinition,
         "trigger:agent:run:completed": provider_models.AgentRunCompletedTriggerDefinition,
         "trigger:agent:prompt:new": provider_models.AgentPromptNewTriggerDefinition,
         "gate:filter": GateFilterDefinition,

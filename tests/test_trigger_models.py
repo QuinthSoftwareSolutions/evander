@@ -18,6 +18,7 @@ from agent_sandbox.events.provider_models import (
     ArtifactPublishArtifactsEffectDefinition,
     ArtifactStageEffectDefinition,
     CommunicationSendMessageEffectDefinition,
+    CiRunCompletedTriggerDefinition,
     GitPromoteAgentBranchEffectDefinition,
     GitPushTriggerDefinition,
     IssueUpdateStateEffectDefinition,
@@ -192,6 +193,119 @@ def test_pr_completed_trigger_requires_org_url_for_ado() -> None:
                 "display_name": "PR completed",
                 "type": "trigger:pull-request:completed",
                 "provider": "ado",
+            }
+        )
+
+
+def test_ci_run_completed_trigger_normalizes_aliases_and_defaults() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    trigger = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "t-ci",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "github-actions",
+                "repo": " owner/repo ",
+                "workflow": " build.yml ",
+                "branches": [" main ", "", "release/v1"],
+                "conclusions": [" succeeded ", "partiallySucceeded", "canceled", "timedOut"],
+            }
+        )
+    )
+
+    assert isinstance(trigger, CiRunCompletedTriggerDefinition)
+    assert trigger.provider == "github_actions"
+    assert trigger.repo == "owner/repo"
+    assert trigger.workflow == "build.yml"
+    assert trigger.branches == ["main", "release/v1"]
+    assert trigger.conclusions == ["success", "failure", "cancelled", "timed_out"]
+    assert trigger.top == 50
+    assert trigger.include_existing is False
+
+
+def test_ci_run_completed_trigger_requires_repo_for_github() -> None:
+    with pytest.raises(ValueError, match="repo is required when provider is 'github_actions'"):
+        CiRunCompletedTriggerDefinition.model_validate(
+            {
+                "id": "t-ci-github",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "github",
+            }
+        )
+
+
+def test_ci_run_completed_trigger_normalizes_ado_config() -> None:
+    trigger = CiRunCompletedTriggerDefinition.model_validate(
+        {
+            "id": "t-ci-ado",
+            "display_name": "CI run completed",
+            "type": "trigger:ci:run:completed",
+            "provider": "azure-pipelines",
+            "organization_url": " https://dev.azure.com/example/ ",
+            "project": " APP ",
+            "repo": " ",
+            "pipeline_id": "42",
+            "pipeline_name": " nightly ",
+            "branches": " release/* ",
+            "conclusions": ["partiallySucceeded", "skipped", "canceled", "timedOut"],
+        }
+    )
+
+    assert trigger.provider == "ado_pipelines"
+    assert trigger.organization_url == "https://dev.azure.com/example"
+    assert trigger.project == "APP"
+    assert trigger.repo is None
+    assert trigger.pipeline_id == 42
+    assert trigger.pipeline_name == "nightly"
+    assert trigger.branches == ["release/*"]
+    assert trigger.conclusions == ["failure", "skipped", "cancelled", "timed_out"]
+
+
+def test_ci_run_completed_trigger_rejects_invalid_provider_conclusion_top_and_missing_provider() -> None:
+    with pytest.raises(ValueError, match="Unsupported CI provider"):
+        CiRunCompletedTriggerDefinition.model_validate(
+            {
+                "id": "t-ci-provider",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "circleci",
+            }
+        )
+
+    with pytest.raises(ValueError, match="Unsupported CI conclusion"):
+        CiRunCompletedTriggerDefinition.model_validate(
+            {
+                "id": "t-ci-conclusion",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "github_actions",
+                "repo": "owner/repo",
+                "conclusions": ["unknown"],
+            }
+        )
+
+    with pytest.raises(ValueError, match="greater than or equal to 1"):
+        CiRunCompletedTriggerDefinition.model_validate(
+            {
+                "id": "t-ci-top",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "github_actions",
+                "repo": "owner/repo",
+                "top": 0,
+            }
+        )
+
+    with pytest.raises(ValueError, match="provider"):
+        CiRunCompletedTriggerDefinition.model_validate(
+            {
+                "id": "t-ci-missing-provider",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "repo": "owner/repo",
             }
         )
 
