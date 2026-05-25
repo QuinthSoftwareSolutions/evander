@@ -31,6 +31,7 @@ class QueryRuntimeContext(ProviderRuntimeBase):
     session_lookup: SessionLookup | None = None
     session_context_reader: SessionContextReader | None = None
     session_artifact_reader: SessionArtifactReader | None = None
+    admin_service: Any | None = None
 
 
 class QueryProvider(Protocol):
