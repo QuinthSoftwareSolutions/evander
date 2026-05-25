@@ -25,6 +25,8 @@ from .base import QueryProviderBase
 
 class CommunicationMessagesQueryProvider(QueryProviderBase):
     NODE_TYPE = "query:communication:messages"
+    DEFAULT_LIMIT = 50
+    MAX_LIMIT = 200
 
     def execute(self, *, resolved_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         payload = self._query_payload()
@@ -407,15 +409,21 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
 
     def _coerce_limit(self, value: Any) -> int | None:
         if value is None:
-            return None
+            return self.DEFAULT_LIMIT
         if isinstance(value, bool):
-            raise ValueError(f"{self.NODE_TYPE} limit must be a positive integer")
+            raise ValueError(
+                f"{self.NODE_TYPE} limit must be between 1 and {self.MAX_LIMIT}"
+            )
         try:
             limit = int(str(value).strip())
         except (TypeError, ValueError) as exc:
-            raise ValueError(f"{self.NODE_TYPE} limit must be a positive integer") from exc
-        if limit <= 0:
-            raise ValueError(f"{self.NODE_TYPE} limit must be a positive integer")
+            raise ValueError(
+                f"{self.NODE_TYPE} limit must be between 1 and {self.MAX_LIMIT}"
+            ) from exc
+        if limit < 1 or limit > self.MAX_LIMIT:
+            raise ValueError(
+                f"{self.NODE_TYPE} limit must be between 1 and {self.MAX_LIMIT}"
+            )
         return limit
 
     def _coerce_optional_cursor(self, value: Any, *, field_name: str) -> str | None:

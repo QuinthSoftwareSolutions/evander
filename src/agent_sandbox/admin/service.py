@@ -3388,7 +3388,6 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Communication target",
                 "enum",
                 required=True,
-                bindable=True,
                 description=(
                     "Select a read-capable Teams or Discord communication target."
                 ),

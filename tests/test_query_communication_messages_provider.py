@@ -269,6 +269,49 @@ def test_query_communication_messages_teams_supports_cursor_before_cursor_limit_
     assert before_output["next_cursor"] == "cursor-2"
 
 
+def test_query_communication_messages_defaults_and_bounds_limit(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    _write_targets(
+        tmp_path,
+        [
+            {
+                "id": "teams-primary",
+                "provider": "teams",
+                "kind": "teams",
+                "address": "team-a/channel-1",
+                "policy": {"capabilities": ["read"]},
+            }
+        ],
+    )
+    store = TeamsInboxStore(tmp_path / "runtime" / "teams-inbox-store.json")
+    for index in range(1, 56):
+        store.add_message_if_new(
+            _teams_message(
+                f"cursor-{index:03d}",
+                message_id=f"msg-{index:03d}",
+                created_at=datetime(2026, 3, 21, 10, index, tzinfo=UTC),
+                content=f"message-{index}",
+            )
+        )
+
+    output = _query(
+        runtime=runtime,
+        communication_target_id="teams-primary",
+    )
+
+    assert output["count"] == 50
+    assert output["next_cursor"] == "cursor-050"
+    assert [message["message_id"] for message in output["messages"]][-1] == "msg-050"
+
+    with pytest.raises(ValueError, match="limit must be between 1 and 200"):
+        _query(
+            runtime=runtime,
+            communication_target_id="teams-primary",
+            limit=201,
+            query_id="query-communication-messages-limit-too-large",
+        )
+
+
 def test_query_communication_messages_returns_discord_messages_and_preserves_store(
     tmp_path: Path,
 ) -> None:
