@@ -1524,6 +1524,56 @@ def _field(
     )
 
 
+def _pull_request_trigger_fields() -> list[WorkflowEditorFieldDefinition]:
+    return [
+        _field(
+            "provider",
+            "Provider",
+            "enum",
+            required=True,
+            options=[
+                _field_option("local", "Local"),
+                _field_option("github", "GitHub"),
+                _field_option("ado", "Azure DevOps"),
+            ],
+        ),
+        _field(
+            "repo",
+            "Repo",
+            "string",
+            description=(
+                "Set a repo to enable explicit Azure DevOps PR polling. Leave blank to use "
+                "legacy pr-map compatibility."
+            ),
+        ),
+        _field("directory_path", "Directory path", "string"),
+        _field("organization_url", "Organization URL", "string"),
+        _field("project", "Project", "string"),
+        _field("status", "Status", "string"),
+        _field("creator_id", "Creator ID", "string"),
+        _field("reviewer_id", "Reviewer ID", "string"),
+        _field("source_ref_name", "Source ref", "string"),
+        _field("target_ref_name", "Target ref", "string"),
+        _field("source_repository_id", "Source repository ID", "string"),
+        _field("repository_id", "Repository ID", "string"),
+        _field("min_time", "Min time", "string"),
+        _field("max_time", "Max time", "string"),
+        _field("query_time_range_type", "Time range type", "string"),
+        _field("include_links", "Include links", "boolean"),
+        _field("max_comment_length", "Max comment length", "number"),
+        _field(
+            "tags",
+            "Tags",
+            "string",
+            description="Tag expression with and, or, not, and parentheses.",
+            placeholder="(TagA or TagB) and not TagC",
+        ),
+        _field("top", "Top", "number"),
+        _field("skip", "Skip", "number"),
+        _field("cursor", "Cursor", "string"),
+    ]
+
+
 _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:cron": "Start a workflow on a recurring cron schedule.",
     "trigger:event": "Start when an internal workflow event is emitted.",
@@ -1821,41 +1871,13 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         kind="trigger",
         type="trigger:pull-request:new-feedback",
         label="PR feedback",
-        fields=[
-            _field(
-                "provider",
-                "Provider",
-                "enum",
-                required=True,
-                options=[
-                    _field_option("local", "Local"),
-                    _field_option("github", "GitHub"),
-                    _field_option("ado", "Azure DevOps"),
-                ],
-            ),
-            _field("organization_url", "Organization URL", "string"),
-            _field("project", "Project", "string"),
-        ],
+        fields=_pull_request_trigger_fields(),
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="trigger",
         type="trigger:pull-request:completed",
         label="PR completed",
-        fields=[
-            _field(
-                "provider",
-                "Provider",
-                "enum",
-                required=True,
-                options=[
-                    _field_option("local", "Local"),
-                    _field_option("github", "GitHub"),
-                    _field_option("ado", "Azure DevOps"),
-                ],
-            ),
-            _field("organization_url", "Organization URL", "string"),
-            _field("project", "Project", "string"),
-        ],
+        fields=_pull_request_trigger_fields(),
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="trigger",

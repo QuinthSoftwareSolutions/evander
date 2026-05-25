@@ -323,6 +323,13 @@ def _resolve_worker_config_for_directory(
     )
 
 
+@dataclass(frozen=True)
+class _ExplicitAdoPrCandidates:
+    organization_url: str
+    project: str
+    pull_requests: list[PullRequestItem]
+
+
 def _require_env(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
@@ -1643,7 +1650,7 @@ def _list_explicit_ado_trigger_pull_requests(
     config: WorkerConfig,
     runtime_gateway_config: GatewayConfig,
     current_directory_path: str,
-) -> list[PullRequestItem]:
+) -> _ExplicitAdoPrCandidates:
     normalized_current_directory_path = DirectoryPath(segments=current_directory_path).as_posix()
     trigger_directory_path = _normalize_optional_text(trigger.directory_path)
     if trigger_directory_path is not None:
@@ -1655,7 +1662,11 @@ def _list_explicit_ado_trigger_pull_requests(
                 effective_directory_path,
                 normalized_current_directory_path,
             )
-            return []
+            return _ExplicitAdoPrCandidates(
+                organization_url="",
+                project="",
+                pull_requests=[],
+            )
     effective_directory_path = trigger_directory_path or normalized_current_directory_path
     directory_config = _resolve_directory_worker_config(
         config, runtime_gateway_config, effective_directory_path
@@ -1668,11 +1679,19 @@ def _list_explicit_ado_trigger_pull_requests(
             effective_directory_path,
             pat_env_name,
         )
-        return []
+        return _ExplicitAdoPrCandidates(
+            organization_url="",
+            project="",
+            pull_requests=[],
+        )
 
     repo = _normalize_optional_text(trigger.repo)
     if not repo:
-        return []
+        return _ExplicitAdoPrCandidates(
+            organization_url="",
+            project="",
+            pull_requests=[],
+        )
 
     organization_url = (
         _normalize_optional_text(trigger.organization_url)
@@ -1710,7 +1729,11 @@ def _list_explicit_ado_trigger_pull_requests(
         skip=trigger.skip,
         cursor=trigger.cursor,
     )
-    return list(response.pull_requests)
+    return _ExplicitAdoPrCandidates(
+        organization_url=organization_url or "",
+        project=project or "",
+        pull_requests=list(response.pull_requests),
+    )
 
 
 def _effect_lock_path_for_worker_config(
@@ -1856,6 +1879,12 @@ def _publish_directory_pr_feedback_events(
 
     for trigger in triggers:
         if _trigger_has_explicit_pr_criteria(trigger):
+            explicit_candidates = _list_explicit_ado_trigger_pull_requests(
+                trigger=trigger,
+                config=config,
+                runtime_gateway_config=runtime_gateway_config,
+                current_directory_path=directory_path,
+            )
             streams = [
                 (
                     {
@@ -1864,19 +1893,23 @@ def _publish_directory_pr_feedback_events(
                         "pr_id": candidate.pr_id,
                     },
                     {},
+                    explicit_candidates.organization_url,
+                    explicit_candidates.project,
                 )
-                for candidate in _list_explicit_ado_trigger_pull_requests(
-                    trigger=trigger,
-                    config=config,
-                    runtime_gateway_config=runtime_gateway_config,
-                    current_directory_path=directory_path,
-                )
+                for candidate in explicit_candidates.pull_requests
             ]
         else:
             streams = [
                 (
                     {"provider": "azure_devops", "repo": repo, "pr_id": pr_id},
                     legacy_bindings.get((repo, pr_id), {}),
+                    trigger.organization_url or config.organization_url,
+                    _ado_project_for_feedback_stream(
+                        repo=repo,
+                        binding=legacy_bindings.get((repo, pr_id), {}),
+                        trigger=trigger,
+                        config=config,
+                    ),
                 )
                 for repo, pr_id in sorted(legacy_bindings.keys())
             ]
@@ -1889,17 +1922,12 @@ def _publish_directory_pr_feedback_events(
         next_cursors = dict(state_cursors)
         discovered: list[tuple[dict[str, str], PrFeedbackItem]] = []
 
-        for stream, binding in streams:
+        for stream, binding, organization_url, project in streams:
             repo = stream["repo"]
             pr_id = stream["pr_id"]
             adapter = AzureDevOpsFeedbackAdapter(
-                organization_url=trigger.organization_url or config.organization_url,
-                project=_ado_project_for_feedback_stream(
-                    repo=repo,
-                    binding=binding,
-                    trigger=trigger,
-                    config=config,
-                ),
+                organization_url=organization_url,
+                project=project,
                 pat=pat,
                 pat_env_name=pat_env_name,
             )
@@ -2056,13 +2084,15 @@ def _publish_directory_pr_completion_events(
                 completed_streams = dict(cursor_streams)
 
         if explicit_pr_criteria:
-            candidates = _list_explicit_ado_trigger_pull_requests(
+            explicit_candidates = _list_explicit_ado_trigger_pull_requests(
                 trigger=trigger,
                 config=config,
                 runtime_gateway_config=runtime_gateway_config,
                 current_directory_path=directory_path,
             )
+            candidates = explicit_candidates.pull_requests
         else:
+            explicit_candidates = None
             candidates = [
                 PullRequestItem(provider="azure_devops", repo=repo, pr_id=pr_id)
                 for repo, pr_id in sorted(legacy_bindings.keys())
@@ -2076,12 +2106,20 @@ def _publish_directory_pr_completion_events(
                 continue
             binding = {} if explicit_pr_criteria else legacy_bindings.get((repo, pr_id), {})
             provider = AzureDevOpsPrQueryProvider(
-                organization_url=trigger.organization_url or config.organization_url,
-                project=_ado_project_for_feedback_stream(
-                    repo=repo,
-                    binding=binding,
-                    trigger=trigger,
-                    config=config,
+                organization_url=(
+                    explicit_candidates.organization_url
+                    if explicit_candidates is not None
+                    else trigger.organization_url or config.organization_url
+                ),
+                project=(
+                    explicit_candidates.project
+                    if explicit_candidates is not None
+                    else _ado_project_for_feedback_stream(
+                        repo=repo,
+                        binding=binding,
+                        trigger=trigger,
+                        config=config,
+                    )
                 ),
                 pat=pat,
                 timeout_seconds=30.0,

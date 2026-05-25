@@ -1978,10 +1978,10 @@ def test_publish_directory_pr_feedback_events_uses_explicit_pr_query_candidates_
         fake_list_pull_requests,
     )
 
-    poll_calls: list[tuple[str, str, str | None]] = []
+    poll_calls: list[tuple[str, str, str, str | None]] = []
 
     def fake_poll(self, *, client, repo, pr_id, cursor):
-        poll_calls.append((self.project, repo, pr_id))
+        poll_calls.append((self.organization_url, self.project, repo, pr_id))
         assert repo == "org/repo"
         assert pr_id == "6070"
         assert cursor is None
@@ -2040,7 +2040,9 @@ def test_publish_directory_pr_feedback_events_uses_explicit_pr_query_candidates_
             },
         }
     ]
-    assert poll_calls == [("Example Project", "org/repo", "6070")]
+    assert poll_calls == [
+        ("https://dev.azure.com/example-org", "Example Project", "org/repo", "6070")
+    ]
     assert not (worker_config.runtime_dir / "pr-map.json").exists()
     queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
     events = queue.list_pending(trigger_id="trigger-pr-feedback-explicit")
@@ -2166,10 +2168,12 @@ def test_publish_directory_pr_completion_events_uses_explicit_pr_query_candidate
         fake_list_pull_requests,
     )
 
-    get_calls: list[tuple[str, str, bool | None, bool | None]] = []
+    get_calls: list[tuple[str, str, str, str, bool | None, bool | None]] = []
 
     def fake_get_pull_request(self, *, repo, pr_id, include_reviewers=None, include_commits=None):
-        get_calls.append((repo, pr_id, include_reviewers, include_commits))
+        get_calls.append(
+            (self.organization_url, self.project, repo, pr_id, include_reviewers, include_commits)
+        )
         assert repo == "org/repo"
         assert pr_id == "6070"
         return GetPullRequestResponse(
@@ -2228,7 +2232,16 @@ def test_publish_directory_pr_completion_events_uses_explicit_pr_query_candidate
             },
         }
     ]
-    assert get_calls == [("org/repo", "6070", False, False)]
+    assert get_calls == [
+        (
+            "https://dev.azure.com/example-org",
+            "Example Project",
+            "org/repo",
+            "6070",
+            False,
+            False,
+        )
+    ]
     assert not (worker_config.runtime_dir / "pr-map.json").exists()
     queue = TriggerEventQueue(worker_config.runtime_dir / "trigger-orchestrator-events.json")
     events = queue.list_pending(trigger_id="trigger-pr-completed-explicit")
@@ -2248,7 +2261,16 @@ def test_publish_directory_pr_completion_events_uses_explicit_pr_query_candidate
         ]
         == events[0].event_id
     )
-    assert get_calls == [("org/repo", "6070", False, False)]
+    assert get_calls == [
+        (
+            "https://dev.azure.com/example-org",
+            "Example Project",
+            "org/repo",
+            "6070",
+            False,
+            False,
+        )
+    ]
 
     with httpx.Client() as client:
         republished = _publish_directory_pr_completion_events(
@@ -2259,7 +2281,16 @@ def test_publish_directory_pr_completion_events_uses_explicit_pr_query_candidate
         )
 
     assert republished == 0
-    assert get_calls == [("org/repo", "6070", False, False)]
+    assert get_calls == [
+        (
+            "https://dev.azure.com/example-org",
+            "Example Project",
+            "org/repo",
+            "6070",
+            False,
+            False,
+        )
+    ]
 
 
 def test_publish_directory_pr_feedback_events_uses_session_ado_project(
