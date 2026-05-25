@@ -89,6 +89,8 @@ class GateSwitchCaseDefinition(BaseModel):
     @field_validator("port", mode="before")
     @classmethod
     def validate_port(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("gate:switch case port must be a non-empty string")
         text = str(value).strip()
         if not text:
             raise ValueError("gate:switch case port must be a non-empty string")
@@ -138,6 +140,8 @@ class GateSwitchDefinition(GateDefinition):
     def validate_default_port(cls, value: object) -> str | None:
         if value is None:
             return None
+        if not isinstance(value, str):
+            raise ValueError("gate:switch default_port must be a non-empty string")
         text = str(value).strip()
         if not text:
             raise ValueError("gate:switch default_port must be a non-empty string")

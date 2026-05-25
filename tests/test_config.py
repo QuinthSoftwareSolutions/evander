@@ -907,7 +907,77 @@ def test_trigger_orchestrator_switch_gate_accepts_cases_and_duplicate_ports() ->
                         "id": "gate-switch",
                         "display_name": "Route by state",
                         "type": "gate:switch",
+                        "cases": [
+                            {
+                                "port": None,
+                                "when": {
+                                    "all": [
+                                        {"left": "${{trigger-1.state}}", "equals": "ready"}
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            "gate:switch case port must be a non-empty string",
+        ),
+        (
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "gates": [
+                    {
+                        "id": "gate-switch",
+                        "display_name": "Route by state",
+                        "type": "gate:switch",
+                        "cases": [
+                            {
+                                "port": 123,
+                                "when": {
+                                    "all": [
+                                        {"left": "${{trigger-1.state}}", "equals": "ready"}
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            "gate:switch case port must be a non-empty string",
+        ),
+        (
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "gates": [
+                    {
+                        "id": "gate-switch",
+                        "display_name": "Route by state",
+                        "type": "gate:switch",
                         "default_port": "   ",
+                        "cases": [
+                            {
+                                "port": "ready",
+                                "when": {
+                                    "all": [
+                                        {"left": "${{trigger-1.state}}", "equals": "ready"}
+                                    ]
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            "gate:switch default_port must be a non-empty string",
+        ),
+        (
+            {
+                "runtime_dir": "/tmp/agent-sandbox-runtime",
+                "gates": [
+                    {
+                        "id": "gate-switch",
+                        "display_name": "Route by state",
+                        "type": "gate:switch",
+                        "default_port": 123,
                         "cases": [
                             {
                                 "port": "ready",
