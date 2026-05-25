@@ -1608,6 +1608,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:pull-request:completed": (
         "Start when a tracked pull request reaches a terminal state."
     ),
+    "trigger:ci:run:completed": (
+        "Start when a CI run completes on GitHub Actions or Azure DevOps."
+    ),
     "trigger:review:new-request": "Start when a review request is queued for orchestration.",
     "trigger:git:push": "Start from Git push events captured by the host-side bare-repo hook.",
     "trigger:agent:run:completed": "Start when an agent run completion event is recorded.",
@@ -1991,6 +1994,96 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="trigger:pull-request:completed",
         label="PR completed",
         fields=_pull_request_trigger_fields(),
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:ci:run:completed",
+        label="CI run completed",
+        fields=[
+            _field(
+                "provider",
+                "Provider",
+                "enum",
+                required=True,
+                options=[
+                    _field_option("github_actions", "GitHub Actions"),
+                    _field_option("ado_pipelines", "Azure DevOps Pipelines"),
+                ],
+                description="Select the CI provider that publishes completed runs.",
+            ),
+            _field(
+                "repo",
+                "Repo",
+                "string",
+                description=(
+                    "Repository owner/name for GitHub Actions. Optional for Azure DevOps when "
+                    "the directory provider config can resolve it."
+                ),
+            ),
+            _field(
+                "workflow",
+                "Workflow",
+                "string",
+                description="Optional GitHub workflow name, file name, or workflow id.",
+            ),
+            _field(
+                "organization_url",
+                "Organization URL",
+                "string",
+                description=(
+                    "Optional Azure DevOps organization URL. Directory provider config can "
+                    "supply it when omitted."
+                ),
+            ),
+            _field(
+                "project",
+                "Project",
+                "string",
+                description=(
+                    "Optional Azure DevOps project. Directory provider config can supply it "
+                    "when omitted."
+                ),
+            ),
+            _field(
+                "pipeline_id",
+                "Pipeline ID",
+                "number",
+                description="Optional Azure DevOps pipeline definition id.",
+            ),
+            _field(
+                "pipeline_name",
+                "Pipeline name",
+                "string",
+                description="Optional Azure DevOps pipeline definition name.",
+            ),
+            _field(
+                "branches",
+                "Branches",
+                "string_list",
+                description="Branch names to include. Leave empty to match any branch.",
+            ),
+            _field(
+                "conclusions",
+                "Conclusions",
+                "string_list",
+                description=(
+                    "Terminal outcomes to include. GitHub and Azure DevOps spellings are "
+                    "normalized to success, failure, cancelled, timed_out, and skipped."
+                ),
+            ),
+            _field(
+                "top",
+                "Top",
+                "number",
+                description="Maximum number of completed runs to fetch per poll.",
+            ),
+            _field(
+                "include_existing",
+                "Include existing",
+                "boolean",
+                description="Emit historical runs on the first poll instead of suppressing them.",
+            ),
+        ],
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="trigger",

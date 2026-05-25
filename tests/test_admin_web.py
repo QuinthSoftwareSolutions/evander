@@ -727,6 +727,31 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         node for node in catalog_payload["nodes"] if node["type"] == "trigger:teams:new-message"
     )
     assert [field["key"] for field in teams_message["fields"]] == ["targets", "user_ids"]
+    ci_run_completed = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "trigger:ci:run:completed"
+    )
+    assert [field["key"] for field in ci_run_completed["fields"]] == [
+        "provider",
+        "repo",
+        "workflow",
+        "organization_url",
+        "project",
+        "pipeline_id",
+        "pipeline_name",
+        "branches",
+        "conclusions",
+        "top",
+        "include_existing",
+    ]
+    assert next(field for field in ci_run_completed["fields"] if field["key"] == "provider")[
+        "options"
+    ] == [
+        {"value": "github_actions", "label": "GitHub Actions"},
+        {"value": "ado_pipelines", "label": "Azure DevOps Pipelines"},
+    ]
+    assert next(field for field in ci_run_completed["fields"] if field["key"] == "include_existing")[
+        "kind"
+    ] == "boolean"
     communication_message = next(
         node
         for node in catalog_payload["nodes"]

@@ -17,7 +17,6 @@ from agent_sandbox.daemons.trigger_orchestrator import (
     build_trigger_orchestrator_worker,
     main,
 )
-from agent_sandbox.events.internal import InternalEventBus
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import (
     AgentPromptNewTriggerDefinition,

@@ -336,6 +336,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "trigger:email:new-message": "Start from newly ingested email messages for the configured mailbox scope.",
   "trigger:pull-request:new-feedback": "Start when new pull-request feedback arrives from the configured provider.",
   "trigger:pull-request:completed": "Start when a tracked pull request reaches a terminal state.",
+  "trigger:ci:run:completed": "Start when a CI run completes on GitHub Actions or Azure DevOps.",
   "trigger:git:push": "Start from Git push events captured by the host-side bare-repo hook.",
   "trigger:agent:run:completed": "Start when a guest agent run completes.",
   "gate:filter": "Allow only matching events to continue downstream.",
@@ -1508,6 +1509,19 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
   }
   if (kind === "trigger" && type === "trigger:pull-request:new-feedback") {
     return { id, display_name: "PR feedback", type, provider: "local" };
+  }
+  if (kind === "trigger" && type === "trigger:ci:run:completed") {
+    return {
+      id,
+      display_name: "CI run completed",
+      type,
+      provider: "github_actions",
+      repo: "owner/repo",
+      branches: [],
+      conclusions: [],
+      top: 50,
+      include_existing: false,
+    };
   }
   if (kind === "trigger" && type === "trigger:git:push") {
     return { id, display_name: "Git push", type, path_glob: "/path/to/git-remotes/*.git" };

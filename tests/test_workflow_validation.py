@@ -327,6 +327,48 @@ def test_binding_diagnostics_accept_merge_derived_outputs() -> None:
     assert diagnostics == []
 
 
+def test_ci_run_completed_outputs_are_bindable() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-ci-1",
+                "display_name": "CI run completed",
+                "type": "trigger:ci:run:completed",
+                "provider": "github_actions",
+                "repo": "owner/repo",
+                "workflow": "build.yml",
+                "branches": ["main"],
+            }
+        ],
+        "effects": [
+            {
+                "id": "prompt-agent",
+                "display_name": "Prompt agent",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": "CI ${{trigger-ci-1.repo}} ran as ${{trigger-ci-1.workflow_name}}",
+            }
+        ],
+        "edges": [
+            {"source_id": "trigger-ci-1", "target_id": "prompt-agent"},
+        ],
+    }
+
+    output_schemas = derive_workflow_output_schemas(config)
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert output_schemas["trigger-ci-1"]["provider"] == {"type": "string"}
+    assert output_schemas["trigger-ci-1"]["repo"] == {"type": "string"}
+    assert output_schemas["trigger-ci-1"]["workflow_id"] == {"type": ["string", "null"]}
+    assert output_schemas["trigger-ci-1"]["pipeline_id"] == {"type": ["integer", "null"]}
+    assert output_schemas["trigger-ci-1"]["pull_requests"] == {
+        "type": "array",
+        "items": {"type": "object"},
+    }
+    assert output_schemas["trigger-ci-1"]["metadata"] == {"type": "object"}
+    assert diagnostics == []
+
+
 def test_output_schema_derivation_handles_nested_node_config() -> None:
     config = {
         "triggers": [
