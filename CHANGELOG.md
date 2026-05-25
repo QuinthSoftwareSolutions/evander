@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - Workflow Switch Lazy Routing Fix
+
+- Fixed `gate:switch` routing so cases are resolved in order and later
+  case/default binding errors cannot prevent an earlier matching branch from
+  running.
+
 ## 2026-05-25 - Workflow Switch Documentation
 
 - Documented `gate:switch` in the configuration reference with ordered cases,

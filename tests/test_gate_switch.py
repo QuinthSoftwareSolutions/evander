@@ -70,6 +70,7 @@ def _worker(
                         "route": {"type": "string"},
                         "state": {"type": "string"},
                         "ticket_id": {"type": "integer"},
+                        "pr": {"type": "object"},
                     },
                 }
             ],
@@ -202,9 +203,8 @@ def test_switch_gate_first_match_wins_and_preserves_outputs(tmp_path: Path) -> N
     assert gate_record["resolved_config"]["matched_case_index"] == 0
     assert gate_record["resolved_config"]["matched_case_label"] == "Ready path"
     assert gate_record["resolved_config"]["matched_by"] == "when"
-    assert gate_record["resolved_config"]["default_port"] == "fallback"
     assert gate_record["resolved_config"]["cases"][0]["when"]["left"] == "ready"
-    assert gate_record["resolved_config"]["cases"][1]["match"]["route"] == "ready"
+    assert len(gate_record["resolved_config"]["cases"]) == 1
     assert gate_record["outputs"] == {
         "route": "ready",
         "state": "ready",
@@ -213,12 +213,79 @@ def test_switch_gate_first_match_wins_and_preserves_outputs(tmp_path: Path) -> N
     assert gate_record["completion_event_branch_port"] == "ready"
     binding_paths = {entry["config_path"] for entry in gate_record["binding_trace"]["entries"]}
     assert "$.cases[0].when.left" in binding_paths
-    assert "$.cases[1].match.route" in binding_paths
+    assert "$.cases[1].match.route" not in binding_paths
     assert executed_effect_ids == ["effect-ready"]
 
     effect_record = _effect_records(worker)[0]
     assert effect_record["effect_id"] == "effect-ready"
     assert effect_record["resolved_config"]["prompt"] == "branch ready"
+
+
+def test_switch_gate_does_not_resolve_later_cases_or_default_after_match(
+    tmp_path: Path,
+) -> None:
+    worker, executed_effect_ids = _worker(
+        tmp_path,
+        switch_gate={
+            "id": "gate-switch",
+            "display_name": "Route by state",
+            "type": "gate:switch",
+            "default_port": "${{trigger-1.pr.id}}",
+            "cases": [
+                {
+                    "port": "ready",
+                    "label": "Ready path",
+                    "when": {
+                        "left": "${{trigger-1.state}}",
+                        "equals": "ready",
+                    },
+                },
+                {
+                    "port": "blocked",
+                    "label": "PR path",
+                    "when": {
+                        "left": "${{trigger-1.pr.id}}",
+                        "equals": 42,
+                    },
+                },
+            ],
+        },
+        effects=[
+            {
+                "id": "effect-ready",
+                "display_name": "Ready effect",
+                "type": "effect:agent:prompt",
+                "prompt": "branch ${{gate-switch.state}}",
+            }
+        ],
+        edges=[_edge("gate-switch", "effect-ready", source_port="ready")],
+    )
+    _publish(
+        worker,
+        event_id="event-ready",
+        payload={"route": "ready", "state": "ready", "ticket_id": 7},
+    )
+
+    _run_cycles(worker)
+
+    gate_record = _gate_records(worker)[0]
+    assert gate_record["status"] == "succeeded"
+    assert gate_record["resolved_config"]["selected_port"] == "ready"
+    assert gate_record["resolved_config"]["matched_case_index"] == 0
+    assert gate_record["resolved_config"]["matched_case_label"] == "Ready path"
+    assert gate_record["resolved_config"]["matched_by"] == "when"
+    assert gate_record["resolved_config"]["cases"] == [
+        {
+            "port": "ready",
+            "label": "Ready path",
+            "when": {"left": "ready", "equals": "ready"},
+            "match": None,
+        }
+    ]
+    assert "default_port" not in gate_record["resolved_config"]
+    binding_paths = {entry["config_path"] for entry in gate_record["binding_trace"]["entries"]}
+    assert binding_paths == {"$.cases[0].when.left"}
+    assert executed_effect_ids == ["effect-ready"]
 
 
 def test_switch_gate_match_case_can_select_branch(tmp_path: Path) -> None:

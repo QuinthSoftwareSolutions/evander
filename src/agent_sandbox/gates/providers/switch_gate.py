@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from agent_sandbox.events.models import NODE_OUTPUTS_CONTEXT_KEY
 from agent_sandbox.gate_runtime import GateRuntimeError, filter_payload_matches, filter_when_matches
 from agent_sandbox.gates.providers.base import GateProviderBase
-from agent_sandbox.workflow.binding import binding_trace_to_payload, resolve_workflow_bindings
+from agent_sandbox.workflow.binding import (
+    BindingResolutionTrace,
+    binding_trace_to_payload,
+    resolve_workflow_bindings,
+)
 from agent_sandbox.workflow.validation import NodeCapability, WorkflowValidationDiagnostic
 
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
@@ -78,33 +83,33 @@ class SwitchGateProvider(GateProviderBase):
         input_event_ids_by_source = kwargs["input_event_ids_by_source"]
         input_occurred_at_by_source = kwargs["input_occurred_at_by_source"]
 
-        raw_config = {
-            "cases": [_case_to_mapping(case) for case in gate.cases],
-            "default_port": getattr(gate, "default_port", None),
-        }
-        resolved = resolve_workflow_bindings(
-            raw_config,
-            upstream_payload,
-            upstream_output_names,
-            system_value_resolver=worker._system_value_resolver_for(
-                started_at=started_at,
-                queue_record=queue_record,
-                node_id=gate.id,
-            ),
-            strict_validation=True,
-        )
-        resolved_config = resolved.resolved_config if isinstance(resolved.resolved_config, dict) else {}
-        resolved_cases = [
-            case for case in resolved_config.get("cases", []) if isinstance(case, dict)
-        ]
-        resolved_default_port = resolved_config.get("default_port")
-
         selected_port: str | None = None
         matched_case_index: int | None = None
         matched_case_label: Any | None = None
         matched_by = "none"
+        resolved_cases: list[dict[str, Any]] = []
+        resolved_default_port: Any | None = None
+        trace_parts: list[BindingResolutionTrace] = []
 
-        for index, case in enumerate(resolved_cases):
+        system_value_resolver = worker._system_value_resolver_for(
+            started_at=started_at,
+            queue_record=queue_record,
+            node_id=gate.id,
+        )
+
+        for index, raw_case in enumerate(_case_to_mapping(case) for case in gate.cases):
+            resolved = resolve_workflow_bindings(
+                raw_case,
+                upstream_payload,
+                upstream_output_names,
+                system_value_resolver=system_value_resolver,
+                strict_validation=True,
+            )
+            trace_parts.append(_prefix_binding_trace(resolved.trace, f"$.cases[{index}]"))
+            if not isinstance(resolved.resolved_config, dict):
+                raise GateRuntimeError("gate:switch cases must resolve to mappings")
+            case = resolved.resolved_config
+            resolved_cases.append(case)
             case_port = _coerce_non_empty_string(case.get("port"), field_name="case port")
             case_label = case.get("label")
             case_when = case.get("when")
@@ -122,7 +127,22 @@ class SwitchGateProvider(GateProviderBase):
                 matched_by = "match"
                 break
 
-        if selected_port is None and resolved_default_port is not None:
+        raw_default_port = getattr(gate, "default_port", None)
+        if selected_port is None and raw_default_port is not None:
+            resolved_default = resolve_workflow_bindings(
+                {"default_port": raw_default_port},
+                upstream_payload,
+                upstream_output_names,
+                system_value_resolver=system_value_resolver,
+                strict_validation=True,
+            )
+            trace_parts.append(resolved_default.trace)
+            resolved_default_config = (
+                resolved_default.resolved_config
+                if isinstance(resolved_default.resolved_config, dict)
+                else {}
+            )
+            resolved_default_port = resolved_default_config.get("default_port")
             selected_port = _coerce_non_empty_string(
                 resolved_default_port, field_name="default_port"
             )
@@ -138,7 +158,7 @@ class SwitchGateProvider(GateProviderBase):
         if resolved_default_port is not None:
             final_resolved_config["default_port"] = resolved_default_port
 
-        binding_trace = binding_trace_to_payload(resolved.trace)
+        binding_trace = binding_trace_to_payload(_merge_binding_traces(trace_parts))
         if selected_port is None:
             worker._write_gate_record(
                 queue_record=queue_record,
@@ -190,6 +210,47 @@ def _case_to_mapping(case: Any) -> dict[str, Any]:
     if isinstance(case, dict):
         return dict(case)
     raise GateRuntimeError("gate:switch cases must be mappings")
+
+
+def _prefix_binding_trace(
+    trace: BindingResolutionTrace,
+    config_path_prefix: str,
+) -> BindingResolutionTrace:
+    return BindingResolutionTrace(
+        consumed_output_keys=trace.consumed_output_keys,
+        entries=tuple(
+            replace(
+                entry,
+                config_path=_join_config_path(config_path_prefix, entry.config_path),
+            )
+            for entry in trace.entries
+        ),
+    )
+
+
+def _merge_binding_traces(
+    trace_parts: list[BindingResolutionTrace],
+) -> BindingResolutionTrace:
+    consumed_output_keys = sorted(
+        {
+            output_key
+            for trace in trace_parts
+            for output_key in trace.consumed_output_keys
+        }
+    )
+    entries = tuple(entry for trace in trace_parts for entry in trace.entries)
+    return BindingResolutionTrace(
+        consumed_output_keys=tuple(consumed_output_keys),
+        entries=entries,
+    )
+
+
+def _join_config_path(prefix: str, path: str) -> str:
+    if path == "$":
+        return prefix
+    if path.startswith("$."):
+        return f"{prefix}.{path[2:]}"
+    return f"{prefix}.{path}"
 
 
 def _coerce_non_empty_string(value: Any, *, field_name: str) -> str:
