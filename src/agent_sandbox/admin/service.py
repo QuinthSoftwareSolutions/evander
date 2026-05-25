@@ -1540,6 +1540,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "trigger:teams:new-message": (
         "Start from new Microsoft Teams messages that match the configured targets."
     ),
+    "trigger:teams:direct-message": (
+        "Start from allowlisted one-on-one Microsoft Teams direct messages."
+    ),
     "trigger:email:new-message": (
         "Start from newly ingested email messages for the configured mailbox scope."
     ),
@@ -1794,6 +1797,26 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 ],
             ),
             _field("user_ids", "User IDs", "string_list"),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="trigger",
+        type="trigger:teams:direct-message",
+        label="Teams direct message",
+        fields=[
+            _field(
+                "sender_user_ids",
+                "Sender user IDs",
+                "string_list",
+                required=True,
+                description="Microsoft Graph user IDs allowed to wake this workflow from one-on-one Teams chats.",
+            ),
+            _field(
+                "message_filter",
+                "Message filter",
+                "json",
+                description='Optional wake filter, for example {"content":{"contains":"literal text","case_sensitive":false}}.',
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

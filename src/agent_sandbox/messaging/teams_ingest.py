@@ -13,6 +13,8 @@ import httpx
 
 from agent_sandbox.bootstrap import load_runtime_gateway_config
 from agent_sandbox.config import GatewayConfig, TeamsIngestWorkerGlobalConfig
+from agent_sandbox.events.models import materialize_node_definition
+from agent_sandbox.events.provider_models import TeamsDirectMessageTriggerDefinition
 from agent_sandbox.repositories.cursors import (
     JsonTeamsInboxCursorRepository,
     TeamsInboxCursorRepository,
@@ -37,6 +39,7 @@ from agent_sandbox.services import (
     parse_teams_target,
 )
 from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage
+from agent_sandbox.workflow.runtime_config import load_trigger_orchestrator_worker_global_config
 
 logger = logging.getLogger(__name__)
 _ATTACHMENT_SECRET_KEYS = {
@@ -55,6 +58,7 @@ _ATTACHMENT_SECRET_KEYS = {
 class TeamsIngestCycleResult:
     directories_polled: int
     channel_targets_polled: int
+    direct_chats_polled: int
     sessions_seen: int
     next_sleep_seconds: float
 
@@ -67,10 +71,12 @@ class TeamsIngestWorker:
         worker_config: TeamsIngestWorkerGlobalConfig,
         runtime: RuntimeContext,
         store: TeamsInboxCursorRepository | None = None,
+        project_dir: Path | None = None,
     ) -> None:
         self.config = config
         self.worker_config = worker_config
         self.runtime = runtime
+        self.project_dir = Path(project_dir) if project_dir is not None else Path.cwd()
         self.session_repository = runtime.session_repository
         self.store = store or JsonTeamsInboxCursorRepository(
             config.runtime_dir / "teams-inbox-store.json"
@@ -104,15 +110,21 @@ class TeamsIngestWorker:
         active_sessions = self.runtime.session_repository.list_active_sessions(now=now)
         directories = self._directories_to_scan(active_sessions)
         channel_targets_polled = 0
+        direct_chats_polled = 0
+        direct_sender_ids = self._direct_message_sender_ids()
         for directory_path in directories:
             channel_targets = self._channel_targets_for_directory(
                 directory_path,
                 active_sessions=active_sessions,
             )
-            if not channel_targets:
+            if not channel_targets and not direct_sender_ids:
                 continue
             channel_targets_polled += len(channel_targets)
-            self._poll_directory(directory_path, channel_targets=channel_targets)
+            direct_chats_polled += self._poll_directory(
+                directory_path,
+                channel_targets=channel_targets,
+                direct_sender_ids=direct_sender_ids,
+            )
         if self.worker_config.directories:
             matching_sessions = {
                 session.session_id
@@ -131,6 +143,7 @@ class TeamsIngestWorker:
         return TeamsIngestCycleResult(
             directories_polled=len(directories),
             channel_targets_polled=channel_targets_polled,
+            direct_chats_polled=direct_chats_polled,
             sessions_seen=len(matching_sessions),
             next_sleep_seconds=next_sleep_seconds,
         )
@@ -148,10 +161,11 @@ class TeamsIngestWorker:
         logger.debug(
             (
                 "Teams ingest worker cycle complete directories=%d channel_targets=%d "
-                "sessions=%d sleep_seconds=%.3f"
+                "direct_chats=%d sessions=%d sleep_seconds=%.3f"
             ),
             result.directories_polled,
             result.channel_targets_polled,
+            result.direct_chats_polled,
             result.sessions_seen,
             result.next_sleep_seconds,
         )
@@ -182,7 +196,35 @@ class TeamsIngestWorker:
         }
         return sorted(targets)
 
-    def _poll_directory(self, directory_path: str, *, channel_targets: list[str]) -> None:
+    def _direct_message_sender_ids(self) -> set[str]:
+        try:
+            trigger_config = load_trigger_orchestrator_worker_global_config(
+                self.project_dir,
+                base_config=self.config,
+            )
+        except Exception:
+            logger.exception("Failed to load trigger orchestrator config for Teams DM ingest")
+            return set()
+
+        sender_ids: set[str] = set()
+        for trigger in trigger_config.triggers:
+            if trigger.type != "trigger:teams:direct-message":
+                continue
+            materialized = materialize_node_definition(trigger)
+            if not isinstance(materialized, TeamsDirectMessageTriggerDefinition):
+                continue
+            sender_ids.update(
+                value.strip() for value in materialized.sender_user_ids if value.strip()
+            )
+        return sender_ids
+
+    def _poll_directory(
+        self,
+        directory_path: str,
+        *,
+        channel_targets: list[str],
+        direct_sender_ids: set[str],
+    ) -> int:
         provider_config = self.runtime.provider_config.resolve_for_directory(directory_path)
         if provider_config.teams_backend not in {"graph_api", "delegated_graph_api"}:
             logger.debug(
@@ -190,11 +232,12 @@ class TeamsIngestWorker:
                 directory_path,
                 provider_config.teams_backend,
             )
-            return
+            return 0
         service = self._build_graph_service(
             provider_config=provider_config,
             channel_targets=channel_targets,
         )
+        direct_chats_polled = 0
         with httpx.Client(timeout=provider_config.teams_timeout_seconds) as client:
             for channel_target in channel_targets:
                 self._poll_channel(
@@ -203,6 +246,13 @@ class TeamsIngestWorker:
                     channel_target=channel_target,
                     budget=service.new_pagination_budget(),
                 )
+            if direct_sender_ids:
+                direct_chats_polled = self._poll_direct_chats(
+                    client,
+                    service=service,
+                    sender_ids=direct_sender_ids,
+                )
+        return direct_chats_polled
 
     def _build_graph_service(
         self,
@@ -254,6 +304,7 @@ class TeamsIngestWorker:
         service: GraphTeamsService,
         channel_target: str,
         budget: Any | None = None,
+        direct_message_sender_ids: set[str] | None = None,
     ) -> None:
         target = parse_teams_target(channel_target)
         cursor_state = self.store.get_cursor_state(channel_target)
@@ -290,17 +341,53 @@ class TeamsIngestWorker:
             if not _message_is_after_cursor_state(message, cursor_state):
                 continue
             latest_seen_message = message
+            if direct_message_sender_ids is not None:
+                message = _mark_direct_message(message)
+                if message.author_id.strip() not in direct_message_sender_ids:
+                    continue
             if self._is_known_status_post(message.cursor):
                 continue
             if self.store.add_message_if_new(message):
                 discovered.append(message)
-        latest = discovered[-1] if discovered else latest_seen_message
+        latest = (
+            latest_seen_message
+            if direct_message_sender_ids is not None
+            else discovered[-1] if discovered else latest_seen_message
+        )
         if latest is not None:
             self.store.set_cursor(
                 channel_target,
                 latest.cursor,
                 created_at=latest.created_at,
             )
+
+    def _poll_direct_chats(
+        self,
+        client: httpx.Client,
+        *,
+        service: GraphTeamsService,
+        sender_ids: set[str],
+    ) -> int:
+        chats_polled = 0
+        for chat_payload in service._iter_one_on_one_chats(
+            client,
+            budget=service.new_pagination_budget(),
+        ):
+            chat_type = str(chat_payload.get("chatType") or "oneOnOne").strip()
+            if chat_type != "oneOnOne":
+                continue
+            chat_id = str(chat_payload.get("id") or "").strip()
+            if not chat_id:
+                continue
+            chats_polled += 1
+            self._poll_channel(
+                client,
+                service=service,
+                channel_target=f"chat:{chat_id}",
+                budget=service.new_pagination_budget(),
+                direct_message_sender_ids=sender_ids,
+            )
+        return chats_polled
 
     def _normalize_message(self, envelope: TeamsMessageEnvelope) -> TeamsInboxMessage:
         metadata = dict(envelope.metadata)
@@ -420,6 +507,7 @@ def build_teams_ingest_worker(
         config=effective_config,
         worker_config=worker_config,
         runtime=runtime,
+        project_dir=resolved_project_dir,
     )
 
 
@@ -446,6 +534,7 @@ def main() -> None:
         print(
             f"Teams ingest worker cycle complete directories={result.directories_polled} "
             f"channel_targets={result.channel_targets_polled} sessions={result.sessions_seen} "
+            f"direct_chats={result.direct_chats_polled} "
             f"sleep_seconds={result.next_sleep_seconds:.3f}"
         )
         return
@@ -458,6 +547,19 @@ def _target_from_envelope(envelope: TeamsMessageEnvelope, *, metadata: dict[str,
     if envelope.chat_id:
         return f"chat:{envelope.chat_id}"
     return f"{envelope.team_id}/{envelope.channel_id}"
+
+
+def _mark_direct_message(message: TeamsInboxMessage) -> TeamsInboxMessage:
+    metadata = dict(message.metadata)
+    metadata["target_type"] = "direct_message"
+    metadata["chat_type"] = "oneOnOne"
+    raw_message = metadata.get("message")
+    if isinstance(raw_message, dict):
+        safe_message = dict(raw_message)
+        safe_message["target_type"] = "direct_message"
+        safe_message["chat_type"] = "oneOnOne"
+        metadata["message"] = safe_message
+    return message.model_copy(update={"metadata": metadata})
 
 
 def _extract_teams_author_name(raw_message: object) -> str:

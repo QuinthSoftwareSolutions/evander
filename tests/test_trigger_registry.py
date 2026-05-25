@@ -35,6 +35,7 @@ def test_default_registry_includes_all_known_trigger_types() -> None:
         "trigger:script-run-request",
         "trigger:discord:new-message",
         "trigger:teams:new-message",
+        "trigger:teams:direct-message",
         "trigger:teams-meeting:new-transcript",
         "trigger:email:new-message",
         "trigger:event",

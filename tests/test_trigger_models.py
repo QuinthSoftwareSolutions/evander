@@ -140,6 +140,36 @@ def test_teams_trigger_accepts_per_target_message_filter() -> None:
     ]
 
 
+def test_teams_direct_message_trigger_requires_sender_user_ids() -> None:
+    adapter = TypeAdapter(TriggerDefinitionDiscriminated)
+
+    trigger = materialize_node_definition(
+        adapter.validate_python(
+            {
+                "id": "t-teams-dm",
+                "display_name": "Teams direct message",
+                "type": "trigger:teams:direct-message",
+                "sender_user_ids": [" 143e5b02-868f-4f0c-a262-cf509b6c09e5 "],
+                "message_filter": {"content": {"contains": "hello"}},
+            }
+        )
+    )
+
+    assert trigger.sender_user_ids == ["143e5b02-868f-4f0c-a262-cf509b6c09e5"]
+    assert trigger.message_filter is not None
+    assert trigger.message_filter.content is not None
+    assert trigger.message_filter.content.contains == "hello"
+
+    with pytest.raises(ValueError, match="sender_user_ids"):
+        adapter.validate_python(
+            {
+                "id": "t-teams-dm-missing",
+                "display_name": "Teams direct message",
+                "type": "trigger:teams:direct-message",
+            }
+        )
+
+
 def test_teams_trigger_message_filter_requires_content_or_mentions() -> None:
     adapter = TypeAdapter(TriggerDefinitionDiscriminated)
 

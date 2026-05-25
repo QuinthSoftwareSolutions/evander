@@ -292,6 +292,24 @@ def test_container_worker_pack_validates_ticket_created_agent_branch() -> None:
         assert effects["effect-agent-enqueue-prompt-1"]["config"][
             "resume_thread_metadata_key"
         ] == "teams:${{trigger-teams-new-message-2.channel_target}}:agent_thread_id"
+        teams_dm_prompt = effects["effect-agent-enqueue-prompt-teams-dm-1"]["config"]["prompt"]
+        assert "${{trigger-teams-direct-message-1.message.content}}" in teams_dm_prompt
+        assert effects["effect-agent-enqueue-prompt-teams-dm-1"]["config"]["queue_key"] == (
+            "teams:${{trigger-teams-direct-message-1.channel_target}}:"
+            "${{trigger-teams-direct-message-1.message_id ?? "
+            "trigger-teams-direct-message-1.cursor}}"
+        )
+        assert effects["effect-agent-enqueue-prompt-teams-dm-1"]["config"][
+            "resume_thread_metadata_key"
+        ] == "teams:${{trigger-teams-direct-message-1.channel_target}}:agent_thread_id"
+    assert (
+        ("trigger-teams-direct-message-1", "query-session-context-teams-dm-1")
+        in default_edges
+    )
+    assert (
+        ("trigger-teams-direct-message-1", "query-session-context-teams-dm-1")
+        in container_edges
+    )
     assert (
         default_effects["effect-agent-enqueue-prompt-2"]["type"]
         == "effect:agent:enqueue-prompt"

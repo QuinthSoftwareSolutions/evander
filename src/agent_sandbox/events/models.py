@@ -272,6 +272,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "trigger:script-run-request": provider_models.ScriptRunRequestTriggerDefinition,
         "trigger:discord:new-message": provider_models.DiscordNewMessageTriggerDefinition,
         "trigger:teams:new-message": provider_models.TeamsNewMessageTriggerDefinition,
+        "trigger:teams:direct-message": provider_models.TeamsDirectMessageTriggerDefinition,
         "trigger:teams-meeting:new-transcript": (
             provider_models.TeamsMeetingNewTranscriptTriggerDefinition
         ),

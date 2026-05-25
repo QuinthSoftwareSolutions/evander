@@ -384,10 +384,10 @@ Storage layout for directory config:
 - Guests never need direct Microsoft Graph credentials or internet access; Teams API access
   happens only in the host-side gateway process, and the token must cover the Teams channels or
   chats you intend to read and write.
-- Teams message arrival for `trigger:teams:new-message` comes from host-side ingest polling on the
-  host, using the same delegated Teams identity/configuration. That polling path is separate from
-  PR and chat wakeups, which are handled by the ADO worker, Discord wake worker, and scheduled wake
-  worker.
+- Teams message arrival for `trigger:teams:new-message` and
+  `trigger:teams:direct-message` comes from host-side ingest polling on the host, using the same
+  delegated Teams identity/configuration. That polling path is separate from PR and chat wakeups,
+  which are handled by the ADO worker, Discord wake worker, and scheduled wake worker.
 - Teams targets can be channel threads, group chats, or explicitly allowlisted one-on-one users:
   - channel targets use `team-id/channel-id` and should be declared in `session.teams_channel_allowlist`
   - chat targets use `chat:<chat-id>` and should be declared in `session.teams_chat_allowlist`
@@ -397,7 +397,8 @@ Storage layout for directory config:
     downloads.
 - The host-side Teams adapter reads channel threads from
   `GET /teams/{team-id}/channels/{channel-id}/messages` and group chats from
-  `GET /chats/{chat-id}/messages`.
+  `GET /chats/{chat-id}/messages`. Direct-message triggers discover one-on-one chats with
+  `GET /me/chats` and only persist messages from configured sender user ids.
 - The host-side Teams adapter creates or reuses one-on-one chats with `POST /chats`. The default
   delegated `Chat.ReadWrite` scope is sufficient; a narrower deployment can grant `Chat.Create`
   for first-contact one-on-one chat creation.
@@ -1627,10 +1628,12 @@ You can run the wrapper directly on the host for validation:
 
 ### Teams ingest worker
 
-- `trigger:teams:new-message` events are produced by a host-side Teams ingest worker that polls
-  Microsoft Graph on the host and writes into the Teams message store consumed by trigger
-  orchestration.
+- `trigger:teams:new-message` and `trigger:teams:direct-message` events are produced by a
+  host-side Teams ingest worker that polls Microsoft Graph on the host and writes into the Teams
+  message store consumed by trigger orchestration.
 - The ingest worker uses the same delegated Teams auth settings described above.
+- Direct-message triggers require `sender_user_ids` so only configured one-on-one senders can wake
+  workflows.
 - This polling path is independent from the wake workers; Discord/scheduled wake behavior now stays with
   `agent-sandbox-discord-wake` and `agent-sandbox-scheduled-wake` while Azure DevOps PR feedback ingestion stays with
   `agent-sandbox-ado-worker`.

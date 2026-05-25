@@ -1942,6 +1942,45 @@ class GraphTeamsService:
             next_url = str(raw_next_url).strip() if raw_next_url else ""
             params = None
 
+    def _iter_one_on_one_chats(
+        self,
+        client: httpx.Client,
+        *,
+        budget: _TeamsGraphPaginationBudget | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        if budget is None:
+            budget = self.new_pagination_budget()
+        next_url = f"{self.api_base_url}/me/chats"
+        params: dict[str, Any] | None = {
+            "$filter": "chatType eq 'oneOnOne'",
+            "$top": self.poll_limit,
+        }
+        seen_urls: set[str] = set()
+        while next_url:
+            if not budget.can_request_page():
+                break
+            remaining_seconds = budget.remaining_seconds()
+            if remaining_seconds <= 0:
+                break
+            if next_url in seen_urls:
+                raise RuntimeError("Teams Graph pagination loop detected for one-on-one chats")
+            seen_urls.add(next_url)
+            response = self._request_with_retries(
+                client,
+                "GET",
+                next_url,
+                params=params,
+                timeout_seconds=min(self.timeout_seconds, remaining_seconds),
+            )
+            budget.record_page()
+            payload = response.json()
+            for chat_payload in payload.get("value", []):
+                if isinstance(chat_payload, dict):
+                    yield chat_payload
+            raw_next_url = payload.get("@odata.nextLink")
+            next_url = str(raw_next_url).strip() if raw_next_url else ""
+            params = None
+
     def get_messages(
         self,
         since_cursor: str | None = None,

@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-25 - Teams Direct Message Trigger
+
+- Added `trigger:teams:direct-message` for allowlisted one-on-one Microsoft
+  Teams direct messages to the delegated Teams identity, backed by host-side
+  Teams ingest polling.
+- Documented the Teams direct-message trigger and updated example Truman packs
+  with a separate direct-message prompt path.
+
 ## 2026-05-25 - Workflow Editor Inspector Layout
 
 - Moved selected-node declared and derived output contracts below configuration
