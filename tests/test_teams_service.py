@@ -974,6 +974,48 @@ def test_graph_teams_service_renders_common_markdown_formatting_as_html(
     )
 
 
+def test_graph_teams_service_nests_bullets_inside_numbered_status_items(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            201,
+            json={
+                "id": "msg-root",
+                "createdDateTime": "2026-03-30T12:00:00Z",
+                "body": {"content": "<p>ok</p>", "contentType": "html"},
+                "from": {"application": {"id": "bot-app"}},
+                "webUrl": "https://teams.example/root",
+            },
+            request=request,
+        )
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    message = "1. Rubrik A\n- detalj A\n\n2. Rubrik B\n- detalj B"
+    service.post_status(message, "team-a/channel-1", "session-1")
+
+    assert requests[0].content == (
+        b'{"body":{"content":"<ol><li>Rubrik A<ul><li>detalj A</li></ul></li>'
+        b"<li>Rubrik B<ul><li>detalj B</li></ul></li></ol>\","
+        b'"contentType":"html"}}'
+    )
+
+
 def test_graph_teams_service_add_reaction_for_channel_message(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

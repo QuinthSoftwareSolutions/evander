@@ -25,7 +25,7 @@ class TeamsDirectMessageTriggerProvider(TriggerProviderBase):
     def poll(self) -> list[TriggerEvent]:
         trigger = self._trigger()
         cursor_store = self._cursor_store()
-        state = cursor_store.get(trigger.id)
+        state = cursor_store.update(trigger.id, _initialize_cursor_if_needed)
         cursor = _parse_dt(state.get("last_created_at"))
         recent_cursors = [
             value
@@ -125,6 +125,20 @@ def _sender_ref_match_key(value: str) -> str:
     if normalized.startswith("user:"):
         normalized = normalized.removeprefix("user:").strip()
     return normalized.casefold()
+
+
+def _initialize_cursor_if_needed(state: dict[str, object]) -> dict[str, object]:
+    if _parse_dt(state.get("last_created_at")) is not None:
+        return state
+    initialized_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    state["initialized_at"] = initialized_at
+    state["last_created_at"] = initialized_at
+    state["recent_cursors"] = merge_cursor_ids(
+        state.get("recent_cursors"),
+        [],
+        limit=TeamsDirectMessageTriggerProvider._RECENT_CURSOR_LIMIT,
+    )
+    return state
 
 
 def _acknowledge_message(

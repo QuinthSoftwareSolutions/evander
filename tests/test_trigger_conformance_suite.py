@@ -606,6 +606,19 @@ def test_conformance_provider_payload_contracts_and_secret_redaction(
             },
         )
     )
+    (runtime_dir / "trigger-cursors-teams.json").write_text(
+        json.dumps(
+            {
+                "teams-dm": {
+                    "last_created_at": (
+                        now - timedelta(seconds=1)
+                    ).isoformat().replace("+00:00", "Z"),
+                    "recent_cursors": [],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
     pr_feedback_path = runtime_dir / "pr-feedback-store.json"
     pr_feedback_path.write_text(
