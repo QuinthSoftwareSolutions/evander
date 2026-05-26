@@ -158,9 +158,7 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "display_name": "Copy agent files",
             "type": "effect:agent:copy-files",
             "session_id": "session-1",
-            "files": [
-                {"destination_path": "/home/agent/repos/repo/task.yaml", "content": "task"}
-            ],
+            "files": [{"destination_path": "/home/agent/repos/repo/task.yaml", "content": "task"}],
         }
     )
     prompt = adapter.validate_python(
@@ -207,6 +205,15 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "allowed_url_patterns": ["https://example.test/*"],
             "headers": {"Accept": "application/json"},
             "payload": {"message": "hello"},
+        }
+    )
+    diagnostics_snapshot = adapter.validate_python(
+        {
+            "id": "effect-runtime-diagnostics",
+            "display_name": "Runtime diagnostics snapshot",
+            "type": "effect:runtime:diagnostics-snapshot",
+            "since": "24 hours ago",
+            "units": ["agent-sandbox-effect-orchestrator.service"],
         }
     )
     vm_exec = adapter.validate_python(
@@ -348,6 +355,8 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert bash_script.type == "effect:bash:script"
     assert http_request.type == "effect:http:request"
     assert http_request.allowed_url_patterns == ["https://example.test/*"]
+    assert diagnostics_snapshot.type == "effect:runtime:diagnostics-snapshot"
+    assert diagnostics_snapshot.units == ["agent-sandbox-effect-orchestrator.service"]
     assert vm_exec.type == "effect:vm:exec"
     assert vm_copy.type == "effect:vm:copy-files"
     assert issue_state.type == "effect:issue:update-state"

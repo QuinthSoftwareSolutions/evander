@@ -403,6 +403,9 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:state:update": provider_models.StateUpdateEffectDefinition,
         "effect:bash:script": provider_models.BashScriptEffectDefinition,
         "effect:http:request": provider_models.HttpRequestEffectDefinition,
+        "effect:runtime:diagnostics-snapshot": (
+            provider_models.RuntimeDiagnosticsSnapshotEffectDefinition
+        ),
         "effect:vm:exec": provider_models.VmExecEffectDefinition,
         "effect:vm:copy-files": provider_models.VmCopyFilesEffectDefinition,
         "effect:vm:delete-files": provider_models.VmDeleteFilesEffectDefinition,
@@ -419,9 +422,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
             provider_models.SessionApproveMcpToolsForRunEffectDefinition
         ),
         "effect:session:update-metadata": provider_models.SessionUpdateMetadataEffectDefinition,
-        "effect:session:renew-if-expired": (
-            provider_models.SessionRenewIfExpiredEffectDefinition
-        ),
+        "effect:session:renew-if-expired": (provider_models.SessionRenewIfExpiredEffectDefinition),
         "effect:git:promote-agent-branch": provider_models.GitPromoteAgentBranchEffectDefinition,
         "effect:pr:create": provider_models.PrCreateEffectDefinition,
         "effect:event:schedule": provider_models.EventScheduleEffectDefinition,

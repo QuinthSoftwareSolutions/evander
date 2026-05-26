@@ -22,6 +22,9 @@ from agent_sandbox.effects.providers.agent_session import (
     selected_execution_backend_for_target,
 )
 from agent_sandbox.effects.providers.http_request import HttpRequestEffectProvider
+from agent_sandbox.effects.providers.runtime_diagnostics_snapshot import (
+    RuntimeDiagnosticsSnapshotEffectProvider,
+)
 from agent_sandbox.effects.providers.base import EffectProviderBase, EffectRuntimeContext
 from agent_sandbox.effects.registry import (
     DEFAULT_EFFECT_PROVIDER_REGISTRY,
@@ -48,7 +51,12 @@ from agent_sandbox.events.provider_models import (
     VmCreateEffectDefinition,
 )
 from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
-from agent_sandbox.models import SessionManifest, ToolName, UpdatePullRequestResponse, VmActionResult
+from agent_sandbox.models import (
+    SessionManifest,
+    ToolName,
+    UpdatePullRequestResponse,
+    VmActionResult,
+)
 from agent_sandbox.repositories.session_manifests import JsonSessionManifestRepository
 from agent_sandbox.repositories.skills_library import SkillLibraryRepository
 
@@ -317,6 +325,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:state:update",
         "effect:bash:script",
         "effect:http:request",
+        "effect:runtime:diagnostics-snapshot",
         "effect:event:emit",
         "effect:event:schedule",
         "effect:vm:exec",
@@ -336,6 +345,10 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:pull-request:update",
     }
     assert DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:http:request"] is HttpRequestEffectProvider
+    assert (
+        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:runtime:diagnostics-snapshot"]
+        is RuntimeDiagnosticsSnapshotEffectProvider
+    )
 
 
 def test_event_schedule_effect_definition_validates_contract_shape() -> None:
@@ -610,10 +623,7 @@ def test_agent_create_provider_passes_session_communication_policy() -> None:
     assert admin_service.create_vm_calls[0]["communication_file_receive_enabled"] is True
     assert admin_service.create_vm_calls[0]["communication_file_send_enabled"] is False
     assert admin_service.create_vm_calls[0]["communication_file_max_bytes"] == 4096
-    assert (
-        admin_service.create_vm_calls[0]["communication_file_require_approval_for_send"]
-        is True
-    )
+    assert admin_service.create_vm_calls[0]["communication_file_require_approval_for_send"] is True
 
 
 def test_agent_create_provider_passes_chat_allowlist_without_channel_allowlist() -> None:
@@ -935,11 +945,7 @@ def test_agent_prompt_provider_uses_resume_thread_metadata_key() -> None:
     session = admin_service._sessions["session-42"]
     admin_service._sessions["session-42"] = session.model_copy(
         update={
-            "metadata": {
-                "agent_thread_ids": {
-                    "teams:chat-1:agent_thread_id": "thread-existing"
-                }
-            }
+            "metadata": {"agent_thread_ids": {"teams:chat-1:agent_thread_id": "thread-existing"}}
         }
     )
     factory = EffectProviderFactory(
@@ -1049,11 +1055,7 @@ def test_agent_enqueue_prompt_provider_uses_resume_thread_metadata_key() -> None
     session = admin_service._sessions["session-42"]
     admin_service._sessions["session-42"] = session.model_copy(
         update={
-            "metadata": {
-                "agent_thread_ids": {
-                    "teams:chat-1:agent_thread_id": "thread-existing"
-                }
-            }
+            "metadata": {"agent_thread_ids": {"teams:chat-1:agent_thread_id": "thread-existing"}}
         }
     )
     admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
@@ -1093,11 +1095,7 @@ def test_agent_enqueue_prompt_provider_explicit_resume_thread_overrides_metadata
     session = admin_service._sessions["session-42"]
     admin_service._sessions["session-42"] = session.model_copy(
         update={
-            "metadata": {
-                "agent_thread_ids": {
-                    "teams:chat-1:agent_thread_id": "thread-existing"
-                }
-            }
+            "metadata": {"agent_thread_ids": {"teams:chat-1:agent_thread_id": "thread-existing"}}
         }
     )
     admin_service.list_vms = lambda include_inactive=True, vm_user="agent": []  # type: ignore[attr-defined]
@@ -1138,12 +1136,8 @@ def test_agent_enqueue_prompt_provider_uses_resume_thread_metadata_collection_ov
     admin_service._sessions["session-42"] = session.model_copy(
         update={
             "metadata": {
-                "agent_thread_ids": {
-                    "teams:chat-1:agent_thread_id": "thread-default"
-                },
-                "team_threads": {
-                    "teams:chat-1:agent_thread_id": "thread-override"
-                },
+                "agent_thread_ids": {"teams:chat-1:agent_thread_id": "thread-default"},
+                "team_threads": {"teams:chat-1:agent_thread_id": "thread-override"},
             }
         }
     )
@@ -1157,9 +1151,7 @@ def test_agent_enqueue_prompt_provider_uses_resume_thread_metadata_collection_ov
     assert output["thread_id"] == "thread-override"
     assert admin_service.resume_calls[0]["resume_thread_id"] == "thread-override"
     updated = admin_service._sessions["session-42"]
-    assert updated.metadata["team_threads"]["teams:chat-1:agent_thread_id"] == (
-        "thread-override"
-    )
+    assert updated.metadata["team_threads"]["teams:chat-1:agent_thread_id"] == ("thread-override")
     assert updated.metadata["agent_thread_ids"]["teams:chat-1:agent_thread_id"] == (
         "thread-default"
     )
@@ -1506,9 +1498,9 @@ def test_agent_enqueue_prompt_keeps_distinct_busy_messages_for_same_metadata_key
 
     queued = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json").read_all()
     assert sorted(queued) == ["teams:chat-1:msg-1", "teams:chat-1:msg-2"]
-    assert {
-        record.resume_thread_metadata_key for record in queued.values()
-    } == {"teams:chat-1:agent_thread_id"}
+    assert {record.resume_thread_metadata_key for record in queued.values()} == {
+        "teams:chat-1:agent_thread_id"
+    }
 
 
 def test_chat_assistant_ensure_session_uses_event_capability_mode(tmp_path) -> None:
@@ -1958,34 +1950,28 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
         in bootstrap_by_path["/home/agent/.codex/config.toml"]["content"]
     )
     assert "DOTNET_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
-    assert (
-        "AGENT_SANDBOX_DOTNET_TOOLS_ROOT"
-        in bootstrap_by_path["/home/agent/.profile"]["content"]
-    )
-    assert (
-        'export DOTNET_CLI_HOME="$HOME"'
-        in bootstrap_by_path["/home/agent/.profile"]["content"]
-    )
+    assert "AGENT_SANDBOX_DOTNET_TOOLS_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
+    assert 'export DOTNET_CLI_HOME="$HOME"' in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert ".dotnet-cli" not in bootstrap_by_path["/home/agent/.profile"]["content"]
-    assert "DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE" in bootstrap_by_path[
-        "/home/agent/.profile"
-    ]["content"]
-    assert "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE" in bootstrap_by_path[
-        "/home/agent/.profile"
-    ]["content"]
+    assert (
+        "DOTNET_SKIP_WORKLOAD_MANIFEST_UPDATE"
+        in bootstrap_by_path["/home/agent/.profile"]["content"]
+    )
+    assert (
+        "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE"
+        in bootstrap_by_path["/home/agent/.profile"]["content"]
+    )
     assert "DOTNET_NOLOGO" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "AGENT_SANDBOX_NODE_ROOT" in bootstrap_by_path["/home/agent/.profile"]["content"]
-    assert "AGENT_SANDBOX_PLAYWRIGHT_RUNTIME" in bootstrap_by_path[
-        "/home/agent/.profile"
-    ]["content"]
+    assert (
+        "AGENT_SANDBOX_PLAYWRIGHT_RUNTIME" in bootstrap_by_path["/home/agent/.profile"]["content"]
+    )
     assert "PLAYWRIGHT_BROWSERS_PATH" in bootstrap_by_path["/home/agent/.profile"]["content"]
-    assert "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD" in bootstrap_by_path[
-        "/home/agent/.profile"
-    ]["content"]
+    assert (
+        "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD" in bootstrap_by_path["/home/agent/.profile"]["content"]
+    )
     assert "PLAYWRIGHT_MCP_SANDBOX" in bootstrap_by_path["/home/agent/.profile"]["content"]
-    assert "PLAYWRIGHT_MCP_EXECUTABLE_PATH" in bootstrap_by_path[
-        "/home/agent/.profile"
-    ]["content"]
+    assert "PLAYWRIGHT_MCP_EXECUTABLE_PATH" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "CHROME_BIN" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "CHROMIUM_BIN" in bootstrap_by_path["/home/agent/.profile"]["content"]
     assert "/home/agent/.dotnet-cli/.keep" not in bootstrap_by_path
@@ -2011,8 +1997,8 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert "config alias.agent-pr-note" in clone_config_command
     assert "config alias.push-agent" in clone_config_command
     assert "config alias.sync-base" in clone_config_command
-    assert '.agent-sandbox/bin/push-agent' in clone_config_command
-    assert '.agent-sandbox/bin/sync-base' in clone_config_command
+    assert ".agent-sandbox/bin/push-agent" in clone_config_command
+    assert ".agent-sandbox/bin/sync-base" in clone_config_command
     assert "git config agent-sandbox.prNotesRef" in clone_config_command
     assert 'git config agent-sandbox.workBranch "$WORK_BRANCH"' in clone_config_command
     assert "git switch -c" in clone_config_command
@@ -2634,9 +2620,10 @@ def test_agent_destroy_provider_deletes_container_session(tmp_path) -> None:
     assert output["session_id"] == "session-container"
     assert output["status"] == "cleaned_up"
     assert session_repository.get_session("session-container") is not None
-    assert session_repository.get_session("session-container").metadata["container_lifecycle"][
-        "state"
-    ] == "cleaned_up"
+    assert (
+        session_repository.get_session("session-container").metadata["container_lifecycle"]["state"]
+        == "cleaned_up"
+    )
 
 
 def test_agent_exec_provider_delegates_libvirt_sessions_to_vm_exec(tmp_path) -> None:

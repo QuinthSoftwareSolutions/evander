@@ -361,6 +361,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:semantic:delete": "Delete semantic points by explicit point IDs.",
   "effect:state:update": "Set, patch, or delete graph-local workflow state.",
   "effect:http:request": "Perform a host-side raw HTTP GET, POST, or PUT request with URL allowlist control.",
+  "effect:runtime:diagnostics-snapshot": "Capture a bounded, redacted host runtime diagnostics snapshot.",
   "effect:vm:create": "Create a VM for the workflow.",
   "effect:vm:clone-repo": "Clone a repository into a target VM.",
   "effect:vm:bootstrap-python": "Bootstrap a Python checkout and environment in a VM.",
@@ -1677,6 +1678,20 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       url: "https://api.example.test/items",
       allowed_url_patterns: ["*"],
       check: false,
+    };
+  }
+  if (kind === "effect" && type === "effect:runtime:diagnostics-snapshot") {
+    return {
+      id,
+      display_name: "Runtime diagnostics snapshot",
+      type,
+      since: "24 hours ago",
+      include_failed_units: true,
+      include_journal: true,
+      include_runtime_files: true,
+      max_journal_lines_per_unit: 200,
+      max_runtime_file_bytes: 120000,
+      command_timeout_seconds: 10,
     };
   }
   if (kind === "effect" && type === "effect:vm:create") {

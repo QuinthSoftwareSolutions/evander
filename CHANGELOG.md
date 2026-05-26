@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-26 - Runtime Diagnostics Snapshot Effect
+
+- Added `effect:runtime:diagnostics-snapshot` for bounded, redacted host
+  diagnostics collection without allowing workflow-configured shell scripts or
+  arbitrary host paths.
+
 ## 2026-05-26 - Tool Call Audit SQLite Index
 
 - Added a SQLite read index for Admin Web Tool Calls while keeping

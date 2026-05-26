@@ -407,6 +407,7 @@ Type-specific keys:
 | `effect:agent:destroy` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `execution_backend`, `directory_path`, `outputs` |
 | `effect:bash:script` | `script_path` | `args`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:http:request` | `url` | `method`, `allowed_url_patterns`, `payload`, `headers`, `timeout_seconds`, `check`, `outputs` |
+| `effect:runtime:diagnostics-snapshot` | _none beyond envelope_ | `since`, `units`, `include_failed_units`, `include_journal`, `include_runtime_files`, `max_journal_lines_per_unit`, `max_runtime_file_bytes`, `command_timeout_seconds`, `outputs` |
 | `effect:vm:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:event:schedule` | `event_type`, `payload`; exactly one of `run_at`, `delay_seconds` | `correlation_key`, `idempotency_key`, `outputs` |
@@ -430,6 +431,15 @@ origin when they include a scheme, for example `https://api.example.test/*`, and
 against the host or `host:port` when they do not, for example `*.example.test`.
 This effect does not use the guest HTTP target relay or its destination
 allowlist.
+
+`effect:runtime:diagnostics-snapshot` captures a host-side diagnostic snapshot
+without accepting arbitrary commands or paths from workflow config. It reads only
+the configured runtime directory, fixed orchestration failure files, and an
+allowlisted subset of `agent-sandbox-*` systemd units. Service log collection is
+bounded by `since`, `units`, `max_journal_lines_per_unit`, and
+`command_timeout_seconds`; runtime file reads are bounded by
+`max_runtime_file_bytes`. Redaction is always enabled before the snapshot is
+returned in `snapshot_text`, `stdout`, and `message`.
 
 `effect:pr:create` preflights the destination branch before pushing. If the
 destination branch exists and its tip is not contained in the local branch, the
