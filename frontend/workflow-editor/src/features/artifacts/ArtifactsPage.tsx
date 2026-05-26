@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { DownloadIcon, UploadIcon } from "../admin/PageActionIcons";
+import { Tooltip } from "../admin/Tooltip";
 
 type PublishedArtifact = {
   key: string;
@@ -102,8 +103,8 @@ export function ArtifactsPage() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadMessage, setUploadMessage] = useState<string | null>(null);
   const [uploadKey, setUploadKey] = useState("");
-  const [uploadArtifactPath, setUploadArtifactPath] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
 
   const items = response?.items ?? [];
   const selectedArtifact = resolvedArtifact ?? items.find((item) => item.key === selectedKey) ?? items[0] ?? null;
@@ -179,7 +180,19 @@ export function ArtifactsPage() {
     window.location.assign(artifactDownloadUrl(key));
   }
 
-  async function uploadArtifact() {
+  function openUploadDialog() {
+    setUploadError(null);
+    setUploadDialogOpen(true);
+  }
+
+  function closeUploadDialog() {
+    if (uploading) return;
+    setUploadError(null);
+    setUploadDialogOpen(false);
+  }
+
+  async function uploadArtifact(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
     const key = uploadKey.trim();
     if (!key) {
       setUploadError("Artifact key is required.");
@@ -192,8 +205,6 @@ export function ArtifactsPage() {
     const formData = new FormData();
     formData.set("key", key);
     formData.set("file", uploadFile);
-    const artifactPath = uploadArtifactPath.trim();
-    if (artifactPath) formData.set("artifact_path", artifactPath);
     setUploading(true);
     setUploadError(null);
     setUploadMessage(null);
@@ -206,8 +217,8 @@ export function ArtifactsPage() {
       if (!response.ok) throw new Error(payload.error || `${response.status} ${response.statusText}`);
       setUploadMessage(`Uploaded ${payload.key}.`);
       setUploadKey("");
-      setUploadArtifactPath("");
       setUploadFile(null);
+      setUploadDialogOpen(false);
       await loadArtifacts(null);
       setSelectedKey(payload.key);
       setResolvedArtifact(payload);
@@ -276,44 +287,6 @@ export function ArtifactsPage() {
             onChange={(event) => setFilters((current) => ({ ...current, limit: event.target.value }))}
           />
         </label>
-
-        <div className="sidebar-divider" />
-
-        <label className="field-stack">
-          <span>Upload key</span>
-          <input
-            value={uploadKey}
-            onChange={(event) => setUploadKey(event.target.value)}
-            placeholder="manuals/true-app/reviewed/run-1"
-          />
-        </label>
-        <label className="field-stack">
-          <span>Artifact path</span>
-          <input
-            value={uploadArtifactPath}
-            onChange={(event) => setUploadArtifactPath(event.target.value)}
-            placeholder="input/reviewed.docx"
-          />
-        </label>
-        <label className="field-stack">
-          <span>File</span>
-          <input
-            type="file"
-            onChange={(event) => {
-              const file = event.target.files?.[0] ?? null;
-              setUploadFile(file);
-              if (file && !uploadArtifactPath.trim()) setUploadArtifactPath(file.name);
-            }}
-          />
-        </label>
-        <div className="inline-actions artifact-lookup-actions">
-          <button type="button" onClick={() => void uploadArtifact()} disabled={uploading}>
-            <UploadIcon />
-            {uploading ? "Uploading..." : "Upload"}
-          </button>
-        </div>
-        {uploadError ? <div className="callout error-callout">{uploadError}</div> : null}
-        {uploadMessage ? <div className="callout success-callout">{uploadMessage}</div> : null}
       </section>
 
       <section className="feature-content">
@@ -323,6 +296,11 @@ export function ArtifactsPage() {
           </div>
           <div className="feature-toolbar-actions">
             <span className="panel-meta">{response?.total ?? 0} matched</span>
+            <Tooltip content="Upload a local file as a published artifact.">
+              <button type="button" className="toolbar-icon-button" aria-label="Upload artifact" onClick={openUploadDialog}>
+                <UploadIcon />
+              </button>
+            </Tooltip>
             <button type="button" onClick={() => void loadArtifacts()} disabled={loading}>
               Refresh
             </button>
@@ -330,6 +308,7 @@ export function ArtifactsPage() {
         </div>
 
         {error ? <div className="callout error-callout">{error}</div> : null}
+        {uploadMessage ? <div className="callout success-callout">{uploadMessage}</div> : null}
 
         <div className="admin-grid two-column artifacts-grid">
           <article className="panel section-panel">
@@ -472,6 +451,60 @@ export function ArtifactsPage() {
           </article>
         </div>
       </section>
+      {uploadDialogOpen ? (
+        <div className="modal-backdrop" onClick={closeUploadDialog} role="presentation">
+          <section
+            className="modal-card artifact-upload-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="artifact-upload-modal-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div>
+                <div className="eyebrow">Artifact store</div>
+                <h2 id="artifact-upload-modal-title">Upload artifact</h2>
+              </div>
+              <button type="button" onClick={closeUploadDialog} disabled={uploading}>
+                Close
+              </button>
+            </div>
+            <div className="modal-body">
+              <form className="form-grid artifact-upload-form" onSubmit={(event) => void uploadArtifact(event)}>
+                <label className="field-stack field-span-2">
+                  <span>Artifact key</span>
+                  <input
+                    value={uploadKey}
+                    onChange={(event) => setUploadKey(event.target.value)}
+                    placeholder="uploads/example"
+                    autoFocus
+                  />
+                </label>
+                <label className="field-stack field-span-2">
+                  <span>File</span>
+                  <input
+                    type="file"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0] ?? null;
+                      setUploadFile(file);
+                    }}
+                  />
+                </label>
+                {uploadError ? <div className="callout error-callout field-span-2">{uploadError}</div> : null}
+                <div className="inline-actions artifact-upload-actions field-span-2">
+                  <button type="button" onClick={closeUploadDialog} disabled={uploading}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="primary" disabled={uploading}>
+                    <UploadIcon />
+                    {uploading ? "Uploading..." : "Upload"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }

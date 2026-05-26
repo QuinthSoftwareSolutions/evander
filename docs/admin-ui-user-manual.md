@@ -207,8 +207,8 @@ Common tasks:
 5. Select an archive row to inspect session ID, backend, byte counts, source file counts,
    source artifacts root, SHA-256, and metadata.
 6. Use the download button to download the selected archive.
-7. To upload a local file, enter a new artifact key, choose an artifact path such as
-   `input/reviewed.docx`, select the file, and click **Upload**.
+7. To upload a local file, click the upload button, enter a new artifact key, select the file,
+   and click **Upload**. The published archive uses the selected file's name.
 
 Artifact keys are durable identifiers. Prefer resolving by key when a workflow, tool call, or run
 detail links to an artifact directly.

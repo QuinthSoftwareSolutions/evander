@@ -10,6 +10,12 @@ material. Newer entries are added incrementally as changes land.
 - Rendered the workflow editor `effect:agent:exec` Command field as a
   multiline text area so long commands are easier to read and edit.
 
+## 2026-05-26 - Artifact Upload Dialog
+
+- Moved manual artifact uploads into a toolbar dialog and defaulted uploaded
+  archives to the selected file's own filename instead of asking for an
+  internal artifact path.
+
 ## 2026-05-26 - Workflow Editor Viewport Stability
 
 - Preserved the workflow editor canvas viewport across node field edits,
