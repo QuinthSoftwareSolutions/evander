@@ -64,6 +64,10 @@ from agent_sandbox.migrations import (
     migrate_pr_template_to_root,
 )
 from agent_sandbox.orchestration.migration import migrate_orchestration_store_to_sqlite
+from agent_sandbox.repositories.audit_index import (
+    ToolCallAuditIndex,
+    audit_index_path_for_log_path,
+)
 from agent_sandbox.email.providers import JsonEmailProvider, MultiMailboxEmailProvider
 from agent_sandbox.models import (
     ApprovalStatus,
@@ -1825,6 +1829,61 @@ def migrate_orchestration_store(
         f"effect_executions={result.retention_effect_executions_deleted} "
         f"gate_executions={result.retention_gate_executions_deleted} "
         f"workflow_events={result.retention_workflow_events_deleted}"
+    )
+
+
+@app.command(
+    "rebuild-audit-index",
+    rich_help_panel="Health and State",
+    short_help="Import tool-call audit JSONL entries into the SQLite audit index.",
+)
+def rebuild_audit_index(
+    config: ConfigOption = CLI_DEFAULT_RUNTIME_DIR,
+    database_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--database-path",
+            help="Override destination SQLite database path. Defaults to runtime/audit.db.",
+        ),
+    ] = None,
+    max_lines: Annotated[
+        int | None,
+        typer.Option(
+            "--max-lines",
+            min=1,
+            help="Maximum JSONL lines to import in this run. Omit to import the full log.",
+        ),
+    ] = None,
+    reset: Annotated[
+        bool,
+        typer.Option(
+            "--reset/--resume",
+            help="Rebuild the index from the start instead of resuming saved import progress.",
+        ),
+    ] = True,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable output.")] = False,
+) -> None:
+    runtime_config = _load_runtime_config_from_option(config)
+    destination = database_path or audit_index_path_for_log_path(runtime_config.audit_log_path)
+    index = ToolCallAuditIndex(destination)
+    result = index.import_from_jsonl(
+        runtime_config.audit_log_path,
+        max_lines=max_lines,
+        reset=reset,
+    )
+    if json_output:
+        typer.echo(json.dumps(result.as_dict(), indent=2, sort_keys=True))
+        return
+    typer.echo(f"Audit index import complete: {result.database_path}")
+    typer.echo(f"source={result.source_path}")
+    typer.echo(
+        f"lines_scanned={result.lines_scanned} imported={result.imported} "
+        f"existing={result.existing} skipped_malformed={result.skipped_malformed} "
+        f"skipped_non_tool_call={result.skipped_non_tool_call}"
+    )
+    typer.echo(
+        f"offset_bytes={result.offset_bytes} complete={result.complete} "
+        f"stopped_by_limit={result.stopped_by_limit}"
     )
 
 

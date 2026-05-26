@@ -161,6 +161,10 @@ from agent_sandbox.repositories.orchestration_db import (
     ensure_orchestration_schema,
     json_loads_object,
 )
+from agent_sandbox.repositories.audit_index import (
+    DEFAULT_TAIL_IMPORT_MAX_LINES,
+    ToolCallAuditIndex,
+)
 from agent_sandbox.messaging.teams_auth import (
     DeviceCodeLoginSession,
     JsonTeamsIdentityCredentialStore,
@@ -5885,6 +5889,17 @@ class AdminService:
             legacy_config_path=self.legacy_config_path,
         )
         self.runtime = build_runtime(self.config)
+        self.tool_call_audit_index: ToolCallAuditIndex | None = ToolCallAuditIndex.for_audit_log(
+            self.config.audit_log_path
+        )
+        try:
+            self.tool_call_audit_index.ensure_schema()
+            self.tool_call_audit_index.import_from_jsonl_tail(
+                self.config.audit_log_path,
+                max_lines=1_000,
+            )
+        except Exception:
+            self.tool_call_audit_index = None
         self.skill_library = SkillLibraryRepository(self.config.runtime_dir)
         self.agent_control_store = AgentControlStore(self.config.host_agent_control_state_path)
         self.local_issue_store = JsonStore(
@@ -10716,6 +10731,20 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if directory_path is not None
             else None
         )
+        indexed_page = self._list_tool_call_audit_entries_from_index(
+            session_id=session_id,
+            tool_name=tool_name,
+            status=normalized_status,
+            directory_path=normalized_directory_path,
+            direct_only=direct_only,
+            created_after=created_after,
+            created_before=created_before,
+            q=q,
+            limit=normalized_limit,
+            recent_only=recent_only,
+        )
+        if indexed_page is not None:
+            return indexed_page
         if recent_only and _tool_call_audit_tail_scan_supported(
             session_id=session_id,
             tool_name=tool_name,
@@ -10797,6 +10826,85 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             ),
             limit=normalized_limit,
             has_more=counts.matched > len(items),
+        )
+
+    def _list_tool_call_audit_entries_from_index(
+        self,
+        *,
+        session_id: str | None,
+        tool_name: str | None,
+        status: str | None,
+        directory_path: str | None,
+        direct_only: bool,
+        created_after: datetime | None,
+        created_before: datetime | None,
+        q: str | None,
+        limit: int,
+        recent_only: bool,
+    ) -> ToolCallAuditListPayload | None:
+        index = self.tool_call_audit_index
+        if index is None:
+            return None
+        try:
+            full_import_complete = index.import_is_complete(self.config.audit_log_path)
+            use_index = full_import_complete
+
+            if created_after is not None:
+                import_result = index.import_from_jsonl_tail(
+                    self.config.audit_log_path,
+                    created_after=created_after,
+                    max_lines=DEFAULT_TAIL_IMPORT_MAX_LINES,
+                )
+                use_index = (
+                    full_import_complete
+                    or import_result.complete
+                    or import_result.reached_time_boundary
+                )
+            elif recent_only or not any(
+                str(value or "").strip()
+                for value in (session_id, tool_name, status, created_before, q)
+            ):
+                index.import_from_jsonl_tail(
+                    self.config.audit_log_path,
+                    max_lines=max(1_000, min(DEFAULT_TAIL_IMPORT_MAX_LINES, limit * 25)),
+                )
+                use_index = True
+            elif not full_import_complete:
+                index.import_from_jsonl(self.config.audit_log_path, max_lines=1_000)
+                use_index = index.import_is_complete(self.config.audit_log_path)
+
+            if not use_index:
+                return None
+
+            page = index.query_tool_calls(
+                session_id=session_id,
+                tool_name=tool_name,
+                status=status,
+                directory_path=directory_path,
+                direct_only=direct_only,
+                created_after=created_after,
+                created_before=created_before,
+                q=q,
+                limit=limit,
+            )
+        except Exception:
+            return None
+
+        items: list[ToolCallAuditEntryPayload] = []
+        for payload in page.payloads:
+            entry = _tool_call_audit_entry_from_payload(payload)
+            if entry is not None:
+                items.append(entry)
+        return ToolCallAuditListPayload(
+            items=items,
+            counts=ToolCallAuditCountsPayload(
+                scanned=page.matched,
+                matched=page.matched,
+                returned=len(items),
+                status_counts=page.status_counts,
+            ),
+            limit=limit,
+            has_more=page.has_more,
         )
 
     def _list_recent_tool_call_audit_entries_from_tail(

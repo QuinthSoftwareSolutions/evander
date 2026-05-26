@@ -314,3 +314,157 @@ test("admin shell routes to tool calls and renders redacted audit entries", asyn
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);
 });
+
+test("tool calls polling does not overlap while a request is pending", async (t) => {
+  const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+  const server = await createServer({
+    root: projectRoot,
+    server: {
+      host: "127.0.0.1",
+      port: 0,
+    },
+    logLevel: "error",
+  });
+  await server.listen();
+
+  const address = server.httpServer?.address();
+  assert.ok(address && typeof address === "object" && "port" in address, "expected Vite to bind an ephemeral port");
+
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  let toolCallRequests = 0;
+  let inFlightToolCallRequests = 0;
+  let maxInFlightToolCallRequests = 0;
+  let releaseToolCallResponse = () => {};
+  let resolveFirstToolCallRequest = () => {};
+  const firstToolCallRequest = new Promise((resolve) => {
+    resolveFirstToolCallRequest = resolve;
+  });
+
+  await page.addInitScript(() => {
+    const originalSetInterval = window.setInterval.bind(window);
+    window.setInterval = (handler, timeout, ...args) => originalSetInterval(
+      handler,
+      timeout === 10_000 ? 20 : timeout,
+      ...args,
+    );
+  });
+
+  await t.after(async () => {
+    await page.close().catch(() => {});
+    await context.close().catch(() => {});
+    await browser.close().catch(() => {});
+    await server.close().catch(() => {});
+  });
+
+  await page.route("**/api/**", async (route) => {
+    const url = new URL(route.request().url());
+    const { pathname } = url;
+    if (pathname === "/api/auth/session") {
+      await route.fulfill(
+        jsonResponse({
+          auth_mode: "none",
+          auth_required: false,
+          authenticated: true,
+          username: "admin",
+          display_name: "Admin Operator",
+          role: "admin",
+          can_manage_users: true,
+          session_id: "session-123",
+          available_login_methods: [],
+          azure_sso_login_url: null,
+          privileged_operations: { unlocked: false },
+        }),
+      );
+      return;
+    }
+    if (pathname === "/api/admin/deployment-status") {
+      await route.fulfill(
+        jsonResponse({
+          active: false,
+          message: null,
+          source: null,
+          started_at: null,
+          updated_at: null,
+          ttl_seconds: 0,
+          stale: false,
+        }),
+      );
+      return;
+    }
+    if (pathname === "/api/admin/state") {
+      await route.fulfill(
+        jsonResponse({
+          selected_directory_path: "root",
+          directory_scoped_config_enabled: false,
+          execution_backend: "libvirt_vm",
+          role: "admin",
+          can_manage_users: true,
+          privileged_operations: { unlocked: false },
+          assistant: { enabled: false, show_launcher_when_disabled: false },
+        }),
+      );
+      return;
+    }
+    if (pathname === "/api/configuration/state") {
+      await route.fulfill(
+        jsonResponse({
+          directory_scoped_config_enabled: false,
+          selected_directory_path: "root",
+          execution_backend: "libvirt_vm",
+          selected_directory: { path: "root", parent_path: null, can_create: false, can_delete: false },
+          tree: {
+            ok: true,
+            data: {
+              directory: {
+                id: "root",
+                name: "root",
+                parent_id: null,
+                created_at: "2026-05-16T00:00:00Z",
+                metadata: {},
+                path: "root",
+              },
+              config_domains: [],
+              children: [],
+            },
+            errors: [],
+            validation_diagnostics: [],
+          },
+        }),
+      );
+      return;
+    }
+    if (pathname === "/api/admin/tool-calls") {
+      toolCallRequests += 1;
+      resolveFirstToolCallRequest();
+      inFlightToolCallRequests += 1;
+      maxInFlightToolCallRequests = Math.max(maxInFlightToolCallRequests, inFlightToolCallRequests);
+      await new Promise((resolve) => {
+        releaseToolCallResponse = resolve;
+      });
+      inFlightToolCallRequests -= 1;
+      await route.fulfill(
+        jsonResponse({
+          items: [],
+          counts: { scanned: 0, matched: 0, returned: 0, status_counts: {} },
+          limit: 100,
+          has_more: false,
+        }),
+      );
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto(`http://127.0.0.1:${address.port}/#tool-calls`, {
+    waitUntil: "domcontentloaded",
+  });
+  await firstToolCallRequest;
+  await page.waitForTimeout(80);
+
+  assert.equal(maxInFlightToolCallRequests, 1);
+  assert.equal(toolCallRequests, 1);
+  releaseToolCallResponse();
+  await page.waitForTimeout(50);
+});

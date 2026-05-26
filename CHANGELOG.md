@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-26 - Tool Call Audit SQLite Index
+
+- Added a SQLite read index for Admin Web Tool Calls while keeping
+  `runtime/audit.jsonl` as the canonical append-only audit journal.
+- Added `agent-sandbox-cli rebuild-audit-index` for rebuilding `runtime/audit.db`
+  from the JSONL audit log.
+
 ## 2026-05-26 - Agent Exec Command Editor
 
 - Rendered the workflow editor `effect:agent:exec` Command field as a
