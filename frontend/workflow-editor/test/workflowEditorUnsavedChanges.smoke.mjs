@@ -42,6 +42,39 @@ function createDirectoryTree() {
   };
 }
 
+async function workflowViewportTransform(page) {
+  const viewport = page.locator(".react-flow__viewport");
+  await viewport.waitFor({ state: "visible" });
+  return viewport.evaluate((element) => getComputedStyle(element).transform);
+}
+
+async function changeWorkflowCanvasViewport(page) {
+  const canvasBox = await page.locator(".canvas-shell").boundingBox();
+  assert.ok(canvasBox, "expected canvas shell bounds");
+  const beforeTransform = await workflowViewportTransform(page);
+  await page.mouse.move(canvasBox.x + canvasBox.width / 2, canvasBox.y + canvasBox.height / 2);
+  await page.mouse.wheel(0, 300);
+  await page.waitForFunction((expectedPreviousTransform) => {
+    const viewport = document.querySelector(".react-flow__viewport");
+    return Boolean(viewport) && getComputedStyle(viewport).transform !== expectedPreviousTransform;
+  }, beforeTransform, { timeout: 5000 });
+  const afterTransform = await workflowViewportTransform(page);
+  assert.notEqual(afterTransform, beforeTransform, "expected zooming to change the workflow viewport");
+  return afterTransform;
+}
+
+async function expectWorkflowViewportTransform(page, expectedTransform, message) {
+  await page.waitForTimeout(350);
+  assert.equal(await workflowViewportTransform(page), expectedTransform, message);
+}
+
+async function clickWorkflowNode(page, nodeId) {
+  const node = page.locator(`.react-flow__node[data-id="${nodeId}"]`);
+  const nodeBox = await node.boundingBox();
+  assert.ok(nodeBox, `expected ${nodeId} node bounds`);
+  await page.mouse.click(nodeBox.x + nodeBox.width / 2, nodeBox.y + nodeBox.height / 2);
+}
+
 test("workflow editor stages unsaved changes, resets them, and guards tab and directory navigation", async (t) => {
   const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
   const server = await createServer({
@@ -383,10 +416,9 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   const saveStatus = page.locator(".save-status");
   await assert.equal(await saveStatus.filter({ hasText: "No unsaved workflow changes" }).count(), 1);
 
+  await changeWorkflowCanvasViewport(page);
   const effectNode = page.locator('.react-flow__node[data-id="effect-1"]');
-  const effectBox = await effectNode.boundingBox();
-  assert.ok(effectBox, "expected effect node bounds");
-  await page.mouse.click(effectBox.x + effectBox.width / 2, effectBox.y + effectBox.height / 2);
+  await clickWorkflowNode(page, "effect-1");
 
   const nodeInspector = page.locator(".sidebar-section.inspector").filter({ hasText: "Display name" });
   const displayNameInput = nodeInspector.locator(".inspector-label").filter({ hasText: "Display name" }).locator("input");
@@ -399,9 +431,15 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   assert.ok(promptFieldBox, "expected prompt field bounds");
   assert.ok(outputsFieldBox, "expected outputs field bounds");
   assert.ok(outputsFieldBox.y > promptFieldBox.y, "expected Outputs to render after selected-node configuration fields");
+  const changedViewportTransform = await workflowViewportTransform(page);
   await displayNameInput.fill("Dispatch agent v2");
   const promptInput = promptField.locator("input");
   await promptInput.fill("Handle escalations");
+  await expectWorkflowViewportTransform(
+    page,
+    changedViewportTransform,
+    "inspector field edits should not refit the workflow canvas",
+  );
 
   await assert.doesNotReject(
     () => page.locator(".node-title").filter({ hasText: "Dispatch agent v2" }).first().waitFor({ state: "visible", timeout: 60000 }),
@@ -414,14 +452,11 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   await assert.equal(await effectNode.locator(".node-card.unsaved").count(), 1);
   await assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 1);
 
-  const triggerNode = page.locator('.react-flow__node[data-id="trigger-1"]');
-  const triggerBox = await triggerNode.boundingBox();
-  assert.ok(triggerBox, "expected trigger node bounds");
-  await page.mouse.click(triggerBox.x + triggerBox.width / 2, triggerBox.y + triggerBox.height / 2);
+  await clickWorkflowNode(page, "trigger-1");
   await page.waitForTimeout(250);
   await nodeInspector.waitFor({ state: "visible" });
   assert.equal(await displayNameInput.inputValue(), "Incoming command");
-  await page.mouse.click(effectBox.x + effectBox.width / 2, effectBox.y + effectBox.height / 2);
+  await clickWorkflowNode(page, "effect-1");
   await page.waitForTimeout(250);
   await nodeInspector.waitFor({ state: "visible" });
   await assert.equal(await displayNameInput.inputValue(), "Dispatch agent v2");
@@ -441,7 +476,7 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   await assert.equal(await page.getByRole("button", { name: "Reset changes" }).count(), 0);
   await assert.equal(saveRequests.length, 0);
 
-  await page.mouse.click(effectBox.x + effectBox.width / 2, effectBox.y + effectBox.height / 2);
+  await clickWorkflowNode(page, "effect-1");
   await page.waitForTimeout(250);
   await displayNameInput.fill("Dispatch agent v2");
   await promptInput.fill("Handle escalations");
@@ -471,6 +506,11 @@ test("workflow editor stages unsaved changes, resets them, and guards tab and di
   await page.getByRole("button", { name: "Save workflow" }).click();
   await page.waitForFunction(() => [...document.querySelectorAll(".node-title")].some((element) => element.textContent?.trim() === "Dispatch agent v2"));
   await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
+  await expectWorkflowViewportTransform(
+    page,
+    changedViewportTransform,
+    "saving workflow edits should not refit the workflow canvas",
+  );
 
   assert.equal(saveRequests.length, 1);
   assert.equal(await page.getByLabel("Unsaved changes").count(), 0);

@@ -4196,6 +4196,7 @@ export default function App() {
       blankWorkflowGeneratorDocument(savedDocument, selectedDirectoryPath),
       [],
       [],
+      { autoFit: true },
     );
   }
 
@@ -4217,6 +4218,7 @@ export default function App() {
         savedDocument,
         [],
         validateWorkflowBindingDiagnostics(savedDocument.config, savedDocument.output_schemas ?? {}),
+        { autoFit: true },
       );
     }
   }
@@ -4247,7 +4249,7 @@ export default function App() {
     setWorkflowGeneratorModel(null);
     setWorkflowGeneratorReadyDescription(null);
     setNodeEditOrigins({});
-    applyWorkflowDocumentState(merged.document, merged.importedNodeIds);
+    applyWorkflowDocumentState(merged.document, merged.importedNodeIds, undefined, { autoFit: true });
     const selectedGeneratedGraph = merged.document.graphs.find((graph) =>
       graph.node_ids.some((nodeId) => merged.importedNodeIds.includes(nodeId)),
     );
@@ -4266,6 +4268,7 @@ export default function App() {
       blankWorkflowGeneratorDocument(savedDocument, selectedDirectoryPath),
       [],
       [],
+      { autoFit: true },
     );
   }
 
@@ -4329,6 +4332,7 @@ export default function App() {
         draftDocument,
         workflowNodeIds(draftDocument.config),
         draft.validation_diagnostics,
+        { autoFit: true },
       );
       setWorkflowGeneratorWarnings(draft.warnings ?? []);
       setWorkflowGeneratorModel(draft.model);
@@ -4619,6 +4623,7 @@ export default function App() {
     nextDocument: WorkflowEditorDocument,
     selectedNodeIdsAfterPatch: string[] = [],
     diagnosticsOverride?: WorkflowValidationDiagnostic[],
+    options: { autoFit?: boolean } = {},
   ) {
     const normalizedDocument = normalizeWorkflowEditorDocument(nextDocument, selectedDirectoryPath);
     const validNodeIds = new Set(workflowNodeIds(normalizedDocument.config));
@@ -4654,7 +4659,9 @@ export default function App() {
     );
     setFlowEdges(buildEdges(normalizedDocument.config, catalog));
     setSaveState("idle");
-    hasAutoFitRef.current = false;
+    if (options.autoFit) {
+      hasAutoFitRef.current = false;
+    }
   }
 
   function patchDocument(

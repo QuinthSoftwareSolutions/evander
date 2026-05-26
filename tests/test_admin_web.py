@@ -319,6 +319,8 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "timeout_seconds",
         "check",
     ]
+    agent_exec_command = next(field for field in agent_exec["fields"] if field["key"] == "command")
+    assert agent_exec_command["multiline"] is True
     semantic_ensure = next(
         node
         for node in catalog_payload["nodes"]
