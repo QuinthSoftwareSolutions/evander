@@ -363,6 +363,8 @@ Storage layout for directory config:
   - optional `teams_delegated_tenant_id`, `teams_delegated_scopes`,
     `teams_delegated_authority_base_url`, and `teams_delegated_credential_store_path`
   - the default delegated scope set includes channel read/send and `Chat.ReadWrite`
+  - Teams direct-message sender mail/UPN resolution may require adding a Graph user-read scope such
+    as `User.ReadBasic.All` or `User.Read`
 - The Entra app behind `teams_delegated_client_id` must be configured for public client /
   device-code auth. `AADSTS7000218` means the app is being treated as a confidential client and
   the host-side delegated flow in this repo cannot complete until that registration is fixed.
@@ -1695,8 +1697,8 @@ compatibility with older live workflow packs and should not be used for new prov
   target must be a read-capable Teams channel/chat or Discord channel target in the trigger's
   `directory_path`. The trigger consumes the existing Teams and Discord inbox stores, so no
   separate ingest worker or provider credential is configured for this node.
-- Direct-message triggers require `sender_user_ids` so only configured one-on-one senders can wake
-  workflows.
+- Direct-message triggers require `sender_user_ids`, which accepts Graph user IDs, UPNs, or mail
+  addresses so only configured one-on-one senders can wake workflows.
 - This polling path is independent from the wake workers; Discord/scheduled wake behavior now stays with
   `agent-sandbox-discord-wake` and `agent-sandbox-scheduled-wake` while Azure DevOps PR feedback ingestion stays with
   `agent-sandbox-ado-worker`.

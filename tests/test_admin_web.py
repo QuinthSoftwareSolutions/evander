@@ -811,6 +811,11 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "sender_user_ids",
         "message_filter",
     ]
+    sender_user_ids_field = next(
+        field for field in teams_direct_message["fields"] if field["key"] == "sender_user_ids"
+    )
+    assert sender_user_ids_field["label"] == "Sender user IDs or emails"
+    assert "UPNs, or mail addresses" in sender_user_ids_field["description"]
     deserialize_gate = next(
         node for node in catalog_payload["nodes"] if node["type"] == "gate:deserialize"
     )

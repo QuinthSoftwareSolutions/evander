@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-26 - Teams Direct Message Sender Emails
+
+- Allowed `trigger:teams:direct-message` `sender_user_ids` entries to be
+  Microsoft Graph user IDs, UPNs, or mail addresses, resolving email-style
+  entries to Graph user IDs during host-side Teams ingest.
+
 ## 2026-05-26 - Azure DevOps Pipeline Run Effect
 
 - Added `effect:ado:pipeline-run` for typed Azure DevOps pipeline queue/poll

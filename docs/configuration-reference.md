@@ -1264,7 +1264,8 @@ mode remains supported for compatibility through `teams_graph_access_token_env` 
 `GRAPH_TEAMS_ACCESS_TOKEN`).
 The same delegated Teams identity/configuration is also used by the host-side Teams ingest worker
 that feeds `trigger:teams:new-message` for both channel threads and group chats, plus
-`trigger:teams:direct-message` for one-on-one direct messages sent by configured sender user ids.
+`trigger:teams:direct-message` for one-on-one direct messages sent by configured sender user ids,
+UPNs, or mail addresses.
 
 Session and `effect:agent:create` manifests can use either legacy raw Teams/Discord IDs or
 directory-scoped communication target IDs in their communication allowlists. Declared target IDs are
@@ -1278,7 +1279,7 @@ targets with `teams_chat_allowlist`, and one-on-one user send targets with
 `teams_user_allowlist`. Teams `user:` communication targets are send-only; they are not valid for
 Teams reads, reactions, attachment downloads, or `trigger:teams:new-message` polling.
 Direct-message trigger polling is configured with `sender_user_ids` on
-`trigger:teams:direct-message`.
+`trigger:teams:direct-message`; entries can be Graph user IDs, UPNs, or mail addresses.
 
 Key delegated Teams provider settings now include:
 
@@ -1288,6 +1289,8 @@ Key delegated Teams provider settings now include:
 - optional `teams_delegated_tenant_id`
 - optional `teams_delegated_scopes` (default includes `offline_access`,
   `ChannelMessage.Read.All`, `ChannelMessage.Send`, and `Chat.ReadWrite`)
+- Resolving Teams direct-message sender mail addresses may require adding a Graph user-read scope
+  such as `User.ReadBasic.All` or `User.Read.All` and rerunning Teams auth.
 - optional `teams_delegated_authority_base_url`
 - optional `teams_delegated_credential_store_path`
 - optional `teams_history_page_cap` (default `1`) and `teams_history_deadline_seconds` (default

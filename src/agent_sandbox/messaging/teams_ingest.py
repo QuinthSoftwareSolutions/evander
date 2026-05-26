@@ -110,23 +110,23 @@ class TeamsIngestWorker:
         active_sessions = self.runtime.session_repository.list_active_sessions(now=now)
         channel_targets_polled = 0
         direct_chats_polled = 0
-        direct_sender_ids = self._direct_message_sender_ids()
+        direct_sender_refs = self._direct_message_sender_refs()
         directories = self._directories_to_scan(
             active_sessions,
-            include_default_directory=bool(direct_sender_ids),
+            include_default_directory=bool(direct_sender_refs),
         )
         for directory_path in directories:
             channel_targets = self._channel_targets_for_directory(
                 directory_path,
                 active_sessions=active_sessions,
             )
-            if not channel_targets and not direct_sender_ids:
+            if not channel_targets and not direct_sender_refs:
                 continue
             channel_targets_polled += len(channel_targets)
             direct_chats_polled += self._poll_directory(
                 directory_path,
                 channel_targets=channel_targets,
-                direct_sender_ids=direct_sender_ids,
+                direct_sender_refs=direct_sender_refs,
             )
         if self.worker_config.directories:
             matching_sessions = {
@@ -209,7 +209,7 @@ class TeamsIngestWorker:
         }
         return sorted(targets)
 
-    def _direct_message_sender_ids(self) -> set[str]:
+    def _direct_message_sender_refs(self) -> set[str]:
         try:
             trigger_config = load_trigger_orchestrator_worker_global_config(
                 self.project_dir,
@@ -219,7 +219,7 @@ class TeamsIngestWorker:
             logger.exception("Failed to load trigger orchestrator config for Teams DM ingest")
             return set()
 
-        sender_ids: set[str] = set()
+        sender_refs: set[str] = set()
         for trigger in trigger_config.triggers:
             if not workflow_node_is_enabled(trigger):
                 continue
@@ -228,17 +228,17 @@ class TeamsIngestWorker:
             materialized = materialize_node_definition(trigger)
             if not isinstance(materialized, TeamsDirectMessageTriggerDefinition):
                 continue
-            sender_ids.update(
+            sender_refs.update(
                 value.strip() for value in materialized.sender_user_ids if value.strip()
             )
-        return sender_ids
+        return sender_refs
 
     def _poll_directory(
         self,
         directory_path: str,
         *,
         channel_targets: list[str],
-        direct_sender_ids: set[str],
+        direct_sender_refs: set[str],
     ) -> int:
         provider_config = self.runtime.provider_config.resolve_for_directory(directory_path)
         if provider_config.teams_backend not in {"graph_api", "delegated_graph_api"}:
@@ -251,10 +251,17 @@ class TeamsIngestWorker:
         service = self._build_graph_service(
             provider_config=provider_config,
             channel_targets=channel_targets,
+            directory_path=directory_path,
         )
         direct_chats_polled = 0
         with httpx.Client(timeout=provider_config.teams_timeout_seconds) as client:
             direct_chat_targets_polled: set[str] = set()
+            direct_sender_ids = self._resolve_direct_message_sender_ids(
+                client,
+                service=service,
+                sender_refs=direct_sender_refs,
+                directory_path=directory_path,
+            )
             if direct_sender_ids:
                 direct_chat_targets_polled = self._poll_direct_chats(
                     client,
@@ -281,6 +288,7 @@ class TeamsIngestWorker:
         *,
         provider_config: GatewayConfig,
         channel_targets: list[str],
+        directory_path: str,
     ) -> GraphTeamsService:
         token = None
         token_provider = None
@@ -317,7 +325,50 @@ class TeamsIngestWorker:
             retry_base_backoff_seconds=provider_config.teams_retry_base_backoff_seconds,
             retry_max_backoff_seconds=provider_config.teams_retry_max_backoff_seconds,
             allowed_channel_targets_provider=lambda: channel_targets,
+            user_chat_cache=self.runtime.teams_user_chat_cache,
+            user_chat_cache_namespace=_teams_user_cache_namespace(
+                provider_config,
+                directory_path=directory_path,
+            ),
         )
+
+    def _resolve_direct_message_sender_ids(
+        self,
+        client: httpx.Client,
+        *,
+        service: GraphTeamsService,
+        sender_refs: set[str],
+        directory_path: str,
+    ) -> set[str]:
+        sender_ids: set[str] = set()
+        for raw_ref in sorted(sender_refs):
+            sender_ref = _normalize_direct_message_sender_ref(raw_ref)
+            if not sender_ref:
+                continue
+            if not _direct_message_sender_ref_needs_resolution(sender_ref):
+                sender_ids.add(sender_ref)
+                continue
+            try:
+                resolved_id = service.resolve_user_id(client, sender_ref)
+            except Exception:
+                logger.warning(
+                    "Failed to resolve Teams direct-message sender user ref %r "
+                    "for directory=%s",
+                    raw_ref,
+                    directory_path,
+                    exc_info=True,
+                )
+                continue
+            if resolved_id:
+                sender_ids.add(resolved_id)
+                continue
+            logger.warning(
+                "Could not resolve Teams direct-message sender user ref %r "
+                "for directory=%s",
+                raw_ref,
+                directory_path,
+            )
+        return sender_ids
 
     def _poll_channel(
         self,
@@ -492,6 +543,26 @@ def _sanitize_teams_attachments(raw_attachments: object) -> list[dict[str, Any]]
 
 def _worker_global_config_path(project_dir: Path) -> Path:
     return project_dir / "config" / "teams-ingest" / "config.json"
+
+
+def _teams_user_cache_namespace(config: GatewayConfig, *, directory_path: str) -> str:
+    if config.teams_backend == "delegated_graph_api":
+        return (
+            f"delegated:{config.teams_delegated_identity_id or 'default'}:"
+            f"{directory_path or 'root'}"
+        )
+    return f"graph_api:{config.teams_graph_access_token_env}:{directory_path or 'root'}"
+
+
+def _normalize_direct_message_sender_ref(value: str) -> str:
+    normalized = str(value or "").strip().strip("/")
+    if normalized.startswith("user:"):
+        normalized = normalized.removeprefix("user:").strip()
+    return normalized
+
+
+def _direct_message_sender_ref_needs_resolution(value: str) -> bool:
+    return "@" in value
 
 
 def _load_teams_ingest_worker_global_config(

@@ -1960,12 +1960,12 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         fields=[
             _field(
                 "sender_user_ids",
-                "Sender user IDs",
+                "Sender user IDs or emails",
                 "string_list",
                 required=True,
                 description=(
-                    "Microsoft Graph user IDs allowed to wake this workflow from one-on-one "
-                    "Teams chats."
+                    "Microsoft Graph user IDs, UPNs, or mail addresses allowed to wake this "
+                    "workflow from one-on-one Teams chats."
                 ),
             ),
             _field(
