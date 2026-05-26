@@ -6702,6 +6702,17 @@ select {
   line-height: 1;
 }
 
+.feature-toolbar-actions button.toolbar-icon-button {
+  width: 2.2rem;
+  min-width: 2.2rem;
+  height: 2.2rem;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
 .feature-toolbar-actions.icon-actions button.danger {
   font-size: 0.95rem;
 }
