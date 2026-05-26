@@ -10965,11 +10965,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 str(value or "").strip()
                 for value in (session_id, tool_name, status, directory_path, created_before, q)
             ):
-                index.import_from_jsonl_tail(
+                import_result = index.import_from_jsonl_tail(
                     self.config.audit_log_path,
                     max_lines=max(1_000, min(DEFAULT_TAIL_IMPORT_MAX_LINES, limit * 25)),
                 )
-                use_index = True
+                use_index = full_import_complete or import_result.complete
             elif not full_import_complete:
                 index.import_from_jsonl(self.config.audit_log_path, max_lines=1_000)
                 use_index = index.import_is_complete(self.config.audit_log_path)

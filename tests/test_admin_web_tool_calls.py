@@ -312,6 +312,48 @@ def test_admin_service_directory_filter_falls_back_when_audit_index_is_incomplet
     assert page.counts.matched == 1
 
 
+def test_admin_service_default_read_falls_back_when_tail_index_is_sparse(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    entries = [
+        {
+            "event_type": "tool_call",
+            "session_id": "old-session",
+            "directory_path": "root/team",
+            "tool_name": "old_tool_call",
+            "decision": "allowed",
+            "created_at": "2026-05-18T09:00:00+00:00",
+        },
+        *[
+            {
+                "event_type": "approval_decision",
+                "session_id": f"recent-session-{index}",
+                "created_at": f"2026-05-18T10:{index % 60:02d}:00+00:00",
+            }
+            for index in range(1_200)
+        ],
+    ]
+    service.config.audit_log_path.write_text(
+        "\n".join(json.dumps(entry, sort_keys=True) for entry in entries) + "\n",
+        encoding="utf-8",
+    )
+
+    page = service.list_tool_call_audit_entries(limit=10)
+
+    assert [item.tool_name for item in page.items] == ["old_tool_call"]
+    assert page.counts.scanned == 1_201
+    assert page.counts.skipped_non_tool_call == 1_200
+    assert page.counts.matched == 1
+
+    recent_page = service.list_tool_call_audit_entries(limit=10, recent_only=True)
+
+    assert [item.tool_name for item in recent_page.items] == ["old_tool_call"]
+    assert recent_page.counts.scanned == 1_201
+    assert recent_page.counts.skipped_non_tool_call == 1_200
+    assert recent_page.counts.matched == 1
+
+
 def test_audit_logger_writes_jsonl_and_indexes_tool_call_entries(tmp_path: Path) -> None:
     audit_log_path = tmp_path / "runtime" / "audit.jsonl"
     logger = AuditLogger(audit_log_path)

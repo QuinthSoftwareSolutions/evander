@@ -10,6 +10,8 @@ material. Newer entries are added incrementally as changes land.
 - Allowed `trigger:teams:direct-message` `sender_user_ids` entries to be
   Microsoft Graph user IDs, UPNs, or mail addresses, resolving email-style
   entries to Graph user IDs during host-side Teams ingest.
+- Preserved resolved direct-message sender aliases in the Teams inbox so trigger
+  polling can emit events for workflows configured with UPNs or mail addresses.
 
 ## 2026-05-26 - Azure DevOps Pipeline Run Effect
 
@@ -40,6 +42,8 @@ material. Newer entries are added incrementally as changes land.
 - Fixed directory-filtered audit queries so incomplete indexes fall back to the
   canonical JSONL log and directory prefixes containing SQLite wildcard
   characters do not match unrelated paths.
+- Kept default Tool Calls reads from treating bounded, incomplete tail imports as
+  authoritative when the SQLite audit index has not been fully imported.
 
 ## 2026-05-26 - Agent Exec Command Editor
 

@@ -452,6 +452,10 @@ def test_teams_ingest_worker_resolves_direct_message_sender_email(
     stored = worker.store.list_all_messages(channel_targets=["chat:dm-chat"])
     assert [message.cursor for message in stored] == ["chat:dm-chat/msg-1"]
     assert stored[0].metadata["target_type"] == "direct_message"
+    assert stored[0].metadata["direct_message_sender_refs"] == [
+        "operator@example.com",
+        "user-allowed",
+    ]
     assert result.direct_chats_polled == 1
 
 

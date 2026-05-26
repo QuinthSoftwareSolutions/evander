@@ -33,7 +33,9 @@ class TeamsDirectMessageTriggerProvider(TriggerProviderBase):
             if isinstance(value, str) and value.strip()
         ]
         recent_cursor_set = set(recent_cursors)
-        sender_filter = {value.strip() for value in trigger.sender_user_ids if value.strip()}
+        sender_filter = {
+            _sender_ref_match_key(value) for value in trigger.sender_user_ids if value.strip()
+        }
 
         inbox_store = JsonTeamsInboxCursorRepository(
             self._resolved_config().runtime_dir / "teams-inbox-store.json"
@@ -42,7 +44,7 @@ class TeamsDirectMessageTriggerProvider(TriggerProviderBase):
         for message in inbox_store.list_all_messages():
             if not _is_direct_message(message):
                 continue
-            if sender_filter and message.author_id.strip() not in sender_filter:
+            if sender_filter and not sender_filter.intersection(_message_sender_ref_keys(message)):
                 continue
             occurred_at = message.created_at.astimezone(UTC)
             if cursor is not None and occurred_at < cursor:
@@ -103,6 +105,26 @@ def _is_direct_message(message: TeamsInboxMessage) -> bool:
     target_type = str(message.metadata.get("target_type") or "").strip()
     chat_type = str(message.metadata.get("chat_type") or "").strip()
     return target_type == "direct_message" or chat_type == "oneOnOne"
+
+
+def _message_sender_ref_keys(message: TeamsInboxMessage) -> set[str]:
+    refs = {
+        message.author_id,
+        str(message.metadata.get("author_id") or ""),
+    }
+    metadata_refs = message.metadata.get("direct_message_sender_refs")
+    if isinstance(metadata_refs, str):
+        refs.add(metadata_refs)
+    elif isinstance(metadata_refs, (list, tuple, set)):
+        refs.update(str(value) for value in metadata_refs)
+    return {_sender_ref_match_key(ref) for ref in refs if str(ref).strip()}
+
+
+def _sender_ref_match_key(value: str) -> str:
+    normalized = str(value or "").strip().strip("/")
+    if normalized.startswith("user:"):
+        normalized = normalized.removeprefix("user:").strip()
+    return normalized.casefold()
 
 
 def _acknowledge_message(
