@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-26 - Teams Status List Rendering
+
+- Rendered unindented bullet details following numbered Teams status items as
+  nested lists inside the same ordered list item, preventing Teams from
+  restarting numbering at 1 for each item.
+
 ## 2026-05-26 - Teams Direct Message Sender Emails
 
 - Allowed `trigger:teams:direct-message` `sender_user_ids` entries to be
@@ -12,6 +18,8 @@ material. Newer entries are added incrementally as changes land.
   entries to Graph user IDs during host-side Teams ingest.
 - Preserved resolved direct-message sender aliases in the Teams inbox so trigger
   polling can emit events for workflows configured with UPNs or mail addresses.
+- Seeded new Teams direct-message trigger cursors on first poll so enabling a
+  sender does not replay already-ingested one-on-one chat history.
 
 ## 2026-05-26 - Azure DevOps Pipeline Run Effect
 
