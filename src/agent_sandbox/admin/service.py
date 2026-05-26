@@ -1648,7 +1648,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:semantic:upsert": "Embed one text string and upsert it as one Qdrant point.",
     "effect:semantic:delete": "Delete semantic points by explicit point IDs.",
     "effect:state:update": "Set, patch, or delete graph-local workflow state.",
-    "effect:bash:script": "Run a host-side Bash script from the effect orchestrator.",
+    "effect:bash:script": (
+        "Deprecated high-risk host-side Bash execution from the effect orchestrator."
+    ),
     "effect:http:request": (
         "Perform a host-side raw HTTP GET, POST, or PUT request with URL allowlist control."
     ),
@@ -1662,6 +1664,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:issue:update-metadata": "Patch metadata on a tracked issue.",
     "effect:issue:upsert-ado-proxy": (
         "Create or refresh local proxy tickets from Azure DevOps work items."
+    ),
+    "effect:ado:pipeline-run": (
+        "Queue an Azure DevOps pipeline run and wait for its terminal result."
     ),
     "effect:ado:update-work-item": (
         "Update an Azure DevOps work item with an optional expected-state guard."
@@ -3543,6 +3548,36 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("fields", "Fields", "json", bindable=True),
             _field("expected_states", "Expected states", "string_list", bindable=True),
             _field("sync_proxy_cache", "Sync proxy cache", "boolean", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
+        type="effect:ado:pipeline-run",
+        label="ADO pipeline run",
+        fields=[
+            _field("directory_path", "Directory path", "string", required=True, bindable=True),
+            _field("pipeline_id", "Pipeline ID", "number", required=True, bindable=True),
+            _field("project", "Project", "string", bindable=True),
+            _field("branch", "Branch", "string", bindable=True),
+            _field(
+                "variables",
+                "Variables",
+                "json",
+                bindable=True,
+                json_value_type="object",
+                default_value={},
+            ),
+            _field(
+                "template_parameters",
+                "Template parameters",
+                "json",
+                bindable=True,
+                json_value_type="object",
+                default_value={},
+            ),
+            _field("timeout_seconds", "Timeout seconds", "number", bindable=True),
+            _field("poll_interval_seconds", "Poll interval seconds", "number", bindable=True),
+            _field("check", "Check result", "boolean", bindable=True),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

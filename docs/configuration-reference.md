@@ -244,8 +244,9 @@ described above. Review requests are fed from the host-owned
 requests are fed from `runtime/script-run-requests-store.json`, which the `run_script(...)` MCP
 tool appends to after validating that the calling session is allowed to invoke the requested
 script name. The checked-in global workflow currently filters that trigger down to
-`provision_exampleindustry_app_demo_environment.sh`, which wraps the existing host-side Example
-Industry APP Azure provisioning script and resumes the originating session with the JSON result.
+`provision_exampleindustry_app_demo_environment.sh`, queues a typed Azure DevOps pipeline run,
+maps the derived demo-environment relay metadata with `gate:map`, and resumes the originating
+session after `effect:session:update-metadata` stores that metadata.
 
 `trigger:communication:new-message` is a provider-neutral chat trigger over declared
 directory-scoped communication targets. Its `communication_target_ids` list is required and must
@@ -413,6 +414,7 @@ Type-specific keys:
 | `effect:event:schedule` | `event_type`, `payload`; exactly one of `run_at`, `delay_seconds` | `correlation_key`, `idempotency_key`, `outputs` |
 | `effect:issue:update-state` | `issue_id`, `state` | `sync_proxy_cache`, `outputs` |
 | `effect:issue:upsert-ado-proxy` | one of `item`, `items` | `directory_path`, `organization_url`, `project`, `repo_source`, `yaml_output_dir`, `outputs` |
+| `effect:ado:pipeline-run` | `directory_path`, `pipeline_id` | `project`, `branch`, `variables`, `template_parameters`, `timeout_seconds`, `poll_interval_seconds`, `check`, `outputs` |
 | `effect:pull-request:update` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `title`, `description`, `status`, `add_tags`, `remove_tags`, `expected_statuses`, `outputs` |
 | `effect:communication:send-message` | `communication_target_id`, `message` | `thread_id`, `outputs` |
 | `effect:notification:send` | `communication_target_id`, `message` | `severity`, `subject`, `thread_id`, `outputs` |
@@ -602,10 +604,14 @@ Effect schema envelope example:
 }
 ```
 
-The checked-in APP provisioning workflow uses `effect:bash:script` with this repo's
-`scripts/provision_exampleindustry_app_demo_environment.sh`, projects `stdout` plus parsed JSON fields such as `app_base_url`, `app_public_url`,
-`app_api_alias`, `app_ui_alias`, and `public_domain` as declared outputs, stores those values in
-session metadata, and then resumes the originating agent session.
+`effect:bash:script` is retained for compatibility but is high-risk host-side shell execution and
+should not be used for new workflows. Prefer typed effects such as `effect:ado:pipeline-run`.
+
+The checked-in APP provisioning workflow uses `effect:ado:pipeline-run` to queue an Azure DevOps
+deployment pipeline, then uses `gate:map` to derive fields such as `app_base_url`,
+`app_public_url`, `app_api_alias`, `app_ui_alias`, and `public_domain`. The mapped
+`session_metadata_patch` is stored with `effect:session:update-metadata` before the originating
+agent session is resumed.
 
 ### Graph examples
 

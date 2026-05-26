@@ -248,6 +248,16 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
             "state": "In Progress",
         }
     )
+    ado_pipeline = adapter.validate_python(
+        {
+            "id": "effect-ado-pipeline",
+            "display_name": "ADO pipeline run",
+            "type": "effect:ado:pipeline-run",
+            "directory_path": "root/team",
+            "pipeline_id": 42,
+            "variables": {"resourceBaseName": "demo7"},
+        }
+    )
     promote = adapter.validate_python(
         {
             "id": "effect-promote",
@@ -360,6 +370,8 @@ def test_effect_schema_validation_accepts_supported_types(report_collector: dict
     assert vm_exec.type == "effect:vm:exec"
     assert vm_copy.type == "effect:vm:copy-files"
     assert issue_state.type == "effect:issue:update-state"
+    assert ado_pipeline.type == "effect:ado:pipeline-run"
+    assert ado_pipeline.pipeline_id == 42
     assert communication.type == "effect:communication:send-message"
     assert notification.type == "effect:notification:send"
     assert session_renew.type == "effect:session:renew-if-expired"

@@ -284,9 +284,12 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         descriptions_by_type[node["type"]] in generic_kind_tooltips
         for node in catalog_payload["nodes"]
     )
+    assert descriptions_by_type["effect:bash:script"] == (
+        "Deprecated high-risk host-side Bash execution from the effect orchestrator."
+    )
     assert (
-        descriptions_by_type["effect:bash:script"]
-        == "Run a host-side Bash script from the effect orchestrator."
+        descriptions_by_type["effect:ado:pipeline-run"]
+        == "Queue an Azure DevOps pipeline run and wait for its terminal result."
     )
     assert (
         descriptions_by_type["effect:http:request"]
@@ -614,6 +617,20 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "environment",
         "stdin",
         "timeout_seconds",
+        "check",
+    ]
+    ado_pipeline = next(
+        node for node in catalog_payload["nodes"] if node["type"] == "effect:ado:pipeline-run"
+    )
+    assert [field["key"] for field in ado_pipeline["fields"]] == [
+        "directory_path",
+        "pipeline_id",
+        "project",
+        "branch",
+        "variables",
+        "template_parameters",
+        "timeout_seconds",
+        "poll_interval_seconds",
         "check",
     ]
     http_request = next(

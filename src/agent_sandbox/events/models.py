@@ -412,6 +412,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:issue:update-state": provider_models.IssueUpdateStateEffectDefinition,
         "effect:issue:update-metadata": provider_models.IssueUpdateMetadataEffectDefinition,
         "effect:issue:upsert-ado-proxy": provider_models.IssueUpsertAdoProxyEffectDefinition,
+        "effect:ado:pipeline-run": provider_models.AdoPipelineRunEffectDefinition,
         "effect:ado:update-work-item": provider_models.AdoUpdateWorkItemEffectDefinition,
         "effect:pull-request:update": provider_models.PullRequestUpdateEffectDefinition,
         "effect:communication:send-message": (

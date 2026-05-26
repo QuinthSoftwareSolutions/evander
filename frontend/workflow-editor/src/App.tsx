@@ -374,6 +374,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:event:emit": "Emit an internal workflow event for other graphs.",
   "effect:event:schedule": "Schedule a one-shot internal workflow event for later delivery.",
   "effect:issue:update-metadata": "Patch metadata on a tracked issue.",
+  "effect:ado:pipeline-run": "Queue an Azure DevOps pipeline run and wait for its terminal result.",
   "effect:ado:update-work-item": "Update an Azure DevOps work item with an optional state guard.",
   "effect:session:update-metadata": "Patch session metadata on the host.",
   "effect:session:renew-if-expired": "Extend an expired session from the host.",
@@ -1784,6 +1785,20 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       state: "In Progress",
       expected_states: ["New", "To Do"],
       sync_proxy_cache: true,
+    };
+  }
+  if (kind === "effect" && type === "effect:ado:pipeline-run") {
+    return {
+      id,
+      display_name: "ADO pipeline run",
+      type,
+      directory_path: "root",
+      pipeline_id: 12345,
+      variables: {},
+      template_parameters: {},
+      timeout_seconds: 3600,
+      poll_interval_seconds: 10,
+      check: true,
     };
   }
   if (kind === "effect" && type === "effect:session:update-metadata") {

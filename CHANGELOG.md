@@ -5,6 +5,18 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-26 - Azure DevOps Pipeline Run Effect
+
+- Added `effect:ado:pipeline-run` for typed Azure DevOps pipeline queue/poll
+  workflows without invoking host-side Bash.
+- Updated checked-in APP demo workflow examples to queue the provisioning
+  pipeline, derive relay metadata with `gate:map`, and store it through
+  `effect:session:update-metadata`.
+- Replaced the checked-in synthetic workflow's host Bash example with a safe
+  internal event emit.
+- Added dynamic object-key bindings and `gate:filter` `matches_regex` support so
+  workflows can build nested metadata maps while rejecting unsafe request names.
+
 ## 2026-05-26 - Runtime Diagnostics Snapshot Effect
 
 - Added `effect:runtime:diagnostics-snapshot` for bounded, redacted host

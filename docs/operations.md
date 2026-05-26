@@ -1657,25 +1657,23 @@ sudo journalctl -u agent-sandbox-trigger-orchestrator.service -f
 
 - `trigger:script-run-request` is wired to accept exactly one host-approved provisioning wrapper:
   `provision_exampleindustry_app_demo_environment.sh`.
-- That wrapper lives in this repo under `scripts/` and delegates to the host script named by
-  `EXAMPLE_APP_DEPLOY_DEMO_SCRIPT_PATH`.
-- The effect-orchestrator service account must also be able to run `az` and must have a non-interactive
-  Azure CLI account context before the wrapper can create Azure resources. On Azure control-plane
-  deployments, Ansible installs Azure CLI when `agent_sandbox_install_azure_cli` is enabled, but
-  Azure authentication is still an operator-owned prerequisite.
-- The wrapper reserves stdout for a final JSON payload and sends deploy progress logs to stderr, so
-  the orchestrator can capture the result blob without parsing human-oriented progress output.
-- The wrapper emits a `session_metadata_patch` object that appends two relay targets under
+- The checked-in workflow no longer runs a host-side Bash provisioning script. It queues a typed
+  Azure DevOps pipeline with `effect:ado:pipeline-run`, waits for the terminal result, and then
+  maps the deterministic demo URLs and aliases with `gate:map`.
+- The Azure DevOps pipeline owns Azure resource creation, deployment, and any cloud-side
+  prerequisites. The effect uses the directory-scoped Azure DevOps provider configuration and PAT
+  to queue and poll the pipeline.
+- The first request parameter must be a lowercase alphanumeric resource name. The gate rejects
+  names outside `^[a-z0-9]+$` so `gate:map` can safely derive DNS labels without string
+  normalization helpers.
+- The mapped `session_metadata_patch` object appends two relay targets under
   `metadata.http_targets.targets`: `<environment-alias>-api` for backend/API traffic and
   `<environment-alias>-ui` for browser/DOM traffic. It keeps the APP-specific
   `metadata.example_app.environments.<environment-alias>` record for convenience and refreshes
   `metadata.example_app_last_provision` with the selected environment alias plus its API alias, UI
   alias, `app_base_url` (API base URL), and `app_public_url` (public UI URL).
 - The trigger graph writes that metadata patch into the originating session and resumes the same
-  session with the provisioning result in the follow-up prompt.
-- The orchestrator filter expects the script request to pass the environment name as the first
-  parameter; the current workflow forwards that value as `--resource-base-name` and uses it as the
-  reported logical environment alias.
+  session with the provisioning pipeline run URL in the follow-up prompt.
 - Guests authenticate to the selected APP environment themselves through the relay-backed URL for
   the appropriate API or UI alias. The generic HTTP target relay no longer injects host-side APP
   authorization headers.
@@ -1683,11 +1681,8 @@ sudo journalctl -u agent-sandbox-trigger-orchestrator.service -f
   `$HTTP_TARGET_RELAY_BASE_URL/session/<session-id>/target/<alias>/` rather than calling the public
   Azure URL directly.
 
-You can run the wrapper directly on the host for validation:
-
-```bash
-./scripts/provision_exampleindustry_app_demo_environment.sh --resource-base-name demo-blue
-```
+The older `scripts/provision_exampleindustry_app_demo_environment.sh` wrapper is retained only for
+compatibility with older live workflow packs and should not be used for new provisioning graphs.
 
 ### Teams ingest worker
 

@@ -21,6 +21,7 @@ from agent_sandbox.effects.providers.agent_session import (
     container_thread_id_from_logs,
     selected_execution_backend_for_target,
 )
+from agent_sandbox.effects.providers.ado_pipeline_run import AdoPipelineRunEffectProvider
 from agent_sandbox.effects.providers.http_request import HttpRequestEffectProvider
 from agent_sandbox.effects.providers.runtime_diagnostics_snapshot import (
     RuntimeDiagnosticsSnapshotEffectProvider,
@@ -334,6 +335,7 @@ def test_default_registry_includes_all_known_effect_types() -> None:
         "effect:issue:update-state",
         "effect:issue:update-metadata",
         "effect:issue:upsert-ado-proxy",
+        "effect:ado:pipeline-run",
         "effect:ado:update-work-item",
         "effect:communication:send-message",
         "effect:notification:send",
@@ -348,6 +350,10 @@ def test_default_registry_includes_all_known_effect_types() -> None:
     assert (
         DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:runtime:diagnostics-snapshot"]
         is RuntimeDiagnosticsSnapshotEffectProvider
+    )
+    assert (
+        DEFAULT_EFFECT_PROVIDER_REGISTRY["effect:ado:pipeline-run"]
+        is AdoPipelineRunEffectProvider
     )
 
 

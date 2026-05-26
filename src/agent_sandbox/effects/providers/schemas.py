@@ -665,6 +665,30 @@ class AdoUpdateWorkItemEffectDefinition(EffectDefinition):
         return value
 
 
+class AdoPipelineRunEffectDefinition(EffectDefinition):
+    type: Literal["effect:ado:pipeline-run"]
+    directory_path: ConfigValue
+    pipeline_id: ConfigValue
+    project: ConfigValue | None = None
+    branch: ConfigValue | None = None
+    variables: ConfigValue | None = None
+    template_parameters: ConfigValue | None = None
+    timeout_seconds: ConfigValue | None = None
+    poll_interval_seconds: ConfigValue | None = None
+    check: ConfigValue | None = True
+
+    @field_validator("variables", "template_parameters")
+    @classmethod
+    def validate_mapping_field(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None:
+            return None
+        if not isinstance(value, (Mapping, str)):
+            raise ValueError(
+                "effect:ado:pipeline-run variables and template_parameters must be JSON objects"
+            )
+        return value
+
+
 class PullRequestUpdateEffectDefinition(EffectDefinition):
     type: Literal["effect:pull-request:update"]
     provider: ConfigValue
