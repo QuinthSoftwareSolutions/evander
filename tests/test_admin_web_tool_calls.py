@@ -105,7 +105,11 @@ def _write_audit_log(path: Path) -> None:
             },
             "created_at": "2026-05-18T10:04:00+00:00",
         },
-        {"event_type": "approval_decision", "session_id": "session-1", "created_at": "2026-05-18T10:05:00+00:00"},
+        {
+            "event_type": "approval_decision",
+            "session_id": "session-1",
+            "created_at": "2026-05-18T10:05:00+00:00",
+        },
     ]
     path.write_text(
         "\n".join(
@@ -183,7 +187,9 @@ def test_admin_service_lists_tool_call_audit_entries_with_filters_and_redaction(
     assert session_tool_status_page.items[0].request_id == "request-1"
     assert session_tool_status_page.items[0].correlation_id == "correlation-1"
     assert session_tool_status_page.items[0].approval_request_id == "approval-1"
-    assert session_tool_status_page.items[0].related_links[0].href == "/api/admin/sessions/session-1"
+    assert (
+        session_tool_status_page.items[0].related_links[0].href == "/api/admin/sessions/session-1"
+    )
     assert [item.tool_name for item in time_window_page.items] == ["make_phone_call"]
     assert time_window_page.items[0].directory_path == "root/team/sub"
     assert [item.tool_name for item in correlation_page.items] == ["prompt_agent"]
@@ -265,6 +271,47 @@ def test_admin_service_tool_call_fallback_reads_jsonl_when_index_is_disabled(
     ]
 
 
+def test_admin_service_directory_filter_falls_back_when_audit_index_is_incomplete(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    entries = [
+        {
+            "event_type": "tool_call",
+            "session_id": "old-session",
+            "directory_path": "root/team",
+            "tool_name": "old_team_tool",
+            "decision": "allowed",
+            "created_at": "2026-05-18T09:00:00+00:00",
+        },
+        *[
+            {
+                "event_type": "tool_call",
+                "session_id": f"recent-session-{index}",
+                "directory_path": "root/other",
+                "tool_name": f"recent_other_tool_{index}",
+                "decision": "allowed",
+                "created_at": f"2026-05-18T10:{index % 60:02d}:00+00:00",
+            }
+            for index in range(1_200)
+        ],
+    ]
+    service.config.audit_log_path.write_text(
+        "\n".join(json.dumps(entry, sort_keys=True) for entry in entries) + "\n",
+        encoding="utf-8",
+    )
+
+    page = service.list_tool_call_audit_entries(
+        directory_path="root/team",
+        direct_only=True,
+        limit=10,
+    )
+
+    assert [item.tool_name for item in page.items] == ["old_team_tool"]
+    assert page.counts.scanned == 1_201
+    assert page.counts.matched == 1
+
+
 def test_audit_logger_writes_jsonl_and_indexes_tool_call_entries(tmp_path: Path) -> None:
     audit_log_path = tmp_path / "runtime" / "audit.jsonl"
     logger = AuditLogger(audit_log_path)
@@ -325,6 +372,93 @@ def test_audit_index_backfill_is_idempotent_and_skips_bad_lines(tmp_path: Path) 
     )
     assert page.matched == 1
     assert page.payloads[0]["tool_name"] == "make_phone_call"
+
+
+def test_audit_index_directory_prefix_escapes_like_wildcards(tmp_path: Path) -> None:
+    audit_log_path = tmp_path / "runtime" / "audit.jsonl"
+    audit_log_path.parent.mkdir(parents=True)
+    entries = [
+        {
+            "event_type": "tool_call",
+            "directory_path": "root/team_a",
+            "tool_name": "underscore_direct",
+            "decision": "allowed",
+            "created_at": "2026-05-18T10:00:00+00:00",
+        },
+        {
+            "event_type": "tool_call",
+            "directory_path": "root/team_a/sub",
+            "tool_name": "underscore_child",
+            "decision": "allowed",
+            "created_at": "2026-05-18T10:01:00+00:00",
+        },
+        {
+            "event_type": "tool_call",
+            "directory_path": "root/teamXa/sub",
+            "tool_name": "underscore_intruder",
+            "decision": "allowed",
+            "created_at": "2026-05-18T10:02:00+00:00",
+        },
+        {
+            "event_type": "tool_call",
+            "directory_path": "root/team%a",
+            "tool_name": "percent_direct",
+            "decision": "allowed",
+            "created_at": "2026-05-18T10:03:00+00:00",
+        },
+        {
+            "event_type": "tool_call",
+            "directory_path": "root/team%a/sub",
+            "tool_name": "percent_child",
+            "decision": "allowed",
+            "created_at": "2026-05-18T10:04:00+00:00",
+        },
+        {
+            "event_type": "tool_call",
+            "directory_path": "root/teamZZa/sub",
+            "tool_name": "percent_intruder",
+            "decision": "allowed",
+            "created_at": "2026-05-18T10:05:00+00:00",
+        },
+    ]
+    audit_log_path.write_text(
+        "\n".join(json.dumps(entry, sort_keys=True) for entry in entries) + "\n",
+        encoding="utf-8",
+    )
+    index = ToolCallAuditIndex(audit_index_path_for_log_path(audit_log_path))
+    index.import_from_jsonl(audit_log_path, reset=True)
+
+    underscore_page = index.query_tool_calls(
+        session_id=None,
+        tool_name=None,
+        status=None,
+        directory_path="root/team_a",
+        direct_only=False,
+        created_after=None,
+        created_before=None,
+        q=None,
+        limit=10,
+    )
+    percent_page = index.query_tool_calls(
+        session_id=None,
+        tool_name=None,
+        status=None,
+        directory_path="root/team%a",
+        direct_only=False,
+        created_after=None,
+        created_before=None,
+        q=None,
+        limit=10,
+    )
+
+    assert [payload["tool_name"] for payload in underscore_page.payloads] == [
+        "underscore_child",
+        "underscore_direct",
+    ]
+    assert [payload["tool_name"] for payload in percent_page.payloads] == [
+        "percent_child",
+        "percent_direct",
+    ]
 
 
 def test_admin_service_date_window_uses_index_without_full_jsonl_scan(tmp_path: Path) -> None:

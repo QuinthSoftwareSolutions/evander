@@ -15,6 +15,8 @@ material. Newer entries are added incrementally as changes land.
 
 - Added `effect:ado:pipeline-run` for typed Azure DevOps pipeline queue/poll
   workflows without invoking host-side Bash.
+- Preserved ADO pipeline run outputs such as `run_id` and `run_url` when checked
+  failed, canceled, or timed-out runs are recorded as failed effects.
 - Updated checked-in APP demo workflow examples to queue the provisioning
   pipeline, derive relay metadata with `gate:map`, and store it through
   `effect:session:update-metadata`.
@@ -35,6 +37,9 @@ material. Newer entries are added incrementally as changes land.
   `runtime/audit.jsonl` as the canonical append-only audit journal.
 - Added `agent-sandbox-cli rebuild-audit-index` for rebuilding `runtime/audit.db`
   from the JSONL audit log.
+- Fixed directory-filtered audit queries so incomplete indexes fall back to the
+  canonical JSONL log and directory prefixes containing SQLite wildcard
+  characters do not match unrelated paths.
 
 ## 2026-05-26 - Agent Exec Command Editor
 

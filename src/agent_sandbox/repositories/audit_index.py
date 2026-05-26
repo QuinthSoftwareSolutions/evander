@@ -553,7 +553,9 @@ def tool_call_audit_index_record_from_payload(
         raw_result.get("mcp_tool_approval_lease_id"),
         raw_result.get("tool_approval_lease_id"),
     )
-    tool_name = _first_text(payload.get("tool_name"), payload.get("tool"), raw_args.get("tool_name"))
+    tool_name = _first_text(
+        payload.get("tool_name"), payload.get("tool"), raw_args.get("tool_name")
+    )
     session_id = _first_text(
         payload.get("session_id"),
         raw_args.get("session_id"),
@@ -666,8 +668,8 @@ def _build_query_filters(
             clauses.append("directory_path = ?")
             values.append(selected_path)
         else:
-            clauses.append("(directory_path = ? OR directory_path LIKE ?)")
-            values.extend([selected_path, f"{selected_path}/%"])
+            clauses.append("(directory_path = ? OR directory_path LIKE ? ESCAPE '\\')")
+            values.extend([selected_path, f"{_escape_like(selected_path)}/%"])
     after_storage = _datetime_to_storage(_normalize_datetime(created_after))
     if after_storage is not None:
         clauses.append("created_at >= ?")
@@ -788,7 +790,9 @@ def _tool_call_failure_status(event: dict[str, Any]) -> str:
     return "success"
 
 
-def _tool_call_error_summary(entry: dict[str, Any], status: str, result: dict[str, Any]) -> str | None:
+def _tool_call_error_summary(
+    entry: dict[str, Any], status: str, result: dict[str, Any]
+) -> str | None:
     for candidate in (
         entry.get("reason"),
         result.get("error"),

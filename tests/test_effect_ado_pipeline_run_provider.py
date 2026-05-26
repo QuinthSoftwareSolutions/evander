@@ -9,7 +9,10 @@ import pytest
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.effects.providers.ado_pipeline_run import AdoPipelineRunEffectProvider
-from agent_sandbox.effects.providers.base import EffectRuntimeContext
+from agent_sandbox.effects.providers.base import (
+    EffectProviderExecutionError,
+    EffectRuntimeContext,
+)
 from agent_sandbox.events.provider_models import AdoPipelineRunEffectDefinition
 
 
@@ -140,6 +143,7 @@ def test_ado_pipeline_run_raises_for_failed_checked_run(
                 "state": "completed",
                 "result": "failed",
                 "pipeline": {"id": 42, "name": "Deploy demo"},
+                "_links": {"web": {"href": "https://dev.azure.test/run/702"}},
             },
             request=request,
         )
@@ -148,8 +152,15 @@ def test_ado_pipeline_run_raises_for_failed_checked_run(
     provider = AdoPipelineRunEffectProvider()
     provider.initialize(_effect_definition(), _runtime_context(tmp_path))
 
-    with pytest.raises(RuntimeError, match="completed with result failed"):
+    with pytest.raises(
+        EffectProviderExecutionError, match="completed with result failed"
+    ) as exc_info:
         provider.execute()
+
+    assert exc_info.value.outputs["success"] is False
+    assert exc_info.value.outputs["completed"] is True
+    assert exc_info.value.outputs["run_id"] == "702"
+    assert exc_info.value.outputs["run_url"] == "https://dev.azure.test/run/702"
 
 
 def test_ado_pipeline_run_returns_failed_result_when_check_disabled(
@@ -172,6 +183,47 @@ def test_ado_pipeline_run_returns_failed_result_when_check_disabled(
     assert result["success"] is False
     assert result["completed"] is True
     assert result["result"] == "canceled"
+
+
+def test_ado_pipeline_run_preserves_outputs_on_checked_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "id": 705,
+                "state": "inProgress",
+                "pipeline": {"id": 42, "name": "Deploy demo"},
+                "_links": {"web": {"href": "https://dev.azure.test/run/705"}},
+            },
+            request=request,
+        )
+
+    ticks = iter([0.0, 2.0])
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.ado_pipeline_run.time.monotonic",
+        lambda: next(ticks),
+    )
+    _install_mock_client(monkeypatch, httpx.MockTransport(handler))
+    provider = AdoPipelineRunEffectProvider()
+    provider.initialize(
+        _effect_definition(timeout_seconds=1, poll_interval_seconds=0),
+        _runtime_context(tmp_path),
+    )
+
+    with pytest.raises(EffectProviderExecutionError, match="timed out") as exc_info:
+        provider.execute()
+
+    assert [request.method for request in requests] == ["POST"]
+    assert exc_info.value.outputs["success"] is False
+    assert exc_info.value.outputs["completed"] is False
+    assert exc_info.value.outputs["run_id"] == "705"
+    assert exc_info.value.outputs["run_url"] == "https://dev.azure.test/run/705"
 
 
 def test_ado_pipeline_run_uses_directory_scoped_provider_config(

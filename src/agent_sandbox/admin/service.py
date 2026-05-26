@@ -10963,7 +10963,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 )
             elif recent_only or not any(
                 str(value or "").strip()
-                for value in (session_id, tool_name, status, created_before, q)
+                for value in (session_id, tool_name, status, directory_path, created_before, q)
             ):
                 index.import_from_jsonl_tail(
                     self.config.audit_log_path,

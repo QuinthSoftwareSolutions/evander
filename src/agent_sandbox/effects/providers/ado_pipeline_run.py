@@ -7,7 +7,7 @@ from urllib.parse import quote
 
 import httpx
 
-from .base import EffectProviderBase
+from .base import EffectProviderBase, EffectProviderExecutionError
 
 _ADO_API_VERSION = "7.1-preview.1"
 _TERMINAL_STATES = {"completed"}
@@ -28,12 +28,11 @@ class AdoPipelineRunEffectProvider(EffectProviderBase):
             getattr(config, "azure_devops_organization_url", None),
             field_name="azure_devops_organization_url",
         )
-        project = (
-            self._normalize_optional_string(payload.get("project"))
-            or self._require_non_empty_string(
-                getattr(config, "azure_devops_project", None),
-                field_name="azure_devops_project",
-            )
+        project = self._normalize_optional_string(
+            payload.get("project")
+        ) or self._require_non_empty_string(
+            getattr(config, "azure_devops_project", None),
+            field_name="azure_devops_project",
         )
         pat_env = self._require_non_empty_string(
             getattr(config, "azure_devops_pat_env", None), field_name="azure_devops_pat_env"
@@ -74,8 +73,7 @@ class AdoPipelineRunEffectProvider(EffectProviderBase):
         )
         project_segment = quote(project, safe="")
         base_url = (
-            f"{organization_url.rstrip('/')}/{project_segment}"
-            f"/_apis/pipelines/{pipeline_id}/runs"
+            f"{organization_url.rstrip('/')}/{project_segment}/_apis/pipelines/{pipeline_id}/runs"
         )
         auth = ("", pat)
         headers = {"Accept": "application/json", "Content-Type": "application/json"}
@@ -108,9 +106,10 @@ class AdoPipelineRunEffectProvider(EffectProviderBase):
                         completed=False,
                     )
                     if check:
-                        raise RuntimeError(
+                        raise EffectProviderExecutionError(
                             "effect:ado:pipeline-run timed out waiting for Azure DevOps run "
-                            f"{run_id}"
+                            f"{run_id}",
+                            outputs=output,
                         )
                     return output
                 if poll_interval_seconds:
@@ -133,9 +132,10 @@ class AdoPipelineRunEffectProvider(EffectProviderBase):
             completed=True,
         )
         if check and not output["success"]:
-            raise RuntimeError(
+            raise EffectProviderExecutionError(
                 "effect:ado:pipeline-run Azure DevOps run "
-                f"{output['run_id']} completed with result {output['result'] or output['status']}"
+                f"{output['run_id']} completed with result {output['result'] or output['status']}",
+                outputs=output,
             )
         return output
 
