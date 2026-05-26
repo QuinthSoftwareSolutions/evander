@@ -3112,7 +3112,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field("session_id", "Session ID", "string", bindable=True),
             _field("vm_name", "VM name", "string", bindable=True),
             _field("vm_user", "VM user", "string", bindable=True),
-            _field("command", "Command", "string", required=True, bindable=True),
+            _field("command", "Command", "string", required=True, bindable=True, multiline=True),
             _field("working_directory", "Working directory", "string", bindable=True),
             _field("environment", "Environment", "json", bindable=True),
             _field("stdin", "Stdin", "string", bindable=True, multiline=True),

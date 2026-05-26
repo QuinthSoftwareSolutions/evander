@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-26 - Agent Exec Command Editor
+
+- Rendered the workflow editor `effect:agent:exec` Command field as a
+  multiline text area so long commands are easier to read and edit.
+
 ## 2026-05-26 - Workflow Editor Viewport Stability
 
 - Preserved the workflow editor canvas viewport across node field edits,
