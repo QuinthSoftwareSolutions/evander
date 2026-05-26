@@ -244,8 +244,9 @@ described above. Review requests are fed from the host-owned
 requests are fed from `runtime/script-run-requests-store.json`, which the `run_script(...)` MCP
 tool appends to after validating that the calling session is allowed to invoke the requested
 script name. The checked-in global workflow currently filters that trigger down to
-`provision_exampleindustry_app_demo_environment.sh`, which wraps the existing host-side Example
-Industry APP Azure provisioning script and resumes the originating session with the JSON result.
+`provision_exampleindustry_app_demo_environment.sh`, queues a typed Azure DevOps pipeline run,
+maps the derived demo-environment relay metadata with `gate:map`, and resumes the originating
+session after `effect:session:update-metadata` stores that metadata.
 
 `trigger:communication:new-message` is a provider-neutral chat trigger over declared
 directory-scoped communication targets. Its `communication_target_ids` list is required and must
@@ -407,11 +408,13 @@ Type-specific keys:
 | `effect:agent:destroy` | _none beyond envelope_ | `target`, `session_id`, `vm_name`, `execution_backend`, `directory_path`, `outputs` |
 | `effect:bash:script` | `script_path` | `args`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:http:request` | `url` | `method`, `allowed_url_patterns`, `payload`, `headers`, `timeout_seconds`, `check`, `outputs` |
+| `effect:runtime:diagnostics-snapshot` | _none beyond envelope_ | `since`, `units`, `include_failed_units`, `include_journal`, `include_runtime_files`, `max_journal_lines_per_unit`, `max_runtime_file_bytes`, `command_timeout_seconds`, `outputs` |
 | `effect:vm:exec` | `command` | `target`, `session_id`, `vm_name`, `vm_user`, `working_directory`, `environment`, `stdin`, `timeout_seconds`, `check`, `outputs` |
 | `effect:vm:copy-files` | `files` | `target`, `session_id`, `vm_name`, `vm_user`, `outputs` |
 | `effect:event:schedule` | `event_type`, `payload`; exactly one of `run_at`, `delay_seconds` | `correlation_key`, `idempotency_key`, `outputs` |
 | `effect:issue:update-state` | `issue_id`, `state` | `sync_proxy_cache`, `outputs` |
 | `effect:issue:upsert-ado-proxy` | one of `item`, `items` | `directory_path`, `organization_url`, `project`, `repo_source`, `yaml_output_dir`, `outputs` |
+| `effect:ado:pipeline-run` | `directory_path`, `pipeline_id` | `project`, `branch`, `variables`, `template_parameters`, `timeout_seconds`, `poll_interval_seconds`, `check`, `outputs` |
 | `effect:pull-request:update` | `provider`, `repo`, `pr_id` | `directory_path`, `organization_url`, `project`, `title`, `description`, `status`, `add_tags`, `remove_tags`, `expected_statuses`, `outputs` |
 | `effect:communication:send-message` | `communication_target_id`, `message` | `thread_id`, `outputs` |
 | `effect:notification:send` | `communication_target_id`, `message` | `severity`, `subject`, `thread_id`, `outputs` |
@@ -430,6 +433,15 @@ origin when they include a scheme, for example `https://api.example.test/*`, and
 against the host or `host:port` when they do not, for example `*.example.test`.
 This effect does not use the guest HTTP target relay or its destination
 allowlist.
+
+`effect:runtime:diagnostics-snapshot` captures a host-side diagnostic snapshot
+without accepting arbitrary commands or paths from workflow config. It reads only
+the configured runtime directory, fixed orchestration failure files, and an
+allowlisted subset of `agent-sandbox-*` systemd units. Service log collection is
+bounded by `since`, `units`, `max_journal_lines_per_unit`, and
+`command_timeout_seconds`; runtime file reads are bounded by
+`max_runtime_file_bytes`. Redaction is always enabled before the snapshot is
+returned in `snapshot_text`, `stdout`, and `message`.
 
 `effect:pr:create` preflights the destination branch before pushing. If the
 destination branch exists and its tip is not contained in the local branch, the
@@ -592,10 +604,14 @@ Effect schema envelope example:
 }
 ```
 
-The checked-in APP provisioning workflow uses `effect:bash:script` with this repo's
-`scripts/provision_exampleindustry_app_demo_environment.sh`, projects `stdout` plus parsed JSON fields such as `app_base_url`, `app_public_url`,
-`app_api_alias`, `app_ui_alias`, and `public_domain` as declared outputs, stores those values in
-session metadata, and then resumes the originating agent session.
+`effect:bash:script` is retained for compatibility but is high-risk host-side shell execution and
+should not be used for new workflows. Prefer typed effects such as `effect:ado:pipeline-run`.
+
+The checked-in APP provisioning workflow uses `effect:ado:pipeline-run` to queue an Azure DevOps
+deployment pipeline, then uses `gate:map` to derive fields such as `app_base_url`,
+`app_public_url`, `app_api_alias`, `app_ui_alias`, and `public_domain`. The mapped
+`session_metadata_patch` is stored with `effect:session:update-metadata` before the originating
+agent session is resumed.
 
 ### Graph examples
 
@@ -1248,7 +1264,8 @@ mode remains supported for compatibility through `teams_graph_access_token_env` 
 `GRAPH_TEAMS_ACCESS_TOKEN`).
 The same delegated Teams identity/configuration is also used by the host-side Teams ingest worker
 that feeds `trigger:teams:new-message` for both channel threads and group chats, plus
-`trigger:teams:direct-message` for one-on-one direct messages sent by configured sender user ids.
+`trigger:teams:direct-message` for one-on-one direct messages sent by configured sender user ids,
+UPNs, or mail addresses.
 
 Session and `effect:agent:create` manifests can use either legacy raw Teams/Discord IDs or
 directory-scoped communication target IDs in their communication allowlists. Declared target IDs are
@@ -1262,7 +1279,7 @@ targets with `teams_chat_allowlist`, and one-on-one user send targets with
 `teams_user_allowlist`. Teams `user:` communication targets are send-only; they are not valid for
 Teams reads, reactions, attachment downloads, or `trigger:teams:new-message` polling.
 Direct-message trigger polling is configured with `sender_user_ids` on
-`trigger:teams:direct-message`.
+`trigger:teams:direct-message`; entries can be Graph user IDs, UPNs, or mail addresses.
 
 Key delegated Teams provider settings now include:
 
@@ -1272,6 +1289,8 @@ Key delegated Teams provider settings now include:
 - optional `teams_delegated_tenant_id`
 - optional `teams_delegated_scopes` (default includes `offline_access`,
   `ChannelMessage.Read.All`, `ChannelMessage.Send`, and `Chat.ReadWrite`)
+- Resolving Teams direct-message sender mail addresses may require adding a Graph user-read scope
+  such as `User.ReadBasic.All` or `User.Read.All` and rerunning Teams auth.
 - optional `teams_delegated_authority_base_url`
 - optional `teams_delegated_credential_store_path`
 - optional `teams_history_page_cap` (default `1`) and `teams_history_deadline_seconds` (default

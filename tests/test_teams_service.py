@@ -98,6 +98,103 @@ def test_graph_teams_service_creates_one_on_one_chat_for_allowlisted_user(
     assert [request.url.path for request in requests] == ["/v1.0/me", "/v1.0/chats"]
 
 
+def test_graph_teams_service_resolves_user_refs_to_graph_ids(tmp_path: Path) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/v1.0/users/user-allowed":
+            return httpx.Response(
+                200,
+                json={"id": "user-allowed", "userPrincipalName": "allowed@example.com"},
+                request=request,
+            )
+        if request.url.path == "/v1.0/users/operator@example.com":
+            return httpx.Response(
+                200,
+                json={"id": "user-operator", "mail": "operator@example.com"},
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert service.resolve_user_id(client, "user-allowed") == "user-allowed"
+        assert service.resolve_user_id(client, "user:operator@example.com") == "user-operator"
+
+    assert [request.url.path for request in requests] == [
+        "/v1.0/users/user-allowed",
+        "/v1.0/users/operator@example.com",
+    ]
+    assert all(request.url.params.get("$select") == "id,userPrincipalName,mail" for request in requests)
+
+
+def test_graph_teams_service_resolves_mail_with_filter_fallback(tmp_path: Path) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/v1.0/users/primary@example.com":
+            return httpx.Response(404, json={"error": {"code": "Request_ResourceNotFound"}}, request=request)
+        if request.url.path == "/v1.0/users":
+            assert request.url.params.get("$filter") == (
+                "mail eq 'primary@example.com' or "
+                "userPrincipalName eq 'primary@example.com'"
+            )
+            return httpx.Response(
+                200,
+                json={"value": [{"id": "user-primary", "mail": "primary@example.com"}]},
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert service.resolve_user_id(client, "primary@example.com") == "user-primary"
+
+    assert [request.url.path for request in requests] == [
+        "/v1.0/users/primary@example.com",
+        "/v1.0/users",
+    ]
+
+
+def test_graph_teams_service_returns_none_for_unresolved_mail(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1.0/users/missing@example.com":
+            return httpx.Response(404, json={"error": {"code": "Request_ResourceNotFound"}}, request=request)
+        if request.url.path == "/v1.0/users":
+            return httpx.Response(200, json={"value": []}, request=request)
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+    )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert service.resolve_user_id(client, "missing@example.com") is None
+
+
 def test_graph_teams_service_rejects_non_allowlisted_user_chat_creation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

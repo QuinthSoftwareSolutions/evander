@@ -5,6 +5,7 @@ from collections.abc import Callable
 from pydantic import BaseModel
 
 from agent_sandbox.effects.providers.schemas import (
+    AdoPipelineRunEffectDefinition,
     AdoUpdateWorkItemEffectDefinition,
     AgentBootstrapFrontendEffectDefinition,
     AgentCloneRepoEffectDefinition,
@@ -30,6 +31,7 @@ from agent_sandbox.effects.providers.schemas import (
     NotificationSendEffectDefinition,
     PrCreateEffectDefinition,
     PullRequestUpdateEffectDefinition,
+    RuntimeDiagnosticsSnapshotEffectDefinition,
     SemanticDeleteEffectDefinition,
     SemanticEnsureCollectionEffectDefinition,
     SemanticUpsertEffectDefinition,
@@ -77,12 +79,14 @@ _EFFECT_MODEL_BY_TYPE = {
     "effect:state:update": StateUpdateEffectDefinition,
     "effect:bash:script": BashScriptEffectDefinition,
     "effect:http:request": HttpRequestEffectDefinition,
+    "effect:runtime:diagnostics-snapshot": RuntimeDiagnosticsSnapshotEffectDefinition,
     "effect:vm:exec": VmExecEffectDefinition,
     "effect:vm:copy-files": VmCopyFilesEffectDefinition,
     "effect:vm:delete-files": VmDeleteFilesEffectDefinition,
     "effect:issue:update-state": IssueUpdateStateEffectDefinition,
     "effect:issue:update-metadata": IssueUpdateMetadataEffectDefinition,
     "effect:issue:upsert-ado-proxy": IssueUpsertAdoProxyEffectDefinition,
+    "effect:ado:pipeline-run": AdoPipelineRunEffectDefinition,
     "effect:ado:update-work-item": AdoUpdateWorkItemEffectDefinition,
     "effect:pull-request:update": PullRequestUpdateEffectDefinition,
     "effect:communication:send-message": CommunicationSendMessageEffectDefinition,

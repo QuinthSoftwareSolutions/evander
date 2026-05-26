@@ -161,6 +161,10 @@ from agent_sandbox.repositories.orchestration_db import (
     ensure_orchestration_schema,
     json_loads_object,
 )
+from agent_sandbox.repositories.audit_index import (
+    DEFAULT_TAIL_IMPORT_MAX_LINES,
+    ToolCallAuditIndex,
+)
 from agent_sandbox.messaging.teams_auth import (
     DeviceCodeLoginSession,
     JsonTeamsIdentityCredentialStore,
@@ -1374,9 +1378,7 @@ def _communication_target_capabilities(target: dict[str, Any]) -> list[str]:
     if not isinstance(raw_capabilities, list):
         return []
     capabilities = {
-        str(capability).strip()
-        for capability in raw_capabilities
-        if str(capability).strip()
+        str(capability).strip() for capability in raw_capabilities if str(capability).strip()
     }
     return sorted(capabilities)
 
@@ -1646,9 +1648,14 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:semantic:upsert": "Embed one text string and upsert it as one Qdrant point.",
     "effect:semantic:delete": "Delete semantic points by explicit point IDs.",
     "effect:state:update": "Set, patch, or delete graph-local workflow state.",
-    "effect:bash:script": "Run a host-side Bash script from the effect orchestrator.",
+    "effect:bash:script": (
+        "Deprecated high-risk host-side Bash execution from the effect orchestrator."
+    ),
     "effect:http:request": (
         "Perform a host-side raw HTTP GET, POST, or PUT request with URL allowlist control."
+    ),
+    "effect:runtime:diagnostics-snapshot": (
+        "Capture a bounded, redacted host runtime diagnostics snapshot from allowlisted sources."
     ),
     "effect:vm:exec": "Run a shell command inside a VM-backed agent target.",
     "effect:vm:copy-files": "Copy rendered file content into a VM-backed agent target.",
@@ -1657,6 +1664,9 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:issue:update-metadata": "Patch metadata on a tracked issue.",
     "effect:issue:upsert-ado-proxy": (
         "Create or refresh local proxy tickets from Azure DevOps work items."
+    ),
+    "effect:ado:pipeline-run": (
+        "Queue an Azure DevOps pipeline run and wait for its terminal result."
     ),
     "effect:ado:update-work-item": (
         "Update an Azure DevOps work item with an optional expected-state guard."
@@ -1685,9 +1695,7 @@ _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
     "effect:artifact:import-published": (
         "Import a published artifact archive into a session artifacts folder."
     ),
-    "effect:git:promote-agent-branch": (
-        "Promote an agent branch into a trusted host checkout."
-    ),
+    "effect:git:promote-agent-branch": ("Promote an agent branch into a trusted host checkout."),
     "effect:pr:create": "Create a pull request from a host-side checkout.",
     "effect:event:schedule": "Schedule a one-shot internal workflow event for later delivery.",
     "query:vm:run-state": "Read the current run state for a VM-backed agent target.",
@@ -1952,12 +1960,12 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         fields=[
             _field(
                 "sender_user_ids",
-                "Sender user IDs",
+                "Sender user IDs or emails",
                 "string_list",
                 required=True,
                 description=(
-                    "Microsoft Graph user IDs allowed to wake this workflow from one-on-one "
-                    "Teams chats."
+                    "Microsoft Graph user IDs, UPNs, or mail addresses allowed to wake this "
+                    "workflow from one-on-one Teams chats."
                 ),
             ),
             _field(
@@ -1965,7 +1973,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Message filter",
                 "json",
                 description=(
-                    'Optional wake filter, for example '
+                    "Optional wake filter, for example "
                     '{"content":{"contains":"literal text","case_sensitive":false}}.'
                 ),
             ),
@@ -2202,7 +2210,6 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             ),
         ],
     ),
-
     WorkflowEditorNodeCatalogEntry(
         kind="gate",
         type="gate:debounce",
@@ -3344,6 +3351,71 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="effect",
+        type="effect:runtime:diagnostics-snapshot",
+        label="Runtime diagnostics snapshot",
+        fields=[
+            _field(
+                "since",
+                "Since",
+                "string",
+                bindable=True,
+                default_value="24 hours ago",
+                placeholder="24 hours ago",
+                description="journalctl-compatible time window for service warnings.",
+            ),
+            _field(
+                "units",
+                "Units",
+                "string_list",
+                bindable=True,
+                description="Optional subset of the built-in agent-sandbox service allowlist.",
+            ),
+            _field(
+                "include_failed_units",
+                "Include failed units",
+                "boolean",
+                bindable=True,
+                default_value=True,
+            ),
+            _field(
+                "include_journal",
+                "Include journal warnings",
+                "boolean",
+                bindable=True,
+                default_value=True,
+            ),
+            _field(
+                "include_runtime_files",
+                "Include runtime failure files",
+                "boolean",
+                bindable=True,
+                default_value=True,
+            ),
+            _field(
+                "max_journal_lines_per_unit",
+                "Max journal lines per unit",
+                "number",
+                bindable=True,
+                default_value=200,
+            ),
+            _field(
+                "max_runtime_file_bytes",
+                "Max runtime file bytes",
+                "number",
+                bindable=True,
+                default_value=120000,
+            ),
+            _field(
+                "command_timeout_seconds",
+                "Command timeout seconds",
+                "number",
+                bindable=True,
+                default_value=10,
+            ),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
         type="effect:vm:exec",
         label="VM exec",
         fields=[
@@ -3480,6 +3552,36 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="effect",
+        type="effect:ado:pipeline-run",
+        label="ADO pipeline run",
+        fields=[
+            _field("directory_path", "Directory path", "string", required=True, bindable=True),
+            _field("pipeline_id", "Pipeline ID", "number", required=True, bindable=True),
+            _field("project", "Project", "string", bindable=True),
+            _field("branch", "Branch", "string", bindable=True),
+            _field(
+                "variables",
+                "Variables",
+                "json",
+                bindable=True,
+                json_value_type="object",
+                default_value={},
+            ),
+            _field(
+                "template_parameters",
+                "Template parameters",
+                "json",
+                bindable=True,
+                json_value_type="object",
+                default_value={},
+            ),
+            _field("timeout_seconds", "Timeout seconds", "number", bindable=True),
+            _field("poll_interval_seconds", "Poll interval seconds", "number", bindable=True),
+            _field("check", "Check result", "boolean", bindable=True),
+        ],
+    ),
+    WorkflowEditorNodeCatalogEntry(
+        kind="effect",
         type="effect:event:emit",
         label="Emit internal event",
         fields=[
@@ -3604,9 +3706,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "string_list",
                 required=True,
                 bindable=True,
-                description=(
-                    "MCP tools to approve only for this workflow run and session."
-                ),
+                description=("MCP tools to approve only for this workflow run and session."),
                 options=_tool_field_options(),
             ),
             _field(
@@ -3928,9 +4028,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
                 "Communication target",
                 "enum",
                 required=True,
-                description=(
-                    "Select a read-capable Teams or Discord communication target."
-                ),
+                description=("Select a read-capable Teams or Discord communication target."),
             ),
             _field(
                 "limit",
@@ -5609,11 +5707,9 @@ def _communication_file_session_policy_update(payload: Mapping[str, Any]) -> dic
                 payload.get(field_name), field_name=field_name
             )
     if "communication_file_max_bytes" in payload:
-        update["communication_file_max_bytes"] = (
-            _normalize_session_policy_non_negative_int_or_none(
-                payload.get("communication_file_max_bytes"),
-                field_name="communication_file_max_bytes",
-            )
+        update["communication_file_max_bytes"] = _normalize_session_policy_non_negative_int_or_none(
+            payload.get("communication_file_max_bytes"),
+            field_name="communication_file_max_bytes",
         )
     for field_name in (
         "communication_file_allowed_mime_types",
@@ -5885,6 +5981,17 @@ class AdminService:
             legacy_config_path=self.legacy_config_path,
         )
         self.runtime = build_runtime(self.config)
+        self.tool_call_audit_index: ToolCallAuditIndex | None = ToolCallAuditIndex.for_audit_log(
+            self.config.audit_log_path
+        )
+        try:
+            self.tool_call_audit_index.ensure_schema()
+            self.tool_call_audit_index.import_from_jsonl_tail(
+                self.config.audit_log_path,
+                max_lines=1_000,
+            )
+        except Exception:
+            self.tool_call_audit_index = None
         self.skill_library = SkillLibraryRepository(self.config.runtime_dir)
         self.agent_control_store = AgentControlStore(self.config.host_agent_control_state_path)
         self.local_issue_store = JsonStore(
@@ -6214,10 +6321,14 @@ class AdminService:
             updated_at = record.updated_at or record.started_at
             rank = kind_rank[kind]
             current = statuses.get(session_id)
-            if current is None or rank < current[0] or (
-                rank == current[0]
-                and updated_at is not None
-                and (current[1] is None or updated_at > current[1])
+            if (
+                current is None
+                or rank < current[0]
+                or (
+                    rank == current[0]
+                    and updated_at is not None
+                    and (current[1] is None or updated_at > current[1])
+                )
             ):
                 statuses[session_id] = (rank, updated_at, str(record.status or "").strip())
         return {session_id: value[2] for session_id, value in statuses.items()}
@@ -6268,7 +6379,10 @@ class AdminService:
             ("control_plane_session_store", self.config.session_store_path),
             ("control_plane_agent_prompt_store", self.runtime.agent_prompt_store.path),
             ("control_plane_local_issues", self.local_issue_yaml_dir),
-            ("control_plane_container_worker_executions", self._container_worker_execution_repository().path),
+            (
+                "control_plane_container_worker_executions",
+                self._container_worker_execution_repository().path,
+            ),
             ("control_plane_communication_artifacts", self._communication_artifact_store().root),
             ("control_plane_published_artifacts", self._published_artifact_store().root),
         ]
@@ -6413,7 +6527,9 @@ class AdminService:
         return CapacitySessionStoragePayload(
             measured_total=DirectorySizeTelemetry(
                 scope="session_storage:container_worker_vm",
-                status=TelemetryStatus.AVAILABLE if measured_session_count > 0 else TelemetryStatus.MISSING,
+                status=TelemetryStatus.AVAILABLE
+                if measured_session_count > 0
+                else TelemetryStatus.MISSING,
                 health=HealthState.OK if measured_session_count > 0 else HealthState.UNKNOWN,
                 size_bytes=measured_total_bytes,
                 file_count=0,
@@ -6541,8 +6657,12 @@ class AdminService:
             ),
         )
         for descriptor in ordered:
-            descriptor["directory_paths"] = sorted(str(path) for path in descriptor["directory_paths"])
-            descriptor["discovered_from"] = sorted(str(item) for item in descriptor["discovered_from"])
+            descriptor["directory_paths"] = sorted(
+                str(path) for path in descriptor["directory_paths"]
+            )
+            descriptor["discovered_from"] = sorted(
+                str(item) for item in descriptor["discovered_from"]
+            )
             if descriptor.get("token_env") is None:
                 descriptor["token_env"] = "AGENT_SANDBOX_WORKER_TOKEN"
             if descriptor.get("timeout_seconds") is None:
@@ -6643,7 +6763,11 @@ class AdminService:
                 status=TelemetryStatus.MISSING,
                 health=HealthState.UNKNOWN,
                 backend=backend,
-                errors=[TelemetryError(status=TelemetryStatus.MISSING, message="trigger queue is missing")],
+                errors=[
+                    TelemetryError(
+                        status=TelemetryStatus.MISSING, message="trigger queue is missing"
+                    )
+                ],
             )
         except PermissionError:
             return CapacityQueueTelemetryPayload(
@@ -7577,9 +7701,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if session is None:
             raise ValueError(f"Unknown session: {normalized_session_id}")
         if not self._is_container_session(session):
-            raise ValueError(
-                f"Session {normalized_session_id!r} is not a container worker session"
-            )
+            raise ValueError(f"Session {normalized_session_id!r} is not a container worker session")
 
         lifecycle = self._container_session_lifecycle(session)
         if lifecycle is None or not lifecycle.actions.cleanup.supported:
@@ -7650,9 +7772,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     ) -> SessionActionResult:
         return self.operations_admin.set_session_allowed_script_names(target, allowed_script_names)
 
-    def update_session_policy(
-        self, target: str, payload: dict[str, object]
-    ) -> SessionActionResult:
+    def update_session_policy(self, target: str, payload: dict[str, object]) -> SessionActionResult:
         return self.operations_admin.update_session_policy(target, payload)
 
     def set_session_model(self, target: str, model: str) -> SessionActionResult:
@@ -7981,9 +8101,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             return "failed"
         return "unknown"
 
-    def _session_summary_with_container_lifecycle(
-        self, summary: SessionSummary
-    ) -> SessionSummary:
+    def _session_summary_with_container_lifecycle(self, summary: SessionSummary) -> SessionSummary:
         if not self._is_container_session(summary):
             return summary.model_copy(update={"container_lifecycle": None})
         executions = self._container_execution_records_for_session(summary.session_id)
@@ -8048,9 +8166,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
         cleanup_attempted_at = _max_datetime("cleanup_attempted_at")
         cleanup_completed_at = _max_datetime("cleanup_completed_at")
-        cleanup_error = _coerce_optional_string(
-            _first_value(metadata_payloads, "cleanup_error")
-        )
+        cleanup_error = _coerce_optional_string(_first_value(metadata_payloads, "cleanup_error"))
 
         active_records = [
             record
@@ -8114,7 +8230,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 completion_candidates.append(finished_at)
         last_completion_at = max(completion_candidates) if completion_candidates else None
         last_signal_at = max(
-            [timestamp for timestamp in (last_heartbeat_at, last_completion_at) if timestamp is not None],
+            [
+                timestamp
+                for timestamp in (last_heartbeat_at, last_completion_at)
+                if timestamp is not None
+            ],
             default=None,
         )
 
@@ -8137,7 +8257,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             cleanup_reason = "Cleanup is not currently supported for this session."
 
         recovery_supported = (
-            state not in {
+            state
+            not in {
                 ContainerSessionLifecycleState.RUNNING,
                 ContainerSessionLifecycleState.STARTING,
                 ContainerSessionLifecycleState.CLEANED_UP,
@@ -8675,9 +8796,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 ),
                 allowed_script_names=self._agent_string_list(payload, "allowed_script_names"),
                 discord_channels=self._agent_string_list(payload, "discord_channels"),
-                teams_channel_allowlist=self._agent_string_list(
-                    payload, "teams_channel_allowlist"
-                ),
+                teams_channel_allowlist=self._agent_string_list(payload, "teams_channel_allowlist"),
                 **(
                     {
                         "teams_chat_allowlist": self._agent_string_list(
@@ -8731,7 +8850,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 directory_path=self._agent_optional_string(payload, "directory_path") or "root",
             )
             session_id = self._agent_optional_string(payload, "session_id")
-            session = self.runtime.session_repository.get_session(session_id) if session_id else None
+            session = (
+                self.runtime.session_repository.get_session(session_id) if session_id else None
+            )
             return {
                 "success": result.success,
                 "agent_id": result.vm_name or vm_name,
@@ -9028,9 +9149,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             or "\n" in normalized_home
             or "\x00" in normalized_home
         ):
-            raise RuntimeError(
-                f"Guest CODEX_HOME resolved to an invalid path: {codex_home!r}"
-            )
+            raise RuntimeError(f"Guest CODEX_HOME resolved to an invalid path: {codex_home!r}")
         return [
             {
                 "destination_path": f"{normalized_home}/skills/{entry.name}/SKILL.md",
@@ -9062,9 +9181,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             check=True,
         )
         if not bool(codex_home_result.get("success")):
-            message = str(
-                codex_home_result.get("message") or "Failed to resolve guest CODEX_HOME"
-            )
+            message = str(codex_home_result.get("message") or "Failed to resolve guest CODEX_HOME")
             raise RuntimeError(message)
         codex_home = str(codex_home_result.get("stdout") or "").strip()
         files = self._skill_install_files_for_codex_home(entries, codex_home=codex_home)
@@ -9099,9 +9216,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         *,
         skill_names: list[str],
     ) -> dict[str, Any]:
-        session, record = self._resolve_container_agent_session(
-            agent_id, require_session=True
-        )
+        session, record = self._resolve_container_agent_session(agent_id, require_session=True)
         if session is None:
             raise ValueError(f"Unknown container worker agent target: {agent_id}")
         execution_records = self._container_execution_records_for_session(session.session_id)
@@ -9131,9 +9246,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             ),
             "status": "updated",
             "session_id": session.session_id,
-            "copied_count": int(
-                getattr(result, "copied_count", len(copied_paths)) or 0
-            ),
+            "copied_count": int(getattr(result, "copied_count", len(copied_paths)) or 0),
             "copied_paths": copied_paths,
             "codex_skills": list(skill_names),
         }
@@ -9156,9 +9269,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 skill_names=names,
                 vm_user=vm_user,
             )
-        return self._install_codex_skills_into_container_agent(
-            agent_id, skill_names=names
-        )
+        return self._install_codex_skills_into_container_agent(agent_id, skill_names=names)
 
     def update_admin_agent(
         self,
@@ -9653,7 +9764,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     offset=normalized_offset,
                     query=normalized_query or None,
                 )
-            text = worker_backend.get_log_snapshot(target, lines=normalized_limit + normalized_offset)
+            text = worker_backend.get_log_snapshot(
+                target, lines=normalized_limit + normalized_offset
+            )
             return _log_page_from_end(
                 text,
                 limit=normalized_limit,
@@ -9852,7 +9965,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             del record
             session_id = session.session_id
             target_name = self._container_session_target_name(session)
-            directory_path = str(getattr(session, "directory_path", None) or "root").strip() or "root"
+            directory_path = (
+                str(getattr(session, "directory_path", None) or "root").strip() or "root"
+            )
             agent_response_id = session_id
         else:
             raise ValueError(f"Unknown agent backend: {backend}")
@@ -10436,8 +10551,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
         if not bool(result.get("success")):
             raise RuntimeError(
-                str(result.get("stderr") or result.get("stdout") or result.get("message") or "")
-                .strip()
+                str(
+                    result.get("stderr") or result.get("stdout") or result.get("message") or ""
+                ).strip()
                 or "VM artifact read failed"
             )
         content = str(result.get("stdout") or "")
@@ -10716,6 +10832,20 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if directory_path is not None
             else None
         )
+        indexed_page = self._list_tool_call_audit_entries_from_index(
+            session_id=session_id,
+            tool_name=tool_name,
+            status=normalized_status,
+            directory_path=normalized_directory_path,
+            direct_only=direct_only,
+            created_after=created_after,
+            created_before=created_before,
+            q=q,
+            limit=normalized_limit,
+            recent_only=recent_only,
+        )
+        if indexed_page is not None:
+            return indexed_page
         if recent_only and _tool_call_audit_tail_scan_supported(
             session_id=session_id,
             tool_name=tool_name,
@@ -10797,6 +10927,85 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             ),
             limit=normalized_limit,
             has_more=counts.matched > len(items),
+        )
+
+    def _list_tool_call_audit_entries_from_index(
+        self,
+        *,
+        session_id: str | None,
+        tool_name: str | None,
+        status: str | None,
+        directory_path: str | None,
+        direct_only: bool,
+        created_after: datetime | None,
+        created_before: datetime | None,
+        q: str | None,
+        limit: int,
+        recent_only: bool,
+    ) -> ToolCallAuditListPayload | None:
+        index = self.tool_call_audit_index
+        if index is None:
+            return None
+        try:
+            full_import_complete = index.import_is_complete(self.config.audit_log_path)
+            use_index = full_import_complete
+
+            if created_after is not None:
+                import_result = index.import_from_jsonl_tail(
+                    self.config.audit_log_path,
+                    created_after=created_after,
+                    max_lines=DEFAULT_TAIL_IMPORT_MAX_LINES,
+                )
+                use_index = (
+                    full_import_complete
+                    or import_result.complete
+                    or import_result.reached_time_boundary
+                )
+            elif recent_only or not any(
+                str(value or "").strip()
+                for value in (session_id, tool_name, status, directory_path, created_before, q)
+            ):
+                import_result = index.import_from_jsonl_tail(
+                    self.config.audit_log_path,
+                    max_lines=max(1_000, min(DEFAULT_TAIL_IMPORT_MAX_LINES, limit * 25)),
+                )
+                use_index = full_import_complete or import_result.complete
+            elif not full_import_complete:
+                index.import_from_jsonl(self.config.audit_log_path, max_lines=1_000)
+                use_index = index.import_is_complete(self.config.audit_log_path)
+
+            if not use_index:
+                return None
+
+            page = index.query_tool_calls(
+                session_id=session_id,
+                tool_name=tool_name,
+                status=status,
+                directory_path=directory_path,
+                direct_only=direct_only,
+                created_after=created_after,
+                created_before=created_before,
+                q=q,
+                limit=limit,
+            )
+        except Exception:
+            return None
+
+        items: list[ToolCallAuditEntryPayload] = []
+        for payload in page.payloads:
+            entry = _tool_call_audit_entry_from_payload(payload)
+            if entry is not None:
+                items.append(entry)
+        return ToolCallAuditListPayload(
+            items=items,
+            counts=ToolCallAuditCountsPayload(
+                scanned=page.matched,
+                matched=page.matched,
+                returned=len(items),
+                status_counts=page.status_counts,
+            ),
+            limit=limit,
+            has_more=page.has_more,
         )
 
     def _list_recent_tool_call_audit_entries_from_tail(
@@ -11026,9 +11235,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 )
             last_finished = self._workflow_generation_last_finished_at_monotonic
             if last_finished is not None:
-                remaining_seconds = _WORKFLOW_GENERATION_COOLDOWN_SECONDS - (
-                    now - last_finished
-                )
+                remaining_seconds = _WORKFLOW_GENERATION_COOLDOWN_SECONDS - (now - last_finished)
                 if remaining_seconds > 0:
                     raise ValueError(
                         "Workflow generation is cooling down. Try again in "
@@ -11235,9 +11442,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         payload = self._write_worker_global_config("trigger-orchestrator", config)
         return TriggerConfigDocument(path=payload.path, config=payload.config)
 
-    def _write_trigger_document_unlocked(
-        self, config: dict[str, object]
-    ) -> TriggerConfigDocument:
+    def _write_trigger_document_unlocked(self, config: dict[str, object]) -> TriggerConfigDocument:
         payload = self._write_worker_global_config_unlocked("trigger-orchestrator", config)
         return TriggerConfigDocument(path=payload.path, config=payload.config)
 
@@ -11881,9 +12086,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 try:
                     response = await client.post(url, headers=headers, json=request_payload)
                 except httpx.HTTPError as exc:
-                    raise ValueError(
-                        f"OpenAI workflow generation request failed: {exc}"
-                    ) from exc
+                    raise ValueError(f"OpenAI workflow generation request failed: {exc}") from exc
         finally:
             self._finish_workflow_generation_request()
         if response.status_code >= 400:
@@ -11900,7 +12103,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         try:
             generated_payload = json.loads(generated_text)
         except json.JSONDecodeError as exc:
-            raise ValueError(f"OpenAI workflow generation returned invalid JSON: {exc.msg}") from exc
+            raise ValueError(
+                f"OpenAI workflow generation returned invalid JSON: {exc.msg}"
+            ) from exc
         if not isinstance(generated_payload, dict):
             raise ValueError("OpenAI workflow generation response must be a JSON object.")
 
@@ -11937,9 +12142,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         context = {
             "directory_path": directory_path,
             "node_catalog": self._workflow_generation_catalog_context(catalog),
-            "examples": self._workflow_generation_examples()
-            if include_current_packs
-            else [],
+            "examples": self._workflow_generation_examples() if include_current_packs else [],
             "rules": [
                 "Return one connected workflow graph unless the user explicitly asks for multiple.",
                 "Every node id must be stable, lowercase, unique, and easy to read.",
@@ -12094,9 +12297,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 if field.default_value is not None:
                     field_payload["default_value"] = field.default_value
                 if field.options:
-                    field_payload["options"] = [
-                        option.value for option in field.options[:50]
-                    ]
+                    field_payload["options"] = [option.value for option in field.options[:50]]
                 fields.append(field_payload)
             result.append(
                 {
@@ -12312,19 +12513,23 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         graph_id = str(graph_payload.get("id") or "").strip() or "generated-workflow"
         graph_name = str(graph_payload.get("name") or "").strip() or "Generated workflow"
         raw_directory_paths = graph_payload.get("directory_paths")
-        directory_paths = [
-            DirectoryPath(segments=str(path).strip()).as_posix()
-            for path in raw_directory_paths
-            if str(path).strip()
-        ] if isinstance(raw_directory_paths, list) else []
+        directory_paths = (
+            [
+                DirectoryPath(segments=str(path).strip()).as_posix()
+                for path in raw_directory_paths
+                if str(path).strip()
+            ]
+            if isinstance(raw_directory_paths, list)
+            else []
+        )
         if directory_path not in directory_paths:
             directory_paths = [directory_path]
         raw_user_ids = graph_payload.get("user_ids")
-        user_ids = [
-            str(user_id).strip()
-            for user_id in raw_user_ids
-            if str(user_id).strip()
-        ] if isinstance(raw_user_ids, list) else []
+        user_ids = (
+            [str(user_id).strip() for user_id in raw_user_ids if str(user_id).strip()]
+            if isinstance(raw_user_ids, list)
+            else []
+        )
         graph = WorkflowEditorGraphMetadata(
             id=graph_id,
             name=graph_name,
@@ -12334,11 +12539,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             node_ids=ordered_generated_node_ids,
         )
         warnings_payload = payload.get("warnings")
-        warnings = [
-            str(warning).strip()
-            for warning in warnings_payload
-            if str(warning).strip()
-        ] if isinstance(warnings_payload, list) else []
+        warnings = (
+            [str(warning).strip() for warning in warnings_payload if str(warning).strip()]
+            if isinstance(warnings_payload, list)
+            else []
+        )
         layout = self._workflow_generation_layout(config)
         return config, layout, [graph], warnings
 
@@ -12359,9 +12564,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 outbound[source_id].append(target_id)
                 inbound_count[target_id] += 1
         initial_queue = [
-            node_id
-            for node_id in ordered_node_ids
-            if inbound_count[node_id] == 0
+            node_id for node_id in ordered_node_ids if inbound_count[node_id] == 0
         ] or ordered_node_ids[:1]
         queue = deque(initial_queue)
         queued_node_ids = set(initial_queue)
@@ -12370,11 +12573,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         while len(processed_node_ids) < len(ordered_node_ids):
             if not queue:
                 next_node_id = next(
-                    (
-                        node_id
-                        for node_id in ordered_node_ids
-                        if node_id not in processed_node_ids
-                    ),
+                    (node_id for node_id in ordered_node_ids if node_id not in processed_node_ids),
                     None,
                 )
                 if next_node_id is None:
@@ -12539,15 +12738,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     ) -> WorkflowEditorCatalogPayload:
         skill_options = [_field_option(skill.name) for skill in self.skill_library.list_skills()]
         tool_options = _tool_field_options()
-        communication_send_target_options = self._communication_send_target_options(
+        communication_send_target_options = self._communication_send_target_options(directory_path)
+        communication_notification_target_options = self._communication_notification_target_options(
             directory_path
         )
-        communication_notification_target_options = (
-            self._communication_notification_target_options(directory_path)
-        )
-        communication_read_target_options = self._communication_read_target_options(
-            directory_path
-        )
+        communication_read_target_options = self._communication_read_target_options(directory_path)
         nodes: list[WorkflowEditorNodeCatalogEntry] = []
         for entry in _WORKFLOW_EDITOR_NODE_CATALOG:
             node = entry.model_copy(
@@ -12648,8 +12843,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             graphs=normalized_graphs,
             output_schemas=output_schemas,
             validation_diagnostics=[
-                diagnostic.model_dump(mode="json", exclude_none=True)
-                for diagnostic in diagnostics
+                diagnostic.model_dump(mode="json", exclude_none=True) for diagnostic in diagnostics
             ]
             + [
                 diagnostic.model_dump(mode="json", exclude_none=True)
@@ -13120,7 +13314,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 group["occurred_at"] = occurred_at_value
             previous_latest = group.get("latest_activity_at")
             if latest_activity_at_value is not None and (
-                not isinstance(previous_latest, datetime) or latest_activity_at_value > previous_latest
+                not isinstance(previous_latest, datetime)
+                or latest_activity_at_value > previous_latest
             ):
                 group["latest_activity_at"] = latest_activity_at_value
             if source_node_id and not group.get("source_node_id"):
@@ -13324,7 +13519,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         for group in groups.values():
             for trace_id_value in group["trace_ids"]:
                 if trace_id_value:
-                    session_ids_by_trace.setdefault(trace_id_value, set()).update(group["session_ids"])
+                    session_ids_by_trace.setdefault(trace_id_value, set()).update(
+                        group["session_ids"]
+                    )
 
         matched_runs: list[WorkflowRunSearchItemPayload] = []
         active_statuses = {"pending", "inflight", "running", "waiting", "completion_pending"}
@@ -13428,6 +13625,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 clear_error=clear_error,
             )
         else:
+
             def _clear_queue_records(records: dict[str, TriggerQueueRecord]) -> int:
                 updated = 0
                 for record_key, record in records.items():
@@ -13693,9 +13891,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             value=worker_config.get("runtime_dir"),
             fallback=self.config.runtime_dir,
         )
-        backend = (
-            str(worker_config.get("orchestration_store_backend") or "sqlite").strip().lower()
-        )
+        backend = str(worker_config.get("orchestration_store_backend") or "sqlite").strip().lower()
         if backend not in {"sqlite", "json"}:
             backend = "sqlite"
         backend_explicit = False
@@ -13913,7 +14109,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         def latest_datetime(*values: object) -> datetime | None:
             parsed_values = [
-                parsed for parsed in (_coerce_optional_datetime(value) for value in values) if parsed
+                parsed
+                for parsed in (_coerce_optional_datetime(value) for value in values)
+                if parsed
             ]
             return max(parsed_values) if parsed_values else None
 
@@ -14172,7 +14370,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 message = f"{message}\n{output}"
             raise RuntimeError(message) from exc
         except OSError as exc:
-            raise RuntimeError(f"{spec['label']} conformance suite could not be started: {exc}") from exc
+            raise RuntimeError(
+                f"{spec['label']} conformance suite could not be started: {exc}"
+            ) from exc
 
         completed_at = _utc_now()
         output = _trim_conformance_process_output(
@@ -14416,7 +14616,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def _workflow_run_store_bundle(self, stores: Mapping[str, Any]) -> tuple[Any, Any, Any]:
         if self._workflow_uses_sqlite_store(stores):
             return self._workflow_sqlite_store_bundle(stores)
-        from agent_sandbox.daemons.effect_orchestrator import JsonExecutionStore, JsonGateExecutionStore
+        from agent_sandbox.daemons.effect_orchestrator import (
+            JsonExecutionStore,
+            JsonGateExecutionStore,
+        )
 
         return (
             TriggerEventQueue(Path(stores["event_queue_store_path"])),
@@ -14441,9 +14644,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if not self._workflow_uses_sqlite_store(stores):
             return None
         event_keys = {
-            value
-            for value in (lookup.run_id, lookup.event_id, lookup.trigger_event_id)
-            if value
+            value for value in (lookup.run_id, lookup.event_id, lookup.trigger_event_id) if value
         }
         trace_id = lookup.trace_id
         if not event_keys and trace_id is None:
@@ -14788,7 +14989,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 group["occurred_at"] = occurred_at_value
             previous_latest = group.get("latest_activity_at")
             if latest_activity_at_value is not None and (
-                not isinstance(previous_latest, datetime) or latest_activity_at_value > previous_latest
+                not isinstance(previous_latest, datetime)
+                or latest_activity_at_value > previous_latest
             ):
                 group["latest_activity_at"] = latest_activity_at_value
             if config_revision_value:
@@ -14860,7 +15062,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             raw_record = normalize_record_payload(record)
             if not raw_record:
                 continue
-            register_trigger(groups, raw_record, event_key=str(raw_record.get("event_id") or event_key))
+            register_trigger(
+                groups, raw_record, event_key=str(raw_record.get("event_id") or event_key)
+            )
         for execution_id, record in effect_records.items():
             raw_record = normalize_record_payload(record)
             if not raw_record:
@@ -15015,9 +15219,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
 
         selected_event_id = str(selected_group["event_id"])
         trigger_record = (
-            selected_group["trigger"]
-            if isinstance(selected_group.get("trigger"), dict)
-            else None
+            selected_group["trigger"] if isinstance(selected_group.get("trigger"), dict) else None
         )
         effect_records_for_group = [
             record for record in selected_group["effect_records"] if isinstance(record, dict)
@@ -15055,13 +15257,17 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             else None
         )
         graph_data_availability = WorkflowRunDataAvailabilityPayload(
-            graph_snapshot="available" if graph_snapshot is not None else "missing_legacy_or_unrecorded",
+            graph_snapshot="available"
+            if graph_snapshot is not None
+            else "missing_legacy_or_unrecorded",
             binding_trace="missing_legacy_or_unrecorded",
             approvals="missing_legacy_or_unrecorded",
             agent_links="missing_legacy_or_unrecorded",
             communication_artifacts="missing_legacy_or_unrecorded",
             tool_calls="missing_legacy_or_unrecorded",
-            trigger_event="available" if trigger_record is not None else "missing_legacy_or_unrecorded",
+            trigger_event="available"
+            if trigger_record is not None
+            else "missing_legacy_or_unrecorded",
         )
 
         selected_trace_id = next(
@@ -15197,8 +15403,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 input_payload=normalize_record_payload(record.get("input_payload")),
                 outputs=normalize_record_payload(record.get("outputs")),
                 resolved_config=normalize_record_payload(record.get("resolved_config")),
-                binding_trace=normalize_record_payload(record.get("binding_trace"))
-                or None,
+                binding_trace=normalize_record_payload(record.get("binding_trace")) or None,
                 binding_error=_coerce_optional_string(record.get("binding_error")),
                 error=_coerce_optional_string(record.get("error")),
                 published_event_id=_coerce_optional_string(record.get("published_event_id")),
@@ -15452,19 +15657,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             session_candidates = collect_keyed_values(merged, key_suffix="session_id")
             vm_name = _coerce_optional_string(merged.get("vm_name"))
             prompt = _coerce_optional_string(
-                merged.get("prompt")
-                or merged.get("content")
-                or merged.get("message")
+                merged.get("prompt") or merged.get("content") or merged.get("message")
             )
             dispatch_id = _coerce_optional_string(
-                merged.get("dispatch_id")
-                or outputs.get("dispatch_id")
-                or record.get("dispatch_id")
+                merged.get("dispatch_id") or outputs.get("dispatch_id") or record.get("dispatch_id")
             )
             thread_id = _coerce_optional_string(
-                merged.get("thread_id")
-                or record.get("thread_id")
-                or outputs.get("thread_id")
+                merged.get("thread_id") or record.get("thread_id") or outputs.get("thread_id")
             )
             execution_id = _coerce_optional_string(
                 merged.get("execution_id")
@@ -15502,8 +15701,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             agent_id = (
                 _coerce_optional_string(selected_agent_record.agent_id)
                 if selected_agent_record is not None
-                else session_id
-                or vm_name
+                else session_id or vm_name
             )
             backend = (
                 _coerce_optional_string(selected_agent_record.backend)
@@ -15624,9 +15822,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     )
                 session_candidates = collect_keyed_values(record, key_suffix="session_id")
                 if session_candidates:
-                    node_session_ids_by_node.setdefault(node_id, set()).update(
-                        session_candidates
-                    )
+                    node_session_ids_by_node.setdefault(node_id, set()).update(session_candidates)
                 for session_candidate in session_candidates:
                     for request in approval_requests_by_session.get(session_candidate, []):
                         approval_links_by_node.setdefault(node_id, []).append(
@@ -15707,7 +15903,9 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 ),
                 reverse=True,
             )
-            latest_source_kind, latest_record, _latest_node_id, latest_node_type = ordered_entries[0]
+            latest_source_kind, latest_record, _latest_node_id, latest_node_type = ordered_entries[
+                0
+            ]
             node_metadata = node_metadata_by_id.get(node_id, {})
             latest_started_at = _coerce_optional_datetime(latest_record.get("started_at"))
             latest_finished_at = _coerce_optional_datetime(latest_record.get("finished_at"))
@@ -15748,9 +15946,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     if retry_resume_eligible:
                         retry_resume_reason = "Failed node has a resumable input payload."
                 elif latest_status == "failed":
-                    retry_resume_reason = (
-                        "Failed node is missing source_node_id, source_trigger_type, trace_id, or input_payload."
-                    )
+                    retry_resume_reason = "Failed node is missing source_node_id, source_trigger_type, trace_id, or input_payload."
             missing_fields: list[str] = []
             if latest_source_kind == "trigger_event":
                 if not _coerce_optional_string(latest_record.get("delivery_state")):
@@ -15839,9 +16035,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     if _coerce_optional_datetime(value) is not None
                 },
                 error=_coerce_optional_string(latest_record.get("error")),
-                published_event_id=_coerce_optional_string(
-                    latest_record.get("published_event_id")
-                ),
+                published_event_id=_coerce_optional_string(latest_record.get("published_event_id")),
                 completion_event_enqueued_at=_coerce_optional_datetime(
                     latest_record.get("completion_event_enqueued_at")
                 ),
@@ -15905,13 +16099,21 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         resume_action = WorkflowRunRecoveryActionPayload(
             eligible=resumable_node is not None,
             reason=(
-                resumable_node.retry_resume_reason if resumable_node is not None else "No failed node with a resumable input payload was found."
+                resumable_node.retry_resume_reason
+                if resumable_node is not None
+                else "No failed node with a resumable input payload was found."
             ),
             event_id=selected_event_id,
             target_node_id=resumable_node.node_id if resumable_node is not None else None,
-            source_node_id=resumable_node.records[0].source_node_id if resumable_node and resumable_node.records else None,
-            source_trigger_type=resumable_node.records[0].source_trigger_type if resumable_node and resumable_node.records else None,
-            source_event_id=resumable_node.records[0].event_id if resumable_node and resumable_node.records else None,
+            source_node_id=resumable_node.records[0].source_node_id
+            if resumable_node and resumable_node.records
+            else None,
+            source_trigger_type=resumable_node.records[0].source_trigger_type
+            if resumable_node and resumable_node.records
+            else None,
+            source_event_id=resumable_node.records[0].event_id
+            if resumable_node and resumable_node.records
+            else None,
         )
         clear_action = WorkflowRunRecoveryActionPayload(
             eligible=True,
@@ -15923,7 +16125,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         trigger_payload = None
         if trigger_record is not None:
             trigger_payload = WorkflowRunTriggerEventPayload(
-                event_id=_coerce_optional_string(trigger_record.get("event_id")) or selected_event_id,
+                event_id=_coerce_optional_string(trigger_record.get("event_id"))
+                or selected_event_id,
                 trigger_id=_coerce_optional_string(trigger_record.get("trigger_id")) or "",
                 trigger_type=_coerce_optional_string(trigger_record.get("trigger_type")) or "",
                 trace_id=_coerce_optional_string(trigger_record.get("trace_id")) or "",
@@ -15983,7 +16186,11 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 if any(node.status == "failed" for node in node_details)
                 else None,
                 "failed_at": next(
-                    (node.finished_at or node.started_at for node in node_details if node.status == "failed"),
+                    (
+                        node.finished_at or node.started_at
+                        for node in node_details
+                        if node.status == "failed"
+                    ),
                     None,
                 ),
                 "error": next((node.error for node in node_details if node.error), None),
@@ -16313,9 +16520,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 raise ValueError(
                     "Invalid trigger-orchestrator config: effects must be a JSON array."
                 )
-            existing_effects = [
-                entry for entry in existing_effects_raw if isinstance(entry, dict)
-            ]
+            existing_effects = [entry for entry in existing_effects_raw if isinstance(entry, dict)]
             existing_edges_raw = config.get("edges", [])
             if not isinstance(existing_edges_raw, list):
                 existing_edges_raw = []
@@ -16342,9 +16547,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 )
             config["effects"] = existing_effects
             config["edges"] = filtered_edges
-            write_result = self._write_worker_global_config_unlocked(
-                "trigger-orchestrator", config
-            )
+            write_result = self._write_worker_global_config_unlocked("trigger-orchestrator", config)
         return EffectConfigMutationPayload(
             effect_id=normalized_effect_id,
             operation="updated" if replacing else "added",
@@ -16393,9 +16596,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     filtered_edges.append(entry)
             config["effects"] = filtered
             config["edges"] = filtered_edges
-            write_result = self._write_worker_global_config_unlocked(
-                "trigger-orchestrator", config
-            )
+            write_result = self._write_worker_global_config_unlocked("trigger-orchestrator", config)
         return EffectConfigMutationPayload(
             effect_id=normalized_effect_id,
             operation="deleted",
@@ -17013,9 +17214,7 @@ def _approval_audit_payload_matches_request(
     payload: dict[str, Any], request: ApprovalRequest
 ) -> bool:
     args_payload = payload.get("args") if isinstance(payload.get("args"), dict) else {}
-    result_payload = (
-        payload.get("result") if isinstance(payload.get("result"), dict) else {}
-    )
+    result_payload = payload.get("result") if isinstance(payload.get("result"), dict) else {}
     for candidate in (
         payload.get("approval_request_id"),
         args_payload.get("approval_request_id"),
@@ -17034,7 +17233,9 @@ def _approval_audit_payload_matches_request(
     return payload.get("session_id") == request.session_id
 
 
-def _tool_call_error_summary(entry: dict[str, Any], status: str, result: dict[str, Any]) -> str | None:
+def _tool_call_error_summary(
+    entry: dict[str, Any], status: str, result: dict[str, Any]
+) -> str | None:
     for candidate in (
         entry.get("reason"),
         result.get("error"),
@@ -17064,7 +17265,9 @@ def _tool_call_safe_text(value: Any) -> str:
     return str(value)
 
 
-def _tool_call_related_links(entry: ToolCallAuditEntryPayload) -> list[ToolCallAuditRelatedLinkPayload]:
+def _tool_call_related_links(
+    entry: ToolCallAuditEntryPayload,
+) -> list[ToolCallAuditRelatedLinkPayload]:
     links: list[ToolCallAuditRelatedLinkPayload] = []
     if entry.session_id:
         links.append(
@@ -17111,16 +17314,15 @@ def _tool_call_related_links(entry: ToolCallAuditEntryPayload) -> list[ToolCallA
                 kind="workflow_trace",
                 label="Workflow trace",
                 value=entry.trace_id,
-                href=(
-                    "/api/workflow-editor/run-detail?trace_id="
-                    f"{quote(entry.trace_id, safe='')}"
-                ),
+                href=(f"/api/workflow-editor/run-detail?trace_id={quote(entry.trace_id, safe='')}"),
             )
         )
     return links
 
 
-def _tool_call_audit_entry_from_payload(payload: dict[str, Any]) -> ToolCallAuditEntryPayload | None:
+def _tool_call_audit_entry_from_payload(
+    payload: dict[str, Any],
+) -> ToolCallAuditEntryPayload | None:
     created_at = _parse_tool_call_datetime(
         payload.get("created_at") or payload.get("timestamp") or payload.get("occurred_at")
     )
@@ -17285,9 +17487,7 @@ def _tool_call_audit_tail_scan_supported(
         return False
     if created_after is not None or created_before is not None:
         return False
-    return not any(
-        str(value or "").strip() for value in (session_id, tool_name, status, q)
-    )
+    return not any(str(value or "").strip() for value in (session_id, tool_name, status, q))
 
 
 def _iter_file_lines_reverse(path: Path, *, block_size: int = 64 * 1024) -> Iterator[str]:

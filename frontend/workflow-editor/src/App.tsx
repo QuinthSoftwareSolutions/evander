@@ -361,6 +361,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:semantic:delete": "Delete semantic points by explicit point IDs.",
   "effect:state:update": "Set, patch, or delete graph-local workflow state.",
   "effect:http:request": "Perform a host-side raw HTTP GET, POST, or PUT request with URL allowlist control.",
+  "effect:runtime:diagnostics-snapshot": "Capture a bounded, redacted host runtime diagnostics snapshot.",
   "effect:vm:create": "Create a VM for the workflow.",
   "effect:vm:clone-repo": "Clone a repository into a target VM.",
   "effect:vm:bootstrap-python": "Bootstrap a Python checkout and environment in a VM.",
@@ -373,6 +374,7 @@ const NODE_TYPE_DESCRIPTIONS: Record<string, string> = {
   "effect:event:emit": "Emit an internal workflow event for other graphs.",
   "effect:event:schedule": "Schedule a one-shot internal workflow event for later delivery.",
   "effect:issue:update-metadata": "Patch metadata on a tracked issue.",
+  "effect:ado:pipeline-run": "Queue an Azure DevOps pipeline run and wait for its terminal result.",
   "effect:ado:update-work-item": "Update an Azure DevOps work item with an optional state guard.",
   "effect:session:update-metadata": "Patch session metadata on the host.",
   "effect:session:renew-if-expired": "Extend an expired session from the host.",
@@ -1679,6 +1681,20 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       check: false,
     };
   }
+  if (kind === "effect" && type === "effect:runtime:diagnostics-snapshot") {
+    return {
+      id,
+      display_name: "Runtime diagnostics snapshot",
+      type,
+      since: "24 hours ago",
+      include_failed_units: true,
+      include_journal: true,
+      include_runtime_files: true,
+      max_journal_lines_per_unit: 200,
+      max_runtime_file_bytes: 120000,
+      command_timeout_seconds: 10,
+    };
+  }
   if (kind === "effect" && type === "effect:vm:create") {
     return { id, display_name: "New VM effect", type };
   }
@@ -1769,6 +1785,20 @@ function createDefaultNode(kind: WorkflowNodeKind, type: string, id: string): Wo
       state: "In Progress",
       expected_states: ["New", "To Do"],
       sync_proxy_cache: true,
+    };
+  }
+  if (kind === "effect" && type === "effect:ado:pipeline-run") {
+    return {
+      id,
+      display_name: "ADO pipeline run",
+      type,
+      directory_path: "root",
+      pipeline_id: 12345,
+      variables: {},
+      template_parameters: {},
+      timeout_seconds: 3600,
+      poll_interval_seconds: 10,
+      check: true,
     };
   }
   if (kind === "effect" && type === "effect:session:update-metadata") {

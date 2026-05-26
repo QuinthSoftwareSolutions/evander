@@ -4,6 +4,7 @@ from importlib import import_module
 from typing import Any
 
 __all__ = [
+    "AdoPipelineRunEffectProvider",
     "AdoUpdateWorkItemEffectProvider",
     "AgentBootstrapFrontendEffectProvider",
     "AgentCloneRepoEffectProvider",
@@ -27,6 +28,7 @@ __all__ = [
     "NotificationSendEffectProvider",
     "PrCreateEffectProvider",
     "PullRequestUpdateEffectProvider",
+    "RuntimeDiagnosticsSnapshotEffectProvider",
     "SemanticDeleteEffectProvider",
     "SemanticEnsureCollectionEffectProvider",
     "SemanticUpsertEffectProvider",
@@ -42,6 +44,7 @@ __all__ = [
 ]
 
 _EXPORT_MODULES = {
+    "AdoPipelineRunEffectProvider": ".ado_pipeline_run",
     "AdoUpdateWorkItemEffectProvider": ".ado_update_work_item",
     "AgentBootstrapFrontendEffectProvider": ".agent_bootstrap_frontend",
     "AgentCloneRepoEffectProvider": ".agent_clone_repo",
@@ -66,6 +69,7 @@ _EXPORT_MODULES = {
     "NotificationSendEffectProvider": ".notification_send",
     "PrCreateEffectProvider": ".pr_create",
     "PullRequestUpdateEffectProvider": ".pull_request_update",
+    "RuntimeDiagnosticsSnapshotEffectProvider": ".runtime_diagnostics_snapshot",
     "SemanticDeleteEffectProvider": ".semantic_delete",
     "SemanticEnsureCollectionEffectProvider": ".semantic_ensure_collection",
     "SemanticUpsertEffectProvider": ".semantic_upsert",

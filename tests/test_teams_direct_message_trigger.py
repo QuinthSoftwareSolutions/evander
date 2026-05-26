@@ -102,6 +102,49 @@ def test_teams_direct_message_trigger_filters_to_allowlisted_direct_messages(
     assert payload["message"]["target_type"] == "direct_message"
 
 
+def test_teams_direct_message_trigger_matches_resolved_sender_refs(
+    tmp_path: Path,
+) -> None:
+    context = _runtime_context(tmp_path)
+    store = TeamsInboxStore(context.resolved_config.runtime_dir / "teams-inbox-store.json")
+    store.add_message_if_new(
+        TeamsInboxMessage(
+            cursor="chat:dm-chat/msg-1",
+            message_id="msg-1",
+            author_id="user-allowed",
+            author_name="User Allowed",
+            chat_id="dm-chat",
+            content="allowed direct message",
+            created_at=datetime(2026, 5, 25, 9, 30, tzinfo=UTC),
+            metadata={
+                "source": "teams_graph_api",
+                "target": "chat:dm-chat",
+                "target_type": "direct_message",
+                "chat_type": "oneOnOne",
+                "direct_message_sender_refs": ["operator@example.com", "user-allowed"],
+            },
+        )
+    )
+
+    provider = TeamsDirectMessageTriggerProvider()
+    provider.initialize(
+        TeamsDirectMessageTriggerDefinition.model_validate(
+            {
+                "id": "teams-dm-trigger",
+                "display_name": "Teams direct message",
+                "type": "trigger:teams:direct-message",
+                "sender_user_ids": ["operator@example.com"],
+            }
+        ),
+        context,
+    )
+
+    events = provider.poll()
+
+    assert [event.event_id for event in events] == ["teams-dm-trigger:chat:dm-chat/msg-1"]
+    assert events[0].payload["message"]["author_id"] == "user-allowed"
+
+
 def test_teams_direct_message_trigger_applies_filter_and_acknowledges_cursor(
     tmp_path: Path,
 ) -> None:

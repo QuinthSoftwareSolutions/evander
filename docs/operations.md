@@ -167,7 +167,8 @@ and surfaces:
 - direct-owned VM/session/issue listings for the selected directory
 - a Tool Calls tab for read-only inspection of the configured `audit_log_path`
   (`runtime/audit.jsonl` by default), with filtering by session, tool, status,
-  directory/scope, and time range
+  directory/scope, and time range. The UI uses `runtime/audit.db` as an indexed
+  SQLite read model when available and falls back to JSONL when needed.
 - an Approvals tab for reviewing queued approval requests with redacted context and
   selected-directory filtering
 - Sessions policy controls for `approval_required_tools`, which lets operators require human
@@ -362,6 +363,8 @@ Storage layout for directory config:
   - optional `teams_delegated_tenant_id`, `teams_delegated_scopes`,
     `teams_delegated_authority_base_url`, and `teams_delegated_credential_store_path`
   - the default delegated scope set includes channel read/send and `Chat.ReadWrite`
+  - Teams direct-message sender mail/UPN resolution may require adding a Graph user-read scope such
+    as `User.ReadBasic.All` or `User.Read`
 - The Entra app behind `teams_delegated_client_id` must be configured for public client /
   device-code auth. `AADSTS7000218` means the app is being treated as a confidential client and
   the host-side delegated flow in this repo cannot complete until that registration is fixed.
@@ -1144,6 +1147,13 @@ against raw JSONL:
 tail -n 100 runtime/audit.jsonl | jq 'select(.tool_name | test("communication_|discord_post_file|teams_post_file|email_.*attachments"))'
 ```
 
+If the Tool Calls SQLite index needs a full refresh after deleting or repairing `runtime/audit.db`,
+run:
+
+```bash
+agent-sandbox-cli rebuild-audit-index --config runtime
+```
+
 Review for:
 
 - `decision == "allowed"` on expected list/download/copy/send calls.
@@ -1336,7 +1346,9 @@ live provider APIs.
 ### Audit and log file locations
 
 - Host feedback state: `runtime/pr-feedback-store.json` (ingested comments + cursors), `runtime/pr-reply-idempotency.json` (reply dedupe keys/results), `runtime/host-agent-control-state.json` (durable enabled/disabled state by VM).
-- Host audit trail: `runtime/audit.jsonl` (backing store for Admin Web Tool Calls, plus denials/errors).
+- Host audit trail: `runtime/audit.jsonl` (canonical append-only audit journal, plus
+  denials/errors). Admin Web Tool Calls indexes tool-call entries into `runtime/audit.db`
+  for faster filtering and can rebuild that index from JSONL.
 
 ### Security boundary reminder
 
@@ -1647,25 +1659,23 @@ sudo journalctl -u agent-sandbox-trigger-orchestrator.service -f
 
 - `trigger:script-run-request` is wired to accept exactly one host-approved provisioning wrapper:
   `provision_exampleindustry_app_demo_environment.sh`.
-- That wrapper lives in this repo under `scripts/` and delegates to the host script named by
-  `EXAMPLE_APP_DEPLOY_DEMO_SCRIPT_PATH`.
-- The effect-orchestrator service account must also be able to run `az` and must have a non-interactive
-  Azure CLI account context before the wrapper can create Azure resources. On Azure control-plane
-  deployments, Ansible installs Azure CLI when `agent_sandbox_install_azure_cli` is enabled, but
-  Azure authentication is still an operator-owned prerequisite.
-- The wrapper reserves stdout for a final JSON payload and sends deploy progress logs to stderr, so
-  the orchestrator can capture the result blob without parsing human-oriented progress output.
-- The wrapper emits a `session_metadata_patch` object that appends two relay targets under
+- The checked-in workflow no longer runs a host-side Bash provisioning script. It queues a typed
+  Azure DevOps pipeline with `effect:ado:pipeline-run`, waits for the terminal result, and then
+  maps the deterministic demo URLs and aliases with `gate:map`.
+- The Azure DevOps pipeline owns Azure resource creation, deployment, and any cloud-side
+  prerequisites. The effect uses the directory-scoped Azure DevOps provider configuration and PAT
+  to queue and poll the pipeline.
+- The first request parameter must be a lowercase alphanumeric resource name. The gate rejects
+  names outside `^[a-z0-9]+$` so `gate:map` can safely derive DNS labels without string
+  normalization helpers.
+- The mapped `session_metadata_patch` object appends two relay targets under
   `metadata.http_targets.targets`: `<environment-alias>-api` for backend/API traffic and
   `<environment-alias>-ui` for browser/DOM traffic. It keeps the APP-specific
   `metadata.example_app.environments.<environment-alias>` record for convenience and refreshes
   `metadata.example_app_last_provision` with the selected environment alias plus its API alias, UI
   alias, `app_base_url` (API base URL), and `app_public_url` (public UI URL).
 - The trigger graph writes that metadata patch into the originating session and resumes the same
-  session with the provisioning result in the follow-up prompt.
-- The orchestrator filter expects the script request to pass the environment name as the first
-  parameter; the current workflow forwards that value as `--resource-base-name` and uses it as the
-  reported logical environment alias.
+  session with the provisioning pipeline run URL in the follow-up prompt.
 - Guests authenticate to the selected APP environment themselves through the relay-backed URL for
   the appropriate API or UI alias. The generic HTTP target relay no longer injects host-side APP
   authorization headers.
@@ -1673,11 +1683,8 @@ sudo journalctl -u agent-sandbox-trigger-orchestrator.service -f
   `$HTTP_TARGET_RELAY_BASE_URL/session/<session-id>/target/<alias>/` rather than calling the public
   Azure URL directly.
 
-You can run the wrapper directly on the host for validation:
-
-```bash
-./scripts/provision_exampleindustry_app_demo_environment.sh --resource-base-name demo-blue
-```
+The older `scripts/provision_exampleindustry_app_demo_environment.sh` wrapper is retained only for
+compatibility with older live workflow packs and should not be used for new provisioning graphs.
 
 ### Teams ingest worker
 
@@ -1690,8 +1697,8 @@ You can run the wrapper directly on the host for validation:
   target must be a read-capable Teams channel/chat or Discord channel target in the trigger's
   `directory_path`. The trigger consumes the existing Teams and Discord inbox stores, so no
   separate ingest worker or provider credential is configured for this node.
-- Direct-message triggers require `sender_user_ids` so only configured one-on-one senders can wake
-  workflows.
+- Direct-message triggers require `sender_user_ids`, which accepts Graph user IDs, UPNs, or mail
+  addresses so only configured one-on-one senders can wake workflows.
 - This polling path is independent from the wake workers; Discord/scheduled wake behavior now stays with
   `agent-sandbox-discord-wake` and `agent-sandbox-scheduled-wake` while Azure DevOps PR feedback ingestion stays with
   `agent-sandbox-ado-worker`.
@@ -2077,9 +2084,10 @@ decision-complete runbook covering:
 - Rotate Discord and email credentials independently from VM lifecycle.
 - Keep Discord bot tokens only in host environment files or shell context; do not write them into
   guest images, cloud-init, or session manifests.
-- Review Admin Web -> Tool Calls for privileged activity; it reads the configured
-  `audit_log_path` (`runtime/audit.jsonl` by default) and shows redacted payloads
-  plus related session, approval, and workflow links when present.
+- Review Admin Web -> Tool Calls for privileged activity; it reads the indexed
+  `runtime/audit.db` view of the configured `audit_log_path` (`runtime/audit.jsonl`
+  by default), shows redacted payloads, and falls back to the JSONL journal if the
+  index is unavailable.
 - Keep VM disks and seed ISOs out of home directories when using `qemu:///system`; the default scripts now place them under `/var/lib/libvirt/images/agent-sandbox`.
 
 

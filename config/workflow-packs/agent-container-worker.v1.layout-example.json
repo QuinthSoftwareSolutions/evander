@@ -160,8 +160,12 @@
       "x": 2263.9319715927486,
       "y": 648.0832170633745
     },
-    "effect-bash-script-1": {
+    "effect-ado-pipeline-run-1": {
       "x": 740,
+      "y": 774
+    },
+    "gate-map-app-demo-metadata-1": {
+      "x": 945,
       "y": 774
     },
     "effect-session-update-metadata-6": {

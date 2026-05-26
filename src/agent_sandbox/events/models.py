@@ -403,12 +403,16 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
         "effect:state:update": provider_models.StateUpdateEffectDefinition,
         "effect:bash:script": provider_models.BashScriptEffectDefinition,
         "effect:http:request": provider_models.HttpRequestEffectDefinition,
+        "effect:runtime:diagnostics-snapshot": (
+            provider_models.RuntimeDiagnosticsSnapshotEffectDefinition
+        ),
         "effect:vm:exec": provider_models.VmExecEffectDefinition,
         "effect:vm:copy-files": provider_models.VmCopyFilesEffectDefinition,
         "effect:vm:delete-files": provider_models.VmDeleteFilesEffectDefinition,
         "effect:issue:update-state": provider_models.IssueUpdateStateEffectDefinition,
         "effect:issue:update-metadata": provider_models.IssueUpdateMetadataEffectDefinition,
         "effect:issue:upsert-ado-proxy": provider_models.IssueUpsertAdoProxyEffectDefinition,
+        "effect:ado:pipeline-run": provider_models.AdoPipelineRunEffectDefinition,
         "effect:ado:update-work-item": provider_models.AdoUpdateWorkItemEffectDefinition,
         "effect:pull-request:update": provider_models.PullRequestUpdateEffectDefinition,
         "effect:communication:send-message": (
@@ -419,9 +423,7 @@ def _builtin_node_schema_resolvers() -> dict[str, Any]:
             provider_models.SessionApproveMcpToolsForRunEffectDefinition
         ),
         "effect:session:update-metadata": provider_models.SessionUpdateMetadataEffectDefinition,
-        "effect:session:renew-if-expired": (
-            provider_models.SessionRenewIfExpiredEffectDefinition
-        ),
+        "effect:session:renew-if-expired": (provider_models.SessionRenewIfExpiredEffectDefinition),
         "effect:git:promote-agent-branch": provider_models.GitPromoteAgentBranchEffectDefinition,
         "effect:pr:create": provider_models.PrCreateEffectDefinition,
         "effect:event:schedule": provider_models.EventScheduleEffectDefinition,

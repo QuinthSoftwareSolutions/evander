@@ -32,8 +32,12 @@
       "x": 1716.0,
       "y": 774.0
     },
-    "effect-bash-script-1": {
+    "effect-ado-pipeline-run-1": {
       "x": 740.0,
+      "y": 774.0
+    },
+    "gate-map-app-demo-metadata-1": {
+      "x": 945.0,
       "y": 774.0
     },
     "effect-git-promote-agent-branch-1": {

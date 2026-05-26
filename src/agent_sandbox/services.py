@@ -1680,6 +1680,10 @@ class GraphTeamsService:
         normalized_user_target = normalize_teams_user_target(user_target)
         return f"{self.user_chat_cache_namespace}:{normalized_user_target}"
 
+    def _user_id_cache_key(self, user_ref: str) -> str:
+        normalized_user_target = normalize_teams_user_target(user_ref)
+        return f"{self.user_chat_cache_namespace}:user-id:{normalized_user_target}"
+
     def _current_user_cache_key(self) -> str:
         return f"{self.user_chat_cache_namespace}:me"
 
@@ -1687,6 +1691,80 @@ class GraphTeamsService:
     def _graph_user_bind_url(api_base_url: str, user_ref: str) -> str:
         escaped_ref = str(user_ref).replace("'", "''")
         return f"{api_base_url}/users('{escaped_ref}')"
+
+    @staticmethod
+    def _graph_user_lookup_url(api_base_url: str, user_ref: str) -> str:
+        return f"{api_base_url}/users/{quote(user_ref, safe='')}"
+
+    @staticmethod
+    def _graph_user_ref(user_ref: str) -> str:
+        normalized = str(user_ref or "").strip().strip("/")
+        if normalized.startswith("user:"):
+            normalized = normalized.removeprefix("user:").strip()
+        if (
+            not normalized
+            or "/" in normalized
+            or any(character.isspace() for character in normalized)
+        ):
+            raise ValueError(f"Invalid Teams user target {user_ref!r}: {_TEAMS_TARGET_ERROR}")
+        return normalized
+
+    @staticmethod
+    def _graph_user_payload_id(payload: object) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        user_id = str(payload.get("id") or "").strip()
+        return user_id or None
+
+    def resolve_user_id(self, client: httpx.Client, user_ref: str) -> str | None:
+        normalized_ref = self._graph_user_ref(user_ref)
+        cache_key = self._user_id_cache_key(normalized_ref)
+        cached = self.user_chat_cache.get(cache_key)
+        if cached:
+            return cached
+
+        params = {"$select": "id,userPrincipalName,mail"}
+        try:
+            response = self._request_with_retries(
+                client,
+                "GET",
+                self._graph_user_lookup_url(self.api_base_url, normalized_ref),
+                params=params,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404 or "@" not in normalized_ref:
+                raise
+        else:
+            user_id = self._graph_user_payload_id(response.json())
+            if user_id:
+                self.user_chat_cache[cache_key] = user_id
+                return user_id
+
+        if "@" not in normalized_ref:
+            return None
+
+        escaped_ref = normalized_ref.replace("'", "''")
+        response = self._request_with_retries(
+            client,
+            "GET",
+            f"{self.api_base_url}/users",
+            params={
+                **params,
+                "$filter": (
+                    f"mail eq '{escaped_ref}' or userPrincipalName eq '{escaped_ref}'"
+                ),
+                "$top": 1,
+            },
+        )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return None
+        for item in payload.get("value", []):
+            user_id = self._graph_user_payload_id(item)
+            if user_id:
+                self.user_chat_cache[cache_key] = user_id
+                return user_id
+        return None
 
     def _require_allowed_user_target(self, user_ref: str) -> str:
         normalized = normalize_teams_user_target(user_ref)

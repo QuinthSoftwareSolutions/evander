@@ -178,10 +178,14 @@
       },
       {
         "source_id": "gate-filter-5",
-        "target_id": "effect-bash-script-1"
+        "target_id": "effect-ado-pipeline-run-1"
       },
       {
-        "source_id": "effect-bash-script-1",
+        "source_id": "effect-ado-pipeline-run-1",
+        "target_id": "gate-map-app-demo-metadata-1"
+      },
+      {
+        "source_id": "gate-map-app-demo-metadata-1",
         "target_id": "effect-session-update-metadata-6"
       },
       {
@@ -291,7 +295,7 @@
       {
         "config": {
           "sender_user_ids": [
-            "00000000-0000-0000-0000-000000000000"
+            "operator@example.com"
           ]
         },
         "display_name": "Teams direct message",
@@ -946,6 +950,10 @@
               {
                 "is_not_null": true,
                 "left": "${{trigger-script-run-request-1.parameters.0 ?? null}}"
+              },
+              {
+                "left": "${{trigger-script-run-request-1.parameters.0 ?? null}}",
+                "matches_regex": "^[a-z0-9]+$"
               }
             ]
           }
@@ -1428,26 +1436,170 @@
       },
       {
         "config": {
-          "args": [
-            "--resource-base-name",
-            "${{gate-filter-5.parameters.0}}",
-            "--environment-alias",
-            "${{gate-filter-5.parameters.0}}",
-            "--session-id",
-            "${{gate-filter-5.session_id}}"
-          ],
           "check": true,
-          "script_path": "/home/jonathan/agent-sandbox/scripts/provision_exampleindustry_app_demo_environment.sh",
-          "working_directory": "/home/jonathan/agent-sandbox"
+          "directory_path": "root/example/truman",
+          "pipeline_id": 12345,
+          "project": "Example Industry APP",
+          "variables": {
+            "resourceBaseName": "${{gate-filter-5.parameters.0}}",
+            "environmentAlias": "${{gate-filter-5.parameters.0}}",
+            "sessionId": "${{gate-filter-5.session_id}}"
+          },
+          "timeout_seconds": 3600,
+          "poll_interval_seconds": 10
         },
-        "display_name": "Provision ExampleIndustry APP demo environment",
-        "id": "effect-bash-script-1",
+        "display_name": "Run APP demo provisioning pipeline",
+        "id": "effect-ado-pipeline-run-1",
+        "outputs": {
+          "completed": {
+            "type": "boolean"
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pipeline_id": {
+            "type": "integer"
+          },
+          "pipeline_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "type": "string"
+          },
+          "queued": {
+            "type": "boolean"
+          },
+          "result": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "run_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "type": "effect:ado:pipeline-run"
+      },
+      {
+        "config": {
+          "template": {
+            "environment_alias": "${{gate-filter-5.parameters.0}}",
+            "app_api_alias": "${{gate-filter-5.parameters.0}}-api",
+            "app_ui_alias": "${{gate-filter-5.parameters.0}}-ui",
+            "app_public_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
+            "app_base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com:5001",
+            "public_domain": "${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
+            "resource_base_name": "${{gate-filter-5.parameters.0}}",
+            "provisioning_status": "succeeded",
+            "pipeline_run_id": "${{effect-ado-pipeline-run-1.run_id}}",
+            "pipeline_run_url": "${{effect-ado-pipeline-run-1.run_url ?? null}}",
+            "session_metadata_patch": {
+              "http_targets": {
+                "targets": {
+                  "${{gate-filter-5.parameters.0}}-api": {
+                    "base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com:5001",
+                    "metadata": {
+                      "kind": "exampleindustry_app_demo_environment",
+                      "environment_alias": "${{gate-filter-5.parameters.0}}",
+                      "api_alias": "${{gate-filter-5.parameters.0}}-api",
+                      "ui_alias": "${{gate-filter-5.parameters.0}}-ui",
+                      "api_base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com:5001",
+                      "public_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
+                      "public_domain": "${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
+                      "resource_base_name": "${{gate-filter-5.parameters.0}}",
+                      "provisioning_status": "succeeded",
+                      "pipeline_run_id": "${{effect-ado-pipeline-run-1.run_id}}",
+                      "pipeline_run_url": "${{effect-ado-pipeline-run-1.run_url ?? null}}",
+                      "role": "api"
+                    }
+                  },
+                  "${{gate-filter-5.parameters.0}}-ui": {
+                    "base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
+                    "metadata": {
+                      "kind": "exampleindustry_app_demo_environment",
+                      "environment_alias": "${{gate-filter-5.parameters.0}}",
+                      "api_alias": "${{gate-filter-5.parameters.0}}-api",
+                      "ui_alias": "${{gate-filter-5.parameters.0}}-ui",
+                      "api_base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com:5001",
+                      "public_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
+                      "public_domain": "${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
+                      "resource_base_name": "${{gate-filter-5.parameters.0}}",
+                      "provisioning_status": "succeeded",
+                      "pipeline_run_id": "${{effect-ado-pipeline-run-1.run_id}}",
+                      "pipeline_run_url": "${{effect-ado-pipeline-run-1.run_url ?? null}}",
+                      "role": "ui"
+                    }
+                  }
+                }
+              },
+              "example_app": {
+                "environments": {
+                  "${{gate-filter-5.parameters.0}}": {
+                    "base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com:5001",
+                    "metadata": {
+                      "api_alias": "${{gate-filter-5.parameters.0}}-api",
+                      "api_base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com:5001",
+                      "public_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
+                      "public_domain": "${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
+                      "resource_base_name": "${{gate-filter-5.parameters.0}}",
+                      "provisioning_status": "succeeded",
+                      "ui_alias": "${{gate-filter-5.parameters.0}}-ui",
+                      "ui_base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
+                      "pipeline_run_id": "${{effect-ado-pipeline-run-1.run_id}}",
+                      "pipeline_run_url": "${{effect-ado-pipeline-run-1.run_url ?? null}}"
+                    }
+                  }
+                }
+              },
+              "example_app_last_provision": {
+                "environment_alias": "${{gate-filter-5.parameters.0}}",
+                "app_api_alias": "${{gate-filter-5.parameters.0}}-api",
+                "app_base_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com:5001",
+                "app_public_url": "https://${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
+                "app_ui_alias": "${{gate-filter-5.parameters.0}}-ui",
+                "provisioning_status": "succeeded",
+                "public_domain": "${{gate-filter-5.parameters.0}}.northeurope.cloudapp.azure.com",
+                "resource_base_name": "${{gate-filter-5.parameters.0}}",
+                "session_id": "${{gate-filter-5.session_id}}",
+                "pipeline_run_id": "${{effect-ado-pipeline-run-1.run_id}}",
+                "pipeline_run_url": "${{effect-ado-pipeline-run-1.run_url ?? null}}"
+              }
+            }
+          }
+        },
+        "display_name": "Map APP demo provisioning metadata",
+        "id": "gate-map-app-demo-metadata-1",
         "outputs": {
           "environment_alias": {
             "type": "string"
-          },
-          "exit_code": {
-            "type": "integer"
           },
           "app_api_alias": {
             "type": "string"
@@ -1461,6 +1613,15 @@
           "app_ui_alias": {
             "type": "string"
           },
+          "pipeline_run_id": {
+            "type": "string"
+          },
+          "pipeline_run_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "provisioning_status": {
             "type": "string"
           },
@@ -1472,19 +1633,13 @@
           },
           "session_metadata_patch": {
             "type": "object"
-          },
-          "stdout": {
-            "type": "string"
-          },
-          "success": {
-            "type": "boolean"
           }
         },
-        "type": "effect:bash:script"
+        "type": "gate:map"
       },
       {
         "config": {
-          "metadata": "${{effect-bash-script-1.session_metadata_patch}}",
+          "metadata": "${{gate-map-app-demo-metadata-1.session_metadata_patch}}",
           "target": "${{gate-filter-5.session_id}}"
         },
         "display_name": "Store APP provisioning metadata",
@@ -1494,7 +1649,7 @@
       {
         "config": {
           "model": "gpt-5.4",
-          "prompt": "The host-side APP demo environment provisioning request '${{gate-filter-5.request_id}}' has completed.\n\nEnvironment alias: ${{effect-bash-script-1.environment_alias}}\nAPP API alias: ${{effect-bash-script-1.app_api_alias}}\nAPP UI alias: ${{effect-bash-script-1.app_ui_alias}}\nAPP API base URL: ${{effect-bash-script-1.app_base_url}}\nPublic UI URL: ${{effect-bash-script-1.app_public_url}}\nPublic domain: ${{effect-bash-script-1.public_domain}}\n\nProvisioning result JSON:\n${{effect-bash-script-1.stdout}}\n\nContinue the same user task in this session. Use the provisioned environment alias named above when referring to this environment. Use the HTTP target relay for browser and API access instead of the public URL directly. In the agent session, the UI relay URL is $HTTP_TARGET_RELAY_BASE_URL/session/${{gate-filter-5.session_id}}/target/${{effect-bash-script-1.app_ui_alias}}/ and the API relay URL is $HTTP_TARGET_RELAY_BASE_URL/session/${{gate-filter-5.session_id}}/target/${{effect-bash-script-1.app_api_alias}}/.\nDon't forget to message to the user to let them know that the demo has been successfully provisioned, through whatever channel the user's original request arrived (Teams, Discord, Email, or a plain prompt). When you do, give the user the public URL to the demo instance so they can follow along.",
+          "prompt": "The host-side APP demo environment provisioning request '${{gate-filter-5.request_id}}' has completed.\n\nEnvironment alias: ${{gate-map-app-demo-metadata-1.environment_alias}}\nAPP API alias: ${{gate-map-app-demo-metadata-1.app_api_alias}}\nAPP UI alias: ${{gate-map-app-demo-metadata-1.app_ui_alias}}\nAPP API base URL: ${{gate-map-app-demo-metadata-1.app_base_url}}\nPublic UI URL: ${{gate-map-app-demo-metadata-1.app_public_url}}\nPublic domain: ${{gate-map-app-demo-metadata-1.public_domain}}\n\nProvisioning pipeline run: ${{effect-ado-pipeline-run-1.run_url ?? effect-ado-pipeline-run-1.run_id}}\n\nContinue the same user task in this session. Use the provisioned environment alias named above when referring to this environment. Use the HTTP target relay for browser and API access instead of the public URL directly. In the agent session, the UI relay URL is $HTTP_TARGET_RELAY_BASE_URL/session/${{gate-filter-5.session_id}}/target/${{gate-map-app-demo-metadata-1.app_ui_alias}}/ and the API relay URL is $HTTP_TARGET_RELAY_BASE_URL/session/${{gate-filter-5.session_id}}/target/${{gate-map-app-demo-metadata-1.app_api_alias}}/.\nDon't forget to message to the user to let them know that the demo has been successfully provisioned, through whatever channel the user's original request arrived (Teams, Discord, Email, or a plain prompt). When you do, give the user the public URL to the demo instance so they can follow along.",
           "resume_thread_id": "${{query-session-context-4.metadata.agent_thread_id ?? null}}",
           "target": "${{gate-filter-5.session_id}}",
           "vm_user": "agent"

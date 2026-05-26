@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -183,6 +184,7 @@ def _validate_filter_when_node(value: Any, *, path: str) -> None:
             "starts_with",
             "ends_with",
             "contains",
+            "matches_regex",
         )
         if key in value
     )
@@ -203,7 +205,7 @@ def _validate_filter_when_node(value: Any, *, path: str) -> None:
 
     if not operator_keys:
         raise ValueError(
-            f"{path} must contain a logical operator or one of: contains, ends_with, equals, greater_than, in, is_not_null, is_null, less_than, not_equals, not_in, starts_with"
+            f"{path} must contain a logical operator or one of: contains, ends_with, equals, greater_than, in, is_not_null, is_null, less_than, matches_regex, not_equals, not_in, starts_with"
         )
     if len(operator_keys) != 1:
         raise ValueError(f"{path} must contain exactly one comparison operator")
@@ -222,8 +224,15 @@ def _validate_filter_when_node(value: Any, *, path: str) -> None:
         if isinstance(operator_value, bool) or not isinstance(operator_value, (int, float)):
             raise ValueError(f"{path}.{operator} must be a number")
         return
-    if operator in {"starts_with", "ends_with", "contains"} and not isinstance(operator_value, str):
+    if operator in {"starts_with", "ends_with", "contains", "matches_regex"} and not isinstance(
+        operator_value, str
+    ):
         raise ValueError(f"{path}.{operator} must be a string")
+    if operator == "matches_regex":
+        try:
+            re.compile(operator_value)
+        except re.error as exc:
+            raise ValueError(f"{path}.matches_regex must be a valid regex") from exc
 
 
 def _infer_schema_from_template_value(value: Any) -> dict[str, Any]:

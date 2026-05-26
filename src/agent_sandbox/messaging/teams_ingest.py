@@ -87,9 +87,7 @@ class TeamsIngestWorker:
                 jitter_seconds=self.worker_config.jitter_seconds,
                 lock_path=self.worker_config.lock_path,
             ),
-            lock_manager=HostFileLockManager(
-                busy_error_text="Teams ingest worker already running"
-            ),
+            lock_manager=HostFileLockManager(busy_error_text="Teams ingest worker already running"),
             sleeper=HostSleeper(),
             run_cycle=self.run_once,
             get_sleep_seconds=lambda result: result.next_sleep_seconds,
@@ -110,23 +108,23 @@ class TeamsIngestWorker:
         active_sessions = self.runtime.session_repository.list_active_sessions(now=now)
         channel_targets_polled = 0
         direct_chats_polled = 0
-        direct_sender_ids = self._direct_message_sender_ids()
+        direct_sender_refs = self._direct_message_sender_refs()
         directories = self._directories_to_scan(
             active_sessions,
-            include_default_directory=bool(direct_sender_ids),
+            include_default_directory=bool(direct_sender_refs),
         )
         for directory_path in directories:
             channel_targets = self._channel_targets_for_directory(
                 directory_path,
                 active_sessions=active_sessions,
             )
-            if not channel_targets and not direct_sender_ids:
+            if not channel_targets and not direct_sender_refs:
                 continue
             channel_targets_polled += len(channel_targets)
             direct_chats_polled += self._poll_directory(
                 directory_path,
                 channel_targets=channel_targets,
-                direct_sender_ids=direct_sender_ids,
+                direct_sender_refs=direct_sender_refs,
             )
         if self.worker_config.directories:
             matching_sessions = {
@@ -209,7 +207,7 @@ class TeamsIngestWorker:
         }
         return sorted(targets)
 
-    def _direct_message_sender_ids(self) -> set[str]:
+    def _direct_message_sender_refs(self) -> set[str]:
         try:
             trigger_config = load_trigger_orchestrator_worker_global_config(
                 self.project_dir,
@@ -219,7 +217,7 @@ class TeamsIngestWorker:
             logger.exception("Failed to load trigger orchestrator config for Teams DM ingest")
             return set()
 
-        sender_ids: set[str] = set()
+        sender_refs: set[str] = set()
         for trigger in trigger_config.triggers:
             if not workflow_node_is_enabled(trigger):
                 continue
@@ -228,17 +226,17 @@ class TeamsIngestWorker:
             materialized = materialize_node_definition(trigger)
             if not isinstance(materialized, TeamsDirectMessageTriggerDefinition):
                 continue
-            sender_ids.update(
+            sender_refs.update(
                 value.strip() for value in materialized.sender_user_ids if value.strip()
             )
-        return sender_ids
+        return sender_refs
 
     def _poll_directory(
         self,
         directory_path: str,
         *,
         channel_targets: list[str],
-        direct_sender_ids: set[str],
+        direct_sender_refs: set[str],
     ) -> int:
         provider_config = self.runtime.provider_config.resolve_for_directory(directory_path)
         if provider_config.teams_backend not in {"graph_api", "delegated_graph_api"}:
@@ -251,15 +249,22 @@ class TeamsIngestWorker:
         service = self._build_graph_service(
             provider_config=provider_config,
             channel_targets=channel_targets,
+            directory_path=directory_path,
         )
         direct_chats_polled = 0
         with httpx.Client(timeout=provider_config.teams_timeout_seconds) as client:
             direct_chat_targets_polled: set[str] = set()
-            if direct_sender_ids:
+            direct_sender_refs_by_id = self._resolve_direct_message_sender_refs_by_id(
+                client,
+                service=service,
+                sender_refs=direct_sender_refs,
+                directory_path=directory_path,
+            )
+            if direct_sender_refs_by_id:
                 direct_chat_targets_polled = self._poll_direct_chats(
                     client,
                     service=service,
-                    sender_ids=direct_sender_ids,
+                    sender_refs_by_id=direct_sender_refs_by_id,
                     allowlisted_chat_targets={
                         target for target in channel_targets if target.startswith("chat:")
                     },
@@ -281,6 +286,7 @@ class TeamsIngestWorker:
         *,
         provider_config: GatewayConfig,
         channel_targets: list[str],
+        directory_path: str,
     ) -> GraphTeamsService:
         token = None
         token_provider = None
@@ -317,7 +323,60 @@ class TeamsIngestWorker:
             retry_base_backoff_seconds=provider_config.teams_retry_base_backoff_seconds,
             retry_max_backoff_seconds=provider_config.teams_retry_max_backoff_seconds,
             allowed_channel_targets_provider=lambda: channel_targets,
+            user_chat_cache=self.runtime.teams_user_chat_cache,
+            user_chat_cache_namespace=_teams_user_cache_namespace(
+                provider_config,
+                directory_path=directory_path,
+            ),
         )
+
+    def _resolve_direct_message_sender_refs_by_id(
+        self,
+        client: httpx.Client,
+        *,
+        service: GraphTeamsService,
+        sender_refs: set[str],
+        directory_path: str,
+    ) -> dict[str, set[str]]:
+        sender_refs_by_id: dict[str, set[str]] = {}
+        for raw_ref in sorted(sender_refs):
+            raw_ref_text = str(raw_ref or "").strip().strip("/")
+            sender_ref = _normalize_direct_message_sender_ref(raw_ref)
+            if not sender_ref:
+                continue
+            aliases = {sender_ref}
+            if raw_ref_text:
+                aliases.add(raw_ref_text)
+            if not _direct_message_sender_ref_needs_resolution(sender_ref):
+                _add_direct_message_sender_ref_aliases(
+                    sender_refs_by_id,
+                    sender_id=sender_ref,
+                    aliases=aliases,
+                )
+                continue
+            try:
+                resolved_id = service.resolve_user_id(client, sender_ref)
+            except Exception:
+                logger.warning(
+                    "Failed to resolve Teams direct-message sender user ref %r for directory=%s",
+                    raw_ref,
+                    directory_path,
+                    exc_info=True,
+                )
+                continue
+            if resolved_id:
+                _add_direct_message_sender_ref_aliases(
+                    sender_refs_by_id,
+                    sender_id=resolved_id,
+                    aliases={*aliases, resolved_id},
+                )
+                continue
+            logger.warning(
+                "Could not resolve Teams direct-message sender user ref %r for directory=%s",
+                raw_ref,
+                directory_path,
+            )
+        return sender_refs_by_id
 
     def _poll_channel(
         self,
@@ -326,7 +385,7 @@ class TeamsIngestWorker:
         service: GraphTeamsService,
         channel_target: str,
         budget: Any | None = None,
-        direct_message_sender_ids: set[str] | None = None,
+        direct_message_sender_refs_by_id: dict[str, set[str]] | None = None,
         store_unmatched_direct_messages: bool = False,
     ) -> None:
         target = parse_teams_target(channel_target)
@@ -364,21 +423,29 @@ class TeamsIngestWorker:
             if not _message_is_after_cursor_state(message, cursor_state):
                 continue
             latest_seen_message = message
-            if direct_message_sender_ids is not None:
+            if direct_message_sender_refs_by_id is not None:
                 message = _mark_direct_message(message)
-                if (
-                    message.author_id.strip() not in direct_message_sender_ids
-                    and not store_unmatched_direct_messages
-                ):
+                direct_sender_refs = direct_message_sender_refs_by_id.get(
+                    message.author_id.strip(),
+                    set(),
+                )
+                if not direct_sender_refs and not store_unmatched_direct_messages:
                     continue
+                if direct_sender_refs:
+                    message = _mark_direct_message(
+                        message,
+                        sender_refs=direct_sender_refs,
+                    )
             if self._is_known_status_post(message.cursor):
                 continue
             if self.store.add_message_if_new(message):
                 discovered.append(message)
         latest = (
             latest_seen_message
-            if direct_message_sender_ids is not None
-            else discovered[-1] if discovered else latest_seen_message
+            if direct_message_sender_refs_by_id is not None
+            else discovered[-1]
+            if discovered
+            else latest_seen_message
         )
         if latest is not None:
             self.store.set_cursor(
@@ -392,7 +459,7 @@ class TeamsIngestWorker:
         client: httpx.Client,
         *,
         service: GraphTeamsService,
-        sender_ids: set[str],
+        sender_refs_by_id: dict[str, set[str]],
         allowlisted_chat_targets: set[str],
     ) -> set[str]:
         chats_polled: set[str] = set()
@@ -413,7 +480,7 @@ class TeamsIngestWorker:
                 service=service,
                 channel_target=chat_target,
                 budget=service.new_pagination_budget(),
-                direct_message_sender_ids=sender_ids,
+                direct_message_sender_refs_by_id=sender_refs_by_id,
                 store_unmatched_direct_messages=chat_target in allowlisted_chat_targets,
             )
         return chats_polled
@@ -492,6 +559,43 @@ def _sanitize_teams_attachments(raw_attachments: object) -> list[dict[str, Any]]
 
 def _worker_global_config_path(project_dir: Path) -> Path:
     return project_dir / "config" / "teams-ingest" / "config.json"
+
+
+def _teams_user_cache_namespace(config: GatewayConfig, *, directory_path: str) -> str:
+    if config.teams_backend == "delegated_graph_api":
+        return (
+            f"delegated:{config.teams_delegated_identity_id or 'default'}:"
+            f"{directory_path or 'root'}"
+        )
+    return f"graph_api:{config.teams_graph_access_token_env}:{directory_path or 'root'}"
+
+
+def _normalize_direct_message_sender_ref(value: str) -> str:
+    normalized = str(value or "").strip().strip("/")
+    if normalized.startswith("user:"):
+        normalized = normalized.removeprefix("user:").strip()
+    return normalized
+
+
+def _direct_message_sender_ref_needs_resolution(value: str) -> bool:
+    return "@" in value
+
+
+def _add_direct_message_sender_ref_aliases(
+    sender_refs_by_id: dict[str, set[str]],
+    *,
+    sender_id: str,
+    aliases: set[str],
+) -> None:
+    normalized_sender_id = _normalize_direct_message_sender_ref(sender_id)
+    if not normalized_sender_id:
+        return
+    sender_aliases = sender_refs_by_id.setdefault(normalized_sender_id, set())
+    sender_aliases.add(normalized_sender_id)
+    for alias in aliases:
+        normalized_alias = str(alias or "").strip()
+        if normalized_alias:
+            sender_aliases.add(normalized_alias)
 
 
 def _load_teams_ingest_worker_global_config(
@@ -578,10 +682,18 @@ def _target_from_envelope(envelope: TeamsMessageEnvelope, *, metadata: dict[str,
     return f"{envelope.team_id}/{envelope.channel_id}"
 
 
-def _mark_direct_message(message: TeamsInboxMessage) -> TeamsInboxMessage:
+def _mark_direct_message(
+    message: TeamsInboxMessage,
+    *,
+    sender_refs: set[str] | None = None,
+) -> TeamsInboxMessage:
     metadata = dict(message.metadata)
     metadata["target_type"] = "direct_message"
     metadata["chat_type"] = "oneOnOne"
+    if sender_refs:
+        direct_sender_refs = _metadata_string_set(metadata.get("direct_message_sender_refs"))
+        direct_sender_refs.update(str(ref).strip() for ref in sender_refs if str(ref).strip())
+        metadata["direct_message_sender_refs"] = sorted(direct_sender_refs)
     raw_message = metadata.get("message")
     if isinstance(raw_message, dict):
         safe_message = dict(raw_message)
@@ -589,6 +701,14 @@ def _mark_direct_message(message: TeamsInboxMessage) -> TeamsInboxMessage:
         safe_message["chat_type"] = "oneOnOne"
         metadata["message"] = safe_message
     return message.model_copy(update={"metadata": metadata})
+
+
+def _metadata_string_set(value: object) -> set[str]:
+    if isinstance(value, str):
+        return {value.strip()} if value.strip() else set()
+    if isinstance(value, (list, tuple, set)):
+        return {str(item).strip() for item in value if str(item).strip()}
+    return set()
 
 
 def _extract_teams_author_name(raw_message: object) -> str:

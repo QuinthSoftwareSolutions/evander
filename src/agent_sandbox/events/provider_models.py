@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agent_sandbox.effects.providers.schemas import (
+    AdoPipelineRunEffectDefinition,
     AdoUpdateWorkItemEffectDefinition,
     AgentBootstrapFrontendEffectDefinition,
     AgentCloneRepoEffectDefinition,
@@ -26,6 +27,7 @@ from agent_sandbox.effects.providers.schemas import (
     NotificationSendEffectDefinition,
     PrCreateEffectDefinition,
     PullRequestUpdateEffectDefinition,
+    RuntimeDiagnosticsSnapshotEffectDefinition,
     SemanticDeleteEffectDefinition,
     SemanticEnsureCollectionEffectDefinition,
     SemanticUpsertEffectDefinition,
@@ -97,6 +99,7 @@ from agent_sandbox.triggers.providers.schemas import (
 )
 
 __all__ = [
+    "AdoPipelineRunEffectDefinition",
     "AdoUpdateWorkItemEffectDefinition",
     "AdoWorkItemMatchingTriggerDefinition",
     "AdoWorkItemsQueryDefinition",
@@ -146,6 +149,7 @@ __all__ = [
     "PullRequestCompletedTriggerDefinition",
     "PullRequestNewFeedbackTriggerDefinition",
     "PullRequestUpdateEffectDefinition",
+    "RuntimeDiagnosticsSnapshotEffectDefinition",
     "ReviewNewRequestTriggerDefinition",
     "ScriptRunRequestTriggerDefinition",
     "WebhookTriggerDefinition",

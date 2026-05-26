@@ -26,9 +26,11 @@ test("groups effect node types by related functionality", () => {
     catalogNode("effect", "effect:pr:create", "PR create"),
     catalogNode("effect", "effect:pull-request:update", "Pull request update"),
     catalogNode("effect", "effect:issue:update-metadata", "Issue update metadata"),
+    catalogNode("effect", "effect:ado:pipeline-run", "ADO pipeline run"),
     catalogNode("effect", "effect:ado:update-work-item", "ADO update work item"),
     catalogNode("effect", "effect:bash:script", "Bash script"),
     catalogNode("effect", "effect:http:request", "HTTP request"),
+    catalogNode("effect", "effect:runtime:diagnostics-snapshot", "Runtime diagnostics snapshot"),
     catalogNode("effect", "effect:artifact:import-published", "Import published artifact"),
     catalogNode("effect", "effect:artifact:publish-artifacts", "Publish artifacts"),
     catalogNode("effect", "effect:communication:send-message", "Send message"),
@@ -58,6 +60,10 @@ test("groups effect node types by related functionality", () => {
         types: ["effect:http:request"],
       },
       {
+        label: "Runtime diagnostics",
+        types: ["effect:runtime:diagnostics-snapshot"],
+      },
+      {
         label: "Semantic store",
         types: ["effect:semantic:upsert"],
       },
@@ -71,7 +77,11 @@ test("groups effect node types by related functionality", () => {
       },
       {
         label: "Issues & sessions",
-        types: ["effect:ado:update-work-item", "effect:issue:update-metadata"],
+        types: [
+          "effect:ado:pipeline-run",
+          "effect:ado:update-work-item",
+          "effect:issue:update-metadata",
+        ],
       },
       {
         label: "Git & PRs",

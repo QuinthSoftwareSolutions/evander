@@ -501,12 +501,21 @@ export function ToolCallsPage() {
 
   useEffect(() => {
     let cancelled = false;
+    let requestInFlight = false;
+    const controller = new AbortController();
 
     async function refresh() {
+      if (requestInFlight) {
+        return;
+      }
+      requestInFlight = true;
       try {
         setLoading(true);
-        await loadToolCalls();
+        const payload = await fetchJson<ToolCallsResponse>(`/api/admin/tool-calls${query}`, {
+          signal: controller.signal,
+        });
         if (!cancelled) {
+          setResponse(payload);
           setError(null);
         }
       } catch (reason) {
@@ -514,6 +523,7 @@ export function ToolCallsPage() {
           setError(reason instanceof Error ? reason.message : String(reason));
         }
       } finally {
+        requestInFlight = false;
         if (!cancelled) {
           setLoading(false);
         }
@@ -526,6 +536,7 @@ export function ToolCallsPage() {
     }, POLL_INTERVAL_MS);
     return () => {
       cancelled = true;
+      controller.abort();
       window.clearInterval(intervalId);
     };
   }, [query]);

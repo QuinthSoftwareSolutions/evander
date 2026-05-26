@@ -58,7 +58,9 @@ class EventScheduleEffectDefinition(EffectDefinition):
         has_run_at = self.run_at is not None
         has_delay_seconds = self.delay_seconds is not None
         if has_run_at == has_delay_seconds:
-            raise ValueError("effect:event:schedule requires exactly one of run_at or delay_seconds")
+            raise ValueError(
+                "effect:event:schedule requires exactly one of run_at or delay_seconds"
+            )
         return self
 
 
@@ -395,17 +397,13 @@ class HttpRequestEffectDefinition(EffectDefinition):
         if isinstance(value, str):
             if value.strip():
                 return value
-            raise ValueError(
-                "effect:http:request allowed_url_patterns must include a pattern"
-            )
+            raise ValueError("effect:http:request allowed_url_patterns must include a pattern")
         if not isinstance(value, list):
             raise ValueError(
                 "effect:http:request allowed_url_patterns must be a string, string list, or binding"
             )
         if not value:
-            raise ValueError(
-                "effect:http:request allowed_url_patterns must include a pattern"
-            )
+            raise ValueError("effect:http:request allowed_url_patterns must include a pattern")
         for item in value:
             if not isinstance(item, str) or not item.strip():
                 raise ValueError(
@@ -425,6 +423,38 @@ class HttpRequestEffectDefinition(EffectDefinition):
             raise ValueError("effect:http:request headers must be a mapping or binding")
         if not isinstance(value, Mapping):
             raise ValueError("effect:http:request headers must be a mapping or binding")
+        return value
+
+
+class RuntimeDiagnosticsSnapshotEffectDefinition(EffectDefinition):
+    type: Literal["effect:runtime:diagnostics-snapshot"]
+    since: ConfigValue | None = "24 hours ago"
+    units: ConfigValue | None = None
+    include_failed_units: ConfigValue | None = True
+    include_journal: ConfigValue | None = True
+    include_runtime_files: ConfigValue | None = True
+    max_journal_lines_per_unit: ConfigValue | None = 200
+    max_runtime_file_bytes: ConfigValue | None = 120000
+    command_timeout_seconds: ConfigValue | None = 10
+
+    @field_validator("units")
+    @classmethod
+    def validate_units(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            if "${{" in value or value.strip():
+                return value
+            raise ValueError("effect:runtime:diagnostics-snapshot units must not be empty")
+        if not isinstance(value, list):
+            raise ValueError(
+                "effect:runtime:diagnostics-snapshot units must be a string list or binding"
+            )
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(
+                    "effect:runtime:diagnostics-snapshot units must be a string list or binding"
+                )
         return value
 
 
@@ -611,9 +641,7 @@ class IssueUpsertAdoProxyEffectDefinition(EffectDefinition):
         if self.item is None and self.items is None:
             raise ValueError("effect:issue:upsert-ado-proxy requires item or items")
         if self.item is not None and self.items is not None:
-            raise ValueError(
-                "effect:issue:upsert-ado-proxy item and items are mutually exclusive"
-            )
+            raise ValueError("effect:issue:upsert-ado-proxy item and items are mutually exclusive")
         return self
 
 
@@ -634,6 +662,30 @@ class AdoUpdateWorkItemEffectDefinition(EffectDefinition):
             return None
         if not isinstance(value, (Mapping, str)):
             raise ValueError("effect:ado:update-work-item fields must be a JSON object")
+        return value
+
+
+class AdoPipelineRunEffectDefinition(EffectDefinition):
+    type: Literal["effect:ado:pipeline-run"]
+    directory_path: ConfigValue
+    pipeline_id: ConfigValue
+    project: ConfigValue | None = None
+    branch: ConfigValue | None = None
+    variables: ConfigValue | None = None
+    template_parameters: ConfigValue | None = None
+    timeout_seconds: ConfigValue | None = None
+    poll_interval_seconds: ConfigValue | None = None
+    check: ConfigValue | None = True
+
+    @field_validator("variables", "template_parameters")
+    @classmethod
+    def validate_mapping_field(cls, value: ConfigValue | None) -> ConfigValue | None:
+        if value is None:
+            return None
+        if not isinstance(value, (Mapping, str)):
+            raise ValueError(
+                "effect:ado:pipeline-run variables and template_parameters must be JSON objects"
+            )
         return value
 
 
@@ -666,9 +718,7 @@ class PullRequestUpdateEffectDefinition(EffectDefinition):
     def validate_string_list_fields(cls, value: ConfigValue | None) -> ConfigValue | None:
         if value is None or isinstance(value, (str, list)):
             return value
-        raise ValueError(
-            "effect:pull-request:update tag/status guards must be a string or list"
-        )
+        raise ValueError("effect:pull-request:update tag/status guards must be a string or list")
 
 
 class CommunicationSendMessageEffectDefinition(EffectDefinition):

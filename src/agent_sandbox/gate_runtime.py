@@ -90,6 +90,13 @@ def filter_when_matches(predicate: Any) -> bool:
         return _require_string_operand(
             predicate["contains"], operator_name="contains"
         ) in _require_string_operand(left, operator_name="contains")
+    if "matches_regex" in predicate:
+        return _regex_fullmatch(
+            pattern=_require_string_operand(
+                predicate["matches_regex"], operator_name="matches_regex"
+            ),
+            value=_require_string_operand(left, operator_name="matches_regex"),
+        )
     raise GateRuntimeError("gate:filter when predicate must define a supported comparison operator")
 
 
@@ -124,6 +131,13 @@ def _require_numeric_operands(
     ):
         raise GateRuntimeError(f"gate:filter when.{operator_name} requires numeric operands")
     return left, right
+
+
+def _regex_fullmatch(*, pattern: str, value: str) -> bool:
+    try:
+        return re.fullmatch(pattern, value) is not None
+    except re.error as exc:
+        raise GateRuntimeError(f"gate:filter when.matches_regex invalid regex: {exc}") from exc
 
 
 def merged_payload_from_sources(

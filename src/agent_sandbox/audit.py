@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_sandbox.models import AuditEvent
+from agent_sandbox.repositories.audit_index import ToolCallAuditIndex
 
 
 class AuditEventType:
@@ -25,11 +26,19 @@ class AuditLogger:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.touch(exist_ok=True)
+        self._index = ToolCallAuditIndex.for_audit_log(self.path)
 
     def log(self, event: AuditEvent) -> None:
+        payload = event.model_dump(mode="json")
         with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event.model_dump(mode="json"), sort_keys=True))
+            handle.write(json.dumps(payload, sort_keys=True))
             handle.write("\n")
+        if str(payload.get("event_type") or "").strip().casefold() != "tool_call":
+            return
+        try:
+            self._index.index_payload(payload)
+        except Exception:
+            pass
 
     def log_decision(
         self,

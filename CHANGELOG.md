@@ -5,6 +5,46 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-26 - Teams Direct Message Sender Emails
+
+- Allowed `trigger:teams:direct-message` `sender_user_ids` entries to be
+  Microsoft Graph user IDs, UPNs, or mail addresses, resolving email-style
+  entries to Graph user IDs during host-side Teams ingest.
+- Preserved resolved direct-message sender aliases in the Teams inbox so trigger
+  polling can emit events for workflows configured with UPNs or mail addresses.
+
+## 2026-05-26 - Azure DevOps Pipeline Run Effect
+
+- Added `effect:ado:pipeline-run` for typed Azure DevOps pipeline queue/poll
+  workflows without invoking host-side Bash.
+- Preserved ADO pipeline run outputs such as `run_id` and `run_url` when checked
+  failed, canceled, or timed-out runs are recorded as failed effects.
+- Updated checked-in APP demo workflow examples to queue the provisioning
+  pipeline, derive relay metadata with `gate:map`, and store it through
+  `effect:session:update-metadata`.
+- Replaced the checked-in synthetic workflow's host Bash example with a safe
+  internal event emit.
+- Added dynamic object-key bindings and `gate:filter` `matches_regex` support so
+  workflows can build nested metadata maps while rejecting unsafe request names.
+
+## 2026-05-26 - Runtime Diagnostics Snapshot Effect
+
+- Added `effect:runtime:diagnostics-snapshot` for bounded, redacted host
+  diagnostics collection without allowing workflow-configured shell scripts or
+  arbitrary host paths.
+
+## 2026-05-26 - Tool Call Audit SQLite Index
+
+- Added a SQLite read index for Admin Web Tool Calls while keeping
+  `runtime/audit.jsonl` as the canonical append-only audit journal.
+- Added `agent-sandbox-cli rebuild-audit-index` for rebuilding `runtime/audit.db`
+  from the JSONL audit log.
+- Fixed directory-filtered audit queries so incomplete indexes fall back to the
+  canonical JSONL log and directory prefixes containing SQLite wildcard
+  characters do not match unrelated paths.
+- Kept default Tool Calls reads from treating bounded, incomplete tail imports as
+  authoritative when the SQLite audit index has not been fully imported.
+
 ## 2026-05-26 - Agent Exec Command Editor
 
 - Rendered the workflow editor `effect:agent:exec` Command field as a
