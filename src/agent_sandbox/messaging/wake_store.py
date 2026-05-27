@@ -216,7 +216,7 @@ class WakeRequestStore:
                             payload_json = ?
                         WHERE request_id = ?
                         """,
-                        self._request_row(request),
+                        self._request_update_row(request),
                     )
 
             message = WakeMessageEnvelope(
@@ -453,12 +453,12 @@ class WakeRequestStore:
                                 next_run_at = ?,
                                 schedule_resume_at = ?,
                                 schedule_cron = ?,
-                                source = ?,
-                                resume_mode = ?,
-                                payload_json = ?
-                            WHERE request_id = ?
-                            """,
-                            self._request_row(request),
+                            source = ?,
+                            resume_mode = ?,
+                            payload_json = ?
+                        WHERE request_id = ?
+                        """,
+                            self._request_update_row(request),
                         )
                         next_run_at = request.next_run_at
                     else:
@@ -714,6 +714,24 @@ class WakeRequestStore:
             request.source,
             request.resume_mode,
             _json_dumps(payload),
+        )
+
+    @staticmethod
+    def _request_update_row(request: WakeScheduledRequest) -> tuple[Any, ...]:
+        payload = request.model_dump(mode="json")
+        return (
+            request.session_id,
+            int(bool(request.enabled)),
+            WakeRequestStore._datetime_to_storage(request.created_at),
+            WakeRequestStore._datetime_to_storage(request.updated_at),
+            WakeRequestStore._datetime_to_storage(request.last_dispatched_at),
+            WakeRequestStore._datetime_to_storage(request.next_run_at),
+            WakeRequestStore._datetime_to_storage(request.schedule.resume_at),
+            request.schedule.cron,
+            request.source,
+            request.resume_mode,
+            _json_dumps(payload),
+            request.request_id,
         )
 
     @staticmethod
