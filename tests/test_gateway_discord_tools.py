@@ -17,12 +17,14 @@ from agent_sandbox.directories import DirectoryService, DirectoryStore
 from agent_sandbox.email.http_utils import ProviderRequestError
 from agent_sandbox.email.providers import EmailDraft, EmailMessageDetail, EmailMessageSummary
 from agent_sandbox.gateway import create_server
+from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
 from agent_sandbox.messaging.targets import (
     SqliteCommunicationTargetsRepository,
     communication_targets_db_path,
 )
 from agent_sandbox.models import (
     DiscordCommandEnvelope,
+    DiscordMessageEnvelope,
     LocalIssueRecord,
     SessionManifest,
     ToolName,
@@ -123,6 +125,11 @@ def set_email_service(context, service) -> None:
 
 def set_pr_reply_service(context, service) -> None:
     context.pr_reply_service = service
+
+
+def _seed_discord_messages(path: Path, messages: list[DiscordMessageEnvelope]) -> None:
+    store = DiscordInboxStore(path)
+    assert store.add_messages_if_new(messages) == len(messages)
 
 
 def read_audit_events(path: Path) -> list[dict[str, object]]:
@@ -249,46 +256,37 @@ def test_list_unread_discord_messages_does_not_apply_read_reactions(tmp_path: Pa
         ),
     )
     inbox_store_path = context.config.runtime_dir / "discord-inbox-store.json"
-    inbox_store_path.write_text(
-        json.dumps(
-            {
-                "cursors": {},
-                "messages": {
-                    "discord:1": {
-                        "message_id": "discord:1",
-                        "channel_id": "chan-a",
-                        "author_id": "bot-user",
-                        "author_name": "Bot",
-                        "content": "Self echo",
-                        "created_at": "2026-01-01T00:00:00Z",
-                        "in_reply_to": None,
-                        "raw": {"source": "discord_bot_api_status", "session_id": "session-1"},
-                    },
-                    "discord:2": {
-                        "message_id": "discord:2",
-                        "channel_id": "chan-a",
-                        "author_id": "user-a",
-                        "author_name": "Alice",
-                        "content": "Human reply",
-                        "created_at": "2026-01-02T00:00:00Z",
-                        "in_reply_to": None,
-                        "raw": {"source": "discord_bot_api"},
-                    },
-                    "discord:3": {
-                        "message_id": "discord:3",
-                        "channel_id": "chan-a",
-                        "author_id": "user-b",
-                        "author_name": "Bob",
-                        "content": "Another human reply",
-                        "created_at": "2026-01-03T00:00:00Z",
-                        "in_reply_to": None,
-                        "raw": {"source": "discord_bot_api"},
-                    },
-                },
-                "session_reads": {},
-            }
-        ),
-        encoding="utf-8",
+    _seed_discord_messages(
+        inbox_store_path,
+        [
+            DiscordMessageEnvelope(
+                message_id="discord:1",
+                channel_id="chan-a",
+                author_id="bot-user",
+                author_name="Bot",
+                content="Self echo",
+                created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                raw={"source": "discord_bot_api_status", "session_id": "session-1"},
+            ),
+            DiscordMessageEnvelope(
+                message_id="discord:2",
+                channel_id="chan-a",
+                author_id="user-a",
+                author_name="Alice",
+                content="Human reply",
+                created_at=datetime(2026, 1, 2, tzinfo=UTC),
+                raw={"source": "discord_bot_api"},
+            ),
+            DiscordMessageEnvelope(
+                message_id="discord:3",
+                channel_id="chan-a",
+                author_id="user-b",
+                author_name="Bob",
+                content="Another human reply",
+                created_at=datetime(2026, 1, 3, tzinfo=UTC),
+                raw={"source": "discord_bot_api"},
+            ),
+        ],
     )
     fake_discord = FakeDiscordService(commands=[])
     set_discord_service(context, fake_discord)
@@ -389,26 +387,19 @@ def test_list_unread_discord_messages_repeated_reads_do_not_retry_reactions(
         ),
     )
     inbox_store_path = context.config.runtime_dir / "discord-inbox-store.json"
-    inbox_store_path.write_text(
-        json.dumps(
-            {
-                "cursors": {},
-                "messages": {
-                    "discord:2": {
-                        "message_id": "discord:2",
-                        "channel_id": "chan-a",
-                        "author_id": "user-a",
-                        "author_name": "Alice",
-                        "content": "Human reply",
-                        "created_at": "2026-01-02T00:00:00Z",
-                        "in_reply_to": None,
-                        "raw": {"source": "discord_bot_api"},
-                    },
-                },
-                "session_reads": {},
-            }
-        ),
-        encoding="utf-8",
+    _seed_discord_messages(
+        inbox_store_path,
+        [
+            DiscordMessageEnvelope(
+                message_id="discord:2",
+                channel_id="chan-a",
+                author_id="user-a",
+                author_name="Alice",
+                content="Human reply",
+                created_at=datetime(2026, 1, 2, tzinfo=UTC),
+                raw={"source": "discord_bot_api"},
+            ),
+        ],
     )
     fake_discord = FakeDiscordService(commands=[])
     request = httpx.Request(

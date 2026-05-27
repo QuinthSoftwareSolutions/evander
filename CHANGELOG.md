@@ -5,6 +5,17 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-27 - Discord Inbox SQLite Integration
+
+- Batched Discord command-envelope persistence so a successful poll cycle can
+  store all fetched commands with one repository write.
+- Kept Discord inbox construction compatible with the legacy
+  `runtime/discord-inbox-store.json` path while the live store uses
+  `runtime/discord-inbox-store.db`.
+- Preserved first-use import from legacy Discord inbox JSON and retained the
+  SQLite message compaction rules for old messages once channel cursors move
+  past them.
+
 ## 2026-05-27 - Orchestration SQLite WAL Maintenance
 
 - Added configurable SQLite WAL checkpoint maintenance for the workflow
