@@ -13,6 +13,7 @@ from agent_sandbox.provider_profiles import (
     is_pure_orchestration_core_profile,
     resolve_provider_module_names,
 )
+from agent_sandbox.repositories.orchestration_db import maybe_checkpoint_orchestration_wal
 from agent_sandbox.gates.registry import GateProviderFactory
 from agent_sandbox.queries.registry import QueryProviderFactory
 from agent_sandbox.runtime import RuntimeContext
@@ -172,6 +173,13 @@ def build_effect_worker_store_wiring(
         )
         workflow_config_snapshot_store = SqliteWorkflowConfigSnapshotRepository(
             worker_config.orchestration_store_path
+        )
+        maybe_checkpoint_orchestration_wal(
+            worker_config.orchestration_store_path,
+            mode=worker_config.orchestration_wal_checkpoint_mode,
+            min_bytes=worker_config.orchestration_wal_checkpoint_min_bytes,
+            interval_seconds=worker_config.orchestration_wal_checkpoint_interval_seconds,
+            busy_timeout_ms=worker_config.orchestration_wal_checkpoint_busy_timeout_ms,
         )
     else:
         workflow_event_journal = WorkflowEventJournal(worker_config.workflow_event_journal_path)

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.provider_profiles import resolve_provider_module_names
+from agent_sandbox.repositories.orchestration_db import maybe_checkpoint_orchestration_wal
 from agent_sandbox.runtime import RuntimeContext
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
 from agent_sandbox.triggers.registry import TriggerProviderFactory
@@ -76,6 +77,13 @@ def build_trigger_worker_wiring(
         event_queue = SqliteTriggerEventQueue(
             worker_config.orchestration_store_path,
             retention_days=int(worker_config.orchestration_retention_days),
+        )
+        maybe_checkpoint_orchestration_wal(
+            worker_config.orchestration_store_path,
+            mode=worker_config.orchestration_wal_checkpoint_mode,
+            min_bytes=worker_config.orchestration_wal_checkpoint_min_bytes,
+            interval_seconds=worker_config.orchestration_wal_checkpoint_interval_seconds,
+            busy_timeout_ms=worker_config.orchestration_wal_checkpoint_busy_timeout_ms,
         )
     else:
         event_queue = TriggerEventQueue(

@@ -5,6 +5,17 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-27 - Orchestration SQLite WAL Maintenance
+
+- Added configurable SQLite WAL checkpoint maintenance for the workflow
+  orchestration store, defaulting to truncated checkpoints when
+  `orchestration.db-wal` reaches 64 MiB and at most once every five minutes.
+- Removed full-history effect execution scans from the effect-orchestrator hot
+  loop by using indexed waiting/completion-pending queries and running
+  waiting/gate maintenance after event dispatch.
+- Avoided rewriting unchanged workflow config snapshots on every effect worker
+  cycle.
+
 ## 2026-05-26 - Teams Message Store SQLite
 
 - Moved the durable Teams message store from per-write JSON rewrites to SQLite,
