@@ -757,12 +757,37 @@ def execution_list_container_worker_executions(
     json_output: Annotated[bool, typer.Option("--json", help="Emit JSON output.")] = False,
 ) -> None:
     cfg = _load_runtime_config_from_option(config)
-    records = sorted(
-        _container_worker_repository(cfg).read_all().values(),
-        key=lambda record: (record.created_at, record.execution_id),
-    )
+    repository = _container_worker_repository(cfg)
     if session_id:
-        records = [record for record in records if record.session_id == session_id]
+        list_by_session = getattr(repository, "list_by_session", None)
+        if callable(list_by_session):
+            records = list_by_session(session_id)
+        else:
+            list_all_ordered = getattr(repository, "list_all_ordered", None)
+            if callable(list_all_ordered):
+                records = [
+                    record
+                    for record in list_all_ordered()
+                    if record.session_id == session_id
+                ]
+            else:
+                records = [
+                    record
+                    for record in sorted(
+                        repository.read_all().values(),
+                        key=lambda record: (record.created_at, record.execution_id),
+                    )
+                    if record.session_id == session_id
+                ]
+    else:
+        list_all_ordered = getattr(repository, "list_all_ordered", None)
+        if callable(list_all_ordered):
+            records = list_all_ordered()
+        else:
+            records = sorted(
+                repository.read_all().values(),
+                key=lambda record: (record.created_at, record.execution_id),
+            )
     payload = [_container_mapping_payload(record) for record in records]
     if json_output:
         typer.echo(json.dumps(payload, indent=2, sort_keys=True))

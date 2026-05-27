@@ -8734,8 +8734,23 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if selected_backend == "libvirt_vm":
             return records
 
+        container_repository = self._container_worker_execution_repository()
+        list_all_ordered = getattr(container_repository, "list_all_ordered", None)
+        list_by_directory = getattr(container_repository, "list_by_directory", None)
+        if all_directories:
+            if callable(list_all_ordered):
+                container_records = list_all_ordered()
+            else:
+                container_records = list(container_repository.read_all().values())
+        elif direct_only and callable(list_by_directory):
+            container_records = list_by_directory(normalized_directory)
+        elif callable(list_all_ordered):
+            container_records = list_all_ordered()
+        else:
+            container_records = list(container_repository.read_all().values())
+
         container_records_by_session: dict[str, list[Any]] = {}
-        for container_record in self._container_worker_execution_repository().read_all().values():
+        for container_record in container_records:
             session_id = str(container_record.session_id or "").strip()
             if not session_id:
                 continue
