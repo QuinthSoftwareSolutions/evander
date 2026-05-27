@@ -224,6 +224,69 @@ def test_scheduled_wake_worker_dispatches_due_request(tmp_path: Path, monkeypatc
     assert "session-a" in cooldown_payload
 
 
+def test_scheduled_wake_worker_uses_find_due_requests_directly(
+    tmp_path: Path, monkeypatch
+) -> None:
+    worker = _build_worker(tmp_path)
+    _register_session(worker)
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    request = _schedule_one_time_request(
+        worker, request_id="wake-direct", session_id="session-a", due_at=due_at
+    )
+
+    class _FakeWakeStore:
+        def __init__(self, due_request):
+            self.due_request = due_request
+            self.find_due_requests_called = False
+            self.upserted_requests: list[object] = []
+
+        def read_raw(self):
+            raise AssertionError("run_once should not call read_raw")
+
+        def find_due_requests(self, *, now_utc):
+            self.find_due_requests_called = True
+            self.now_utc = now_utc
+            return [self.due_request]
+
+        def upsert_request(self, request):
+            self.upserted_requests.append(request)
+
+    fake_store = _FakeWakeStore(request)
+    worker.runtime.wake_store = fake_store
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state", lambda **kwargs: "idle"
+    )
+    dispatch_at = datetime.now(UTC)
+
+    def resume_binding(binding, **kwargs):
+        return WakeDispatchRecord(
+            dispatch_id="dispatch-direct-success",
+            request_id=kwargs["request_id"],
+            session_id=binding.session_id,
+            status="dispatched",
+            resume_prompt=WakeResumePromptPayload(prompt=kwargs["prompt"]),
+            resume_mode=kwargs["resume_mode"],
+            scheduled_for=kwargs["scheduled_for"],
+            dispatched_at=dispatch_at,
+            source=kwargs["dispatch_source"],
+            metadata={"vm_id": binding.vm_id, "source": binding.source},
+        )
+
+    monkeypatch.setattr(worker.dispatcher, "resume_binding", resume_binding)
+
+    result = worker.run_once()
+
+    assert fake_store.find_due_requests_called is True
+    assert result.requests_due == 1
+    assert result.wakes_dispatched == 1
+    assert len(fake_store.upserted_requests) == 1
+    refreshed = fake_store.upserted_requests[0]
+    assert refreshed.request_id == "wake-direct"
+    assert refreshed.enabled is False
+    assert refreshed.next_run_at is None
+
+
 def test_scheduled_wake_worker_dispatches_due_cron_range_request(
     tmp_path: Path, monkeypatch
 ) -> None:
