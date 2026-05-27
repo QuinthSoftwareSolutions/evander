@@ -5,6 +5,15 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-27 - Wake Store SQLite Migration
+
+- Moved the scheduled wake store to SQLite while keeping the public repository
+  API stable for gateway, admin, and worker callers.
+- Preserved legacy `wake-requests-store.json` compatibility as import-only
+  input, with sibling `.db` storage used for active persistence.
+- Updated gateway-facing wake schedule coverage to assert repository behavior
+  instead of treating the legacy JSON file as the live datastore.
+
 ## 2026-05-27 - Orchestration SQLite WAL Maintenance
 
 - Added configurable SQLite WAL checkpoint maintenance for the workflow
