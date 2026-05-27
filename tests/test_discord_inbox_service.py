@@ -161,5 +161,5 @@ def test_discord_inbox_store_compacts_expired_messages_after_channel_cursor_adva
     )
 
     assert inserted is True
-    payload = json.loads(store_path.read_text(encoding="utf-8"))
+    payload = store.read_raw()
     assert payload["messages"] == {}

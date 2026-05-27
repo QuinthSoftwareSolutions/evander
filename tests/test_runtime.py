@@ -219,6 +219,8 @@ def test_build_runtime_initializes_discord_inbox_service(tmp_path: Path) -> None
 
     assert isinstance(runtime.discord_inbox_service, DiscordInboxService)
     assert runtime.discord_inbox_service.store_path == tmp_path / "discord-inbox-store.json"
+    assert runtime.discord_inbox_service.store.path == tmp_path / "discord-inbox-store.db"
+    assert runtime.discord_inbox_service.store.path.exists()
 
 
 def test_build_runtime_initializes_agent_prompt_store(tmp_path: Path) -> None:
