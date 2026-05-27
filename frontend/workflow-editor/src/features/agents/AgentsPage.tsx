@@ -12,6 +12,7 @@ import type {
   AgentExecutionRecord,
   AgentListResponse,
   AgentLogResponse,
+  AgentLogView,
   AgentRecord,
   AgentPolicyUpdateRequest,
   AgentSessionPolicy,
@@ -224,12 +225,13 @@ async function loadSkillList(): Promise<SkillLibraryItem[]> {
 
 async function loadAgentLogPage(
   agent: AgentRecord | null,
-  options: { limit?: number; offset?: number; query?: string } = {},
+  options: { limit?: number; offset?: number; query?: string; view?: AgentLogView } = {},
 ): Promise<AgentLogResponse> {
   if (!agent) {
     return {
       agent_id: "",
       backend: null,
+      view: options.view ?? "executions",
       lines: 0,
       text: "No agent selected.",
       returned_lines: 1,
@@ -240,6 +242,7 @@ async function loadAgentLogPage(
     return {
       agent_id: agent.agent_id,
       backend: agent.backend,
+      view: options.view ?? "executions",
       lines: 0,
       text: "Logs are not available for this agent.",
       returned_lines: 1,
@@ -250,6 +253,7 @@ async function loadAgentLogPage(
     backend: agent.backend,
     limit: String(options.limit ?? LOG_PAGE_LIMIT),
     offset: String(options.offset ?? 0),
+    view: options.view ?? "executions",
   });
   const searchQuery = options.query?.trim();
   if (searchQuery) query.set("query", searchQuery);
@@ -609,6 +613,7 @@ export function AgentsPage() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [agentLog, setAgentLog] = useState<AgentLogViewState>(() => emptyLogState());
   const [logSearchInput, setLogSearchInput] = useState("");
+  const [logView, setLogView] = useState<AgentLogView>("executions");
   const [logReloadNonce, setLogReloadNonce] = useState(0);
   const [agentPrompt, setAgentPrompt] = useState("");
   const [agentPromptResumeThreadId, setAgentPromptResumeThreadId] = useState("");
@@ -751,6 +756,7 @@ export function AgentsPage() {
     [filteredItems, hashSelection, selectedKey],
   );
   const selectedAgentKey = selectedAgent ? agentKey(selectedAgent) : null;
+  const activeLogView: AgentLogView = selectedAgent?.backend === "container_worker_vm" ? logView : "executions";
 
   useEffect(() => {
     if (showPromptForm) return;
@@ -808,6 +814,7 @@ export function AgentsPage() {
           limit: activeQuery ? LOG_PAGE_LIMIT : Math.max(LOG_PAGE_LIMIT, logLoadedLinesRef.current),
           offset: 0,
           query: activeQuery || undefined,
+          view: activeLogView,
         });
         if (cancelled) return;
         if (!activeQuery && !showLoadingState && !shouldStick) {
@@ -865,7 +872,7 @@ export function AgentsPage() {
       cancelled = true;
       if (timer !== null) window.clearInterval(timer);
     };
-  }, [agentLog.appliedQuery, logReloadNonce, selectedAgent?.backend, selectedAgent?.agent_id]);
+  }, [activeLogView, agentLog.appliedQuery, logReloadNonce, selectedAgent?.backend, selectedAgent?.agent_id]);
 
   async function handleManualRefresh() {
     setLoading(true);
@@ -892,6 +899,16 @@ export function AgentsPage() {
     setLogReloadNonce((current) => current + 1);
   }
 
+  function changeLogView(nextView: AgentLogView) {
+    if (nextView === logView) return;
+    setLogView(nextView);
+    setLogSearchInput("");
+    logLoadedLinesRef.current = LOG_PAGE_LIMIT;
+    pendingLogScrollRef.current = "bottom";
+    setAgentLog(emptyLogState("Loading..."));
+    setLogReloadNonce((current) => current + 1);
+  }
+
   async function loadOlderLogLines() {
     if (!selectedAgent || agentLog.loadingOlder || !agentLog.hasMoreBefore) return;
     const element = logViewRef.current;
@@ -904,6 +921,7 @@ export function AgentsPage() {
         limit: LOG_PAGE_LIMIT,
         offset: agentLog.loadedLines,
         query: agentLog.appliedQuery || undefined,
+        view: activeLogView,
       });
       const returnedLines = responseReturnedLines(payload);
       setAgentLog((current) => {
@@ -2087,6 +2105,28 @@ export function AgentsPage() {
                     {logTitle} / {logRangeLabel}
                     {agentLog.pendingLiveUpdate ? " / live update waiting" : ""}
                   </span>
+                  {selectedAgent?.backend === "container_worker_vm" ? (
+                    <div className="session-schedule-type-toggle agent-log-view-toggle" role="group" aria-label="Log view">
+                      <button
+                        type="button"
+                        className={activeLogView === "executions" ? "primary" : ""}
+                        aria-pressed={activeLogView === "executions"}
+                        onClick={() => changeLogView("executions")}
+                        disabled={agentLog.loading && activeLogView === "executions"}
+                      >
+                        Executions
+                      </button>
+                      <button
+                        type="button"
+                        className={activeLogView === "threads" ? "primary" : ""}
+                        aria-pressed={activeLogView === "threads"}
+                        onClick={() => changeLogView("threads")}
+                        disabled={agentLog.loading && activeLogView === "threads"}
+                      >
+                        Threads
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
                 <form
                   className="agent-log-search"

@@ -45,6 +45,8 @@ export type AdminUserMutationResponse = {
 
 export type AgentBackend = "libvirt_vm" | "container_worker_vm";
 
+export type AgentLogView = "executions" | "threads";
+
 export type AgentCapabilities = {
   start: boolean;
   shutdown: boolean;
@@ -150,6 +152,7 @@ export type AgentListResponse = {
 export type AgentLogResponse = {
   agent_id: string;
   backend: AgentBackend | null;
+  view?: AgentLogView;
   lines: number;
   text: string;
   limit?: number;

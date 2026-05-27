@@ -4198,6 +4198,10 @@ select {
   width: min(16rem, 100%);
 }
 
+.agent-log-view-toggle {
+  margin-top: 0.45rem;
+}
+
 .agent-log-controls {
   display: flex;
   flex-wrap: wrap;
