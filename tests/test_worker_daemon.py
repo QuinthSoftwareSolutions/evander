@@ -448,6 +448,64 @@ def test_session_delete_removes_stopped_worker_jobs(tmp_path: Path) -> None:
     assert job_response.json()["cleanup_status"] == "cleanup_succeeded"
 
 
+def test_session_delete_uses_session_scoped_job_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = FakeContainerRuntime()
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+
+    session_a = WorkerSessionPaths.resolve(daemon.worker_root, "session-a")
+    session_b = WorkerSessionPaths.resolve(daemon.worker_root, "session-b")
+    daemon.store.put(
+        WorkerJobRecord(
+            job_id="job-a",
+            session_id="session-a",
+            image="codex:latest",
+            command=["true"],
+            container_name="agent-worker-job-a",
+            status="running",
+            started_at=datetime(2026, 5, 21, 10, 0, tzinfo=UTC),
+            agent_home_path=str(session_a.agent_home),
+            repo_root_path=str(session_a.repo_root),
+            artifacts_path=str(session_a.artifacts),
+            logs_path=str(session_a.logs),
+        )
+    )
+    daemon.store.put(
+        WorkerJobRecord(
+            job_id="job-b",
+            session_id="session-b",
+            image="codex:latest",
+            command=["true"],
+            container_name="agent-worker-job-b",
+            status="running",
+            started_at=datetime(2026, 5, 21, 10, 5, tzinfo=UTC),
+            agent_home_path=str(session_b.agent_home),
+            repo_root_path=str(session_b.repo_root),
+            artifacts_path=str(session_b.artifacts),
+            logs_path=str(session_b.logs),
+        )
+    )
+
+    monkeypatch.setattr(
+        daemon.store,
+        "read_all",
+        lambda: (_ for _ in ()).throw(AssertionError("read_all should not be used")),
+    )
+
+    deleted = daemon.delete_session("session-a")
+
+    assert deleted is True
+    assert runtime.removed == ["job-a"]
+    assert daemon.store.get("job-a").status == "removed"
+    assert daemon.store.get("job-b").status == "running"
+
+
 def test_session_delete_marks_cleanup_failed_when_session_root_removal_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
