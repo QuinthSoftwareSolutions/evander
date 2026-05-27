@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 from .models import WorkerJobRecord
 
 SQLITE_BUSY_TIMEOUT_MS = 30_000
+_SQLITE_WAL_ENABLE_TIMEOUT_SECONDS = 5.0
 _SQLITE_WORKER_JOB_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
 _TERMINAL_STATUSES = {"removed", "stopped", "failed", "exited", "cleanup_failed"}
 
@@ -38,7 +40,9 @@ def _read_legacy_worker_jobs_json(path: Path) -> dict[str, WorkerJobRecord]:
 class WorkerJobStore:
     def __init__(self, path: Path) -> None:
         self._lock = RLock()
-        self._legacy_json_path = path if path.suffix.lower() not in _SQLITE_WORKER_JOB_SUFFIXES else None
+        self._legacy_json_path = (
+            path if path.suffix.lower() not in _SQLITE_WORKER_JOB_SUFFIXES else None
+        )
         self.path = _worker_jobs_db_path(path)
         self.ensure_schema()
         self._import_legacy_json_if_empty()
@@ -48,11 +52,25 @@ class WorkerJobStore:
         connection = sqlite3.connect(self.path, timeout=30.0)
         connection.row_factory = sqlite3.Row
         connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
-        connection.execute("PRAGMA journal_mode=WAL")
+        self._enable_wal(connection)
         return connection
 
     @staticmethod
-    def _record_row(record: WorkerJobRecord) -> tuple[str, str, str, str, str, str | None, str | None, str]:
+    def _enable_wal(connection: sqlite3.Connection) -> None:
+        deadline = time.monotonic() + _SQLITE_WAL_ENABLE_TIMEOUT_SECONDS
+        while True:
+            try:
+                connection.execute("PRAGMA journal_mode=WAL")
+                return
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).casefold() or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
+
+    @staticmethod
+    def _record_row(
+        record: WorkerJobRecord,
+    ) -> tuple[str, str, str, str, str, str | None, str | None, str]:
         payload = record.model_dump(mode="json")
         return (
             record.job_id,

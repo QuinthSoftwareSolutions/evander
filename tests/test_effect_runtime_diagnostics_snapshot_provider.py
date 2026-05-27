@@ -12,6 +12,8 @@ from agent_sandbox.effects.providers.runtime_diagnostics_snapshot import (
     RuntimeDiagnosticsSnapshotEffectProvider,
 )
 from agent_sandbox.events.provider_models import RuntimeDiagnosticsSnapshotEffectDefinition
+from agent_sandbox.worker.models import WorkerJobRecord
+from agent_sandbox.worker.store import WorkerJobStore
 
 
 def _runtime_context(tmp_path: Path) -> EffectRuntimeContext:
@@ -51,6 +53,22 @@ def test_runtime_diagnostics_snapshot_reads_bounded_sources_and_redacts(
     (runtime_dir / "gate-orchestrator-executions.json").write_text(
         '{"status": "succeeded"}\n',
         encoding="utf-8",
+    )
+    WorkerJobStore(runtime_dir / "worker-jobs.json").put(
+        WorkerJobRecord(
+            job_id="job-failed",
+            session_id="session-1",
+            image="runner:latest",
+            command=["true"],
+            container_name="agent-worker-job-failed",
+            status="cleanup_failed",
+            agent_home_path="/worker/sessions/session-1/agent_home",
+            repo_root_path="/worker/sessions/session-1/agent_home/repos",
+            artifacts_path="/worker/sessions/session-1/artifacts",
+            logs_path="/worker/sessions/session-1/logs",
+            cleanup_status="cleanup_failed",
+            cleanup_error="token=worker-secret",
+        )
     )
 
     calls: list[list[str]] = []
@@ -109,12 +127,16 @@ def test_runtime_diagnostics_snapshot_reads_bounded_sources_and_redacts(
     assert "## Failed systemd units" in snapshot
     assert "### agent-sandbox-admin-web.service" in snapshot
     assert "## Runtime audit errors and denials" in snapshot
+    assert "## Recent worker job failures" in snapshot
+    assert "worker-jobs.db" in snapshot
+    assert "job_id=job-failed" in snapshot
     assert "visible" in snapshot
     assert "system-secret" not in snapshot
     assert "journal-secret" not in snapshot
     assert "journal-cookie" not in snapshot
     assert "audit-secret" not in snapshot
     assert "execution-secret" not in snapshot
+    assert "worker-secret" not in snapshot
     assert "Bearer <redacted>" in snapshot
     assert "<redacted>" in snapshot
     assert calls == [

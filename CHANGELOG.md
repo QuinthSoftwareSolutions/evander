@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-27 - Worker Job Store SQLite
+
+- Moved the worker daemon job store from `worker-jobs.json` full-store rewrites
+  to `worker-jobs.db` SQLite row updates while preserving `WorkerJobStore` as
+  the public entry point.
+- Added first-use import from legacy `worker-jobs.json` files when the SQLite
+  table is empty, leaving the JSON source untouched.
+- Updated worker session cleanup and diagnostics to use indexed SQLite job
+  reads instead of scanning or tailing the legacy JSON store.
+
 ## 2026-05-27 - Orchestration SQLite WAL Maintenance
 
 - Added configurable SQLite WAL checkpoint maintenance for the workflow
