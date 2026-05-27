@@ -224,9 +224,10 @@ def test_start_sends_worker_job_request_and_records_mapping(tmp_path: Path) -> N
     assert handle.execution_id == "exec-1"
     assert handle.image == "custom-runner:latest"
     assert handle.repo_source == "git@example.test/repo.git"
-    store = json.loads((tmp_path / "container-worker-executions.json").read_text(encoding="utf-8"))
-    assert store["exec-1"]["worker_job_id"] == "exec-1"
-    assert store["exec-1"]["session_id"] == "session-1"
+    stored = backend.repository.get("exec-1")
+    assert stored is not None
+    assert stored.worker_job_id == "exec-1"
+    assert stored.session_id == "session-1"
 
 
 def test_start_requires_first_class_command(tmp_path: Path) -> None:

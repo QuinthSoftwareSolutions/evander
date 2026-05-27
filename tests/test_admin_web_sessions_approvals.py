@@ -361,9 +361,7 @@ def test_admin_web_exposes_container_session_lifecycle_and_cleanup(
         def delete_session(self, session_id: str) -> dict[str, object]:
             attempted_at = now
             completed_at = now
-            for record in repository.read_all().values():
-                if record.session_id != session_id:
-                    continue
+            for record in repository.list_by_session(session_id):
                 record.last_status = "removed"
                 record.cleanup_status = "cleanup_succeeded"
                 record.cleanup_attempted_at = attempted_at
@@ -455,9 +453,7 @@ def test_admin_web_cleanup_container_session_surfaces_failure_without_deleting_c
         def delete_session(self, session_id: str) -> dict[str, object]:
             attempted_at = now
             completed_at = now
-            for record in repository.read_all().values():
-                if record.session_id != session_id:
-                    continue
+            for record in repository.list_by_session(session_id):
                 record.last_status = "cleanup_failed"
                 record.cleanup_status = "cleanup_failed"
                 record.cleanup_attempted_at = attempted_at
