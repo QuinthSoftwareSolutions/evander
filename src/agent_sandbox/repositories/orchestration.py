@@ -610,6 +610,36 @@ class SqliteExecutionRepository(Generic[TRecord]):
                     updated += 1
         return updated
 
+    def dismiss_failed_records_for_node(
+        self,
+        node_id: str,
+        *,
+        dismissed_at: datetime,
+        dismiss_reason: str,
+    ) -> int:
+        normalized_node_id = str(node_id or "").strip()
+        if not normalized_node_id:
+            return 0
+        updated = 0
+        with self._lock, connect_orchestration_db(self.path) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT payload_json
+                FROM {self.table_name}
+                WHERE {self.node_id_field} = ?
+                  AND status = 'failed'
+                  AND dismissed_at IS NULL
+                """,
+                (normalized_node_id,),
+            ).fetchall()
+            for row in rows:
+                record = self._record_from_row(row)
+                setattr(record, "dismissed_at", dismissed_at)
+                setattr(record, "dismiss_reason", dismiss_reason)
+                self._upsert_record(connection, record)
+                updated += 1
+        return updated
+
     def update_all(self, updater: Callable[[dict[str, TRecord]], R]) -> R:
         with self._lock:
             records = self.read_all()

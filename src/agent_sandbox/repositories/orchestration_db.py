@@ -116,6 +116,8 @@ def ensure_orchestration_schema(path: Path | str) -> None:
                 ON effect_executions(status, effect_type, finished_at, execution_id);
             CREATE INDEX IF NOT EXISTS idx_effect_executions_effect
                 ON effect_executions(effect_id, effect_type, finished_at, execution_id);
+            CREATE INDEX IF NOT EXISTS idx_effect_executions_node_failed_dismissed
+                ON effect_executions(effect_id, status, dismissed_at, execution_id);
             CREATE INDEX IF NOT EXISTS idx_effect_executions_trace
                 ON effect_executions(trace_id, finished_at, execution_id);
             CREATE INDEX IF NOT EXISTS idx_effect_executions_started
@@ -148,6 +150,8 @@ def ensure_orchestration_schema(path: Path | str) -> None:
                 ON gate_executions(status, gate_type, finished_at, execution_id);
             CREATE INDEX IF NOT EXISTS idx_gate_executions_gate
                 ON gate_executions(gate_id, gate_type, finished_at, execution_id);
+            CREATE INDEX IF NOT EXISTS idx_gate_executions_node_failed_dismissed
+                ON gate_executions(gate_id, status, dismissed_at, execution_id);
             CREATE INDEX IF NOT EXISTS idx_gate_executions_trace
                 ON gate_executions(trace_id, finished_at, execution_id);
             CREATE INDEX IF NOT EXISTS idx_gate_executions_started

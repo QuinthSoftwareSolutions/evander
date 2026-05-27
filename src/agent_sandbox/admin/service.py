@@ -13804,6 +13804,18 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 updated += 1
             return updated
 
+        def _dismiss_store(store: Any, *, node_id_field: str) -> int:
+            dismiss_failed_records_for_node = getattr(store, "dismiss_failed_records_for_node", None)
+            if callable(dismiss_failed_records_for_node):
+                return dismiss_failed_records_for_node(
+                    normalized_node_id,
+                    dismissed_at=dismissed_at,
+                    dismiss_reason=dismiss_reason,
+                )
+            return store.update_all(
+                lambda records: _dismiss_failed_records(records, node_id_field=node_id_field)
+            )
+
         if self._workflow_uses_sqlite_store(stores):
             _, effect_store, gate_store = self._workflow_sqlite_store_bundle(stores)
         else:
@@ -13815,12 +13827,8 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             effect_store = JsonExecutionStore(stores["effect_execution_store_path"])
             gate_store = JsonGateExecutionStore(stores["gate_execution_store_path"])
 
-        effect_records_updated = effect_store.update_all(
-            lambda records: _dismiss_failed_records(records, node_id_field="effect_id")
-        )
-        gate_records_updated = gate_store.update_all(
-            lambda records: _dismiss_failed_records(records, node_id_field="gate_id")
-        )
+        effect_records_updated = _dismiss_store(effect_store, node_id_field="effect_id")
+        gate_records_updated = _dismiss_store(gate_store, node_id_field="gate_id")
 
         if effect_records_updated or gate_records_updated:
             self._workflow_event_journal().append(
