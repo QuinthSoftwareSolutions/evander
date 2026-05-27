@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import uuid
 from collections.abc import Sequence
@@ -688,7 +689,7 @@ class WorkerDaemon:
                 TelemetryStatus.PERMISSION_DENIED,
                 "permission denied",
             )
-        except (OSError, ValueError):
+        except (sqlite3.Error, OSError, ValueError):
             return self._job_telemetry_failure(
                 TelemetryStatus.UNSUPPORTED,
                 "job store is unavailable",

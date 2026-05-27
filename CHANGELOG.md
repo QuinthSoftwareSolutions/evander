@@ -25,6 +25,7 @@ material. Newer entries are added incrementally as changes land.
   table is empty, leaving the JSON source untouched.
 - Updated worker session cleanup and diagnostics to use indexed SQLite job
   reads instead of scanning or tailing the legacy JSON store.
+- Made worker telemetry degrade gracefully when SQLite job-store reads fail.
 
 ## 2026-05-27 - Wake Store SQLite Migration
 

@@ -245,6 +245,30 @@ def test_worker_daemon_read_telemetry_reports_cleanup_failures_as_available(
     assert telemetry.jobs.error_count == 1
 
 
+def test_worker_daemon_read_telemetry_degrades_when_sqlite_job_store_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=FakeContainerRuntime(),
+        token="test-token",
+    )
+
+    class LockedJobStore:
+        def list_all_ordered(self) -> list[WorkerJobRecord]:
+            raise sqlite3.OperationalError("database is locked")
+
+    daemon.store = LockedJobStore()  # type: ignore[assignment]
+
+    telemetry = daemon.read_telemetry()
+
+    assert telemetry.jobs.status is TelemetryStatus.UNSUPPORTED
+    assert telemetry.jobs.health is HealthState.UNKNOWN
+    assert telemetry.jobs.error_count == 1
+    assert telemetry.jobs.errors[0].message == "job store is unavailable"
+
+
 def test_worker_job_request_rejects_egress_policy_fields() -> None:
     with pytest.raises(ValidationError, match="egress_policy_enabled"):
         WorkerJobRequest.model_validate(
