@@ -3075,9 +3075,12 @@ def test_get_admin_agent_log_page_container_session_pages_across_runs(
     assert "execution=exec-new" in latest_page["text"]
     assert "new line 2" in latest_page["text"]
     assert "exec-old" not in latest_page["text"]
+    assert "session transcript" not in latest_page["text"]
+    assert "augmented" not in latest_page["text"]
     assert latest_page["has_more_before"] is True
     assert latest_page["total_lines"] is None
-    assert fake_backend.calls == [("exec-new", 0, "augmented")]
+    assert latest_page["view"] == "executions"
+    assert fake_backend.calls == [("exec-new", 0, "raw")]
 
     older_page = service.get_admin_agent_log_page(
         "session-1",
@@ -3089,11 +3092,289 @@ def test_get_admin_agent_log_page_container_session_pages_across_runs(
     assert "execution=exec-old" in older_page["text"]
     assert "old line 2" in older_page["text"]
     assert "exec-new" not in older_page["text"]
+    assert "session transcript" not in older_page["text"]
+    assert "augmented" not in older_page["text"]
     assert older_page["has_more_before"] is False
-    assert fake_backend.calls[-2:] == [
-        ("exec-new", 0, "augmented"),
+    assert older_page["view"] == "executions"
+    assert fake_backend.calls == [
+        ("exec-new", 0, "raw"),
+        ("exec-new", 0, "raw"),
         ("exec-old", 0, "raw"),
     ]
+
+
+def test_get_admin_agent_log_snapshot_and_page_container_session_use_raw_only(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-raw-default",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-raw-default",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-raw-default",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-raw-default",
+            session_id="session-raw-default",
+            worker_job_id="job-raw-default",
+            worker_url="http://worker.test",
+            target_name="target-raw-default",
+            last_status="running",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.calls.append((target, lines, mode))
+            if mode == "raw":
+                return "raw transcript for exec-raw-default\n"
+            if mode == "session":
+                return "session transcript for exec-raw-default\n"
+            if mode == "augmented":
+                return "augmented transcript for exec-raw-default\n"
+            raise AssertionError(f"unexpected mode: {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    snapshot_text = service.get_admin_agent_log_snapshot(
+        "session-raw-default",
+        backend="container_worker_vm",
+    )
+    page = service.get_admin_agent_log_page(
+        "session-raw-default",
+        backend="container_worker_vm",
+        limit=20,
+    )
+
+    assert "raw transcript for exec-raw-default" in snapshot_text
+    assert "session transcript for exec-raw-default" not in snapshot_text
+    assert "augmented transcript for exec-raw-default" not in snapshot_text
+    assert "log=raw" in snapshot_text
+    assert "raw transcript for exec-raw-default" in page["text"]
+    assert "session transcript for exec-raw-default" not in page["text"]
+    assert "augmented transcript for exec-raw-default" not in page["text"]
+    assert page["view"] == "executions"
+    assert all(mode == "raw" for _, _, mode in fake_backend.calls)
+
+
+def test_get_admin_agent_log_page_container_session_threads_group_by_thread_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-threads",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-threads",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-threads",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-a2",
+            session_id="session-threads",
+            worker_job_id="job-a2",
+            worker_url="http://worker.test",
+            target_name="target-threads",
+            started_at=datetime(2026, 5, 18, 8, 30, tzinfo=UTC),
+            last_status="running",
+            directory_path="root",
+        )
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-b1",
+            session_id="session-threads",
+            worker_job_id="job-b1",
+            worker_url="http://worker.test",
+            target_name="target-threads",
+            started_at=datetime(2026, 5, 18, 7, 0, tzinfo=UTC),
+            last_status="running",
+            directory_path="root",
+        )
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-a1",
+            session_id="session-threads",
+            worker_job_id="job-a1",
+            worker_url="http://worker.test",
+            target_name="target-threads",
+            started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC),
+            last_status="running",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.calls.append((target, lines, mode))
+            if mode == "raw":
+                if target == "exec-b1":
+                    return "session id: thread-b\nraw log for b1\n"
+                if target == "exec-a1":
+                    return "session id: thread-a\nraw log for a1\n"
+                if target == "exec-a2":
+                    return "session id: thread-a\nraw log for a2\n"
+            if mode == "session":
+                if target == "exec-b1":
+                    return "thread-b transcript\n"
+                if target == "exec-a1":
+                    return "thread-a transcript\n"
+                raise AssertionError(f"unexpected session fetch for {target}")
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    page = service.get_admin_agent_log_page(
+        "session-threads",
+        backend="container_worker_vm",
+        view="threads",
+        limit=200,
+    )
+
+    assert page["view"] == "threads"
+    assert page["text"].count("thread=thread-b") == 1
+    assert page["text"].count("thread=thread-a") == 1
+    assert page["text"].index("thread=thread-b") < page["text"].index("thread=thread-a")
+    assert "first_execution=exec-b1" in page["text"]
+    assert "first_execution=exec-a1" in page["text"]
+    assert "executions=1" in page["text"]
+    assert "executions=2" in page["text"]
+    assert "thread-b transcript" in page["text"]
+    assert "thread-a transcript" in page["text"]
+    assert fake_backend.calls == [
+        ("exec-b1", 0, "raw"),
+        ("exec-a1", 0, "raw"),
+        ("exec-a2", 0, "raw"),
+        ("exec-b1", 200, "session"),
+        ("exec-a1", 200, "session"),
+    ]
+
+
+def test_get_admin_agent_log_page_container_session_threads_render_unthreaded_execution(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-unthreaded",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-unthreaded",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-unthreaded",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-alone",
+            session_id="session-unthreaded",
+            worker_job_id="job-alone",
+            worker_url="http://worker.test",
+            target_name="target-unthreaded",
+            started_at=datetime(2026, 5, 18, 9, 0, tzinfo=UTC),
+            last_status="running",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.calls.append((target, lines, mode))
+            if mode == "raw" and target == "exec-alone":
+                return "raw log without thread id\n"
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    page = service.get_admin_agent_log_page(
+        "session-unthreaded",
+        backend="container_worker_vm",
+        view="threads",
+        limit=200,
+    )
+
+    assert page["view"] == "threads"
+    assert "thread=unthreaded" in page["text"]
+    assert "first_execution=exec-alone" in page["text"]
+    assert "executions=1" in page["text"]
+    assert "raw log without thread id" in page["text"]
+    assert fake_backend.calls == [("exec-alone", 0, "raw")]
 
 
 def test_list_sessions_filters_active_and_expired(tmp_path: Path) -> None:

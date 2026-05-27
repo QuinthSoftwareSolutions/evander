@@ -261,6 +261,9 @@ _WORKER_GLOBAL_CONFIG_MODELS: dict[str, type[BaseModel]] = {
 }
 _ADMIN_CONFIG_MUTATION_THREAD_LOCK = threading.RLock()
 _WORKFLOW_GENERATION_COOLDOWN_SECONDS = 10.0
+_CONTAINER_SESSION_ID_LOG_PATTERN = re.compile(
+    r"^session id:\s*(?P<thread_id>\S+)\s*$", re.IGNORECASE | re.MULTILINE
+)
 ISSUE_STATES: tuple[str, ...] = (
     "New",
     "Approved",
@@ -7962,6 +7965,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             return "threads"
         raise ValueError(f"Unknown agent log view: {selected_view}")
 
+    @staticmethod
+    def _container_log_thread_id(text: str) -> str | None:
+        match = _CONTAINER_SESSION_ID_LOG_PATTERN.search(text)
+        if match is None:
+            return None
+        thread_id = str(match.group("thread_id") or "").strip()
+        return thread_id or None
+
     @classmethod
     def _normalize_agent_backend_filter(cls, backend: str | None) -> str:
         selected_backend = str(backend or "all").strip()
@@ -9581,6 +9592,14 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 return worker_backend.get_log_snapshot(agent_id, lines=lines, mode="raw")
             if not execution_records:
                 return f"No container executions have run for session {session_id}.\n"
+            if self._normalize_agent_log_view(view) == "threads":
+                return self._join_container_log_chunks(
+                    self._container_thread_log_chunks(
+                        worker_backend,
+                        execution_records,
+                        lines=lines,
+                    )
+                )
             per_execution_lines = lines
             if lines > 0:
                 per_execution_lines = max(1, lines // max(1, len(execution_records)))
@@ -9640,6 +9659,111 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     @staticmethod
     def _join_container_log_chunks(chunks: list[str]) -> str:
         return "\n\n".join(chunk for chunk in chunks if chunk).rstrip() + "\n"
+
+    def _container_thread_log_chunks(
+        self,
+        worker_backend: Any,
+        execution_records: list[Any],
+        *,
+        lines: int,
+    ) -> list[str]:
+        sorted_records = sorted(execution_records, key=self._container_execution_sort_key)
+        grouped_records: dict[str, list[Any]] = {}
+        unthreaded_chunks: list[tuple[tuple[datetime, str], str]] = []
+        for execution in sorted_records:
+            try:
+                raw_text = worker_backend.get_log_snapshot(
+                    execution.execution_id,
+                    lines=0,
+                    mode="raw",
+                )
+            except Exception as exc:
+                raw_text = f"[log unavailable: {exc}]"
+            thread_id = self._container_log_thread_id(raw_text)
+            if thread_id is None:
+                header_parts = [
+                    "thread=unthreaded",
+                    f"first_execution={execution.execution_id}",
+                    "executions=1",
+                ]
+                if execution.started_at is not None:
+                    header_parts.append(f"started={execution.started_at.isoformat()}")
+                header = "=== " + " ".join(header_parts) + " ==="
+                body = raw_text.rstrip()
+                unthreaded_chunks.append(
+                    (
+                        self._container_execution_sort_key(execution),
+                        header if not body else header + "\n" + body,
+                    )
+                )
+                continue
+            grouped_records.setdefault(thread_id, []).append(execution)
+
+        threaded_chunks: list[tuple[tuple[datetime, str], str]] = []
+        for thread_id, records in grouped_records.items():
+            ordered_records = sorted(records, key=self._container_execution_sort_key)
+            first_execution = ordered_records[0]
+            header_parts = [
+                f"thread={thread_id}",
+                f"first_execution={first_execution.execution_id}",
+                f"executions={len(ordered_records)}",
+            ]
+            if first_execution.started_at is not None:
+                header_parts.append(f"started={first_execution.started_at.isoformat()}")
+            header = "=== " + " ".join(header_parts) + " ==="
+            try:
+                transcript = worker_backend.get_log_snapshot(
+                    first_execution.execution_id,
+                    lines=lines,
+                    mode="session",
+                ).rstrip()
+            except Exception as exc:
+                transcript = f"[log unavailable: {exc}]"
+            threaded_chunks.append(
+                (
+                    self._container_execution_sort_key(first_execution),
+                    header if not transcript else header + "\n" + transcript,
+                )
+            )
+
+        return [
+            chunk
+            for _, chunk in sorted(
+                [*threaded_chunks, *unthreaded_chunks],
+                key=lambda item: item[0],
+            )
+        ]
+
+    def _container_thread_log_page(
+        self,
+        *,
+        session_id: str,
+        execution_records: list[Any],
+        worker_backend: Any,
+        limit: int,
+        offset: int,
+        query: str | None,
+    ) -> dict[str, object]:
+        if not execution_records:
+            return _log_page_from_end(
+                f"No container executions have run for session {session_id}.\n",
+                limit=limit,
+                offset=offset,
+                query=query,
+            )
+        text = self._join_container_log_chunks(
+            self._container_thread_log_chunks(
+                worker_backend,
+                execution_records,
+                lines=limit,
+            )
+        )
+        return _log_page_from_end(
+            text,
+            limit=limit,
+            offset=offset,
+            query=query,
+        )
 
     def _container_execution_log_page(
         self,
@@ -9781,14 +9905,24 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             )
             target = agent_id
             if session is not None and record is None:
-                page = self._container_execution_log_page(
-                    session_id=session_id,
-                    execution_records=execution_records,
-                    worker_backend=worker_backend,
-                    limit=normalized_limit,
-                    offset=normalized_offset,
-                    query=normalized_query or None,
-                )
+                if normalized_view == "threads":
+                    page = self._container_thread_log_page(
+                        session_id=session_id,
+                        execution_records=execution_records,
+                        worker_backend=worker_backend,
+                        limit=normalized_limit,
+                        offset=normalized_offset,
+                        query=normalized_query or None,
+                    )
+                else:
+                    page = self._container_execution_log_page(
+                        session_id=session_id,
+                        execution_records=execution_records,
+                        worker_backend=worker_backend,
+                        limit=normalized_limit,
+                        offset=normalized_offset,
+                        query=normalized_query or None,
+                    )
                 page["view"] = normalized_view
                 return page
             page_reader = getattr(worker_backend, "get_log_page", None)

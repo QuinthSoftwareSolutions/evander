@@ -7876,11 +7876,21 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
             mode: str | None = None,
         ) -> str:
             self.logged.append((target, lines, mode))
-            if mode == "session":
-                return "session transcript\n" if target == "exec-1" else ""
-            if mode == "augmented":
-                return "repo line for exec-1\n" if target == "exec-1" else "line 2\n"
-            return "line 2\n"
+            if target == "exec-1":
+                if mode == "raw":
+                    return "session id: thread-a\nrepo raw line for exec-1\n"
+                if mode == "session":
+                    return "session transcript for exec-1\n"
+                if mode == "augmented":
+                    return "augmented transcript for exec-1\n"
+            if target == "exec-2":
+                if mode == "raw":
+                    return "session id: thread-b\nother raw line for exec-2\n"
+                if mode == "session":
+                    return "session transcript for exec-2\n"
+                if mode == "augmented":
+                    return "augmented transcript for exec-2\n"
+            raise AssertionError(f"unexpected log request: {target} {mode}")
 
         def get_log_page(
             self,
@@ -7939,9 +7949,11 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
 
     client = TestClient(create_app(service))
 
-    log_response = client.get("/api/admin/agents/session-1/log?backend=container_worker_vm&lines=4")
+    log_response = client.get(
+        "/api/admin/agents/session-1/log?backend=container_worker_vm&view=executions&lines=4"
+    )
     paged_response = client.get(
-        "/api/admin/agents/session-1/log?backend=container_worker_vm&limit=3&offset=0&query=repo"
+        "/api/admin/agents/session-1/log?backend=container_worker_vm&view=executions&limit=3&offset=0&query=repo"
     )
     stop_response = client.post(
         "/api/admin/agents/session-1/actions/stop?backend=container_worker_vm", json={}
@@ -7951,13 +7963,17 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     )
 
     assert log_response.status_code == 200
-    assert "session=session-1 log=codex_transcript" in log_response.json()["text"]
-    assert "session transcript" in log_response.json()["text"]
+    assert log_response.json()["view"] == "executions"
     assert "execution=exec-2" in log_response.json()["text"]
     assert "execution=exec-1" in log_response.json()["text"]
     assert "log=raw" in log_response.json()["text"]
+    assert "repo raw line for exec-1" in log_response.json()["text"]
+    assert "other raw line for exec-2" in log_response.json()["text"]
+    assert "session transcript" not in log_response.json()["text"]
+    assert "augmented transcript" not in log_response.json()["text"]
     assert paged_response.status_code == 200
-    assert paged_response.json()["text"] == "repo line for exec-1\n"
+    assert paged_response.json()["view"] == "executions"
+    assert paged_response.json()["text"] == "repo raw line for exec-1\n"
     assert paged_response.json()["has_more_before"] is False
     assert paged_response.json()["total_lines"] == 1
     assert stop_response.status_code == 200
@@ -7965,16 +7981,134 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     assert destroy_response.status_code == 200
     assert destroy_response.json()["status"] == "destroyed"
     assert fake_backend.inspected == []
-    assert fake_backend.logged == [
-        ("exec-1", 4, "session"),
-        ("exec-2", 2, "raw"),
-        ("exec-1", 2, "raw"),
-        ("exec-2", 0, "raw"),
-        ("exec-1", 0, "augmented"),
-    ]
+    assert sorted(fake_backend.logged) == sorted(
+        [
+            ("exec-1", 2, "raw"),
+            ("exec-2", 2, "raw"),
+            ("exec-1", 0, "raw"),
+            ("exec-2", 0, "raw"),
+        ]
+    )
     assert fake_backend.paged == []
     assert fake_backend.stopped == ["exec-1"]
     assert fake_backend.destroyed == ["exec-1"]
+
+
+def test_admin_web_container_agent_log_threads_view_groups_threads(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-threads",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-threads",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-threads",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-a2",
+            session_id="session-threads",
+            worker_job_id="job-a2",
+            worker_url="http://worker.test",
+            target_name="target-threads",
+            started_at=datetime(2026, 5, 18, 8, 30, tzinfo=timezone.utc),
+            last_status="running",
+            directory_path="root",
+        )
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-b1",
+            session_id="session-threads",
+            worker_job_id="job-b1",
+            worker_url="http://worker.test",
+            target_name="target-threads",
+            started_at=datetime(2026, 5, 18, 7, 0, tzinfo=timezone.utc),
+            last_status="running",
+            directory_path="root",
+        )
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-a1",
+            session_id="session-threads",
+            worker_job_id="job-a1",
+            worker_url="http://worker.test",
+            target_name="target-threads",
+            started_at=datetime(2026, 5, 18, 8, 0, tzinfo=timezone.utc),
+            last_status="running",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.logged: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.logged.append((target, lines, mode))
+            if mode == "raw":
+                if target == "exec-b1":
+                    return "session id: thread-b\nraw log for b1\n"
+                if target == "exec-a1":
+                    return "session id: thread-a\nraw log for a1\n"
+                if target == "exec-a2":
+                    return "session id: thread-a\nraw log for a2\n"
+            if mode == "session":
+                if target == "exec-b1":
+                    return "thread-b transcript\n"
+                if target == "exec-a1":
+                    return "thread-a transcript\n"
+                raise AssertionError(f"unexpected session fetch for {target}")
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+    client = TestClient(create_app(service))
+
+    response = client.get(
+        "/api/admin/agents/session-threads/log?backend=container_worker_vm&view=threads"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["view"] == "threads"
+    assert response.json()["text"].index("thread=thread-b") < response.json()["text"].index(
+        "thread=thread-a"
+    )
+    assert "first_execution=exec-b1" in response.json()["text"]
+    assert "first_execution=exec-a1" in response.json()["text"]
+    assert "executions=2" in response.json()["text"]
+    assert "thread-b transcript" in response.json()["text"]
+    assert "thread-a transcript" in response.json()["text"]
+    assert fake_backend.logged == [
+        ("exec-b1", 0, "raw"),
+        ("exec-a1", 0, "raw"),
+        ("exec-a2", 0, "raw"),
+        ("exec-b1", 200, "session"),
+        ("exec-a1", 200, "session"),
+    ]
 
 
 def test_admin_web_agents_create_vm_uses_agent_crud_payload(tmp_path: Path, monkeypatch) -> None:
