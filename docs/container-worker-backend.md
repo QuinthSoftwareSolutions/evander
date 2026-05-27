@@ -427,7 +427,15 @@ metadata-protection boundary.
 
 ## Job Store
 
-The runtime store is `<runtime-dir>/worker-jobs.json`. It records job id, session id, image, command, container name/id, status, timestamps, persistent paths, and sanitized metadata.
+The active runtime store is `<runtime-dir>/worker-jobs.db`. Worker daemon code still constructs
+`WorkerJobStore(runtime_dir / "worker-jobs.json")` for compatibility; the store resolves that
+legacy JSON path to the sibling SQLite database and imports an existing JSON file only when the
+SQLite table is empty. The legacy JSON file is left untouched after import and remains only a
+migration input or troubleshooting artifact.
+
+The SQLite `worker_jobs` table records query columns for job id, session id, container name,
+status, cleanup status, timestamps, and a full JSON payload for `WorkerJobRecord` round trips.
+Lifecycle updates write one SQLite row instead of rewriting the complete job history.
 
 The job store must not contain request headers, bearer tokens, host credentials, or full environment variables.
 
