@@ -170,9 +170,7 @@ class TeamsIngestWorker:
             poll_interval_seconds=self.worker_config.poll_interval_seconds,
             jitter_seconds=self.worker_config.jitter_seconds,
         )
-        trigger_wake_notified = self._notify_trigger_orchestrator_if_needed(
-            new_messages_discovered
-        )
+        trigger_wake_notified = self._notify_trigger_orchestrator_if_needed(new_messages_discovered)
         return TeamsIngestCycleResult(
             directories_polled=len(directories),
             channel_targets_polled=channel_targets_polled,
@@ -701,6 +699,8 @@ def _build_trigger_wake_notifier(
         ).lock_path
     if lock_path is None:
         lock_path = config.runtime_dir / "trigger-orchestrator.lock"
+    if not lock_path.is_absolute():
+        lock_path = project_dir / lock_path
     notifier = HostWakeNotifier(wake_socket_path_for_lock(lock_path))
     return notifier.notify
 

@@ -10,6 +10,9 @@ material. Newer entries are added incrementally as changes land.
 - Woke the trigger orchestrator immediately after Teams ingest stores new inbox
   messages, reducing healthy-path `trigger:teams:new-message` latency without
   increasing Teams Graph polling.
+- Resolved relative trigger lock paths against the project root before deriving
+  the Teams ingest wake socket, so `scripts/run_teams_ingest.sh` works from any
+  caller directory.
 - Kept missing trigger wake sockets non-fatal so the existing trigger polling
   interval remains the fallback path.
 

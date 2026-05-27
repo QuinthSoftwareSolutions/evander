@@ -275,6 +275,74 @@ def test_teams_ingest_worker_notifies_configured_trigger_wake_socket(
     assert result.trigger_wake_notified is True
 
 
+def test_teams_ingest_worker_resolves_relative_trigger_wake_socket_from_project_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_dir = tmp_path / "project"
+    relative_trigger_lock_path = Path("runtime") / "custom-trigger.lock"
+    write_trigger_config(
+        project_dir,
+        [],
+        extra={"lock_path": str(relative_trigger_lock_path)},
+    )
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    monkeypatch.chdir(outside_dir)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/teams/team-a/channels/channel-1/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-1",
+                            "createdDateTime": "2026-03-30T11:00:00Z",
+                            "body": {"content": "hello", "contentType": "text"},
+                            "from": {"user": {"id": "user-1", "displayName": "Ada"}},
+                        }
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(project_dir / "runtime"),
+            "teams_backend": "graph_api",
+        }
+    )
+    worker = build_teams_ingest_worker(config, project_dir=project_dir)
+    ensure_directory(worker, "root/team-a")
+    worker.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    sleeper = HostWakeSleeper(wake_socket_path_for_lock(project_dir / relative_trigger_lock_path))
+    sleeper.start()
+    try:
+        result = worker.run_once()
+    finally:
+        sleeper.close()
+
+    assert [request.url.path for request in requests] == [
+        "/v1.0/teams/team-a/channels/channel-1/messages"
+    ]
+    assert result.new_messages_discovered == 1
+    assert result.trigger_wake_notified is True
+
+
 def test_teams_ingest_worker_polls_chat_targets_from_chat_allowlist(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
