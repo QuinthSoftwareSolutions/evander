@@ -286,11 +286,11 @@ def test_stop_destroy_and_logs_call_expected_endpoints(tmp_path: Path) -> None:
     assert client.stopped == ["exec-1"]
     assert client.logged == [("exec-1", None), ("exec-1", "raw")]
     assert client.deleted == ["exec-1"]
-    store = json.loads((tmp_path / "container-worker-executions.json").read_text(encoding="utf-8"))
+    store = backend.repository.read_all()
     assert set(store) == {"exec-1"}
-    assert store["exec-1"]["last_status"] == "removed"
-    assert store["exec-1"]["cleanup_status"] == "cleanup_succeeded"
-    assert store["exec-1"]["cleanup_error"] is None
+    assert store["exec-1"].last_status == "removed"
+    assert store["exec-1"].cleanup_status == "cleanup_succeeded"
+    assert store["exec-1"].cleanup_error is None
 
 
 def test_destroy_records_cleanup_failed_tombstone_when_delete_fails(
@@ -317,11 +317,11 @@ def test_destroy_records_cleanup_failed_tombstone_when_delete_fails(
     with pytest.raises(ContainerWorkerClientError):
         backend.destroy("exec-1")
 
-    store = json.loads((tmp_path / "container-worker-executions.json").read_text(encoding="utf-8"))
-    assert store["exec-1"]["last_status"] == "cleanup_failed"
-    assert store["exec-1"]["cleanup_status"] == "cleanup_failed"
-    assert "boom" in store["exec-1"]["cleanup_error"]
-    assert store["exec-1"]["finished_at"] is not None
+    store = backend.repository.read_all()
+    assert store["exec-1"].last_status == "cleanup_failed"
+    assert store["exec-1"].cleanup_status == "cleanup_failed"
+    assert "boom" in store["exec-1"].cleanup_error
+    assert store["exec-1"].finished_at is not None
 
 
 def test_session_preparation_clone_and_write_delegate_to_worker_client(tmp_path: Path) -> None:
@@ -364,10 +364,10 @@ def test_delete_session_delegates_to_worker_client(tmp_path: Path) -> None:
 
     assert result == {"deleted": True, "session_id": "session-1"}
     assert client.deleted_sessions == ["session-1"]
-    store = json.loads((tmp_path / "container-worker-executions.json").read_text(encoding="utf-8"))
-    assert store["exec-1"]["last_status"] == "removed"
-    assert store["exec-1"]["cleanup_status"] == "cleanup_succeeded"
-    assert store["exec-1"]["cleanup_error"] is None
+    store = backend.repository.read_all()
+    assert store["exec-1"].last_status == "removed"
+    assert store["exec-1"].cleanup_status == "cleanup_succeeded"
+    assert store["exec-1"].cleanup_error is None
 
 
 def test_mssql_provisioning_uses_configured_advertised_endpoint(tmp_path: Path) -> None:
@@ -437,7 +437,9 @@ def test_secret_metadata_is_redacted_before_request_and_store(tmp_path: Path) ->
     )
 
     request_payload = client.created[0].model_dump(mode="json")
-    store_text = (tmp_path / "container-worker-executions.json").read_text(encoding="utf-8")
+    store_record = backend.repository.get("exec-1")
+    assert store_record is not None
+    store_text = json.dumps(store_record.model_dump(mode="json"))
     assert "should-not-leak" not in json.dumps(request_payload)
     assert "hidden" not in json.dumps(request_payload)
     assert "should-not-leak" not in store_text
