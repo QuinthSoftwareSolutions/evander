@@ -199,8 +199,8 @@ class DiscordIngestWorker:
                     channel_id=channel_id, payload=payload, created_at=created_at
                 )
             )
-        for envelope in discovered:
-            self.runtime.discord_inbox_service.store.add_message_if_new(envelope)
+        if discovered:
+            self.runtime.discord_inbox_service.store.add_messages_if_new(discovered)
         if discovered:
             latest_created_at = discovered[-1].created_at.isoformat().replace("+00:00", "Z")
             self.runtime.discord_inbox_service.store.set_cursor(channel_id, latest_created_at)

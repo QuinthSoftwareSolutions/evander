@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import Any, Sequence
 
 from agent_sandbox.models import DiscordMessageEnvelope
 
@@ -80,10 +80,14 @@ class DiscordInboxStore:
                 )
             self._compact_messages(connection)
 
-    def add_message_if_new(self, envelope: DiscordMessageEnvelope) -> bool:
-        validated = DiscordMessageEnvelope.model_validate(envelope)
+    def add_messages_if_new(self, envelopes: Sequence[DiscordMessageEnvelope]) -> int:
+        validated = [DiscordMessageEnvelope.model_validate(envelope) for envelope in envelopes]
+        if not validated:
+            return 0
+
         with self._lock, self._connect() as connection:
-            cursor = connection.execute(
+            before_changes = connection.total_changes
+            connection.executemany(
                 """
                 INSERT OR IGNORE INTO discord_inbox_messages(
                     message_id,
@@ -96,12 +100,15 @@ class DiscordInboxStore:
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                self._message_row(validated),
+                (self._message_row(message) for message in validated),
             )
-            if cursor.rowcount == 0:
-                return False
-            self._compact_messages(connection)
-            return True
+            inserted_count = connection.total_changes - before_changes
+            if inserted_count > 0:
+                self._compact_messages(connection)
+            return inserted_count
+
+    def add_message_if_new(self, envelope: DiscordMessageEnvelope) -> bool:
+        return self.add_messages_if_new([envelope]) > 0
 
     def get_session_cursor(self, session_id: str, channel_id: str) -> str | None:
         with self._lock, self._connect() as connection:

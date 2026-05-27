@@ -113,6 +113,19 @@ def test_discord_inbox_store_dedupes_messages(tmp_path: Path) -> None:
     assert store.path.exists()
 
 
+def test_discord_inbox_store_batches_multiple_messages(tmp_path: Path) -> None:
+    store = DiscordInboxStore(tmp_path / "runtime" / "discord-inbox-store.json")
+    first = _message("msg-1", created_at=datetime(2026, 3, 21, 0, 0, 1, tzinfo=timezone.utc))
+    second = _message("msg-2", created_at=datetime(2026, 3, 21, 0, 0, 2, tzinfo=timezone.utc))
+
+    assert store.add_messages_if_new([first, second]) == 2
+    assert store.add_messages_if_new([first, second]) == 0
+    assert [message.message_id for message in store.list_all_messages(channel_ids=["chan-1"]).messages] == [
+        "msg-1",
+        "msg-2",
+    ]
+
+
 def test_discord_inbox_store_persists_and_resumes_channel_cursors(tmp_path: Path) -> None:
     path = tmp_path / "runtime" / "discord-inbox-store.json"
     store = DiscordInboxStore(path)
@@ -327,7 +340,8 @@ def test_discord_inbox_store_imports_legacy_json_when_sqlite_store_is_empty(
                     "msg-1": _message(
                         "msg-1",
                         created_at=created_at,
-                    ).model_dump(mode="json")
+                    ).model_dump(mode="json"),
+                    "msg-bad": {"message_id": "msg-bad"},
                 },
                 "session_reads": {
                     "session-1": {
