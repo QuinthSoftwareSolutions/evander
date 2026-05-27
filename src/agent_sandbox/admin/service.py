@@ -9641,7 +9641,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def _join_container_log_chunks(chunks: list[str]) -> str:
         return "\n\n".join(chunk for chunk in chunks if chunk).rstrip() + "\n"
 
-    def _container_session_log_page(
+    def _container_execution_log_page(
         self,
         *,
         session_id: str,
@@ -9781,7 +9781,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             )
             target = agent_id
             if session is not None and record is None:
-                page = self._container_session_log_page(
+                page = self._container_execution_log_page(
                     session_id=session_id,
                     execution_records=execution_records,
                     worker_backend=worker_backend,
