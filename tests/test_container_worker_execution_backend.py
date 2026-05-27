@@ -9,7 +9,10 @@ from agent_sandbox.config import GatewayConfig
 from agent_sandbox.execution import ExecutionSpec, ExecutionStatusKind
 from agent_sandbox.execution.container_worker_backend import ContainerWorkerVmExecutionBackend
 from agent_sandbox.execution.container_worker_client import ContainerWorkerClientError
-from agent_sandbox.execution.container_worker_repository import ContainerWorkerExecutionRepository
+from agent_sandbox.execution.container_worker_repository import (
+    ContainerWorkerExecutionRecord,
+    ContainerWorkerExecutionRepository,
+)
 from agent_sandbox.worker.models import (
     WorkerFileWriteRecord,
     WorkerFileWriteRequest,
@@ -369,6 +372,61 @@ def test_delete_session_delegates_to_worker_client(tmp_path: Path) -> None:
     assert store["exec-1"].last_status == "removed"
     assert store["exec-1"].cleanup_status == "cleanup_succeeded"
     assert store["exec-1"].cleanup_error is None
+
+
+def test_delete_session_uses_targeted_repository_lookup(tmp_path: Path) -> None:
+    client = FakeContainerWorkerClient()
+    record = ContainerWorkerExecutionRepository(
+        tmp_path / "container-worker-executions.json"
+    )
+    record.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-1",
+            session_id="session-1",
+            worker_job_id="worker-1",
+            worker_url="http://worker.test",
+            target_name="target-1",
+            last_status="running",
+        )
+    )
+
+    class TargetedRepository:
+        def __init__(self, source: ContainerWorkerExecutionRepository) -> None:
+            self.source = source
+            self.listed_sessions: list[str] = []
+            self.updated: list[ContainerWorkerExecutionRecord] = []
+
+        def list_by_session(self, session_id: str) -> list[ContainerWorkerExecutionRecord]:
+            self.listed_sessions.append(session_id)
+            return self.source.list_by_session(session_id)
+
+        def put(self, value: ContainerWorkerExecutionRecord) -> None:
+            self.updated.append(value)
+            self.source.put(value)
+
+        def read_all(self) -> dict[str, ContainerWorkerExecutionRecord]:
+            raise AssertionError("delete_session should not scan all execution mappings")
+
+    targeted_repository = TargetedRepository(record)
+    backend = ContainerWorkerVmExecutionBackend(
+        config=GatewayConfig(
+            runtime_dir=tmp_path,
+            execution_backend="container_worker_vm",
+            container_worker_base_url="http://worker.test",
+        ),
+        client=client,
+        repository=targeted_repository,  # type: ignore[arg-type]
+    )
+
+    result = backend.delete_session("session-1")
+
+    assert result == {"deleted": True, "session_id": "session-1"}
+    assert targeted_repository.listed_sessions == ["session-1"]
+    assert [updated.execution_id for updated in targeted_repository.updated] == ["exec-1"]
+    stored = record.get("exec-1")
+    assert stored is not None
+    assert stored.last_status == "removed"
+    assert stored.cleanup_status == "cleanup_succeeded"
 
 
 def test_mssql_provisioning_uses_configured_advertised_endpoint(tmp_path: Path) -> None:

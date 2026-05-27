@@ -79,7 +79,13 @@ This does not replace `vm_provider`; provider-specific lifecycle details still l
 
 For `container_worker_vm`, execution-defining inputs are first-class `ExecutionSpec` fields: `command`, `image`, `repo_source`, `clone_branch`, `resource_limits`, `persistence_mode`, and `workspace_mode`. `metadata` is reserved for sanitized caller context and is not used to smuggle the container command or clone settings.
 
-The execution CLI never mutates the configured backend. `start-container-job` and `smoke-container-worker` explicitly construct the container backend from the loaded config. `status`, `logs`, `stop`, and `destroy` auto-use the container backend only when the target resolves in `container-worker-executions.json`, or when the operator passes `--backend container_worker_vm`.
+The execution CLI never mutates the configured backend. `start-container-job` and
+`smoke-container-worker` explicitly construct the container backend from the loaded config.
+`status`, `logs`, `stop`, and `destroy` auto-use the container backend only when the target
+resolves in the container worker execution mapping store, or when the operator passes
+`--backend container_worker_vm`. The mapping store is backed by
+`runtime/container-worker-executions.db`; `runtime/container-worker-executions.json` is still
+accepted as the configured path and as one-time legacy import input.
 
 Portable workflow nodes use `effect:agent:*` for session setup. On `libvirt_vm` they delegate to
 the existing VM services. On `container_worker_vm`, `effect:agent:create` prepares a durable
@@ -94,7 +100,7 @@ manifest and container execution mappings as cleanup tombstones. Admin Web > Ses
 the resulting container lifecycle state as `stopped`, `failed`, `abandoned`, `cleanup_failed`, or
 `cleaned_up`, along with the last worker observation/completion signal and any cleanup error. A
 cleanup failure must remain visible so operators can retry manual cleanup without losing the
-session/run context in `runtime/sessions.json` or `runtime/container-worker-executions.json`.
+session/run context in `runtime/sessions.json` or `runtime/container-worker-executions.db`.
 
 
 Chat Assistant session resolution is backend-aware and durable. Admin Web prewarms
