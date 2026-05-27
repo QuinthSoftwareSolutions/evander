@@ -9751,18 +9751,22 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 offset=offset,
                 query=query,
             )
+        normalized_query = str(query or "").strip()
+        transcript_lines = 0
+        if not normalized_query:
+            transcript_lines = max(1, int(limit)) + max(0, int(offset)) + 1
         text = self._join_container_log_chunks(
             self._container_thread_log_chunks(
                 worker_backend,
                 execution_records,
-                lines=limit,
+                lines=transcript_lines,
             )
         )
         return _log_page_from_end(
             text,
             limit=limit,
             offset=offset,
-            query=query,
+            query=normalized_query or None,
         )
 
     def _container_execution_log_page(

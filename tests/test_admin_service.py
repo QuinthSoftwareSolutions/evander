@@ -3299,8 +3299,170 @@ def test_get_admin_agent_log_page_container_session_threads_group_by_thread_id(
         ("exec-b1", 0, "raw"),
         ("exec-a1", 0, "raw"),
         ("exec-a2", 0, "raw"),
-        ("exec-b1", 200, "session"),
-        ("exec-a1", 200, "session"),
+        ("exec-b1", 201, "session"),
+        ("exec-a1", 201, "session"),
+    ]
+
+
+def test_get_admin_agent_log_page_container_session_threads_fetches_offset_window(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-thread-window",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-thread-window",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-thread-window",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-thread-window",
+            session_id="session-thread-window",
+            worker_job_id="job-thread-window",
+            worker_url="http://worker.test",
+            target_name="target-thread-window",
+            started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC),
+            last_status="running",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.calls.append((target, lines, mode))
+            if mode == "raw" and target == "exec-thread-window":
+                return "session id: thread-window\nraw log\n"
+            if mode == "session" and target == "exec-thread-window":
+                transcript_lines = [f"thread line {index}" for index in range(1, 11)]
+                selected_lines = transcript_lines if lines <= 0 else transcript_lines[-lines:]
+                return "\n".join(selected_lines) + "\n"
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    page = service.get_admin_agent_log_page(
+        "session-thread-window",
+        backend="container_worker_vm",
+        view="threads",
+        limit=3,
+        offset=3,
+    )
+
+    assert page["view"] == "threads"
+    assert page["text"] == "thread line 5\nthread line 6\nthread line 7\n"
+    assert page["has_more_before"] is True
+    assert fake_backend.calls == [
+        ("exec-thread-window", 0, "raw"),
+        ("exec-thread-window", 7, "session"),
+    ]
+
+
+def test_get_admin_agent_log_page_container_session_threads_searches_full_transcript(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-thread-search",
+            vm_provider="container_worker_vm",
+            vm_provider_id="target-thread-search",
+            directory_path="root",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={
+                "execution_backend": "container_worker_vm",
+                "target_name": "target-thread-search",
+            },
+        )
+    )
+    repository = ContainerWorkerExecutionRepository(
+        service.config.runtime_dir / "container-worker-executions.json"
+    )
+    repository.put(
+        ContainerWorkerExecutionRecord(
+            execution_id="exec-thread-search",
+            session_id="session-thread-search",
+            worker_job_id="job-thread-search",
+            worker_url="http://worker.test",
+            target_name="target-thread-search",
+            started_at=datetime(2026, 5, 18, 8, 0, tzinfo=UTC),
+            last_status="running",
+            directory_path="root",
+        )
+    )
+
+    class FakeContainerBackend:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, str | None]] = []
+
+        def get_log_snapshot(
+            self,
+            target: str,
+            *,
+            lines: int = 50,
+            mode: str | None = None,
+        ) -> str:
+            self.calls.append((target, lines, mode))
+            if mode == "raw" and target == "exec-thread-search":
+                return "session id: thread-search\nraw log\n"
+            if mode == "session" and target == "exec-thread-search":
+                transcript_lines = [
+                    "older needle match",
+                    "middle line",
+                    "recent line",
+                ]
+                selected_lines = transcript_lines if lines <= 0 else transcript_lines[-lines:]
+                return "\n".join(selected_lines) + "\n"
+            raise AssertionError(f"unexpected log request: {target} {mode}")
+
+    fake_backend = FakeContainerBackend()
+    monkeypatch.setattr(
+        service,
+        "_container_worker_backend",
+        MethodType(lambda self, **_kwargs: fake_backend, service),
+    )
+
+    page = service.get_admin_agent_log_page(
+        "session-thread-search",
+        backend="container_worker_vm",
+        view="threads",
+        limit=1,
+        query="needle",
+    )
+
+    assert page["view"] == "threads"
+    assert page["text"] == "older needle match\n"
+    assert page["total_lines"] == 1
+    assert fake_backend.calls == [
+        ("exec-thread-search", 0, "raw"),
+        ("exec-thread-search", 0, "session"),
     ]
 
 
