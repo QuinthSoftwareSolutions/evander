@@ -5,7 +5,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -104,7 +104,7 @@ class ScheduledWakeWorker:
         now_utc = datetime.now(UTC)
         requests_due = 0
         wakes_dispatched = 0
-        for request in _load_due_wake_requests(wake_store=wake_store, now_utc=now_utc):
+        for request in wake_store.find_due_requests(now_utc=now_utc):
             session = self.runtime.session_repository.get_session(request.session_id)
             if session is None:
                 continue
@@ -331,34 +331,6 @@ def _build_scheduled_resume_prompt(worker_config: GatewayConfig, requested_promp
     return cleaned_requested
 
 
-def _load_due_wake_requests(*, wake_store: Any, now_utc: datetime) -> list[WakeScheduledRequest]:
-    payload = wake_store.read_raw()
-    raw_requests = payload.get("requests", {})
-    if not isinstance(raw_requests, dict):
-        return []
-    due: list[WakeScheduledRequest] = []
-    for raw_value in raw_requests.values():
-        if not isinstance(raw_value, dict):
-            continue
-        request = _parse_wake_request(raw_value)
-        if request is None or not request.enabled:
-            continue
-        next_run_at = request.next_run_at
-        if next_run_at is None:
-            cron = (request.schedule.cron or "").strip()
-            if cron:
-                next_run_at = next_cron_time(cron, now_utc - timedelta(minutes=1))
-                if next_run_at is not None:
-                    request.next_run_at = next_run_at
-                    request.updated_at = now_utc
-                    wake_store.upsert_request(request)
-        if next_run_at is None or next_run_at > now_utc:
-            continue
-        due.append(request)
-    due.sort(key=lambda request: request.next_run_at or request.created_at)
-    return due
-
-
 def _advance_cron_wake_request(
     *,
     wake_store: Any,
@@ -381,11 +353,3 @@ def _advance_cron_wake_request(
     next_base = request.next_run_at or now_utc
     request.next_run_at = next_cron_time(cron, next_base)
     wake_store.upsert_request(request)
-
-
-def _parse_wake_request(raw_value: dict[str, Any]) -> WakeScheduledRequest | None:
-    try:
-        return WakeScheduledRequest.model_validate(raw_value)
-    except Exception:
-        logger.warning("Skipping invalid wake request entry=%r", raw_value, exc_info=True)
-        return None
