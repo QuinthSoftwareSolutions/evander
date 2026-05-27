@@ -2691,6 +2691,9 @@ def test_list_unread_feedback_returns_items_and_audits_result_count(tmp_path: Pa
 
 
 def test_schedule_resume_persists_request_and_audits_success(tmp_path: Path) -> None:
+    legacy_wake_store_path = tmp_path / "wake-requests-store.json"
+    legacy_wake_store_path.write_text("   \n", encoding="utf-8")
+
     context = make_context(tmp_path)
     context.session_repository.upsert_session(
         SessionManifest(
@@ -2722,13 +2725,15 @@ def test_schedule_resume_persists_request_and_audits_success(tmp_path: Path) -> 
         "scheduled": True,
         "request_id": "wake-123",
     }
-    stored = json.loads((tmp_path / "wake-requests-store.json").read_text(encoding="utf-8"))
-    saved_request = stored["requests"]["wake-123"]
-    assert saved_request["session_id"] == "session-1"
-    assert saved_request["schedule"]["resume_at"] == "2026-04-01T10:30:00Z"
-    assert saved_request["resume_prompt"]["prompt"] == "Continue working through unread feedback."
-    assert saved_request["source"] == "wake-worker"
-    assert saved_request["resume_prompt"]["metadata"] == {"trace_id": "trace-1"}
+    saved_request = context.wake_store.get_request("wake-123")
+    assert saved_request is not None
+    assert context.wake_store.path == tmp_path / "wake-requests-store.db"
+    assert legacy_wake_store_path.read_text(encoding="utf-8") == "   \n"
+    assert saved_request.session_id == "session-1"
+    assert saved_request.schedule.resume_at == datetime(2026, 4, 1, 10, 30, tzinfo=UTC)
+    assert saved_request.resume_prompt.prompt == "Continue working through unread feedback."
+    assert saved_request.source == "wake-worker"
+    assert saved_request.resume_prompt.metadata == {"trace_id": "trace-1"}
 
     event = read_audit_events(context.config.audit_log_path)[-1]
     assert event["tool_name"] == ToolName.SCHEDULE_RESUME.value

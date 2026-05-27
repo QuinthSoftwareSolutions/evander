@@ -26,6 +26,15 @@ material. Newer entries are added incrementally as changes land.
 - Updated worker session cleanup and diagnostics to use indexed SQLite job
   reads instead of scanning or tailing the legacy JSON store.
 
+## 2026-05-27 - Wake Store SQLite Migration
+
+- Moved the scheduled wake store to SQLite while keeping the public repository
+  API stable for gateway, admin, and worker callers.
+- Preserved legacy `wake-requests-store.json` compatibility as import-only
+  input, with sibling `.db` storage used for active persistence.
+- Updated gateway-facing wake schedule coverage to assert repository behavior
+  instead of treating the legacy JSON file as the live datastore.
+
 ## 2026-05-27 - Orchestration SQLite WAL Maintenance
 
 - Added configurable SQLite WAL checkpoint maintenance for the workflow

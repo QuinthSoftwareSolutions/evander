@@ -153,7 +153,9 @@ This sequence minimizes payload volume when there is no new feedback and support
 
 ### Scheduled wake dispatch model
 
-- Scheduled wake requests are persisted in host runtime state (`wake-requests-store.json`) as request + dispatch history records.
+- Scheduled wake requests are persisted in host runtime state (`wake-requests-store.db`) as request + dispatch history records.
+  Existing `wake-requests-store.json` files are first-use migration input and are left
+  untouched after import.
 - A schedule can be either:
   - one-time (`resume_at` UTC timestamp), or
   - recurring (`cron` expression).
