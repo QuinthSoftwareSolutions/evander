@@ -5,6 +5,17 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-27 - Teams Trigger Wake Notifications
+
+- Woke the trigger orchestrator immediately after Teams ingest stores new inbox
+  messages, reducing healthy-path `trigger:teams:new-message` latency without
+  increasing Teams Graph polling.
+- Resolved relative trigger lock paths against the project root before deriving
+  the Teams ingest wake socket, so `scripts/run_teams_ingest.sh` works from any
+  caller directory.
+- Kept missing trigger wake sockets non-fatal so the existing trigger polling
+  interval remains the fallback path.
+
 ## 2026-05-27 - Discord Inbox SQLite Integration
 
 - Batched Discord command-envelope persistence so a successful poll cycle can
