@@ -67,7 +67,6 @@ def test_ansible_admin_web_caddy_role_serves_static_assets_directly() -> None:
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
         encoding="utf-8"
     )
-    azure = (repo / "ansible" / "group_vars" / "azure.yml").read_text(encoding="utf-8")
     tasks = (
         repo / "ansible" / "roles" / "admin_web_caddy" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
@@ -84,7 +83,6 @@ def test_ansible_admin_web_caddy_role_serves_static_assets_directly() -> None:
     assert "agent_sandbox_admin_web_caddy_verification_max_time_seconds: 20" in defaults
     assert "agent_sandbox_admin_web_caddy_verification_retries: 6" in defaults
     assert "agent_sandbox_admin_web_caddy_verification_delay_seconds: 10" in defaults
-    assert "agent_sandbox_admin_web_caddy_enabled: true" in azure
     assert "Install Caddy package" in tasks
     assert "Assert Admin Web frontend assets were built" in tasks
     assert "Render Admin Web Caddyfile" in tasks
@@ -209,14 +207,12 @@ def test_ansible_host_prereqs_can_install_azure_cli_for_control_plane() -> None:
     defaults = (repo / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
         encoding="utf-8"
     )
-    azure = (repo / "ansible" / "group_vars" / "azure.yml").read_text(encoding="utf-8")
     tasks = (repo / "ansible" / "roles" / "host_prereqs" / "tasks" / "main.yml").read_text(
         encoding="utf-8"
     )
 
     assert "agent_sandbox_install_azure_cli: false" in defaults
     assert "agent_sandbox_azure_cli_deb_architecture" in defaults
-    assert "agent_sandbox_install_azure_cli: true" in azure
     assert "Download Microsoft signing key for Azure CLI" in tasks
     assert "https://packages.microsoft.com/repos/azure-cli/" in tasks
     assert "name: azure-cli" in tasks
@@ -486,15 +482,19 @@ def test_ansible_qdrant_semantic_store_defaults_and_role_contract() -> None:
 
 def test_ansible_azure_inventory_maps_nexus_password_from_vault() -> None:
     repo = Path(__file__).resolve().parents[1]
-    azure = (repo / "ansible" / "group_vars" / "azure.yml").read_text(encoding="utf-8")
-    inventory = (repo / "ansible" / "inventory" / "azure.yml").read_text(encoding="utf-8")
+    azure = (repo / "ansible" / "group_vars" / "azure.example.yml").read_text(
+        encoding="utf-8"
+    )
+    inventory = (repo / "ansible" / "inventory" / "azure.example.yml").read_text(
+        encoding="utf-8"
+    )
     docs = (repo / "ansible" / "README.md").read_text(encoding="utf-8")
 
     assert (
         'agent_sandbox_nexus_admin_password: "{{ vault_agent_sandbox_nexus_admin_password | default(\'\') }}"'
         in azure
     )
-    assert 'agent_sandbox_control_plane_private_ip: "10.2.0.4"' in azure
+    assert 'agent_sandbox_control_plane_private_ip: "10.0.0.4"' in azure
     assert "agent_sandbox_control_plane_private_ip" not in inventory
     assert "vault_agent_sandbox_nexus_admin_password" in docs
 
@@ -507,8 +507,10 @@ def test_ansible_worker_egress_policy_defaults_are_private_control_plane_endpoin
     worker_defaults = (
         repo / "ansible" / "group_vars" / "agent_sandbox_worker_hosts.yml"
     ).read_text(encoding="utf-8")
-    azure = (repo / "ansible" / "group_vars" / "azure.yml").read_text(encoding="utf-8")
-    azure_inventory = (repo / "ansible" / "inventory" / "azure.yml").read_text(
+    azure = (repo / "ansible" / "group_vars" / "azure.example.yml").read_text(
+        encoding="utf-8"
+    )
+    azure_inventory = (repo / "ansible" / "inventory" / "azure.example.yml").read_text(
         encoding="utf-8"
     )
 

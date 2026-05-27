@@ -1100,6 +1100,19 @@ def _sorted_teams_messages(messages: dict[str, TeamsMessageEnvelope]) -> list[Te
     return sorted(messages.values(), key=lambda item: (item.created_at, item.cursor))
 
 
+def _put_teams_messages(
+    message_store: TeamsRecordsRepository, messages: dict[str, TeamsMessageEnvelope]
+) -> None:
+    if not messages:
+        return
+    put_many = getattr(message_store, "put_many", None)
+    if callable(put_many):
+        put_many(messages)
+        return
+    for cursor, message in messages.items():
+        message_store.put(cursor, message)
+
+
 def _filter_teams_messages_since_cursor(
     messages: list[TeamsMessageEnvelope], since_cursor: str | None
 ) -> list[TeamsMessageEnvelope]:
@@ -2136,6 +2149,7 @@ class GraphTeamsService:
         if since_cursor is None and before_cursor is None and effective_limit is None:
             effective_limit = self.poll_limit
         messages: dict[str, TeamsMessageEnvelope] = dict(self.message_store.read_all())
+        fetched_messages: dict[str, TeamsMessageEnvelope] = {}
         since_cursor_parts = _parse_teams_cursor(since_cursor)
         before_cursor_parts = _parse_teams_cursor(before_cursor)
         requested_target = None
@@ -2192,7 +2206,7 @@ class GraphTeamsService:
                             fetched=envelope,
                         )
                         messages[envelope.cursor] = envelope
-                        self.message_store.put(envelope.cursor, envelope)
+                        fetched_messages[envelope.cursor] = envelope
 
                         if target_mode == "since":
                             if envelope.message_id == target_cursor:
@@ -2223,6 +2237,7 @@ class GraphTeamsService:
                     if stop_target:
                         break
 
+        _put_teams_messages(self.message_store, fetched_messages)
         ordered = _sorted_teams_messages(messages)
         if requested_target is not None:
             ordered = [

@@ -7,10 +7,13 @@ from pathlib import Path
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from agent_sandbox.daemons.effect_orchestrator import EffectOrchestratorWorker
 from agent_sandbox.events.models import TriggerEvent
+from agent_sandbox.orchestration import wal_maintenance
 from agent_sandbox.orchestration.wiring import (
     build_effect_worker_wiring,
     build_trigger_worker_wiring,
 )
+from agent_sandbox.orchestration.wiring import effect as effect_wiring
+from agent_sandbox.repositories.orchestration_db import OrchestrationWalCheckpointResult
 from agent_sandbox.daemons.trigger_orchestrator import TriggerOrchestratorWorker
 from agent_sandbox.workflow.engine import OrchestrationLoop
 
@@ -148,6 +151,75 @@ def test_effect_worker_wiring_uses_effect_cursor_path_for_processed_checkpoint(
     effect_cursor_payload = json.loads(effect_cursor_path.read_text(encoding="utf-8"))
     assert effect_cursor_payload["last_processed_event_id"] == "event-1"
     assert not gate_cursor_path.exists()
+
+
+def test_effect_worker_runs_wal_checkpoint_maintenance_from_worker_cycle(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "poll_interval_seconds": 1,
+            "jitter_seconds": 0,
+            "orchestration_store_backend": "sqlite",
+            "orchestration_wal_checkpoint_min_bytes": 0,
+            "orchestration_wal_checkpoint_interval_seconds": 300,
+            "triggers": [],
+            "gates": [],
+            "effects": [],
+            "queries": [],
+            "edges": [],
+        }
+    )
+    startup_results: list[Path] = []
+    cycle_calls: list[tuple[Path, dict[str, object]]] = []
+
+    def _startup_checkpoint(path: Path, **_kwargs: object) -> OrchestrationWalCheckpointResult:
+        startup_results.append(Path(path))
+        return OrchestrationWalCheckpointResult(skipped_reason="startup-test")
+
+    def _cycle_checkpoint(
+        path: Path,
+        **kwargs: object,
+    ) -> OrchestrationWalCheckpointResult:
+        cycle_calls.append((Path(path), dict(kwargs)))
+        return OrchestrationWalCheckpointResult(attempted=True, wal_size_bytes=128)
+
+    monkeypatch.setattr(
+        effect_wiring,
+        "maybe_checkpoint_orchestration_wal",
+        _startup_checkpoint,
+    )
+    monkeypatch.setattr(
+        wal_maintenance,
+        "maybe_checkpoint_orchestration_wal",
+        _cycle_checkpoint,
+    )
+
+    worker = EffectOrchestratorWorker(
+        config=config,
+        worker_config=worker_config,
+        runtime=None,  # type: ignore[arg-type]
+    )
+
+    worker.run_once()
+    worker.run_once()
+
+    assert startup_results == [worker_config.orchestration_store_path]
+    assert cycle_calls == [
+        (
+            worker_config.orchestration_store_path,
+            {
+                "mode": "truncate",
+                "min_bytes": 0,
+                "interval_seconds": 300,
+                "busy_timeout_ms": 1_000,
+            },
+        )
+    ]
 
 
 def test_core_minimal_profile_smoke_builds_trigger_and_effect_workers_without_builtin_providers(
