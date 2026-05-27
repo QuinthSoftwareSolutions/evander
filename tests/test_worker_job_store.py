@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from multiprocessing import get_context
 from pathlib import Path
 
@@ -14,6 +14,8 @@ from agent_sandbox.worker.store import WorkerJobStore
 _CREATED_AT = datetime(2026, 5, 26, 8, 0, tzinfo=UTC)
 _STARTED_AT = datetime(2026, 5, 26, 9, 0, tzinfo=UTC)
 _FINISHED_AT = datetime(2026, 5, 26, 10, 0, tzinfo=UTC)
+_EARLIER_STARTED_AT = _STARTED_AT - timedelta(hours=1)
+_LATER_STARTED_AT = _STARTED_AT + timedelta(hours=1)
 
 
 def _record(
@@ -71,6 +73,16 @@ def test_worker_job_store_derives_sqlite_path_from_legacy_json_path(tmp_path: Pa
     store = WorkerJobStore(_store_path(tmp_path))
 
     assert store.path == tmp_path / "runtime" / "worker-jobs.db"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["worker-jobs.db", "worker-jobs.sqlite", "worker-jobs.sqlite3"],
+)
+def test_worker_job_store_preserves_explicit_sqlite_paths(tmp_path: Path, name: str) -> None:
+    store = WorkerJobStore(_store_path(tmp_path, name))
+
+    assert store.path == tmp_path / "runtime" / name
 
 
 def test_worker_job_store_uses_expected_sqlite_schema(tmp_path: Path) -> None:
@@ -160,6 +172,7 @@ def test_worker_job_store_lists_jobs_by_session_and_filters_active_jobs(tmp_path
     store.ensure_schema()
 
     for record in [
+        _record("job-created", status="created", started_at=_STARTED_AT),
         _record("job-starting", status="starting", started_at=_STARTED_AT),
         _record("job-running", status="running", started_at=_STARTED_AT),
         _record("job-stopped", status="stopped", started_at=_STARTED_AT),
@@ -178,6 +191,7 @@ def test_worker_job_store_lists_jobs_by_session_and_filters_active_jobs(tmp_path
 
     assert [record.job_id for record in store.list_by_session("session-a")] == [
         "job-cleanup-failed",
+        "job-created",
         "job-exited",
         "job-failed",
         "job-removed",
@@ -186,6 +200,49 @@ def test_worker_job_store_lists_jobs_by_session_and_filters_active_jobs(tmp_path
         "job-stopped",
     ]
     assert [record.job_id for record in store.list_active_by_session("session-a")] == [
+        "job-created",
+        "job-running",
+        "job-starting",
+    ]
+
+
+def test_worker_job_store_orders_jobs_by_started_at_then_job_id_within_a_session(
+    tmp_path: Path,
+) -> None:
+    store = WorkerJobStore(tmp_path / "runtime" / "worker-jobs.db")
+    store.ensure_schema()
+
+    for record in [
+        _record("job-late", started_at=_LATER_STARTED_AT),
+        _record("job-a", started_at=_STARTED_AT),
+        _record("job-b", started_at=_STARTED_AT),
+        _record("job-none", started_at=None),
+        _record("job-other-session", session_id="session-b", started_at=_STARTED_AT),
+    ]:
+        store.put(record)
+
+    assert [record.job_id for record in store.list_by_session("session-a")] == [
+        "job-a",
+        "job-b",
+        "job-late",
+        "job-none",
+    ]
+
+
+def test_worker_job_store_lists_created_jobs_as_active(tmp_path: Path) -> None:
+    store = WorkerJobStore(tmp_path / "runtime" / "worker-jobs.db")
+    store.ensure_schema()
+
+    for record in [
+        _record("job-created", status="created", started_at=_STARTED_AT),
+        _record("job-starting", status="starting", started_at=_STARTED_AT),
+        _record("job-running", status="running", started_at=_STARTED_AT),
+        _record("job-stopped", status="stopped", started_at=_STARTED_AT),
+    ]:
+        store.put(record)
+
+    assert [record.job_id for record in store.list_active_by_session("session-a")] == [
+        "job-created",
         "job-running",
         "job-starting",
     ]
