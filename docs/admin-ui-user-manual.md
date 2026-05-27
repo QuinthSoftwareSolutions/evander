@@ -164,6 +164,10 @@ Notes:
 
 - The provider field can be left blank to use the directory/default backend.
 - Skill choices come from the managed Skills tab.
+- Container-worker logs default to **Executions**, which shows raw worker job logs by execution.
+  Use **Threads** when you need the Codex conversation grouped by thread ID. The thread view is
+  available only for container-worker sessions; VM-backed agents continue to show their normal
+  agent output.
 - Some actions are unavailable until privileged operations are unlocked.
 
 ## Approvals

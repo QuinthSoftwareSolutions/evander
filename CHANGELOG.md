@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-27 - Thread Log Pagination
+
+- Fixed container worker thread-log paging so older transcript lines are fetched
+  before applying the Admin Web page window.
+- Made thread-log search inspect full session transcripts instead of only the
+  current tail page.
+
 ## 2026-05-27 - Teams Trigger Wake Notifications
 
 - Woke the trigger orchestrator immediately after Teams ingest stores new inbox
