@@ -38,6 +38,10 @@ class EffectExecutionRepository(Protocol):
 
     def read_all(self) -> dict[str, Any]: ...
 
+    def list_waiting_records(self, node_type: str | None = None) -> list[Any]: ...
+
+    def list_completion_pending_records(self) -> list[Any]: ...
+
     def put(self, record: Any) -> None: ...
 
     def find_by_idempotency_key(self, idempotency_key: str) -> Any | None: ...
@@ -336,6 +340,27 @@ class JsonExecutionRepository(Generic[TRecord]):
     def list_executions(self) -> list[TRecord]:
         return list(self.read_all().values())
 
+    def list_waiting_records(self, node_type: str | None = None) -> list[TRecord]:
+        normalized_type = str(node_type or "").strip()
+        records = []
+        for record in self.read_all().values():
+            if str(getattr(record, "status", "") or "").strip() != "waiting":
+                continue
+            if normalized_type and normalized_type not in {
+                str(getattr(record, "effect_type", "") or "").strip(),
+                str(getattr(record, "gate_type", "") or "").strip(),
+            }:
+                continue
+            records.append(record)
+        return records
+
+    def list_completion_pending_records(self) -> list[TRecord]:
+        return [
+            record
+            for record in self.read_all().values()
+            if str(getattr(record, "status", "") or "").strip() == "completion_pending"
+        ]
+
     def record_execution(self, record: TRecord) -> None:
         self.put(record)
 
@@ -416,6 +441,37 @@ class SqliteExecutionRepository(Generic[TRecord]):
 
     def list_executions(self) -> list[TRecord]:
         return list(self.read_all().values())
+
+    def list_waiting_records(self, node_type: str | None = None) -> list[TRecord]:
+        params: list[Any] = []
+        where = ["status = 'waiting'"]
+        normalized_type = str(node_type or "").strip()
+        if normalized_type:
+            where.append(f"{self.node_type_field} = ?")
+            params.append(normalized_type)
+        with self._lock, connect_orchestration_db(self.path) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT payload_json
+                FROM {self.table_name}
+                WHERE {" AND ".join(where)}
+                ORDER BY COALESCE(finished_at, started_at) DESC, execution_id DESC
+                """,
+                params,
+            ).fetchall()
+        return [self._record_from_row(row) for row in rows]
+
+    def list_completion_pending_records(self) -> list[TRecord]:
+        with self._lock, connect_orchestration_db(self.path) as connection:
+            rows = connection.execute(
+                f"""
+                SELECT payload_json
+                FROM {self.table_name}
+                WHERE status = 'completion_pending'
+                ORDER BY COALESCE(finished_at, started_at) DESC, execution_id DESC
+                """
+            ).fetchall()
+        return [self._record_from_row(row) for row in rows]
 
     def record_execution(self, record: TRecord) -> None:
         self.put(record)

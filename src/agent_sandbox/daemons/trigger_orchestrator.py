@@ -48,6 +48,10 @@ from agent_sandbox.orchestration.host_polling import (
     wake_socket_path_for_lock,
 )
 from agent_sandbox.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
+from agent_sandbox.orchestration.wal_maintenance import (
+    OrchestrationWalCheckpointMaintenance,
+    sqlite_orchestration_store_enabled,
+)
 from agent_sandbox.orchestration.wiring import TriggerWorkerWiring, build_trigger_worker_wiring
 from agent_sandbox.orchestration.wiring.trigger import build_trigger_provider_runtime_wiring
 from agent_sandbox.repositories.orchestration import GateCursorRepository
@@ -103,6 +107,7 @@ class TriggerOrchestratorWorker:
         self.event_queue = resolved_wiring.event_queue
         self.provider_factory = resolved_wiring.provider_factory
         self.cursor_repository: GateCursorRepository = resolved_wiring.gate_cursor_repository
+        self._wal_checkpoint_maintenance = OrchestrationWalCheckpointMaintenance()
         self._wake_sleeper = HostWakeSleeper(
             wake_socket_path_for_lock(self.worker_config.lock_path)
         )
@@ -250,12 +255,24 @@ class TriggerOrchestratorWorker:
             poll_interval_seconds=sleep_config.poll_interval_seconds,
             jitter_seconds=sleep_config.jitter_seconds,
         )
+        self._run_orchestration_wal_checkpoint_maintenance()
         return TriggerOrchestratorCycleResult(
             configured_triggers=len(configured_triggers),
             events_discovered=events_discovered,
             events_published=events_published,
             next_sleep_seconds=next_sleep_seconds,
         )
+
+    def _run_orchestration_wal_checkpoint_maintenance(self) -> None:
+        result = self._wal_checkpoint_maintenance.run_if_due(self.worker_config)
+        if result is not None and result.error:
+            logger.warning(
+                "Trigger orchestrator WAL checkpoint maintenance reported an error "
+                "skipped_reason=%s wal_size_bytes=%d error=%s",
+                result.skipped_reason,
+                result.wal_size_bytes,
+                result.error,
+            )
 
     def _publish_due_scheduled_internal_events(
         self, worker_config: TriggerOrchestratorWorkerGlobalConfig
@@ -368,10 +385,7 @@ def _is_system_trigger(trigger: TriggerDefinitionDiscriminated) -> bool:
 def _build_trigger_event_queue(
     worker_config: TriggerOrchestratorWorkerGlobalConfig,
 ) -> TriggerEventQueue | SqliteTriggerEventQueue:
-    if (
-        worker_config.orchestration_store_backend == "sqlite"
-        and "orchestration_store_backend" in worker_config.model_fields_set
-    ):
+    if sqlite_orchestration_store_enabled(worker_config):
         return SqliteTriggerEventQueue(
             worker_config.orchestration_store_path,
             retention_days=worker_config.orchestration_retention_days,

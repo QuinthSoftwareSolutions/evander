@@ -170,7 +170,9 @@ class CommunicationMessagesQueryProvider(QueryProviderBase):
         normalized_target = normalize_teams_target(target.address)
         target_messages = [
             message
-            for message in TeamsInboxStore(runtime_dir / "teams-inbox-store.json").list_all_messages()
+            for message in TeamsInboxStore(
+                runtime_dir / "teams-inbox-store.json"
+            ).list_all_messages(channel_targets=[normalized_target])
             if teams_target_from_message(
                 team_id=message.team_id,
                 channel_id=message.channel_id,

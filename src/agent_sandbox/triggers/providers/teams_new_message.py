@@ -37,17 +37,19 @@ class TeamsNewMessageTriggerProvider(TriggerProviderBase):
         ]
         recent_cursor_set = set(recent_cursors)
 
-        inbox_store = JsonTeamsInboxCursorRepository(
-            self._resolved_config().runtime_dir / "teams-inbox-store.json"
-        )
-        raw_messages = inbox_store.list_all_messages()
-
         target_filters = {
             _normalize_channel_target(item.target): item.message_filter
             for item in trigger.targets
             if item.target.strip()
         }
         user_filter = {value.strip() for value in trigger.user_ids if value.strip()}
+        inbox_store = JsonTeamsInboxCursorRepository(
+            self._resolved_config().runtime_dir / "teams-inbox-store.json"
+        )
+        raw_messages = inbox_store.list_all_messages(
+            channel_targets=list(target_filters) if target_filters else None,
+            created_at_from=cursor,
+        )
 
         candidates: list[TeamsInboxMessage] = []
         for message in raw_messages:

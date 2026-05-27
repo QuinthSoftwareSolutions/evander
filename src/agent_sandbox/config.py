@@ -788,6 +788,12 @@ class OrchestrationCoreConfig(BaseModel):
     orchestration_store_backend: Literal["sqlite", "json"] = "sqlite"
     orchestration_store_path: Path | None = None
     orchestration_retention_days: int = Field(default=30, ge=0)
+    orchestration_wal_checkpoint_mode: Literal[
+        "disabled", "passive", "full", "restart", "truncate"
+    ] = "truncate"
+    orchestration_wal_checkpoint_min_bytes: int = Field(default=64 * 1024 * 1024, ge=0)
+    orchestration_wal_checkpoint_interval_seconds: int = Field(default=5 * 60, ge=0)
+    orchestration_wal_checkpoint_busy_timeout_ms: int = Field(default=1_000, ge=0)
     lock_path: Path | None = None
     event_queue_store_path: Path | None = None
     event_queue_cursor_store_path: Path | None = None

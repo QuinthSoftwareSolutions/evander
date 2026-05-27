@@ -792,7 +792,8 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   - `GET /teams/{team-id}/channels/{channel-id}/messages` for channel threads
   - `GET /chats/{chat-id}/messages` for group chats
   - `GET /me/chats` plus `GET /chats/{chat-id}/messages` for allowlisted direct-message triggers
-  It stores both top-level messages and any expanded replies in `runtime/teams_messages.json`.
+  It stores both top-level messages and any expanded replies in `runtime/teams_messages.db`.
+  Existing `runtime/teams_messages.json` stores are imported on first use.
 - `teams_get_messages` accepts optional `channel_target`, `since_cursor`, `before_cursor`, and
   `limit` arguments. Cursorless reads are bounded recent reads: the gateway defaults the call to
   `teams_poll_limit`, and the Graph adapter stops after `teams_history_page_cap` pages or
@@ -828,7 +829,7 @@ See [live-smoke-tests.md](docs/live-smoke-tests.md) for the live Discord and pro
   - `POST /teams/{team-id}/channels/{channel-id}/messages/{thread_id}/replies` for replies
   - `POST /chats/{chat-id}/messages` for top-level chat posts
   - `POST /chats/{chat-id}/messages/{message-id}/replies` for chat replies
-- Outbound posts are audited and persisted in `runtime/teams_messages.json` with
+- Outbound posts are audited and persisted in `runtime/teams_messages.db` with
   `metadata.source == "teams_graph_api_status"` and the originating `session_id`.
 - Source filtering is strict: only envelopes tagged with `metadata.source == "teams_graph_api"`
   and originating from a session allowlisted `team-id/channel-id` are returned to that session.

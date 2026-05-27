@@ -24,6 +24,27 @@ def patch_httpx_client(
     )
 
 
+class RecordingTeamsMessageStore:
+    def __init__(self) -> None:
+        self.records: dict[str, TeamsMessageEnvelope] = {}
+        self.put_calls = 0
+        self.put_many_calls = 0
+
+    def get(self, cursor: str) -> TeamsMessageEnvelope | None:
+        return self.records.get(cursor)
+
+    def put(self, cursor: str, envelope: TeamsMessageEnvelope) -> None:
+        self.put_calls += 1
+        self.records[cursor] = envelope
+
+    def put_many(self, records: dict[str, TeamsMessageEnvelope]) -> None:
+        self.put_many_calls += 1
+        self.records.update(records)
+
+    def read_all(self) -> dict[str, TeamsMessageEnvelope]:
+        return dict(self.records)
+
+
 def test_teams_services_default_and_override_read_reaction_emoji(tmp_path: Path) -> None:
     store = JsonStore(tmp_path / "teams.json", TeamsMessageEnvelope)
     stub_default = StubTeamsService(store)
@@ -275,6 +296,58 @@ def test_graph_teams_service_polls_allowlisted_channels_and_flattens_replies(
     assert requests[0].headers["Authorization"] == "Bearer graph-token"
     assert requests[0].url.params.get("$top") == "25"
     assert requests[0].url.params.get("$expand") == "replies"
+
+
+def test_graph_teams_service_batches_fetched_message_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/teams/team-a/channels/channel-1/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-1",
+                            "createdDateTime": "2026-03-30T11:00:00Z",
+                            "body": {"content": "first", "contentType": "text"},
+                            "from": {"user": {"id": "user-1"}},
+                        },
+                        {
+                            "id": "msg-2",
+                            "createdDateTime": "2026-03-30T11:01:00Z",
+                            "body": {"content": "second", "contentType": "text"},
+                            "from": {"user": {"id": "user-2"}},
+                        },
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    store = RecordingTeamsMessageStore()
+    service = GraphTeamsService(
+        store,
+        token="graph-token",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_targets_provider=lambda: ["team-a/channel-1"],
+    )
+
+    messages = service.get_messages()
+
+    assert [message.cursor for message in messages] == [
+        "team-a/channel-1/msg-1",
+        "team-a/channel-1/msg-2",
+    ]
+    assert store.put_many_calls == 1
+    assert store.put_calls == 0
+    assert set(store.records) == {
+        "team-a/channel-1/msg-1",
+        "team-a/channel-1/msg-2",
+    }
 
 
 def test_graph_teams_service_uses_token_provider_for_requests(
