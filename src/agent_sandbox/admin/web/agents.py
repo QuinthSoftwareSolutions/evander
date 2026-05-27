@@ -95,6 +95,7 @@ def agent_routes(
     async def get_agent_log(request: Request) -> JSONResponse:
         agent_id = request.path_params["agent_id"]
         backend = _string_query(request, "backend")
+        view = _string_query(request, "view", default="executions") or "executions"
         lines_text = _string_query(request, "lines", default="200") or "200"
         try:
             lines = max(1, int(lines_text))
@@ -107,6 +108,7 @@ def agent_routes(
                     service.get_admin_agent_log_page,
                     agent_id,
                     backend=backend,
+                    view=view,
                     limit=max(1, _int_query(request, "limit", default=lines)),
                     offset=max(0, _int_query(request, "offset", default=0)),
                     query=_string_query(request, "query"),
@@ -116,6 +118,7 @@ def agent_routes(
                     {
                         "agent_id": agent_id,
                         "backend": backend,
+                        "view": page["view"],
                         "lines": page["limit"],
                         "text": page["text"],
                         "limit": page["limit"],
@@ -132,6 +135,7 @@ def agent_routes(
                 service.get_admin_agent_log_snapshot,
                 agent_id,
                 backend=backend,
+                view=view,
                 lines=lines,
                 repo_name=repo_name,
             )
@@ -143,6 +147,7 @@ def agent_routes(
             {
                 "agent_id": agent_id,
                 "backend": backend,
+                "view": view,
                 "lines": lines,
                 "text": text,
             }

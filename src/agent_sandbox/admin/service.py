@@ -7954,6 +7954,15 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         raise ValueError(f"Unknown agent backend: {selected_backend}")
 
     @classmethod
+    def _normalize_agent_log_view(cls, view: str | None) -> str:
+        selected_view = str(view or "executions").strip()
+        if selected_view in {"", "executions"}:
+            return "executions"
+        if selected_view == "threads":
+            return "threads"
+        raise ValueError(f"Unknown agent log view: {selected_view}")
+
+    @classmethod
     def _normalize_agent_backend_filter(cls, backend: str | None) -> str:
         selected_backend = str(backend or "all").strip()
         if selected_backend in {"", "all"}:
@@ -9528,10 +9537,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         agent_id: str,
         *,
         backend: str | None = None,
+        view: str | None = None,
         lines: int = 50,
         repo_name: str | None = None,
         vm_user: str = "agent",
     ) -> str:
+        _ = self._normalize_agent_log_view(view)
         selected_backend = str(backend or "libvirt_vm").strip()
         if selected_backend in {"libvirt", "libvirt_vm"}:
             return self.get_agent_log_snapshot(
@@ -9726,6 +9737,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         agent_id: str,
         *,
         backend: str | None = None,
+        view: str | None = None,
         limit: int = 200,
         offset: int = 0,
         query: str | None = None,
@@ -9735,6 +9747,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         normalized_limit = max(1, min(int(limit), 5000))
         normalized_offset = max(0, int(offset))
         normalized_query = str(query or "").strip()
+        normalized_view = self._normalize_agent_log_view(view)
         selected_backend = str(backend or "libvirt_vm").strip()
         if selected_backend in {"libvirt", "libvirt_vm"}:
             window_lines = normalized_limit + normalized_offset
@@ -9757,6 +9770,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 page["total_lines"] = None
                 page["start_line"] = None
                 page["end_line"] = None
+            page["view"] = normalized_view
             return page
         if selected_backend == "container_worker_vm":
             session, record = self._resolve_container_agent_session(agent_id, require_session=False)
@@ -9782,7 +9796,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             )
             target = agent_id
             if session is not None and record is None:
-                return self._container_session_log_page(
+                page = self._container_session_log_page(
                     session_id=session_id,
                     execution_records=execution_records,
                     worker_backend=worker_backend,
@@ -9790,23 +9804,29 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     offset=normalized_offset,
                     query=normalized_query or None,
                 )
+                page["view"] = normalized_view
+                return page
             page_reader = getattr(worker_backend, "get_log_page", None)
             if callable(page_reader):
-                return page_reader(
+                page = page_reader(
                     target,
                     limit=normalized_limit,
                     offset=normalized_offset,
                     query=normalized_query or None,
                 )
+                page["view"] = normalized_view
+                return page
             text = worker_backend.get_log_snapshot(
                 target, lines=normalized_limit + normalized_offset
             )
-            return _log_page_from_end(
+            page = _log_page_from_end(
                 text,
                 limit=normalized_limit,
                 offset=normalized_offset,
                 query=normalized_query or None,
             )
+            page["view"] = normalized_view
+            return page
         raise ValueError(f"Unknown agent backend: {selected_backend}")
 
     def run_admin_agent_action(
