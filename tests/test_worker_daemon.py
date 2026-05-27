@@ -452,9 +452,7 @@ def test_session_delete_removes_stopped_worker_jobs(tmp_path: Path) -> None:
     assert job_response.json()["cleanup_status"] == "cleanup_succeeded"
 
 
-def test_session_delete_uses_session_scoped_job_lookup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_session_delete_uses_session_scoped_job_lookup(tmp_path: Path) -> None:
     runtime = FakeContainerRuntime()
     daemon = WorkerDaemon(
         runtime_dir=tmp_path / "runtime",
@@ -465,8 +463,8 @@ def test_session_delete_uses_session_scoped_job_lookup(
 
     session_a = WorkerSessionPaths.resolve(daemon.worker_root, "session-a")
     session_b = WorkerSessionPaths.resolve(daemon.worker_root, "session-b")
-    daemon.store.put(
-        WorkerJobRecord(
+    session_jobs: dict[str, WorkerJobRecord] = {
+        "job-a": WorkerJobRecord(
             job_id="job-a",
             session_id="session-a",
             image="codex:latest",
@@ -478,10 +476,8 @@ def test_session_delete_uses_session_scoped_job_lookup(
             repo_root_path=str(session_a.repo_root),
             artifacts_path=str(session_a.artifacts),
             logs_path=str(session_a.logs),
-        )
-    )
-    daemon.store.put(
-        WorkerJobRecord(
+        ),
+        "job-b": WorkerJobRecord(
             job_id="job-b",
             session_id="session-b",
             image="codex:latest",
@@ -493,20 +489,37 @@ def test_session_delete_uses_session_scoped_job_lookup(
             repo_root_path=str(session_b.repo_root),
             artifacts_path=str(session_b.artifacts),
             logs_path=str(session_b.logs),
-        )
-    )
+        ),
+    }
 
-    monkeypatch.setattr(
-        daemon.store,
-        "read_all",
-        lambda: (_ for _ in ()).throw(AssertionError("read_all should not be used")),
-    )
+    class FakeWorkerJobStore:
+        def __init__(self) -> None:
+            self.put_calls: list[str] = []
+            self.list_by_session_calls: list[str] = []
+
+        def list_by_session(self, session_id: str) -> list[WorkerJobRecord]:
+            self.list_by_session_calls.append(session_id)
+            return [record for record in session_jobs.values() if record.session_id == session_id]
+
+        def read_all(self) -> dict[str, WorkerJobRecord]:
+            raise AssertionError("read_all should not be used")
+
+        def put(self, record: WorkerJobRecord) -> None:
+            self.put_calls.append(record.job_id)
+            session_jobs[record.job_id] = record
+
+        def get(self, job_id: str) -> WorkerJobRecord | None:
+            return session_jobs.get(job_id)
+
+    daemon.store = FakeWorkerJobStore()
 
     deleted = daemon.delete_session("session-a")
 
     assert deleted is True
     assert runtime.removed == ["job-a"]
+    assert daemon.store.list_by_session_calls == ["session-a"]
     assert daemon.store.get("job-a").status == "removed"
+    assert daemon.store.get("job-a").cleanup_status == "cleanup_succeeded"
     assert daemon.store.get("job-b").status == "running"
 
 
