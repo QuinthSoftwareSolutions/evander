@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from agent_sandbox.repositories.cursors import JsonDiscordInboxCursorRepository
+from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
 from agent_sandbox.models import DiscordMessageEnvelope
 from agent_sandbox.events.models import TriggerEvent
 from agent_sandbox.events.provider_models import DiscordNewMessageTriggerDefinition
@@ -29,19 +29,23 @@ class DiscordNewMessageTriggerProvider(TriggerProviderBase):
         ]
         recent_message_id_set = set(recent_message_ids)
 
-        inbox_store = JsonDiscordInboxCursorRepository(
-            self._runtime_dir() / "discord-inbox-store.json"
-        )
-        raw_messages = inbox_store.read_raw().get("messages", {})
+        inbox_store = DiscordInboxStore(self._runtime_dir() / "discord-inbox-store.json")
 
         channel_filter = {value.strip() for value in trigger.channel_ids if value.strip()}
         user_filter = {value.strip() for value in trigger.user_ids if value.strip()}
 
         candidates: list[DiscordMessageEnvelope] = []
-        for raw in raw_messages.values():
-            if not isinstance(raw, dict):
-                continue
-            message = DiscordMessageEnvelope.model_validate(raw)
+        if channel_filter:
+            messages = inbox_store.list_all_messages(channel_ids=sorted(channel_filter)).messages
+        else:
+            # Preserve the legacy compatibility path for unfiltered Discord triggers.
+            messages = [
+                DiscordMessageEnvelope.model_validate(raw)
+                for raw in inbox_store.read_raw().get("messages", {}).values()
+                if isinstance(raw, dict)
+            ]
+
+        for message in messages:
             if channel_filter and message.channel_id not in channel_filter:
                 continue
             if user_filter and message.author_id not in user_filter:
