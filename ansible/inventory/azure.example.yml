@@ -1,19 +1,19 @@
 all:
   vars:
-    agent_sandbox_control_plane_public_host: 52.158.33.185
+    agent_sandbox_control_plane_public_host: 203.0.113.10
     agent_sandbox_control_plane_ssh_user: azureuser
     agent_sandbox_control_plane_ssh_private_key_file: >-
       {{ lookup('env', 'AGENT_SANDBOX_CONTROL_PLANE_SSH_KEY_FILE')
-      | default('~/.ssh/truman-control-center_key.pem', true) }}
+      | default('~/.ssh/agent-sandbox-control-plane.pem', true) }}
     agent_sandbox_worker_ssh_private_key_file: >-
       {{ lookup('env', 'AGENT_SANDBOX_WORKER_SSH_KEY_FILE')
-      | default('~/.ssh/truman-worker-1_key.pem', true) }}
+      | default('~/.ssh/agent-sandbox-worker.pem', true) }}
   children:
     azure:
       children:
         agent_sandbox_hosts:
           hosts:
-            truman-control-plane:
+            agent-sandbox-control-plane:
               ansible_host: "{{ agent_sandbox_control_plane_public_host }}"
               ansible_user: "{{ agent_sandbox_control_plane_ssh_user }}"
               ansible_ssh_private_key_file: "{{ agent_sandbox_control_plane_ssh_private_key_file }}"
@@ -21,8 +21,8 @@ all:
                 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o IdentitiesOnly=yes
         agent_sandbox_worker_hosts:
           hosts:
-            truman-worker-1:
-              ansible_host: 10.2.1.4
+            agent-sandbox-worker-1:
+              ansible_host: 10.0.1.4
               ansible_user: "{{ agent_sandbox_control_plane_ssh_user }}"
               ansible_ssh_private_key_file: "{{ agent_sandbox_worker_ssh_private_key_file }}"
               ansible_ssh_common_args: >-
@@ -32,8 +32,6 @@ all:
                 -W %h:%p {{ agent_sandbox_control_plane_ssh_user }}@{{ agent_sandbox_control_plane_public_host }}"
               agent_sandbox_worker_mssql_enabled: true
               agent_sandbox_worker_mssql_accept_eula: true
-              # Host vars override the generic agent_sandbox_worker_hosts group
-              # defaults, which intentionally keep non-Azure workers isolated.
               agent_sandbox_worker_docker_network: "bridge"
               agent_sandbox_worker_egress_policy_enabled: true
               agent_sandbox_worker_mssql_server_repo: "deb [arch=amd64,arm64 signed-by={{ agent_sandbox_worker_mssql_apt_key_path }}] http://packages.microsoft.com/ubuntu/24.04/mssql-server-2025 noble main"

@@ -40,7 +40,7 @@ def test_auto_dev_runtime_log_snapshot_redacts_secret_shapes(tmp_path: Path) -> 
             [
                 (
                     '{"decision":"error","args":{'
-                    '"OPENAI_API_KEY":"sk-testsecret12345678901234567890",'
+                    '"OPENAI_API_KEY":"example-openai-api-key",'
                     '"Authorization":"Bearer abc.def.ghi",'
                     '"password":"hunter2",'
                     '"url":"https://user:pass@example.com/path?sig=secret",'
@@ -81,7 +81,7 @@ def test_auto_dev_runtime_log_snapshot_redacts_secret_shapes(tmp_path: Path) -> 
     assert '"redaction":"enabled"' in combined
     assert "<redacted>" in combined
     for secret in (
-        "sk-testsecret",
+        "example-openai-api-key",
         "Bearer abc.def.ghi",
         "journal.secret.token",
         "hunter2",

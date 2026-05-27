@@ -24,7 +24,10 @@ the base Ubuntu cloud image.
 - `site.yml`: main deployment playbook
 - `worker.yml`: dedicated container-worker VM deployment playbook
 - `inventory/hosts.example.yml`: example inventory
+- `inventory/azure.example.yml`: example Azure inventory shape
 - `group_vars/all/defaults.yml`: documented variable contract and defaults
+- `group_vars/azure.example.yml`: example Azure deployment overrides
+- `group_vars/all/vault.yml.example`: non-secret Vault variable template
 - `group_vars/agent_sandbox_worker_hosts.yml`: container-worker VM defaults
 - `roles/`: deployment steps grouped by responsibility
 
@@ -124,7 +127,8 @@ Admin Web public access:
   `agent_sandbox_admin_web_caddy_verification_connect_timeout_seconds`, and
   `agent_sandbox_admin_web_caddy_verification_max_time_seconds` if certificate or listener
   readiness is slower on a target host.
-- Azure inventory enables this role for `truman-admin.northeurope.cloudapp.azure.com`.
+- Azure deployments can enable this role by setting
+  `agent_sandbox_admin_web_caddy_enabled: true` in operator-owned group vars.
 
 Workflow config ownership:
 
@@ -166,9 +170,9 @@ proxy/group repositories: `pypi-proxy`, `pypi-all`, `npm-proxy`, and `npm-all`. 
 anonymous user a least-privilege package-cache reader role so worker `uv` and npm installs can
 download package assets through Nexus without direct PyPI/npm egress or worker-side Nexus
 credentials.
-The Azure inventory maps this from `vault_agent_sandbox_nexus_admin_password`; add that value to
-the Vault file or set `agent_sandbox_services.package_cache: false` for deployments that should not
-run Nexus.
+Deployment-specific group vars usually map this from
+`vault_agent_sandbox_nexus_admin_password`; add that value to an encrypted Vault file or set
+`agent_sandbox_services.package_cache: false` for deployments that should not run Nexus.
 
 The apt cache relay uses the Ubuntu `apt-cacher-ng` package and does not share Nexus. When
 `agent_sandbox_services.apt_cache` is enabled, the control plane listens on
@@ -210,40 +214,33 @@ ansible-playbook \
 
 ## Azure Pipelines
 
-The repository root includes `azure-pipelines.yml` for a manual deploy pipeline that reuses these
-playbooks instead of replacing them. The pipeline runs the control-plane deployment first, then
-builds `dist/agent-sandbox-runner.tar`, then deploys the worker VM:
+Azure Pipelines deployment YAML is intentionally not checked into this product repo because it
+usually contains client-specific service connection names, Secure File names, target hosts, public
+IPs, NSG settings, and inventory paths. Keep that pipeline in an operator-owned deployment config
+repo together with the real inventory and encrypted Vault files. The pipeline should reuse these
+playbooks instead of replacing them:
 
 1. `ansible-playbook -i <inventory> ansible/site.yml`
 2. `./scripts/build_agent_sandbox_runner_image.sh`
 3. `ansible-playbook -i <inventory> ansible/worker.yml`
 
-The pipeline passes `$(Build.SourceVersion)` as `agent_sandbox_repo_version` so target hosts deploy
-the same revision that Azure Pipelines checked out. The default inventory is
-`ansible/inventory/azure.yml`; override the `inventoryPath`, `controlPlaneTarget`, and
-`workerTarget` parameters when deploying a different environment or a subset of hosts. The target
-parameters are dropdowns with `all` as the default; selecting `all` runs the relevant playbook
-without an Ansible `--limit`.
-
-Because the deploy is pinned to `$(Build.SourceVersion)`, the inventory's
-`agent_sandbox_repo_url` must point at the same repository that owns this pipeline, or at a mirror
-that already contains that exact commit. A lagging mirror fails during `repo_checkout` with
+The deployment pipeline should check out this product repo as a repository resource, compute the
+checked-out product commit with `git rev-parse HEAD`, and pass that value as
+`agent_sandbox_repo_version` so target hosts deploy the same revision the pipeline built. The
+inventory's `agent_sandbox_repo_url` must point at this product repo or at a mirror that already
+contains that exact commit. A lagging mirror fails during `repo_checkout` with
 `fatal: reference is not a tree`.
 
 Set the secret Azure Pipelines variable `ANSIBLE_VAULT_PASSWORD` so the pipeline can read the
 encrypted Vault-backed variables. Upload the SSH private keys to Azure DevOps Secure Files and make
-them available to this pipeline. The default secure-file names are `truman-control-center_key.pem`
-for the control plane and `truman-worker-1_key.pem` for the worker; override
-`controlPlaneSshKeySecureFile` or `workerSshKeySecureFile` when your secure files use different
-names.
+them available to the deployment pipeline.
 
 The pipeline downloads those secure files per job, sets
-`AGENT_SANDBOX_CONTROL_PLANE_SSH_KEY_FILE` and `AGENT_SANDBOX_WORKER_SSH_KEY_FILE`, and the Azure
-inventory uses those paths for Ansible SSH. The worker SSH path still uses the control-plane VM as a
-`ProxyCommand` jump host, so the pipeline agent must be able to reach the control-plane public SSH
-endpoint and the control plane must be able to reach the worker private IP. For local operator runs,
-export the same environment variables before invoking `ansible-playbook`, or place the keys at the
-fallback `~/.ssh/truman-control-center_key.pem` and `~/.ssh/truman-worker-1_key.pem` paths.
+`AGENT_SANDBOX_CONTROL_PLANE_SSH_KEY_FILE` and `AGENT_SANDBOX_WORKER_SSH_KEY_FILE`, and the
+operator-owned Azure inventory uses those paths for Ansible SSH. A worker SSH path can use the
+control-plane VM as a `ProxyCommand` jump host, so the pipeline agent must be able to reach the
+control-plane public SSH endpoint and the control plane must be able to reach the worker private IP.
+For local operator runs, export the same environment variables before invoking `ansible-playbook`.
 
 For Microsoft-hosted agents, the pipeline can temporarily allow the current build agent's public
 `/32` to reach SSH on the control-plane NSG. Set `azureServiceConnection` to an Azure Resource

@@ -5,6 +5,20 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-26 - Teams Message Store SQLite
+
+- Moved the durable Teams message store from per-write JSON rewrites to SQLite,
+  with first-use import from existing `runtime/teams_messages.json` files.
+- Batched `teams_get_messages` persistence so each fetch stores refreshed Teams
+  messages in one repository transaction.
+
+## 2026-05-26 - Secret File Cleanup
+
+- Removed local env files from the tracked repository surface.
+- Ignored generated `config/*.env` files while keeping checked-in `.env.example` files.
+- Moved client-specific Azure Pipeline, inventory, group vars, and Vault material out of the
+  product repo and added non-secret Ansible examples.
+
 ## 2026-05-26 - Teams Status List Rendering
 
 - Rendered unindented bullet details following numbered Teams status items as

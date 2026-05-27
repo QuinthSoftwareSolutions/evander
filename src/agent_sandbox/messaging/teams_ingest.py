@@ -31,7 +31,7 @@ from agent_sandbox.runtime import (
     _build_delegated_teams_token_provider,
     build_runtime,
 )
-from agent_sandbox.repositories.records import JsonTeamsRecordsRepository
+from agent_sandbox.repositories.records import SqliteTeamsRecordsRepository, teams_records_db_path
 from agent_sandbox.services import (
     GraphTeamsService,
     normalize_teams_target,
@@ -311,7 +311,10 @@ class TeamsIngestWorker:
         else:
             resolved_token_provider = token_provider
         return GraphTeamsService(
-            JsonTeamsRecordsRepository(self.config.teams_message_store_path),
+            SqliteTeamsRecordsRepository(
+                teams_records_db_path(self.config.teams_message_store_path),
+                legacy_json_path=self.config.teams_message_store_path,
+            ),
             token=token,
             token_provider=resolved_token_provider,
             api_base_url=provider_config.teams_graph_api_base_url,
