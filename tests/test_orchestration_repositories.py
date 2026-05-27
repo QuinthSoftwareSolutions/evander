@@ -20,6 +20,10 @@ from agent_sandbox.repositories.orchestration import (
     JsonWorkflowConfigSnapshotRepository,
     SqliteWorkflowConfigSnapshotRepository,
 )
+from agent_sandbox.repositories.orchestration_db import (
+    connect_orchestration_db,
+    maybe_checkpoint_orchestration_wal,
+)
 
 
 def _effect_record(
@@ -242,6 +246,104 @@ def test_sqlite_execution_repository_supports_indexed_queries(tmp_path: Path) ->
     assert gate_store.find_latest_execution_for_gate("merge-1") == newer_gate
 
 
+def test_execution_repositories_list_waiting_and_completion_pending_records(
+    tmp_path: Path,
+) -> None:
+    stores = [
+        JsonExecutionStore(tmp_path / "effect-executions.json"),
+        SqliteExecutionStore(tmp_path / "orchestration.db"),
+    ]
+    for index, execution_store in enumerate(stores):
+        waiting_target = _effect_record(
+            execution_id=f"exec-waiting-target-{index}",
+            idempotency_key=f"idem-waiting-target-{index}",
+        )
+        waiting_target.status = "waiting"
+        waiting_target.effect_type = "effect:agent:enqueue-prompt"
+        waiting_other = _effect_record(
+            execution_id=f"exec-waiting-other-{index}",
+            idempotency_key=f"idem-waiting-other-{index}",
+        )
+        waiting_other.status = "waiting"
+        waiting_other.effect_type = "effect:other"
+        pending = _effect_record(
+            execution_id=f"exec-pending-{index}",
+            idempotency_key=f"idem-pending-{index}",
+        )
+        pending.status = "completion_pending"
+        succeeded = _effect_record(
+            execution_id=f"exec-succeeded-{index}",
+            idempotency_key=f"idem-succeeded-{index}",
+        )
+        succeeded.status = "succeeded"
+
+        for record in (waiting_target, waiting_other, pending, succeeded):
+            execution_store.record_execution(record)
+
+        assert [
+            record.execution_id
+            for record in execution_store.list_waiting_records(
+                "effect:agent:enqueue-prompt"
+            )
+        ] == [waiting_target.execution_id]
+        assert {record.execution_id for record in execution_store.list_waiting_records()} == {
+            waiting_target.execution_id,
+            waiting_other.execution_id,
+        }
+        assert [
+            record.execution_id
+            for record in execution_store.list_completion_pending_records()
+        ] == [pending.execution_id]
+
+
+def test_gate_execution_repositories_list_waiting_and_completion_pending_records(
+    tmp_path: Path,
+) -> None:
+    stores = [
+        JsonGateExecutionStore(tmp_path / "gate-executions.json"),
+        SqliteGateExecutionStore(tmp_path / "orchestration.db"),
+    ]
+    for index, gate_store in enumerate(stores):
+        waiting_target = _gate_record(
+            execution_id=f"gate-waiting-target-{index}",
+            idempotency_key=f"gate-idem-waiting-target-{index}",
+            gate_id="gate-target",
+            finished_at=datetime(2026, 4, 23, 12, 0, tzinfo=UTC),
+        )
+        waiting_target.status = "waiting"
+        waiting_target.gate_type = "gate:await-agent"
+        waiting_other = _gate_record(
+            execution_id=f"gate-waiting-other-{index}",
+            idempotency_key=f"gate-idem-waiting-other-{index}",
+            gate_id="gate-other",
+            finished_at=datetime(2026, 4, 23, 12, 1, tzinfo=UTC),
+        )
+        waiting_other.status = "waiting"
+        waiting_other.gate_type = "gate:other"
+        pending = _gate_record(
+            execution_id=f"gate-pending-{index}",
+            idempotency_key=f"gate-idem-pending-{index}",
+            gate_id="gate-pending",
+            finished_at=datetime(2026, 4, 23, 12, 2, tzinfo=UTC),
+        )
+        pending.status = "completion_pending"
+
+        for record in (waiting_target, waiting_other, pending):
+            gate_store.record_execution(record)
+
+        assert [
+            record.execution_id
+            for record in gate_store.list_waiting_records("gate:await-agent")
+        ] == [waiting_target.execution_id]
+        assert {record.execution_id for record in gate_store.list_waiting_records()} == {
+            waiting_target.execution_id,
+            waiting_other.execution_id,
+        }
+        assert [record.execution_id for record in gate_store.list_completion_pending_records()] == [
+            pending.execution_id
+        ]
+
+
 def test_sqlite_execution_repository_treats_completion_pending_as_active(
     tmp_path: Path,
 ) -> None:
@@ -292,6 +394,44 @@ def test_sqlite_gate_execution_repository_treats_completion_pending_as_active(
     assert cleared == 1
     assert gate_store.get_execution("gate-1").status == "failed"
     assert gate_store.get_execution("gate-1").dismissed_at is not None
+
+
+def test_orchestration_wal_checkpoint_records_maintenance_metadata(tmp_path: Path) -> None:
+    db_path = tmp_path / "orchestration.db"
+    execution_store = SqliteExecutionStore(db_path)
+    execution_store.record_execution(
+        _effect_record(execution_id="exec-1", idempotency_key="idem-1")
+    )
+
+    result = maybe_checkpoint_orchestration_wal(
+        db_path,
+        mode="truncate",
+        min_bytes=0,
+        interval_seconds=0,
+        busy_timeout_ms=100,
+    )
+
+    assert result.attempted is True
+    assert result.mode == "truncate"
+    with connect_orchestration_db(db_path) as connection:
+        row = connection.execute(
+            "SELECT value_json FROM orchestration_metadata WHERE key = ?",
+            ("last_wal_checkpoint",),
+        ).fetchone()
+    assert row is not None
+    payload = json.loads(row["value_json"])
+    assert payload["mode"] == "truncate"
+    assert isinstance(payload["wal_size_bytes"], int)
+
+    skipped = maybe_checkpoint_orchestration_wal(
+        db_path,
+        mode="truncate",
+        min_bytes=0,
+        interval_seconds=300,
+        busy_timeout_ms=100,
+    )
+    assert skipped.attempted is False
+    assert skipped.skipped_reason == "interval"
 
 
 def test_sqlite_execution_repository_clears_target_event_without_full_file_store(

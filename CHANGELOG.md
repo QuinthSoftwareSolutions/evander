@@ -5,6 +5,38 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-27 - Orchestration SQLite WAL Maintenance
+
+- Added configurable SQLite WAL checkpoint maintenance for the workflow
+  orchestration store, defaulting to truncated checkpoints when
+  `orchestration.db-wal` reaches 64 MiB and at most once every five minutes.
+- Ran WAL checkpoint maintenance from active trigger/effect worker cycles so
+  long-running SQLite deployments are not limited to startup cleanup.
+- Removed full-history effect execution scans from the effect-orchestrator hot
+  loop by using indexed waiting/completion-pending queries and running
+  waiting/gate maintenance after event dispatch.
+- Avoided rewriting unchanged workflow config snapshots on every effect worker
+  cycle.
+- Moved the Teams ingest inbox from JSON-object rewrites to SQLite with
+  first-use import from existing `runtime/teams-inbox-store.json` files, and
+  targeted Teams trigger queries by channel target and cursor timestamp.
+- Stored Teams inbox SQLite comparison timestamps in fixed-width UTC form so
+  same-second fractional messages are not skipped by cursor filters.
+
+## 2026-05-26 - Teams Message Store SQLite
+
+- Moved the durable Teams message store from per-write JSON rewrites to SQLite,
+  with first-use import from existing `runtime/teams_messages.json` files.
+- Batched `teams_get_messages` persistence so each fetch stores refreshed Teams
+  messages in one repository transaction.
+
+## 2026-05-26 - Secret File Cleanup
+
+- Removed local env files from the tracked repository surface.
+- Ignored generated `config/*.env` files while keeping checked-in `.env.example` files.
+- Moved client-specific Azure Pipeline, inventory, group vars, and Vault material out of the
+  product repo and added non-secret Ansible examples.
+
 ## 2026-05-26 - Teams Status List Rendering
 
 - Rendered unindented bullet details following numbered Teams status items as

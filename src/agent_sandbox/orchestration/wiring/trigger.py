@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
 from agent_sandbox.provider_config import ProviderConfigResolver
 from agent_sandbox.provider_profiles import resolve_provider_module_names
+from agent_sandbox.repositories.orchestration_db import maybe_checkpoint_orchestration_wal
+from agent_sandbox.orchestration.wal_maintenance import sqlite_orchestration_store_enabled
 from agent_sandbox.runtime import RuntimeContext
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue, TriggerEventQueue
 from agent_sandbox.triggers.registry import TriggerProviderFactory
@@ -77,6 +79,13 @@ def build_trigger_worker_wiring(
             worker_config.orchestration_store_path,
             retention_days=int(worker_config.orchestration_retention_days),
         )
+        maybe_checkpoint_orchestration_wal(
+            worker_config.orchestration_store_path,
+            mode=worker_config.orchestration_wal_checkpoint_mode,
+            min_bytes=worker_config.orchestration_wal_checkpoint_min_bytes,
+            interval_seconds=worker_config.orchestration_wal_checkpoint_interval_seconds,
+            busy_timeout_ms=worker_config.orchestration_wal_checkpoint_busy_timeout_ms,
+        )
     else:
         event_queue = TriggerEventQueue(
             worker_config.event_queue_store_path,
@@ -100,7 +109,4 @@ def build_trigger_worker_wiring(
 def _sqlite_orchestration_store_enabled(
     worker_config: TriggerOrchestratorWorkerGlobalConfig,
 ) -> bool:
-    return (
-        worker_config.orchestration_store_backend == "sqlite"
-        and "orchestration_store_backend" in worker_config.model_fields_set
-    )
+    return sqlite_orchestration_store_enabled(worker_config)

@@ -175,15 +175,11 @@ def test_worker_group_vars_define_docker_and_durable_state_contract() -> None:
     assert "AGENT_SANDBOX_WORKER_MSSQL_ADMIN_PASSWORD" in text
 
 
-def test_worker_azure_inventory_uses_truman_control_plane_identity() -> None:
-    azure = (ROOT / "ansible" / "group_vars" / "azure.yml").read_text(encoding="utf-8")
+def test_worker_defaults_derive_control_plane_identity_from_hostvars() -> None:
     worker_defaults = (
         ROOT / "ansible" / "group_vars" / "agent_sandbox_worker_hosts.yml"
     ).read_text(encoding="utf-8")
 
-    assert 'agent_sandbox_deploy_path: "/opt/truman"' in azure
-    assert 'agent_sandbox_run_user: "truman"' in azure
-    assert "agent_sandbox_install_azure_cli: true" in azure
     assert "agent_sandbox_install_azure_cli: false" in worker_defaults
     assert "agent_sandbox_git_user" in worker_defaults
     assert "hostvars[agent_sandbox_control_plane_host].agent_sandbox_run_user" in worker_defaults
@@ -194,7 +190,7 @@ def test_worker_egress_policy_defaults_expose_private_control_plane_endpoints() 
     defaults = (ROOT / "ansible" / "group_vars" / "all" / "defaults.yml").read_text(
         encoding="utf-8"
     )
-    azure_inventory = (ROOT / "ansible" / "inventory" / "azure.yml").read_text(
+    azure_inventory = (ROOT / "ansible" / "inventory" / "azure.example.yml").read_text(
         encoding="utf-8"
     )
     worker_defaults = (

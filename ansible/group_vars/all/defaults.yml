@@ -35,8 +35,10 @@ agent_sandbox_repo_managed_tracked_config_paths: >-
     )
   }}
 agent_sandbox_repo_managed_base_untracked_config_paths:
+  - config/admin-web.env
   - config/ado-worker.env
   - config/discord-wake/config.json
+  - config/firewall.env
   - config/gateway.env
   - config/http-target-relay.env
   - config/openai-relay.env

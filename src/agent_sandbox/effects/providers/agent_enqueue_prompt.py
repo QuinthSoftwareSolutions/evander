@@ -49,6 +49,22 @@ _ACTIVE_CONTAINER_STATUSES = {
 }
 
 
+def _waiting_execution_records(worker: Any, effect_type: str) -> list[Any]:
+    execution_store = getattr(worker, "execution_store", None)
+    list_waiting = getattr(execution_store, "list_waiting_records", None)
+    if callable(list_waiting):
+        return list(list_waiting(effect_type))
+    read_all = getattr(execution_store, "read_all", None)
+    if not callable(read_all):
+        return []
+    return [
+        record
+        for record in read_all().values()
+        if str(getattr(record, "effect_type", "") or "").strip() == effect_type
+        and str(getattr(record, "status", "") or "").strip() == "waiting"
+    ]
+
+
 class AgentEnqueuePromptEffectProvider(EffectProviderBase):
     capability = NodeCapability(
         min_inbound=1,
@@ -432,9 +448,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             return 0
 
         finalized = 0
-        for record in worker.execution_store.read_all().values():
-            if record.effect_type != cls.node_type() or record.status != "waiting":
-                continue
+        for record in _waiting_execution_records(worker, cls.node_type()):
             if str(record.outputs.get("dispatch_id") or "").strip() != dispatch_id:
                 continue
             AgentPromptEffectProvider._finalize_waiting_record(
@@ -452,9 +466,7 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
             return 0
         completed = 0
         vm_records: list[Any] = []
-        for record in worker.execution_store.read_all().values():
-            if record.effect_type != cls.node_type() or record.status != "waiting":
-                continue
+        for record in _waiting_execution_records(worker, cls.node_type()):
             if (
                 str(record.outputs.get("execution_backend") or "").strip()
                 == ExecutionBackendKind.CONTAINER_WORKER_VM.value
