@@ -960,10 +960,14 @@ def test_worker_job_store_migrates_legacy_workspace_path_records(tmp_path: Path)
 
     assert response.status_code == 201
     store = WorkerJobStore(store_path)
+    assert store.path == runtime_dir / "worker-jobs.db"
     record = store.get("legacy-job")
     assert record is not None
     assert record.repo_root_path == str(legacy_workspace)
     assert not hasattr(record, "workspace_path")
+    new_record = store.get("job-1")
+    assert new_record is not None
+    assert new_record.session_id == "session-1"
     assert store_path.read_bytes() == legacy_bytes
 
 
