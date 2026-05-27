@@ -437,4 +437,6 @@ class TeamsInboxStore:
     def _datetime_to_storage(value: datetime) -> str:
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        return (
+            value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        )

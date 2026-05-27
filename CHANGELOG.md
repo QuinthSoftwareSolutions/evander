@@ -20,6 +20,8 @@ material. Newer entries are added incrementally as changes land.
 - Moved the Teams ingest inbox from JSON-object rewrites to SQLite with
   first-use import from existing `runtime/teams-inbox-store.json` files, and
   targeted Teams trigger queries by channel target and cursor timestamp.
+- Stored Teams inbox SQLite comparison timestamps in fixed-width UTC form so
+  same-second fractional messages are not skipped by cursor filters.
 
 ## 2026-05-26 - Teams Message Store SQLite
 
