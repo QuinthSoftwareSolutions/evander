@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 import fcntl
@@ -165,6 +165,17 @@ class JsonStore(_JsonFileStoreBase, Generic[T]):
                 items = self._read_all_unlocked()
                 items[key] = value
                 self._write_all_unlocked(items)
+
+    def put_many(self, items: Mapping[str, T]) -> None:
+        if not items:
+            return
+
+        batch = dict(items)
+
+        def updater(existing: dict[str, T]) -> None:
+            existing.update(batch)
+
+        self.update_all(updater)
 
     def delete(self, key: str) -> None:
         with self._lock:
