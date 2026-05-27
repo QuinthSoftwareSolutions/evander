@@ -31,6 +31,9 @@ def _record(
     updated_at: datetime | None = None,
     started_at: datetime | None = None,
     finished_at: datetime | None = None,
+    cleanup_attempted_at: datetime | None = None,
+    cleanup_completed_at: datetime | None = None,
+    cleanup_error: str | None = None,
     metadata: dict[str, object] | None = None,
 ) -> ContainerWorkerExecutionRecord:
     return ContainerWorkerExecutionRecord(
@@ -45,6 +48,9 @@ def _record(
         finished_at=finished_at,
         last_status=last_status,
         cleanup_status=cleanup_status,
+        cleanup_attempted_at=cleanup_attempted_at,
+        cleanup_completed_at=cleanup_completed_at,
+        cleanup_error=cleanup_error,
         directory_path=directory_path,
         metadata=metadata or {},
     )
@@ -59,6 +65,8 @@ def test_repository_put_get_delete_and_read_all_round_trip(tmp_path: Path) -> No
     created_at = _utc_at(0)
     started_at = _utc_at(1)
     finished_at = _utc_at(2)
+    cleanup_attempted_at = _utc_at(3)
+    cleanup_completed_at = _utc_at(4)
 
     repo.put(
         _record(
@@ -70,6 +78,10 @@ def test_repository_put_get_delete_and_read_all_round_trip(tmp_path: Path) -> No
             created_at=created_at,
             started_at=started_at,
             finished_at=finished_at,
+            cleanup_status="failed",
+            cleanup_attempted_at=cleanup_attempted_at,
+            cleanup_completed_at=cleanup_completed_at,
+            cleanup_error="cleanup failed",
             metadata={
                 "purpose": "round-trip",
                 "authorization": "Bearer should-not-leak",
@@ -87,17 +99,25 @@ def test_repository_put_get_delete_and_read_all_round_trip(tmp_path: Path) -> No
     assert stored.created_at == created_at
     assert stored.started_at == started_at
     assert stored.finished_at == finished_at
+    assert stored.cleanup_status == "failed"
+    assert stored.cleanup_attempted_at == cleanup_attempted_at
+    assert stored.cleanup_completed_at == cleanup_completed_at
+    assert stored.cleanup_error == "cleanup failed"
     assert stored.metadata["purpose"] == "round-trip"
     assert stored.metadata["authorization"] == "[redacted]"
     assert stored.metadata["nested"]["api_key"] == "[redacted]"
     assert stored.updated_at >= stored.created_at
+    assert repo.get(None) is None
+    assert repo.get("   ") is None
 
     all_records = repo.read_all()
     assert list(all_records) == ["exec-1"]
     assert all_records["exec-1"].created_at == created_at
     assert all_records["exec-1"].finished_at == finished_at
+    assert all_records["exec-1"].cleanup_completed_at == cleanup_completed_at
     assert all_records["exec-1"].metadata["authorization"] == "[redacted]"
 
+    repo.delete("exec-1")
     repo.delete("exec-1")
     assert repo.get("exec-1") is None
     assert repo.read_all() == {}
@@ -197,7 +217,7 @@ def test_repository_resolve_and_targeted_listings_are_ordered(tmp_path: Path) ->
             worker_job_id="job-b",
             target_name="target-b",
             directory_path="root/team",
-            last_status="stopped",
+            last_status="running",
             created_at=_utc_at(0),
             metadata={"kind": "b"},
         )
@@ -216,13 +236,25 @@ def test_repository_resolve_and_targeted_listings_are_ordered(tmp_path: Path) ->
     )
     repo.put(
         _record(
+            "exec-d",
+            session_id="session-shared",
+            worker_job_id="job-d",
+            target_name="target-d",
+            directory_path="root/team",
+            last_status="stopped",
+            created_at=_utc_at(5),
+            metadata={"kind": "d"},
+        )
+    )
+    repo.put(
+        _record(
             "exec-c",
             session_id="session-unique",
             worker_job_id="job-c",
             target_name="target-c",
             directory_path="root/other",
             last_status="running",
-            created_at=_utc_at(5),
+            created_at=_utc_at(10),
             metadata={"kind": "c"},
         )
     )
@@ -234,33 +266,44 @@ def test_repository_resolve_and_targeted_listings_are_ordered(tmp_path: Path) ->
 
     with pytest.raises(
         ValueError,
-        match="Ambiguous container worker session target session-shared: exec-a, exec-b",
+        match="Ambiguous container worker session target session-shared: exec-a, exec-b, exec-d",
     ):
         repo.resolve("session-shared")
+    with pytest.raises(
+        ValueError, match="Unknown container worker execution target: missing-target"
+    ):
+        repo.resolve("missing-target")
+    with pytest.raises(ValueError, match="container worker execution target is required"):
+        repo.resolve("   ")
 
     assert [record.execution_id for record in repo.list_all_ordered()] == [
         "exec-a",
         "exec-b",
+        "exec-d",
         "exec-c",
     ]
-    assert list(repo.read_all()) == ["exec-a", "exec-b", "exec-c"]
+    assert list(repo.read_all()) == ["exec-a", "exec-b", "exec-d", "exec-c"]
     assert [record.execution_id for record in repo.list_by_session("session-shared")] == [
         "exec-a",
         "exec-b",
+        "exec-d",
     ]
     assert [record.execution_id for record in repo.list_active_by_session("session-shared", ["running"])] == [
         "exec-a",
+        "exec-b",
     ]
     assert repo.list_active_by_session("", ["running"]) == []
     assert repo.list_active_by_session("session-shared", []) == []
     assert [record.execution_id for record in repo.list_by_directory(None)] == [
         "exec-a",
         "exec-b",
+        "exec-d",
         "exec-c",
     ]
     assert [record.execution_id for record in repo.list_by_directory("root/team")] == [
         "exec-a",
         "exec-b",
+        "exec-d",
     ]
 
 
