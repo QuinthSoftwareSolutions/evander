@@ -2806,7 +2806,6 @@ class DiscordInboxService:
         limit: int | None,
         persist_session_cursor: bool,
     ) -> ListUnreadDiscordMessagesResponse:
-        payload = self._read_store()
         allowed_channels = {stream["channel_id"] for stream in streams}
         channel_cursors = {
             stream["channel_id"]: self._effective_cursor(
@@ -2817,20 +2816,24 @@ class DiscordInboxService:
             for stream in streams
         }
         items: list[DiscordMessageEnvelope] = []
-        for raw_value in payload.get("messages", {}).values():
-            if not isinstance(raw_value, dict):
-                continue
-            candidate = DiscordMessageEnvelope.model_validate(raw_value)
-            if candidate.channel_id not in allowed_channels:
-                continue
-            if session_id is not None and self._is_self_authored_message(
-                candidate, session_id=session_id
-            ):
-                continue
-            effective_cursor = channel_cursors.get(candidate.channel_id)
-            if effective_cursor and candidate.created_at <= self._parse_cursor(effective_cursor):
-                continue
-            items.append(candidate)
+        if allowed_channels:
+            candidates = self.store.list_all_messages(
+                channel_ids=sorted(allowed_channels),
+                limit=None,
+            ).messages
+            for candidate in candidates:
+                if candidate.channel_id not in allowed_channels:
+                    continue
+                if session_id is not None and self._is_self_authored_message(
+                    candidate, session_id=session_id
+                ):
+                    continue
+                effective_cursor = channel_cursors.get(candidate.channel_id)
+                if effective_cursor and candidate.created_at <= self._parse_cursor(
+                    effective_cursor
+                ):
+                    continue
+                items.append(candidate)
 
         items.sort(
             key=lambda item: (
