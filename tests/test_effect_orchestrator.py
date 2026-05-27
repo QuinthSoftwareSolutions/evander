@@ -5859,6 +5859,55 @@ def test_force_complete_await_agent_releases_follow_up(tmp_path: Path, monkeypat
     assert {item["effect_id"] for item in effect_payload.values()} == {"effect-1", "effect-2"}
 
 
+class _IndexedOnlyExecutionStore:
+    def __init__(self, records: list[object]) -> None:
+        self.records = records
+
+    def list_waiting_records(self, effect_type: str | None = None) -> list[object]:
+        normalized_type = str(effect_type or "").strip()
+        return [
+            record
+            for record in self.records
+            if str(getattr(record, "status", "") or "").strip() == "waiting"
+            and (
+                not normalized_type
+                or str(getattr(record, "effect_type", "") or "").strip() == normalized_type
+            )
+        ]
+
+    def read_all(self) -> dict[str, object]:
+        raise AssertionError("hot-path reconciliation should not call read_all")
+
+
+def test_agent_prompt_waiting_reconciliation_uses_indexed_store_method() -> None:
+    worker = SimpleNamespace(execution_store=_IndexedOnlyExecutionStore([]))
+
+    assert AgentPromptEffectProvider.reconcile_waiting(worker=worker) == 0
+    assert AgentEnqueuePromptEffectProvider.reconcile_waiting(worker=worker) == 0
+
+
+def test_enqueue_prompt_queue_dispatch_checks_waiting_records_without_full_scan() -> None:
+    waiting_record = SimpleNamespace(
+        effect_type="effect:agent:enqueue-prompt",
+        status="waiting",
+        outputs={"session_id": "session-1"},
+        resolved_config={},
+        input_payload={},
+    )
+    worker = SimpleNamespace(
+        execution_store=_IndexedOnlyExecutionStore([waiting_record]),
+    )
+    queued_record = SimpleNamespace(session_id="session-1", vm_name="", target="")
+
+    assert (
+        AgentEnqueuePromptQueueDispatchHook()._has_waiting_enqueue_prompt_for_record(
+            worker=worker,
+            record=queued_record,
+        )
+        is True
+    )
+
+
 def test_waiting_agent_prompt_reconciliation_completes_from_idle_matching_dispatch(
     tmp_path: Path, monkeypatch
 ) -> None:

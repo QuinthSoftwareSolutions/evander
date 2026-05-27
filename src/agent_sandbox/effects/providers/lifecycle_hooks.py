@@ -544,24 +544,27 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
 
     def _has_waiting_enqueue_prompt_for_record(self, *, worker: Any, record: Any) -> bool:
         execution_store = getattr(worker, "execution_store", None)
+        list_waiting = getattr(execution_store, "list_waiting_records", None)
         read_all = getattr(execution_store, "read_all", None)
-        if not callable(read_all):
-            return False
         session_id = str(getattr(record, "session_id", "") or "").strip()
         vm_name = str(getattr(record, "vm_name", "") or "").strip()
         target = str(getattr(record, "target", "") or "").strip()
         try:
-            records = read_all().values()
+            if callable(list_waiting):
+                records = list_waiting("effect:agent:enqueue-prompt")
+            elif callable(read_all):
+                records = [
+                    execution
+                    for execution in read_all().values()
+                    if str(getattr(execution, "effect_type", "") or "").strip()
+                    == "effect:agent:enqueue-prompt"
+                    and str(getattr(execution, "status", "") or "").strip() == "waiting"
+                ]
+            else:
+                return False
         except Exception:
             return False
         for execution in records:
-            if (
-                str(getattr(execution, "effect_type", "") or "").strip()
-                != "effect:agent:enqueue-prompt"
-            ):
-                continue
-            if str(getattr(execution, "status", "") or "").strip() != "waiting":
-                continue
             outputs = getattr(execution, "outputs", None)
             if not isinstance(outputs, dict):
                 outputs = {}

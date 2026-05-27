@@ -89,6 +89,7 @@ from agent_sandbox.workflow.engine.node_executors import (
 )
 from agent_sandbox.workflow.engine import OrchestrationLoop
 from agent_sandbox.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
+from agent_sandbox.orchestration.wal_maintenance import OrchestrationWalCheckpointMaintenance
 from agent_sandbox.orchestration.wiring import (
     EffectWorkerStoreWiring,
     EffectWorkerWiring,
@@ -122,6 +123,7 @@ __all__ = [
 
 _DEFAULT_MAX_GRAPH_DEPTH = 16
 _DEFAULT_MAX_EVENTS_PER_CYCLE = 200
+_PHASE_LOG_THRESHOLD_SECONDS = 0.25
 _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
 COMPLETION_PENDING_STATUS = "completion_pending"
@@ -379,7 +381,9 @@ class EventScheduleEffectExecutor:
         source = InternalEventSource(
             source_type="scheduled_internal_event",
             workflow_run_id=_normalize_optional_string(execution_context.get("workflow_run_id")),
-            workflow_event_id=_normalize_optional_string(execution_context.get("workflow_event_id")),
+            workflow_event_id=_normalize_optional_string(
+                execution_context.get("workflow_event_id")
+            ),
             workflow_trace_id=_normalize_optional_string(
                 execution_context.get("workflow_trace_id")
             ),
@@ -464,6 +468,8 @@ class EffectOrchestratorWorker:
         self._last_graph_revision: str | None = None
         self._last_graph_node_count = 0
         self._last_graph_edge_count = 0
+        self._last_snapshot_revision: str | None = None
+        self._wal_checkpoint_maintenance = OrchestrationWalCheckpointMaintenance()
         self._scheduled_internal_event_store_cache: _ScheduledInternalEventStoreCache = None
         self.provider_factory = resolved_wiring.provider_factory
         self.query_provider_factory = resolved_wiring.query_provider_factory
@@ -513,12 +519,12 @@ class EffectOrchestratorWorker:
         config_changed = latest_config != previous_config
         early_completion_events_published = 0
         if config_changed:
-            provider_changed = _provider_loader_signature(latest_config) != _provider_loader_signature(
-                previous_config
-            )
-            store_changed = _effect_store_binding_signature(latest_config) != _effect_store_binding_signature(
-                previous_config
-            )
+            provider_changed = _provider_loader_signature(
+                latest_config
+            ) != _provider_loader_signature(previous_config)
+            store_changed = _effect_store_binding_signature(
+                latest_config
+            ) != _effect_store_binding_signature(previous_config)
             store_wiring: EffectWorkerStoreWiring | None = None
             runtime_wiring: EffectProviderRuntimeWiring | None = None
             apply_config = True
@@ -601,6 +607,7 @@ class EffectOrchestratorWorker:
                     self.workflow_config_snapshot_store = (
                         store_wiring.workflow_config_snapshot_store
                     )
+                    self._last_snapshot_revision = None
                     self.queued_agent_prompt_store = store_wiring.queued_agent_prompt_store
                     self._wake_sleeper.set_path(wake_socket_path_for_lock(self.lock_path))
                     self._kernel.config = PollingKernelConfig(
@@ -654,34 +661,62 @@ class EffectOrchestratorWorker:
         completion_events_published = early_completion_events_published
 
         graph = _build_execution_graph(active_config)
-        snapshot_captured_at = datetime.now(UTC)
-        try:
-            self.workflow_config_snapshot_store.put_snapshot(
-                _build_workflow_config_snapshot(
-                    active_config=active_config,
-                    graph=graph,
-                    config_revision=config_revision,
-                    captured_at=snapshot_captured_at,
+        if self._last_snapshot_revision != config_revision:
+            snapshot_captured_at = datetime.now(UTC)
+            phase_started = time.perf_counter()
+            try:
+                self.workflow_config_snapshot_store.put_snapshot(
+                    _build_workflow_config_snapshot(
+                        active_config=active_config,
+                        graph=graph,
+                        config_revision=config_revision,
+                        captured_at=snapshot_captured_at,
+                    )
                 )
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "Effect orchestrator failed to persist workflow config snapshot revision=%s",
-                config_revision,
+                self._last_snapshot_revision = config_revision
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Effect orchestrator failed to persist workflow config snapshot revision=%s",
+                    config_revision,
+                )
+            self._log_phase_duration(
+                "config_snapshot",
+                phase_started,
+                snapshot_written=True,
             )
         self._log_graph_revision_change(
             config_revision=config_revision,
             node_count=len(graph.nodes_by_id),
             edge_count=len(active_config.edges),
         )
-        completion_events_published += self._reconcile_gate_providers(graph=graph)
-        completion_events_published += self._run_waiting_reconciliation_hooks()
 
+        phase_started = time.perf_counter()
         _completed_count, published_count = self._reap_completed_futures()
+        self._log_phase_duration(
+            "reap_completed_futures",
+            phase_started,
+            completed_count=_completed_count,
+            published_count=published_count,
+        )
         completion_events_published += published_count
-        completion_events_published += self._run_post_completion_dispatch_hooks()
-        completion_events_published += self._retry_pending_effect_completion_publications()
-        completion_events_published += self._retry_pending_gate_completion_publications()
+
+        phase_started = time.perf_counter()
+        count = self._retry_pending_effect_completion_publications()
+        self._log_phase_duration(
+            "retry_pending_effect_completion_publications",
+            phase_started,
+            retried=count,
+        )
+        completion_events_published += count
+
+        phase_started = time.perf_counter()
+        count = self._retry_pending_gate_completion_publications()
+        self._log_phase_duration(
+            "retry_pending_gate_completion_publications",
+            phase_started,
+            retried=count,
+        )
+        completion_events_published += count
 
         loop = OrchestrationLoop[
             TriggerQueueRecord,
@@ -712,10 +747,17 @@ class EffectOrchestratorWorker:
         ) -> EffectLoopExecution:
             nonlocal effect_executions_started
             resolved_graph, resolved_config_revision, _cursor = dependency
+            phase_started = time.perf_counter()
             execution_count = self._process_event_record(
                 queue_record,
                 graph=resolved_graph,
                 config_revision=resolved_config_revision,
+            )
+            self._log_phase_duration(
+                "event_processing",
+                phase_started,
+                event_id=queue_record.event_id,
+                executions_started=execution_count,
             )
             effect_executions_started += execution_count
             return EffectLoopExecution(
@@ -724,6 +766,7 @@ class EffectOrchestratorWorker:
                 published_count=0,
             )
 
+        phase_started = time.perf_counter()
         loop_result = loop.run_once(
             max_events=max(
                 1,
@@ -733,6 +776,12 @@ class EffectOrchestratorWorker:
         )
         pending_events_scanned = loop_result.events_scanned
         events_processed = loop_result.events_scanned
+        self._log_phase_duration(
+            "event_loop",
+            phase_started,
+            events_scanned=loop_result.events_scanned,
+            executions_recorded=loop_result.executions_recorded,
+        )
 
         # Give very short-running in-process effects a chance to settle before
         # the second reap so the same cycle can publish their completion state.
@@ -740,8 +789,17 @@ class EffectOrchestratorWorker:
 
         # Reap futures again after dispatch so fast in-process effects do not
         # remain marked as running until an extra poll cycle.
+        phase_started = time.perf_counter()
         _completed_count, published_count = self._reap_completed_futures()
+        self._log_phase_duration(
+            "post_dispatch_reap_completed_futures",
+            phase_started,
+            completed_count=_completed_count,
+            published_count=published_count,
+        )
         completion_events_published += published_count
+        completion_events_published += self._run_post_event_maintenance(graph=graph)
+        self._run_orchestration_wal_checkpoint_maintenance()
 
         next_sleep_seconds = _compute_effect_cycle_sleep_seconds(
             events_processed=events_processed,
@@ -934,9 +992,57 @@ class EffectOrchestratorWorker:
         except (AttributeError, KeyError):
             return None
 
-    def _run_waiting_reconciliation_hooks(self) -> int:
+    def _log_phase_duration(self, phase: str, started_at: float, **details: Any) -> None:
+        duration_seconds = time.perf_counter() - started_at
+        if duration_seconds < _PHASE_LOG_THRESHOLD_SECONDS and not any(
+            bool(value) for value in details.values()
+        ):
+            return
+        logger.info(
+            "Effect orchestrator phase completed phase=%s duration_ms=%.1f details=%s",
+            phase,
+            duration_seconds * 1000,
+            {key: value for key, value in details.items() if value is not None},
+        )
+
+    def _run_post_event_maintenance(self, *, graph: ExecutionGraph) -> int:
+        published = 0
+        phase_started = time.perf_counter()
+        count = self._reconcile_gate_providers(graph=graph)
+        self._log_phase_duration("gate_reconciliation", phase_started, reconciled=count)
+        published += count
+
+        phase_started = time.perf_counter()
+        count = self._run_waiting_reconciliation_hooks(graph=graph)
+        self._log_phase_duration("waiting_reconciliation", phase_started, reconciled=count)
+        published += count
+
+        phase_started = time.perf_counter()
+        count = self._run_post_completion_dispatch_hooks()
+        self._log_phase_duration("post_completion_dispatch", phase_started, dispatched=count)
+        published += count
+        return published
+
+    def _run_orchestration_wal_checkpoint_maintenance(self) -> None:
+        phase_started = time.perf_counter()
+        result = self._wal_checkpoint_maintenance.run_if_due(self.worker_config)
+        if result is None:
+            return
+        self._log_phase_duration(
+            "wal_checkpoint",
+            phase_started,
+            attempted=result.attempted,
+            skipped_reason=result.skipped_reason,
+            wal_size_bytes=result.wal_size_bytes,
+            busy=result.busy,
+            log_frames=result.log_frames,
+            checkpointed_frames=result.checkpointed_frames,
+            error=result.error,
+        )
+
+    def _run_waiting_reconciliation_hooks(self, *, graph: ExecutionGraph | None = None) -> int:
         reconciled = 0
-        graph = self._build_execution_graph()
+        graph = graph or self._build_execution_graph()
         for hook in self._lifecycle_reconciliation_hooks:
             hook_name = hook.__class__.__name__
             try:
@@ -965,18 +1071,30 @@ class EffectOrchestratorWorker:
 
     def _retry_pending_effect_completion_publications(self) -> int:
         retried = 0
-        list_executions = getattr(self.execution_store, "list_executions", None)
-        if callable(list_executions):
-            records = list(list_executions())
+        list_completion_pending = getattr(
+            self.execution_store, "list_completion_pending_records", None
+        )
+        if callable(list_completion_pending):
+            records = list(list_completion_pending())
         else:
-            read_all = getattr(self.execution_store, "read_all", None)
-            if not callable(read_all):
-                return 0
-            records = list(read_all().values())
+            list_executions = getattr(self.execution_store, "list_executions", None)
+            if callable(list_executions):
+                records = [
+                    record
+                    for record in list_executions()
+                    if str(getattr(record, "status", "") or "").strip() == COMPLETION_PENDING_STATUS
+                ]
+            else:
+                read_all = getattr(self.execution_store, "read_all", None)
+                if not callable(read_all):
+                    return 0
+                records = [
+                    record
+                    for record in read_all().values()
+                    if str(getattr(record, "status", "") or "").strip() == COMPLETION_PENDING_STATUS
+                ]
 
         for record in records:
-            if str(getattr(record, "status", "") or "").strip() != COMPLETION_PENDING_STATUS:
-                continue
             outputs = dict(getattr(record, "outputs", {}) or {})
             branch_port = getattr(record, "completion_event_branch_port", None)
             published_event_id = self._publish_effect_completion_event_or_mark_pending(
@@ -1121,18 +1239,30 @@ class EffectOrchestratorWorker:
 
     def _retry_pending_gate_completion_publications(self) -> int:
         retried = 0
-        list_executions = getattr(self.gate_execution_store, "list_executions", None)
-        if callable(list_executions):
-            records = list(list_executions())
+        list_completion_pending = getattr(
+            self.gate_execution_store, "list_completion_pending_records", None
+        )
+        if callable(list_completion_pending):
+            records = list(list_completion_pending())
         else:
-            read_all = getattr(self.gate_execution_store, "read_all", None)
-            if not callable(read_all):
-                return 0
-            records = list(read_all().values())
+            list_executions = getattr(self.gate_execution_store, "list_executions", None)
+            if callable(list_executions):
+                records = [
+                    record
+                    for record in list_executions()
+                    if str(getattr(record, "status", "") or "").strip() == COMPLETION_PENDING_STATUS
+                ]
+            else:
+                read_all = getattr(self.gate_execution_store, "read_all", None)
+                if not callable(read_all):
+                    return 0
+                records = [
+                    record
+                    for record in read_all().values()
+                    if str(getattr(record, "status", "") or "").strip() == COMPLETION_PENDING_STATUS
+                ]
 
         for record in records:
-            if str(getattr(record, "status", "") or "").strip() != COMPLETION_PENDING_STATUS:
-                continue
             outputs = dict(getattr(record, "outputs", {}) or {})
             branch_port = getattr(record, "completion_event_branch_port", None)
             for_execution_ids = getattr(record, "completion_event_for_execution_ids", None)
@@ -1353,7 +1483,6 @@ class EffectOrchestratorWorker:
             event_id=queue_record.event_id,
             node_id=node_id,
         )
-
 
     def claim_dedupe_key(
         self,
@@ -2629,7 +2758,9 @@ def _effect_store_binding_signature(
         "gate_execution_store_path": str(worker_config.gate_execution_store_path)
         if worker_config.gate_execution_store_path is not None
         else None,
-        "workflow_config_snapshot_store_path": str(worker_config.workflow_config_snapshot_store_path)
+        "workflow_config_snapshot_store_path": str(
+            worker_config.workflow_config_snapshot_store_path
+        )
         if worker_config.workflow_config_snapshot_store_path is not None
         else None,
         "effect_cursor_store_path": str(worker_config.effect_cursor_store_path)

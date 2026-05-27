@@ -7,7 +7,12 @@ runtime/
 .codex
 /.agent-sandbox/review-context.env
 git-remotes/
-config/nuget-relay.env
+/azure-pipelines.yml
+/config/*.env
+!/config/*.env.example
+ansible/group_vars/azure.yml
+ansible/group_vars/all/vault.yml
+ansible/inventory/azure.yml
 config/ado-worker/config.json
 config/communication-targets/config.json
 config/discord-ingest/config.json

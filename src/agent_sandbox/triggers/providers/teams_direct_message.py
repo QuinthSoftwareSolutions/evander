@@ -41,7 +41,10 @@ class TeamsDirectMessageTriggerProvider(TriggerProviderBase):
             self._resolved_config().runtime_dir / "teams-inbox-store.json"
         )
         candidates: list[TeamsInboxMessage] = []
-        for message in inbox_store.list_all_messages():
+        for message in inbox_store.list_all_messages(
+            created_at_from=cursor,
+            direct_messages_only=True,
+        ):
             if not _is_direct_message(message):
                 continue
             if sender_filter and not sender_filter.intersection(_message_sender_ref_keys(message)):
