@@ -9047,14 +9047,17 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         return None, None
 
     def _container_execution_records_for_session(self, session_id: str) -> list[Any]:
-        return sorted(
-            [
+        repository = self._container_worker_execution_repository()
+        list_by_session = getattr(repository, "list_by_session", None)
+        if callable(list_by_session):
+            records = list_by_session(session_id)
+        else:
+            records = [
                 record
-                for record in self._container_worker_execution_repository().read_all().values()
+                for record in repository.read_all().values()
                 if record.session_id == session_id
-            ],
-            key=self._container_execution_sort_key,
-        )
+            ]
+        return sorted(records, key=self._container_execution_sort_key)
 
     def _session_associated_agent_description(
         self,
@@ -9096,10 +9099,18 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         )
         container_repository = self._container_worker_execution_repository()
         removed_mappings = 0
-        for execution_id, candidate in list(container_repository.read_all().items()):
-            if candidate.session_id == session_id:
-                container_repository.delete(execution_id)
-                removed_mappings += 1
+        list_by_session = getattr(container_repository, "list_by_session", None)
+        if callable(list_by_session):
+            records = list_by_session(session_id)
+        else:
+            records = [
+                candidate
+                for candidate in container_repository.read_all().values()
+                if candidate.session_id == session_id
+            ]
+        for candidate in records:
+            container_repository.delete(candidate.execution_id)
+            removed_mappings += 1
         return worker_session_deleted, removed_mappings
 
     @staticmethod
@@ -9453,10 +9464,18 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         worker_session_removed = self._worker_delete_session_removed(worker_session_deleted)
         container_repository = self._container_worker_execution_repository()
         removed_mappings = 0
-        for execution_id, candidate in list(container_repository.read_all().items()):
-            if candidate.session_id == session_id:
-                container_repository.delete(execution_id)
-                removed_mappings += 1
+        list_by_session = getattr(container_repository, "list_by_session", None)
+        if callable(list_by_session):
+            records = list_by_session(session_id)
+        else:
+            records = [
+                candidate
+                for candidate in container_repository.read_all().values()
+                if candidate.session_id == session_id
+            ]
+        for candidate in records:
+            container_repository.delete(candidate.execution_id)
+            removed_mappings += 1
         removed_session = self.runtime.session_repository.delete_session(session_id)
         removed_assistant_mappings = self._delete_chat_assistant_session_mappings({session_id})
         removed_approvals = _prune_approvals_for_sessions(self.runtime, session_ids={session_id})
