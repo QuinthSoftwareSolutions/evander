@@ -62,7 +62,7 @@ def test_wake_request_store_resolves_json_path_to_sibling_db_and_creates_schema(
         "idx_wake_requests_retention",
         "idx_wake_dispatches_latest",
         "idx_wake_dispatches_retention",
-        "idx_wake_messages_created_at",
+        "idx_wake_messages_retention",
     } <= indexes
 
 
@@ -187,6 +187,7 @@ def test_wake_request_store_skips_legacy_import_when_db_already_has_rows(
     assert "wake-import" not in payload["requests"]
     assert "dispatch-import" not in payload["dispatches"]
     assert "wake:dispatch-import" not in payload["messages"]
+    assert path.read_text(encoding="utf-8") == json.dumps(legacy_payload)
 
 
 def test_record_dispatch_updates_request_and_appends_message(tmp_path: Path) -> None:
@@ -450,16 +451,90 @@ def test_wake_request_store_treats_missing_or_empty_legacy_json_as_empty_store(
     assert store.read_raw() == {"requests": {}, "dispatches": {}, "messages": {}}
 
 
-def test_wake_request_store_raises_on_invalid_legacy_json_when_db_is_empty(
+@pytest.mark.parametrize(
+    ("legacy_text", "expected_exception"),
+    [
+        ("{not json", json.JSONDecodeError),
+        (json.dumps(["not", "an", "object"]), ValueError),
+    ],
+)
+def test_wake_request_store_rejects_invalid_legacy_payload_when_db_is_empty(
+    tmp_path: Path,
+    legacy_text: str,
+    expected_exception: type[Exception],
+) -> None:
+    path = tmp_path / "wake-store.json"
+    path.write_text(legacy_text, encoding="utf-8")
+
+    with pytest.raises(expected_exception):
+        WakeRequestStore(path)
+
+    db_path = tmp_path / "wake-store.db"
+    with sqlite3.connect(db_path) as connection:
+        counts = {
+            row[0]: row[1]
+            for row in connection.execute(
+                """
+                SELECT 'wake_requests' AS table_name, COUNT(*) AS row_count
+                FROM wake_requests
+                UNION ALL
+                SELECT 'wake_dispatches' AS table_name, COUNT(*) AS row_count
+                FROM wake_dispatches
+                UNION ALL
+                SELECT 'wake_messages' AS table_name, COUNT(*) AS row_count
+                FROM wake_messages
+                """
+            )
+        }
+
+    assert counts == {
+        "wake_requests": 0,
+        "wake_dispatches": 0,
+        "wake_messages": 0,
+    }
+
+
+def test_wake_request_store_rejects_invalid_legacy_wake_records_when_db_is_empty(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "wake-store.json"
-    path.write_text("{not json", encoding="utf-8")
+    payload = {
+        "requests": {
+            "wake-1": {
+                "request_id": "wake-1",
+            }
+        },
+        "dispatches": {},
+        "messages": {},
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
 
-    store = WakeRequestStore(path)
+    with pytest.raises(Exception):
+        WakeRequestStore(path)
 
-    with pytest.raises(json.JSONDecodeError):
-        store.read_raw()
+    db_path = tmp_path / "wake-store.db"
+    with sqlite3.connect(db_path) as connection:
+        counts = {
+            row[0]: row[1]
+            for row in connection.execute(
+                """
+                SELECT 'wake_requests' AS table_name, COUNT(*) AS row_count
+                FROM wake_requests
+                UNION ALL
+                SELECT 'wake_dispatches' AS table_name, COUNT(*) AS row_count
+                FROM wake_dispatches
+                UNION ALL
+                SELECT 'wake_messages' AS table_name, COUNT(*) AS row_count
+                FROM wake_messages
+                """
+            )
+        }
+
+    assert counts == {
+        "wake_requests": 0,
+        "wake_dispatches": 0,
+        "wake_messages": 0,
+    }
 
 
 def test_wake_request_store_skips_invalid_legacy_json_after_db_is_seeded(
@@ -484,6 +559,7 @@ def test_wake_request_store_skips_invalid_legacy_json_after_db_is_seeded(
     payload = reopened.read_raw()
 
     assert payload["requests"] == {"wake-seeded": seeded.model_dump(mode="json")}
+    assert path.read_text(encoding="utf-8") == "{not json"
 
 
 def test_wake_request_store_retains_independent_request_and_dispatch_updates_across_instances(
