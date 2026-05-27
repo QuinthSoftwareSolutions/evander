@@ -4094,7 +4094,10 @@ def teams_ingest(
         result = worker.run_once_with_lock()
         typer.echo(
             f"Teams ingest worker cycle complete directories={result.directories_polled} "
-            f"sessions={result.sessions_seen} sleep_seconds={result.next_sleep_seconds:.3f}"
+            f"sessions={result.sessions_seen} "
+            f"new_messages={result.new_messages_discovered} "
+            f"trigger_wake_notified={result.trigger_wake_notified} "
+            f"sleep_seconds={result.next_sleep_seconds:.3f}"
         )
         return
 

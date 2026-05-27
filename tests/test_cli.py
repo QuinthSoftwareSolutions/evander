@@ -4813,7 +4813,13 @@ def test_teams_ingest_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> Non
     class _FakeWorker:
         def run_once_with_lock(self):
             calls.append("run_once_with_lock")
-            return SimpleNamespace(directories_polled=4, sessions_seen=6, next_sleep_seconds=21.25)
+            return SimpleNamespace(
+                directories_polled=4,
+                sessions_seen=6,
+                new_messages_discovered=2,
+                trigger_wake_notified=True,
+                next_sleep_seconds=21.25,
+            )
 
         def run_forever(self) -> None:
             raise AssertionError("run_forever should not be called in --once mode")
@@ -4831,6 +4837,8 @@ def test_teams_ingest_once_runs_single_cycle(tmp_path: Path, monkeypatch) -> Non
     assert calls == ["run_once_with_lock"]
     assert "directories=4" in result.output
     assert "sessions=6" in result.output
+    assert "new_messages=2" in result.output
+    assert "trigger_wake_notified=True" in result.output
 
 
 def test_wake_schedules_create_and_list(tmp_path: Path) -> None:

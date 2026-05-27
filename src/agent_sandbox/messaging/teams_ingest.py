@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,7 +13,11 @@ from typing import Any
 import httpx
 
 from agent_sandbox.bootstrap import load_runtime_gateway_config
-from agent_sandbox.config import GatewayConfig, TeamsIngestWorkerGlobalConfig
+from agent_sandbox.config import (
+    GatewayConfig,
+    TeamsIngestWorkerGlobalConfig,
+    TriggerOrchestratorWorkerGlobalConfig,
+)
 from agent_sandbox.events.models import materialize_node_definition
 from agent_sandbox.events.provider_models import TeamsDirectMessageTriggerDefinition
 from agent_sandbox.repositories.cursors import (
@@ -20,7 +25,12 @@ from agent_sandbox.repositories.cursors import (
     TeamsInboxCursorRepository,
 )
 from agent_sandbox.models import DirectoryPath, SessionManifest, TeamsMessageEnvelope, ToolName
-from agent_sandbox.orchestration.host_polling import HostFileLockManager, HostSleeper
+from agent_sandbox.orchestration.host_polling import (
+    HostFileLockManager,
+    HostSleeper,
+    HostWakeNotifier,
+    wake_socket_path_for_lock,
+)
 from agent_sandbox.orchestration.kernels import (
     PollingKernelConfig,
     PollingOrchestratorKernel,
@@ -60,7 +70,21 @@ class TeamsIngestCycleResult:
     channel_targets_polled: int
     direct_chats_polled: int
     sessions_seen: int
+    new_messages_discovered: int
+    trigger_wake_notified: bool
     next_sleep_seconds: float
+
+
+@dataclass(frozen=True)
+class _TeamsDirectoryPollResult:
+    direct_chats_polled: int
+    new_messages_discovered: int
+
+
+@dataclass(frozen=True)
+class _TeamsDirectChatsPollResult:
+    targets_polled: set[str]
+    new_messages_discovered: int
 
 
 class TeamsIngestWorker:
@@ -72,6 +96,7 @@ class TeamsIngestWorker:
         runtime: RuntimeContext,
         store: TeamsInboxCursorRepository | None = None,
         project_dir: Path | None = None,
+        trigger_wake_notifier: Callable[[], bool] | None = None,
     ) -> None:
         self.config = config
         self.worker_config = worker_config
@@ -81,6 +106,7 @@ class TeamsIngestWorker:
         self.store = store or JsonTeamsInboxCursorRepository(
             config.runtime_dir / "teams-inbox-store.json"
         )
+        self._trigger_wake_notifier = trigger_wake_notifier
         self._kernel = PollingOrchestratorKernel(
             config=PollingKernelConfig(
                 poll_interval_seconds=self.worker_config.poll_interval_seconds,
@@ -108,6 +134,7 @@ class TeamsIngestWorker:
         active_sessions = self.runtime.session_repository.list_active_sessions(now=now)
         channel_targets_polled = 0
         direct_chats_polled = 0
+        new_messages_discovered = 0
         direct_sender_refs = self._direct_message_sender_refs()
         directories = self._directories_to_scan(
             active_sessions,
@@ -121,11 +148,13 @@ class TeamsIngestWorker:
             if not channel_targets and not direct_sender_refs:
                 continue
             channel_targets_polled += len(channel_targets)
-            direct_chats_polled += self._poll_directory(
+            directory_result = self._poll_directory(
                 directory_path,
                 channel_targets=channel_targets,
                 direct_sender_refs=direct_sender_refs,
             )
+            direct_chats_polled += directory_result.direct_chats_polled
+            new_messages_discovered += directory_result.new_messages_discovered
         if self.worker_config.directories:
             matching_sessions = {
                 session.session_id
@@ -141,11 +170,16 @@ class TeamsIngestWorker:
             poll_interval_seconds=self.worker_config.poll_interval_seconds,
             jitter_seconds=self.worker_config.jitter_seconds,
         )
+        trigger_wake_notified = self._notify_trigger_orchestrator_if_needed(
+            new_messages_discovered
+        )
         return TeamsIngestCycleResult(
             directories_polled=len(directories),
             channel_targets_polled=channel_targets_polled,
             direct_chats_polled=direct_chats_polled,
             sessions_seen=len(matching_sessions),
+            new_messages_discovered=new_messages_discovered,
+            trigger_wake_notified=trigger_wake_notified,
             next_sleep_seconds=next_sleep_seconds,
         )
 
@@ -162,17 +196,29 @@ class TeamsIngestWorker:
         logger.debug(
             (
                 "Teams ingest worker cycle complete directories=%d channel_targets=%d "
-                "direct_chats=%d sessions=%d sleep_seconds=%.3f"
+                "direct_chats=%d sessions=%d new_messages=%d "
+                "trigger_wake_notified=%s sleep_seconds=%.3f"
             ),
             result.directories_polled,
             result.channel_targets_polled,
             result.direct_chats_polled,
             result.sessions_seen,
+            result.new_messages_discovered,
+            result.trigger_wake_notified,
             result.next_sleep_seconds,
         )
 
     def _log_cycle_exception(self, _exc: Exception) -> None:
         logger.exception("Teams ingest worker cycle failed")
+
+    def _notify_trigger_orchestrator_if_needed(self, new_messages_discovered: int) -> bool:
+        if new_messages_discovered <= 0 or self._trigger_wake_notifier is None:
+            return False
+        try:
+            return self._trigger_wake_notifier()
+        except Exception:
+            logger.warning("Failed to notify trigger orchestrator wake socket", exc_info=True)
+            return False
 
     def _directories_to_scan(
         self,
@@ -237,7 +283,7 @@ class TeamsIngestWorker:
         *,
         channel_targets: list[str],
         direct_sender_refs: set[str],
-    ) -> int:
+    ) -> _TeamsDirectoryPollResult:
         provider_config = self.runtime.provider_config.resolve_for_directory(directory_path)
         if provider_config.teams_backend not in {"graph_api", "delegated_graph_api"}:
             logger.debug(
@@ -245,13 +291,14 @@ class TeamsIngestWorker:
                 directory_path,
                 provider_config.teams_backend,
             )
-            return 0
+            return _TeamsDirectoryPollResult(direct_chats_polled=0, new_messages_discovered=0)
         service = self._build_graph_service(
             provider_config=provider_config,
             channel_targets=channel_targets,
             directory_path=directory_path,
         )
         direct_chats_polled = 0
+        new_messages_discovered = 0
         with httpx.Client(timeout=provider_config.teams_timeout_seconds) as client:
             direct_chat_targets_polled: set[str] = set()
             direct_sender_refs_by_id = self._resolve_direct_message_sender_refs_by_id(
@@ -261,7 +308,7 @@ class TeamsIngestWorker:
                 directory_path=directory_path,
             )
             if direct_sender_refs_by_id:
-                direct_chat_targets_polled = self._poll_direct_chats(
+                direct_chats_result = self._poll_direct_chats(
                     client,
                     service=service,
                     sender_refs_by_id=direct_sender_refs_by_id,
@@ -269,17 +316,22 @@ class TeamsIngestWorker:
                         target for target in channel_targets if target.startswith("chat:")
                     },
                 )
+                direct_chat_targets_polled = direct_chats_result.targets_polled
                 direct_chats_polled = len(direct_chat_targets_polled)
+                new_messages_discovered += direct_chats_result.new_messages_discovered
             for channel_target in channel_targets:
                 if channel_target in direct_chat_targets_polled:
                     continue
-                self._poll_channel(
+                new_messages_discovered += self._poll_channel(
                     client,
                     service=service,
                     channel_target=channel_target,
                     budget=service.new_pagination_budget(),
                 )
-        return direct_chats_polled
+        return _TeamsDirectoryPollResult(
+            direct_chats_polled=direct_chats_polled,
+            new_messages_discovered=new_messages_discovered,
+        )
 
     def _build_graph_service(
         self,
@@ -390,7 +442,7 @@ class TeamsIngestWorker:
         budget: Any | None = None,
         direct_message_sender_refs_by_id: dict[str, set[str]] | None = None,
         store_unmatched_direct_messages: bool = False,
-    ) -> None:
+    ) -> int:
         target = parse_teams_target(channel_target)
         cursor_state = self.store.get_cursor_state(channel_target)
         discovered: list[TeamsInboxMessage] = []
@@ -456,6 +508,7 @@ class TeamsIngestWorker:
                 latest.cursor,
                 created_at=latest.created_at,
             )
+        return len(discovered)
 
     def _poll_direct_chats(
         self,
@@ -464,8 +517,9 @@ class TeamsIngestWorker:
         service: GraphTeamsService,
         sender_refs_by_id: dict[str, set[str]],
         allowlisted_chat_targets: set[str],
-    ) -> set[str]:
+    ) -> _TeamsDirectChatsPollResult:
         chats_polled: set[str] = set()
+        new_messages_discovered = 0
         for chat_payload in service._iter_one_on_one_chats(
             client,
             budget=service.new_pagination_budget(),
@@ -478,7 +532,7 @@ class TeamsIngestWorker:
                 continue
             chat_target = f"chat:{chat_id}"
             chats_polled.add(chat_target)
-            self._poll_channel(
+            new_messages_discovered += self._poll_channel(
                 client,
                 service=service,
                 channel_target=chat_target,
@@ -486,7 +540,10 @@ class TeamsIngestWorker:
                 direct_message_sender_refs_by_id=sender_refs_by_id,
                 store_unmatched_direct_messages=chat_target in allowlisted_chat_targets,
             )
-        return chats_polled
+        return _TeamsDirectChatsPollResult(
+            targets_polled=chats_polled,
+            new_messages_discovered=new_messages_discovered,
+        )
 
     def _normalize_message(self, envelope: TeamsMessageEnvelope) -> TeamsInboxMessage:
         metadata = dict(envelope.metadata)
@@ -622,10 +679,37 @@ def _load_teams_ingest_worker_global_config(
     return TeamsIngestWorkerGlobalConfig.model_validate({**base_payload, **raw})
 
 
+def _build_trigger_wake_notifier(
+    config: GatewayConfig,
+    *,
+    project_dir: Path,
+) -> Callable[[], bool]:
+    try:
+        trigger_config = load_trigger_orchestrator_worker_global_config(
+            project_dir,
+            base_config=config,
+        )
+        lock_path = trigger_config.lock_path
+    except Exception:
+        logger.warning(
+            "Failed to load trigger orchestrator config for Teams ingest wake notifier; "
+            "using default trigger lock path",
+            exc_info=True,
+        )
+        lock_path = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+            {"runtime_dir": config.runtime_dir}
+        ).lock_path
+    if lock_path is None:
+        lock_path = config.runtime_dir / "trigger-orchestrator.lock"
+    notifier = HostWakeNotifier(wake_socket_path_for_lock(lock_path))
+    return notifier.notify
+
+
 def build_teams_ingest_worker(
     config: GatewayConfig,
     *,
     project_dir: Path | None = None,
+    trigger_wake_notifier: Callable[[], bool] | None = None,
 ) -> TeamsIngestWorker:
     resolved_project_dir = Path(project_dir) if project_dir is not None else Path.cwd()
     worker_config = _load_teams_ingest_worker_global_config(
@@ -639,11 +723,16 @@ def build_teams_ingest_worker(
         }
     )
     runtime = build_runtime(effective_config)
+    resolved_trigger_wake_notifier = trigger_wake_notifier or _build_trigger_wake_notifier(
+        effective_config,
+        project_dir=resolved_project_dir,
+    )
     return TeamsIngestWorker(
         config=effective_config,
         worker_config=worker_config,
         runtime=runtime,
         project_dir=resolved_project_dir,
+        trigger_wake_notifier=resolved_trigger_wake_notifier,
     )
 
 
@@ -671,6 +760,8 @@ def main() -> None:
             f"Teams ingest worker cycle complete directories={result.directories_polled} "
             f"channel_targets={result.channel_targets_polled} sessions={result.sessions_seen} "
             f"direct_chats={result.direct_chats_polled} "
+            f"new_messages={result.new_messages_discovered} "
+            f"trigger_wake_notified={result.trigger_wake_notified} "
             f"sleep_seconds={result.next_sleep_seconds:.3f}"
         )
         return

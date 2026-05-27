@@ -16,6 +16,7 @@ from agent_sandbox.messaging.targets import (
 )
 from agent_sandbox.models import SessionManifest, TeamsMessageEnvelope, ToolName
 from agent_sandbox.messaging.teams_ingest import build_teams_ingest_worker
+from agent_sandbox.orchestration.host_polling import HostWakeSleeper, wake_socket_path_for_lock
 
 
 def ensure_directory(worker, directory_path: str) -> None:
@@ -49,10 +50,18 @@ def write_root_communication_targets(worker, targets: list[dict[str, object]]) -
     repository.write_overlay("root", {"targets": targets})
 
 
-def write_trigger_config(project_dir: Path, triggers: list[dict[str, object]]) -> None:
+def write_trigger_config(
+    project_dir: Path,
+    triggers: list[dict[str, object]],
+    *,
+    extra: dict[str, object] | None = None,
+) -> None:
     trigger_config_path = project_dir / "config" / "trigger-orchestrator" / "config.json"
     trigger_config_path.parent.mkdir(parents=True, exist_ok=True)
-    trigger_config_path.write_text(json.dumps({"triggers": triggers}), encoding="utf-8")
+    payload = {"triggers": triggers}
+    if extra:
+        payload.update(extra)
+    trigger_config_path.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def test_build_teams_ingest_worker_uses_worker_config_and_normalizes_directories(
@@ -144,7 +153,12 @@ def test_teams_ingest_worker_persists_inbound_messages_and_ignores_status_store_
             "teams_backend": "graph_api",
         }
     )
-    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    wake_calls: list[str] = []
+    worker = build_teams_ingest_worker(
+        config,
+        project_dir=tmp_path,
+        trigger_wake_notifier=lambda: wake_calls.append("wake") or True,
+    )
     ensure_directory(worker, "root/team-a")
     worker.session_repository.upsert_session(
         SessionManifest(
@@ -190,6 +204,75 @@ def test_teams_ingest_worker_persists_inbound_messages_and_ignores_status_store_
     assert worker.store.get_cursor("team-a/channel-1") == "team-a/channel-1/msg-2"
     assert requests[0].headers["Authorization"] == "Bearer graph-token"
     assert result.channel_targets_polled == 1
+    assert result.new_messages_discovered == 2
+    assert result.trigger_wake_notified is True
+    assert wake_calls == ["wake"]
+
+    second_result = worker.run_once()
+
+    assert second_result.new_messages_discovered == 0
+    assert second_result.trigger_wake_notified is False
+    assert wake_calls == ["wake"]
+
+
+def test_teams_ingest_worker_notifies_configured_trigger_wake_socket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trigger_lock_path = tmp_path / "runtime" / "custom-trigger.lock"
+    write_trigger_config(tmp_path, [], extra={"lock_path": str(trigger_lock_path)})
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/teams/team-a/channels/channel-1/messages"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {
+                            "id": "msg-1",
+                            "createdDateTime": "2026-03-30T11:00:00Z",
+                            "body": {"content": "hello", "contentType": "text"},
+                            "from": {"user": {"id": "user-1", "displayName": "Ada"}},
+                        }
+                    ]
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_worker_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    monkeypatch.setenv("GRAPH_TEAMS_ACCESS_TOKEN", "graph-token")
+    config = GatewayConfig.model_validate(
+        {
+            "runtime_dir": str(tmp_path / "runtime"),
+            "teams_backend": "graph_api",
+        }
+    )
+    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    ensure_directory(worker, "root/team-a")
+    worker.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.TEAMS_GET_MESSAGES],
+            teams_channel_allowlist=["team-a/channel-1"],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    sleeper = HostWakeSleeper(wake_socket_path_for_lock(trigger_lock_path))
+    sleeper.start()
+    try:
+        result = worker.run_once()
+    finally:
+        sleeper.close()
+
+    assert [request.url.path for request in requests] == [
+        "/v1.0/teams/team-a/channels/channel-1/messages"
+    ]
+    assert result.new_messages_discovered == 1
+    assert result.trigger_wake_notified is True
 
 
 def test_teams_ingest_worker_polls_chat_targets_from_chat_allowlist(
@@ -243,6 +326,8 @@ def test_teams_ingest_worker_polls_chat_targets_from_chat_allowlist(
     assert worker.store.list_all_messages(channel_targets=["chat:chat-1"])
     assert worker.store.get_cursor("chat:chat-1") == "chat:chat-1/msg-1"
     assert result.channel_targets_polled == 1
+    assert result.new_messages_discovered == 1
+    assert result.trigger_wake_notified is False
 
 
 def test_teams_ingest_worker_resolves_communication_target_allowlists(
@@ -265,7 +350,12 @@ def test_teams_ingest_worker_resolves_communication_target_allowlists(
             "teams_backend": "graph_api",
         }
     )
-    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    wake_calls: list[str] = []
+    worker = build_teams_ingest_worker(
+        config,
+        project_dir=tmp_path,
+        trigger_wake_notifier=lambda: wake_calls.append("wake") or True,
+    )
     ensure_directory(worker, "root/team-a")
     write_root_communication_targets(
         worker,
@@ -295,6 +385,9 @@ def test_teams_ingest_worker_resolves_communication_target_allowlists(
         "/v1.0/teams/team-a/channels/channel-1/messages"
     ]
     assert result.channel_targets_polled == 1
+    assert result.new_messages_discovered == 0
+    assert result.trigger_wake_notified is False
+    assert wake_calls == []
 
 
 def test_teams_ingest_worker_polls_allowlisted_direct_messages_from_configured_trigger(
@@ -849,7 +942,12 @@ def test_teams_ingest_worker_ignores_graph_echo_of_agent_status_post(
             "teams_backend": "graph_api",
         }
     )
-    worker = build_teams_ingest_worker(config, project_dir=tmp_path)
+    wake_calls: list[str] = []
+    worker = build_teams_ingest_worker(
+        config,
+        project_dir=tmp_path,
+        trigger_wake_notifier=lambda: wake_calls.append("wake") or True,
+    )
     ensure_directory(worker, "root/team-a")
     worker.session_repository.upsert_session(
         SessionManifest(
@@ -875,7 +973,10 @@ def test_teams_ingest_worker_ignores_graph_echo_of_agent_status_post(
         ),
     )
 
-    worker.run_once()
+    result = worker.run_once()
 
     assert worker.store.list_all_messages(channel_targets=["team-a/channel-1"]) == []
     assert worker.store.get_cursor("team-a/channel-1") == "team-a/channel-1/msg-status"
+    assert result.new_messages_discovered == 0
+    assert result.trigger_wake_notified is False
+    assert wake_calls == []
