@@ -13,6 +13,10 @@
   "orchestration_retention_days": 30,
   "orchestration_store_backend": "sqlite",
   "orchestration_store_path": "runtime/orchestration.db",
+  "orchestration_wal_checkpoint_busy_timeout_ms": 1000,
+  "orchestration_wal_checkpoint_interval_seconds": 300,
+  "orchestration_wal_checkpoint_min_bytes": 67108864,
+  "orchestration_wal_checkpoint_mode": "truncate",
   "poll_interval_seconds": 5.0,
   "provider_loader": {
     "provider_entry_points_enabled": true,

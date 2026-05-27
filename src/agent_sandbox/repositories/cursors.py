@@ -60,6 +60,8 @@ class TeamsInboxCursorRepository(Protocol):
         self,
         *,
         channel_targets: list[str] | None = None,
+        created_at_from: datetime | None = None,
+        direct_messages_only: bool = False,
         limit: int | None = None,
     ) -> list[TeamsInboxMessage]: ...
 

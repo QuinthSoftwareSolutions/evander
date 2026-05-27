@@ -7,6 +7,7 @@ from pathlib import Path
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.events.provider_models import TeamsNewMessageTriggerDefinition
 from agent_sandbox.messaging.teams_inbox_store import TeamsInboxMessage, TeamsInboxStore
+from agent_sandbox.repositories.cursors import JsonTeamsInboxCursorRepository
 from agent_sandbox.triggers.providers.base import TriggerRuntimeContext
 from agent_sandbox.triggers.providers.teams_new_message import TeamsNewMessageTriggerProvider
 
@@ -281,6 +282,57 @@ def test_teams_trigger_filters_by_channel_target_and_user(tmp_path: Path) -> Non
         message_id="msg-1",
         target_type="channel",
     )
+
+
+def test_teams_trigger_uses_targeted_inbox_query(tmp_path: Path, monkeypatch) -> None:
+    context = _runtime_context(tmp_path)
+    store = TeamsInboxStore(context.resolved_config.runtime_dir / "teams-inbox-store.json")
+    store.add_message_if_new(
+        TeamsInboxMessage(
+            cursor="team-a/channel-1/msg-1",
+            message_id="msg-1",
+            author_id="user-a",
+            author_name="User A",
+            team_id="team-a",
+            channel_id="channel-1",
+            thread_id="msg-1",
+            content="allowed",
+            created_at=datetime(2026, 4, 9, 10, 0, tzinfo=UTC),
+            metadata={"source": "teams_graph_api"},
+        )
+    )
+    cursor_path = context.resolved_config.runtime_dir / "trigger-cursors-teams.json"
+    cursor_path.write_text(
+        json.dumps(
+            {
+                "teams-trigger": {
+                    "last_created_at": "2026-04-09T09:59:00Z",
+                    "recent_cursors": [],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls: list[dict[str, object]] = []
+    original = JsonTeamsInboxCursorRepository.list_all_messages
+
+    def spy(self, **kwargs):
+        calls.append(dict(kwargs))
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(JsonTeamsInboxCursorRepository, "list_all_messages", spy)
+    provider = TeamsNewMessageTriggerProvider()
+    provider.initialize(_trigger_definition(), context)
+
+    assert [event.event_id for event in provider.poll()] == [
+        "teams-trigger:team-a/channel-1/msg-1"
+    ]
+    assert calls == [
+        {
+            "channel_targets": ["team-a/channel-1"],
+            "created_at_from": datetime(2026, 4, 9, 9, 59, tzinfo=UTC),
+        }
+    ]
 
 
 def test_teams_trigger_message_filter_matches_content_case_insensitively(tmp_path: Path) -> None:

@@ -635,6 +635,10 @@ def test_trigger_orchestrator_worker_global_config_defaults_follow_runtime_dir()
     assert config.orchestration_store_backend == "sqlite"
     assert str(config.orchestration_store_path) == "/tmp/agent-sandbox-runtime/orchestration.db"
     assert config.orchestration_retention_days == 30
+    assert config.orchestration_wal_checkpoint_mode == "truncate"
+    assert config.orchestration_wal_checkpoint_min_bytes == 64 * 1024 * 1024
+    assert config.orchestration_wal_checkpoint_interval_seconds == 5 * 60
+    assert config.orchestration_wal_checkpoint_busy_timeout_ms == 1_000
     assert (
         str(config.event_queue_cursor_store_path)
         == "/tmp/agent-sandbox-runtime/trigger-orchestrator-cursors.json"

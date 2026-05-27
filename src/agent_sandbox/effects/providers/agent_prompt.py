@@ -51,6 +51,22 @@ _BRANCH_PORT_PAYLOAD_KEY = "__branch_port"
 _FOR_EXECUTION_IDS_PAYLOAD_KEY = "__for_execution_ids"
 
 
+def _waiting_execution_records(worker: Any, effect_type: str) -> list[Any]:
+    execution_store = getattr(worker, "execution_store", None)
+    list_waiting = getattr(execution_store, "list_waiting_records", None)
+    if callable(list_waiting):
+        return list(list_waiting(effect_type))
+    read_all = getattr(execution_store, "read_all", None)
+    if not callable(read_all):
+        return []
+    return [
+        record
+        for record in read_all().values()
+        if str(getattr(record, "effect_type", "") or "").strip() == effect_type
+        and str(getattr(record, "status", "") or "").strip() == "waiting"
+    ]
+
+
 class AgentPromptEffectProvider(EffectProviderBase):
     capability = NodeCapability(
         min_inbound=1,
@@ -292,9 +308,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
             return 0
 
         finalized = 0
-        for record in worker.execution_store.read_all().values():
-            if record.effect_type != cls.node_type() or record.status != "waiting":
-                continue
+        for record in _waiting_execution_records(worker, cls.node_type()):
             record_dispatch_id = str(record.outputs.get("dispatch_id") or "").strip()
             if record_dispatch_id != dispatch_id:
                 continue
@@ -307,11 +321,7 @@ class AgentPromptEffectProvider(EffectProviderBase):
         worker = kwargs.get("worker")
         if worker is None:
             return 0
-        waiting_records = [
-            record
-            for record in worker.execution_store.read_all().values()
-            if record.effect_type == cls.node_type() and record.status == "waiting"
-        ]
+        waiting_records = _waiting_execution_records(worker, cls.node_type())
         if not waiting_records:
             return 0
 

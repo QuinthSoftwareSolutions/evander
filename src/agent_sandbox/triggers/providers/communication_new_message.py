@@ -227,7 +227,10 @@ class CommunicationNewMessageTriggerProvider(TriggerProviderBase):
         inbox_store = JsonTeamsInboxCursorRepository(
             self._runtime_dir() / "teams-inbox-store.json"
         )
-        raw_messages = inbox_store.list_all_messages()
+        raw_messages = inbox_store.list_all_messages(
+            channel_targets=list(self._teams_targets_by_address),
+            created_at_from=cursor,
+        )
         candidates: list[_PendingCommunicationEvent] = []
 
         for message in raw_messages:
