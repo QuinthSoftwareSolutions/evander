@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from contextlib import contextmanager
 from threading import RLock
 from typing import Any, Iterable
 
@@ -44,6 +46,7 @@ class ContainerWorkerExecutionRepository:
         else:
             self.path = original_path
             self.legacy_json_path = None
+        self.lock_path = self.path.with_name(f".{self.path.name}.lock")
         self._lock = RLock()
         self._initialized = False
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -215,9 +218,20 @@ class ContainerWorkerExecutionRepository:
         with self._lock:
             if self._initialized:
                 return
-            self._create_schema()
-            self._import_legacy_json_if_empty()
+            with self._initialization_lock():
+                self._create_schema()
+                self._import_legacy_json_if_empty()
             self._initialized = True
+
+    @contextmanager
+    def _initialization_lock(self) -> Any:
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def _create_schema(self) -> None:
         with self._connect() as connection:
