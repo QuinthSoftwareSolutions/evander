@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
-from typing import Any, Callable, Iterator, Literal, Protocol
+from typing import Any, Callable, Iterator, Literal, Mapping, Protocol
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
 import httpx
@@ -851,6 +851,7 @@ class DiscordBotApiService:
 
     def get_commands(self, since_cursor: str | None = None) -> list[DiscordCommandEnvelope]:
         envelopes: dict[str, DiscordCommandEnvelope] = dict(self.command_store.read_all())
+        fetched_commands: dict[str, DiscordCommandEnvelope] = {}
         with httpx.Client(timeout=self.timeout_seconds) as client:
             channel_ids = sorted(
                 set(self._allowed_channel_ids()) | set(self._operator_dm_channel_ids(client))
@@ -885,7 +886,9 @@ class DiscordBotApiService:
                         },
                     )
                     envelopes[envelope.command_id] = envelope
-                    self.command_store.put(envelope.command_id, envelope)
+                    fetched_commands[envelope.command_id] = envelope
+
+        _put_discord_commands(self.command_store, fetched_commands)
 
         commands = sorted(
             envelopes.values(),
@@ -1111,6 +1114,20 @@ def _put_teams_messages(
         return
     for cursor, message in messages.items():
         message_store.put(cursor, message)
+
+
+def _put_discord_commands(
+    command_store: DiscordRecordsRepository,
+    commands: Mapping[str, DiscordCommandEnvelope],
+) -> None:
+    if not commands:
+        return
+    put_many = getattr(command_store, "put_many", None)
+    if callable(put_many):
+        put_many(commands)
+        return
+    for command_id, envelope in commands.items():
+        command_store.put(command_id, envelope)
 
 
 def _filter_teams_messages_since_cursor(

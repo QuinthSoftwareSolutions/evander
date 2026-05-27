@@ -49,6 +49,8 @@ class DiscordRecordsRepository(Protocol):
 
     def put(self, command_id: str, envelope: DiscordCommandEnvelope) -> None: ...
 
+    def put_many(self, records: Mapping[str, DiscordCommandEnvelope]) -> None: ...
+
     def read_all(self) -> dict[str, DiscordCommandEnvelope]: ...
 
 
@@ -91,6 +93,19 @@ class JsonDiscordRecordsRepository:
 
     def put(self, command_id: str, envelope: DiscordCommandEnvelope) -> None:
         self._store.put(command_id, envelope)
+
+    def put_many(self, records: Mapping[str, DiscordCommandEnvelope]) -> None:
+        if not records:
+            return
+        validated = {
+            command_id: DiscordCommandEnvelope.model_validate(envelope)
+            for command_id, envelope in records.items()
+        }
+
+        def update(items: dict[str, DiscordCommandEnvelope]) -> None:
+            items.update(validated)
+
+        self._store.update_all(update)
 
     def read_all(self) -> dict[str, DiscordCommandEnvelope]:
         return self._store.read_all()
