@@ -45,6 +45,12 @@ from agent_sandbox.capacity_health import (
     TelemetryStatus,
 )
 from agent_sandbox.config import GatewayConfig, TriggerOrchestratorWorkerGlobalConfig
+from agent_sandbox.daemons.effect_orchestrator import (
+    EffectExecutionRecord,
+    GateExecutionRecord,
+    SqliteExecutionStore,
+    SqliteGateExecutionStore,
+)
 from agent_sandbox.daemons.trigger_orchestrator import TriggerOrchestratorWorker
 from agent_sandbox.communication_artifacts import CommunicationArtifactStore
 from agent_sandbox.published_artifacts import PublishedArtifactStore
@@ -75,6 +81,7 @@ from agent_sandbox.models import (
 )
 from agent_sandbox.events.internal import InternalEventBus
 from agent_sandbox.orchestration.host_polling import wake_socket_path_for_lock
+from agent_sandbox.repositories.orchestration_db import connect_orchestration_db
 from agent_sandbox.triggers.queue import SqliteTriggerEventQueue
 from agent_sandbox.worker.models import WorkerSessionRecord
 
@@ -102,6 +109,115 @@ def write_config(
         lines.append(f'execution_backend: "{execution_backend}"')
     config_path.write_text("\n".join(lines), encoding="utf-8")
     return config_path
+
+
+def _write_trigger_orchestrator_sqlite_config(tmp_path: Path) -> Path:
+    runtime_dir = tmp_path / "runtime"
+    config_path = tmp_path / "config" / "trigger-orchestrator" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "runtime_dir": str(runtime_dir),
+                "orchestration_store_backend": "sqlite",
+                "orchestration_store_path": str(runtime_dir / "orchestration.db"),
+                "orchestration_retention_days": 365,
+                "poll_interval_seconds": 1,
+                "jitter_seconds": 0,
+                "triggers": [],
+                "gates": [],
+                "edges": [],
+                "effects": [],
+                "queries": [],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def _sqlite_payload_json_by_execution_id(path: Path, table_name: str) -> dict[str, str]:
+    with connect_orchestration_db(path) as connection:
+        rows = connection.execute(
+            f"SELECT execution_id, payload_json FROM {table_name} ORDER BY execution_id"
+        ).fetchall()
+    return {row["execution_id"]: row["payload_json"] for row in rows}
+
+
+def _effect_execution_record(
+    *,
+    execution_id: str,
+    idempotency_key: str,
+    event_id: str,
+    effect_id: str,
+    status: str,
+    started_at: datetime,
+    finished_at: datetime,
+    dismissed_at: datetime | None = None,
+    dismiss_reason: str | None = None,
+) -> EffectExecutionRecord:
+    record = EffectExecutionRecord(
+        execution_id=execution_id,
+        idempotency_key=idempotency_key,
+        event_id=event_id,
+        trace_id="trace-test",
+        source_node_id="trigger-ticket",
+        source_trigger_type="trigger:ticket:created",
+        effect_id=effect_id,
+        effect_type="effect:agent:prompt",
+        status=status,
+        started_at=started_at,
+        finished_at=finished_at,
+        resolved_config_hash="hash-test",
+        resolved_config={},
+        input_payload={},
+        outputs={},
+    )
+    if dismissed_at is not None:
+        record.dismissed_at = dismissed_at
+    if dismiss_reason is not None:
+        record.dismiss_reason = dismiss_reason
+    return record
+
+
+def _gate_execution_record(
+    *,
+    execution_id: str,
+    idempotency_key: str,
+    event_id: str,
+    gate_id: str,
+    status: str,
+    started_at: datetime,
+    finished_at: datetime,
+    dismissed_at: datetime | None = None,
+    dismiss_reason: str | None = None,
+) -> GateExecutionRecord:
+    record = GateExecutionRecord(
+        execution_id=execution_id,
+        idempotency_key=idempotency_key,
+        event_id=event_id,
+        trace_id="trace-test",
+        source_node_id="trigger-ticket",
+        source_trigger_type="trigger:ticket:created",
+        gate_id=gate_id,
+        gate_type="gate:filter",
+        status=status,
+        started_at=started_at,
+        finished_at=finished_at,
+        resolved_config_hash="hash-test",
+        resolved_config={},
+        input_payload={},
+        outputs={},
+        inputs_by_source={},
+        input_event_ids_by_source={},
+        input_occurred_at_by_source={},
+    )
+    if dismissed_at is not None:
+        record.dismissed_at = dismissed_at
+    if dismiss_reason is not None:
+        record.dismiss_reason = dismiss_reason
+    return record
 
 
 def _workflow_expected_revision(client: TestClient) -> str:
@@ -3330,6 +3446,259 @@ def test_admin_web_can_dismiss_all_failed_runs_for_workflow_node(tmp_path: Path)
     assert dismiss_gate_response.json()["gate_records_updated"] == 1
     assert final_response.status_code == 200
     assert "gate-review" not in final_response.json()["node_activity"]
+
+
+def test_admin_web_dismisses_workflow_node_failures_with_sqlite_fast_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    _write_trigger_orchestrator_sqlite_config(tmp_path)
+
+    db_path = runtime_dir / "orchestration.db"
+    effect_store = SqliteExecutionStore(db_path)
+    gate_store = SqliteGateExecutionStore(db_path)
+
+    target_failed_1 = EffectExecutionRecord(
+        execution_id="exec-failed-1",
+        idempotency_key="idem-failed-1",
+        event_id="evt-failed-1",
+        trace_id="trace-failed-1",
+        source_node_id="trigger-ticket",
+        source_trigger_type="trigger:ticket:created",
+        effect_id="effect-prompt",
+        effect_type="effect:agent:prompt",
+        status="failed",
+        started_at=datetime(2026, 4, 23, 12, 0, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 4, 23, 12, 1, tzinfo=timezone.utc),
+        resolved_config_hash="hash-failed-1",
+        resolved_config={},
+        input_payload={},
+        outputs={},
+        error="first failure",
+    )
+    target_failed_2 = EffectExecutionRecord(
+        execution_id="exec-failed-2",
+        idempotency_key="idem-failed-2",
+        event_id="evt-failed-2",
+        trace_id="trace-failed-2",
+        source_node_id="trigger-ticket",
+        source_trigger_type="trigger:ticket:created",
+        effect_id="effect-prompt",
+        effect_type="effect:agent:prompt",
+        status="failed",
+        started_at=datetime(2026, 4, 23, 12, 2, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 4, 23, 12, 3, tzinfo=timezone.utc),
+        resolved_config_hash="hash-failed-2",
+        resolved_config={},
+        input_payload={},
+        outputs={},
+        error="second failure",
+    )
+    target_running = EffectExecutionRecord(
+        execution_id="exec-running",
+        idempotency_key="idem-running",
+        event_id="evt-running",
+        trace_id="trace-running",
+        source_node_id="trigger-ticket",
+        source_trigger_type="trigger:ticket:created",
+        effect_id="effect-prompt",
+        effect_type="effect:agent:prompt",
+        status="running",
+        started_at=datetime(2026, 4, 23, 12, 4, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 4, 23, 12, 5, tzinfo=timezone.utc),
+        resolved_config_hash="hash-running",
+        resolved_config={},
+        input_payload={},
+        outputs={},
+    )
+    target_succeeded = EffectExecutionRecord(
+        execution_id="exec-succeeded",
+        idempotency_key="idem-succeeded",
+        event_id="evt-succeeded",
+        trace_id="trace-succeeded",
+        source_node_id="trigger-ticket",
+        source_trigger_type="trigger:ticket:created",
+        effect_id="effect-prompt",
+        effect_type="effect:agent:prompt",
+        status="succeeded",
+        started_at=datetime(2026, 4, 23, 12, 6, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 4, 23, 12, 7, tzinfo=timezone.utc),
+        resolved_config_hash="hash-succeeded",
+        resolved_config={},
+        input_payload={},
+        outputs={},
+    )
+    target_dismissed = EffectExecutionRecord(
+        execution_id="exec-dismissed",
+        idempotency_key="idem-dismissed",
+        event_id="evt-dismissed",
+        trace_id="trace-dismissed",
+        source_node_id="trigger-ticket",
+        source_trigger_type="trigger:ticket:created",
+        effect_id="effect-prompt",
+        effect_type="effect:agent:prompt",
+        status="failed",
+        started_at=datetime(2026, 4, 23, 12, 8, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 4, 23, 12, 9, tzinfo=timezone.utc),
+        resolved_config_hash="hash-dismissed",
+        resolved_config={},
+        input_payload={},
+        outputs={},
+        dismiss_reason="manual_dismiss_errored_workflow_run",
+        dismissed_at=datetime(2026, 4, 23, 12, 10, tzinfo=timezone.utc),
+    )
+    target_gate_failed = GateExecutionRecord(
+        execution_id="gate-failed",
+        idempotency_key="gate-idem-failed",
+        event_id="evt-gate-failed",
+        trace_id="trace-gate-failed",
+        source_node_id="trigger-ticket",
+        source_trigger_type="trigger:ticket:created",
+        gate_id="gate-review",
+        gate_type="gate:filter",
+        status="failed",
+        started_at=datetime(2026, 4, 23, 12, 11, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 4, 23, 12, 12, tzinfo=timezone.utc),
+        resolved_config_hash="hash-gate-failed",
+        resolved_config={},
+        input_payload={},
+        outputs={},
+        inputs_by_source={},
+        input_event_ids_by_source={},
+        input_occurred_at_by_source={},
+        error="gate failure",
+    )
+    target_gate_dismissed = GateExecutionRecord(
+        execution_id="gate-dismissed",
+        idempotency_key="gate-idem-dismissed",
+        event_id="evt-gate-dismissed",
+        trace_id="trace-gate-dismissed",
+        source_node_id="trigger-ticket",
+        source_trigger_type="trigger:ticket:created",
+        gate_id="gate-review",
+        gate_type="gate:filter",
+        status="failed",
+        started_at=datetime(2026, 4, 23, 12, 13, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 4, 23, 12, 14, tzinfo=timezone.utc),
+        resolved_config_hash="hash-gate-dismissed",
+        resolved_config={},
+        input_payload={},
+        outputs={},
+        inputs_by_source={},
+        input_event_ids_by_source={},
+        input_occurred_at_by_source={},
+        error="already dismissed gate failure",
+        dismiss_reason="manual_dismiss_node_failures",
+        dismissed_at=datetime(2026, 4, 23, 12, 15, tzinfo=timezone.utc),
+    )
+    effect_store.record_execution(target_failed_1)
+    effect_store.record_execution(target_failed_2)
+    effect_store.record_execution(target_running)
+    effect_store.record_execution(target_succeeded)
+    effect_store.record_execution(target_dismissed)
+    gate_store.record_execution(target_gate_failed)
+    gate_store.record_execution(target_gate_dismissed)
+
+    for index in range(180):
+        status = ("failed", "running", "succeeded")[index % 3]
+        record = _effect_execution_record(
+            execution_id=f"exec-unrelated-{index}",
+            idempotency_key=f"idem-unrelated-{index}",
+            event_id=f"evt-unrelated-{index}",
+            effect_id=f"effect-unrelated-{index % 12}",
+            status=status,
+            started_at=datetime(2026, 4, 23, 12, 20, tzinfo=timezone.utc),
+            finished_at=datetime(2026, 4, 23, 12, 21, tzinfo=timezone.utc),
+        )
+        effect_store.record_execution(record)
+    for index in range(120):
+        status = ("failed", "running", "succeeded")[index % 3]
+        record = _gate_execution_record(
+            execution_id=f"gate-unrelated-{index}",
+            idempotency_key=f"gate-idem-unrelated-{index}",
+            event_id=f"evt-gate-unrelated-{index}",
+            gate_id=f"gate-unrelated-{index % 8}",
+            status=status,
+            started_at=datetime(2026, 4, 23, 12, 22, tzinfo=timezone.utc),
+            finished_at=datetime(2026, 4, 23, 12, 23, tzinfo=timezone.utc),
+        )
+        gate_store.record_execution(record)
+
+    effect_before_payloads = _sqlite_payload_json_by_execution_id(db_path, "effect_executions")
+    gate_before_payloads = _sqlite_payload_json_by_execution_id(db_path, "gate_executions")
+    effect_unchanged_before = {
+        execution_id: payload
+        for execution_id, payload in effect_before_payloads.items()
+        if execution_id not in {"exec-failed-1", "exec-failed-2", "exec-dismissed"}
+    }
+    gate_unchanged_before = {
+        execution_id: payload
+        for execution_id, payload in gate_before_payloads.items()
+        if execution_id != "gate-dismissed"
+    }
+
+    def fail_update_all(*_: object, **__: object) -> None:
+        raise AssertionError("SQLite fast path should not call update_all()")
+
+    monkeypatch.setattr(SqliteExecutionStore, "update_all", fail_update_all, raising=False)
+    monkeypatch.setattr(SqliteGateExecutionStore, "update_all", fail_update_all, raising=False)
+
+    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+
+    before_response = client.get("/api/workflow-editor/runs")
+    dismiss_response = client.delete("/api/workflow-editor/node-failures/effect-prompt")
+    after_response = client.get("/api/workflow-editor/runs")
+
+    assert before_response.status_code == 200
+    assert before_response.json()["node_activity"]["effect-prompt"] == {
+        "failed": 2,
+        "running": 1,
+    }
+    assert before_response.json()["node_activity"]["gate-review"] == {
+        "failed": 1,
+    }
+    assert dismiss_response.status_code == 200
+    dismiss_payload = dismiss_response.json()
+    assert dismiss_payload["worker_id"] == "trigger-orchestrator"
+    assert dismiss_payload["node_id"] == "effect-prompt"
+    assert dismiss_payload["effect_records_updated"] == 2
+    assert dismiss_payload["gate_records_updated"] == 0
+    assert after_response.status_code == 200
+    assert after_response.json()["node_activity"]["effect-prompt"] == {"running": 1}
+    assert after_response.json()["node_activity"]["gate-review"] == {
+        "failed": 1,
+    }
+    assert after_response.json()["node_activity"]["effect-unrelated-0"] == before_response.json()[
+        "node_activity"
+    ]["effect-unrelated-0"]
+    assert after_response.json()["node_activity"]["gate-unrelated-1"] == before_response.json()[
+        "node_activity"
+    ]["gate-unrelated-1"]
+
+    effect_after_payloads = _sqlite_payload_json_by_execution_id(db_path, "effect_executions")
+    gate_after_payloads = _sqlite_payload_json_by_execution_id(db_path, "gate_executions")
+
+    assert effect_after_payloads["exec-failed-1"] != effect_before_payloads["exec-failed-1"]
+    assert effect_after_payloads["exec-failed-2"] != effect_before_payloads["exec-failed-2"]
+    assert gate_after_payloads["gate-failed"] == gate_before_payloads["gate-failed"]
+    assert {
+        execution_id: effect_after_payloads[execution_id]
+        for execution_id in effect_unchanged_before
+    } == effect_unchanged_before
+    assert {
+        execution_id: gate_after_payloads[execution_id]
+        for execution_id in gate_unchanged_before
+    } == gate_unchanged_before
+
+    assert effect_store.get_execution("exec-failed-1").dismissed_at is not None
+    assert effect_store.get_execution("exec-failed-1").dismiss_reason == "manual_dismiss_node_failures"
+    assert effect_store.get_execution("exec-running").dismissed_at is None
+    assert effect_store.get_execution("exec-succeeded").dismissed_at is None
+    assert effect_store.get_execution("exec-dismissed").dismiss_reason == "manual_dismiss_errored_workflow_run"
+    assert gate_store.get_execution("gate-failed").dismissed_at is None
+    assert gate_store.get_execution("gate-failed").dismiss_reason is None
+    assert gate_store.get_execution("gate-dismissed").dismiss_reason == "manual_dismiss_node_failures"
 
 
 def test_admin_web_lists_resolves_and_downloads_published_artifacts(tmp_path: Path) -> None:
