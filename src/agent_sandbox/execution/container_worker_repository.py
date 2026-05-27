@@ -116,6 +116,12 @@ class ContainerWorkerExecutionRepository:
             )
 
     def read_all(self) -> dict[str, ContainerWorkerExecutionRecord]:
+        return {
+            record.execution_id: record
+            for record in self.list_all_ordered()
+        }
+
+    def list_all_ordered(self) -> list[ContainerWorkerExecutionRecord]:
         self._ensure_ready()
         with self._connect() as connection:
             rows = connection.execute(
@@ -125,14 +131,7 @@ class ContainerWorkerExecutionRepository:
                 ORDER BY created_at ASC, execution_id ASC
                 """
             ).fetchall()
-        return {
-            record.execution_id: record
-            for record in (self._record_from_row(row) for row in rows)
-            if record is not None
-        }
-
-    def list_all_ordered(self) -> list[ContainerWorkerExecutionRecord]:
-        return list(self.read_all().values())
+        return [record for row in rows if (record := self._record_from_row(row)) is not None]
 
     def list_by_session(self, session_id: str) -> list[ContainerWorkerExecutionRecord]:
         normalized = self._normalize_key(session_id)
@@ -209,6 +208,9 @@ class ContainerWorkerExecutionRepository:
 
         raise ValueError(f"Unknown container worker execution target: {normalized}")
 
+    def ensure_schema(self) -> None:
+        self._ensure_ready()
+
     def _ensure_ready(self) -> None:
         with self._lock:
             if self._initialized:
@@ -237,7 +239,7 @@ class ContainerWorkerExecutionRepository:
 
                 CREATE INDEX IF NOT EXISTS idx_container_worker_executions_session_status_updated
                     ON container_worker_executions(session_id, last_status, updated_at);
-                CREATE INDEX IF NOT EXISTS idx_container_worker_executions_session_created
+                CREATE INDEX IF NOT EXISTS idx_container_worker_executions_session_created_execution
                     ON container_worker_executions(session_id, created_at, execution_id);
                 CREATE INDEX IF NOT EXISTS idx_container_worker_executions_worker_job_id
                     ON container_worker_executions(worker_job_id);
