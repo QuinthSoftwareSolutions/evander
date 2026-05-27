@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
@@ -18,6 +19,8 @@ from agent_sandbox.models import (
 )
 
 SQLITE_BUSY_TIMEOUT_MS = 30_000
+_SQLITE_WAL_ENABLE_RETRIES = 8
+_SQLITE_WAL_RETRY_DELAY_S = 0.05
 _WAKE_RETENTION = timedelta(days=90)
 
 
@@ -536,33 +539,58 @@ class WakeRequestStore:
         return WakeMessageEnvelope.model_validate(json.loads(row["payload_json"]))
 
     def _compact_connection(self, connection: sqlite3.Connection, *, now: datetime) -> None:
-        cutoff = _datetime_to_storage(now - _WAKE_RETENTION)
-        if cutoff is None:
-            return
-        connection.execute(
-            "DELETE FROM wake_dispatches WHERE dispatched_at < ?",
-            (cutoff,),
-        )
-        connection.execute(
-            "DELETE FROM wake_messages WHERE created_at < ?",
-            (cutoff,),
-        )
-        connection.execute(
-            """
-            DELETE FROM wake_requests
-            WHERE enabled = 0 AND updated_at < ?
-            """,
-            (cutoff,),
-        )
+        cutoff = now - _WAKE_RETENTION
+
+        for row in connection.execute(
+            "SELECT dispatch_id, dispatched_at FROM wake_dispatches"
+        ).fetchall():
+            if self._parse_dt(row["dispatched_at"]) < cutoff:
+                connection.execute(
+                    "DELETE FROM wake_dispatches WHERE dispatch_id = ?",
+                    (row["dispatch_id"],),
+                )
+
+        for row in connection.execute("SELECT message_id, created_at FROM wake_messages").fetchall():
+            if self._parse_dt(row["created_at"]) < cutoff:
+                connection.execute(
+                    "DELETE FROM wake_messages WHERE message_id = ?",
+                    (row["message_id"],),
+                )
+
+        for row in connection.execute(
+            "SELECT request_id, enabled, updated_at FROM wake_requests"
+        ).fetchall():
+            if int(row["enabled"]) != 0:
+                continue
+            if self._parse_dt(row["updated_at"]) < cutoff:
+                connection.execute(
+                    "DELETE FROM wake_requests WHERE request_id = ?",
+                    (row["request_id"],),
+                )
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.path, timeout=30.0)
         connection.row_factory = sqlite3.Row
         connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
-        connection.execute("PRAGMA journal_mode=WAL")
+        self._enable_wal_mode(connection)
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
+
+    def _enable_wal_mode(self, connection: sqlite3.Connection) -> None:
+        last_error: sqlite3.OperationalError | None = None
+        for attempt in range(_SQLITE_WAL_ENABLE_RETRIES):
+            try:
+                connection.execute("PRAGMA journal_mode=WAL")
+                return
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if "locked" not in message and "busy" not in message:
+                    raise
+                last_error = exc
+                time.sleep(_SQLITE_WAL_RETRY_DELAY_S * (attempt + 1))
+        if last_error is not None:
+            raise last_error
 
     def _compact(self, payload: dict[str, Any]) -> None:
         cutoff = datetime.now(UTC) - _WAKE_RETENTION
