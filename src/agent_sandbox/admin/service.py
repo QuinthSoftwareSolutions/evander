@@ -9578,27 +9578,13 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     worker_backend.inspect(agent_id)
                 except Exception:
                     pass
-                return worker_backend.get_log_snapshot(agent_id, lines=lines)
+                return worker_backend.get_log_snapshot(agent_id, lines=lines, mode="raw")
             if not execution_records:
                 return f"No container executions have run for session {session_id}.\n"
             per_execution_lines = lines
             if lines > 0:
                 per_execution_lines = max(1, lines // max(1, len(execution_records)))
             chunks: list[str] = []
-            for execution in reversed(execution_records):
-                try:
-                    transcript = worker_backend.get_log_snapshot(
-                        execution.execution_id,
-                        lines=lines,
-                        mode="session",
-                    ).rstrip()
-                except Exception:
-                    transcript = ""
-                if transcript:
-                    chunks.append(
-                        f"=== session={session_id} log=codex_transcript ===\n{transcript}"
-                    )
-                    break
             for execution in execution_records:
                 header_parts = [
                     f"execution={execution.execution_id}",
@@ -9681,7 +9667,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     worker_backend,
                     sorted_records[-1],
                     lines=0,
-                    mode="augmented",
+                    mode="raw",
                 ),
                 limit=limit,
                 offset=0,
@@ -9702,13 +9688,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if normalized_query
             else list(reversed(list(enumerate(sorted_records))))
         )
-        for original_index, execution in records_to_read:
-            mode = "augmented" if original_index == len(sorted_records) - 1 else "raw"
+        for _original_index, execution in records_to_read:
             chunk = self._container_execution_log_chunk(
                 worker_backend,
                 execution,
                 lines=0,
-                mode=mode,
+                mode="raw",
             )
             if normalized_query:
                 chunks.append(chunk)
@@ -9716,7 +9701,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             chunks.insert(0, chunk)
             line_count += len(chunk.splitlines()) + (1 if len(chunks) > 1 else 0)
             if line_count >= target_lines:
-                truncated_before = original_index > 0
+                truncated_before = _original_index > 0
                 break
 
         page = _log_page_from_end(
@@ -9813,11 +9798,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     limit=normalized_limit,
                     offset=normalized_offset,
                     query=normalized_query or None,
+                    mode="raw",
                 )
                 page["view"] = normalized_view
                 return page
             text = worker_backend.get_log_snapshot(
-                target, lines=normalized_limit + normalized_offset
+                target, lines=normalized_limit + normalized_offset, mode="raw"
             )
             page = _log_page_from_end(
                 text,
