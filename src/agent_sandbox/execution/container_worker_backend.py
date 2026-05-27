@@ -319,11 +319,19 @@ class ContainerWorkerVmExecutionBackend:
         normalized_session_id = str(session_id or "").strip()
         if not normalized_session_id:
             raise ValueError("session_id is required")
-        mappings = [
-            record
-            for record in self.repository.read_all().values()
-            if record.session_id == normalized_session_id
-        ]
+        list_by_session = getattr(self.repository, "list_by_session", None)
+        if callable(list_by_session):
+            mappings = list(list_by_session(normalized_session_id))
+        else:
+            read_all = getattr(self.repository, "read_all", None)
+            if not callable(read_all):
+                mappings = []
+            else:
+                mappings = [
+                    record
+                    for record in read_all().values()
+                    if record.session_id == normalized_session_id
+                ]
         attempted_at = now_utc()
         try:
             response = self.client.delete_session(normalized_session_id)

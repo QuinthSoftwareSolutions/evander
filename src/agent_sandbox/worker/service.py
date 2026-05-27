@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import uuid
 from collections.abc import Sequence
@@ -515,11 +516,7 @@ class WorkerDaemon:
 
         mssql_cleanup = self.drop_mssql_session(normalized_session_id)
         removed_any = False
-        session_records = [
-            record
-            for record in list(self.store.read_all().values())
-            if record.session_id == normalized_session_id
-        ]
+        session_records = self.store.list_by_session(normalized_session_id)
         cleanup_started_at = now_utc()
         for record in session_records:
             if record.status == "removed":
@@ -681,7 +678,7 @@ class WorkerDaemon:
 
     def _job_telemetry(self) -> WorkerJobTelemetry:
         try:
-            records = list(self.store.read_all().values())
+            records = self.store.list_all_ordered()
         except FileNotFoundError:
             return self._job_telemetry_failure(
                 TelemetryStatus.MISSING,
@@ -692,7 +689,7 @@ class WorkerDaemon:
                 TelemetryStatus.PERMISSION_DENIED,
                 "permission denied",
             )
-        except (OSError, ValueError):
+        except (sqlite3.Error, OSError, ValueError):
             return self._job_telemetry_failure(
                 TelemetryStatus.UNSUPPORTED,
                 "job store is unavailable",

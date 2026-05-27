@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, Sequence
 
-from agent_sandbox.messaging.discord_inbox_store import DiscordInboxStore
+from agent_sandbox.messaging.discord_inbox_store import DiscordInboxListResult, DiscordInboxStore
 from agent_sandbox.email.cursor_store import DurableCursorStore, EmailSyncCursor
 from agent_sandbox.models import DiscordMessageEnvelope
 from agent_sandbox.messaging.teams_inbox_store import (
@@ -31,6 +31,15 @@ class DiscordInboxCursorRepository(Protocol):
     def set_cursor(self, channel_id: str, cursor: str | None) -> None: ...
 
     def add_message_if_new(self, envelope: DiscordMessageEnvelope) -> bool: ...
+
+    def add_messages_if_new(self, envelopes: Sequence[DiscordMessageEnvelope]) -> int: ...
+
+    def list_all_messages(
+        self,
+        *,
+        channel_ids: list[str],
+        limit: int | None = None,
+    ) -> DiscordInboxListResult: ...
 
     def get_session_cursor(self, session_id: str, channel_id: str) -> str | None: ...
 

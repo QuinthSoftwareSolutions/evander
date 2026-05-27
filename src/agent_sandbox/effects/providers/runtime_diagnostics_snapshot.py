@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from agent_sandbox.worker.models import WorkerJobRecord
+from agent_sandbox.worker.store import WorkerJobStore
 
 from .base import EffectProviderBase
 
@@ -279,7 +283,6 @@ class RuntimeDiagnosticsSnapshotEffectProvider(EffectProviderBase):
         for relative_path in (
             "effect-orchestrator-executions.json",
             "gate-orchestrator-executions.json",
-            "worker-jobs.json",
         ):
             path = runtime_dir / relative_path
             lines.append("")
@@ -291,7 +294,68 @@ class RuntimeDiagnosticsSnapshotEffectProvider(EffectProviderBase):
             filtered = self._filter_lines(text, EXECUTION_FAILURE_FILTER, limit=120)
             lines.extend(filtered or ["no matching failures"])
         lines.append("")
+        lines.extend(self._worker_job_failures_section(runtime_dir=runtime_dir, errors=errors))
         return lines
+
+    @classmethod
+    def _worker_job_failures_section(cls, *, runtime_dir: Path, errors: list[str]) -> list[str]:
+        lines = ["## Recent worker job failures"]
+        db_path = runtime_dir / "worker-jobs.db"
+        legacy_json_path = runtime_dir / "worker-jobs.json"
+        lines.append("")
+        lines.append(f"### {db_path}")
+        if not db_path.exists():
+            if legacy_json_path.exists():
+                lines.append(
+                    f"missing active SQLite store; legacy JSON present at {legacy_json_path}"
+                )
+            else:
+                lines.append("missing")
+            lines.append("")
+            return lines
+
+        try:
+            records = WorkerJobStore(db_path).list_all_ordered()
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            message = f"worker job store {db_path}: {exc}"
+            errors.append(message)
+            lines.append(message)
+            lines.append("")
+            return lines
+
+        failures = [
+            record
+            for record in records
+            if record.status in {"failed", "cleanup_failed"}
+            or record.cleanup_status == "cleanup_failed"
+            or record.error
+            or record.cleanup_error
+        ]
+        if not failures:
+            lines.append("no matching failures")
+        else:
+            for record in failures[-120:]:
+                lines.append(cls._worker_job_failure_line(record))
+        lines.append("")
+        return lines
+
+    @staticmethod
+    def _worker_job_failure_line(record: WorkerJobRecord) -> str:
+        fields = [
+            f"job_id={record.job_id}",
+            f"session_id={record.session_id}",
+            f"status={record.status}",
+            f"cleanup_status={record.cleanup_status}",
+        ]
+        if record.started_at is not None:
+            fields.append(f"started_at={record.started_at.isoformat()}")
+        if record.finished_at is not None:
+            fields.append(f"finished_at={record.finished_at.isoformat()}")
+        if record.error:
+            fields.append(f"error={record.error}")
+        if record.cleanup_error:
+            fields.append(f"cleanup_error={record.cleanup_error}")
+        return " ".join(fields)
 
     @staticmethod
     def _run_command(args: list[str], *, timeout_seconds: float) -> _CommandResult:

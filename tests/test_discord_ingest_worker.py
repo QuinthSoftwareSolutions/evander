@@ -185,3 +185,111 @@ def test_discord_ingest_normalize_message_preserves_attachment_metadata_without_
     ]
     assert "content" not in envelope.raw["message"]["attachments"][0]
     assert "content_base64" not in envelope.raw["message"]["attachments"][0]
+
+
+def test_discord_ingest_worker_batches_new_messages_before_advancing_cursor(
+    tmp_path: Path,
+) -> None:
+    worker = build_discord_ingest_worker(
+        GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")}),
+        project_dir=tmp_path,
+    )
+
+    class _FakeResponse:
+        def json(self):
+            return [
+                {
+                    "id": "2",
+                    "timestamp": "2026-03-30T11:00:02Z",
+                    "content": "second",
+                    "author": {"id": "user-b", "username": "B"},
+                    "attachments": [],
+                },
+                {
+                    "id": "1",
+                    "timestamp": "2026-03-30T11:00:01Z",
+                    "content": "first",
+                    "author": {"id": "user-a", "username": "A"},
+                    "attachments": [],
+                },
+            ]
+
+    class _FakeAdapter:
+        api_base_url = "https://discord.test"
+        poll_limit = 50
+
+        def _request_with_retries(self, client, method, url, params=None):
+            return _FakeResponse()
+
+    class _RecordingStore:
+        def __init__(self) -> None:
+            self.add_messages_calls: list[list[str]] = []
+            self.set_cursor_calls: list[tuple[str, str | None]] = []
+
+        def get_cursor(self, channel_id: str) -> str | None:
+            return None
+
+        def add_messages_if_new(self, envelopes) -> int:
+            message_ids = [envelope.message_id for envelope in envelopes]
+            self.add_messages_calls.append(message_ids)
+            return len(message_ids)
+
+        def set_cursor(self, channel_id: str, cursor: str | None) -> None:
+            self.set_cursor_calls.append((channel_id, cursor))
+
+    store = _RecordingStore()
+    worker.runtime.discord_inbox_service.store = store
+
+    worker._poll_channel(object(), adapter=_FakeAdapter(), channel_id="chan-a")
+
+    assert store.add_messages_calls == [["1", "2"]]
+    assert store.set_cursor_calls == [("chan-a", "2026-03-30T11:00:02Z")]
+
+
+def test_discord_ingest_worker_does_not_advance_cursor_when_batch_write_fails(
+    tmp_path: Path,
+) -> None:
+    worker = build_discord_ingest_worker(
+        GatewayConfig.model_validate({"runtime_dir": str(tmp_path / "runtime")}),
+        project_dir=tmp_path,
+    )
+
+    class _FakeResponse:
+        def json(self):
+            return [
+                {
+                    "id": "1",
+                    "timestamp": "2026-03-30T11:00:01Z",
+                    "content": "first",
+                    "author": {"id": "user-a", "username": "A"},
+                    "attachments": [],
+                }
+            ]
+
+    class _FakeAdapter:
+        api_base_url = "https://discord.test"
+        poll_limit = 50
+
+        def _request_with_retries(self, client, method, url, params=None):
+            return _FakeResponse()
+
+    class _FailingStore:
+        def __init__(self) -> None:
+            self.set_cursor_calls: list[tuple[str, str | None]] = []
+
+        def get_cursor(self, channel_id: str) -> str | None:
+            return None
+
+        def add_messages_if_new(self, envelopes) -> int:
+            raise RuntimeError("boom")
+
+        def set_cursor(self, channel_id: str, cursor: str | None) -> None:
+            self.set_cursor_calls.append((channel_id, cursor))
+
+    store = _FailingStore()
+    worker.runtime.discord_inbox_service.store = store
+
+    with pytest.raises(RuntimeError, match="boom"):
+        worker._poll_channel(object(), adapter=_FakeAdapter(), channel_id="chan-a")
+
+    assert store.set_cursor_calls == []

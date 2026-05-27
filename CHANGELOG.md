@@ -5,6 +5,37 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-27 - Discord Inbox SQLite Integration
+
+- Batched Discord command-envelope persistence so a successful poll cycle can
+  store all fetched commands with one repository write.
+- Kept Discord inbox construction compatible with the legacy
+  `runtime/discord-inbox-store.json` path while the live store uses
+  `runtime/discord-inbox-store.db`.
+- Preserved first-use import from legacy Discord inbox JSON and retained the
+  SQLite message compaction rules for old messages once channel cursors move
+  past them.
+
+## 2026-05-27 - Worker Job Store SQLite
+
+- Moved the worker daemon job store from `worker-jobs.json` full-store rewrites
+  to `worker-jobs.db` SQLite row updates while preserving `WorkerJobStore` as
+  the public entry point.
+- Added first-use import from legacy `worker-jobs.json` files when the SQLite
+  table is empty, leaving the JSON source untouched.
+- Updated worker session cleanup and diagnostics to use indexed SQLite job
+  reads instead of scanning or tailing the legacy JSON store.
+- Made worker telemetry degrade gracefully when SQLite job-store reads fail.
+
+## 2026-05-27 - Wake Store SQLite Migration
+
+- Moved the scheduled wake store to SQLite while keeping the public repository
+  API stable for gateway, admin, and worker callers.
+- Preserved legacy `wake-requests-store.json` compatibility as import-only
+  input, with sibling `.db` storage used for active persistence.
+- Updated gateway-facing wake schedule coverage to assert repository behavior
+  instead of treating the legacy JSON file as the live datastore.
+
 ## 2026-05-27 - Orchestration SQLite WAL Maintenance
 
 - Added configurable SQLite WAL checkpoint maintenance for the workflow

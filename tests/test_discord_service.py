@@ -23,6 +23,27 @@ def patch_httpx_client(
     )
 
 
+class RecordingDiscordCommandStore:
+    def __init__(self) -> None:
+        self.records: dict[str, DiscordCommandEnvelope] = {}
+        self.put_calls = 0
+        self.put_many_calls = 0
+
+    def get(self, command_id: str) -> DiscordCommandEnvelope | None:
+        return self.records.get(command_id)
+
+    def put(self, command_id: str, envelope: DiscordCommandEnvelope) -> None:
+        self.put_calls += 1
+        self.records[command_id] = envelope
+
+    def put_many(self, records: dict[str, DiscordCommandEnvelope]) -> None:
+        self.put_many_calls += 1
+        self.records.update(records)
+
+    def read_all(self) -> dict[str, DiscordCommandEnvelope]:
+        return dict(self.records)
+
+
 def make_service(tmp_path: Path, transport: httpx.BaseTransport) -> DiscordBotApiService:
     command_store = JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope)
     return DiscordBotApiService(
@@ -134,6 +155,130 @@ def test_get_commands_polls_only_allowlisted_channels_and_filters_since_cursor(
     assert all(request.url.params.get("limit") == "25" for request in requests)
 
 
+def test_get_commands_batches_store_writes_after_successful_poll(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command_store = JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope)
+    put_calls = 0
+    put_many_calls = 0
+    original_put_many = command_store.put_many
+
+    def fake_put(command_id: str, envelope: DiscordCommandEnvelope) -> None:
+        nonlocal put_calls
+        put_calls += 1
+        raise AssertionError("get_commands() should batch Discord command writes")
+
+    def fake_put_many(items: dict[str, DiscordCommandEnvelope]) -> None:
+        nonlocal put_many_calls
+        put_many_calls += 1
+        original_put_many(items)
+
+    monkeypatch.setattr(command_store, "put", fake_put)
+    monkeypatch.setattr(command_store, "put_many", fake_put_many)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/channels/chan-a/messages"):
+            return httpx.Response(
+                200,
+                json=[{"id": "200", "content": "new-a", "author": {"id": "user-a"}}],
+                request=request,
+            )
+        if request.url.path.endswith("/channels/chan-b/messages"):
+            return httpx.Response(
+                200,
+                json=[{"id": "300", "content": "new-b", "author": {"id": "user-b"}}],
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+
+    service = DiscordBotApiService(
+        command_store,
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        retry_count=2,
+        retry_base_backoff_seconds=0.01,
+        retry_max_backoff_seconds=0.05,
+        allowed_channel_ids_provider=lambda: ["chan-a", "chan-b"],
+    )
+
+    commands = service.get_commands()
+
+    assert [command.command_id for command in commands] == ["200", "300"]
+    assert put_many_calls == 1
+    assert put_calls == 0
+    assert [command.command_id for command in command_store.read_all().values()] == [
+        "200",
+        "300",
+    ]
+
+
+def test_get_commands_does_not_persist_partial_results_on_http_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command_store = JsonStore(tmp_path / "discord.json", DiscordCommandEnvelope)
+    put_calls = 0
+    put_many_calls = 0
+    original_put_many = command_store.put_many
+
+    def fake_put(command_id: str, envelope: DiscordCommandEnvelope) -> None:
+        nonlocal put_calls
+        put_calls += 1
+        raise AssertionError("get_commands() should not write partial results")
+
+    def fake_put_many(items: dict[str, DiscordCommandEnvelope]) -> None:
+        nonlocal put_many_calls
+        put_many_calls += 1
+        original_put_many(items)
+
+    monkeypatch.setattr(command_store, "put", fake_put)
+    monkeypatch.setattr(command_store, "put_many", fake_put_many)
+
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/channels/chan-a/messages"):
+            return httpx.Response(
+                200,
+                json=[{"id": "200", "content": "new-a", "author": {"id": "user-a"}}],
+                request=request,
+            )
+        if request.url.path.endswith("/channels/chan-b/messages"):
+            raise httpx.ReadTimeout("timed out", request=request)
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
+    patch_httpx_client(monkeypatch, transport)
+
+    service = DiscordBotApiService(
+        command_store,
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        retry_count=0,
+        allowed_channel_ids_provider=lambda: ["chan-a", "chan-b"],
+    )
+
+    with pytest.raises(httpx.ReadTimeout):
+        service.get_commands()
+
+    assert put_many_calls == 0
+    assert put_calls == 0
+    assert command_store.read_all() == {}
+    assert [request.url.path for request in requests] == [
+        "/api/v10/channels/chan-a/messages",
+        "/api/v10/channels/chan-b/messages",
+    ]
+
+
 def test_get_commands_never_polls_stale_or_non_allowlisted_channels(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -235,6 +380,101 @@ def test_get_commands_polls_operator_dms_only_when_enabled(
         "/api/v10/users/@me/channels",
         "/api/v10/channels/dm-operator/messages",
     ]
+
+
+def test_get_commands_batches_fetched_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = RecordingDiscordCommandStore()
+    store.records["100"] = DiscordCommandEnvelope(
+        command_id="100",
+        author_id="seed-user",
+        channel_id="chan-a",
+        content="seed",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        metadata={"source": "discord_bot_api", "channel_id": "chan-a", "author_id": "seed-user"},
+    )
+
+    requested_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_paths.append(request.url.path)
+        if request.url.path.endswith("/users/@me/channels"):
+            return httpx.Response(
+                200,
+                json=[
+                    {"id": "dm-operator", "recipients": [{"id": "operator-user"}]},
+                    {"id": "dm-other", "recipients": [{"id": "not-operator"}]},
+                ],
+                request=request,
+            )
+        if request.url.path.endswith("/channels/chan-a/messages"):
+            return httpx.Response(
+                200,
+                json=[
+                    {"id": "200", "content": "new-a", "author": {"id": "user-a"}},
+                ],
+                request=request,
+            )
+        if request.url.path.endswith("/channels/dm-operator/messages"):
+            return httpx.Response(
+                200,
+                json=[
+                    {"id": "300", "content": "dm", "author": {"id": "operator-user"}},
+                ],
+                request=request,
+            )
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = DiscordBotApiService(
+        store,
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_ids_provider=lambda: ["chan-a"],
+        operator_user_ids_provider=lambda: ["operator-user"],
+        include_operator_dms=True,
+    )
+
+    commands = service.get_commands(since_cursor="180")
+
+    assert [command.command_id for command in commands] == ["200", "300"]
+    assert store.put_many_calls == 1
+    assert store.put_calls == 0
+    assert requested_paths == [
+        "/api/v10/users/@me/channels",
+        "/api/v10/channels/chan-a/messages",
+        "/api/v10/channels/dm-operator/messages",
+    ]
+
+
+def test_get_commands_does_not_write_when_no_new_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = RecordingDiscordCommandStore()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/channels/chan-a/messages"):
+            return httpx.Response(200, json=[], request=request)
+        raise AssertionError(f"Unexpected path: {request.url.path}")
+
+    patch_httpx_client(monkeypatch, httpx.MockTransport(handler))
+    service = DiscordBotApiService(
+        store,
+        token="test-token",
+        api_base_url="https://discord.test/api/v10",
+        poll_limit=25,
+        timeout_seconds=5.0,
+        allowed_channel_ids_provider=lambda: ["chan-a"],
+    )
+
+    commands = service.get_commands()
+
+    assert commands == []
+    assert store.put_many_calls == 0
+    assert store.put_calls == 0
 
 
 def test_post_status_raises_on_rate_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

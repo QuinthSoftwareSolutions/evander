@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
-from typing import Any, Callable, Iterator, Literal, Protocol
+from typing import Any, Callable, Iterator, Literal, Mapping, Protocol
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
 import httpx
@@ -851,6 +851,7 @@ class DiscordBotApiService:
 
     def get_commands(self, since_cursor: str | None = None) -> list[DiscordCommandEnvelope]:
         envelopes: dict[str, DiscordCommandEnvelope] = dict(self.command_store.read_all())
+        fetched_commands: dict[str, DiscordCommandEnvelope] = {}
         with httpx.Client(timeout=self.timeout_seconds) as client:
             channel_ids = sorted(
                 set(self._allowed_channel_ids()) | set(self._operator_dm_channel_ids(client))
@@ -885,7 +886,9 @@ class DiscordBotApiService:
                         },
                     )
                     envelopes[envelope.command_id] = envelope
-                    self.command_store.put(envelope.command_id, envelope)
+                    fetched_commands[envelope.command_id] = envelope
+
+        _put_discord_commands(self.command_store, fetched_commands)
 
         commands = sorted(
             envelopes.values(),
@@ -1111,6 +1114,20 @@ def _put_teams_messages(
         return
     for cursor, message in messages.items():
         message_store.put(cursor, message)
+
+
+def _put_discord_commands(
+    command_store: DiscordRecordsRepository,
+    commands: Mapping[str, DiscordCommandEnvelope],
+) -> None:
+    if not commands:
+        return
+    put_many = getattr(command_store, "put_many", None)
+    if callable(put_many):
+        put_many(commands)
+        return
+    for command_id, envelope in commands.items():
+        command_store.put(command_id, envelope)
 
 
 def _filter_teams_messages_since_cursor(
@@ -2789,7 +2806,6 @@ class DiscordInboxService:
         limit: int | None,
         persist_session_cursor: bool,
     ) -> ListUnreadDiscordMessagesResponse:
-        payload = self._read_store()
         allowed_channels = {stream["channel_id"] for stream in streams}
         channel_cursors = {
             stream["channel_id"]: self._effective_cursor(
@@ -2800,20 +2816,24 @@ class DiscordInboxService:
             for stream in streams
         }
         items: list[DiscordMessageEnvelope] = []
-        for raw_value in payload.get("messages", {}).values():
-            if not isinstance(raw_value, dict):
-                continue
-            candidate = DiscordMessageEnvelope.model_validate(raw_value)
-            if candidate.channel_id not in allowed_channels:
-                continue
-            if session_id is not None and self._is_self_authored_message(
-                candidate, session_id=session_id
-            ):
-                continue
-            effective_cursor = channel_cursors.get(candidate.channel_id)
-            if effective_cursor and candidate.created_at <= self._parse_cursor(effective_cursor):
-                continue
-            items.append(candidate)
+        if allowed_channels:
+            candidates = self.store.list_all_messages(
+                channel_ids=sorted(allowed_channels),
+                limit=None,
+            ).messages
+            for candidate in candidates:
+                if candidate.channel_id not in allowed_channels:
+                    continue
+                if session_id is not None and self._is_self_authored_message(
+                    candidate, session_id=session_id
+                ):
+                    continue
+                effective_cursor = channel_cursors.get(candidate.channel_id)
+                if effective_cursor and candidate.created_at <= self._parse_cursor(
+                    effective_cursor
+                ):
+                    continue
+                items.append(candidate)
 
         items.sort(
             key=lambda item: (

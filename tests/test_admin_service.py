@@ -6592,9 +6592,7 @@ def test_delete_session_cleans_detached_worker_state(
             self.deleted_sessions.append(session_id)
             attempted_at = now
             completed_at = now
-            for record in repository.read_all().values():
-                if record.session_id != session_id:
-                    continue
+            for record in repository.list_by_session(session_id):
                 record.last_status = "removed"
                 record.cleanup_status = "cleanup_succeeded"
                 record.cleanup_attempted_at = attempted_at
@@ -6741,9 +6739,7 @@ def test_cleanup_container_session_records_failure_and_keeps_context(
         def delete_session(self, session_id: str) -> dict[str, object]:
             attempted_at = now
             completed_at = now
-            for record in repository.read_all().values():
-                if record.session_id != session_id:
-                    continue
+            for record in repository.list_by_session(session_id):
                 record.last_status = "cleanup_failed"
                 record.cleanup_status = "cleanup_failed"
                 record.cleanup_attempted_at = attempted_at

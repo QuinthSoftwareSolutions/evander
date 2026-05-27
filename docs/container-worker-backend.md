@@ -306,10 +306,16 @@ session login before removing durable files; SQL cleanup failure blocks session-
 The host-side backend records the control-plane mapping in:
 
 ```text
-<runtime-dir>/container-worker-executions.json
+<runtime-dir>/container-worker-executions.db
 ```
 
-That store maps the host execution id and session id to the worker job id, worker URL, target name, timestamps, last observed status, directory path, and sanitized metadata. Operators can target an execution by execution id, worker job id, target name, or an unambiguous session id.
+That SQLite store maps the host execution id and session id to the worker job id, worker URL,
+target name, timestamps, last observed status, directory path, and sanitized metadata. Existing
+configuration and code paths still pass `<runtime-dir>/container-worker-executions.json`; on
+startup the repository resolves that legacy path to the sibling SQLite database and imports the
+JSON file once if the database is empty. The JSON file is left untouched as migration input.
+Operators can target an execution by execution id, worker job id, target name, or an unambiguous
+session id.
 
 ## Operator CLI
 
@@ -331,7 +337,10 @@ agent-sandbox-cli execution start-container-job \
   --json
 ```
 
-Follow-up operations can target the execution id, worker job id, target name, or an unambiguous session id. They auto-route to the container backend when the target exists in `<runtime-dir>/container-worker-executions.json`; use `--backend container_worker_vm` or `--backend libvirt_vm` to force a backend:
+Follow-up operations can target the execution id, worker job id, target name, or an unambiguous
+session id. They auto-route to the container backend when the target exists in the container worker
+execution mapping database; use `--backend container_worker_vm` or `--backend libvirt_vm` to force
+a backend:
 
 ```bash
 agent-sandbox-cli execution status demo-container-1
@@ -418,7 +427,15 @@ metadata-protection boundary.
 
 ## Job Store
 
-The runtime store is `<runtime-dir>/worker-jobs.json`. It records job id, session id, image, command, container name/id, status, timestamps, persistent paths, and sanitized metadata.
+The active runtime store is `<runtime-dir>/worker-jobs.db`. Worker daemon code still constructs
+`WorkerJobStore(runtime_dir / "worker-jobs.json")` for compatibility; the store resolves that
+legacy JSON path to the sibling SQLite database and imports an existing JSON file only when the
+SQLite table is empty. The legacy JSON file is left untouched after import and remains only a
+migration input or troubleshooting artifact.
+
+The SQLite `worker_jobs` table records query columns for job id, session id, container name,
+status, cleanup status, timestamps, and a full JSON payload for `WorkerJobRecord` round trips.
+Lifecycle updates write one SQLite row instead of rewriting the complete job history.
 
 The job store must not contain request headers, bearer tokens, host credentials, or full environment variables.
 
