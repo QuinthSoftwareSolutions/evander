@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 
 import yaml
 
@@ -6,21 +7,38 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _tracked_repo_paths(*paths: str) -> set[str]:
+    result = subprocess.run(
+        ["git", "ls-files", "--", *paths],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return set(result.stdout.splitlines())
+
+
 def test_client_deployment_files_are_not_product_repo_sources() -> None:
     ignored = (ROOT / ".gitignore").read_text(encoding="utf-8")
     docs = (ROOT / "ansible" / "README.md").read_text(encoding="utf-8")
+    local_only_paths = {
+        "azure-pipelines.yml",
+        "ansible/inventory/azure.yml",
+        "ansible/group_vars/azure.yml",
+        "ansible/group_vars/all/vault.yml",
+    }
 
-    assert not (ROOT / "azure-pipelines.yml").exists()
-    assert not (ROOT / "ansible" / "inventory" / "azure.yml").exists()
-    assert not (ROOT / "ansible" / "group_vars" / "azure.yml").exists()
-    assert not (ROOT / "ansible" / "group_vars" / "all" / "vault.yml").exists()
+    assert _tracked_repo_paths(*sorted(local_only_paths)).isdisjoint(local_only_paths)
 
     assert "/azure-pipelines.yml" in ignored
     assert "ansible/inventory/azure.yml" in ignored
     assert "ansible/group_vars/azure.yml" in ignored
     assert "ansible/group_vars/all/vault.yml" in ignored
 
-    assert "Azure Pipelines deployment YAML is intentionally not checked into this product repo" in docs
+    assert (
+        "Azure Pipelines deployment YAML is intentionally not checked into this product repo"
+        in docs
+    )
     assert "operator-owned deployment config" in docs
 
 
@@ -52,9 +70,10 @@ def test_azure_deployment_examples_are_non_secret_templates() -> None:
     assert vars_payload["agent_sandbox_nexus_admin_password"] == (
         "{{ vault_agent_sandbox_nexus_admin_password | default('') }}"
     )
-    assert vars_payload["agent_sandbox_admin_web_env"][
-        "AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL"
-    ] == "https://admin.example.com"
+    assert (
+        vars_payload["agent_sandbox_admin_web_env"]["AGENT_SANDBOX_ADMIN_WEB_PUBLIC_BASE_URL"]
+        == "https://admin.example.com"
+    )
 
     assert set(vault_payload) >= {
         "vault_openai_api_key",

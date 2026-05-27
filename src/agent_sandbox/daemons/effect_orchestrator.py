@@ -89,6 +89,7 @@ from agent_sandbox.workflow.engine.node_executors import (
 )
 from agent_sandbox.workflow.engine import OrchestrationLoop
 from agent_sandbox.orchestration.kernels import PollingKernelConfig, PollingOrchestratorKernel
+from agent_sandbox.orchestration.wal_maintenance import OrchestrationWalCheckpointMaintenance
 from agent_sandbox.orchestration.wiring import (
     EffectWorkerStoreWiring,
     EffectWorkerWiring,
@@ -380,7 +381,9 @@ class EventScheduleEffectExecutor:
         source = InternalEventSource(
             source_type="scheduled_internal_event",
             workflow_run_id=_normalize_optional_string(execution_context.get("workflow_run_id")),
-            workflow_event_id=_normalize_optional_string(execution_context.get("workflow_event_id")),
+            workflow_event_id=_normalize_optional_string(
+                execution_context.get("workflow_event_id")
+            ),
             workflow_trace_id=_normalize_optional_string(
                 execution_context.get("workflow_trace_id")
             ),
@@ -466,6 +469,7 @@ class EffectOrchestratorWorker:
         self._last_graph_node_count = 0
         self._last_graph_edge_count = 0
         self._last_snapshot_revision: str | None = None
+        self._wal_checkpoint_maintenance = OrchestrationWalCheckpointMaintenance()
         self._scheduled_internal_event_store_cache: _ScheduledInternalEventStoreCache = None
         self.provider_factory = resolved_wiring.provider_factory
         self.query_provider_factory = resolved_wiring.query_provider_factory
@@ -515,12 +519,12 @@ class EffectOrchestratorWorker:
         config_changed = latest_config != previous_config
         early_completion_events_published = 0
         if config_changed:
-            provider_changed = _provider_loader_signature(latest_config) != _provider_loader_signature(
-                previous_config
-            )
-            store_changed = _effect_store_binding_signature(latest_config) != _effect_store_binding_signature(
-                previous_config
-            )
+            provider_changed = _provider_loader_signature(
+                latest_config
+            ) != _provider_loader_signature(previous_config)
+            store_changed = _effect_store_binding_signature(
+                latest_config
+            ) != _effect_store_binding_signature(previous_config)
             store_wiring: EffectWorkerStoreWiring | None = None
             runtime_wiring: EffectProviderRuntimeWiring | None = None
             apply_config = True
@@ -795,6 +799,7 @@ class EffectOrchestratorWorker:
         )
         completion_events_published += published_count
         completion_events_published += self._run_post_event_maintenance(graph=graph)
+        self._run_orchestration_wal_checkpoint_maintenance()
 
         next_sleep_seconds = _compute_effect_cycle_sleep_seconds(
             events_processed=events_processed,
@@ -1018,6 +1023,23 @@ class EffectOrchestratorWorker:
         published += count
         return published
 
+    def _run_orchestration_wal_checkpoint_maintenance(self) -> None:
+        phase_started = time.perf_counter()
+        result = self._wal_checkpoint_maintenance.run_if_due(self.worker_config)
+        if result is None:
+            return
+        self._log_phase_duration(
+            "wal_checkpoint",
+            phase_started,
+            attempted=result.attempted,
+            skipped_reason=result.skipped_reason,
+            wal_size_bytes=result.wal_size_bytes,
+            busy=result.busy,
+            log_frames=result.log_frames,
+            checkpointed_frames=result.checkpointed_frames,
+            error=result.error,
+        )
+
     def _run_waiting_reconciliation_hooks(self, *, graph: ExecutionGraph | None = None) -> int:
         reconciled = 0
         graph = graph or self._build_execution_graph()
@@ -1060,8 +1082,7 @@ class EffectOrchestratorWorker:
                 records = [
                     record
                     for record in list_executions()
-                    if str(getattr(record, "status", "") or "").strip()
-                    == COMPLETION_PENDING_STATUS
+                    if str(getattr(record, "status", "") or "").strip() == COMPLETION_PENDING_STATUS
                 ]
             else:
                 read_all = getattr(self.execution_store, "read_all", None)
@@ -1070,8 +1091,7 @@ class EffectOrchestratorWorker:
                 records = [
                     record
                     for record in read_all().values()
-                    if str(getattr(record, "status", "") or "").strip()
-                    == COMPLETION_PENDING_STATUS
+                    if str(getattr(record, "status", "") or "").strip() == COMPLETION_PENDING_STATUS
                 ]
 
         for record in records:
@@ -1230,8 +1250,7 @@ class EffectOrchestratorWorker:
                 records = [
                     record
                     for record in list_executions()
-                    if str(getattr(record, "status", "") or "").strip()
-                    == COMPLETION_PENDING_STATUS
+                    if str(getattr(record, "status", "") or "").strip() == COMPLETION_PENDING_STATUS
                 ]
             else:
                 read_all = getattr(self.gate_execution_store, "read_all", None)
@@ -1240,8 +1259,7 @@ class EffectOrchestratorWorker:
                 records = [
                     record
                     for record in read_all().values()
-                    if str(getattr(record, "status", "") or "").strip()
-                    == COMPLETION_PENDING_STATUS
+                    if str(getattr(record, "status", "") or "").strip() == COMPLETION_PENDING_STATUS
                 ]
 
         for record in records:
@@ -1465,7 +1483,6 @@ class EffectOrchestratorWorker:
             event_id=queue_record.event_id,
             node_id=node_id,
         )
-
 
     def claim_dedupe_key(
         self,
@@ -2741,7 +2758,9 @@ def _effect_store_binding_signature(
         "gate_execution_store_path": str(worker_config.gate_execution_store_path)
         if worker_config.gate_execution_store_path is not None
         else None,
-        "workflow_config_snapshot_store_path": str(worker_config.workflow_config_snapshot_store_path)
+        "workflow_config_snapshot_store_path": str(
+            worker_config.workflow_config_snapshot_store_path
+        )
         if worker_config.workflow_config_snapshot_store_path is not None
         else None,
         "effect_cursor_store_path": str(worker_config.effect_cursor_store_path)

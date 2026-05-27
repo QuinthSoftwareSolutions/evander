@@ -10,6 +10,8 @@ material. Newer entries are added incrementally as changes land.
 - Added configurable SQLite WAL checkpoint maintenance for the workflow
   orchestration store, defaulting to truncated checkpoints when
   `orchestration.db-wal` reaches 64 MiB and at most once every five minutes.
+- Ran WAL checkpoint maintenance from active trigger/effect worker cycles so
+  long-running SQLite deployments are not limited to startup cleanup.
 - Removed full-history effect execution scans from the effect-orchestrator hot
   loop by using indexed waiting/completion-pending queries and running
   waiting/gate maintenance after event dispatch.
