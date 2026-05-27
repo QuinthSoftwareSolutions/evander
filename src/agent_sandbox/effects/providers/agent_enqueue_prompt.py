@@ -505,16 +505,27 @@ class AgentEnqueuePromptEffectProvider(EffectProviderBase):
 
     @classmethod
     def container_session_is_busy_for_backend(cls, *, backend: Any, session_id: str) -> bool:
-        repository = getattr(backend, "repository", None)
-        read_all = getattr(repository, "read_all", None)
-        if not callable(read_all):
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
             return False
-        for record in read_all().values():
-            if str(getattr(record, "session_id", "") or "").strip() != session_id:
-                continue
+        repository = getattr(backend, "repository", None)
+        list_active_by_session = getattr(repository, "list_active_by_session", None)
+        if callable(list_active_by_session):
+            records = list_active_by_session(normalized_session_id, _ACTIVE_CONTAINER_STATUSES)
+        else:
+            read_all = getattr(repository, "read_all", None)
+            if not callable(read_all):
+                return False
+            records = [
+                record
+                for record in read_all().values()
+                if str(getattr(record, "session_id", "") or "").strip() == normalized_session_id
+                and str(getattr(record, "last_status", "") or "").strip().casefold()
+                in _ACTIVE_CONTAINER_STATUSES
+            ]
+
+        for record in records:
             status = str(getattr(record, "last_status", "") or "").strip().casefold()
-            if status not in _ACTIVE_CONTAINER_STATUSES:
-                continue
             try:
                 inspected = backend.inspect(getattr(record, "execution_id"))
                 inspected_status = getattr(inspected, "status", None)

@@ -1389,16 +1389,19 @@ def test_agent_enqueue_prompt_provider_queues_when_container_session_is_busy(
         metadata={},
     )
     backend.repository = SimpleNamespace(
-        read_all=lambda: {
-            "agent-session-1-old": ContainerWorkerExecutionRecord(
+        list_active_by_session=lambda session_id, active_statuses: [
+            ContainerWorkerExecutionRecord(
                 execution_id="agent-session-1-old",
-                session_id="session-1",
+                session_id=session_id,
                 worker_job_id="job-1",
                 worker_url="http://worker.test",
                 target_name="agent-session-1-old",
-                last_status="running",
+                last_status=next(iter(active_statuses)),
             )
-        }
+        ],
+        read_all=lambda: (_ for _ in ()).throw(
+            AssertionError("container enqueue should not scan all execution mappings")
+        ),
     )
     monkeypatch.setattr(
         "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
@@ -1468,16 +1471,19 @@ def test_agent_enqueue_prompt_keeps_distinct_busy_messages_for_same_metadata_key
         metadata={},
     )
     backend.repository = SimpleNamespace(
-        read_all=lambda: {
-            "agent-session-1-old": ContainerWorkerExecutionRecord(
+        list_active_by_session=lambda session_id, active_statuses: [
+            ContainerWorkerExecutionRecord(
                 execution_id="agent-session-1-old",
-                session_id="session-1",
+                session_id=session_id,
                 worker_job_id="job-1",
                 worker_url="http://worker.test",
                 target_name="agent-session-1-old",
-                last_status="running",
+                last_status=next(iter(active_statuses)),
             )
-        }
+        ],
+        read_all=lambda: (_ for _ in ()).throw(
+            AssertionError("container enqueue should not scan all execution mappings")
+        ),
     )
     monkeypatch.setattr(
         "agent_sandbox.effects.providers.agent_enqueue_prompt.container_backend",
