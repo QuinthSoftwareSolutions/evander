@@ -851,6 +851,7 @@ class DiscordBotApiService:
 
     def get_commands(self, since_cursor: str | None = None) -> list[DiscordCommandEnvelope]:
         envelopes: dict[str, DiscordCommandEnvelope] = dict(self.command_store.read_all())
+        fetched_envelopes: dict[str, DiscordCommandEnvelope] = {}
         with httpx.Client(timeout=self.timeout_seconds) as client:
             channel_ids = sorted(
                 set(self._allowed_channel_ids()) | set(self._operator_dm_channel_ids(client))
@@ -885,7 +886,10 @@ class DiscordBotApiService:
                         },
                     )
                     envelopes[envelope.command_id] = envelope
-                    self.command_store.put(envelope.command_id, envelope)
+                    fetched_envelopes[envelope.command_id] = envelope
+
+        if fetched_envelopes:
+            self.command_store.put_many(fetched_envelopes)
 
         commands = sorted(
             envelopes.values(),

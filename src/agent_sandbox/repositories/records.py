@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Protocol
 
 from agent_sandbox.models import DiscordCommandEnvelope, EmailMessage, TeamsMessageEnvelope
@@ -19,6 +20,8 @@ class DiscordRecordsRepository(Protocol):
     def get(self, command_id: str) -> DiscordCommandEnvelope | None: ...
 
     def put(self, command_id: str, envelope: DiscordCommandEnvelope) -> None: ...
+
+    def put_many(self, items: Mapping[str, DiscordCommandEnvelope]) -> None: ...
 
     def read_all(self) -> dict[str, DiscordCommandEnvelope]: ...
 
@@ -62,6 +65,9 @@ class JsonDiscordRecordsRepository:
 
     def put(self, command_id: str, envelope: DiscordCommandEnvelope) -> None:
         self._store.put(command_id, envelope)
+
+    def put_many(self, items: Mapping[str, DiscordCommandEnvelope]) -> None:
+        self._store.put_many(items)
 
     def read_all(self) -> dict[str, DiscordCommandEnvelope]:
         return self._store.read_all()
