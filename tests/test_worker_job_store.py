@@ -298,6 +298,22 @@ def test_worker_job_store_rejects_invalid_legacy_json_payloads(
         store.read_all()
 
 
+@pytest.mark.parametrize("legacy_text", ["", "   \n\t  "])
+def test_worker_job_store_ignores_empty_legacy_json_payloads(
+    tmp_path: Path,
+    legacy_text: str,
+) -> None:
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    legacy_path = runtime_dir / "worker-jobs.json"
+    legacy_path.write_text(legacy_text, encoding="utf-8")
+    store = WorkerJobStore(legacy_path)
+
+    assert store.read_all() == {}
+    assert store.path == runtime_dir / "worker-jobs.db"
+    assert legacy_path.read_text(encoding="utf-8") == legacy_text
+
+
 def test_worker_job_store_list_by_session_orders_rows(tmp_path: Path) -> None:
     store = _store(tmp_path)
     records = [
