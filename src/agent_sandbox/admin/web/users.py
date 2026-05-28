@@ -8,10 +8,12 @@ from starlette.routing import BaseRoute, Route
 from agent_sandbox.admin.service import AdminService
 from agent_sandbox.admin.web.shared import AdminWebAuth, json_error, json_ok
 from agent_sandbox.admin.web.user_store import (
+    AdminWebGroupRecord,
     AdminWebUserRole,
     AdminWebUserStore,
     normalize_admin_web_login,
 )
+from agent_sandbox.admin.web.rbac import PERMISSION_CATALOG
 from agent_sandbox.directory_config import ContactDirectoryConfig
 
 WORKFLOW_TUTORIAL_PROGRESS_PREFERENCE_KEY = "workflow_tutorial_progress"
@@ -19,8 +21,10 @@ WORKFLOW_TUTORIAL_IDS = frozenset({"first-steps"})
 
 
 def _user_payload(
+    user_store: AdminWebUserStore,
     user,
     *,
+    directory_path: str = "root",
     contact_id: str | None = None,
     contacts_config: ContactDirectoryConfig | None = None,
 ) -> dict[str, Any]:
@@ -41,7 +45,76 @@ def _user_payload(
         if contact is not None and contact_id is not None
         else None
     )
+    payload["group_assignments"] = [
+        assignment.model_dump(mode="json")
+        for assignment in user_store.list_user_group_assignments(user.login)
+    ]
+    payload["workflow_grants"] = [
+        grant.model_dump(mode="json") for grant in user_store.list_user_workflow_grants(user.login)
+    ]
+    payload["effective_permissions"] = sorted(
+        user_store.effective_permissions(user.login, directory_path=directory_path)
+    )
     return payload
+
+
+def _group_payload(group: AdminWebGroupRecord) -> dict[str, Any]:
+    return group.model_dump(mode="json")
+
+
+def _assignment_payloads(payload: dict[str, Any]) -> list[dict[str, Any]] | None:
+    if "group_assignments" not in payload:
+        return None
+    raw_assignments = payload.get("group_assignments")
+    if raw_assignments is None:
+        return []
+    if not isinstance(raw_assignments, list):
+        raise ValueError("group_assignments must be a JSON array")
+    result: list[dict[str, Any]] = []
+    for item in raw_assignments:
+        if not isinstance(item, dict):
+            raise ValueError("group_assignments entries must be JSON objects")
+        result.append(
+            {
+                "group_id": item.get("group_id"),
+                "directory_path": item.get("directory_path"),
+            }
+        )
+    return result
+
+
+def _workflow_grant_payloads(payload: dict[str, Any]) -> list[dict[str, Any]] | None:
+    if "workflow_grants" not in payload:
+        return None
+    raw_grants = payload.get("workflow_grants")
+    if raw_grants is None:
+        return []
+    if not isinstance(raw_grants, list):
+        raise ValueError("workflow_grants must be a JSON array")
+    result: list[dict[str, Any]] = []
+    for item in raw_grants:
+        if not isinstance(item, dict):
+            raise ValueError("workflow_grants entries must be JSON objects")
+        result.append(
+            {
+                "permission": item.get("permission"),
+                "directory_path": item.get("directory_path"),
+            }
+        )
+    return result
+
+
+def _apply_user_access_payload(
+    user_store: AdminWebUserStore,
+    *,
+    login: str,
+    group_assignments: list[dict[str, Any]] | None,
+    workflow_grants: list[dict[str, Any]] | None,
+) -> None:
+    if group_assignments is not None:
+        user_store.set_user_group_assignments(login=login, assignments=group_assignments)
+    if workflow_grants is not None:
+        user_store.set_user_workflow_grants(login=login, grants=workflow_grants)
 
 
 def _contact_options_payload(config: ContactDirectoryConfig) -> list[dict[str, Any]]:
@@ -122,7 +195,7 @@ def _workflow_tutorial_progress_payload(payload: object) -> dict[str, list[str]]
 def _require_user_manager(auth: AdminWebAuth, request: Request) -> None:
     auth.require(request)
     if not auth.can_manage_users(request):
-        raise PermissionError("Admin user role is required")
+        raise PermissionError("User-management permission is required")
 
 
 def _directory_path_from_request(service: AdminService, request: Request) -> str:
@@ -203,9 +276,13 @@ def admin_user_routes(
                 "directory_path": directory_path,
                 "directory_scoped_config_enabled": service.directory_scoped_config_enabled,
                 "contacts": _contact_options_payload(contacts_config),
+                "permission_catalog": sorted(PERMISSION_CATALOG),
+                "groups": [_group_payload(group) for group in user_store.list_groups()],
                 "users": [
                     _user_payload(
+                        user_store,
                         user,
+                        directory_path=directory_path,
                         contact_id=contacts_config.user_contact_links.get(user.login),
                         contacts_config=contacts_config,
                     )
@@ -240,6 +317,12 @@ def admin_user_routes(
             if "display_name" in payload:
                 update["display_name"] = payload["display_name"]
             user = user_store.upsert_user(**update)  # type: ignore[arg-type]
+            _apply_user_access_payload(
+                user_store,
+                login=user.login,
+                group_assignments=_assignment_payloads(payload),
+                workflow_grants=_workflow_grant_payloads(payload),
+            )
             if "contact_id" in payload:
                 _write_user_contact_link(
                     service,
@@ -255,7 +338,9 @@ def admin_user_routes(
         return json_ok(
             {
                 "user": _user_payload(
+                    user_store,
                     user,
+                    directory_path=directory_path,
                     contact_id=contacts_config.user_contact_links.get(user.login),
                     contacts_config=contacts_config,
                 )
@@ -293,6 +378,12 @@ def admin_user_routes(
             user = user_store.update_user(**update)
             if user is None:
                 return json_error("Admin web user not found", status_code=404)
+            _apply_user_access_payload(
+                user_store,
+                login=user.login,
+                group_assignments=_assignment_payloads(payload),
+                workflow_grants=_workflow_grant_payloads(payload),
+            )
             if "contact_id" in payload:
                 _write_user_contact_link(
                     service,
@@ -308,7 +399,9 @@ def admin_user_routes(
         return json_ok(
             {
                 "user": _user_payload(
+                    user_store,
                     user,
+                    directory_path=directory_path,
                     contact_id=contacts_config.user_contact_links.get(user.login),
                     contacts_config=contacts_config,
                 )
@@ -334,7 +427,74 @@ def admin_user_routes(
             return json_error(str(exc), status_code=403)
         except ValueError as exc:
             return json_error(str(exc))
-        return json_ok({"user": _user_payload(user)})
+        return json_ok(
+            {"user": _user_payload(user_store, user, directory_path=directory_path)}
+        )
+
+    async def upsert_group(request: Request):
+        try:
+            _require_user_manager(auth, request)
+            payload = await _json_body(request)
+            group_id = payload.get("group_id")
+            display_name = payload.get("display_name")
+            group_update: dict[str, Any] = {
+                "group_id": group_id,
+                "display_name": display_name,
+            }
+            if "description" in payload:
+                group_update["description"] = payload.get("description")
+            group = user_store.upsert_group(**group_update)
+            if "permissions" in payload:
+                permissions = payload.get("permissions")
+                if not isinstance(permissions, list):
+                    return json_error("permissions must be a JSON array")
+                group = user_store.set_group_permissions(group.group_id, permissions)
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        except ValueError as exc:
+            return json_error(str(exc))
+        return json_ok({"group": _group_payload(group)})
+
+    async def update_group(request: Request):
+        group_id = request.path_params["group_id"]
+        try:
+            _require_user_manager(auth, request)
+            payload = await _json_body(request)
+            existing = user_store.get_group(group_id)
+            if existing is None:
+                return json_error("Admin web group not found", status_code=404)
+            group = user_store.upsert_group(
+                group_id=group_id,
+                display_name=payload.get("display_name", existing.display_name),
+                description=(
+                    payload.get("description")
+                    if "description" in payload
+                    else existing.description
+                ),
+            )
+            if "permissions" in payload:
+                permissions = payload.get("permissions")
+                if not isinstance(permissions, list):
+                    return json_error("permissions must be a JSON array")
+                group = user_store.set_group_permissions(group.group_id, permissions)
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        except ValueError as exc:
+            return json_error(str(exc))
+        return json_ok({"group": _group_payload(group)})
+
+    async def delete_group(request: Request):
+        group_id = request.path_params["group_id"]
+        try:
+            _require_user_manager(auth, request)
+            group = user_store.delete_group(group_id)
+            if group is None:
+                return json_error("Admin web group not found", status_code=404)
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        except ValueError as exc:
+            return json_error(str(exc))
+        return json_ok({"group": _group_payload(group)})
 
     async def get_workflow_tutorial_progress(request: Request):
         try:
@@ -366,6 +526,9 @@ def admin_user_routes(
         Route("/api/admin/users", upsert_user, methods=["POST"]),
         Route("/api/admin/users/{login}", update_user, methods=["PATCH"]),
         Route("/api/admin/users/{login}", delete_user, methods=["DELETE"]),
+        Route("/api/admin/groups", upsert_group, methods=["POST"]),
+        Route("/api/admin/groups/{group_id}", update_group, methods=["PATCH"]),
+        Route("/api/admin/groups/{group_id}", delete_group, methods=["DELETE"]),
         Route(
             "/api/admin/user-preferences/workflow-tutorial-progress",
             get_workflow_tutorial_progress,

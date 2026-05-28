@@ -129,4 +129,3 @@ def test_admin_web_rbac_blocks_removing_last_effective_owner(tmp_path: Path) -> 
         store.set_group_permissions(OWNER_GROUP_ID, set())
 
     assert store.can("owner@example.com", ADMIN_OWNER_PERMISSION)
-

@@ -305,10 +305,12 @@ orchestrator’s durable execution stores.
 - optional `workflow_ir`: inline IR fragment for local overlays
 
 Each pack can also carry optional `graphs` metadata. A graph entry names one connected node set
-inside the pack (`id`, `name`, `description`, `directory_paths`, `user_ids`, `node_ids`) so the
+inside the pack (`id`, `name`, `description`, `directory_path`, `user_ids`, `node_ids`) so the
 editor can select, filter, and label that workflow without treating the whole pack as one graph.
-`user_ids` identify associated users for ownership and audit reporting; they do not hide graphs from
-control-plane operators.
+Legacy one-item `directory_paths` values normalize to `directory_path` for compatibility, but
+multi-directory graph ownership is unsupported. `user_ids` identify associated users for ownership
+and audit reporting; Admin Web group assignments and direct workflow grants control graph
+visibility.
 
 At load time, the orchestrator composes selected pack IR + optional inline IR into executable
 runtime arrays (`triggers`, `gates`, `effects`, `queries`, `edges`) and then runs existing graph

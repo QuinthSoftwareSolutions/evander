@@ -416,28 +416,32 @@ Conformance:
 
 The conformance report artifacts are also documented in `conformance-reports.md`.
 
-## Users
+## Users & Groups
 
-The Users tab manages Admin Web user records when Azure SSO is enabled.
+The Users & Groups tab manages Admin Web user records, reusable permission groups, directory-scoped
+group assignments, and direct workflow grants when Azure SSO is enabled.
 
 ![Users](assets/admin-ui/manual-users.png)
 
 Common tasks:
 
 1. Sign in as a user with the `admin` role.
-2. Open **Users**.
+2. Open **Users & Groups**.
 3. Click **New user**.
 4. Enter the user's login/email-style identifier.
 5. Optionally set a display name.
-6. Choose `admin` or `regular`.
+6. Choose the legacy compatibility role.
 7. Optionally attach a directory-scoped contact.
-8. Click **Save**.
-9. Select an existing user to edit display name, role, or contact.
-10. Use **Delete** to remove a user record and invalidate their local Admin Web access on the next
+8. Add directory-scoped group assignments or direct workflow read/write grants.
+9. Click **Save**.
+10. Select an existing user to edit display name, role, contact, assignments, or grants.
+11. Select or create a group to edit its permission checkboxes.
+12. Use **Delete** to remove a user record and invalidate their local Admin Web access on the next
     authenticated request.
 
-Only admin users can manage users. Regular users can sign in and use non-admin surfaces according
-to the configured auth/session behavior, but they cannot edit the user registry.
+Only users with user/group management permission can manage this registry. Other users can sign in
+and use surfaces allowed by their effective permissions. Group directory scopes inherit downward,
+and direct workflow write grants imply read.
 
 ## Workers
 

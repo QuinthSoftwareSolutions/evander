@@ -3928,6 +3928,34 @@ select {
   margin-top: 0.08rem;
 }
 
+.users-page .compact-header {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(71, 56, 37, 0.12);
+}
+
+.users-page .compact-header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.users-page .stacked-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.users-page .stacked-list .inline-actions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.users-page .stacked-list select,
+.users-page .stacked-list input {
+  min-width: min(14rem, 100%);
+}
+
 .vm-list-item {
   padding: 0.65rem 0.8rem;
   border-radius: 0;

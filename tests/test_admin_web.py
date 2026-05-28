@@ -2299,7 +2299,9 @@ def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) 
 def test_admin_web_workflow_editor_accepts_revision_returned_from_previous_save(
     tmp_path: Path,
 ) -> None:
-    client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.create_directory_child("root", "ops")
+    client = TestClient(create_app(service))
     payload = {
         "config": {
             "runtime_dir": str(tmp_path / "runtime"),
@@ -6887,6 +6889,82 @@ def test_admin_web_user_api_clears_inherited_directory_contact(tmp_path: Path) -
     assert cleared.status_code == 200
     assert cleared.json()["user"]["contact_id"] is None
     assert listed.json()["users"][0]["contact_id"] is None
+
+
+def test_admin_web_user_api_manages_groups_assignments_and_direct_workflow_grants(
+    tmp_path: Path,
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.create_directory_child("root", "ops")
+    client = TestClient(create_app(service))
+
+    owner = client.post(
+        "/api/admin/users",
+        json={"login": "owner@example.com", "role": "admin", "display_name": "Owner"},
+    )
+    group = client.post(
+        "/api/admin/groups",
+        json={
+            "group_id": "ops-reviewers",
+            "display_name": "Ops Reviewers",
+            "description": "Review workflow changes for ops.",
+            "permissions": [WORKFLOWS_READ_PERMISSION, WORKFLOW_RUNS_READ_PERMISSION],
+        },
+    )
+    member = client.post(
+        "/api/admin/users?directory_path=root/ops",
+        json={
+            "login": "member@example.com",
+            "role": "regular",
+            "display_name": "Member",
+            "group_assignments": [
+                {"group_id": "ops-reviewers", "directory_path": "root/ops"}
+            ],
+            "workflow_grants": [
+                {"permission": WORKFLOWS_WRITE_PERMISSION, "directory_path": "root/ops"}
+            ],
+        },
+    )
+    listed = client.get("/api/admin/users?directory_path=root/ops")
+    updated_group = client.patch(
+        "/api/admin/groups/ops-reviewers",
+        json={
+            "display_name": "Ops Workflow Reviewers",
+            "permissions": [WORKFLOWS_READ_PERMISSION],
+        },
+    )
+
+    assert owner.status_code == 200
+    assert group.status_code == 200
+    assert set(group.json()["group"]["permissions"]) == {
+        WORKFLOWS_READ_PERMISSION,
+        WORKFLOW_RUNS_READ_PERMISSION,
+    }
+    assert member.status_code == 200
+    member_payload = member.json()["user"]
+    assert member_payload["group_assignments"] == [
+        {
+            "login": "member@example.com",
+            "group_id": "ops-reviewers",
+            "directory_path": "root/ops",
+            "created_at": member_payload["group_assignments"][0]["created_at"],
+        }
+    ]
+    assert member_payload["workflow_grants"] == [
+        {
+            "login": "member@example.com",
+            "permission": WORKFLOWS_WRITE_PERMISSION,
+            "directory_path": "root/ops",
+            "created_at": member_payload["workflow_grants"][0]["created_at"],
+        }
+    ]
+    assert WORKFLOWS_WRITE_PERMISSION in member_payload["effective_permissions"]
+    assert listed.status_code == 200
+    assert "ops-reviewers" in {group["group_id"] for group in listed.json()["groups"]}
+    assert WORKFLOWS_WRITE_PERMISSION in listed.json()["permission_catalog"]
+    assert updated_group.status_code == 200
+    assert updated_group.json()["group"]["display_name"] == "Ops Workflow Reviewers"
+    assert updated_group.json()["group"]["permissions"] == [WORKFLOWS_READ_PERMISSION]
 
 
 def test_admin_web_user_api_rejects_regular_azure_user(tmp_path: Path, monkeypatch) -> None:

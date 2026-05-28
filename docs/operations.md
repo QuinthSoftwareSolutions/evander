@@ -126,11 +126,14 @@ Troubleshooting checklist:
   `pack_version`, `ir.version`, `ir.nodes`, `ir.edges`). These live pack files are ignored by Git;
   checked-in starting points use `*-example.json`.
 - A pack can contain multiple connected graphs. Optional `graphs` entries name those connected
-  node sets with `id`, `name`, `description`, `directory_paths`, `user_ids`, and `node_ids`; the
-  runtime still executes from the IR, while the editor uses this metadata for directory-scoped
-  graph selection and labels. `user_ids` are owner/audit metadata only; workflow graphs are visible
-  to control-plane operators. Saving from a filtered view keeps unchanged graph metadata entries
-  intact, so graphs outside the selected directory are not rewritten by the presentation filter.
+  node sets with `id`, `name`, `description`, canonical `directory_path`, `user_ids`, and
+  `node_ids`; the runtime still executes from the IR, while the editor uses this metadata for
+  directory-scoped graph selection and labels. A legacy one-item `directory_paths` list is accepted
+  and emitted as compatibility metadata, but multi-directory graph ownership is rejected. `user_ids`
+  are owner/audit metadata only; workflow graph visibility is controlled by Admin Web group
+  assignments and direct workflow grants. Saving from a filtered view keeps unchanged graph
+  metadata entries intact, so graphs outside the selected directory are not rewritten by the
+  presentation filter.
 - In the Workflow editor, node inspector edits are staged into the local workflow document as soon
   as fields change. They are still not persisted to disk until **Save workflow** succeeds. Dirty
   nodes show an **Unsaved changes** badge, selected dirty nodes can be reverted with **Reset
@@ -260,11 +263,14 @@ Azure SSO enabling sequence:
 
 Azure SSO users are stored in `runtime/admin-web.db`, keyed by normalized login/email. When the
 SQLite user table is empty, `AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS` seeds those users with the
-`admin` role. A legacy `runtime/admin-web-users.json` file is imported once when the SQLite table is
-empty. After that first bootstrap, the SQLite runtime store is the source of truth. Admins manage
-membership and the `admin` / `regular` role from the Admin Web Users tab. Removing an Azure user
-from the runtime store invalidates their existing local admin session on the next authenticated
-request.
+Owner group. A legacy `runtime/admin-web-users.json` file is imported once when the SQLite table is
+empty; legacy `admin` and `regular` roles are retained for compatibility and mapped to Owner and
+Operator group assignments. After that first bootstrap, the SQLite runtime store is the source of
+truth. Users with user/group management permission manage groups, directory-scoped group
+assignments, and direct workflow read/write grants from the Admin Web Users & Groups tab. Directory
+scopes inherit downward, direct workflow write grants imply read, and privileged unlock remains a
+separate guard for high-risk mutations. Removing an Azure user from the runtime store invalidates
+their existing local admin session on the next authenticated request.
 
 The admin backend performs the token exchange server-side, validates issuer/audience/tenant, then mints the same local signed session cookie used by the password flow. Privileged lock/unlock behavior remains tied to that local admin session rather than the upstream Azure token.
 
