@@ -38,9 +38,68 @@ default_open_agent_pr() {
 
 OPEN_AGENT_PR="${OPEN_AGENT_PR:-$(default_open_agent_pr)}"
 
+normalize_branch_ref() {
+  local value="$1"
+  case "${value}" in
+    refs/heads/*)
+      printf '%s\n' "${value#refs/heads/}"
+      ;;
+    refs/head/*)
+      printf '%s\n' "${value#refs/head/}"
+      ;;
+    refs/remotes/origin/*)
+      printf '%s\n' "${value#refs/remotes/origin/}"
+      ;;
+    origin/*)
+      printf '%s\n' "${value#origin/}"
+      ;;
+    *)
+      printf '%s\n' "${value}"
+      ;;
+  esac
+}
+
+normalized_args=()
+positional_count=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --base)
+      if [[ $# -lt 2 ]]; then
+        normalized_args+=("$1")
+        shift
+        continue
+      fi
+      normalized_args+=("$1" "$(normalize_branch_ref "$2")")
+      shift 2
+      ;;
+    --provider|--project|--session-id|--work-item-id|--title|--body-file|--body-artifact-id)
+      if [[ $# -lt 2 ]]; then
+        normalized_args+=("$1")
+        shift
+        continue
+      fi
+      normalized_args+=("$1" "$2")
+      shift 2
+      ;;
+    --*)
+      normalized_args+=("$1")
+      shift
+      ;;
+    *)
+      positional_count=$((positional_count + 1))
+      if [[ "${positional_count}" -eq 3 ]]; then
+        normalized_args+=("$(normalize_branch_ref "$1")")
+      else
+        normalized_args+=("$1")
+      fi
+      shift
+      ;;
+  esac
+done
+
 output=""
 status=0
-if output="$("${OPEN_AGENT_PR}" "$@" 2>&1)"; then
+if output="$("${OPEN_AGENT_PR}" "${normalized_args[@]}" 2>&1)"; then
   status=0
 else
   status=$?

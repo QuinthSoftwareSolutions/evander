@@ -76,3 +76,48 @@ def test_push_existing_pr_branch_fails_on_logical_preflight_failure(tmp_path: Pa
     assert payload["message"] == "merge first"
     assert payload["origin_branch"] == "feature/topic"
     assert "AGENT_PR_RESULT" in result.stderr
+
+
+def test_push_existing_pr_branch_normalizes_ref_prefixed_branch_args(tmp_path: Path) -> None:
+    fake_open_agent_pr = tmp_path / "open_agent_pr.sh"
+    args_log = tmp_path / "args.log"
+    fake_open_agent_pr.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f"printf '%s\\n' \"$@\" > {args_log}\n"
+        "printf '%s\\n' 'Pushed branch'\n",
+        encoding="utf-8",
+    )
+    fake_open_agent_pr.chmod(0o755)
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "push_existing_pr_branch.sh"
+    env = os.environ.copy()
+    env["OPEN_AGENT_PR"] = str(fake_open_agent_pr)
+    result = subprocess.run(
+        [
+            str(script),
+            "--provider",
+            "azure_devops",
+            "--base",
+            "refs/heads/main",
+            "/repo",
+            "review/session/work",
+            "refs/heads/bugfix/topic",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+    )
+
+    assert result.returncode == 0
+    assert args_log.read_text(encoding="utf-8").splitlines() == [
+        "--provider",
+        "azure_devops",
+        "--base",
+        "main",
+        "/repo",
+        "review/session/work",
+        "bugfix/topic",
+    ]

@@ -15,6 +15,8 @@ material. Newer entries are added incrementally as changes land.
 - Added a `push_existing_pr_branch.sh` helper that wraps push-only
   `open_agent_pr.sh` calls with JSON output and non-zero exits for logical PR
   branch preflight failures.
+- Normalized ref-prefixed base and source branch names before invoking
+  `open_agent_pr.sh`.
 
 ## 2026-05-28 - Session Metadata Rule Editor
 
