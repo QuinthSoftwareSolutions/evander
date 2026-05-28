@@ -4130,7 +4130,16 @@ select {
 .approvals-page .stack-layout {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 1.25rem;
+}
+
+.approvals-page .feature-content,
+.approvals-page .feature-grid {
+  gap: 1.25rem;
+}
+
+.approvals-page .history-list {
+  gap: 0.9rem;
 }
 
 .approval-review-summary {
@@ -7320,6 +7329,16 @@ select {
   background: rgba(29, 26, 21, 0.9);
   color: #d7e3ea;
   box-shadow: 0 14px 38px rgba(0, 0, 0, 0.2);
+}
+
+:root[data-theme="dark"] .approvals-page .history-card {
+  border-color: rgba(128, 106, 66, 0.22);
+  background: rgba(20, 34, 42, 0.72);
+  color: #d7e3ea;
+}
+
+:root[data-theme="dark"] .approvals-page .history-card span {
+  color: #a7bac8;
 }
 
 :root[data-theme="dark"] .sidebar .workflow-tutorial-launcher-button {

@@ -27,6 +27,9 @@ material. Newer entries are added incrementally as changes land.
 - Removed the Admin Web Approvals `Queue health` panel.
 - Promoted approval `Summary` content out of its nested card so it reads as a
   root section inside the `Review` panel.
+- Added more vertical spacing between Approvals page cards.
+- Fixed decision-history cards so they use dark-mode surfaces and metadata
+  colors.
 
 ## 2026-05-27 - Thread Log Pagination
 
