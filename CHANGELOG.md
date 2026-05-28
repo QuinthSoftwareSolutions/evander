@@ -11,6 +11,18 @@ material. Newer entries are added incrementally as changes land.
   `open_agent_pr.sh` calls with JSON output and non-zero exits for logical PR
   branch preflight failures.
 
+## 2026-05-28 - Session Metadata Rule Editor
+
+- Added a structured workflow-editor metadata rule editor for
+  `query:session:list`, replacing separate raw JSON controls for equals,
+  exists, and prefix filters when the existing configuration can be represented
+  as simple rules.
+
+## 2026-05-28 - Session List State Selector
+
+- Changed the workflow-editor `query:session:list` State field from free text to
+  an enum selector for the accepted state values.
+
 ## 2026-05-28 - Session List Field Help
 
 - Added workflow-editor tooltips for every `query:session:list` configuration

@@ -3912,8 +3912,15 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
             _field(
                 "state",
                 "State",
-                "string",
+                "enum",
                 bindable=True,
+                options=[
+                    _field_option("active", "Active"),
+                    _field_option("expired", "Expired"),
+                    _field_option("inactive", "Inactive"),
+                    _field_option("all", "All"),
+                    _field_option("any", "Any"),
+                ],
                 description=(
                     "Value: active, expired, inactive, all, or any. Empty behaves like all."
                 ),
