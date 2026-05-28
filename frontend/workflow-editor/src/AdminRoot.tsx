@@ -1420,13 +1420,13 @@ export default function AdminRoot() {
   const activeTab = visibleTabs.find((tab) => tab.key === renderedTab) ?? TABS[TABS.length - 1];
   const privilegeUnlocked = adminState?.privileged_operations.unlocked ?? session?.privileged_operations.unlocked ?? false;
   const currentUserRole = adminState?.role ?? session?.role ?? null;
-  const currentUserPermissions = normalizePermissionList(
-    session?.permissions,
+  const currentUserPermissions = normalizePermissionList(session?.permissions, adminState?.permissions);
+  const currentUserEffectivePermissions = normalizePermissionList(
     session?.effective_permissions,
-    adminState?.permissions,
     adminState?.effective_permissions,
+    currentUserPermissions,
   );
-  const currentUserPermissionSet = new Set(currentUserPermissions);
+  const currentUserPermissionSet = new Set(currentUserEffectivePermissions);
   const isOwner = currentUserRole === "admin" || currentUserPermissionSet.has("admin.owner");
   const hasPermission = (permission: string) => isOwner || currentUserPermissionSet.has(permission);
   const canReadWorkflows = isOwner || [...WORKFLOW_READ_PERMISSIONS].some((permission) => hasPermission(permission));
@@ -1485,7 +1485,7 @@ export default function AdminRoot() {
     currentUserLabel,
     currentUserRole,
     currentUserPermissions,
-    currentUserEffectivePermissions: currentUserPermissions,
+    currentUserEffectivePermissions,
     canReadWorkflows,
     canWriteWorkflows,
     canControlWorkflowRuns,

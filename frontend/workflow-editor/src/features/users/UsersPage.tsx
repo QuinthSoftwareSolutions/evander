@@ -191,7 +191,7 @@ export function UsersPage() {
         <div className="feature-sidebar-header">
           <div>
             <div className="eyebrow">Access</div>
-            <h1>Users</h1>
+            <h1>Users &amp; Groups</h1>
           </div>
           <div className="inline-actions compact-actions">
             <button type="button" onClick={() => void loadUsers()} disabled={loading || !canManageUsers}>
@@ -203,7 +203,7 @@ export function UsersPage() {
           </div>
         </div>
         {!canManageUsers ? (
-          <div className="callout warning-callout">Admin role is required to manage users.</div>
+          <div className="callout warning-callout">Admin role is required to manage users and groups.</div>
         ) : null}
         <div className="feature-list user-list">
           {sortedUsers.map((user) => (

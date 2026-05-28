@@ -42,7 +42,12 @@ export const TABS: ReadonlyArray<AdminTabDefinition> = [
   { key: "tool-calls", label: "Tool Calls", shortLabel: "Calls", description: "Search MCP tool invocation audit entries." },
   { key: "configuration", label: "Configuration", shortLabel: "Config", description: "Directory-scoped config and policy." },
   { key: "reports", label: "Reports", shortLabel: "Reports", description: "Workflow activity and operational reporting." },
-  { key: "users", label: "Users", shortLabel: "Users", description: "Azure SSO users and roles." },
+  {
+    key: "users",
+    label: "Users & Groups",
+    shortLabel: "Users",
+    description: "Azure SSO users, groups, and permissions.",
+  },
   { key: "workers", label: "Workers", shortLabel: "Workers", description: "Background worker state, logs, and settings." },
   { key: "workflow", label: "Workflow", shortLabel: "Flow", description: "Workflow editor and runtime activity." },
 ];
