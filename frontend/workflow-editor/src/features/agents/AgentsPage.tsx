@@ -639,7 +639,7 @@ export function AgentsPage() {
   const logViewRef = useRef<HTMLPreElement | null>(null);
   const logSticksToBottomRef = useRef(true);
   const logLoadedLinesRef = useRef(LOG_PAGE_LIMIT);
-  const pendingLogScrollRef = useRef<"bottom" | { previousHeight: number; previousTop: number } | null>(null);
+  const pendingLogScrollRef = useRef<"bottom" | "top" | { previousHeight: number; previousTop: number } | null>(null);
   const hashSelectionActive = Boolean(hashSelection.agentId || hashSelection.sessionId);
 
   useEffect(() => {
@@ -684,6 +684,9 @@ export function AgentsPage() {
     if (pending === "bottom") {
       element.scrollTop = element.scrollHeight;
       logSticksToBottomRef.current = true;
+    } else if (pending === "top") {
+      element.scrollTop = 0;
+      logSticksToBottomRef.current = false;
     } else {
       element.scrollTop = element.scrollHeight - pending.previousHeight + pending.previousTop;
     }
@@ -800,7 +803,7 @@ export function AgentsPage() {
     const activeQuery = agentLog.appliedQuery;
     const refreshLog = async (showLoadingState: boolean) => {
       if (showLoadingState) {
-        pendingLogScrollRef.current = "bottom";
+        pendingLogScrollRef.current = activeLogView === "threads" ? "top" : "bottom";
         setAgentLog((current) => ({
           ...emptyLogState("Loading..."),
           appliedQuery: activeQuery,
@@ -828,7 +831,7 @@ export function AgentsPage() {
           return;
         }
         if (!activeQuery) {
-          pendingLogScrollRef.current = "bottom";
+          pendingLogScrollRef.current = activeLogView === "threads" ? "top" : "bottom";
         }
         const returnedLines = responseReturnedLines(payload);
         logLoadedLinesRef.current = Math.max(LOG_PAGE_LIMIT, returnedLines);
@@ -863,7 +866,7 @@ export function AgentsPage() {
       }
     };
     void refreshLog(true);
-    const timer = activeQuery
+    const timer = activeQuery || activeLogView === "threads"
       ? null
       : window.setInterval(() => {
           void refreshLog(false);
@@ -889,7 +892,7 @@ export function AgentsPage() {
 
   function reloadLog(query: string) {
     const normalizedQuery = query.trim();
-    pendingLogScrollRef.current = "bottom";
+    pendingLogScrollRef.current = activeLogView === "threads" ? "top" : "bottom";
     logLoadedLinesRef.current = LOG_PAGE_LIMIT;
     setAgentLog((current) => ({
       ...emptyLogState("Loading..."),
@@ -904,15 +907,16 @@ export function AgentsPage() {
     setLogView(nextView);
     setLogSearchInput("");
     logLoadedLinesRef.current = LOG_PAGE_LIMIT;
-    pendingLogScrollRef.current = "bottom";
+    pendingLogScrollRef.current = nextView === "threads" ? "top" : "bottom";
     setAgentLog(emptyLogState("Loading..."));
     setLogReloadNonce((current) => current + 1);
   }
 
   async function loadOlderLogLines() {
     if (!selectedAgent || agentLog.loadingOlder || !agentLog.hasMoreBefore) return;
+    const requestedView = activeLogView;
     const element = logViewRef.current;
-    pendingLogScrollRef.current = element
+    pendingLogScrollRef.current = requestedView === "threads" ? null : element
       ? { previousHeight: element.scrollHeight, previousTop: element.scrollTop }
       : null;
     setAgentLog((current) => ({ ...current, loadingOlder: true, error: null }));
@@ -921,7 +925,7 @@ export function AgentsPage() {
         limit: LOG_PAGE_LIMIT,
         offset: agentLog.loadedLines,
         query: agentLog.appliedQuery || undefined,
-        view: activeLogView,
+        view: requestedView,
       });
       const returnedLines = responseReturnedLines(payload);
       setAgentLog((current) => {
@@ -929,7 +933,9 @@ export function AgentsPage() {
         logLoadedLinesRef.current = Math.max(LOG_PAGE_LIMIT, loadedLines);
         return {
           ...current,
-          text: appendLogText(payload.text, current.text),
+          text: requestedView === "threads"
+            ? appendLogText(current.text, payload.text)
+            : appendLogText(payload.text, current.text),
           loading: false,
           loadingOlder: false,
           error: null,
@@ -2105,28 +2111,6 @@ export function AgentsPage() {
                     {logTitle} / {logRangeLabel}
                     {agentLog.pendingLiveUpdate ? " / live update waiting" : ""}
                   </span>
-                  {selectedAgent?.backend === "container_worker_vm" ? (
-                    <div className="session-schedule-type-toggle agent-log-view-toggle" role="group" aria-label="Log view">
-                      <button
-                        type="button"
-                        className={activeLogView === "executions" ? "primary" : ""}
-                        aria-pressed={activeLogView === "executions"}
-                        onClick={() => changeLogView("executions")}
-                        disabled={agentLog.loading && activeLogView === "executions"}
-                      >
-                        Executions
-                      </button>
-                      <button
-                        type="button"
-                        className={activeLogView === "threads" ? "primary" : ""}
-                        aria-pressed={activeLogView === "threads"}
-                        onClick={() => changeLogView("threads")}
-                        disabled={agentLog.loading && activeLogView === "threads"}
-                      >
-                        Threads
-                      </button>
-                    </div>
-                  ) : null}
                 </div>
                 <form
                   className="agent-log-search"
@@ -2164,7 +2148,7 @@ export function AgentsPage() {
                   onClick={() => void loadOlderLogLines()}
                   disabled={agentLog.loading || agentLog.loadingOlder || !agentLog.hasMoreBefore}
                 >
-                  {agentLog.loadingOlder ? "Loading..." : "Load older"}
+                  {agentLog.loadingOlder ? "Loading..." : activeLogView === "threads" ? "Load more" : "Load older"}
                 </button>
                 <button
                   type="button"
@@ -2179,9 +2163,33 @@ export function AgentsPage() {
                 {agentLog.loading ? <span className="panel-meta">Loading...</span> : null}
                 {agentLog.error ? <span className="panel-meta error-text">{agentLog.error}</span> : null}
               </div>
+              {selectedAgent?.backend === "container_worker_vm" ? (
+                <div className="agent-log-tabs" role="tablist" aria-label="Log view">
+                  <button
+                    type="button"
+                    role="tab"
+                    className={activeLogView === "executions" ? "active" : ""}
+                    aria-selected={activeLogView === "executions"}
+                    onClick={() => changeLogView("executions")}
+                    disabled={agentLog.loading && activeLogView === "executions"}
+                  >
+                    Executions
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    className={activeLogView === "threads" ? "active" : ""}
+                    aria-selected={activeLogView === "threads"}
+                    onClick={() => changeLogView("threads")}
+                    disabled={agentLog.loading && activeLogView === "threads"}
+                  >
+                    Threads
+                  </button>
+                </div>
+              ) : null}
               <pre
                 ref={logViewRef}
-                className="log-view vm-agent-log"
+                className={`log-view vm-agent-log ${selectedAgent?.backend === "container_worker_vm" ? "has-log-tabs" : ""}`}
                 onScroll={(event) => {
                   const atBottom = isScrolledToBottom(event.currentTarget);
                   logSticksToBottomRef.current = atBottom;

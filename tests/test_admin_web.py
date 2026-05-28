@@ -7882,6 +7882,8 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
         ) -> str:
             self.logged.append((target, lines, mode))
             if target == "exec-1":
+                if mode == "execution":
+                    return "session id: thread-a\nrepo execution line for exec-1\n"
                 if mode == "raw":
                     return "session id: thread-a\nrepo raw line for exec-1\n"
                 if mode == "session":
@@ -7889,6 +7891,8 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
                 if mode == "augmented":
                     return "augmented transcript for exec-1\n"
             if target == "exec-2":
+                if mode == "execution":
+                    return "session id: thread-b\nother execution line for exec-2\n"
                 if mode == "raw":
                     return "session id: thread-b\nother raw line for exec-2\n"
                 if mode == "session":
@@ -7971,14 +7975,14 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     assert log_response.json()["view"] == "executions"
     assert "execution=exec-2" in log_response.json()["text"]
     assert "execution=exec-1" in log_response.json()["text"]
-    assert "log=raw" in log_response.json()["text"]
-    assert "repo raw line for exec-1" in log_response.json()["text"]
-    assert "other raw line for exec-2" in log_response.json()["text"]
+    assert "log=execution" in log_response.json()["text"]
+    assert "repo execution line for exec-1" in log_response.json()["text"]
+    assert "other execution line for exec-2" in log_response.json()["text"]
     assert "session transcript" not in log_response.json()["text"]
     assert "augmented transcript" not in log_response.json()["text"]
     assert paged_response.status_code == 200
     assert paged_response.json()["view"] == "executions"
-    assert paged_response.json()["text"] == "repo raw line for exec-1\n"
+    assert paged_response.json()["text"] == "repo execution line for exec-1\n"
     assert paged_response.json()["has_more_before"] is False
     assert paged_response.json()["total_lines"] == 1
     assert stop_response.status_code == 200
@@ -7988,10 +7992,10 @@ def test_admin_web_container_agent_log_and_actions_do_not_require_vm_summary(
     assert fake_backend.inspected == []
     assert sorted(fake_backend.logged) == sorted(
         [
-            ("exec-1", 2, "raw"),
-            ("exec-2", 2, "raw"),
-            ("exec-1", 0, "raw"),
-            ("exec-2", 0, "raw"),
+            ("exec-1", 2, "execution"),
+            ("exec-2", 2, "execution"),
+            ("exec-1", 0, "execution"),
+            ("exec-2", 0, "execution"),
         ]
     )
     assert fake_backend.paged == []
