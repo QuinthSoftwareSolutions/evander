@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-28 - Admin Issues Copy
+
+- Reworded the Admin Web Issues tab summary so it describes issue intake and
+  records instead of presenting VM creation as the page purpose.
+
 ## 2026-05-27 - Thread Log Pagination
 
 - Fixed container worker thread-log paging so older transcript lines are fetched

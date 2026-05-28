@@ -35,7 +35,7 @@ export const TABS: ReadonlyArray<AdminTabDefinition> = [
   { key: "artifacts", label: "Artifacts", shortLabel: "Artifacts", description: "Resolve and download durable agent artifact archives." },
   { key: "skills", label: "Skills", shortLabel: "Skills", description: "Managed Codex skill library." },
   { key: "vms", label: "VMs", shortLabel: "VMs", description: "VM host lifecycle and machine details." },
-  { key: "issues", label: "Issues", shortLabel: "Issues", description: "Local issue intake and VM creation." },
+  { key: "issues", label: "Issues", shortLabel: "Issues", description: "Local issue intake and issue records." },
   { key: "sessions", label: "Sessions", shortLabel: "Sessions", description: "Session state, tools, and wake schedules." },
   { key: "tool-calls", label: "Tool Calls", shortLabel: "Calls", description: "Search MCP tool invocation audit entries." },
   { key: "configuration", label: "Configuration", shortLabel: "Config", description: "Directory-scoped config and policy." },
