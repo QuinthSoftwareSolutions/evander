@@ -22,6 +22,9 @@ material. Newer entries are added incrementally as changes land.
 - Preserved guaranteed pre-branch context across merge gates while keeping
   branch-local data available through explicit merge projections.
 - Kept debounce gate releases from dropping inherited workflow binding context.
+- Scoped workflow editor binding validation to visible graphs and scheduled
+  graph validation progressively so large workflow packs do not block initial
+  rendering.
 
 ## 2026-05-28 - Approval Queue Review Fixes
 
