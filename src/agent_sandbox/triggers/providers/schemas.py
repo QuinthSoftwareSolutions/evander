@@ -418,10 +418,18 @@ class PullRequestNewFeedbackTriggerDefinition(_PullRequestTriggerDefinition):
     type: Literal["trigger:pull-request:new-feedback"]
     agent_author_names: list[str] = Field(default_factory=list)
     agent_mention_names: list[str] = Field(default_factory=list)
+    agent_author_ids: list[str] = Field(default_factory=list)
+    agent_mention_ids: list[str] = Field(default_factory=list)
 
-    @field_validator("agent_author_names", "agent_mention_names", mode="before")
+    @field_validator(
+        "agent_author_names",
+        "agent_mention_names",
+        "agent_author_ids",
+        "agent_mention_ids",
+        mode="before",
+    )
     @classmethod
-    def normalize_agent_identity_names(cls, value: object) -> object:
+    def normalize_agent_identities(cls, value: object) -> object:
         return normalize_string_list(value)
 
 

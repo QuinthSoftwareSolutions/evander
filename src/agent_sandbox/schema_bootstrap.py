@@ -270,6 +270,7 @@ _TRIGGER_OUTPUT_SCHEMAS = {
                         "prior_thread_comment_author_unique_names": {"type": "array"},
                         "prior_thread_comment_author_ids": {"type": "array"},
                         "mentioned_names": {"type": "array"},
+                        "mentioned_ids": {"type": "array"},
                         "thread_comment_count": {"type": "integer"},
                         "agent_directed": {"type": "boolean"},
                         "agent_directed_same_thread": {"type": "boolean"},

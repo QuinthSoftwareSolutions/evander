@@ -568,6 +568,22 @@ def test_ado_mapping_exposes_thread_authors_and_mentions_for_filters() -> None:
                                 "isDeleted": False,
                             },
                         ],
+                    },
+                    {
+                        "id": 45,
+                        "status": "active",
+                        "comments": [
+                            {
+                                "id": 1,
+                                "author": {"displayName": "Dev Two"},
+                                "content": (
+                                    "@<C74221CB-EE08-6A83-9055-AF01C3333112> "
+                                    "can you make the fix?"
+                                ),
+                                "publishedDate": "2026-03-21T01:00:02Z",
+                                "isDeleted": False,
+                            },
+                        ],
                     }
                 ]
             }
@@ -578,13 +594,18 @@ def test_ado_mapping_exposes_thread_authors_and_mentions_for_filters() -> None:
 
     result = adapter.poll(client=FakeClient(), repo="repo-1", pr_id="101", cursor=None)
 
-    assert len(result.feedback) == 2
+    assert len(result.feedback) == 3
     metadata = result.feedback[1].metadata
     assert metadata["prior_thread_comment_author_names"] == ["evander Bot"]
     assert metadata["prior_thread_comment_author_unique_names"] == ["evander@example.com"]
     assert metadata["prior_thread_comment_author_ids"] == ["bot-id"]
     assert metadata["mentioned_names"] == ["Truman Bot"]
     assert metadata["thread_comment_count"] == 2
+    compact_metadata = result.feedback[2].metadata
+    assert compact_metadata["prior_thread_comment_author_names"] == []
+    assert compact_metadata["mentioned_names"] == []
+    assert compact_metadata["mentioned_ids"] == ["c74221cb-ee08-6a83-9055-af01c3333112"]
+    assert compact_metadata["thread_comment_count"] == 1
 
 
 def test_ado_mapping_filters_comments_at_or_before_cursor_and_keeps_next_cursor() -> None:

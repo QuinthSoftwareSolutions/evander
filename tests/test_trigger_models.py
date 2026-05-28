@@ -438,11 +438,15 @@ def test_pr_feedback_trigger_accepts_agent_directed_identity_names() -> None:
             "provider": "ado",
             "agent_author_names": [" evander Bot ", "Truman Bot"],
             "agent_mention_names": ["@evander", "Truman"],
+            "agent_author_ids": [" bot-id "],
+            "agent_mention_ids": [" C74221CB-EE08-6A83-9055-AF01C3333112 "],
         }
     )
 
     assert trigger.agent_author_names == ["evander Bot", "Truman Bot"]
     assert trigger.agent_mention_names == ["@evander", "Truman"]
+    assert trigger.agent_author_ids == ["bot-id"]
+    assert trigger.agent_mention_ids == ["C74221CB-EE08-6A83-9055-AF01C3333112"]
 
 
 @pytest.mark.parametrize(

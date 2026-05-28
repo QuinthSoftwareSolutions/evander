@@ -865,6 +865,8 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         *pr_trigger_field_keys,
         "agent_author_names",
         "agent_mention_names",
+        "agent_author_ids",
+        "agent_mention_ids",
     ]
     pr_completed_trigger = next(
         node

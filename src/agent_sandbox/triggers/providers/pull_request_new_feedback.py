@@ -253,6 +253,8 @@ class PullRequestNewFeedbackTriggerProvider(TriggerProviderBase):
             item,
             agent_author_names=trigger.agent_author_names,
             agent_mention_names=trigger.agent_mention_names,
+            agent_author_ids=trigger.agent_author_ids,
+            agent_mention_ids=trigger.agent_mention_ids,
         )
 
     @staticmethod

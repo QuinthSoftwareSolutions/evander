@@ -1982,6 +1982,8 @@ def _publish_directory_pr_feedback_events(
                     PrFeedbackItem.model_validate(pr_feedback_item_payload(envelope)),
                     agent_author_names=trigger.agent_author_names,
                     agent_mention_names=trigger.agent_mention_names,
+                    agent_author_ids=trigger.agent_author_ids,
+                    agent_mention_ids=trigger.agent_mention_ids,
                 )
                 discovered.append(
                     (
