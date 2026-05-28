@@ -5,6 +5,16 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-28 - Scheduled Wake Container Docs
+
+- Documented that scheduled wakes cover both VM-bound `libvirt_vm` sessions and
+  `container_worker_vm` sessions.
+- Noted that MCP-created scheduled resumes stay `resume_mode=same_context`,
+  which uses Codex resume-last behavior for container workers when no explicit
+  thread id is available.
+- Clarified that busy container wakes queue the prompt, still count as handled,
+  and can advance one-shot or cron schedules accordingly.
+
 ## 2026-05-28 - Approval Queue Review Fixes
 
 - Kept any-payload MCP approval grants from consuming uses until the retry

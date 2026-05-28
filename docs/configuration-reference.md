@@ -862,6 +862,11 @@ Mixed graph:
 }
 ```
 
+MCP-created schedules always use `resume_mode=same_context`; on container workers that means the
+prompt command resumes the last Codex context when no explicit thread id is available. Admin
+created or CLI-created recurring schedules can set `resume_mode=new_context` to start a fresh
+container Codex exec session.
+
 - Recurring cron schedule (host CLI):
 
 ```bash
@@ -873,6 +878,10 @@ agent-sandbox-cli wake-schedules create \
   --mode new_context \
   --source admin_cli
 ```
+
+Busy container-worker wake requests are still treated as handled for one-shot consumption and cron
+advancement after they queue a prompt, so the same schedule rules apply whether the session is
+resumed immediately or deferred by the prompt queue.
 
 ## Root issue setup and git automation config
 
