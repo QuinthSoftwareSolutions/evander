@@ -1106,6 +1106,15 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "active_only",
         "limit",
     ]
+    session_list_fields = {field["key"]: field for field in session_list["fields"]}
+    assert all(field["description"] for field in session_list_fields.values())
+    assert "descendants" in session_list_fields["directory_path"]["description"]
+    assert "dot-path selectors" in session_list_fields["metadata_equals"]["description"]
+    assert "presence" in session_list_fields["metadata_exists"]["description"]
+    assert "string prefixes" in session_list_fields["metadata_prefix"]["description"]
+    assert "active, expired, inactive, all, or any" in session_list_fields["state"]["description"]
+    assert "expires_at" in session_list_fields["active_only"]["description"]
+    assert "positive integer" in session_list_fields["limit"]["description"]
     pr_feedback = next(
         node for node in catalog_payload["nodes"] if node["type"] == "query:pull-request:feedback"
     )

@@ -3868,13 +3868,73 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="query:session:list",
         label="Session list",
         fields=[
-            _field("directory_path", "Directory path", "string", bindable=True),
-            _field("metadata_equals", "Metadata equals", "json", bindable=True),
-            _field("metadata_exists", "Metadata exists", "json", bindable=True),
-            _field("metadata_prefix", "Metadata prefix", "json", bindable=True),
-            _field("state", "State", "string", bindable=True),
-            _field("active_only", "Active only", "boolean", bindable=True),
-            _field("limit", "Limit", "number", bindable=True),
+            _field(
+                "directory_path",
+                "Directory path",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional directory path such as root or root/team. When set, matches "
+                    "sessions in that directory and its descendants."
+                ),
+            ),
+            _field(
+                "metadata_equals",
+                "Metadata equals",
+                "json",
+                bindable=True,
+                description=(
+                    "Value: JSON object whose keys are metadata names or dot-path selectors "
+                    "and whose values must match exactly."
+                ),
+            ),
+            _field(
+                "metadata_exists",
+                "Metadata exists",
+                "json",
+                bindable=True,
+                description=(
+                    "Value: metadata selector string, selector array, or JSON object. Object "
+                    "values of true require presence; false requires absence."
+                ),
+            ),
+            _field(
+                "metadata_prefix",
+                "Metadata prefix",
+                "json",
+                bindable=True,
+                description=(
+                    "Value: JSON object whose keys are metadata names or dot-path selectors "
+                    "and whose values are required string prefixes. Arrays match when any "
+                    "item starts with the prefix."
+                ),
+            ),
+            _field(
+                "state",
+                "State",
+                "string",
+                bindable=True,
+                description=(
+                    "Value: active, expired, inactive, all, or any. Empty behaves like all."
+                ),
+            ),
+            _field(
+                "active_only",
+                "Active only",
+                "boolean",
+                bindable=True,
+                description=(
+                    "Value: boolean. Set true to return only sessions whose expires_at is "
+                    "still in the future."
+                ),
+            ),
+            _field(
+                "limit",
+                "Limit",
+                "number",
+                bindable=True,
+                description="Value: positive integer maximum number of matched sessions to return.",
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(
