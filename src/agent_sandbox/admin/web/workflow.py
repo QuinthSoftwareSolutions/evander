@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from collections.abc import Iterable
 from typing import Any
 
 from starlette.requests import Request
@@ -10,7 +11,12 @@ from starlette.routing import Route
 
 from agent_sandbox.admin.service import AdminRevisionConflict, AdminService
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
-from agent_sandbox.admin.web.rbac import WORKFLOWS_READ_PERMISSION, WORKFLOWS_WRITE_PERMISSION
+from agent_sandbox.admin.web.rbac import (
+    WORKFLOW_RUNS_CONTROL_PERMISSION,
+    WORKFLOW_RUNS_READ_PERMISSION,
+    WORKFLOWS_READ_PERMISSION,
+    WORKFLOWS_WRITE_PERMISSION,
+)
 from agent_sandbox.admin.web.shared import AdminWebAuth, request_has_privileged_operations
 from agent_sandbox.admin.web.shared import json_error
 
@@ -100,6 +106,190 @@ def _readable_graphs_for_document(
         if auth.can(request, WORKFLOWS_READ_PERMISSION, directory_path=directory_path):
             readable_graphs.append(graph_payload)
     return readable_graphs
+
+
+def _graph_directory_paths_for_document_graphs(graphs: list[object]) -> tuple[str, ...]:
+    directory_paths: list[str] = []
+    seen_directory_paths: set[str] = set()
+    for graph in graphs:
+        if isinstance(graph, dict):
+            graph_payload = graph
+        elif hasattr(graph, "model_dump"):
+            graph_payload = graph.model_dump(mode="json")
+        else:
+            continue
+        directory_path = str(graph_payload.get("directory_path") or "").strip() or "root"
+        if directory_path in seen_directory_paths:
+            continue
+        seen_directory_paths.add(directory_path)
+        directory_paths.append(directory_path)
+    return tuple(directory_paths)
+
+
+def _graph_directory_paths_by_node_id(graphs: list[object]) -> dict[str, tuple[str, ...]]:
+    directory_paths_by_node_id: dict[str, list[str]] = {}
+    for graph in graphs:
+        if isinstance(graph, dict):
+            graph_payload = graph
+        elif hasattr(graph, "model_dump"):
+            graph_payload = graph.model_dump(mode="json")
+        else:
+            continue
+        directory_path = str(graph_payload.get("directory_path") or "").strip() or "root"
+        node_ids = graph_payload.get("node_ids")
+        if not isinstance(node_ids, list):
+            continue
+        for raw_node_id in node_ids:
+            node_id = str(raw_node_id or "").strip()
+            if not node_id:
+                continue
+            directory_paths = directory_paths_by_node_id.setdefault(node_id, [])
+            if directory_path not in directory_paths:
+                directory_paths.append(directory_path)
+    return {
+        node_id: tuple(directory_paths)
+        for node_id, directory_paths in directory_paths_by_node_id.items()
+    }
+
+
+def _graph_directory_paths_for_node_ids(
+    graphs: list[object], node_ids: Iterable[str]
+) -> tuple[str, ...]:
+    node_directory_paths = _graph_directory_paths_by_node_id(graphs)
+    directory_paths: list[str] = []
+    seen_directory_paths: set[str] = set()
+    for node_id in node_ids:
+        for directory_path in node_directory_paths.get(str(node_id or "").strip(), ()):
+            if directory_path in seen_directory_paths:
+                continue
+            seen_directory_paths.add(directory_path)
+            directory_paths.append(directory_path)
+    return tuple(directory_paths)
+
+
+def _readable_workflow_run_graphs(
+    *, auth: AdminWebAuth, request: Request, graphs: list[object]
+) -> list[dict[str, Any]]:
+    readable_graphs = _readable_graphs_for_document(auth=auth, request=request, graphs=graphs)
+    if readable_graphs:
+        return readable_graphs
+    if not graphs:
+        auth.require_permission(request, WORKFLOW_RUNS_READ_PERMISSION, directory_path="root")
+        return []
+    raise PermissionError("Permission required: workflow_runs.read")
+
+
+def _visible_workflow_run_node_ids(readable_graphs: list[dict[str, Any]]) -> set[str]:
+    node_ids: set[str] = set()
+    for graph in readable_graphs:
+        for raw_node_id in graph.get("node_ids", []):
+            node_id = str(raw_node_id or "").strip()
+            if node_id:
+                node_ids.add(node_id)
+    return node_ids
+
+
+def _filter_workflow_run_snapshot_payload(
+    snapshot: Any, *, readable_node_ids: set[str]
+) -> dict[str, Any]:
+    payload = snapshot.model_dump(mode="json")
+    runs = payload.get("runs")
+    if isinstance(runs, list):
+        filtered_runs: list[dict[str, Any]] = []
+        for run in runs:
+            if not isinstance(run, dict):
+                continue
+            active_nodes = run.get("active_nodes")
+            if isinstance(active_nodes, list):
+                filtered_active_nodes = [
+                    node
+                    for node in active_nodes
+                    if isinstance(node, dict)
+                    and str(node.get("node_id") or "").strip() in readable_node_ids
+                ]
+                if not filtered_active_nodes:
+                    continue
+                run["active_nodes"] = filtered_active_nodes
+            else:
+                continue
+            failed_node_id = str(run.get("failed_node_id") or "").strip()
+            if failed_node_id and failed_node_id not in readable_node_ids:
+                for field_name in ("failed_node_id", "failed_node_status", "failed_at", "error"):
+                    run[field_name] = None
+            filtered_runs.append(run)
+        payload["runs"] = filtered_runs
+    node_activity = payload.get("node_activity")
+    if isinstance(node_activity, dict):
+        payload["node_activity"] = {
+            node_id: counts
+            for node_id, counts in node_activity.items()
+            if str(node_id or "").strip() in readable_node_ids
+        }
+    return payload
+
+
+def _workflow_run_detail_node_ids(payload: Any) -> set[str]:
+    node_ids: set[str] = set()
+    payload_dict = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else payload
+    if not isinstance(payload_dict, dict):
+        return node_ids
+    for node in payload_dict.get("nodes", []):
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("node_id") or "").strip()
+        if node_id:
+            node_ids.add(node_id)
+    for node in payload_dict.get("active_nodes", []):
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("node_id") or "").strip()
+        if node_id:
+            node_ids.add(node_id)
+    trigger_event = payload_dict.get("trigger_event")
+    if isinstance(trigger_event, dict):
+        trigger_id = str(trigger_event.get("trigger_id") or "").strip()
+        if trigger_id:
+            node_ids.add(trigger_id)
+    source_node_id = str(payload_dict.get("source_node_id") or "").strip()
+    if source_node_id:
+        node_ids.add(source_node_id)
+    return node_ids
+
+
+def _require_workflow_run_read_access(
+    *, auth: AdminWebAuth, request: Request, graphs: list[object]
+) -> tuple[list[dict[str, Any]], set[str]]:
+    readable_graphs = _readable_workflow_run_graphs(auth=auth, request=request, graphs=graphs)
+    return readable_graphs, _visible_workflow_run_node_ids(readable_graphs)
+
+
+def _require_workflow_run_control_access(
+    *,
+    auth: AdminWebAuth,
+    request: Request,
+    graphs: list[object],
+    node_ids: Iterable[str],
+) -> None:
+    if not graphs:
+        auth.require_permission(request, WORKFLOW_RUNS_CONTROL_PERMISSION, directory_path="root")
+        return
+    directory_paths = _graph_directory_paths_for_node_ids(graphs, node_ids)
+    if not directory_paths:
+        raise PermissionError("Permission required: workflow_runs.control")
+    for directory_path in directory_paths:
+        auth.require_permission(
+            request, WORKFLOW_RUNS_CONTROL_PERMISSION, directory_path=directory_path
+        )
+
+
+def _workflow_run_graphs_for_document(
+    service: AdminService, auth: AdminWebAuth, request: Request
+) -> tuple[list[object], list[dict[str, Any]], set[str]]:
+    document = service.read_workflow_editor_document()
+    readable_graphs, readable_node_ids = _require_workflow_run_read_access(
+        auth=auth, request=request, graphs=document.graphs
+    )
+    return document.graphs, readable_graphs, readable_node_ids
 
 
 def _filter_workflow_document_payload(
@@ -223,7 +413,11 @@ def _graph_directories_from_payload(
     return ()
 
 
-async def workflow_run_events(service: AdminService, request: Request) -> AsyncIterator[str]:
+async def workflow_run_events(
+    service: AdminService,
+    request: Request,
+    auth: AdminWebAuth | None = None,
+) -> AsyncIterator[str]:
     last_state_key: str | None = None
     journal = service.workflow_event_journal()
     cursor = journal.cursor()
@@ -233,11 +427,44 @@ async def workflow_run_events(service: AdminService, request: Request) -> AsyncI
             return None
         try:
             snapshot = service.read_workflow_run_snapshot()
+            if auth is None:
+                payload = json.dumps(snapshot.model_dump(mode="json"))
+            else:
+                document = service.read_workflow_editor_document()
+                _, readable_graphs, readable_node_ids = _workflow_run_graphs_for_document(
+                    service, auth, request
+                )
+                if not document.graphs:
+                    payload = json.dumps(snapshot.model_dump(mode="json"))
+                else:
+                    payload = json.dumps(
+                        _filter_workflow_run_snapshot_payload(
+                            snapshot, readable_node_ids=readable_node_ids
+                        )
+                    )
+                if readable_graphs:
+                    state_key = json.dumps(
+                        {
+                            "runs": [
+                                run.model_dump(mode="json")
+                                for run in snapshot.runs
+                                if any(
+                                    node.node_id in readable_node_ids
+                                    for node in run.active_nodes
+                                )
+                            ],
+                            "node_activity": {
+                                node_id: counts
+                                for node_id, counts in snapshot.node_activity.items()
+                                if node_id in readable_node_ids
+                            },
+                        },
+                        sort_keys=True,
+                    )
+                    return state_key, f"event: snapshot\ndata: {payload}\n\n"
         except ValueError as exc:
             payload = json.dumps({"error": str(exc)})
             return f"error:{payload}", f"event: error\ndata: {payload}\n\n"
-
-        payload = json.dumps(snapshot.model_dump(mode="json"))
         state_key = json.dumps(
             {
                 "runs": [run.model_dump(mode="json") for run in snapshot.runs],
@@ -314,19 +541,61 @@ def workflow_routes(
             return json_error(str(exc), status_code=403)
         return JSONResponse(catalog.model_dump(mode="json"))
 
-    async def get_runs(_: Request) -> JSONResponse:
+    async def get_runs(request: Request) -> JSONResponse:
         try:
+            document = service.read_workflow_editor_document()
             snapshot = service.read_workflow_run_snapshot()
+            if not document.graphs:
+                auth.require_permission(request, WORKFLOW_RUNS_READ_PERMISSION, directory_path="root")
+                return JSONResponse(snapshot.model_dump(mode="json"))
+            readable_graphs, readable_node_ids = _require_workflow_run_read_access(
+                auth=auth, request=request, graphs=document.graphs
+            )
+            return JSONResponse(
+                _filter_workflow_run_snapshot_payload(
+                    snapshot, readable_node_ids=readable_node_ids
+                )
+            )
         except ValueError as exc:
             return json_error(str(exc))
-        return JSONResponse(snapshot.model_dump(mode="json"))
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
 
     async def get_run_search(request: Request) -> JSONResponse:
         query = request.query_params
         try:
+            document = service.read_workflow_editor_document()
+            graph_id = query.get("graph_id")
+            node_id = query.get("node_id")
+            if not document.graphs:
+                auth.require_permission(
+                    request, WORKFLOW_RUNS_READ_PERMISSION, directory_path="root"
+                )
+            else:
+                directory_paths: list[str] = []
+                if graph_id:
+                    graph = next(
+                        (candidate for candidate in document.graphs if candidate.id == graph_id),
+                        None,
+                    )
+                    if graph is None:
+                        raise ValueError(f"Workflow graph not found: {graph_id}")
+                    directory_paths.extend([graph.directory_path])
+                if node_id:
+                    directory_paths.extend(
+                        _graph_directory_paths_for_node_ids(document.graphs, [node_id])
+                    )
+                if (graph_id or node_id) and not directory_paths:
+                    raise PermissionError("Permission required: workflow_runs.read")
+                if not directory_paths:
+                    raise ValueError("Workflow run search requires node_id or graph_id.")
+                for directory_path in dict.fromkeys(directory_paths):
+                    auth.require_permission(
+                        request, WORKFLOW_RUNS_READ_PERMISSION, directory_path=directory_path
+                    )
             payload = service.read_workflow_run_search(
-                node_id=query.get("node_id"),
-                graph_id=query.get("graph_id"),
+                node_id=node_id,
+                graph_id=graph_id,
                 without_session=optional_bool_from_query(
                     query.get("without_session"),
                     default=False,
@@ -340,6 +609,8 @@ def workflow_routes(
         except ValueError as exc:
             status_code = 404 if "not found" in str(exc) else 400
             return json_error(str(exc), status_code=status_code)
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
         return JSONResponse(payload.model_dump(mode="json"))
 
     async def get_run_detail(request: Request) -> JSONResponse:
@@ -353,40 +624,102 @@ def workflow_routes(
                 session_id=query.get("session_id"),
                 artifact_id=query.get("artifact_id"),
             )
+            document = service.read_workflow_editor_document()
+            if not document.graphs:
+                auth.require_permission(
+                    request, WORKFLOW_RUNS_READ_PERMISSION, directory_path="root"
+                )
+            else:
+                _require_workflow_run_read_access(
+                    auth=auth, request=request, graphs=document.graphs
+                )
+                involved_node_ids = _workflow_run_detail_node_ids(payload)
+                directory_paths = _graph_directory_paths_for_node_ids(
+                    document.graphs, involved_node_ids
+                )
+                if not directory_paths:
+                    raise PermissionError("Permission required: workflow_runs.read")
+                for directory_path in directory_paths:
+                    auth.require_permission(
+                        request, WORKFLOW_RUNS_READ_PERMISSION, directory_path=directory_path
+                    )
         except ValueError as exc:
             status_code = 404 if "did not match any stored run" in str(exc) else 400
             return json_error(str(exc), status_code=status_code)
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
         return JSONResponse(payload.model_dump(mode="json"))
 
     async def clear_run(request: Request) -> JSONResponse:
         event_id = request.path_params.get("event_id", "")
         try:
+            document = service.read_workflow_editor_document()
+            payload = service.read_workflow_run_detail(event_id=event_id)
+            _require_workflow_run_control_access(
+                auth=auth,
+                request=request,
+                graphs=document.graphs,
+                node_ids=_workflow_run_detail_node_ids(payload),
+            )
             payload = service.clear_workflow_run(event_id)
         except ValueError as exc:
             status_code = 404 if "not found or already inactive" in str(exc) else 400
             return json_error(str(exc), status_code=status_code)
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
         return JSONResponse(payload.model_dump(mode="json"))
 
     async def dismiss_node_failures(request: Request) -> JSONResponse:
         node_id = request.path_params.get("node_id", "")
         try:
+            document = service.read_workflow_editor_document()
+            _require_workflow_run_control_access(
+                auth=auth,
+                request=request,
+                graphs=document.graphs,
+                node_ids=[node_id],
+            )
             payload = service.dismiss_workflow_node_failures(node_id)
         except ValueError as exc:
             return json_error(str(exc))
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
         return JSONResponse(payload.model_dump(mode="json"))
 
     async def resume_run(request: Request) -> JSONResponse:
         event_id = request.path_params.get("event_id", "")
         try:
+            document = service.read_workflow_editor_document()
+            payload = service.read_workflow_run_detail(event_id=event_id)
+            _require_workflow_run_control_access(
+                auth=auth,
+                request=request,
+                graphs=document.graphs,
+                node_ids=_workflow_run_detail_node_ids(payload),
+            )
             payload = service.resume_workflow_run(event_id)
         except ValueError as exc:
             status_code = 404 if "not resumable" in str(exc) else 400
             return json_error(str(exc), status_code=status_code)
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
         return JSONResponse(payload.model_dump(mode="json"))
 
     async def stream_runs(request: Request) -> StreamingResponse:
+        try:
+            document = service.read_workflow_editor_document()
+            if document.graphs:
+                _require_workflow_run_read_access(auth=auth, request=request, graphs=document.graphs)
+            else:
+                auth.require_permission(
+                    request, WORKFLOW_RUNS_READ_PERMISSION, directory_path="root"
+                )
+        except ValueError as exc:
+            return json_error(str(exc))
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
         return StreamingResponse(
-            workflow_run_events(service, request),
+            workflow_run_events(service, request, auth=auth),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
         )
