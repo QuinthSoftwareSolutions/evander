@@ -360,6 +360,7 @@ class HostWakeDispatcher:
                 dispatch_record = self._build_container_dispatch_record(
                     dispatch_id=dispatch_id,
                     session_id=session_id,
+                    request_id=request_id,
                     prompt=prompt,
                     resume_mode=effective_resume_mode,
                     scheduled_for=scheduled_for,

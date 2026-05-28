@@ -5,6 +5,11 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-28 - Scheduled Wake Queue Failure Fix
+
+- Fixed busy container scheduled wakes so queue write failures record a failed
+  dispatch with the original request id instead of crashing the wake worker.
+
 ## 2026-05-28 - Scheduled Wake Container Docs
 
 - Documented that scheduled wakes cover both VM-bound `libvirt_vm` sessions and

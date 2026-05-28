@@ -241,6 +241,55 @@ def test_resume_container_binding_queues_busy_session_and_records_queue_metadata
     assert latest.resume_prompt.metadata["schedule_cron"] == "* * * * *"
 
 
+def test_resume_container_binding_records_failed_dispatch_when_queueing_busy_session_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dispatcher, config, session_repository, wake_store = _build_dispatcher(tmp_path)
+    session = _upsert_container_session(
+        session_repository,
+        session_id="session-1",
+        metadata={"target_name": "metadata-target"},
+        vm_provider_id="provider-target",
+    )
+    backend = _ContainerBackendStub(active=True)
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        lambda resolved_config, *, admin_service: backend,
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.enqueue_agent_prompt",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("queue write failed")),
+    )
+
+    result = dispatcher.resume_container_binding(
+        session,
+        worker_config=config,
+        prompt="Resume work.",
+        resume_mode="same_context",
+        dispatch_source="scheduled_cron",
+        request_id="wake-queue-failed",
+        scheduled_for=datetime(2026, 4, 1, 10, 30, tzinfo=UTC),
+        wake_metadata={"schedule_cron": "* * * * *"},
+    )
+
+    assert result is not None
+    assert backend.prepared_specs == []
+    assert backend.started_specs == []
+    assert not (tmp_path / "queued-agent-prompts.json").exists()
+
+    latest = wake_store.latest_dispatch_by_request_id()["wake-queue-failed"]
+    assert latest.status == "failed"
+    assert latest.request_id == "wake-queue-failed"
+    assert latest.resume_mode == "same_context"
+    assert latest.error == "queue write failed"
+    assert latest.metadata["backend"] == "container_worker_vm"
+    assert latest.metadata["target_name"] == "metadata-target"
+    assert latest.metadata["source"] == "scheduled_cron"
+    assert latest.resume_prompt.metadata["schedule_cron"] == "* * * * *"
+
+
 def test_resume_container_binding_records_failed_dispatch_when_backend_start_raises(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
