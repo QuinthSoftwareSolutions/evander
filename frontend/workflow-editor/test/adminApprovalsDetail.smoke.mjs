@@ -181,7 +181,7 @@ test("admin shell approvals detail renders intended effect and payload digest", 
     if (pathname === "/api/admin/approvals") {
       assert.equal(url.searchParams.get("statuses"), "pending");
       assert.equal(url.searchParams.get("directory_path"), "root");
-      assert.equal(url.searchParams.get("direct_only"), "true");
+      assert.equal(url.searchParams.get("direct_only"), "false");
       await route.fulfill(jsonResponse(approvalIndexResponse));
       return;
     }
@@ -451,7 +451,7 @@ test("admin shell approvals detail uses signed-in approver and offers revoke for
     if (pathname === "/api/admin/approvals") {
       assert.equal(url.searchParams.get("statuses"), null);
       assert.equal(url.searchParams.get("directory_path"), "root");
-      assert.equal(url.searchParams.get("direct_only"), "true");
+      assert.equal(url.searchParams.get("direct_only"), "false");
       await route.fulfill(jsonResponse(approvalIndexResponse));
       return;
     }

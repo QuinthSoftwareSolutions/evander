@@ -99,7 +99,7 @@ export function ApprovalsScreen() {
   const initialRequestId = approvalRequestIdFromHash();
   const [filters, setFilters] = useState<Filters>({
     status: initialRequestId ? "" : "pending",
-    directOnly: true,
+    directOnly: false,
     sessionId: "",
     vmId: "",
     toolName: "",
