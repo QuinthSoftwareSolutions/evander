@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-28 - PR Feedback Agent-Directed Metadata
+
+- Added Azure DevOps PR feedback metadata for prior same-thread authors and ADO
+  mention names, plus optional PR-feedback trigger configuration that annotates
+  whether a comment is directed at an agent.
+
 ## 2026-05-28 - Session Metadata Equals Flattening
 
 - Made the workflow-editor `query:session:list` metadata rule editor expand
