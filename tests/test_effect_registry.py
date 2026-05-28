@@ -100,6 +100,7 @@ class _FakeContainerBackend:
         self.prepare_error: Exception | None = None
         self.write_files_error: Exception | None = None
         self.start_error: Exception | None = None
+        self.clone_result_cloned = True
 
     def prepare_session(self, **kwargs):
         if self.prepare_error is not None:
@@ -117,7 +118,7 @@ class _FakeContainerBackend:
             target_dir=f"/home/agent/repos/{repo_name}",
             guest_repo_name=repo_name,
             remote_url=kwargs["repo_source"],
-            cloned=True,
+            cloned=self.clone_result_cloned,
         )
 
     def write_files(self, **kwargs):
@@ -2049,6 +2050,64 @@ def test_agent_create_clone_copy_and_prompt_use_container_session_backend(
     assert backend.started_specs[-1].command is not None
     assert "cd /home/agent" in str(backend.started_specs[-1].command)
     assert "continue" in str(backend.started_specs[-1].command)
+
+
+def test_agent_clone_container_skips_config_job_when_repo_already_prepared(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_provider="container_worker_vm",
+            allowed_tools=[ToolName.GET_AGENT_STATUS],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    admin_service = SimpleNamespace(
+        runtime=SimpleNamespace(
+            session_repository=session_repository,
+            provider_config=_ContainerResolverStub(config),
+        )
+    )
+    backend = _FakeContainerBackend()
+    backend.clone_result_cloned = False
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_clone_repo.container_backend",
+        lambda context, config: backend,
+    )
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.agent_clone_repo._container_git_mirror_resolver",
+        lambda context, directory_path: _FakeContainerGitMirrorResolver(),
+    )
+    factory = EffectProviderFactory(
+        provider_config_resolver=_ContainerResolverStub(config),
+        admin_service=admin_service,
+    )
+
+    output = factory.build(
+        AgentCloneRepoEffectDefinition(
+            id="agent-clone",
+            display_name="Clone",
+            type="effect:agent:clone-repo",
+            session_id="session-1",
+            repo_source="/tmp/repo",
+        )
+    ).execute()
+
+    assert output["message"] == "Repo already prepared for container worker session session-1"
+    assert output["target_dir"] == "/home/agent/repos/repo"
+    assert backend.written_files[0]["files"][0]["destination_path"].endswith("agent-pr-note")
+    assert backend.written_files[0]["files"][1]["destination_path"].endswith("push-agent")
+    assert backend.written_files[0]["files"][2]["destination_path"].endswith("sync-base")
+    assert backend.started_specs == []
+    assert backend.destroyed == []
 
 
 def test_agent_create_container_noops_when_session_exists(

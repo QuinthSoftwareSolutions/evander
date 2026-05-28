@@ -64,6 +64,34 @@ material. Newer entries are added incrementally as changes land.
 - Clarified that busy container wakes queue the prompt, still count as handled,
   and can advance one-shot or cron schedules accordingly.
 
+## 2026-05-28 - Container Session Idempotency
+
+- Skipped container-worker file rewrites when the destination content and mode
+  already match the requested file.
+- Avoided starting a short-lived Git configuration container when
+  `effect:agent:clone-repo` finds the repo already prepared for the session.
+
+## 2026-05-28 - Agent Log View Corrections
+
+- Made container-worker execution logs include only execution-scoped Codex
+  messages, avoiding restored-thread history while still showing assistant
+  progress that is not present in raw container stdout.
+- Changed Admin Web thread logs to page from the oldest thread forward and
+  stopped auto-polling the expensive thread transcript view.
+- Rendered the Admin Web execution/thread log switch as attached tabs so the
+  active log view is clearer.
+
+## 2026-05-28 - Workflow Binding Context
+
+- Made workflow binding diagnostics distinguish guaranteed upstream references
+  from path-conditional branch references.
+- Preserved guaranteed pre-branch context across merge gates while keeping
+  branch-local data available through explicit merge projections.
+- Kept debounce gate releases from dropping inherited workflow binding context.
+- Scoped workflow editor binding validation to visible graphs and scheduled
+  graph validation progressively so large workflow packs do not block initial
+  rendering.
+
 ## 2026-05-28 - Approval Queue Review Fixes
 
 - Kept any-payload MCP approval grants from consuming uses until the retry

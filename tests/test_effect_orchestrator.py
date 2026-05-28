@@ -7381,6 +7381,275 @@ def test_merge_gate_re_emits_shared_payload_keys(tmp_path: Path) -> None:
     assert effect_record["status"] == "succeeded"
 
 
+def test_merge_gate_preserves_guaranteed_pre_branch_context(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Trigger",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                    "outputs": {"ticket_id": {"type": "string"}},
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-merge",
+                    "display_name": "Merge",
+                    "type": "gate:merge",
+                    "outputs": {"shared": {"type": "string"}},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-pre",
+                    "display_name": "Prepare",
+                    "type": "effect:agent:prompt",
+                    "prompt": "prepare",
+                    "outputs": {"session_id": {"type": "string"}},
+                },
+                {
+                    "id": "effect-a",
+                    "display_name": "A",
+                    "type": "effect:agent:prompt",
+                    "prompt": "a",
+                    "outputs": {"shared": {"type": "string"}},
+                },
+                {
+                    "id": "effect-b",
+                    "display_name": "B",
+                    "type": "effect:agent:prompt",
+                    "prompt": "b",
+                    "outputs": {"shared": {"type": "string"}},
+                },
+                {
+                    "id": "effect-after",
+                    "display_name": "After",
+                    "type": "effect:agent:prompt",
+                    "session_id": "${{effect-pre.session_id}}",
+                    "prompt": "shared ${{gate-merge.shared}}",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-pre"),
+                _edge("effect-pre", "effect-a"),
+                _edge("effect-pre", "effect-b"),
+                _edge("effect-a", "gate-merge"),
+                _edge("effect-b", "gate-merge"),
+                _edge("gate-merge", "effect-after"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory(
+        {
+            "effect-pre": {"session_id": "session-pre", "success": True},
+            "effect-a": {"shared": "a", "success": True},
+            "effect-b": {"shared": "b", "success": True},
+            "effect-after": {"success": True},
+        }
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-merge-context-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={"ticket_id": "42"},
+        )
+    )
+
+    for _ in range(8):
+        worker.run_once()
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    after_records = [
+        item for item in effect_payload.values() if item["effect_id"] == "effect-after"
+    ]
+    assert after_records
+    assert all(record["status"] == "succeeded" for record in after_records)
+    assert {record["resolved_config"]["session_id"] for record in after_records} == {
+        "session-pre"
+    }
+
+
+def test_merge_gate_drops_branch_local_context(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Trigger",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-merge",
+                    "display_name": "Merge",
+                    "type": "gate:merge",
+                    "outputs": {"shared": {"type": "string"}},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-a",
+                    "display_name": "A",
+                    "type": "effect:agent:prompt",
+                    "prompt": "a",
+                    "outputs": {"shared": {"type": "string"}},
+                },
+                {
+                    "id": "effect-b",
+                    "display_name": "B",
+                    "type": "effect:agent:prompt",
+                    "prompt": "b",
+                    "outputs": {"shared": {"type": "string"}},
+                },
+                {
+                    "id": "effect-after",
+                    "display_name": "After",
+                    "type": "effect:agent:prompt",
+                    "prompt": "branch ${{effect-a.shared}}",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-a"),
+                _edge("trigger-1", "effect-b"),
+                _edge("effect-a", "gate-merge"),
+                _edge("effect-b", "gate-merge"),
+                _edge("gate-merge", "effect-after"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory(
+        {
+            "effect-a": {"shared": "a"},
+            "effect-b": {"shared": "b"},
+            "effect-after": {"success": True},
+        }
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-merge-branch-context-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    for _ in range(8):
+        worker.run_once()
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    after_records = [
+        item for item in effect_payload.values() if item["effect_id"] == "effect-after"
+    ]
+    assert after_records
+    assert all(record["status"] == "failed" for record in after_records)
+    assert {
+        record["binding_error"] for record in after_records
+    } == {"Output reference node 'effect-a' is not available in this upstream path"}
+
+
+def test_debounce_gate_preserves_context_for_delayed_release(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    config = GatewayConfig(runtime_dir=runtime_dir)
+    worker_config = TriggerOrchestratorWorkerGlobalConfig.model_validate(
+        {
+            "runtime_dir": runtime_dir,
+            "triggers": [
+                {
+                    "id": "trigger-1",
+                    "display_name": "Trigger",
+                    "type": "trigger:cron",
+                    "expression": "* * * * *",
+                }
+            ],
+            "gates": [
+                {
+                    "id": "gate-debounce",
+                    "display_name": "Debounce",
+                    "type": "gate:debounce",
+                    "key": "fixed",
+                    "quiet_period": "PT0.001S",
+                    "max_delay": "PT0.001S",
+                    "outputs": {"message": {"type": "string"}},
+                }
+            ],
+            "effects": [
+                {
+                    "id": "effect-pre",
+                    "display_name": "Prepare",
+                    "type": "effect:agent:prompt",
+                    "prompt": "prepare",
+                    "outputs": {"session_id": {"type": "string"}},
+                },
+                {
+                    "id": "effect-after",
+                    "display_name": "After",
+                    "type": "effect:agent:prompt",
+                    "session_id": "${{effect-pre.session_id}}",
+                    "prompt": "${{gate-debounce.message}}",
+                },
+            ],
+            "edges": [
+                _edge("trigger-1", "effect-pre"),
+                _edge("effect-pre", "gate-debounce"),
+                _edge("gate-debounce", "effect-after"),
+            ],
+        }
+    )
+    worker = EffectOrchestratorWorker(config=config, worker_config=worker_config, runtime=None)  # type: ignore[arg-type]
+    worker.provider_factory = _Factory(
+        {
+            "effect-pre": {"session_id": "session-pre", "message": "hello"},
+            "effect-after": {"success": True},
+        }
+    )
+
+    worker.event_queue.publish(
+        TriggerEvent(
+            event_id="event-debounce-context-1",
+            trigger_id="trigger-1",
+            trigger_type="trigger:cron",
+            occurred_at=datetime(2026, 4, 4, 12, 0, tzinfo=timezone.utc),
+            payload={},
+        )
+    )
+
+    for _ in range(6):
+        worker.run_once()
+
+    effect_payload = json.loads(
+        (runtime_dir / "effect-orchestrator-executions.json").read_text(encoding="utf-8")
+    )
+    after_record = next(
+        item for item in effect_payload.values() if item["effect_id"] == "effect-after"
+    )
+    assert after_record["status"] == "succeeded"
+    assert after_record["resolved_config"] == {
+        "prompt": "hello",
+        "session_id": "session-pre",
+    }
+
+
 def test_event_emit_effect_evaluates_payload_and_writes_internal_event(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     config = GatewayConfig(runtime_dir=runtime_dir)

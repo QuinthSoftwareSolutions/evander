@@ -93,6 +93,7 @@ import {
   workflowJsonFieldFallbackValue,
 } from "./workflowFieldDefaults";
 import {
+  buildWorkflowUpstreamIndex,
   declaredOutputsForNode,
   deriveWorkflowOutputSchemas,
   isPassThroughGateType,
@@ -143,7 +144,10 @@ type GraphNodeData = {
   dominantStatus: string | null;
   statusBadges: ReadonlyArray<GraphNodeStatusBadge>;
   diagnosticCount: number;
+  diagnosticErrorCount: number;
+  diagnosticWarningCount: number;
   hasDiagnostics: boolean;
+  hasErrorDiagnostics: boolean;
   hasUnsavedChanges: boolean;
   isDisabled: boolean;
   isInspectGhost?: boolean;
@@ -284,6 +288,11 @@ type WorkflowDocumentLike = {
   layout: WorkflowLayout;
   graphs: WorkflowGraphMetadata[];
   output_schemas?: WorkflowOutputSchemas;
+};
+
+type WorkflowValidationCacheEntry = {
+  signature: string;
+  diagnostics: WorkflowValidationDiagnostic[];
 };
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
@@ -531,7 +540,7 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
     <div
       className={`node-card node-${nodeData.kind}${selected ? " selected" : ""}${
         nodeData.dominantStatus ? ` runtime-${nodeData.dominantStatus}` : ""
-      }${nodeData.hasDiagnostics ? " invalid" : ""}${
+      }${nodeData.hasErrorDiagnostics ? " invalid" : ""}${
         nodeData.pendingConnectionRole ? ` connection-${nodeData.pendingConnectionRole}` : ""
       }${nodeData.hasUnsavedChanges ? " unsaved" : ""}${nodeData.isDisabled ? " trigger-disabled" : ""}${nodeData.isInspectGhost ? " inspect-ghost" : ""}${
         nodeData.tutorialHighlight ? ` tutorial-highlight tutorial-highlight-${nodeData.tutorialHighlightMode ?? "pulse"}` : ""
@@ -553,9 +562,14 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
             <div className="node-kind">{nodeData.kind}</div>
           </Tooltip>
           <div className="node-badges">
-            {nodeData.hasDiagnostics ? (
-              <Tooltip content={`${nodeData.diagnosticCount} workflow binding problem${nodeData.diagnosticCount === 1 ? "" : "s"}`}>
-                <div className="node-diagnostic-badge">{nodeData.diagnosticCount}</div>
+            {nodeData.diagnosticErrorCount > 0 ? (
+              <Tooltip content={`${nodeData.diagnosticErrorCount} workflow binding error${nodeData.diagnosticErrorCount === 1 ? "" : "s"}`}>
+                <div className="node-diagnostic-badge error">{nodeData.diagnosticErrorCount}</div>
+              </Tooltip>
+            ) : null}
+            {nodeData.diagnosticWarningCount > 0 ? (
+              <Tooltip content={`${nodeData.diagnosticWarningCount} workflow binding warning${nodeData.diagnosticWarningCount === 1 ? "" : "s"}`}>
+                <div className="node-diagnostic-badge warning">{nodeData.diagnosticWarningCount}</div>
               </Tooltip>
             ) : null}
             {nodeData.hasUnsavedChanges ? (
@@ -861,7 +875,10 @@ function buildNodes(
     const activity = nodeActivity[node.id];
     const catalogEntry = getCatalogEntry(catalog, node.type);
     const outputPorts = workflowOutputPortsForNode(node, catalogEntry?.output_ports ?? []);
-    const diagnosticCount = diagnostics.filter((diagnostic) => diagnostic.node_id === node.id).length;
+    const nodeDiagnostics = diagnostics.filter((diagnostic) => diagnostic.node_id === node.id);
+    const diagnosticErrorCount = nodeDiagnostics.filter((diagnostic) => (diagnostic.severity ?? "error") !== "warning").length;
+    const diagnosticWarningCount = nodeDiagnostics.filter((diagnostic) => (diagnostic.severity ?? "error") === "warning").length;
+    const diagnosticCount = diagnosticErrorCount + diagnosticWarningCount;
     return {
       id: node.id,
       type: "workflowNode",
@@ -880,7 +897,10 @@ function buildNodes(
         dominantStatus: dominantNodeStatus(activity),
         statusBadges: nodeStatusBadges(activity),
         diagnosticCount,
+        diagnosticErrorCount,
+        diagnosticWarningCount,
         hasDiagnostics: diagnosticCount > 0,
+        hasErrorDiagnostics: diagnosticErrorCount > 0,
         hasUnsavedChanges: dirtyNodeIds.has(node.id),
         isDisabled: kind === "trigger" && !workflowTriggerEnabled(node),
         isInspectGhost: ghostNodeIds.has(node.id),
@@ -2943,10 +2963,15 @@ function validateWorkflowBindingDiagnostics(
   const nodes = workflowNodes(config);
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
   const allNodeIds = new Set(nodes.map((node) => node.id));
+  const upstreamIndex = buildWorkflowUpstreamIndex(config);
 
   for (const node of nodes) {
+    const ancestorNodeIds = upstreamIndex.ancestorNodeIdsByNodeId.get(node.id) ?? [];
+    const guaranteedNodeIds = new Set(
+      upstreamIndex.guaranteedUpstreamNodeIdsByNodeId.get(node.id) ?? [],
+    );
     const declaredOutputs = new Map(
-      collectAncestorNodeIds(config, node.id)
+      ancestorNodeIds
         .map((upstreamNodeId) => [upstreamNodeId, declaredOutputsForNode(nodesById.get(upstreamNodeId), outputSchemas)] as const),
     );
     for (const [fieldPath, value] of walkEditableNodeConfigValues(node)) {
@@ -2956,6 +2981,7 @@ function validateWorkflowBindingDiagnostics(
           fieldPath,
           node,
           declaredOutputs,
+          guaranteedNodeIds,
           allNodeIds,
         }),
       );
@@ -2964,24 +2990,138 @@ function validateWorkflowBindingDiagnostics(
   return diagnostics;
 }
 
-function collectAncestorNodeIds(config: WorkflowConfig, nodeId: string): string[] {
-  const inboundByTarget = new Map<string, string[]>();
-  for (const edge of config.edges) {
-    const current = inboundByTarget.get(edge.target_id) ?? [];
-    current.push(edge.source_id);
-    inboundByTarget.set(edge.target_id, current);
+function validateWorkflowGraphBindingDiagnostics(
+  config: WorkflowConfig,
+  graph: WorkflowGraphMetadata,
+  outputSchemas: WorkflowOutputSchemas = deriveWorkflowOutputSchemas(config),
+): WorkflowValidationDiagnostic[] {
+  const graphConfig = workflowGraphScopedConfig(config, graph);
+  return validateWorkflowBindingDiagnostics(
+    graphConfig,
+    deriveWorkflowOutputSchemas(graphConfig, outputSchemas),
+  );
+}
+
+function workflowGraphScopedConfig(
+  config: WorkflowConfig,
+  graph: WorkflowGraphMetadata,
+): WorkflowConfig {
+  const graphNodeIds = new Set(graph.node_ids);
+  const includesGraphNode = (node: WorkflowNodeConfig) => graphNodeIds.has(node.id);
+  return {
+    ...config,
+    triggers: (config.triggers ?? []).filter(includesGraphNode),
+    gates: (config.gates ?? []).filter(includesGraphNode),
+    effects: (config.effects ?? []).filter(includesGraphNode),
+    queries: (config.queries ?? []).filter(includesGraphNode),
+    edges: (config.edges ?? []).filter((edge) =>
+      graphNodeIds.has(edge.source_id) && graphNodeIds.has(edge.target_id),
+    ),
+  };
+}
+
+function workflowGraphValidationSignature(
+  config: WorkflowConfig,
+  graph: WorkflowGraphMetadata,
+  outputSchemas: WorkflowOutputSchemas,
+): string {
+  const graphNodeIds = new Set(graph.node_ids);
+  const nodes = workflowNodes(config)
+    .filter((node) => graphNodeIds.has(node.id))
+    .map((node) => [node.id, node] as const)
+    .sort(([left], [right]) => left.localeCompare(right));
+  const edges = (config.edges ?? [])
+    .filter((edge) => graphNodeIds.has(edge.source_id) && graphNodeIds.has(edge.target_id))
+    .map((edge) => ({
+      source_id: edge.source_id,
+      source_port: edge.source_port ?? null,
+      target_id: edge.target_id,
+      allow_cycle: Boolean(edge.allow_cycle),
+    }))
+    .sort((left, right) =>
+      `${left.source_id}\u0000${left.source_port ?? ""}\u0000${left.target_id}`.localeCompare(
+        `${right.source_id}\u0000${right.source_port ?? ""}\u0000${right.target_id}`,
+      ),
+    );
+  const schemas = [...graphNodeIds]
+    .sort()
+    .map((nodeId) => [nodeId, outputSchemas[nodeId] ?? null] as const);
+  return JSON.stringify({
+    node_ids: [...graphNodeIds].sort(),
+    nodes,
+    edges,
+    schemas,
+  });
+}
+
+function cachedVisibleValidationDiagnostics(
+  cache: Map<string, WorkflowValidationCacheEntry>,
+  visibleGraphs: ReadonlyArray<WorkflowGraphMetadata>,
+): WorkflowValidationDiagnostic[] {
+  const diagnostics: WorkflowValidationDiagnostic[] = [];
+  for (const graph of visibleGraphs) {
+    const entry = cache.get(graph.id);
+    if (!entry) continue;
+    for (const diagnostic of entry.diagnostics) {
+      diagnostics.push(diagnostic);
+    }
   }
-  const ordered: string[] = [];
-  const queue = [...(inboundByTarget.get(nodeId) ?? [])];
+  return dedupeWorkflowDiagnostics(diagnostics);
+}
+
+function workflowDiagnosticsForGraphs(
+  diagnostics: ReadonlyArray<WorkflowValidationDiagnostic>,
+  graphs: ReadonlyArray<WorkflowGraphMetadata>,
+): WorkflowValidationDiagnostic[] {
+  const graphNodeIds = new Set(graphs.flatMap((graph) => graph.node_ids));
+  return diagnostics.filter((diagnostic) =>
+    diagnostic.node_id ? graphNodeIds.has(diagnostic.node_id) : true,
+  );
+}
+
+function mergeWorkflowDiagnostics(
+  first: ReadonlyArray<WorkflowValidationDiagnostic>,
+  second: ReadonlyArray<WorkflowValidationDiagnostic>,
+): WorkflowValidationDiagnostic[] {
+  return dedupeWorkflowDiagnostics([...first, ...second]);
+}
+
+function dedupeWorkflowDiagnostics(
+  diagnostics: ReadonlyArray<WorkflowValidationDiagnostic>,
+): WorkflowValidationDiagnostic[] {
+  const nextDiagnostics: WorkflowValidationDiagnostic[] = [];
   const seen = new Set<string>();
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    if (seen.has(current)) continue;
-    seen.add(current);
-    ordered.push(current);
-    queue.push(...(inboundByTarget.get(current) ?? []));
+  for (const diagnostic of diagnostics) {
+    const key = [
+      diagnostic.code,
+      diagnostic.severity ?? "error",
+      diagnostic.node_id ?? "",
+      diagnostic.node_type ?? "",
+      diagnostic.field_path ?? "",
+      diagnostic.reference ?? "",
+      diagnostic.message,
+    ].join("\u0000");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    nextDiagnostics.push(diagnostic);
   }
-  return ordered;
+  return nextDiagnostics;
+}
+
+function scheduleWorkflowValidation(callback: () => void): () => void {
+  const idleGlobal = globalThis as typeof globalThis & {
+    requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+    cancelIdleCallback?: (handle: number) => void;
+  };
+  if (
+    typeof idleGlobal.requestIdleCallback === "function" &&
+    typeof idleGlobal.cancelIdleCallback === "function"
+  ) {
+    const handle = idleGlobal.requestIdleCallback(callback, { timeout: 250 });
+    return () => idleGlobal.cancelIdleCallback?.(handle);
+  }
+  const handle = globalThis.setTimeout(callback, 0);
+  return () => globalThis.clearTimeout(handle);
 }
 
 function walkEditableNodeConfigValues(node: WorkflowNodeConfig): Array<[string, unknown]> {
@@ -3022,12 +3162,14 @@ function validateBindingValue({
   fieldPath,
   node,
   declaredOutputs,
+  guaranteedNodeIds,
   allNodeIds,
 }: {
   value: unknown;
   fieldPath: string;
   node: WorkflowNodeConfig;
   declaredOutputs: Map<string, Record<string, unknown>>;
+  guaranteedNodeIds: Set<string>;
   allNodeIds: Set<string>;
 }): WorkflowValidationDiagnostic[] {
   if (typeof value !== "string" || !value.includes("${{")) return [];
@@ -3060,6 +3202,7 @@ function validateBindingValue({
           fieldPath,
           node,
           declaredOutputs,
+          guaranteedNodeIds,
           allNodeIds,
         }),
       );
@@ -3087,12 +3230,14 @@ function validateBindingExpression({
   fieldPath,
   node,
   declaredOutputs,
+  guaranteedNodeIds,
   allNodeIds,
 }: {
   expression: ParsedBindingExpression;
   fieldPath: string;
   node: WorkflowNodeConfig;
   declaredOutputs: Map<string, Record<string, unknown>>;
+  guaranteedNodeIds: Set<string>;
   allNodeIds: Set<string>;
 }): WorkflowValidationDiagnostic[] {
   const diagnostics = validateBindingReference({
@@ -3100,6 +3245,7 @@ function validateBindingExpression({
     fieldPath,
     node,
     declaredOutputs,
+    guaranteedNodeIds,
     allNodeIds,
   });
   if (!expression.hasFallback) return diagnostics;
@@ -3111,6 +3257,7 @@ function validateBindingExpression({
         fieldPath,
         node,
         declaredOutputs,
+        guaranteedNodeIds,
         allNodeIds,
       }),
     );
@@ -3121,6 +3268,7 @@ function validateBindingExpression({
         fieldPath,
         node,
         declaredOutputs,
+        guaranteedNodeIds,
         allNodeIds,
       }),
     );
@@ -3133,12 +3281,14 @@ function validateBindingReference({
   fieldPath,
   node,
   declaredOutputs,
+  guaranteedNodeIds,
   allNodeIds,
 }: {
   reference: ParsedBindingReference;
   fieldPath: string;
   node: WorkflowNodeConfig;
   declaredOutputs: Map<string, Record<string, unknown>>;
+  guaranteedNodeIds: Set<string>;
   allNodeIds: Set<string>;
 }): WorkflowValidationDiagnostic[] {
   const resolved = resolveAvailableBindingReference(reference, declaredOutputs, allNodeIds);
@@ -3161,6 +3311,17 @@ function validateBindingReference({
     return [{
       code: "missing_binding_output",
       message: `${fieldPath} references missing output ${outputRef}`,
+      node_id: node.id,
+      node_type: node.type,
+      field_path: fieldPath,
+      reference: outputRef,
+    }];
+  }
+  if (!guaranteedNodeIds.has(resolved.nodeId)) {
+    return [{
+      code: "conditional_binding_node",
+      message: `${fieldPath} references conditionally available upstream node ${resolved.nodeId}; bind through a merge-projected output when this value must be available after branching`,
+      severity: "warning",
       node_id: node.id,
       node_type: node.type,
       field_path: fieldPath,
@@ -3358,6 +3519,8 @@ export default function App() {
   const sidebarResizeRef = useRef<SidebarResizeState | null>(null);
   const workflowGeneratorAbortRef = useRef<AbortController | null>(null);
   const workflowGeneratorRequestIdRef = useRef(0);
+  const validationCacheRef = useRef<Map<string, WorkflowValidationCacheEntry>>(new Map());
+  const validationRunIdRef = useRef(0);
   const [document, setDocument] = useState<WorkflowEditorDocument | null>(null);
   const [savedDocument, setSavedDocument] = useState<WorkflowEditorDocument | null>(null);
   const [catalog, setCatalog] = useState<WorkflowEditorCatalog>(emptyCatalog());
@@ -3390,6 +3553,7 @@ export default function App() {
   const [runSearchError, setRunSearchError] = useState<string | null>(null);
   const [isCompactCanvasTouchMode, setIsCompactCanvasTouchMode] = useState(isCompactCanvasTouchViewport);
   const compactCanvasTouchModeRef = useRef<CompactCanvasTouchMode>("idle");
+  const [backendValidationDiagnostics, setBackendValidationDiagnostics] = useState<WorkflowValidationDiagnostic[]>([]);
   const [validationDiagnostics, setValidationDiagnostics] = useState<WorkflowValidationDiagnostic[]>([]);
   const [flowNodes, setFlowNodes] = useState<Node<GraphNodeData>[]>([]);
   const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
@@ -3583,6 +3747,9 @@ export default function App() {
   const selectedNode = !isInspectMode && selectedNodeIds.length === 1 && selectedNodeId
     ? nodeById(activeWorkflowConfig, selectedNodeId)
     : undefined;
+  const selectedNodeGraph = selectedNode && !isTutorialMode
+    ? visibleWorkflowGraphs.find((graph) => graph.node_ids.includes(selectedNode.id))
+    : undefined;
   const selectedCatalogEntry = selectedNode ? getCatalogEntry(activeWorkflowCatalog, selectedNode.type) : undefined;
   const selectedNodeDiagnostics = selectedNode
     ? (isTutorialMode
@@ -3684,9 +3851,18 @@ export default function App() {
     const withRoot = ensureDirectorySelectOption(treeOptions, "root", "root");
     return ensureDirectorySelectOption(withRoot, selectedDirectoryPath, selectedDirectoryPath);
   }, [directoryTree, selectedDirectoryPath]);
-  const selectedNodeBindingOptions = selectedNode
-    ? upstreamBindingOptions(activeWorkflowConfig, selectedNode.id, activeWorkflowOutputSchemas)
-    : [];
+  const selectedNodeBindingConfig = useMemo(
+    () => selectedNodeGraph
+      ? workflowGraphScopedConfig(activeWorkflowConfig, selectedNodeGraph)
+      : activeWorkflowConfig,
+    [activeWorkflowConfig, selectedNodeGraph],
+  );
+  const selectedNodeBindingOptions = useMemo(
+    () => selectedNode
+      ? upstreamBindingOptions(selectedNodeBindingConfig, selectedNode.id, activeWorkflowOutputSchemas)
+      : [],
+    [activeWorkflowOutputSchemas, selectedNode?.id, selectedNodeBindingConfig],
+  );
   const hasCollapsedTargetUi =
     selectedNode?.type === "effect:vm:copy-files" ||
     selectedNode?.type === "effect:agent:prompt" ||
@@ -3889,10 +4065,17 @@ export default function App() {
           normalizedDocument,
           initialGraphDirectoryPathRef.current,
         );
-        const nextDiagnostics = payload.validation_diagnostics
-          ?? validateWorkflowBindingDiagnostics(normalizedConfig, outputSchemas);
+        validationCacheRef.current.clear();
         setRunSnapshot(runSnapshotPayload);
-        setValidationDiagnostics(nextDiagnostics);
+        const visibleGraphsForDocument = normalizedGraphs.filter((graph) =>
+          graphVisibleInDirectory(graph, initialGraphDirectoryPathRef.current),
+        );
+        const nextBackendDiagnostics = workflowDiagnosticsForGraphs(
+          payload.validation_diagnostics ?? [],
+          visibleGraphsForDocument,
+        );
+        setBackendValidationDiagnostics(payload.validation_diagnostics ?? []);
+        setValidationDiagnostics(nextBackendDiagnostics);
         setDocument(savedNormalizedDocument);
         setSavedDocument(savedNormalizedDocument);
         setError(null);
@@ -3938,6 +4121,65 @@ export default function App() {
       cancelled = true;
     };
   }, [documentLoaded, selectedDirectoryPath, workflowGeneratorOpen]);
+
+  useEffect(() => {
+    if (!document || isTutorialMode) return;
+    const visibleGraphsForValidation = (document.graphs ?? []).filter((graph) =>
+      graphVisibleInDirectory(graph, selectedDirectoryPath),
+    );
+    const outputSchemas = document.output_schemas ?? EMPTY_OUTPUT_SCHEMAS;
+    const cache = validationCacheRef.current;
+    const pendingGraphs: Array<{ graph: WorkflowGraphMetadata; signature: string }> = [];
+    const visibleBackendDiagnostics = workflowDiagnosticsForGraphs(
+      backendValidationDiagnostics,
+      visibleGraphsForValidation,
+    );
+    for (const graph of visibleGraphsForValidation) {
+      const signature = workflowGraphValidationSignature(document.config, graph, outputSchemas);
+      const cached = cache.get(graph.id);
+      if (cached?.signature === signature) continue;
+      cache.delete(graph.id);
+      pendingGraphs.push({ graph, signature });
+    }
+
+    const cachedDiagnostics = cachedVisibleValidationDiagnostics(cache, visibleGraphsForValidation);
+    setValidationDiagnostics(mergeWorkflowDiagnostics(visibleBackendDiagnostics, cachedDiagnostics));
+    if (pendingGraphs.length === 0) return;
+
+    let cancelled = false;
+    let cancelScheduled = () => {};
+    const runId = validationRunIdRef.current + 1;
+    validationRunIdRef.current = runId;
+    const runNext = () => {
+      if (cancelled || validationRunIdRef.current !== runId) return;
+      const next = pendingGraphs.shift();
+      if (!next) return;
+      const diagnostics = validateWorkflowGraphBindingDiagnostics(
+        document.config,
+        next.graph,
+        outputSchemas,
+      );
+      if (cancelled || validationRunIdRef.current !== runId) return;
+      cache.set(next.graph.id, {
+        signature: next.signature,
+        diagnostics,
+      });
+      setValidationDiagnostics(
+        mergeWorkflowDiagnostics(
+          visibleBackendDiagnostics,
+          cachedVisibleValidationDiagnostics(cache, visibleGraphsForValidation),
+        ),
+      );
+      if (pendingGraphs.length > 0) {
+        cancelScheduled = scheduleWorkflowValidation(runNext);
+      }
+    };
+    cancelScheduled = scheduleWorkflowValidation(runNext);
+    return () => {
+      cancelled = true;
+      cancelScheduled();
+    };
+  }, [backendValidationDiagnostics, document?.config, document?.graphs, document?.output_schemas, selectedDirectoryPath, isTutorialMode]);
 
   useEffect(() => {
     const stream = new EventSource("/api/workflow-editor/runs/stream");
@@ -4446,7 +4688,7 @@ export default function App() {
       applyWorkflowDocumentState(
         savedDocument,
         [],
-        validateWorkflowBindingDiagnostics(savedDocument.config, savedDocument.output_schemas ?? {}),
+        [],
         { autoFit: true },
       );
     }
@@ -4864,12 +5106,16 @@ export default function App() {
     const nextSelectedNodeIds = Array.from(new Set(selectedNodeIdsAfterPatch)).filter((nodeId) =>
       validNodeIds.has(nodeId),
     );
-    const nextDiagnostics = diagnosticsOverride ?? validateWorkflowBindingDiagnostics(
-      normalizedDocument.config,
-      normalizedDocument.output_schemas,
+    const visibleGraphsForDocument = (normalizedDocument.graphs ?? []).filter((graph) =>
+      graphVisibleInDirectory(graph, selectedDirectoryPath),
     );
+    const nextBackendDiagnostics = diagnosticsOverride ?? [];
+    const nextDiagnostics = diagnosticsOverride
+      ? workflowDiagnosticsForGraphs(diagnosticsOverride, visibleGraphsForDocument)
+      : [];
     const nextDirtyNodeIds = dirtyWorkflowNodeIds(normalizedDocument, savedDocument, nodeEditOrigins);
     setDocument(normalizedDocument);
+    setBackendValidationDiagnostics(nextBackendDiagnostics);
     setValidationDiagnostics(nextDiagnostics);
     setSelectedNodeIds(nextSelectedNodeIds);
     setSelectedNodeId((currentSelectedNodeId) => {

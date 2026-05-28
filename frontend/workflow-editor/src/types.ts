@@ -93,6 +93,7 @@ export type WorkflowEditorGeneratedDraft = {
 export type WorkflowValidationDiagnostic = {
   code: string;
   message: string;
+  severity?: "error" | "warning" | string;
   node_id?: string | null;
   node_type?: string | null;
   field_path?: string | null;

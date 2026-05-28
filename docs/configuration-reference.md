@@ -359,13 +359,16 @@ validate in the editor.
 
 `gate:merge` uses Reactive Extensions `merge` semantics: every inbound event is forwarded as it
 arrives. When `outputs` is declared, the gate projects each inbound payload to that shared key set.
-The runtime also records the latest inbound payload seen from each upstream source in the gate
-execution log for debugging.
+Downstream nodes can bind to the merge outputs and to upstream nodes that are guaranteed to have
+executed on every path to the merge. Branch-local outputs should be mapped into a shared shape
+before the merge and read from the merge node. The runtime also records the latest inbound payload
+seen from each upstream source in the gate execution log for debugging.
 
 `gate:debounce` groups inbound activations by its bindable `key`, waits until no newer
 activation for that key has arrived for the ISO-8601 `quiet_period`, and caps each burst by
 ISO-8601 `max_delay`. It forwards the latest payload in the burst and records debounce
 diagnostics including key, first/last seen times, scheduled release time, and release reason.
+Delayed debounce releases preserve the inherited workflow binding context.
 
 Edge wiring records connect upstream node ids to downstream node ids and replace any node-local
 `upstream_id` field.

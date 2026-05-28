@@ -364,6 +364,55 @@ def test_session_prepare_and_file_write_surface_targets_durable_paths(tmp_path: 
     ).read_text(encoding="utf-8") == "task: test\n"
 
 
+def test_session_file_write_skips_identical_existing_content_and_mode(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    prepared = client.post(
+        "/v1/sessions",
+        headers=_auth(),
+        json={"session_id": "session-1"},
+    )
+    assert prepared.status_code == 201
+
+    payload = {
+        "files": [
+            {
+                "destination_path": "/home/agent/AGENTS.md",
+                "content": "# Agent\n",
+                "mode": "0644",
+                "overwrite": True,
+            }
+        ]
+    }
+    first = client.post("/v1/sessions/session-1/files", headers=_auth(), json=payload)
+    second = client.post("/v1/sessions/session-1/files", headers=_auth(), json=payload)
+    mode_change = client.post(
+        "/v1/sessions/session-1/files",
+        headers=_auth(),
+        json={
+            "files": [
+                {
+                    "destination_path": "/home/agent/AGENTS.md",
+                    "content": "# Agent\n",
+                    "mode": "0600",
+                    "overwrite": True,
+                }
+            ]
+        },
+    )
+
+    assert first.status_code == 200
+    assert first.json()["copied_count"] == 1
+    assert first.json()["copied_paths"] == ["/home/agent/AGENTS.md"]
+    assert second.status_code == 200
+    assert second.json()["copied_count"] == 0
+    assert second.json()["copied_paths"] == []
+    assert mode_change.status_code == 200
+    assert mode_change.json()["copied_count"] == 1
+    target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "AGENTS.md"
+    assert target.read_text(encoding="utf-8") == "# Agent\n"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
 def test_session_artifact_text_endpoint_reads_utf8_artifact_and_rejects_escape(
     tmp_path: Path,
 ) -> None:
@@ -1167,6 +1216,76 @@ def test_logs_recover_codex_messages_from_session_jsonl(tmp_path: Path) -> None:
     assert response.text.count("I am checking the repo now.") == 1
     log_path = tmp_path / "worker-root" / "sessions" / "session-1" / "logs" / "job-1.log"
     assert log_path.read_text(encoding="utf-8") == f"session id: {thread_id}\n"
+
+
+def test_execution_logs_limit_resumed_thread_to_job_window(tmp_path: Path) -> None:
+    thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    started_at = datetime(2026, 5, 5, 8, 19, tzinfo=UTC)
+    finished_at = started_at + timedelta(minutes=1)
+    runtime = FakeContainerRuntime()
+    runtime.logs["job-1"] = f"session id: {thread_id}\n"
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="codex:latest",
+        command=["true"],
+        container_name="agent-worker-job-1",
+        status="removed",
+        started_at=started_at,
+        finished_at=finished_at,
+        agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+    )
+    session_dir = (
+        paths.agent_home
+        / ".config"
+        / "agent-sandbox"
+        / "codex"
+        / "sessions"
+        / "2026"
+        / "05"
+        / "05"
+    )
+    session_dir.mkdir(parents=True)
+    rollout = session_dir / f"rollout-2026-05-05T08-19-00-{thread_id}.jsonl"
+    rollout.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {
+                    "timestamp": (started_at - timedelta(minutes=1)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {"type": "agent_message", "message": "old planner message"},
+                },
+                {
+                    "timestamp": (started_at + timedelta(seconds=10)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {"type": "agent_message", "message": "message during this job"},
+                },
+                {
+                    "timestamp": (finished_at + timedelta(minutes=1)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {"type": "agent_message", "message": "message after this job"},
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert daemon.get_logs(record, mode="execution") == (
+        f"session id: {thread_id}\n"
+        "message during this job\n"
+    )
 
 
 def test_logs_recover_live_codex_messages_without_thread_id_in_container_output(
