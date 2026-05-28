@@ -5,6 +5,12 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-28 - Existing PR Branch Push Wrapper
+
+- Added a `push_existing_pr_branch.sh` helper that wraps push-only
+  `open_agent_pr.sh` calls with JSON output and non-zero exits for logical PR
+  branch preflight failures.
+
 ## 2026-05-28 - Session List Field Help
 
 - Added workflow-editor tooltips for every `query:session:list` configuration
