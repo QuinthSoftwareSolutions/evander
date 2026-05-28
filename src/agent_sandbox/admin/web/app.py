@@ -367,7 +367,7 @@ def create_app(service: AdminService) -> Starlette:
         Route("/api/admin/privileged/unlock", unlock_privileged_operations, methods=["POST"]),
         Route("/api/admin/privileged/lock", lock_privileged_operations, methods=["POST"]),
     ]
-    routes.extend(workflow_routes(service, dashboard_cache))
+    routes.extend(workflow_routes(service, auth, dashboard_cache))
     routes.extend(agent_routes(service, auth, dashboard_cache))
     routes.extend(capacity_routes(service, auth, dashboard_cache))
     routes.extend(skill_routes(service, auth))

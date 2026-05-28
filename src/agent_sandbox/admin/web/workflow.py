@@ -10,6 +10,8 @@ from starlette.routing import Route
 
 from agent_sandbox.admin.service import AdminRevisionConflict, AdminService
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
+from agent_sandbox.admin.web.rbac import WORKFLOWS_READ_PERMISSION, WORKFLOWS_WRITE_PERMISSION
+from agent_sandbox.admin.web.shared import AdminWebAuth, request_has_privileged_operations
 from agent_sandbox.admin.web.shared import json_error
 
 
@@ -53,6 +55,172 @@ def optional_limit_from_query(value: str | None, *, default: int = 25) -> int:
     if parsed < 1 or parsed > 100:
         raise ValueError("limit must be between 1 and 100.")
     return parsed
+
+
+def _graph_directory_paths(graphs: object) -> tuple[str, ...]:
+    if not isinstance(graphs, list):
+        return ()
+    directory_paths: list[str] = []
+    seen_directory_paths: set[str] = set()
+    for graph in graphs:
+        if not isinstance(graph, dict):
+            continue
+        directory_path = str(graph.get("directory_path") or "").strip()
+        if not directory_path:
+            legacy_directory_paths = graph.get("directory_paths")
+            if isinstance(legacy_directory_paths, list):
+                directory_path = next(
+                    (str(candidate or "").strip() for candidate in legacy_directory_paths if str(candidate or "").strip()),
+                    "",
+                )
+            elif isinstance(legacy_directory_paths, str):
+                directory_path = legacy_directory_paths.strip()
+        if not directory_path or directory_path in seen_directory_paths:
+            continue
+        seen_directory_paths.add(directory_path)
+        directory_paths.append(directory_path)
+    return tuple(directory_paths)
+
+
+def _readable_graphs_for_document(
+    *,
+    auth: AdminWebAuth,
+    request: Request,
+    graphs: list[object],
+) -> list[dict[str, Any]]:
+    readable_graphs: list[dict[str, Any]] = []
+    for graph in graphs:
+        if isinstance(graph, dict):
+            graph_payload = graph
+        elif hasattr(graph, "model_dump"):
+            graph_payload = graph.model_dump(mode="json")
+        else:
+            continue
+        directory_path = str(graph_payload.get("directory_path") or "").strip() or "root"
+        if auth.can(request, WORKFLOWS_READ_PERMISSION, directory_path=directory_path):
+            readable_graphs.append(graph_payload)
+    return readable_graphs
+
+
+def _filter_workflow_document_payload(
+    *,
+    document: Any,
+    readable_graphs: list[object],
+) -> dict[str, Any]:
+    readable_graph_ids = {
+        str(graph.get("id") or "").strip()
+        for graph in readable_graphs
+        if isinstance(graph, dict) and str(graph.get("id") or "").strip()
+    }
+    readable_node_ids: set[str] = set()
+    for graph in readable_graphs:
+        if not isinstance(graph, dict):
+            continue
+        for node_id in graph.get("node_ids", []):
+            normalized_node_id = str(node_id or "").strip()
+            if normalized_node_id:
+                readable_node_ids.add(normalized_node_id)
+
+    payload = document.model_dump(mode="json")
+
+    config = payload.get("config")
+    if isinstance(config, dict):
+        filtered_config = json.loads(json.dumps(config))
+        for collection_name in ("triggers", "gates", "effects", "queries"):
+            entries = filtered_config.get(collection_name)
+            if not isinstance(entries, list):
+                continue
+            filtered_config[collection_name] = [
+                entry
+                for entry in entries
+                if isinstance(entry, dict)
+                and str(entry.get("id") or "").strip() in readable_node_ids
+            ]
+        edges = filtered_config.get("edges")
+        if isinstance(edges, list):
+            filtered_config["edges"] = [
+                edge
+                for edge in edges
+                if isinstance(edge, dict)
+                and str(edge.get("source_id") or "").strip() in readable_node_ids
+                and str(edge.get("target_id") or "").strip() in readable_node_ids
+            ]
+        workflow_graphs = filtered_config.get("workflow_graphs")
+        if isinstance(workflow_graphs, list):
+            filtered_config["workflow_graphs"] = [
+                graph
+                for graph in workflow_graphs
+                if isinstance(graph, dict)
+                and (
+                    str(graph.get("id") or "").strip() in readable_graph_ids
+                    or (
+                        not str(graph.get("id") or "").strip()
+                        and str(graph.get("directory_path") or "").strip() in {
+                            str(candidate.get("directory_path") or "").strip()
+                            for candidate in readable_graphs
+                            if isinstance(candidate, dict)
+                        }
+                    )
+                )
+            ]
+        payload["config"] = filtered_config
+
+    layout = payload.get("layout")
+    if isinstance(layout, dict):
+        nodes = layout.get("nodes")
+        if isinstance(nodes, dict):
+            layout["nodes"] = {
+                node_id: node_value
+                for node_id, node_value in nodes.items()
+                if str(node_id or "").strip() in readable_node_ids
+            }
+
+    output_schemas = payload.get("output_schemas")
+    if isinstance(output_schemas, dict):
+        payload["output_schemas"] = {
+            node_id: schema
+            for node_id, schema in output_schemas.items()
+            if str(node_id or "").strip() in readable_node_ids
+        }
+
+    graphs_payload = payload.get("graphs")
+    if isinstance(graphs_payload, list):
+        payload["graphs"] = [
+            graph
+            for graph in graphs_payload
+            if isinstance(graph, dict)
+            and str(graph.get("id") or "").strip() in readable_graph_ids
+        ]
+    return payload
+
+
+def _graph_directories_from_payload(
+    service: AdminService,
+    payload: dict[str, Any],
+    *,
+    fallback_graphs: list[Any] | None = None,
+) -> tuple[str, ...]:
+    graphs_payload = payload.get("graphs")
+    submitted_graphs = service._coerce_workflow_editor_graphs(graphs_payload, strict=False)
+    directories = _graph_directory_paths(
+        [graph.model_dump(mode="json") for graph in submitted_graphs]
+    )
+    if directories:
+        return directories
+    if graphs_payload is None or (
+        isinstance(graphs_payload, list) and len(graphs_payload) == 0
+    ):
+        fallback = fallback_graphs or []
+        fallback_directories = _graph_directory_paths(
+            [
+                graph.model_dump(mode="json") if hasattr(graph, "model_dump") else graph
+                for graph in fallback
+            ]
+        )
+        if fallback_directories:
+            return fallback_directories
+        return ("root",)
+    return ()
 
 
 async def workflow_run_events(service: AdminService, request: Request) -> AsyncIterator[str]:
@@ -105,22 +273,45 @@ async def workflow_run_events(service: AdminService, request: Request) -> AsyncI
 
 def workflow_routes(
     service: AdminService,
+    auth: AdminWebAuth,
     cache: AdminWebJsonResponseCache | None = None,
 ) -> list[Route]:
-    async def get_document(_: Request) -> JSONResponse:
+    async def get_document(request: Request) -> JSONResponse:
         try:
             document = service.read_workflow_editor_document()
+            readable_graphs = _readable_graphs_for_document(
+                auth=auth,
+                request=request,
+                graphs=document.graphs,
+            )
+            if document.graphs and not readable_graphs:
+                raise PermissionError("Permission required: workflows.read")
+            if not document.graphs and not auth.can(
+                request, WORKFLOWS_READ_PERMISSION, directory_path="root"
+            ):
+                raise PermissionError("Permission required: workflows.read")
         except ValueError as exc:
             return json_error(str(exc))
-        return JSONResponse(document.model_dump(mode="json"))
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
+        return JSONResponse(
+            _filter_workflow_document_payload(
+                document=document,
+                readable_graphs=readable_graphs if document.graphs else [],
+            )
+        )
 
     async def get_catalog(request: Request) -> JSONResponse:
         try:
-            catalog = service.read_workflow_editor_catalog(
-                directory_path=request.query_params.get("directory_path")
+            directory_path = service._normalize_directory_reference(
+                request.query_params.get("directory_path") or "root"
             )
+            auth.require_permission(request, WORKFLOWS_READ_PERMISSION, directory_path=directory_path)
+            catalog = service.read_workflow_editor_catalog(directory_path=directory_path)
         except ValueError as exc:
             return json_error(str(exc))
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
         return JSONResponse(catalog.model_dump(mode="json"))
 
     async def get_runs(_: Request) -> JSONResponse:
@@ -202,7 +393,19 @@ def workflow_routes(
 
     async def validate_document(request: Request) -> JSONResponse:
         try:
+            auth.require(request)
             payload = await json_body(request)
+            fallback_graphs = None
+            if not isinstance(payload.get("graphs"), list) or not payload.get("graphs"):
+                fallback_graphs = service.read_workflow_editor_document().graphs
+            for directory_path in _graph_directories_from_payload(
+                service,
+                payload,
+                fallback_graphs=fallback_graphs,
+            ):
+                auth.require_permission(
+                    request, WORKFLOWS_READ_PERMISSION, directory_path=directory_path
+                )
             validation = service.validate_workflow_editor_document(
                 config=payload.get("config") if isinstance(payload.get("config"), dict) else {},
                 layout=payload.get("layout") if isinstance(payload.get("layout"), dict) else {},
@@ -210,23 +413,48 @@ def workflow_routes(
             )
         except ValueError as exc:
             return json_error(str(exc))
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
         return JSONResponse(validation.model_dump(mode="json"))
 
     async def generate_draft(request: Request) -> JSONResponse:
         try:
+            auth.require(request)
             payload = await json_body(request)
+            directory_path = service._normalize_directory_reference(
+                str(payload.get("directory_path") or "").strip() or "root"
+            )
+            auth.require_permission(
+                request, WORKFLOWS_WRITE_PERMISSION, directory_path=directory_path
+            )
             draft = await service.generate_workflow_editor_draft(
                 description=str(payload.get("description") or ""),
-                directory_path=str(payload.get("directory_path") or ""),
+                directory_path=directory_path,
                 include_current_packs=bool(payload.get("include_current_packs", True)),
             )
         except ValueError as exc:
             return json_error(str(exc))
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
         return JSONResponse(draft.model_dump(mode="json"))
 
     async def save_document(request: Request) -> JSONResponse:
         try:
+            auth.require(request)
             payload = await json_body(request)
+            fallback_graphs = None
+            if not isinstance(payload.get("graphs"), list) or not payload.get("graphs"):
+                fallback_graphs = service.read_workflow_editor_document().graphs
+            for directory_path in _graph_directories_from_payload(
+                service,
+                payload,
+                fallback_graphs=fallback_graphs,
+            ):
+                auth.require_permission(
+                    request, WORKFLOWS_WRITE_PERMISSION, directory_path=directory_path
+                )
+            if not request_has_privileged_operations(auth=auth, service=service, request=request):
+                return json_error("Privileged operations are locked.", status_code=403)
             expected_revision = expected_revision_from_payload(payload)
             save_result = service.save_workflow_editor_document(
                 config=payload.get("config") if isinstance(payload.get("config"), dict) else {},
@@ -240,6 +468,8 @@ def workflow_routes(
             return json_error(str(exc), status_code=409, details=exc.details)
         except ValueError as exc:
             return json_error(str(exc))
+        except PermissionError as exc:
+            return json_error(str(exc), status_code=403)
         return JSONResponse(save_result.model_dump(mode="json"))
 
     return [

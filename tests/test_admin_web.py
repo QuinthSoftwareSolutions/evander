@@ -235,6 +235,11 @@ def _workflow_expected_revision(client: TestClient) -> str:
     return revision
 
 
+def _unlock_privileged_operations(client: TestClient) -> None:
+    response = client.post("/api/admin/privileged/unlock")
+    assert response.status_code == 200
+
+
 def _snapshot_runtime_files(runtime_dir: Path) -> dict[str, bytes]:
     if not runtime_dir.exists():
         return {}
@@ -1672,7 +1677,7 @@ def test_workflow_editor_default_dedupe_node_uses_supported_event_binding() -> N
 
 
 def test_admin_web_exposes_deployment_status_from_runtime(tmp_path: Path) -> None:
-    service = AdminService(write_config(tmp_path))
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     status_path = service.config.runtime_dir / "deployment-status.json"
     status_path.write_text(
         json.dumps(
@@ -1703,7 +1708,7 @@ def test_admin_web_deployment_status_is_public_when_auth_required(
 ) -> None:
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_AUTH_MODE", "local_password")
     monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "secret")
-    service = AdminService(write_config(tmp_path))
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
     (service.config.runtime_dir / "deployment-status.json").write_text(
         json.dumps({"active": True, "message": "Deploying", "ttl_seconds": 3600}),
         encoding="utf-8",
@@ -2276,6 +2281,7 @@ def test_admin_web_validates_and_saves_workflow_editor_document(tmp_path: Path) 
     }
 
     validate_response = client.post("/api/workflow-editor/validate", json=payload)
+    _unlock_privileged_operations(client)
     payload["expected_revision"] = _workflow_expected_revision(client)
     save_response = client.put("/api/workflow-editor/document", json=payload)
 
@@ -2333,6 +2339,7 @@ def test_admin_web_workflow_editor_accepts_revision_returned_from_previous_save(
         ],
     }
 
+    _unlock_privileged_operations(client)
     payload["expected_revision"] = _workflow_expected_revision(client)
     first_save = client.put("/api/workflow-editor/document", json=payload)
     assert first_save.status_code == 200
@@ -2379,6 +2386,7 @@ def test_admin_web_saves_disconnected_workflow_editor_document(tmp_path: Path) -
         },
     }
 
+    _unlock_privileged_operations(client)
     payload["expected_revision"] = _workflow_expected_revision(client)
     save_response = client.put("/api/workflow-editor/document", json=payload)
 
@@ -2388,6 +2396,7 @@ def test_admin_web_saves_disconnected_workflow_editor_document(tmp_path: Path) -
 
 def test_admin_web_workflow_editor_save_requires_matching_revision(tmp_path: Path) -> None:
     client = TestClient(create_app(AdminService(write_config(tmp_path))))
+    _unlock_privileged_operations(client)
     payload = {
         "config": {
             "runtime_dir": str(tmp_path / "runtime"),
@@ -2416,6 +2425,326 @@ def test_admin_web_workflow_editor_save_requires_matching_revision(tmp_path: Pat
     assert stale.json()["details"]["current_revision"] == current_revision
     assert saved.status_code == 200
     assert saved.json()["revision"] == _workflow_expected_revision(client)
+
+
+def test_admin_web_workflow_editor_document_filters_unreadable_graphs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.create_directory_child("root", "ops")
+    service.save_workflow_editor_document(
+        config={
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "root-start",
+                    "display_name": "Root start",
+                    "type": "trigger:cron",
+                    "expression": "0 * * * *",
+                },
+                {
+                    "id": "ops-start",
+                    "display_name": "Ops start",
+                    "type": "trigger:cron",
+                    "expression": "15 * * * *",
+                },
+            ],
+            "gates": [
+                {
+                    "id": "root-filter",
+                    "display_name": "Root filter",
+                    "type": "gate:filter",
+                    "when": {"all": [{"left": "root", "equals": "root"}]},
+                },
+                {
+                    "id": "ops-filter",
+                    "display_name": "Ops filter",
+                    "type": "gate:filter",
+                    "when": {"all": [{"left": "ops", "equals": "ops"}]},
+                },
+            ],
+            "effects": [],
+            "queries": [],
+            "edges": [
+                {"source_id": "root-start", "target_id": "root-filter"},
+                {"source_id": "ops-start", "target_id": "ops-filter"},
+            ],
+        },
+        layout={
+            "nodes": {
+                "root-start": {"x": 100, "y": 50},
+                "root-filter": {"x": 320, "y": 50},
+                "ops-start": {"x": 100, "y": 250},
+                "ops-filter": {"x": 320, "y": 250},
+            }
+        },
+        graphs=[
+            {
+                "id": "graph-root",
+                "name": "Root workflow",
+                "directory_paths": ["root"],
+                "user_ids": ["owner@example.com"],
+                "node_ids": ["root-start", "root-filter"],
+            },
+            {
+                "id": "graph-ops",
+                "name": "Ops workflow",
+                "directory_paths": ["root/ops"],
+                "user_ids": ["viewer@example.com"],
+                "node_ids": ["ops-start", "ops-filter"],
+            },
+        ],
+    )
+    store = _admin_web_user_store(tmp_path)
+    store.upsert_user(login="owner@example.com", role="admin", display_name="Owner")
+    store.upsert_user(login="viewer@example.com", role="regular", display_name="Viewer")
+    store.remove_user_group_assignment(
+        login="viewer@example.com", group_id="operator", directory_path="root"
+    )
+    store.assign_user_group(
+        login="viewer@example.com", group_id="workflow-viewer", directory_path="root/ops"
+    )
+    _set_azure_sso_env(monkeypatch, allowed_users=None)
+    app = create_app(service)
+    client = TestClient(app)
+
+    callback = _complete_azure_login(
+        app, client, login="viewer@example.com", display_name="Viewer"
+    )
+    response = client.get("/api/workflow-editor/document")
+    payload = response.json()
+    full_revision = service.read_workflow_editor_document().revision
+
+    assert callback.status_code == 303
+    assert response.status_code == 200
+    assert payload["revision"] == full_revision
+    assert [graph["id"] for graph in payload["graphs"]] == ["graph-ops"]
+    assert [node["id"] for node in payload["config"]["triggers"]] == ["ops-start"]
+    assert [node["id"] for node in payload["config"]["gates"]] == ["ops-filter"]
+    assert [edge["source_id"] for edge in payload["config"]["edges"]] == ["ops-start"]
+    assert set(payload["layout"]["nodes"]) == {"ops-start", "ops-filter"}
+    assert set(payload["output_schemas"]) == {"ops-start", "ops-filter"}
+    assert payload["config"]["workflow_graphs"] == [
+        {
+            "id": "graph-ops",
+            "name": "Ops workflow",
+            "directory_path": "root/ops",
+            "directory_paths": ["root/ops"],
+            "user_ids": ["viewer@example.com"],
+            "node_ids": ["ops-start", "ops-filter"],
+        }
+    ]
+
+
+def test_admin_web_workflow_editor_routes_enforce_directory_permissions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = AdminService(write_config(tmp_path, enable_directory_scoped_config=True))
+    service.create_directory_child("root", "ops")
+    service.write_directory_domain_config(
+        "root",
+        COMMUNICATION_TARGETS_DOMAIN,
+        {
+            "targets": [
+                {
+                    "id": "root-chat",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team/root",
+                    "policy": {"capabilities": ["read"]},
+                }
+            ]
+        },
+    )
+    service.write_directory_domain_config(
+        "root/ops",
+        COMMUNICATION_TARGETS_DOMAIN,
+        {
+            "targets": [
+                {
+                    "id": "ops-chat",
+                    "provider": "teams",
+                    "kind": "teams",
+                    "address": "team/ops",
+                    "policy": {"capabilities": ["read"]},
+                }
+            ]
+        },
+    )
+    service.save_workflow_editor_document(
+        config={
+            "runtime_dir": str(tmp_path / "runtime"),
+            "triggers": [
+                {
+                    "id": "root-start",
+                    "display_name": "Root start",
+                    "type": "trigger:cron",
+                    "expression": "0 * * * *",
+                },
+                {
+                    "id": "ops-start",
+                    "display_name": "Ops start",
+                    "type": "trigger:cron",
+                    "expression": "15 * * * *",
+                },
+            ],
+            "gates": [
+                {
+                    "id": "root-filter",
+                    "display_name": "Root filter",
+                    "type": "gate:filter",
+                    "when": {"all": [{"left": "root", "equals": "root"}]},
+                },
+                {
+                    "id": "ops-filter",
+                    "display_name": "Ops filter",
+                    "type": "gate:filter",
+                    "when": {"all": [{"left": "ops", "equals": "ops"}]},
+                },
+            ],
+            "effects": [],
+            "queries": [],
+            "edges": [
+                {"source_id": "root-start", "target_id": "root-filter"},
+                {"source_id": "ops-start", "target_id": "ops-filter"},
+            ],
+        },
+        layout={
+            "nodes": {
+                "root-start": {"x": 100, "y": 50},
+                "root-filter": {"x": 320, "y": 50},
+                "ops-start": {"x": 100, "y": 250},
+                "ops-filter": {"x": 320, "y": 250},
+            }
+        },
+        graphs=[
+            {
+                "id": "graph-root",
+                "name": "Root workflow",
+                "directory_paths": ["root"],
+                "user_ids": ["owner@example.com"],
+                "node_ids": ["root-start", "root-filter"],
+            },
+            {
+                "id": "graph-ops",
+                "name": "Ops workflow",
+                "directory_paths": ["root/ops"],
+                "user_ids": ["viewer@example.com"],
+                "node_ids": ["ops-start", "ops-filter"],
+            },
+        ],
+    )
+    store = _admin_web_user_store(tmp_path)
+    store.upsert_user(login="owner@example.com", role="admin", display_name="Owner")
+    store.upsert_user(login="viewer@example.com", role="regular", display_name="Viewer")
+    store.remove_user_group_assignment(
+        login="viewer@example.com", group_id="operator", directory_path="root"
+    )
+    store.assign_user_group(
+        login="viewer@example.com", group_id="workflow-viewer", directory_path="root/ops"
+    )
+    _set_azure_sso_env(monkeypatch, allowed_users=None)
+    app = create_app(service)
+    client = TestClient(app)
+    _complete_azure_login(app, client, login="viewer@example.com", display_name="Viewer")
+
+    document_response = client.get("/api/workflow-editor/document")
+    validate_response = client.post(
+        "/api/workflow-editor/validate",
+        json={
+            "config": {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "ops-start",
+                        "display_name": "Ops start",
+                        "type": "trigger:cron",
+                        "expression": "15 * * * *",
+                    }
+                ],
+                "gates": [
+                {
+                    "id": "ops-filter",
+                    "display_name": "Ops filter",
+                    "type": "gate:filter",
+                    "when": {"all": [{"left": "ops", "equals": "ops"}]},
+                }
+                ],
+                "edges": [{"source_id": "ops-start", "target_id": "ops-filter"}],
+            },
+            "layout": {
+                "nodes": {
+                    "ops-start": {"x": 100, "y": 250},
+                    "ops-filter": {"x": 320, "y": 250},
+                }
+            },
+            "graphs": [
+                {
+                    "id": "graph-ops",
+                    "name": "Ops workflow",
+                    "directory_paths": ["root/ops"],
+                    "user_ids": ["viewer@example.com"],
+                    "node_ids": ["ops-start", "ops-filter"],
+                }
+            ],
+        },
+    )
+    catalog_allowed = client.get("/api/workflow-editor/catalog?directory_path=root/ops")
+    catalog_denied = client.get("/api/workflow-editor/catalog?directory_path=root")
+    generate_denied = client.post(
+        "/api/workflow-editor/generate-draft",
+        json={"description": "Draft ops workflow", "directory_path": "root/ops"},
+    )
+    save_denied = client.put(
+        "/api/workflow-editor/document",
+        json={
+            "config": {
+                "runtime_dir": str(tmp_path / "runtime"),
+                "triggers": [
+                    {
+                        "id": "ops-start",
+                        "display_name": "Ops start",
+                        "type": "trigger:cron",
+                        "expression": "15 * * * *",
+                    }
+                ],
+                "gates": [
+                {
+                    "id": "ops-filter",
+                    "display_name": "Ops filter",
+                    "type": "gate:filter",
+                    "when": {"all": [{"left": "ops", "equals": "ops"}]},
+                }
+                ],
+                "edges": [{"source_id": "ops-start", "target_id": "ops-filter"}],
+            },
+            "layout": {
+                "nodes": {
+                    "ops-start": {"x": 100, "y": 250},
+                    "ops-filter": {"x": 320, "y": 250},
+                }
+            },
+            "graphs": [
+                {
+                    "id": "graph-ops",
+                    "name": "Ops workflow",
+                    "directory_paths": ["root/ops"],
+                    "user_ids": ["viewer@example.com"],
+                    "node_ids": ["ops-start", "ops-filter"],
+                }
+            ],
+            "expected_revision": document_response.json()["revision"],
+        },
+    )
+
+    assert document_response.status_code == 200
+    assert validate_response.status_code == 200
+    assert catalog_allowed.status_code == 200
+    assert catalog_denied.status_code == 403
+    assert generate_denied.status_code == 403
+    assert generate_denied.json()["error"] == "Permission required: workflows.write"
+    assert save_denied.status_code == 403
+    assert save_denied.json()["error"] == "Permission required: workflows.write"
 
 
 def _workflow_binding_validation_payload(tmp_path: Path, prompt: str) -> dict[str, object]:
@@ -2503,6 +2832,7 @@ def test_admin_web_validate_reports_deleted_binding_node_without_rejecting_save(
     )
 
     validate_response = client.post("/api/workflow-editor/validate", json=payload)
+    _unlock_privileged_operations(client)
     payload["expected_revision"] = _workflow_expected_revision(client)
     save_response = client.put("/api/workflow-editor/document", json=payload)
 
@@ -2588,6 +2918,7 @@ def test_admin_web_save_seeds_new_ticket_created_trigger_cursor(tmp_path: Path) 
         "id": "ticket-copy",
         "display_name": "Ticket created Copy",
     }
+    _unlock_privileged_operations(client)
     response = client.put(
         "/api/workflow-editor/document",
         json={
