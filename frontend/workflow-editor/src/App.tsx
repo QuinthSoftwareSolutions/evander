@@ -2877,25 +2877,14 @@ function cachedVisibleValidationDiagnostics(
   visibleGraphs: ReadonlyArray<WorkflowGraphMetadata>,
 ): WorkflowValidationDiagnostic[] {
   const diagnostics: WorkflowValidationDiagnostic[] = [];
-  const seen = new Set<string>();
   for (const graph of visibleGraphs) {
     const entry = cache.get(graph.id);
     if (!entry) continue;
     for (const diagnostic of entry.diagnostics) {
-      const key = [
-        diagnostic.code,
-        diagnostic.severity ?? "error",
-        diagnostic.node_id ?? "",
-        diagnostic.field_path ?? "",
-        diagnostic.reference ?? "",
-        diagnostic.message,
-      ].join("\u0000");
-      if (seen.has(key)) continue;
-      seen.add(key);
       diagnostics.push(diagnostic);
     }
   }
-  return diagnostics;
+  return dedupeWorkflowDiagnostics(diagnostics);
 }
 
 function workflowDiagnosticsForGraphs(
@@ -2904,8 +2893,37 @@ function workflowDiagnosticsForGraphs(
 ): WorkflowValidationDiagnostic[] {
   const graphNodeIds = new Set(graphs.flatMap((graph) => graph.node_ids));
   return diagnostics.filter((diagnostic) =>
-    diagnostic.node_id ? graphNodeIds.has(diagnostic.node_id) : false,
+    diagnostic.node_id ? graphNodeIds.has(diagnostic.node_id) : true,
   );
+}
+
+function mergeWorkflowDiagnostics(
+  first: ReadonlyArray<WorkflowValidationDiagnostic>,
+  second: ReadonlyArray<WorkflowValidationDiagnostic>,
+): WorkflowValidationDiagnostic[] {
+  return dedupeWorkflowDiagnostics([...first, ...second]);
+}
+
+function dedupeWorkflowDiagnostics(
+  diagnostics: ReadonlyArray<WorkflowValidationDiagnostic>,
+): WorkflowValidationDiagnostic[] {
+  const nextDiagnostics: WorkflowValidationDiagnostic[] = [];
+  const seen = new Set<string>();
+  for (const diagnostic of diagnostics) {
+    const key = [
+      diagnostic.code,
+      diagnostic.severity ?? "error",
+      diagnostic.node_id ?? "",
+      diagnostic.node_type ?? "",
+      diagnostic.field_path ?? "",
+      diagnostic.reference ?? "",
+      diagnostic.message,
+    ].join("\u0000");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    nextDiagnostics.push(diagnostic);
+  }
+  return nextDiagnostics;
 }
 
 function scheduleWorkflowValidation(callback: () => void): () => void {
@@ -3339,6 +3357,7 @@ export default function App() {
   const [runSearchError, setRunSearchError] = useState<string | null>(null);
   const [isCompactCanvasTouchMode, setIsCompactCanvasTouchMode] = useState(isCompactCanvasTouchViewport);
   const compactCanvasTouchModeRef = useRef<CompactCanvasTouchMode>("idle");
+  const [backendValidationDiagnostics, setBackendValidationDiagnostics] = useState<WorkflowValidationDiagnostic[]>([]);
   const [validationDiagnostics, setValidationDiagnostics] = useState<WorkflowValidationDiagnostic[]>([]);
   const [flowNodes, setFlowNodes] = useState<Node<GraphNodeData>[]>([]);
   const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
@@ -3849,7 +3868,15 @@ export default function App() {
         );
         validationCacheRef.current.clear();
         setRunSnapshot(runSnapshotPayload);
-        setValidationDiagnostics([]);
+        const visibleGraphsForDocument = normalizedGraphs.filter((graph) =>
+          graphVisibleInDirectory(graph, initialGraphDirectoryPathRef.current),
+        );
+        const nextBackendDiagnostics = workflowDiagnosticsForGraphs(
+          payload.validation_diagnostics ?? [],
+          visibleGraphsForDocument,
+        );
+        setBackendValidationDiagnostics(payload.validation_diagnostics ?? []);
+        setValidationDiagnostics(nextBackendDiagnostics);
         setDocument(savedNormalizedDocument);
         setSavedDocument(savedNormalizedDocument);
         setError(null);
@@ -3904,6 +3931,10 @@ export default function App() {
     const outputSchemas = document.output_schemas ?? EMPTY_OUTPUT_SCHEMAS;
     const cache = validationCacheRef.current;
     const pendingGraphs: Array<{ graph: WorkflowGraphMetadata; signature: string }> = [];
+    const visibleBackendDiagnostics = workflowDiagnosticsForGraphs(
+      backendValidationDiagnostics,
+      visibleGraphsForValidation,
+    );
     for (const graph of visibleGraphsForValidation) {
       const signature = workflowGraphValidationSignature(document.config, graph, outputSchemas);
       const cached = cache.get(graph.id);
@@ -3912,7 +3943,8 @@ export default function App() {
       pendingGraphs.push({ graph, signature });
     }
 
-    setValidationDiagnostics(cachedVisibleValidationDiagnostics(cache, visibleGraphsForValidation));
+    const cachedDiagnostics = cachedVisibleValidationDiagnostics(cache, visibleGraphsForValidation);
+    setValidationDiagnostics(mergeWorkflowDiagnostics(visibleBackendDiagnostics, cachedDiagnostics));
     if (pendingGraphs.length === 0) return;
 
     let cancelled = false;
@@ -3933,7 +3965,12 @@ export default function App() {
         signature: next.signature,
         diagnostics,
       });
-      setValidationDiagnostics(cachedVisibleValidationDiagnostics(cache, visibleGraphsForValidation));
+      setValidationDiagnostics(
+        mergeWorkflowDiagnostics(
+          visibleBackendDiagnostics,
+          cachedVisibleValidationDiagnostics(cache, visibleGraphsForValidation),
+        ),
+      );
       if (pendingGraphs.length > 0) {
         cancelScheduled = scheduleWorkflowValidation(runNext);
       }
@@ -3943,7 +3980,7 @@ export default function App() {
       cancelled = true;
       cancelScheduled();
     };
-  }, [document?.config, document?.graphs, document?.output_schemas, selectedDirectoryPath, isTutorialMode]);
+  }, [backendValidationDiagnostics, document?.config, document?.graphs, document?.output_schemas, selectedDirectoryPath, isTutorialMode]);
 
   useEffect(() => {
     const stream = new EventSource("/api/workflow-editor/runs/stream");
@@ -4868,11 +4905,13 @@ export default function App() {
     const visibleGraphsForDocument = (normalizedDocument.graphs ?? []).filter((graph) =>
       graphVisibleInDirectory(graph, selectedDirectoryPath),
     );
+    const nextBackendDiagnostics = diagnosticsOverride ?? [];
     const nextDiagnostics = diagnosticsOverride
       ? workflowDiagnosticsForGraphs(diagnosticsOverride, visibleGraphsForDocument)
       : [];
     const nextDirtyNodeIds = dirtyWorkflowNodeIds(normalizedDocument, savedDocument, nodeEditOrigins);
     setDocument(normalizedDocument);
+    setBackendValidationDiagnostics(nextBackendDiagnostics);
     setValidationDiagnostics(nextDiagnostics);
     setSelectedNodeIds(nextSelectedNodeIds);
     setSelectedNodeId((currentSelectedNodeId) => {

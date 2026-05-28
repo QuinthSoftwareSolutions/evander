@@ -5,6 +5,13 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-28 - Container Session Idempotency
+
+- Skipped container-worker file rewrites when the destination content and mode
+  already match the requested file.
+- Avoided starting a short-lived Git configuration container when
+  `effect:agent:clone-repo` finds the repo already prepared for the session.
+
 ## 2026-05-28 - Agent Log View Corrections
 
 - Made container-worker execution logs include only execution-scoped Codex

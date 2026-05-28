@@ -8,6 +8,7 @@ import re
 import shlex
 import shutil
 import sqlite3
+import stat
 import subprocess
 import uuid
 from collections.abc import Sequence
@@ -493,11 +494,30 @@ class WorkerDaemon:
                 container_path=container_path,
             )
             if entry.content_base64 is not None:
-                destination.write_bytes(base64.b64decode(entry.content_base64))
+                desired_content = base64.b64decode(entry.content_base64)
+            else:
+                desired_content = (entry.content or "").encode("utf-8")
+            desired_mode = (
+                int(self._normalize_mode(entry.mode), 8) if entry.mode is not None else None
+            )
+            if destination.is_file() and entry.overwrite:
+                content_matches = destination.read_bytes() == desired_content
+                mode_matches = (
+                    desired_mode is None
+                    or stat.S_IMODE(destination.stat().st_mode) == desired_mode
+                )
+                if content_matches and mode_matches:
+                    continue
+                if content_matches and desired_mode is not None:
+                    destination.chmod(desired_mode)
+                    copied_paths.append(container_path)
+                    continue
+            if entry.content_base64 is not None:
+                destination.write_bytes(desired_content)
             else:
                 destination.write_text(entry.content or "", encoding="utf-8")
-            if entry.mode is not None:
-                destination.chmod(int(self._normalize_mode(entry.mode), 8))
+            if desired_mode is not None:
+                destination.chmod(desired_mode)
             copied_paths.append(container_path)
         return WorkerFileWriteRecord(
             session_id=session_id,
