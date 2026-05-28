@@ -166,7 +166,7 @@ Type-specific keys:
 | `trigger:teams:new-message` | `targets` | `user_ids` |
 | `trigger:teams:direct-message` | `sender_user_ids` | `message_filter` |
 | `trigger:email:new-message` | `provider`, `account_identifier`, `mailbox_ids` | `auth_secret_refs` |
-| `trigger:pull-request:new-feedback` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor` |
+| `trigger:pull-request:new-feedback` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor`, `agent_author_names`, `agent_mention_names` |
 | `trigger:pull-request:completed` | `provider` | `repo`, `directory_path`, `organization_url`, `project`, `status`, `creator_id`, `reviewer_id`, `source_ref_name`, `target_ref_name`, `source_repository_id`, `repository_id`, `min_time`, `max_time`, `query_time_range_type`, `include_links`, `max_comment_length`, `tags`, `top`, `skip`, `cursor` |
 | `trigger:ci:run:completed` | `provider` | `repo` (required when `provider=github_actions`), `workflow`, `organization_url`, `project`, `pipeline_id`, `pipeline_name`, `branches`, `conclusions`, `top`, `include_existing` |
 | `trigger:review:new-request` | — | — |
@@ -865,6 +865,11 @@ Mixed graph:
 }
 ```
 
+MCP-created schedules always use `resume_mode=same_context`; on container workers that means the
+prompt command resumes the last Codex context when no explicit thread id is available. Admin
+created or CLI-created recurring schedules can set `resume_mode=new_context` to start a fresh
+container Codex exec session.
+
 - Recurring cron schedule (host CLI):
 
 ```bash
@@ -876,6 +881,10 @@ agent-sandbox-cli wake-schedules create \
   --mode new_context \
   --source admin_cli
 ```
+
+Busy container-worker wake requests are still treated as handled for one-shot consumption and cron
+advancement after they queue a prompt, so the same schedule rules apply whether the session is
+resumed immediately or deferred by the prompt queue.
 
 ## Root issue setup and git automation config
 

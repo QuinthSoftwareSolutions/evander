@@ -1311,6 +1311,9 @@ live provider APIs.
   selected by setting `repo` on the PR trigger; it lists candidate PRs from ADO
   using the trigger criteria, stores trigger-owned cursors outside
   `pr-map.json`, and emits normalized PR events without session bindings.
+  `trigger:pull-request:new-feedback` can set `agent_author_names` and
+  `agent_mention_names` so downstream gates can filter on
+  `feedback.metadata.agent_directed` without running host scripts.
   Keep `pr-map.json` compatibility until a later cleanup removes the older path.
 - Recommended service lifecycle commands:
   - `sudo systemctl start agent-sandbox-discord-wake.service`
@@ -1327,6 +1330,9 @@ live provider APIs.
 - `discord_resume_prompt` remains directory-scoped and is surfaced in the admin GUI under Communications; it is used by the Discord wake worker.
 - `scheduled_wake_prefix_text` lives in the scheduled-wake worker global config and is used as the shared prompt prefix for scheduled wake dispatch.
 - MCP-triggered scheduled resumes are always dispatched with `resume_mode=same_context`.
+- For `container_worker_vm` sessions, that same-context dispatch uses Codex resume-last behavior when a worker prompt does not already carry an explicit thread id.
+- Admin-created recurring wake schedules can still request `resume_mode=new_context`, which starts a fresh Codex exec session on container workers.
+- Busy container wakes queue the prompt for later dispatch and still count as handled for schedule advancement.
 - Recurring cron wake schedules are consumed only after a successful host resume dispatch. Failed, timed-out, or missing-script attempts stay due/retryable and remain visible through wake dispatch history.
 - Wake schedule CRUD is available in the CLI under `wake-schedules`:
   - create one-time wake: `agent-sandbox-cli wake-schedules create --runtime-dir runtime --session-id issue-11-session --resume-at 2026-04-01T10:30:00Z --prompt "Resume pending work."`

@@ -1533,8 +1533,10 @@ def _field(
     )
 
 
-def _pull_request_trigger_fields() -> list[WorkflowEditorFieldDefinition]:
-    return [
+def _pull_request_trigger_fields(
+    *, include_agent_identity_fields: bool = False
+) -> list[WorkflowEditorFieldDefinition]:
+    fields = [
         _field(
             "provider",
             "Provider",
@@ -1581,6 +1583,29 @@ def _pull_request_trigger_fields() -> list[WorkflowEditorFieldDefinition]:
         _field("skip", "Skip", "number"),
         _field("cursor", "Cursor", "string"),
     ]
+    if include_agent_identity_fields:
+        fields.extend(
+            [
+                _field(
+                    "agent_author_names",
+                    "Agent author names",
+                    "string_list",
+                    description=(
+                        "Feedback author display names that should mark a PR feedback event "
+                        "as agent-directed."
+                    ),
+                ),
+                _field(
+                    "agent_mention_names",
+                    "Agent mention names",
+                    "string_list",
+                    description=(
+                        "Mention display names that should mark a PR feedback event as agent-directed."
+                    ),
+                ),
+            ]
+        )
+    return fields
 
 
 _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
@@ -2009,7 +2034,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         kind="trigger",
         type="trigger:pull-request:new-feedback",
         label="PR feedback",
-        fields=_pull_request_trigger_fields(),
+        fields=_pull_request_trigger_fields(include_agent_identity_fields=True),
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="trigger",
@@ -3868,13 +3893,80 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         type="query:session:list",
         label="Session list",
         fields=[
-            _field("directory_path", "Directory path", "string", bindable=True),
-            _field("metadata_equals", "Metadata equals", "json", bindable=True),
-            _field("metadata_exists", "Metadata exists", "json", bindable=True),
-            _field("metadata_prefix", "Metadata prefix", "json", bindable=True),
-            _field("state", "State", "string", bindable=True),
-            _field("active_only", "Active only", "boolean", bindable=True),
-            _field("limit", "Limit", "number", bindable=True),
+            _field(
+                "directory_path",
+                "Directory path",
+                "string",
+                bindable=True,
+                description=(
+                    "Optional directory path such as root or root/team. When set, matches "
+                    "sessions in that directory and its descendants."
+                ),
+            ),
+            _field(
+                "metadata_equals",
+                "Metadata equals",
+                "json",
+                bindable=True,
+                description=(
+                    "Value: JSON object whose keys are metadata names or dot-path selectors "
+                    "and whose values must match exactly."
+                ),
+            ),
+            _field(
+                "metadata_exists",
+                "Metadata exists",
+                "json",
+                bindable=True,
+                description=(
+                    "Value: metadata selector string, selector array, or JSON object. Object "
+                    "values of true require presence; false requires absence."
+                ),
+            ),
+            _field(
+                "metadata_prefix",
+                "Metadata prefix",
+                "json",
+                bindable=True,
+                description=(
+                    "Value: JSON object whose keys are metadata names or dot-path selectors "
+                    "and whose values are required string prefixes. Arrays match when any "
+                    "item starts with the prefix."
+                ),
+            ),
+            _field(
+                "state",
+                "State",
+                "enum",
+                bindable=True,
+                options=[
+                    _field_option("active", "Active"),
+                    _field_option("expired", "Expired"),
+                    _field_option("inactive", "Inactive"),
+                    _field_option("all", "All"),
+                    _field_option("any", "Any"),
+                ],
+                description=(
+                    "Value: active, expired, inactive, all, or any. Empty behaves like all."
+                ),
+            ),
+            _field(
+                "active_only",
+                "Active only",
+                "boolean",
+                bindable=True,
+                description=(
+                    "Value: boolean. Set true to return only sessions whose expires_at is "
+                    "still in the future."
+                ),
+            ),
+            _field(
+                "limit",
+                "Limit",
+                "number",
+                bindable=True,
+                description="Value: positive integer maximum number of matched sessions to return.",
+            ),
         ],
     ),
     WorkflowEditorNodeCatalogEntry(

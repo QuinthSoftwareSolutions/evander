@@ -1212,12 +1212,14 @@ class AgentPromptEffectProvider(EffectProviderBase):
         prompt: str,
         model: str,
         resume_thread_id: str | None,
+        resume_mode: str | None = None,
         mcp_gateway_url: str | None = None,
     ) -> str:
         return container_prompt_command(
             prompt=prompt,
             model=model,
             resume_thread_id=resume_thread_id,
+            resume_mode=resume_mode,
             mcp_gateway_url=mcp_gateway_url,
         )
 

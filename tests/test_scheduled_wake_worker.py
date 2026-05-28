@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.execution import ExecutionBackendKind
+from agent_sandbox.messaging.agent_prompt_queue import AgentPromptQueueStore
 from agent_sandbox.models import (
     SessionManifest,
     ToolName,
@@ -48,6 +51,60 @@ def _register_session(worker, *, session_id: str = "session-a") -> None:
             expires_at=datetime.now(UTC) + timedelta(hours=1),
         ),
     )
+
+
+def _register_container_session(
+    worker,
+    *,
+    session_id: str = "session-a",
+    vm_provider: str | None = "container_worker_vm",
+    vm_provider_id: str | None = "truman",
+    metadata: dict[str, object] | None = None,
+) -> None:
+    worker.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id=session_id,
+            vm_id=None,
+            vm_provider=vm_provider,
+            vm_provider_id=vm_provider_id,
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata=metadata or {},
+        ),
+    )
+
+
+class _ContainerBackendStub:
+    def __init__(self, *, active: bool) -> None:
+        self.active = active
+        self.prepared_specs: list[object] = []
+        self.started_specs: list[object] = []
+        self.repository = SimpleNamespace(list_active_by_session=self.list_active_by_session)
+
+    def list_active_by_session(self, session_id: str, active_statuses: set[str]) -> list[object]:
+        del active_statuses
+        if not self.active:
+            return []
+        return [
+            SimpleNamespace(
+                session_id=session_id,
+                execution_id=f"execution:{session_id}",
+                last_status="running",
+            )
+        ]
+
+    def prepare(self, spec):
+        self.prepared_specs.append(spec)
+        return spec
+
+    def start(self, spec):
+        self.started_specs.append(spec)
+        return SimpleNamespace(execution_id=f"execution:{spec.target_name}")
+
+    def inspect(self, execution_id: str):
+        del execution_id
+        return SimpleNamespace(status="running")
 
 
 def _schedule_one_time_request(worker, *, request_id: str, session_id: str, due_at: datetime):
@@ -222,6 +279,127 @@ def test_scheduled_wake_worker_dispatches_due_request(tmp_path: Path, monkeypatc
     assert refreshed.next_run_at is None
     cooldown_payload = json.loads(worker.worker_config.session_cooldown_path.read_text())
     assert "session-a" in cooldown_payload
+
+
+def test_scheduled_wake_worker_dispatches_due_container_request_without_vm_binding(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(tmp_path)
+    _register_container_session(worker, session_id="session-container")
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_one_time_request(
+        worker, request_id="wake-container", session_id="session-container", due_at=due_at
+    )
+    backend = _ContainerBackendStub(active=False)
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        lambda resolved_config, *, admin_service: backend,
+    )
+
+    result = worker.run_once()
+
+    assert result.requests_due == 1
+    assert result.wakes_dispatched == 1
+    assert len(backend.prepared_specs) == 1
+    assert len(backend.started_specs) == 1
+    spec = backend.started_specs[0]
+    assert spec.backend == ExecutionBackendKind.CONTAINER_WORKER_VM
+    assert spec.session_id == "session-container"
+    assert "codex exec resume --last" in str(spec.command)
+    assert spec.metadata["source"] == "scheduled_once"
+    assert spec.metadata["resume_mode"] == "same_context"
+    assert worker.runtime.wake_store.latest_dispatch_by_request_id()["wake-container"].status == (
+        "dispatched"
+    )
+    refreshed = worker.runtime.wake_store.get_request("wake-container")
+    assert refreshed is not None
+    assert refreshed.enabled is False
+    assert refreshed.next_run_at is None
+    assert not (tmp_path / "runtime" / "queued-agent-prompts.json").exists()
+
+
+def test_scheduled_wake_worker_dispatches_due_container_request_by_metadata_and_advances_cron(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(tmp_path)
+    _register_container_session(
+        worker,
+        session_id="session-container",
+        vm_provider=None,
+        vm_provider_id="metadata-target",
+        metadata={
+            "execution_backend": "container_worker_vm",
+            "target_name": "metadata-target",
+        },
+    )
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_cron_request(
+        worker, request_id="wake-container-cron", session_id="session-container", due_at=due_at
+    )
+    backend = _ContainerBackendStub(active=True)
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.wake_dispatch.build_execution_backend",
+        lambda resolved_config, *, admin_service: backend,
+    )
+
+    result = worker.run_once()
+
+    assert result.requests_due == 1
+    assert result.wakes_dispatched == 1
+    assert backend.prepared_specs == []
+    assert backend.started_specs == []
+    queue_store = AgentPromptQueueStore(tmp_path / "runtime" / "queued-agent-prompts.json")
+    queued = queue_store.get("scheduled-wake:wake-container-cron")
+    assert queued is not None
+    assert queued.target == "session-container"
+    assert queued.vm_name == "metadata-target"
+    assert queued.metadata["resume_mode"] == "same_context"
+    assert queued.metadata["source"] == "scheduled_cron"
+    latest = worker.runtime.wake_store.latest_dispatch_by_request_id()["wake-container-cron"]
+    assert latest.status == "queued"
+    refreshed = worker.runtime.wake_store.get_request("wake-container-cron")
+    assert refreshed is not None
+    assert refreshed.enabled is True
+    assert refreshed.next_run_at is not None
+    assert refreshed.next_run_at > due_at
+    assert refreshed.last_dispatched_at is not None
+
+
+def test_scheduled_wake_worker_leaves_plain_no_vm_session_due(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    worker = _build_worker(tmp_path)
+    worker.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-plain",
+            directory_path="root/team-a",
+            allowed_tools=[ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    due_at = datetime.now(UTC) - timedelta(minutes=1)
+    _schedule_one_time_request(worker, request_id="wake-plain", session_id="session-plain", due_at=due_at)
+
+    monkeypatch.setattr(
+        "agent_sandbox.messaging.scheduled_wake.probe_agent_dispatch_state",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("busy-check should be skipped")),
+    )
+
+    result = worker.run_once()
+
+    assert result.requests_due == 1
+    assert result.wakes_dispatched == 0
+    assert worker.runtime.wake_store.latest_dispatch_by_request_id() == {}
+    refreshed = worker.runtime.wake_store.get_request("wake-plain")
+    assert refreshed is not None
+    assert refreshed.enabled is True
+    assert refreshed.next_run_at == due_at
+    assert refreshed.last_dispatched_at is None
 
 
 def test_scheduled_wake_worker_uses_find_due_requests_directly(

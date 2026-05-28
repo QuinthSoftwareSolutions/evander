@@ -28,6 +28,7 @@ from agent_sandbox.messaging.targets import (
     CommunicationTargetCapability,
     CommunicationTargetDefinition,
 )
+from agent_sandbox.session_backends import session_has_vm_binding, session_is_container_worker_vm
 from agent_sandbox.services import (
     normalize_teams_target,
     parse_teams_target,
@@ -309,7 +310,9 @@ class PolicyEngine:
             )
         if not has_tool_permission:
             raise PolicyError(f"Tool {tool_name.value} is not allowed for session {session_id}")
-        if tool_name == ToolName.SCHEDULE_RESUME and not str(session.vm_id or "").strip():
+        if tool_name == ToolName.SCHEDULE_RESUME and not (
+            session_has_vm_binding(session) or session_is_container_worker_vm(session)
+        ):
             raise PolicyError(f"Tool {tool_name.value} requires a session with a VM binding")
         if tool_name in {
             ToolName.HAS_PENDING_FEEDBACK,

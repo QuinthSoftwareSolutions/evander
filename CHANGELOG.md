@@ -5,6 +5,65 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-28 - Workflow Editor Bindable Selectors
+
+- Kept bindable enum workflow fields, including `query:session:list` State,
+  editable through either a finite literal selector or an upstream binding.
+- Kept `query:session:list` metadata filter bindings reachable from the
+  structured metadata rule editor.
+- Exposed PR-feedback agent identity fields in the workflow editor catalog.
+
+## 2026-05-28 - PR Feedback Agent-Directed Metadata
+
+- Added Azure DevOps PR feedback metadata for prior same-thread authors and ADO
+  mention names, plus optional PR-feedback trigger configuration that annotates
+  whether a comment is directed at an agent.
+
+## 2026-05-28 - Session Metadata Equals Flattening
+
+- Made the workflow-editor `query:session:list` metadata rule editor expand
+  nested `metadata_equals` objects into dot-path Equals rows.
+
+## 2026-05-28 - Existing PR Branch Push Wrapper
+
+- Added a `push_existing_pr_branch.sh` helper that wraps push-only
+  `open_agent_pr.sh` calls with JSON output and non-zero exits for logical PR
+  branch preflight failures.
+- Normalized ref-prefixed base and source branch names before invoking
+  `open_agent_pr.sh`.
+
+## 2026-05-28 - Session Metadata Rule Editor
+
+- Added a structured workflow-editor metadata rule editor for
+  `query:session:list`, replacing separate raw JSON controls for equals,
+  exists, and prefix filters when the existing configuration can be represented
+  as simple rules.
+
+## 2026-05-28 - Session List State Selector
+
+- Changed the workflow-editor `query:session:list` State field from free text to
+  an enum selector for the accepted state values.
+
+## 2026-05-28 - Session List Field Help
+
+- Added workflow-editor tooltips for every `query:session:list` configuration
+  field.
+
+## 2026-05-28 - Scheduled Wake Queue Failure Fix
+
+- Fixed busy container scheduled wakes so queue write failures record a failed
+  dispatch with the original request id instead of crashing the wake worker.
+
+## 2026-05-28 - Scheduled Wake Container Docs
+
+- Documented that scheduled wakes cover both VM-bound `libvirt_vm` sessions and
+  `container_worker_vm` sessions.
+- Noted that MCP-created scheduled resumes stay `resume_mode=same_context`,
+  which uses Codex resume-last behavior for container workers when no explicit
+  thread id is available.
+- Clarified that busy container wakes queue the prompt, still count as handled,
+  and can advance one-shot or cron schedules accordingly.
+
 ## 2026-05-28 - Container Session Idempotency
 
 - Skipped container-worker file rewrites when the destination content and mode

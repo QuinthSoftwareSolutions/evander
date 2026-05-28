@@ -197,6 +197,15 @@ type StringMapDraftRow = {
   value: string;
 };
 
+type SessionListMetadataRuleKind = "equals" | "exists" | "prefix";
+
+type SessionListMetadataRuleDraftRow = {
+  id: string;
+  kind: SessionListMetadataRuleKind;
+  key: string;
+  value: string;
+};
+
 type JsonDisplayMode = "structured" | "raw";
 
 type InspectorDraftSnapshot = {
@@ -290,6 +299,11 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const EMPTY_OUTPUT_SCHEMAS: WorkflowOutputSchemas = {};
 const BINDING_EXACT_RE = /^\$\{\{([A-Za-z0-9][A-Za-z0-9_-]*)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}$/;
 const EFFECT_TARGET_KEYS = ["target", "session_id", "vm_name"] as const;
+const SESSION_LIST_METADATA_FIELD_KEYS = [
+  "metadata_equals",
+  "metadata_exists",
+  "metadata_prefix",
+] as const;
 const COMMUNICATION_EFFECT_NODE_TYPES = new Set([
   "effect:communication:send-message",
   "effect:notification:send",
@@ -2334,6 +2348,174 @@ function formatJson(value: unknown, fallback = "{}"): string {
   return JSON.stringify(value, null, 2);
 }
 
+function isSessionListMetadataFieldKey(
+  key: string,
+): key is (typeof SESSION_LIST_METADATA_FIELD_KEYS)[number] {
+  return SESSION_LIST_METADATA_FIELD_KEYS.includes(
+    key as (typeof SESSION_LIST_METADATA_FIELD_KEYS)[number],
+  );
+}
+
+function createSessionListMetadataRuleDraftRow(
+  kind: SessionListMetadataRuleKind = "equals",
+  key = "",
+  value = "",
+): SessionListMetadataRuleDraftRow {
+  const randomSuffix = Math.random().toString(36).slice(2);
+  return {
+    id: `metadata-rule-${Date.now()}-${randomSuffix}`,
+    kind,
+    key,
+    value,
+  };
+}
+
+function sessionListMetadataEqualsRuleValueText(value: unknown): string {
+  if (typeof value === "string") {
+    try {
+      JSON.parse(value);
+      return JSON.stringify(value);
+    } catch {
+      return value;
+    }
+  }
+  try {
+    const text = JSON.stringify(value);
+    return text === undefined ? String(value ?? "") : text;
+  } catch {
+    return String(value ?? "");
+  }
+}
+
+function sessionListMetadataPrefixRuleValueText(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    const text = JSON.stringify(value);
+    return text === undefined ? String(value ?? "") : text;
+  } catch {
+    return String(value ?? "");
+  }
+}
+
+function sessionListMetadataRuleValue(value: string): unknown {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+function sessionListMetadataExistsFlagIsPresent(value: unknown): boolean {
+  if (value === true) return true;
+  if (typeof value === "string") {
+    return ["true", "1", "yes", "on"].includes(value.trim().toLowerCase());
+  }
+  return false;
+}
+
+function appendSessionListMetadataEqualsRuleRows(
+  rows: SessionListMetadataRuleDraftRow[],
+  selector: string,
+  value: unknown,
+) {
+  if (isRecord(value) && Object.keys(value).length > 0) {
+    for (const [nestedKey, nestedValue] of Object.entries(value)) {
+      const nestedSelector = selector ? `${selector}.${nestedKey}` : nestedKey;
+      appendSessionListMetadataEqualsRuleRows(rows, nestedSelector, nestedValue);
+    }
+    return;
+  }
+  rows.push(createSessionListMetadataRuleDraftRow(
+    "equals",
+    selector,
+    sessionListMetadataEqualsRuleValueText(value),
+  ));
+}
+
+function sessionListMetadataRuleDraftRowsFromValues(values: Record<string, unknown>): {
+  rows: SessionListMetadataRuleDraftRow[];
+  supported: boolean;
+} {
+  const rows: SessionListMetadataRuleDraftRow[] = [];
+  const metadataEquals = values.metadata_equals;
+  const metadataExists = values.metadata_exists;
+  const metadataPrefix = values.metadata_prefix;
+  if (
+    isExactBindingValue(metadataEquals) ||
+    isExactBindingValue(metadataExists) ||
+    isExactBindingValue(metadataPrefix)
+  ) {
+    return { rows, supported: false };
+  }
+  if (metadataEquals !== undefined && metadataEquals !== null && !isRecord(metadataEquals)) {
+    return { rows, supported: false };
+  }
+  if (metadataPrefix !== undefined && metadataPrefix !== null && !isRecord(metadataPrefix)) {
+    return { rows, supported: false };
+  }
+  if (isRecord(metadataEquals)) {
+    for (const [key, value] of Object.entries(metadataEquals)) {
+      appendSessionListMetadataEqualsRuleRows(rows, key, value);
+    }
+  }
+  if (typeof metadataExists === "string") {
+    const key = metadataExists.trim();
+    if (key) rows.push(createSessionListMetadataRuleDraftRow("exists", key));
+  } else if (Array.isArray(metadataExists)) {
+    for (const item of metadataExists) {
+      const key = String(item ?? "").trim();
+      if (key) rows.push(createSessionListMetadataRuleDraftRow("exists", key));
+    }
+  } else if (isRecord(metadataExists)) {
+    for (const [key, flag] of Object.entries(metadataExists)) {
+      if (!sessionListMetadataExistsFlagIsPresent(flag)) {
+        return { rows: [], supported: false };
+      }
+      if (key.trim()) rows.push(createSessionListMetadataRuleDraftRow("exists", key));
+    }
+  } else if (metadataExists !== undefined && metadataExists !== null) {
+    return { rows: [], supported: false };
+  }
+  if (isRecord(metadataPrefix)) {
+    for (const [key, value] of Object.entries(metadataPrefix)) {
+      rows.push(createSessionListMetadataRuleDraftRow(
+        "prefix",
+        key,
+        sessionListMetadataPrefixRuleValueText(value),
+      ));
+    }
+  }
+  return { rows, supported: true };
+}
+
+function sessionListMetadataRuleValues(rows: SessionListMetadataRuleDraftRow[]): {
+  metadata_equals?: Record<string, unknown>;
+  metadata_exists?: string[];
+  metadata_prefix?: Record<string, string>;
+} {
+  const metadataEquals: Record<string, unknown> = {};
+  const metadataExists: string[] = [];
+  const metadataPrefix: Record<string, string> = {};
+  for (const row of rows) {
+    const key = row.key.trim();
+    if (!key) continue;
+    if (row.kind === "equals") {
+      metadataEquals[key] = sessionListMetadataRuleValue(row.value);
+    } else if (row.kind === "exists") {
+      metadataExists.push(key);
+    } else if (row.kind === "prefix") {
+      metadataPrefix[key] = row.value;
+    }
+  }
+  return {
+    ...(Object.keys(metadataEquals).length > 0 ? { metadata_equals: metadataEquals } : {}),
+    ...(metadataExists.length > 0 ? { metadata_exists: metadataExists } : {}),
+    ...(Object.keys(metadataPrefix).length > 0 ? { metadata_prefix: metadataPrefix } : {}),
+  };
+}
+
 function workflowRunDetailLookupQuery(value: string, kind: WorkflowRunDetailLookupKind): URLSearchParams {
   const normalized = value.trim();
   const query = new URLSearchParams();
@@ -3172,6 +3354,20 @@ function fieldValueMode(field: WorkflowEditorFieldDefinition, value: unknown): "
   return "literal";
 }
 
+function enumOptionValue(field: WorkflowEditorFieldDefinition, value: unknown): string {
+  const stringValue = typeof value === "string" ? value : "";
+  if (!stringValue) return "";
+  return field.options.some((option) => option.value === stringValue) ? stringValue : "";
+}
+
+function enumLiteralFallbackValue(field: WorkflowEditorFieldDefinition, value: unknown): string {
+  const currentValue = enumOptionValue(field, value);
+  if (currentValue) return currentValue;
+  const defaultValue = enumOptionValue(field, field.default_value);
+  if (defaultValue) return defaultValue;
+  return field.required ? field.options[0]?.value ?? "" : "";
+}
+
 function parseJsonDraft(text: string, fallback: unknown): unknown {
   const trimmed = text.trim();
   if (!trimmed) return fallback;
@@ -3386,6 +3582,9 @@ export default function App() {
   const [inspectorJsonDisplayModes, setInspectorJsonDisplayModes] = useState<Record<string, JsonDisplayMode>>({});
   const [inspectorStringListDrafts, setInspectorStringListDrafts] = useState<Record<string, string>>({});
   const [inspectorStringMapDrafts, setInspectorStringMapDrafts] = useState<Record<string, StringMapDraftRow[]>>({});
+  const [inspectorSessionListMetadataRules, setInspectorSessionListMetadataRules] = useState<
+    SessionListMetadataRuleDraftRow[]
+  >([]);
   const [inspectorFieldModes, setInspectorFieldModes] = useState<Record<string, "literal" | "bind" | "template">>({});
   const [rawJsonDraft, setRawJsonDraft] = useState("{}");
   const [copiedBindingExpression, setCopiedBindingExpression] = useState<string | null>(null);
@@ -4778,6 +4977,7 @@ export default function App() {
       setInspectorJsonDisplayModes({});
       setInspectorStringListDrafts({});
       setInspectorStringMapDrafts({});
+      setInspectorSessionListMetadataRules([]);
       setInspectorFieldModes({});
       setRawJsonDraft("{}");
       return;
@@ -4795,6 +4995,9 @@ export default function App() {
     const nextJsonDisplayModes: Record<string, JsonDisplayMode> = {};
     const nextStringListDrafts: Record<string, string> = {};
     const nextStringMapDrafts: Record<string, StringMapDraftRow[]> = {};
+    const nextSessionListMetadataRules = nextNode.type === "query:session:list"
+      ? sessionListMetadataRuleDraftRowsFromValues(nextKnownValues).rows
+      : [];
     const nextFieldModes: Record<string, "literal" | "bind" | "template"> = {};
     for (const field of nextCatalogEntry?.fields ?? []) {
       nextFieldModes[field.key] = fieldValueMode(field, nextKnownValues[field.key]);
@@ -4864,6 +5067,7 @@ export default function App() {
     setInspectorJsonDisplayModes(nextJsonDisplayModes);
     setInspectorStringListDrafts(nextStringListDrafts);
     setInspectorStringMapDrafts(nextStringMapDrafts);
+    setInspectorSessionListMetadataRules(nextSessionListMetadataRules);
     setInspectorFieldModes(nextFieldModes);
     setRawJsonDraft(JSON.stringify(extras, null, 2));
     setInspectorDraftError(null);
@@ -6305,6 +6509,32 @@ export default function App() {
     setInspectorFieldModes((current) => ({ ...current, [key]: mode }));
   }
 
+  function updateBindableEnumFieldMode(
+    field: WorkflowEditorFieldDefinition,
+    value: unknown,
+    nextMode: "literal" | "bind" | "template",
+  ) {
+    updateFieldMode(field.key, nextMode);
+    if (nextMode === "bind") {
+      updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
+    } else {
+      updateKnownField(field.key, enumLiteralFallbackValue(field, value));
+    }
+  }
+
+  function updateMetadataFieldMode(
+    field: WorkflowEditorFieldDefinition,
+    value: unknown,
+    nextMode: "literal" | "bind" | "template",
+  ) {
+    updateFieldMode(field.key, nextMode);
+    if (nextMode === "bind") {
+      updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
+    } else if (isExactBindingValue(value)) {
+      updateKnownField(field.key, undefined);
+    }
+  }
+
   async function copyBindingExpression(bindingExpression: string) {
     try {
       if (!navigator.clipboard?.writeText) {
@@ -7322,11 +7552,261 @@ export default function App() {
     stageInspectorDraft({ knownValues: next });
   }
 
+  function updateSessionListMetadataRuleRows(nextRows: SessionListMetadataRuleDraftRow[]) {
+    const metadataValues = sessionListMetadataRuleValues(nextRows);
+    const nextKnownValues = { ...inspectorKnownValues };
+    const nextJsonDrafts = { ...inspectorJsonDrafts };
+    for (const key of SESSION_LIST_METADATA_FIELD_KEYS) {
+      delete nextKnownValues[key];
+      const value = metadataValues[key];
+      nextJsonDrafts[key] = value === undefined ? "" : JSON.stringify(value, null, 2);
+      if (value !== undefined) {
+        nextKnownValues[key] = value;
+      }
+    }
+    setInspectorSessionListMetadataRules(nextRows);
+    setInspectorKnownValues(nextKnownValues);
+    setInspectorJsonDrafts(nextJsonDrafts);
+    setInspectorFieldModes((current) => ({
+      ...current,
+      metadata_equals: "literal",
+      metadata_exists: "literal",
+      metadata_prefix: "literal",
+    }));
+    stageInspectorDraft({
+      knownValues: nextKnownValues,
+      jsonDrafts: nextJsonDrafts,
+    });
+  }
+
+  function mutateSessionListMetadataRuleRows(
+    updater: (rows: SessionListMetadataRuleDraftRow[]) => SessionListMetadataRuleDraftRow[],
+  ) {
+    const derivedRows = sessionListMetadataRuleDraftRowsFromValues(inspectorKnownValues).rows;
+    const currentRows = inspectorSessionListMetadataRules.length > 0
+      ? inspectorSessionListMetadataRules
+      : derivedRows;
+    updateSessionListMetadataRuleRows(updater(currentRows));
+  }
+
+  function renderGenericJsonField(
+    field: WorkflowEditorFieldDefinition,
+    value: unknown,
+    mode: "literal" | "bind" | "template",
+    isDisabled: boolean,
+  ) {
+    return (
+      <div key={field.key} className="inspector-field">
+        <div className="field-toolbar">
+          {renderFieldHeader(field)}
+          {renderModeSelect(field, mode, (nextMode) => {
+            updateFieldMode(field.key, nextMode);
+            if (nextMode === "bind") {
+              updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
+            } else {
+              updateKnownField(field.key, undefined);
+            }
+          }, isDisabled)}
+        </div>
+        {mode === "bind"
+          ? renderBindingSelect(
+            field,
+            selectedNodeBindingOptions,
+            value,
+            (nextValue) => updateKnownField(field.key, nextValue),
+          )
+          : (
+            <textarea
+              value={inspectorJsonDrafts[field.key] ?? ""}
+              rows={field.key === "outputs" ? 5 : 8}
+              onChange={(event) => {
+                const nextText = event.target.value;
+                const next = { ...inspectorJsonDrafts, [field.key]: nextText };
+                setInspectorJsonDrafts(next);
+                stageInspectorDraft({ jsonDrafts: next });
+              }}
+              disabled={isDisabled}
+            />
+          )}
+      </div>
+    );
+  }
+
+  function renderSessionListMetadataRules(isDisabled: boolean) {
+    const metadataFields = SESSION_LIST_METADATA_FIELD_KEYS
+      .map((fieldKey) => selectedCatalogEntry?.fields.find((field) => field.key === fieldKey))
+      .filter((field): field is WorkflowEditorFieldDefinition => Boolean(field));
+    const unsupportedByMode = metadataFields.some((field) => {
+      const value = inspectorKnownValues[field.key];
+      return (inspectorFieldModes[field.key] ?? fieldValueMode(field, value)) !== "literal";
+    });
+    const supportedByValues = sessionListMetadataRuleDraftRowsFromValues(inspectorKnownValues).supported;
+    const structured = !unsupportedByMode && supportedByValues;
+    const headerField: WorkflowEditorFieldDefinition = {
+      key: "metadata_rules",
+      label: "Metadata rules",
+      kind: "json",
+      required: false,
+      bindable: false,
+      read_only: false,
+      multiline: false,
+      description: "Rules that match session metadata with exact values, key presence, or string prefixes.",
+      placeholder: null,
+      json_value_type: "object",
+      default_value: null,
+      options: [],
+      item_fields: [],
+    };
+
+    if (!structured) {
+      return (
+        <div key="metadata_rules" className="inspector-field metadata-rule-editor">
+          <div className="field-toolbar">
+            {renderFieldHeader(headerField)}
+          </div>
+          <div className="metadata-rule-raw-fields">
+            {metadataFields.map((field) => {
+              const value = inspectorKnownValues[field.key];
+              const mode = inspectorFieldModes[field.key] ?? fieldValueMode(field, value);
+              const rawFieldDisabled = field.read_only
+                || (workflowEditLocked && !tutorialAllowsInspectorFieldEdit(field.key));
+              return renderGenericJsonField(field, value, mode, rawFieldDisabled);
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    const derivedRows = sessionListMetadataRuleDraftRowsFromValues(inspectorKnownValues).rows;
+    const metadataRuleRows = inspectorSessionListMetadataRules.length > 0
+      ? inspectorSessionListMetadataRules
+      : derivedRows;
+    return (
+      <div key="metadata_rules" className="inspector-field metadata-rule-editor">
+        <div className="field-toolbar">
+          {renderFieldHeader(headerField)}
+        </div>
+        <div className="metadata-rule-field-modes">
+          {metadataFields.map((field) => {
+            const fieldValue = inspectorKnownValues[field.key];
+            const fieldMode = inspectorFieldModes[field.key] ?? fieldValueMode(field, fieldValue);
+            return (
+              <div key={`${field.key}-mode`} className="metadata-rule-field-mode">
+                {renderFieldHeader(field)}
+                {renderModeSelect(
+                  field,
+                  fieldMode,
+                  (nextMode) => updateMetadataFieldMode(field, fieldValue, nextMode),
+                  isDisabled,
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <div className="metadata-rule-list">
+          {metadataRuleRows.map((row, index) => {
+            const rowClassName = row.kind === "exists"
+              ? "metadata-rule-row metadata-rule-row-exists"
+              : "metadata-rule-row";
+            return (
+              <div key={row.id} className={rowClassName}>
+                <label className="field-inline">
+                  <span>Rule</span>
+                  <select
+                    value={row.kind}
+                    onChange={(event) => {
+                      const nextKind = event.target.value as SessionListMetadataRuleKind;
+                      mutateSessionListMetadataRuleRows((currentRows) =>
+                        currentRows.map((currentRow) =>
+                          currentRow.id === row.id ? { ...currentRow, kind: nextKind } : currentRow,
+                        ),
+                      );
+                    }}
+                    disabled={isDisabled}
+                  >
+                    <option value="equals">Equals</option>
+                    <option value="exists">Exists</option>
+                    <option value="prefix">Prefix</option>
+                  </select>
+                </label>
+                <label className="field-inline">
+                  <span>Metadata key</span>
+                  <input
+                    value={row.key}
+                    placeholder="user.name"
+                    onChange={(event) => {
+                      const nextKey = event.target.value;
+                      mutateSessionListMetadataRuleRows((currentRows) =>
+                        currentRows.map((currentRow) =>
+                          currentRow.id === row.id ? { ...currentRow, key: nextKey } : currentRow,
+                        ),
+                      );
+                    }}
+                    disabled={isDisabled}
+                  />
+                </label>
+                {row.kind !== "exists" ? (
+                  <label className="field-inline">
+                    <span>{row.kind === "prefix" ? "Prefix" : "Exact value"}</span>
+                    <input
+                      value={row.value}
+                      onChange={(event) => {
+                        const nextValue = event.target.value;
+                        mutateSessionListMetadataRuleRows((currentRows) =>
+                          currentRows.map((currentRow) =>
+                            currentRow.id === row.id
+                              ? { ...currentRow, value: nextValue }
+                              : currentRow,
+                          ),
+                        );
+                      }}
+                      disabled={isDisabled}
+                    />
+                  </label>
+                ) : null}
+                <button
+                  type="button"
+                  className="subtle-button metadata-rule-remove"
+                  onClick={() =>
+                    mutateSessionListMetadataRuleRows((currentRows) =>
+                      currentRows.filter((currentRow) => currentRow.id !== row.id),
+                    )
+                  }
+                  disabled={isDisabled}
+                  aria-label={`Remove metadata rule ${index + 1}`}
+                >
+                  Remove
+                </button>
+              </div>
+            );
+          })}
+          <button
+            type="button"
+            className="subtle-button"
+            onClick={() =>
+              mutateSessionListMetadataRuleRows((currentRows) => [
+                ...currentRows,
+                createSessionListMetadataRuleDraftRow(),
+              ])
+            }
+            disabled={isDisabled}
+          >
+            Add metadata rule
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   function renderField(field: WorkflowEditorFieldDefinition) {
     const value = inspectorKnownValues[field.key];
     const mode = inspectorFieldModes[field.key] ?? fieldValueMode(field, value);
     const isDisabled = field.read_only || (workflowEditLocked && !tutorialAllowsInspectorFieldEdit(field.key));
     const selectedNodeType = selectedNode?.type;
+
+    if (selectedNodeType === "query:session:list" && isSessionListMetadataFieldKey(field.key)) {
+      return field.key === "metadata_equals" ? renderSessionListMetadataRules(isDisabled) : null;
+    }
 
     if (field.kind === "string") {
       const communicationState = field.key === "thread_id" && isCommunicationEffectNodeType(selectedNodeType)
@@ -7525,23 +8005,33 @@ export default function App() {
         );
       }
       return (
-        <label key={field.key} className="inspector-field">
+        <div key={field.key} className="inspector-field">
           <div className="field-toolbar">
             {renderFieldHeader(field)}
+            {renderModeSelect(
+              field,
+              mode,
+              (nextMode) => updateBindableEnumFieldMode(field, value, nextMode),
+              isDisabled,
+            )}
           </div>
-          <select
-            value={typeof value === "string" ? value : ""}
-            onChange={(event) => updateKnownField(field.key, event.target.value)}
-            disabled={isDisabled}
-          >
-            <option value="">Select</option>
-            {field.options.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+          {mode === "bind"
+            ? renderBindingSelect(field, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(field.key, nextValue))
+            : (
+              <select
+                value={enumOptionValue(field, value)}
+                onChange={(event) => updateKnownField(field.key, event.target.value || undefined)}
+                disabled={isDisabled}
+              >
+                <option value="">Select</option>
+                {field.options.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            )}
+        </div>
       );
     }
 
@@ -7633,36 +8123,7 @@ export default function App() {
     }
 
     if (field.kind === "json") {
-      return (
-        <div key={field.key} className="inspector-field">
-          <div className="field-toolbar">
-            {renderFieldHeader(field)}
-            {renderModeSelect(field, mode, (nextMode) => {
-              updateFieldMode(field.key, nextMode);
-              if (nextMode === "bind") {
-                updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
-              } else {
-                updateKnownField(field.key, undefined);
-              }
-            }, isDisabled)}
-          </div>
-          {mode === "bind"
-            ? renderBindingSelect(field, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(field.key, nextValue))
-            : (
-              <textarea
-                value={inspectorJsonDrafts[field.key] ?? ""}
-                rows={field.key === "outputs" ? 5 : 8}
-                onChange={(event) => {
-                  const nextText = event.target.value;
-                  const next = { ...inspectorJsonDrafts, [field.key]: nextText };
-                  setInspectorJsonDrafts(next);
-                  stageInspectorDraft({ jsonDrafts: next });
-                }}
-                disabled={isDisabled}
-              />
-            )}
-        </div>
-      );
+      return renderGenericJsonField(field, value, mode, isDisabled);
     }
 
     if (field.kind === "object_list") {

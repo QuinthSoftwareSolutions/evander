@@ -861,7 +861,11 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         for node in catalog_payload["nodes"]
         if node["type"] == "trigger:pull-request:new-feedback"
     )
-    assert [field["key"] for field in pr_feedback_trigger["fields"]] == pr_trigger_field_keys
+    assert [field["key"] for field in pr_feedback_trigger["fields"]] == [
+        *pr_trigger_field_keys,
+        "agent_author_names",
+        "agent_mention_names",
+    ]
     pr_completed_trigger = next(
         node
         for node in catalog_payload["nodes"]
@@ -1106,6 +1110,24 @@ def test_admin_web_exposes_workflow_editor_api(tmp_path: Path) -> None:
         "active_only",
         "limit",
     ]
+    session_list_fields = {field["key"]: field for field in session_list["fields"]}
+    assert all(field["description"] for field in session_list_fields.values())
+    assert "descendants" in session_list_fields["directory_path"]["description"]
+    assert "dot-path selectors" in session_list_fields["metadata_equals"]["description"]
+    assert "presence" in session_list_fields["metadata_exists"]["description"]
+    assert "string prefixes" in session_list_fields["metadata_prefix"]["description"]
+    assert session_list_fields["state"]["kind"] == "enum"
+    assert session_list_fields["state"]["bindable"] is True
+    assert [option["value"] for option in session_list_fields["state"]["options"]] == [
+        "active",
+        "expired",
+        "inactive",
+        "all",
+        "any",
+    ]
+    assert "active, expired, inactive, all, or any" in session_list_fields["state"]["description"]
+    assert "expires_at" in session_list_fields["active_only"]["description"]
+    assert "positive integer" in session_list_fields["limit"]["description"]
     pr_feedback = next(
         node for node in catalog_payload["nodes"] if node["type"] == "query:pull-request:feedback"
     )

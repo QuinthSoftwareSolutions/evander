@@ -1856,12 +1856,56 @@ select {
   margin-top: 0.1rem;
 }
 
+.metadata-rule-editor,
+.metadata-rule-list,
+.metadata-rule-field-modes,
+.metadata-rule-raw-fields {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.metadata-rule-field-modes {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.metadata-rule-field-mode {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.metadata-rule-row {
+  display: grid;
+  grid-template-columns: minmax(6rem, 0.7fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.55rem;
+  padding: 0.7rem;
+  border: 1px solid rgba(91, 67, 37, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 248, 236, 0.48);
+}
+
+.metadata-rule-row-exists {
+  grid-template-columns: minmax(6rem, 0.7fr) minmax(0, 1fr) auto;
+}
+
+.metadata-rule-row .field-inline {
+  margin-bottom: 0;
+}
+
+.metadata-rule-remove {
+  align-self: end;
+}
+
 @media (max-width: 720px) {
-  .string-map-row {
+  .string-map-row,
+  .metadata-rule-field-modes,
+  .metadata-rule-row,
+  .metadata-rule-row-exists {
     grid-template-columns: 1fr;
   }
 
-  .string-map-remove {
+  .string-map-remove,
+  .metadata-rule-remove {
     justify-self: start;
   }
 }
@@ -7476,6 +7520,7 @@ select {
 :root[data-theme="dark"] .option-checkbox-section,
 :root[data-theme="dark"] .option-checkbox-list,
 :root[data-theme="dark"] .string-map-row,
+:root[data-theme="dark"] .metadata-rule-row,
 :root[data-theme="dark"] .object-list-item,
 :root[data-theme="dark"] .runtime-run-card,
 :root[data-theme="dark"] .log-panel {

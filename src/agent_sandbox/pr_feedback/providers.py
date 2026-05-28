@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import html
 import mimetypes
 import re
 from html.parser import HTMLParser
@@ -79,13 +80,123 @@ class _HtmlInlineMediaParser(HTMLParser):
             self._active_anchor_index = None
 
 
+class _AdoMentionParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.mentioned_names: list[str] = []
+        self._capture_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "a":
+            return
+        for name, value in attrs:
+            normalized_name = name.lower()
+            normalized_value = (value or "").lower()
+            if normalized_name == "data-vss-mention" or "mention" in normalized_value:
+                self._capture_depth += 1
+                return
+
+    def handle_data(self, data: str) -> None:
+        if not self._capture_depth:
+            return
+        text = html.unescape(data).strip()
+        if text:
+            self.mentioned_names.append(text)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "a" and self._capture_depth:
+            self._capture_depth -= 1
+
+
+def _unique_non_empty(values: Iterable[object]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        key = re.sub(r"\s+", " ", text).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
+
+
+def _ado_author_field(comment: dict[str, Any], key: str) -> str | None:
+    author = comment.get("author")
+    if not isinstance(author, dict):
+        return None
+    value = author.get(key)
+    text = str(value or "").strip()
+    return text or None
+
+
+def _ado_comment_is_before(
+    candidate: dict[str, Any],
+    current: dict[str, Any],
+    *,
+    candidate_index: int,
+    current_index: int,
+) -> bool:
+    candidate_id = str(candidate.get("id") or "").strip()
+    current_id = str(current.get("id") or "").strip()
+    if candidate_id and current_id:
+        if candidate_id == current_id:
+            return False
+        try:
+            return int(candidate_id) < int(current_id)
+        except ValueError:
+            return candidate_index < current_index
+    return candidate_index < current_index
+
+
+def _extract_ado_mention_names(content: str) -> list[str]:
+    parser = _AdoMentionParser()
+    parser.feed(content or "")
+    return _unique_non_empty(parser.mentioned_names)
+
+
+def _ado_comment_metadata(
+    *,
+    comments: list[dict[str, Any]],
+    current_comment: dict[str, Any],
+    current_index: int,
+    body: str,
+) -> dict[str, Any]:
+    prior_comments = [
+        candidate
+        for candidate_index, candidate in enumerate(comments)
+        if not candidate.get("isDeleted")
+        and _ado_comment_is_before(
+            candidate,
+            current_comment,
+            candidate_index=candidate_index,
+            current_index=current_index,
+        )
+    ]
+    return {
+        "prior_thread_comment_author_names": _unique_non_empty(
+            _ado_author_field(comment, "displayName") for comment in prior_comments
+        ),
+        "prior_thread_comment_author_unique_names": _unique_non_empty(
+            _ado_author_field(comment, "uniqueName") for comment in prior_comments
+        ),
+        "prior_thread_comment_author_ids": _unique_non_empty(
+            _ado_author_field(comment, "id") for comment in prior_comments
+        ),
+        "mentioned_names": _extract_ado_mention_names(body),
+        "thread_comment_count": len(
+            [comment for comment in comments if not comment.get("isDeleted")]
+        ),
+    }
+
+
 def _looks_like_ado_attachment_url(url: str) -> bool:
     parsed = urlparse(url)
     path = parsed.path.lower()
     return "/_apis/wit/attachments/" in path or (
-        "/_apis/git/repositories/" in path
-        and "/pullrequests/" in path
-        and "/attachments/" in path
+        "/_apis/git/repositories/" in path and "/pullrequests/" in path and "/attachments/" in path
     )
 
 
@@ -324,7 +435,9 @@ def _extract_ado_inline_media(
                 mime_type=mime_type,
                 metadata=sanitize_inline_media_metadata(
                     {
-                        "source": "html_image" if item.get("tag") == "img" else "ado_attachment_link",
+                        "source": "html_image"
+                        if item.get("tag") == "img"
+                        else "ado_attachment_link",
                         "alt": item.get("alt", ""),
                         "title": item.get("title", ""),
                         "text": item.get("text", ""),
@@ -762,7 +875,10 @@ class AzureDevOpsFeedbackAdapter:
             )
             file_path = thread_context.get("filePath")
             line = _ado_line_from_context(thread_context)
-            for comment in thread.get("comments", []):
+            raw_comments = [
+                comment for comment in thread.get("comments", []) if isinstance(comment, dict)
+            ]
+            for comment_index, comment in enumerate(raw_comments):
                 if comment.get("isDeleted"):
                     continue
                 created_at = _parse_dt(
@@ -803,6 +919,12 @@ class AzureDevOpsFeedbackAdapter:
                         created_at=created_at,
                         in_reply_to=in_reply_to,
                         resolved=resolved,
+                        metadata=_ado_comment_metadata(
+                            comments=raw_comments,
+                            current_comment=comment,
+                            current_index=comment_index,
+                            body=body,
+                        ),
                         inline_media=_extract_ado_inline_media(
                             content=body,
                             provider="azure_devops",
