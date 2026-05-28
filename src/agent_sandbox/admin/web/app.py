@@ -25,6 +25,7 @@ from agent_sandbox.admin.web.shared import (
     json_error,
     request_has_privileged_operations,
 )
+from agent_sandbox.admin.web.rbac import ADMIN_OWNER_PERMISSION, USERS_MANAGE_PERMISSION
 from agent_sandbox.admin.web.reports import report_routes
 from agent_sandbox.admin.web.tool_calls import tool_call_routes
 from agent_sandbox.admin.web.teams_auth import teams_auth_routes
@@ -119,6 +120,11 @@ def create_app(service: AdminService) -> Starlette:
     def privileged_operations_unlocked_for_request(request: Request) -> bool:
         return request_has_privileged_operations(auth=auth, service=service, request=request)
 
+    def _role_for_permissions(permissions: list[str] | tuple[str, ...]) -> str:
+        if ADMIN_OWNER_PERMISSION in permissions or USERS_MANAGE_PERMISSION in permissions:
+            return "admin"
+        return "regular"
+
     async def health(_: Request) -> JSONResponse:
         return JSONResponse({"ok": True})
 
@@ -135,6 +141,7 @@ def create_app(service: AdminService) -> Starlette:
             )
         except ValueError as exc:
             return json_error(str(exc), status_code=401)
+        permissions = list(auth.effective_permissions(auth.config.username))
         response = JSONResponse(
             {
                 "auth_mode": auth.config.auth_mode,
@@ -142,8 +149,10 @@ def create_app(service: AdminService) -> Starlette:
                 "authenticated": True,
                 "username": auth.config.username,
                 "display_name": auth.config.username,
-                "role": "admin",
-                "can_manage_users": True,
+                "role": _role_for_permissions(permissions),
+                "can_manage_users": auth.can_manage_users(auth.config.username),
+                "permissions": permissions,
+                "effective_permissions": permissions,
                 "session_id": None,
                 "available_login_methods": ["password"]
                 if auth.config.auth_mode == "local_password"
@@ -208,6 +217,11 @@ def create_app(service: AdminService) -> Starlette:
         if auth.privileged_for_request(request):
             service.lock_privileged_operations()
         auth.logout(request)
+        permissions = (
+            list(auth.effective_permissions(auth.config.username))
+            if not auth.config.auth_required
+            else []
+        )
         response = JSONResponse(
             {
                 "auth_mode": auth.config.auth_mode,
@@ -215,8 +229,14 @@ def create_app(service: AdminService) -> Starlette:
                 "authenticated": not auth.config.auth_required,
                 "username": auth.config.username if not auth.config.auth_required else None,
                 "display_name": auth.config.username if not auth.config.auth_required else None,
-                "role": "admin" if not auth.config.auth_required else None,
+                "role": (
+                    _role_for_permissions(permissions)
+                    if not auth.config.auth_required
+                    else None
+                ),
                 "can_manage_users": not auth.config.auth_required,
+                "permissions": permissions,
+                "effective_permissions": permissions,
                 "session_id": None,
                 "available_login_methods": (
                     []
@@ -247,13 +267,18 @@ def create_app(service: AdminService) -> Starlette:
             )
         except ValueError:
             selected_directory_path = "root"
+        permissions = list(auth.effective_permissions(session, selected_directory_path))
         return JSONResponse(
             {
                 "selected_directory_path": selected_directory_path,
                 "directory_scoped_config_enabled": service.directory_scoped_config_enabled,
                 "execution_backend": service.effective_execution_backend(selected_directory_path),
-                "role": session.get("role"),
-                "can_manage_users": bool(session.get("can_manage_users")),
+                "role": _role_for_permissions(permissions) if session else None,
+                "can_manage_users": auth.can_manage_users(
+                    session, directory_path=selected_directory_path
+                ),
+                "permissions": permissions,
+                "effective_permissions": permissions,
                 "assistant": {
                     "enabled": bool(assistant_settings.get("enabled")),
                     "show_launcher_when_disabled": bool(

@@ -34,6 +34,13 @@ from agent_sandbox.admin import release_metadata as release_metadata_module
 from agent_sandbox.admin.web.cache import AdminWebJsonResponseCache
 from agent_sandbox.admin.web.app import _workflow_run_events, create_app
 from agent_sandbox.admin.web.shared import AdminWebConfig
+from agent_sandbox.admin.web.rbac import (
+    ADMIN_OWNER_PERMISSION,
+    WORKFLOWS_READ_PERMISSION,
+    WORKFLOWS_WRITE_PERMISSION,
+    WORKFLOW_RUNS_CONTROL_PERMISSION,
+    WORKFLOW_RUNS_READ_PERMISSION,
+)
 from agent_sandbox.admin.web.user_store import AdminWebUserStore
 from agent_sandbox.capacity_health import (
     DiskThresholds,
@@ -5077,6 +5084,8 @@ def test_admin_web_session_endpoint_reports_auth_disabled_by_default(tmp_path: P
     assert response.json()["authenticated"] is True
     assert response.json()["role"] == "admin"
     assert response.json()["can_manage_users"] is True
+    assert ADMIN_OWNER_PERMISSION in response.json()["permissions"]
+    assert response.json()["permissions"] == response.json()["effective_permissions"]
 
 
 def test_admin_web_requires_login_when_password_configured(tmp_path: Path, monkeypatch) -> None:
@@ -5095,6 +5104,8 @@ def test_admin_web_requires_login_when_password_configured(tmp_path: Path, monke
     assert login.json()["authenticated"] is True
     assert login.json()["role"] == "admin"
     assert login.json()["can_manage_users"] is True
+    assert ADMIN_OWNER_PERMISSION in login.json()["permissions"]
+    assert login.json()["permissions"] == login.json()["effective_permissions"]
     assert authorized.status_code == 200
 
 
@@ -5669,6 +5680,8 @@ def test_admin_web_session_payload_reports_local_password_mode(tmp_path: Path, m
     assert response.json()["authenticated"] is False
     assert response.json()["role"] is None
     assert response.json()["can_manage_users"] is False
+    assert response.json()["permissions"] == []
+    assert response.json()["effective_permissions"] == []
     assert response.json()["available_login_methods"] == ["password"]
 
 
@@ -5692,6 +5705,8 @@ def test_admin_web_session_payload_reports_azure_sso_mode(tmp_path: Path, monkey
     assert response.json()["authenticated"] is False
     assert response.json()["role"] is None
     assert response.json()["can_manage_users"] is False
+    assert response.json()["permissions"] == []
+    assert response.json()["effective_permissions"] == []
     assert response.json()["available_login_methods"] == ["azure_sso"]
     assert response.json()["azure_sso_login_url"] == "/api/auth/azure-sso/start"
 
@@ -5745,10 +5760,54 @@ def test_admin_web_azure_login_uses_runtime_user_store_without_env_allowlist(
     assert session.json()["authenticated"] is True
     assert session.json()["role"] == "admin"
     assert session.json()["can_manage_users"] is True
+    assert ADMIN_OWNER_PERMISSION in session.json()["permissions"]
+    assert session.json()["permissions"] == session.json()["effective_permissions"]
     assert session.json()["display_name"] == "Runtime Operator"
     assert admin_state.json()["role"] == "admin"
     assert admin_state.json()["can_manage_users"] is True
+    assert ADMIN_OWNER_PERMISSION in admin_state.json()["permissions"]
+    assert admin_state.json()["permissions"] == admin_state.json()["effective_permissions"]
     assert app.state.admin_user_store.get_user("operator@example.com").last_login_at is not None
+
+
+def test_admin_web_azure_login_uses_effective_permissions_for_regular_user(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = write_config(tmp_path)
+    store = _admin_web_user_store(tmp_path)
+    store.upsert_user(login="admin@example.com", role="admin")
+    store.upsert_user(login="regular@example.com", role="regular")
+    _set_azure_sso_env(monkeypatch, allowed_users=None)
+    app = create_app(AdminService(config_path))
+    client = TestClient(app)
+
+    callback = _complete_azure_login(
+        app, client, login="regular@example.com", display_name="Regular User"
+    )
+    session = client.get("/api/auth/session")
+    admin_state = client.get("/api/admin/state")
+
+    assert callback.status_code == 303
+    assert session.status_code == 200
+    assert session.json()["authenticated"] is True
+    assert session.json()["role"] == "regular"
+    assert session.json()["can_manage_users"] is False
+    assert set(session.json()["permissions"]) == {
+        WORKFLOWS_READ_PERMISSION,
+        WORKFLOWS_WRITE_PERMISSION,
+        WORKFLOW_RUNS_READ_PERMISSION,
+        WORKFLOW_RUNS_CONTROL_PERMISSION,
+    }
+    assert session.json()["permissions"] == session.json()["effective_permissions"]
+    assert admin_state.status_code == 200
+    assert admin_state.json()["role"] == "regular"
+    assert admin_state.json()["can_manage_users"] is False
+    assert set(admin_state.json()["permissions"]) == {
+        WORKFLOWS_READ_PERMISSION,
+        WORKFLOWS_WRITE_PERMISSION,
+        WORKFLOW_RUNS_READ_PERMISSION,
+        WORKFLOW_RUNS_CONTROL_PERMISSION,
+    }
 
 
 def test_admin_web_state_exposes_effective_execution_backend(tmp_path: Path) -> None:
@@ -5986,6 +6045,8 @@ def test_admin_web_azure_callback_accepts_allowlisted_user_and_sets_local_sessio
     assert session.json()["display_name"] == "Operator"
     assert session.json()["role"] == "admin"
     assert session.json()["can_manage_users"] is True
+    assert ADMIN_OWNER_PERMISSION in session.json()["permissions"]
+    assert session.json()["permissions"] == session.json()["effective_permissions"]
 
 
 def test_admin_web_logout_clears_azure_local_session_cookie(tmp_path: Path, monkeypatch) -> None:
@@ -6045,6 +6106,8 @@ def test_admin_web_removed_azure_user_loses_existing_session(tmp_path: Path, mon
     assert session.status_code == 200
     assert session.json()["authenticated"] is False
     assert session.json()["role"] is None
+    assert session.json()["permissions"] == []
+    assert session.json()["effective_permissions"] == []
     assert after_removal.status_code == 401
 
 

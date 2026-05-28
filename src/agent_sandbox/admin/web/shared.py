@@ -8,7 +8,7 @@ import os
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 from urllib.parse import urlencode
 
 import httpx
@@ -21,6 +21,12 @@ from agent_sandbox.admin.web.user_store import (
     AdminWebUserRecord,
     AdminWebUserStore,
     normalize_admin_web_login,
+)
+from agent_sandbox.admin.web.rbac import (
+    ADMIN_OWNER_PERMISSION,
+    GROUPS_MANAGE_PERMISSION,
+    PERMISSION_CATALOG,
+    USERS_MANAGE_PERMISSION,
 )
 
 AdminAuthMode = Literal["none", "local_password", "azure_sso"]
@@ -245,21 +251,25 @@ class AdminWebAuth:
                     "AGENT_SANDBOX_ADMIN_WEB_AZURE_ALLOWED_USERS for first startup "
                     "or populate runtime/admin-web.db"
                 )
-            if not any(user.role == "admin" for user in users):
-                raise ValueError("Azure SSO admin auth requires at least one admin user")
+            if not any(self.user_store.can(user.login, ADMIN_OWNER_PERMISSION) for user in users):
+                raise ValueError("Azure SSO admin auth requires at least one effective owner")
 
     def authentication_payload(self, request: Request) -> dict[str, Any]:
         session = self.read_session(request)
         session_id = str(session.get("sid") or "").strip() if session else None
         default_identity = self.config.username if self.config.auth_mode == "none" else None
+        identity = session.get("login") if session else default_identity
+        permissions = list(self.effective_permissions(identity)) if identity else []
         return {
             "auth_mode": self.config.auth_mode,
             "auth_required": self.config.auth_required,
             "authenticated": session is not None or not self.config.auth_required,
             "username": session.get("login") if session else default_identity,
             "display_name": session.get("name") if session else default_identity,
-            "role": session.get("role") if session else None,
-            "can_manage_users": bool(session.get("can_manage_users")) if session else False,
+            "role": self._role_for_permissions(permissions) if identity else None,
+            "can_manage_users": self._can_manage_users_for_permissions(permissions),
+            "permissions": permissions,
+            "effective_permissions": permissions,
             "session_id": session_id,
             "available_login_methods": (
                 []
@@ -376,26 +386,30 @@ class AdminWebAuth:
         if session is None and self.config.auth_required:
             raise PermissionError("Authentication required")
         if session is None:
-            return {
+            session = {
                 "sub": self.config.username,
                 "sid": "local-dev",
                 "login": self.config.username,
                 "name": self.config.username,
                 "role": "admin",
                 "can_manage_users": True,
+                "permissions": sorted(PERMISSION_CATALOG),
+                "effective_permissions": sorted(PERMISSION_CATALOG),
             }
         return session
 
     def read_session(self, request: Request) -> dict[str, Any] | None:
         if self.config.auth_mode == "none":
-            return {
-                "sub": self.config.username,
-                "sid": "local-dev",
-                "login": self.config.username,
-                "name": self.config.username,
-                "role": "admin",
-                "can_manage_users": True,
-            }
+            return self._annotate_session_permissions(
+                {
+                    "sub": self.config.username,
+                    "sid": "local-dev",
+                    "login": self.config.username,
+                    "name": self.config.username,
+                    "role": "admin",
+                    "can_manage_users": True,
+                }
+            )
         token = request.cookies.get(self.config.cookie_name, "")
         if not token:
             return None
@@ -409,9 +423,108 @@ class AdminWebAuth:
             if user is None:
                 return None
             return self._enrich_azure_session(payload, user)
-        payload["role"] = "admin"
-        payload["can_manage_users"] = True
-        return payload
+        return self._annotate_session_permissions(payload)
+
+    def effective_permissions(
+        self,
+        request_or_login: Request | str | Mapping[str, Any] | None,
+        directory_path: object | None = None,
+    ) -> tuple[str, ...]:
+        login = self._login_from_request_or_login(request_or_login)
+        if login is None:
+            return ()
+        return self._effective_permissions_for_login(login, directory_path=directory_path)
+
+    def can(
+        self,
+        request_or_login: Request | str | Mapping[str, Any] | None,
+        permission: object,
+        directory_path: object | None = None,
+    ) -> bool:
+        normalized_permission = str(permission or "").strip().lower()
+        if not normalized_permission:
+            return False
+        return normalized_permission in self.effective_permissions(
+            request_or_login, directory_path=directory_path
+        )
+
+    def require_permission(
+        self,
+        request_or_login: Request | str | Mapping[str, Any] | None,
+        permission: object,
+        directory_path: object | None = None,
+    ) -> None:
+        if self.can(request_or_login, permission, directory_path=directory_path):
+            return
+        raise PermissionError(f"Permission required: {str(permission or '').strip()}")
+
+    def can_manage_users(
+        self,
+        request_or_login: Request | str | Mapping[str, Any] | None,
+        directory_path: object | None = None,
+    ) -> bool:
+        permissions = self.effective_permissions(request_or_login, directory_path=directory_path)
+        return self._can_manage_users_for_permissions(permissions)
+
+    def _login_from_request_or_login(
+        self, request_or_login: Request | str | Mapping[str, Any] | None
+    ) -> str | None:
+        if isinstance(request_or_login, Request):
+            session = self.read_session(request_or_login)
+            if session is None:
+                return None
+            return normalize_admin_web_login(session.get("login"))
+        if isinstance(request_or_login, Mapping):
+            return normalize_admin_web_login(request_or_login.get("login"))
+        return normalize_admin_web_login(request_or_login)
+
+    def _effective_permissions_for_login(
+        self, login: object | None, directory_path: object | None = None
+    ) -> tuple[str, ...]:
+        normalized_login = normalize_admin_web_login(login)
+        if normalized_login is None:
+            return ()
+        if (
+            self.config.auth_mode in {"none", "local_password"}
+            and normalized_login == self.config.username
+        ):
+            return tuple(sorted(PERMISSION_CATALOG))
+        if self.user_store is None:
+            return ()
+        return tuple(
+            sorted(
+                self.user_store.effective_permissions(
+                    normalized_login, directory_path=directory_path
+                )
+            )
+        )
+
+    def _role_for_permissions(self, permissions: list[str] | tuple[str, ...]) -> str:
+        if ADMIN_OWNER_PERMISSION in permissions or USERS_MANAGE_PERMISSION in permissions:
+            return "admin"
+        return "regular"
+
+    def _can_manage_users_for_permissions(self, permissions: list[str] | tuple[str, ...]) -> bool:
+        return any(
+            permission in permissions
+            for permission in (
+                ADMIN_OWNER_PERMISSION,
+                USERS_MANAGE_PERMISSION,
+                GROUPS_MANAGE_PERMISSION,
+            )
+        )
+
+    def _annotate_session_permissions(
+        self, payload: dict[str, Any], *, directory_path: object | None = None
+    ) -> dict[str, Any]:
+        enriched = dict(payload)
+        login = normalize_admin_web_login(enriched.get("login"))
+        permissions = list(self._effective_permissions_for_login(login, directory_path))
+        enriched["role"] = self._role_for_permissions(permissions)
+        enriched["can_manage_users"] = self._can_manage_users_for_permissions(permissions)
+        enriched["permissions"] = permissions
+        enriched["effective_permissions"] = permissions
+        return enriched
 
     def attach_session_cookie(self, response: Response, token: str) -> None:
         response.set_cookie(
@@ -614,13 +727,7 @@ class AdminWebAuth:
         enriched = dict(payload)
         enriched["login"] = user.login
         enriched["name"] = user.display_name or str(payload.get("name") or user.login)
-        enriched["role"] = user.role
-        enriched["can_manage_users"] = user.role == "admin"
-        return enriched
-
-    def can_manage_users(self, request: Request) -> bool:
-        session = self.read_session(request)
-        return bool(session and session.get("can_manage_users"))
+        return self._annotate_session_permissions(enriched)
 
     def _require_azure_sso_config(self) -> AzureSsoConfig:
         if self.config.auth_mode != "azure_sso" or self.config.azure_sso is None:
