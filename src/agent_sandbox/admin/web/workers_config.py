@@ -86,6 +86,7 @@ _ASSISTANT_SETTINGS_FIELD_LABELS: dict[str, str] = {
 _DIRECTORY_CONFIG_FIELD_LABELS: dict[tuple[str, str], str] = {
     (COMMUNICATION_TARGETS_DOMAIN, "targets"): "Communication targets",
     ("providers", "execution_backend"): "Execution backend",
+    ("policy", "mcp_tool_policies"): "MCP tool approval policy",
     ("policy", "tool_argument_policies"): "Tool argument policy",
 }
 _SOURCE_DOMAIN_CONFIG_FIELD_TOOLTIPS: dict[tuple[str, str], str] = {
@@ -94,6 +95,9 @@ _SOURCE_DOMAIN_CONFIG_FIELD_TOOLTIPS: dict[tuple[str, str], str] = {
     ),
     ("policy", "tool_argument_policies"): (
         "Directory-scoped tool argument guardrails keyed by exact MCP tool name."
+    ),
+    ("policy", "mcp_tool_policies"): (
+        "Directory-scoped MCP tool deny, approval requirement, approval default, and hard-limit rules."
     ),
     (_ASSISTANT_SETTINGS_DOMAIN, "enabled"): (
         "Enables the admin web assistant launcher and chat endpoints."
@@ -216,6 +220,11 @@ _DIRECTORY_CONFIG_TAB_SECTIONS: dict[
             "Communication files",
             _COMMUNICATION_FILE_POLICY_FIELDS,
             ("communication_file_",),
+        ),
+        (
+            "MCP tool policy",
+            (("policy", "mcp_tool_policies"),),
+            (),
         ),
         (
             "Tool argument policy",

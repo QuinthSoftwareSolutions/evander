@@ -9,10 +9,13 @@ from typing import Any
 
 from agent_sandbox.config import GatewayConfig
 from agent_sandbox.models import (
+    ApprovalGrantSettings,
     ApprovalNotificationStatus,
+    ApprovalPayloadMode,
     ApprovalRequest,
     ApprovalStatus,
     DiscordCommandEnvelope,
+    McpToolPolicyRule,
     SessionManifest,
     ToolArgumentConstraint,
     ToolArgumentConstraintOperator,
@@ -218,7 +221,27 @@ def _tool_argument_policy_error(
 def _approval_request_is_reusable(request: ApprovalRequest, now: datetime) -> bool:
     if request.status not in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}:
         return False
+    settings = _approval_settings_for_request(request)
+    if settings is not None and settings.max_uses is not None:
+        if request.used_count >= settings.max_uses:
+            return False
     return request.expires_at > now
+
+
+def _approval_settings_for_request(request: ApprovalRequest) -> ApprovalGrantSettings | None:
+    if request.approval_settings is not None:
+        return request.approval_settings
+    if request.action_type == "mcp_tool_invocation":
+        return ApprovalGrantSettings()
+    return None
+
+
+def _stricter_max_uses(current: int | None, limit: int | None) -> int | None:
+    if limit is None:
+        return current
+    if current is None:
+        return limit
+    return min(current, limit)
 
 
 class PolicyEngine:
@@ -273,6 +296,7 @@ class PolicyEngine:
                 ToolName.ASSISTANT_RUN_SAFE_OPERATION,
             }:
                 self._require_assistant_mutation_guardrails(session, tool_name)
+        self.require_tool_not_denied(session, tool_name)
         has_tool_permission = tool_name in session.allowed_tools
         if tool_name == ToolName.LIST_PENDING_AGENT_PROMPTS and not has_tool_permission:
             has_tool_permission = ToolName.RESPOND_TO_AGENT in session.allowed_tools
@@ -294,6 +318,13 @@ class PolicyEngine:
         }:
             self.require_pr_feedback_streams(session)
         return session
+
+    def require_tool_not_denied(self, session: SessionManifest, tool_name: ToolName) -> None:
+        rule = self.mcp_tool_policy_for_session(session, tool_name)
+        if rule is not None and rule.denied:
+            raise PolicyError(
+                f"Tool {tool_name.value} is denied by directory policy for session {session.session_id}"
+            )
 
     def _lease_allows_tool(
         self,
@@ -321,12 +352,92 @@ class PolicyEngine:
             tool_name=tool_name,
         )
 
+    def consume_tool_approval_lease_use(
+        self,
+        *,
+        session_id: str | None,
+        tool_name: ToolName,
+        workflow_run_id: str | None,
+        mcp_tool_approval_lease_id: str | None,
+    ) -> None:
+        if self.tool_approval_leases is None:
+            return
+        normalized_session_id = str(session_id or "").strip()
+        normalized_workflow_run_id = str(workflow_run_id or "").strip()
+        normalized_lease_id = str(mcp_tool_approval_lease_id or "").strip()
+        if not normalized_session_id or not normalized_workflow_run_id or not normalized_lease_id:
+            return
+        session = self.get_session(normalized_session_id)
+        if tool_name in session.allowed_tools:
+            return
+        self.require_tool_not_denied(session, tool_name)
+        rule = self.mcp_tool_policy_for_session(session, tool_name)
+        if rule is not None and rule.require_approval:
+            raise PolicyError(
+                f"Tool {tool_name.value} requires per-invocation approval in this directory"
+            )
+        if rule is not None and rule.require_exact_payload:
+            raise PolicyError(
+                f"Tool {tool_name.value} requires exact-payload approval in this directory"
+            )
+        consumed = self.tool_approval_leases.consume_tool_use(
+            lease_id=normalized_lease_id,
+            session_id=normalized_session_id,
+            workflow_run_id=normalized_workflow_run_id,
+            tool_name=tool_name,
+        )
+        if not consumed:
+            raise PolicyError(
+                f"Tool {tool_name.value} is not allowed for session {normalized_session_id}: "
+                f"approval lease {normalized_lease_id} is not usable"
+            )
+
     def approval_required_for_tool(self, session: SessionManifest, tool_name: ToolName) -> bool:
         if tool_name in {ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK}:
             return False
+        self.require_tool_not_denied(session, tool_name)
         required_tools = set(session.approval_required_tools or [])
-        required_tools.update(self.effective_policy_for_session(session).approval_required_tools)
+        effective_policy = self.effective_policy_for_session(session)
+        required_tools.update(effective_policy.approval_required_tools)
+        rule = effective_policy.mcp_tool_policies.get(tool_name.value)
+        if rule is not None and rule.require_approval:
+            return True
         return tool_name in required_tools
+
+    def mcp_tool_policy_for_session(
+        self, session: SessionManifest, tool_name: ToolName
+    ) -> McpToolPolicyRule | None:
+        return self.effective_policy_for_session(session).mcp_tool_policies.get(tool_name.value)
+
+    def approval_grant_settings_for_tool(
+        self, session: SessionManifest, tool_name: ToolName
+    ) -> ApprovalGrantSettings:
+        rule = self.mcp_tool_policy_for_session(session, tool_name)
+        settings = ApprovalGrantSettings()
+        if rule is not None and rule.default_settings is not None:
+            settings = rule.default_settings
+        session_settings = session.approval_tool_settings.get(tool_name.value)
+        if session_settings is not None:
+            settings = session_settings
+        return self._apply_approval_grant_limits(settings, rule)
+
+    def _apply_approval_grant_limits(
+        self, settings: ApprovalGrantSettings, rule: McpToolPolicyRule | None
+    ) -> ApprovalGrantSettings:
+        ttl_seconds = settings.ttl_seconds
+        max_uses = settings.max_uses
+        payload_mode = settings.payload_mode
+        if rule is not None:
+            if rule.max_ttl_seconds is not None:
+                ttl_seconds = min(ttl_seconds, rule.max_ttl_seconds)
+            max_uses = _stricter_max_uses(max_uses, rule.max_uses)
+            if rule.require_exact_payload:
+                payload_mode = ApprovalPayloadMode.EXACT
+        return ApprovalGrantSettings(
+            ttl_seconds=ttl_seconds,
+            max_uses=max_uses,
+            payload_mode=payload_mode,
+        )
 
     def tool_argument_policy_for_session(
         self, session: SessionManifest, tool_name: ToolName
@@ -1097,6 +1208,7 @@ class PolicyEngine:
         *,
         tool_name: str | None = None,
         intended_effect: str | None = None,
+        approval_settings: ApprovalGrantSettings | None = None,
     ) -> ApprovalRequest:
         request_id = f"apr_{digest_payload({'session_id': session_id, **payload})[:16]}"
         now = datetime.now(UTC)
@@ -1116,6 +1228,10 @@ class PolicyEngine:
 
         session = self.get_session(session_id)
         effective_policy = self.effective_policy_for_session(session)
+        if tool_name:
+            tool_enum = ToolName._value2member_map_.get(str(tool_name).strip())
+            if tool_enum is not None:
+                self.require_tool_not_denied(session, tool_enum)
         redacted_payload = _redact_nested_payload(effective_policy.redacted_keys, payload)
         notification_target_ids = list(effective_policy.approval_notification_target_ids)
         notification_status = (
@@ -1124,6 +1240,11 @@ class PolicyEngine:
             else ApprovalNotificationStatus.DISABLED
         )
         if existing is None:
+            ttl_seconds = (
+                approval_settings.ttl_seconds
+                if approval_settings is not None
+                else effective_policy.approval_ttl_seconds
+            )
             request = ApprovalRequest(
                 request_id=request_id,
                 session_id=session_id,
@@ -1135,12 +1256,18 @@ class PolicyEngine:
                 vm_id=session.vm_id,
                 tool_name=tool_name or action_type,
                 intended_effect=intended_effect,
+                approval_settings=approval_settings,
                 notification_status=notification_status,
                 notification_target_ids=notification_target_ids,
                 notification_attempted_at=now if notification_target_ids else None,
-                expires_at=now + timedelta(seconds=effective_policy.approval_ttl_seconds),
+                expires_at=now + timedelta(seconds=ttl_seconds),
             )
         else:
+            ttl_seconds = (
+                approval_settings.ttl_seconds
+                if approval_settings is not None
+                else effective_policy.approval_ttl_seconds
+            )
             request = existing
             request.session_id = session_id
             request.action_type = action_type
@@ -1151,6 +1278,9 @@ class PolicyEngine:
             request.vm_id = session.vm_id
             request.tool_name = tool_name or action_type
             request.intended_effect = intended_effect
+            request.approval_settings = approval_settings
+            request.used_count = 0
+            request.last_used_at = None
             request.status = ApprovalStatus.PENDING
             request.notification_status = notification_status
             request.notification_target_ids = notification_target_ids
@@ -1158,7 +1288,7 @@ class PolicyEngine:
             request.notification_error = None
             request.notification_deliveries = []
             request.created_at = now
-            request.expires_at = now + timedelta(seconds=effective_policy.approval_ttl_seconds)
+            request.expires_at = now + timedelta(seconds=ttl_seconds)
             request.approver = None
             request.decision_at = None
             request.decision_reason = None
@@ -1188,12 +1318,90 @@ class PolicyEngine:
             self.approval_store.put(request.request_id, request)
         return request
 
-    def require_approved(self, request_id: str, payload: dict[str, Any]) -> ApprovalRequest:
-        request = self.get_approval(request_id)
-        if request.status != ApprovalStatus.APPROVED:
-            raise PolicyError(f"Approval request {request_id} is not approved")
-        if request.payload_digest != digest_payload(payload):
-            raise PolicyError(f"Approval payload mismatch for request {request_id}")
-        if request.expires_at <= datetime.now(UTC):
-            raise PolicyError(f"Approval request {request_id} has expired")
+    def require_approved(
+        self, request_id: str, payload: dict[str, Any], *, consume: bool = False
+    ) -> ApprovalRequest:
+        now = datetime.now(UTC)
+        error: PolicyError | None = None
+
+        def _validate_and_maybe_consume(items: dict[str, ApprovalRequest]) -> ApprovalRequest:
+            nonlocal error
+            request = items.get(request_id)
+            if request is None:
+                error = PolicyError(f"Unknown approval request: {request_id}")
+                return ApprovalRequest(
+                    request_id=request_id,
+                    session_id="unknown",
+                    action_type="unknown",
+                    payload_digest="",
+                    human_summary="unknown",
+                    expires_at=now,
+                )
+            self._refresh_approval_redaction(request)
+            if request.status != ApprovalStatus.APPROVED:
+                error = PolicyError(f"Approval request {request_id} is not approved")
+                return request
+            settings = _approval_settings_for_request(request)
+            payload_mode = settings.payload_mode if settings is not None else ApprovalPayloadMode.EXACT
+            if payload_mode == ApprovalPayloadMode.EXACT and request.payload_digest != digest_payload(payload):
+                error = PolicyError(f"Approval payload mismatch for request {request_id}")
+                return request
+            if request.expires_at <= now:
+                request.status = ApprovalStatus.EXPIRED
+                items[request_id] = request
+                error = PolicyError(f"Approval request {request_id} has expired")
+                return request
+            if request.action_type == "mcp_tool_invocation":
+                expected_session_id = str(payload.get("session_id") or "").strip()
+                if expected_session_id and request.session_id != expected_session_id:
+                    error = PolicyError(
+                        f"Approval request {request_id} does not belong to session "
+                        f"{expected_session_id}"
+                    )
+                    return request
+                expected_tool_name = str(payload.get("tool_name") or "").strip()
+                actual_tool_name = str(request.tool_name or request.action_type).strip()
+                if expected_tool_name and actual_tool_name != expected_tool_name:
+                    error = PolicyError(
+                        f"Approval request {request_id} is not for tool {expected_tool_name}"
+                    )
+                    return request
+                session = self.session_store.get_session(request.session_id)
+                if session is None:
+                    error = PolicyError(f"Unknown session: {request.session_id}")
+                    return request
+                tool = ToolName._value2member_map_.get(str(request.tool_name or "").strip())
+                if tool is not None:
+                    try:
+                        self.require_tool_not_denied(session, tool)
+                    except PolicyError as exc:
+                        error = exc
+                        return request
+            if consume and settings is not None and settings.max_uses is not None:
+                if request.used_count >= settings.max_uses:
+                    request.status = ApprovalStatus.EXHAUSTED
+                    items[request_id] = request
+                    error = PolicyError(f"Approval request {request_id} has no remaining uses")
+                    return request
+                request.used_count += 1
+                request.last_used_at = now
+                if request.used_count >= settings.max_uses:
+                    request.status = ApprovalStatus.EXHAUSTED
+                items[request_id] = request
+            return request
+
+        request = self.approval_store.update_all(_validate_and_maybe_consume)
+        if error is not None:
+            raise error
         return request
+
+    def _refresh_approval_redaction(self, request: ApprovalRequest) -> None:
+        session = self.session_store.get_session(request.session_id)
+        if session is None:
+            return
+        redacted_payload = _redact_nested_payload(
+            self.effective_policy_for_session(session).redacted_keys,
+            request.payload,
+        )
+        if redacted_payload != request.payload:
+            request.payload = redacted_payload

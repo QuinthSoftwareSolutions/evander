@@ -152,7 +152,7 @@ test("admin shell routes to approvals and renders an empty queue", async (t) => 
     if (pathname === "/api/admin/approvals") {
       assert.equal(url.searchParams.get("statuses"), "pending");
       assert.equal(url.searchParams.get("directory_path"), "root");
-      assert.equal(url.searchParams.get("direct_only"), "true");
+      assert.equal(url.searchParams.get("direct_only"), "false");
       await route.fulfill(jsonResponse(approvalsIndexResponse));
       return;
     }
@@ -194,6 +194,7 @@ test("admin shell routes to approvals and renders an empty queue", async (t) => 
   await page.getByRole("button", { name: "Expand sections" }).click();
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Approvals" }).waitFor({ state: "visible" }));
+  assert.equal(await page.getByLabel("Direct directory only").isChecked(), false);
   await assert.doesNotReject(() => page.getByText("No approval requests matched the current filters.").waitFor({ state: "visible" }));
 
   assert.equal(await page.evaluate(() => window.location.hash), "#approvals");

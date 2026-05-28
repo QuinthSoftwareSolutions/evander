@@ -978,11 +978,21 @@ effect, canonical payload digest, and an audited `pending_approval` tool-call ev
 MCP tool error instructing the agent to retry the exact same payload with the generated
 `approval_request_id` after an operator approves it.
 
+Approval grants default to the restrictive shape: one use, 3600 second TTL, and exact payload
+matching. Operators can override those settings per session when enabling `Require approval` for a
+tool, and directory policy can set tool defaults or hard limits. A hard directory limit wins over
+the session setting.
+
 After approval, the agent retries the same tool call and includes `approval_request_id`. The gateway
 executes only if the request is approved, belongs to the same session, targets the same tool, has not
-expired, and matches the original payload digest. Denied, expired, wrong-tool, wrong-session, or
-changed-payload retries are blocked and audited with the approval request id for review in Admin Web
--> Tool Calls.
+expired, has remaining uses, and satisfies the configured payload matching mode. Denied, expired,
+exhausted, wrong-tool, wrong-session, or changed-payload retries are blocked and audited with the
+approval request id for review in Admin Web -> Tool Calls.
+
+Directory policy can also set `mcp_tool_policies` for known tools. A rule can deny a tool outright,
+force per-invocation approval, provide default grant settings, cap TTL or use count, or force exact
+payload matching. Deny rules are inherited downward and cannot be reopened by a descendant directory
+or by session policy.
 
 ### Tool Argument Policies
 

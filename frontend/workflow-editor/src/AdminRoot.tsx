@@ -14,6 +14,7 @@ import { ConfigurationScreen } from "./features/configuration/ConfigurationScree
 import { IssuesPage } from "./features/issues/IssuesPage";
 import { ApprovalsScreen } from "./features/approvals/ApprovalsScreen";
 import { OperationsDashboard } from "./features/dashboard/OperationsDashboard";
+import { McpToolsPage } from "./features/mcpTools/McpToolsPage";
 import { ReportsPage } from "./features/reports/ReportsPage";
 import { SessionsScreen } from "./features/sessions/SessionsScreen";
 import { ToolCallsPage } from "./features/toolCalls/ToolCallsPage";
@@ -1439,6 +1440,9 @@ export default function AdminRoot() {
   const adminUiState = {
     privilegedUnlocked: privilegeUnlocked,
     authBusy,
+    authMode: session?.auth_mode ?? "none",
+    authRequired: session?.auth_required ?? false,
+    authenticated: session?.authenticated ?? false,
     directoryScopedConfigEnabled: adminState?.directory_scoped_config_enabled ?? false,
     currentUserId,
     currentUserLabel,
@@ -1624,6 +1628,8 @@ export default function AdminRoot() {
               <WorkersScreen />
             ) : renderedTab === "sessions" ? (
               <SessionsScreen />
+            ) : renderedTab === "mcp-tools" ? (
+              <McpToolsPage />
             ) : renderedTab === "approvals" ? (
               <ApprovalsScreen />
             ) : renderedTab === "artifacts" ? (

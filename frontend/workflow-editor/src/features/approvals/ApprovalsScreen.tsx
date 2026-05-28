@@ -5,7 +5,7 @@ import { useAdminUi } from "../admin/AdminContext";
 import { Tooltip } from "../admin/Tooltip";
 import { hashQueryParam } from "../../adminRouting";
 
-type ApprovalStatus = "pending" | "approved" | "denied" | "expired";
+type ApprovalStatus = "pending" | "approved" | "denied" | "expired" | "exhausted";
 
 type ApprovalItem = {
   request_id: string;
@@ -38,6 +38,7 @@ type ApprovalHealth = {
   approved: number;
   denied: number;
   expired: number;
+  exhausted: number;
   oldest_pending_age_seconds?: number | null;
 };
 
@@ -95,11 +96,11 @@ function approvalRequestIdFromHash(): string {
 }
 
 export function ApprovalsScreen() {
-  const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
+  const { privilegedUnlocked, authRequired, currentUserId, currentUserLabel, selectedDirectoryPath } = useAdminUi();
   const initialRequestId = approvalRequestIdFromHash();
   const [filters, setFilters] = useState<Filters>({
     status: initialRequestId ? "" : "pending",
-    directOnly: true,
+    directOnly: false,
     sessionId: "",
     vmId: "",
     toolName: "",
@@ -114,15 +115,18 @@ export function ApprovalsScreen() {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [acting, setActing] = useState<"approve" | "deny" | null>(null);
+  const [acting, setActing] = useState<"approve" | "deny" | "revoke" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const query = useMemo(() => toQuery(filters, selectedDirectoryPath), [filters, selectedDirectoryPath]);
+  const usesAnonymousApprover = !authRequired;
+  const signedInApprover = currentUserLabel.trim() || currentUserId.trim() || "unknown";
 
-  async function loadApprovals() {
+  async function loadApprovals(options: { preserveSelectedId?: string } = {}) {
     const next = await fetchJson<ApprovalIndexResponse>(`/api/admin/approvals${query}`);
     setResponse(next);
     setSelectedId((current) => {
+      if (options.preserveSelectedId && current === options.preserveSelectedId) return current;
       if (current && next.items.some((item) => item.request_id === current)) return current;
       if (current && current === deepLinkedRequestId) return current;
       return next.items[0]?.request_id ?? "";
@@ -180,7 +184,7 @@ export function ApprovalsScreen() {
       .then((payload) => {
         if (cancelled) return;
         setDetail(payload);
-        setReason(payload.request.status === "pending" ? "" : payload.request.decision_reason ?? "");
+        setReason(payload.request.status === "pending" || (payload.request.status === "approved" && payload.expires_in_seconds > 0) ? "" : payload.request.decision_reason ?? "");
         setError(null);
       })
       .catch((reasonValue: unknown) => {
@@ -197,7 +201,8 @@ export function ApprovalsScreen() {
 
   async function submitDecision(approve: boolean) {
     if (!detail) return;
-    if (!approver.trim()) {
+    const resolvedApprover = usesAnonymousApprover ? approver.trim() : signedInApprover;
+    if (!resolvedApprover) {
       setError("Approver is required.");
       return;
     }
@@ -211,12 +216,12 @@ export function ApprovalsScreen() {
       await fetchJson<{ request: ApprovalItem }>(`/api/admin/approvals/${encodeURIComponent(detail.request.request_id)}/decision`, {
         method: "POST",
         body: JSON.stringify({
-          approver: approver.trim(),
+          ...(usesAnonymousApprover ? { approver: resolvedApprover } : {}),
           approve,
           reason: reason.trim(),
         }),
       });
-      await loadApprovals();
+      await loadApprovals({ preserveSelectedId: detail.request.request_id });
       const refreshed = await fetchJson<ApprovalDetailResponse>(`/api/admin/approvals/${encodeURIComponent(detail.request.request_id)}`);
       setDetail(refreshed);
       setReason(refreshed.request.decision_reason ?? reason.trim());
@@ -229,9 +234,42 @@ export function ApprovalsScreen() {
     }
   }
 
+  async function submitRevoke() {
+    if (!detail) return;
+    const resolvedApprover = usesAnonymousApprover ? approver.trim() : signedInApprover;
+    if (!resolvedApprover) {
+      setError("Approver is required.");
+      return;
+    }
+    if (!reason.trim()) {
+      setError("Reason is required.");
+      return;
+    }
+    setActing("revoke");
+    try {
+      await fetchJson<{ request: ApprovalItem }>(`/api/admin/approvals/${encodeURIComponent(detail.request.request_id)}/revoke`, {
+        method: "POST",
+        body: JSON.stringify({
+          ...(usesAnonymousApprover ? { approver: resolvedApprover } : {}),
+          reason: reason.trim(),
+        }),
+      });
+      await loadApprovals({ preserveSelectedId: detail.request.request_id });
+      const refreshed = await fetchJson<ApprovalDetailResponse>(`/api/admin/approvals/${encodeURIComponent(detail.request.request_id)}`);
+      setDetail(refreshed);
+      setReason(refreshed.request.decision_reason ?? reason.trim());
+      setStatusMessage(`Revoked ${detail.request.request_id}.`);
+      setError(null);
+    } catch (reasonValue: unknown) {
+      setError(reasonValue instanceof Error ? reasonValue.message : String(reasonValue));
+    } finally {
+      setActing(null);
+    }
+  }
+
   const items = response?.items ?? [];
-  const health = response?.health;
   const mutationLocked = !privilegedUnlocked;
+  const selectedApprovalIsValid = detail ? detail.request.status === "approved" && detail.expires_in_seconds > 0 : false;
 
   return (
     <div className="feature-page approvals-page">
@@ -245,7 +283,7 @@ export function ApprovalsScreen() {
             Refresh
           </button>
         </div>
-        {mutationLocked ? <div className="callout warning-callout">Unlock privileged operations to approve or deny queued requests.</div> : null}
+        {mutationLocked ? <div className="callout warning-callout">Unlock privileged operations to approve, deny, or revoke queued requests.</div> : null}
         <label className="field-stack">
           <span>Status</span>
           <select value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}>
@@ -292,13 +330,13 @@ export function ApprovalsScreen() {
               <button
                 key={item.request_id}
                 type="button"
-                className={`feature-list-item${selectedId === item.request_id ? " selected" : ""}`}
+                className={`feature-list-item approval-list-item${selectedId === item.request_id ? " selected" : ""}`}
                 onClick={() => {
                   setDeepLinkedRequestId("");
                   setSelectedId(item.request_id);
                 }}
               >
-                <div className="feature-list-title-row">
+                <div className="feature-list-title-row approval-list-item-title-row">
                   <strong>{item.human_summary}</strong>
                   <span className={`status-pill state-${item.status === "approved" ? "running" : item.status === "pending" ? "idle" : "failed"}`}>
                     {item.status}
@@ -320,7 +358,7 @@ export function ApprovalsScreen() {
           <div>
             <h2>{detail ? detail.request.request_id : "Select a request"}</h2>
             <p className="muted-text">
-              Review payload context, record a decision, and keep the explicit approver and reason trail intact.
+              Review payload context, record decisions, and keep the reason trail intact.
             </p>
           </div>
           <div className="feature-toolbar-actions">
@@ -330,23 +368,6 @@ export function ApprovalsScreen() {
 
         {error ? <div className="callout error-callout">{error}</div> : null}
         {statusMessage ? <div className="callout success-callout">{statusMessage}</div> : null}
-
-        <div className="feature-grid">
-          <article className="panel">
-            <div className="panel-header">
-              <h3>Queue health</h3>
-              <span className="panel-meta">Current filter scope</span>
-            </div>
-            <dl className="property-grid">
-              <div><dt>Total</dt><dd>{health?.total ?? 0}</dd></div>
-              <div><dt>Pending</dt><dd>{health?.pending ?? 0}</dd></div>
-              <div><dt>Approved</dt><dd>{health?.approved ?? 0}</dd></div>
-              <div><dt>Denied</dt><dd>{health?.denied ?? 0}</dd></div>
-              <div><dt>Expired</dt><dd>{health?.expired ?? 0}</dd></div>
-              <div><dt>Oldest pending</dt><dd>{formatRelativeSeconds(health?.oldest_pending_age_seconds)}</dd></div>
-            </dl>
-          </article>
-        </div>
 
         <article className="panel">
           <div className="panel-header">
@@ -366,58 +387,75 @@ export function ApprovalsScreen() {
                 <div><dt>Expires in</dt><dd>{formatRelativeSeconds(detail.expires_in_seconds)}</dd></div>
               </dl>
 
-              <article className="panel">
-                <div className="panel-header">
+              <section className="approval-review-summary">
+                <div className="panel-header approval-review-summary-header">
                   <h3>Summary</h3>
                   <span className="panel-meta">{detail.request.directory_path}</span>
                 </div>
-                <div className="panel-body">
-                <p>{detail.request.human_summary}</p>
-                {detail.request.intended_effect ? (
-                  <p className="muted-copy">
-                    Intended effect:{" "}
-                    <Tooltip content={detail.request.intended_effect}>
-                      <span>{detail.request.intended_effect}</span>
-                    </Tooltip>
-                  </p>
-                ) : null}
-                <p className="muted-copy">Directory: <Tooltip content={`Directory scope for this approval request: ${detail.request.directory_path}`}><span>{detail.request.directory_path}</span></Tooltip></p>
-                <p className="muted-copy">Payload digest: <Tooltip content={`Payload digest: ${detail.request.payload_digest}`}><span>{detail.request.payload_digest}</span></Tooltip></p>
+                <div className="approval-review-summary-body">
+                  <p>{detail.request.human_summary}</p>
+                  {detail.request.intended_effect ? (
+                    <p className="muted-copy">
+                      Intended effect:{" "}
+                      <Tooltip content={detail.request.intended_effect}>
+                        <span>{detail.request.intended_effect}</span>
+                      </Tooltip>
+                    </p>
+                  ) : null}
+                  <p className="muted-copy">Directory: <Tooltip content={`Directory scope for this approval request: ${detail.request.directory_path}`}><span>{detail.request.directory_path}</span></Tooltip></p>
+                  <p className="muted-copy">Payload digest: <Tooltip content={`Payload digest: ${detail.request.payload_digest}`}><span>{detail.request.payload_digest}</span></Tooltip></p>
                 </div>
-              </article>
+              </section>
 
               <div className="feature-grid">
                 <article className="panel">
                   <div className="panel-header">
                     <h3>Decision</h3>
-                    <span className="panel-meta">Required approver and reason</span>
+                    <span className="panel-meta">{usesAnonymousApprover ? "Required approver and reason" : "Signed-in user and reason"}</span>
                   </div>
                   <div className="panel-body">
-                <label className="field-stack">
-                  <span>Approver</span>
-                  <input value={approver} onChange={(event) => setApprover(event.target.value)} disabled={mutationLocked} />
-                </label>
+                {usesAnonymousApprover ? (
+                  <label className="field-stack">
+                    <span>Approver</span>
+                    <input value={approver} onChange={(event) => setApprover(event.target.value)} disabled={mutationLocked} />
+                  </label>
+                ) : (
+                  <p className="muted-copy">Decision will be recorded as {signedInApprover}.</p>
+                )}
                 <label className="field-stack">
                   <span>Reason</span>
                   <textarea value={reason} rows={4} onChange={(event) => setReason(event.target.value)} disabled={mutationLocked} />
                 </label>
                 <div className="action-row">
-                  <button
-                    type="button"
-                    className="primary"
-                    disabled={detail.request.status !== "pending" || acting !== null || mutationLocked}
-                    onClick={() => void submitDecision(true)}
-                  >
-                    {acting === "approve" ? "Approving..." : "Approve"}
-                  </button>
-                  <button
-                    type="button"
-                    className="danger"
-                    disabled={detail.request.status !== "pending" || acting !== null || mutationLocked}
-                    onClick={() => void submitDecision(false)}
-                  >
-                    {acting === "deny" ? "Denying..." : "Deny"}
-                  </button>
+                  {detail.request.status === "pending" ? (
+                    <>
+                      <button
+                        type="button"
+                        className="primary"
+                        disabled={acting !== null || mutationLocked}
+                        onClick={() => void submitDecision(true)}
+                      >
+                        {acting === "approve" ? "Approving..." : "Approve"}
+                      </button>
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={acting !== null || mutationLocked}
+                        onClick={() => void submitDecision(false)}
+                      >
+                        {acting === "deny" ? "Denying..." : "Deny"}
+                      </button>
+                    </>
+                  ) : selectedApprovalIsValid ? (
+                    <button
+                      type="button"
+                      className="danger"
+                      disabled={acting !== null || mutationLocked}
+                      onClick={() => void submitRevoke()}
+                    >
+                      {acting === "revoke" ? "Revoking..." : "Revoke"}
+                    </button>
+                  ) : null}
                 </div>
                 {detail.request.status !== "pending" ? (
                   <p className="muted-copy">

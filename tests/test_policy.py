@@ -11,8 +11,11 @@ from agent_sandbox.messaging.targets import (
     communication_targets_db_path,
 )
 from agent_sandbox.models import (
+    ApprovalGrantSettings,
+    ApprovalPayloadMode,
     ApprovalRequest,
     ApprovalStatus,
+    Directory,
     DiscordCommandEnvelope,
     SessionManifest,
     TeamsMessageEnvelope,
@@ -280,6 +283,287 @@ def test_require_tool_reads_and_resets_run_scoped_tool_approval_context(
     assert session.session_id == "s1"
     with pytest.raises(PolicyError, match="not allowed"):
         engine.require_tool("s1", ToolName.RUN_SCRIPT)
+
+
+def test_run_scoped_tool_approval_lease_can_be_limited_by_use_count(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    engine.tool_approval_leases = JsonSessionToolApprovalLeaseRepository.from_runtime_dir(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    lease = engine.tool_approval_leases.upsert_lease(
+        session_id="s1",
+        workflow_run_id="run-1",
+        tools=[ToolName.RUN_SCRIPT],
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
+        approval_settings={
+            ToolName.RUN_SCRIPT.value: ApprovalGrantSettings(max_uses=1, payload_mode="any")
+        },
+    )
+
+    engine.require_tool(
+        "s1",
+        ToolName.RUN_SCRIPT,
+        workflow_run_id="run-1",
+        mcp_tool_approval_lease_id=lease.lease_id,
+    )
+    engine.consume_tool_approval_lease_use(
+        session_id="s1",
+        tool_name=ToolName.RUN_SCRIPT,
+        workflow_run_id="run-1",
+        mcp_tool_approval_lease_id=lease.lease_id,
+    )
+
+    assert engine.tool_approval_leases.get_lease(lease.lease_id).used_counts[
+        ToolName.RUN_SCRIPT.value
+    ] == 1
+    with pytest.raises(PolicyError, match="not usable"):
+        engine.consume_tool_approval_lease_use(
+            session_id="s1",
+            tool_name=ToolName.RUN_SCRIPT,
+            workflow_run_id="run-1",
+            mcp_tool_approval_lease_id=lease.lease_id,
+        )
+
+
+def test_directory_mcp_tool_deny_overrides_session_and_descendant_policy(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        audit_log_path=tmp_path / "audit.jsonl",
+        session_store_path=tmp_path / "sessions.json",
+        approval_store_path=tmp_path / "approvals.json",
+        draft_store_path=tmp_path / "drafts.json",
+        email_store_path=tmp_path / "emails.json",
+        discord_command_store_path=tmp_path / "discord.json",
+    )
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    directory_store.put(Directory(id="child", name="child", parent_id="root"))
+    overlays = DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir)
+    overlays.write(
+        "root",
+        domain="policy",
+        payload={"mcp_tool_policies": {ToolName.RUN_SCRIPT.value: {"denied": True}}},
+    )
+    overlays.write(
+        "root/child",
+        domain="policy",
+        payload={"mcp_tool_policies": {ToolName.RUN_SCRIPT.value: {"denied": False}}},
+    )
+    engine = make_engine_from_config(config)
+    session = SessionManifest(
+        session_id="s1",
+        directory_path="root/child",
+        allowed_tools=[ToolName.RUN_SCRIPT],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.session_store.upsert_session(session)
+
+    resolved = engine.effective_policy_for_session(session)
+    assert resolved.mcp_tool_policies[ToolName.RUN_SCRIPT.value].denied is True
+    with pytest.raises(PolicyError, match="denied by directory policy"):
+        engine.require_tool("s1", ToolName.RUN_SCRIPT)
+
+
+def test_approval_grant_settings_apply_directory_defaults_session_overrides_and_clamps(
+    tmp_path: Path,
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        audit_log_path=tmp_path / "audit.jsonl",
+        session_store_path=tmp_path / "sessions.json",
+        approval_store_path=tmp_path / "approvals.json",
+        draft_store_path=tmp_path / "drafts.json",
+        email_store_path=tmp_path / "emails.json",
+        discord_command_store_path=tmp_path / "discord.json",
+    )
+    write_root_policy_overlay(
+        config,
+        {
+            "mcp_tool_policies": {
+                ToolName.RUN_SCRIPT.value: {
+                    "default_settings": {
+                        "ttl_seconds": 7200,
+                        "max_uses": None,
+                        "payload_mode": "any",
+                    },
+                    "max_ttl_seconds": 300,
+                    "max_uses": 5,
+                    "require_exact_payload": True,
+                }
+            }
+        },
+    )
+    engine = make_engine_from_config(config)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.RUN_SCRIPT],
+        approval_tool_settings={
+            ToolName.RUN_SCRIPT.value: {
+                "ttl_seconds": 600,
+                "max_uses": 10,
+                "payload_mode": "any",
+            }
+        },
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.session_store.upsert_session(session)
+
+    settings = engine.approval_grant_settings_for_tool(session, ToolName.RUN_SCRIPT)
+
+    assert settings.ttl_seconds == 300
+    assert settings.max_uses == 5
+    assert settings.payload_mode == ApprovalPayloadMode.EXACT
+
+
+def test_mcp_tool_approval_can_allow_payload_variance_until_use_count_exhausted(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    session = SessionManifest(
+        session_id="s1",
+        allowed_tools=[ToolName.RUN_SCRIPT],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    engine.session_store.upsert_session(session)
+    approval = engine.create_approval(
+        "s1",
+        "mcp_tool_invocation",
+        {
+            "tool_name": ToolName.RUN_SCRIPT.value,
+            "session_id": "s1",
+            "arguments": {"script_name": "one"},
+        },
+        "Run script",
+        tool_name=ToolName.RUN_SCRIPT.value,
+        approval_settings=ApprovalGrantSettings(
+            ttl_seconds=3600,
+            max_uses=2,
+            payload_mode=ApprovalPayloadMode.ANY,
+        ),
+    )
+    approval.status = ApprovalStatus.APPROVED
+    engine.approval_store.put(approval.request_id, approval)
+
+    engine.require_approved(
+        approval.request_id,
+        {
+            "tool_name": ToolName.RUN_SCRIPT.value,
+            "session_id": "s1",
+            "arguments": {"script_name": "two"},
+        },
+        consume=True,
+    )
+    request = engine.require_approved(
+        approval.request_id,
+        {
+            "tool_name": ToolName.RUN_SCRIPT.value,
+            "session_id": "s1",
+            "arguments": {"script_name": "three"},
+        },
+        consume=True,
+    )
+
+    assert request.used_count == 2
+    assert request.status == ApprovalStatus.EXHAUSTED
+    with pytest.raises(PolicyError, match="not approved"):
+        engine.require_approved(
+            approval.request_id,
+            {
+                "tool_name": ToolName.RUN_SCRIPT.value,
+                "session_id": "s1",
+                "arguments": {"script_name": "four"},
+            },
+            consume=True,
+        )
+
+
+def test_mcp_tool_any_payload_approval_validates_owner_before_consuming(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.RUN_SCRIPT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s2",
+            allowed_tools=[ToolName.RUN_SCRIPT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    approval = engine.create_approval(
+        "s1",
+        "mcp_tool_invocation",
+        {
+            "tool_name": ToolName.RUN_SCRIPT.value,
+            "session_id": "s1",
+            "arguments": {"script_name": "one"},
+        },
+        "Run script",
+        tool_name=ToolName.RUN_SCRIPT.value,
+        approval_settings=ApprovalGrantSettings(
+            ttl_seconds=3600,
+            max_uses=1,
+            payload_mode=ApprovalPayloadMode.ANY,
+        ),
+    )
+    approval.status = ApprovalStatus.APPROVED
+    engine.approval_store.put(approval.request_id, approval)
+
+    with pytest.raises(PolicyError, match="does not belong to session s2"):
+        engine.require_approved(
+            approval.request_id,
+            {
+                "tool_name": ToolName.RUN_SCRIPT.value,
+                "session_id": "s2",
+                "arguments": {"script_name": "two"},
+            },
+            consume=True,
+        )
+    stored = engine.approval_store.get(approval.request_id)
+    assert stored is not None
+    assert stored.status == ApprovalStatus.APPROVED
+    assert stored.used_count == 0
+
+    with pytest.raises(PolicyError, match="is not for tool complete_issue"):
+        engine.require_approved(
+            approval.request_id,
+            {
+                "tool_name": ToolName.COMPLETE_ISSUE.value,
+                "session_id": "s1",
+                "arguments": {"issue_number": "1"},
+            },
+            consume=True,
+        )
+    stored = engine.approval_store.get(approval.request_id)
+    assert stored is not None
+    assert stored.status == ApprovalStatus.APPROVED
+    assert stored.used_count == 0
+
+    consumed = engine.require_approved(
+        approval.request_id,
+        {
+            "tool_name": ToolName.RUN_SCRIPT.value,
+            "session_id": "s1",
+            "arguments": {"script_name": "three"},
+        },
+        consume=True,
+    )
+    assert consumed.used_count == 1
+    assert consumed.status == ApprovalStatus.EXHAUSTED
 
 
 def test_require_tool_schedule_resume_requires_vm_binding(tmp_path: Path) -> None:

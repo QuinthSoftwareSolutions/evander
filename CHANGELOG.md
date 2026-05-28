@@ -5,6 +5,55 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-28 - Approval Queue Review Fixes
+
+- Kept any-payload MCP approval grants from consuming uses until the retry
+  matches the approved session and tool.
+- Made Admin Web approval directory filters include descendant queues when
+  direct-only matching is disabled.
+- Kept per-session approval requirements removable in the Sessions tool editor
+  while preserving inherited admin-required gates.
+
+## 2026-05-28 - Configurable MCP Tool Approvals
+
+- Added configurable MCP invocation approval grants with restrictive defaults:
+  single use, 3600 second TTL, and exact-payload matching.
+- Added directory-scoped MCP tool policies for admin defaults, hard approval
+  limits, forced approval, and inherited tool deny rules.
+- Added Admin Web MCP Tools policy editing and per-session approval settings
+  controls, and made workflow-run MCP tool leases honor directory rules.
+
+## 2026-05-28 - Admin Approval Directory Scope
+
+- Defaulted the Approvals page to include descendant directories instead of
+  limiting the queue to direct directory matches.
+
+## 2026-05-28 - Admin Issues Copy
+
+- Reworded the Admin Web Issues tab summary so it describes issue intake and
+  records instead of presenting VM creation as the page purpose.
+
+## 2026-05-28 - Admin Approval Decisions
+
+- Used the signed-in Admin Web user as the approval decision actor when
+  authentication is enabled, leaving the editable approver field only for
+  anonymous/no-auth operation.
+- Added an Admin Web revoke action for still-valid approved requests.
+
+## 2026-05-28 - Admin Approval List Layout
+
+- Kept approval status badges inside approval list cards when long request
+  summaries wrap in the Admin Web sidebar.
+
+## 2026-05-28 - Approvals Review Panel Layout
+
+- Removed the Admin Web Approvals `Queue health` panel.
+- Promoted approval `Summary` content out of its nested card so it reads as a
+  root section inside the `Review` panel.
+- Added more vertical spacing between Approvals page cards.
+- Fixed decision-history cards so they use dark-mode surfaces and metadata
+  colors.
+
 ## 2026-05-27 - Thread Log Pagination
 
 - Fixed container worker thread-log paging so older transcript lines are fetched

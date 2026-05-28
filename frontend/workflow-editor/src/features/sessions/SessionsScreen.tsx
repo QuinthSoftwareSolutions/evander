@@ -2,9 +2,34 @@ import { useEffect, useMemo, useState } from "react";
 
 import { fetchJson, formatTimestamp } from "../admin/api";
 import { useAdminUi } from "../admin/AdminContext";
-import { DeleteIcon, ExtendIcon, RevokeIcon } from "../admin/PageActionIcons";
+import { DeleteIcon, ExtendIcon, RevokeIcon, SettingsIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
+import { isInheritedApprovalRequiredForTool, type SessionEffectiveToolPolicy } from "./sessionPolicy";
+
+type ApprovalPayloadMode = "exact" | "any";
+
+type ApprovalGrantSettings = {
+  ttl_seconds: number;
+  max_uses: number | null;
+  payload_mode: ApprovalPayloadMode;
+};
+
+type McpToolPolicyRule = {
+  denied?: boolean;
+  require_approval?: boolean;
+  default_settings?: ApprovalGrantSettings | null;
+  max_ttl_seconds?: number | null;
+  max_uses?: number | null;
+  require_exact_payload?: boolean;
+};
+
+type EffectiveToolPolicy = SessionEffectiveToolPolicy & {
+  allowed_tools?: string[];
+  approval_tool_settings?: Record<string, ApprovalGrantSettings>;
+  mcp_tool_policies?: Record<string, McpToolPolicyRule>;
+  tool_argument_policies?: Record<string, unknown>;
+};
 
 type SessionRecord = {
   session_id: string;
@@ -13,6 +38,8 @@ type SessionRecord = {
   directory_path: string;
   allowed_tools: string[];
   approval_required_tools?: string[];
+  approval_tool_settings?: Record<string, ApprovalGrantSettings>;
+  effective_tool_policy?: EffectiveToolPolicy | null;
   allowed_script_names: string[];
   discord_channel_allowlist: string[];
   teams_channel_allowlist: string[];
@@ -101,6 +128,7 @@ type TabKey = "active" | "expired";
 type SessionPolicyDraft = {
   allowedScriptNames: string;
   approvalRequiredTools: string[];
+  approvalToolSettings: Record<string, ApprovalGrantSettings>;
   discordChannelAllowlist: string;
   teamsChannelAllowlist: string;
   communicationFileReceiveEnabled: boolean;
@@ -115,6 +143,11 @@ type SessionPolicyDraft = {
 
 const POLL_INTERVAL_MS = 10000;
 const TOOL_DESCRIPTION_FALLBACK = "Allow the session to invoke this MCP tool when the agent needs it.";
+const DEFAULT_APPROVAL_SETTINGS: ApprovalGrantSettings = {
+  ttl_seconds: 3600,
+  max_uses: 1,
+  payload_mode: "exact",
+};
 
 const TOOL_DESCRIPTIONS: Record<string, string> = {
   create_ado_backlog_item: "Create a new Azure DevOps backlog item on the host using the configured project defaults.",
@@ -213,10 +246,33 @@ function formatList(value: unknown): string {
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).join("\n");
 }
 
+function normalizeApprovalSettings(value: ApprovalGrantSettings | null | undefined): ApprovalGrantSettings {
+  const ttlSeconds = Math.max(1, Math.trunc(Number(value?.ttl_seconds ?? DEFAULT_APPROVAL_SETTINGS.ttl_seconds)));
+  const rawMaxUses = value?.max_uses;
+  return {
+    ttl_seconds: ttlSeconds,
+    max_uses: rawMaxUses == null ? null : Math.max(1, Math.trunc(Number(rawMaxUses))),
+    payload_mode: value?.payload_mode === "any" ? "any" : "exact",
+  };
+}
+
+function normalizeApprovalToolSettings(
+  value: Record<string, ApprovalGrantSettings> | null | undefined,
+): Record<string, ApprovalGrantSettings> {
+  const result: Record<string, ApprovalGrantSettings> = {};
+  for (const [toolName, settings] of Object.entries(value ?? {})) {
+    const normalizedTool = toolName.trim();
+    if (!normalizedTool) continue;
+    result[normalizedTool] = normalizeApprovalSettings(settings);
+  }
+  return result;
+}
+
 function policyDraftFromSession(session: SessionRecord): SessionPolicyDraft {
   return {
     allowedScriptNames: formatList(session.allowed_script_names),
     approvalRequiredTools: sortTools(session.approval_required_tools ?? []),
+    approvalToolSettings: normalizeApprovalToolSettings(session.approval_tool_settings),
     discordChannelAllowlist: formatList(session.discord_channel_allowlist),
     teamsChannelAllowlist: formatList(session.teams_channel_allowlist),
     communicationFileReceiveEnabled: Boolean(session.communication_file_receive_enabled),
@@ -238,6 +294,21 @@ function parseNullableNonNegativeInteger(value: string, label: string): number |
     throw new Error(`${label} must be a non-negative integer or blank.`);
   }
   return parsed;
+}
+
+function parsePositiveInteger(value: string, label: string): number {
+  const trimmed = value.trim();
+  const parsed = Number(trimmed);
+  if (!trimmed || !Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${label} must be a positive whole number.`);
+  }
+  return parsed;
+}
+
+function parseNullablePositiveInteger(value: string, label: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return parsePositiveInteger(trimmed, label);
 }
 
 function parseJsonObject(value: string, label: string): Record<string, unknown> {
@@ -525,6 +596,183 @@ function RenewSessionModal({
   );
 }
 
+function ApprovalSettingsModal({
+  open,
+  toolLabel,
+  toolValue,
+  settings,
+  inheritedSettings,
+  hardRule,
+  busy,
+  locked,
+  onChange,
+  onReset,
+  onClose,
+}: {
+  open: boolean;
+  toolLabel: string;
+  toolValue: string;
+  settings: ApprovalGrantSettings;
+  inheritedSettings: ApprovalGrantSettings;
+  hardRule: McpToolPolicyRule | null;
+  busy: boolean;
+  locked: boolean;
+  onChange: (settings: ApprovalGrantSettings) => void;
+  onReset: () => void;
+  onClose: () => void;
+}) {
+  const [ttlDraft, setTtlDraft] = useState("");
+  const [usesDraft, setUsesDraft] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const normalized = normalizeApprovalSettings(settings);
+    setTtlDraft(String(normalized.ttl_seconds));
+    setUsesDraft(normalized.max_uses == null ? "" : String(normalized.max_uses));
+    setError(null);
+  }, [open, settings.max_uses, settings.payload_mode, settings.ttl_seconds]);
+
+  if (!open) return null;
+
+  const effectiveSettings = normalizeApprovalSettings(settings);
+  const inherited = normalizeApprovalSettings(inheritedSettings);
+
+  function commit(update: Partial<ApprovalGrantSettings>) {
+    const next = normalizeApprovalSettings({ ...effectiveSettings, ...update });
+    const ttlLimit = hardRule?.max_ttl_seconds;
+    const usesLimit = hardRule?.max_uses;
+    const limited = {
+      ...next,
+      ttl_seconds: ttlLimit == null ? next.ttl_seconds : Math.min(next.ttl_seconds, ttlLimit),
+      max_uses:
+        usesLimit == null
+          ? next.max_uses
+          : next.max_uses == null
+            ? usesLimit
+            : Math.min(next.max_uses, usesLimit),
+      payload_mode: hardRule?.require_exact_payload ? "exact" as ApprovalPayloadMode : next.payload_mode,
+    };
+    onChange(limited);
+  }
+
+  function commitTtl() {
+    try {
+      const ttlSeconds = parsePositiveInteger(ttlDraft, "Approval TTL seconds");
+      commit({ ttl_seconds: ttlSeconds });
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  function commitUses() {
+    try {
+      const maxUses = parseNullablePositiveInteger(usesDraft, "Approval uses");
+      commit({ max_uses: maxUses });
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose} role="presentation">
+      <div
+        className="modal-card session-approval-settings-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="session-approval-settings-title"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="modal-header">
+          <div>
+            <div className="eyebrow">MCP approval settings</div>
+            <h2 id="session-approval-settings-title">{toolLabel}</h2>
+            <p>{toolValue}</p>
+          </div>
+          <div className="inline-actions">
+            <button type="button" className="admin-shell-button admin-shell-button-muted" onClick={onClose}>
+              Done
+            </button>
+          </div>
+        </div>
+        <div className="modal-body session-approval-settings-body">
+          {error ? <div className="callout error-callout">{error}</div> : null}
+          <dl className="property-grid">
+            <div><dt>Inherited TTL</dt><dd>{inherited.ttl_seconds}s</dd></div>
+            <div><dt>Inherited uses</dt><dd>{inherited.max_uses == null ? "unlimited" : inherited.max_uses}</dd></div>
+            <div><dt>Inherited payload</dt><dd>{inherited.payload_mode === "any" ? "May vary" : "Exact payload"}</dd></div>
+            <div><dt>Hard TTL</dt><dd>{hardRule?.max_ttl_seconds == null ? "None" : `${hardRule.max_ttl_seconds}s`}</dd></div>
+            <div><dt>Hard uses</dt><dd>{hardRule?.max_uses == null ? "None" : hardRule.max_uses}</dd></div>
+            <div><dt>Payload clamp</dt><dd>{hardRule?.require_exact_payload ? "Exact required" : "None"}</dd></div>
+          </dl>
+          <div className="session-approval-settings-grid">
+            <label className="field-stack">
+              <span>TTL seconds</span>
+              <input
+                autoFocus
+                type="number"
+                min="1"
+                step="1"
+                value={ttlDraft}
+                onChange={(event) => setTtlDraft(event.target.value)}
+                onBlur={commitTtl}
+                disabled={locked || busy}
+              />
+            </label>
+            <label className="field-stack">
+              <span>Uses</span>
+              <input
+                type="number"
+                min="1"
+                step="1"
+                value={usesDraft}
+                onChange={(event) => setUsesDraft(event.target.value)}
+                onBlur={commitUses}
+                placeholder="unlimited"
+                disabled={locked || busy}
+              />
+            </label>
+            <label className="field-stack">
+              <span>Payload</span>
+              <select
+                value={effectiveSettings.payload_mode}
+                onChange={(event) => commit({ payload_mode: event.target.value === "any" ? "any" : "exact" })}
+                disabled={locked || busy || Boolean(hardRule?.require_exact_payload)}
+              >
+                <option value="exact">Exact payload</option>
+                <option value="any">May vary</option>
+              </select>
+            </label>
+          </div>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={effectiveSettings.max_uses == null}
+              onChange={(event) => {
+                const maxUses = event.target.checked ? null : 1;
+                setUsesDraft(maxUses == null ? "" : String(maxUses));
+                commit({ max_uses: maxUses });
+              }}
+              disabled={locked || busy || hardRule?.max_uses != null}
+            />
+            <span>Unlimited uses</span>
+          </label>
+          <div className="feature-toolbar-actions session-approval-settings-actions">
+            <button type="button" onClick={onReset} disabled={locked || busy}>
+              Reset to inherited defaults
+            </button>
+            <button type="button" className="primary" onClick={onClose}>
+              Done
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function SessionsScreen() {
   const { privilegedUnlocked, selectedDirectoryPath } = useAdminUi();
   const [response, setResponse] = useState<SessionListResponse | null>(null);
@@ -545,6 +793,7 @@ export function SessionsScreen() {
   const [policyDraft, setPolicyDraft] = useState<SessionPolicyDraft>({
     allowedScriptNames: "",
     approvalRequiredTools: [],
+    approvalToolSettings: {},
     discordChannelAllowlist: "",
     teamsChannelAllowlist: "",
     communicationFileReceiveEnabled: false,
@@ -572,6 +821,7 @@ export function SessionsScreen() {
   const [toolsStatus, setToolsStatus] = useState<string | null>(null);
   const [policyStatus, setPolicyStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [approvalSettingsTool, setApprovalSettingsTool] = useState("");
 
   useEffect(() => {
     const syncDeepLink = () => {
@@ -750,6 +1000,59 @@ export function SessionsScreen() {
   );
   const mutationLocked = !privilegedUnlocked;
   const groupedToolOptions = useMemo(() => groupTools(catalog?.tool_options ?? []), [catalog?.tool_options]);
+  const approvalSettingsToolOption = useMemo(
+    () => catalog?.tool_options.find((tool) => tool.value === approvalSettingsTool) ?? null,
+    [approvalSettingsTool, catalog?.tool_options],
+  );
+
+  function effectiveRuleForTool(toolValue: string): McpToolPolicyRule | null {
+    return selectedSession?.effective_tool_policy?.mcp_tool_policies?.[toolValue] ?? null;
+  }
+
+  function inheritedApprovalRequiredForTool(toolValue: string): boolean {
+    return isInheritedApprovalRequiredForTool(
+      toolValue,
+      selectedSession?.effective_tool_policy,
+      selectedSession?.approval_required_tools,
+    );
+  }
+
+  function effectiveApprovalSettingsForTool(toolValue: string): ApprovalGrantSettings {
+    return normalizeApprovalSettings(
+      selectedSession?.effective_tool_policy?.approval_tool_settings?.[toolValue] ?? DEFAULT_APPROVAL_SETTINGS,
+    );
+  }
+
+  function approvalSettingsDraftForTool(toolValue: string): ApprovalGrantSettings {
+    return normalizeApprovalSettings(policyDraft.approvalToolSettings[toolValue] ?? effectiveApprovalSettingsForTool(toolValue));
+  }
+
+  function updateApprovalSettingsDraft(toolValue: string, settings: ApprovalGrantSettings) {
+    setPolicyDraft((current) => ({
+      ...current,
+      approvalToolSettings: {
+        ...current.approvalToolSettings,
+        [toolValue]: normalizeApprovalSettings(settings),
+      },
+    }));
+    setPolicyDirty(true);
+    setPolicyStatus(null);
+  }
+
+  function resetApprovalSettingsDraft(toolValue: string) {
+    setPolicyDraft((current) => ({
+      ...current,
+      approvalToolSettings: Object.fromEntries(
+        Object.entries(current.approvalToolSettings).filter(([value]) => value !== toolValue),
+      ),
+    }));
+    setPolicyDirty(true);
+    setPolicyStatus(null);
+  }
+
+  function openApprovalSettings(toolValue: string) {
+    setApprovalSettingsTool(toolValue);
+  }
 
   function resetWakeEditor() {
     setEditingWakeRequestId("");
@@ -876,10 +1179,14 @@ export function SessionsScreen() {
     });
     if (wasEnabled) {
       const hadGate = policyDraft.approvalRequiredTools.includes(toolValue);
-      if (hadGate) {
+      const hadSettings = Boolean(policyDraft.approvalToolSettings[toolValue]);
+      if (hadGate || hadSettings) {
         setPolicyDraft((current) => ({
           ...current,
           approvalRequiredTools: current.approvalRequiredTools.filter((value) => value !== toolValue),
+          approvalToolSettings: Object.fromEntries(
+            Object.entries(current.approvalToolSettings).filter(([value]) => value !== toolValue),
+          ),
         }));
         setPolicyDirty(true);
         setPolicyStatus(null);
@@ -902,9 +1209,15 @@ export function SessionsScreen() {
       const nextTools = isEnabled
         ? current.approvalRequiredTools.filter((value) => value !== toolValue)
         : [...current.approvalRequiredTools, toolValue];
+      const nextSettings = isEnabled
+        ? Object.fromEntries(
+            Object.entries(current.approvalToolSettings).filter(([value]) => value !== toolValue),
+          )
+        : current.approvalToolSettings;
       return {
         ...current,
         approvalRequiredTools: sortTools(nextTools),
+        approvalToolSettings: nextSettings,
       };
     });
     setPolicyDirty(true);
@@ -935,6 +1248,16 @@ export function SessionsScreen() {
     } finally {
       setBusy(null);
     }
+  }
+
+  function policyApprovalToolSettingsPayload(): Record<string, ApprovalGrantSettings> {
+    const enabledTools = new Set(toolsDraft);
+    const result: Record<string, ApprovalGrantSettings> = {};
+    for (const [toolName, settings] of Object.entries(policyDraft.approvalToolSettings)) {
+      if (!enabledTools.has(toolName)) continue;
+      result[toolName] = normalizeApprovalSettings(settings);
+    }
+    return result;
   }
 
   async function saveSessionSettings() {
@@ -994,6 +1317,7 @@ export function SessionsScreen() {
               communication_file_blocked_extensions: parseList(policyDraft.communicationFileBlockedExtensions),
               communication_file_require_approval_for_send: policyDraft.communicationFileRequireApprovalForSend,
               approval_required_tools: sortTools(policyDraft.approvalRequiredTools),
+              approval_tool_settings: policyApprovalToolSettingsPayload(),
               metadata: parseJsonObject(policyDraft.metadataJson, "Metadata"),
             }),
           },
@@ -1292,7 +1616,10 @@ export function SessionsScreen() {
                       {groupedToolOptions.map((group) => {
                         const enabledCount = group.items.filter((tool) => toolsDraft.includes(tool.value)).length;
                         const approvalRequiredCount = group.items.filter(
-                          (tool) => toolsDraft.includes(tool.value) && policyDraft.approvalRequiredTools.includes(tool.value),
+                          (tool) => toolsDraft.includes(tool.value) && (
+                            policyDraft.approvalRequiredTools.includes(tool.value) ||
+                            inheritedApprovalRequiredForTool(tool.value)
+                          ),
                         ).length;
                         return (
                           <details key={group.name} className="compact-disclosure session-tool-group">
@@ -1307,15 +1634,19 @@ export function SessionsScreen() {
                               {group.items.map((tool) => {
                                 const toolDescription = describeTool(tool);
                                 const isEnabled = toolsDraft.includes(tool.value);
-                                const isApprovalRequired = policyDraft.approvalRequiredTools.includes(tool.value);
+                                const toolRule = effectiveRuleForTool(tool.value);
+                                const isDenied = Boolean(toolRule?.denied);
+                                const isInheritedApprovalRequired = inheritedApprovalRequiredForTool(tool.value);
+                                const isLocalApprovalRequired = policyDraft.approvalRequiredTools.includes(tool.value);
+                                const isApprovalRequired = isLocalApprovalRequired || isInheritedApprovalRequired;
                                 return (
-                                  <div key={tool.value} className="session-tool-row">
+                                  <div key={tool.value} className={`session-tool-row${isDenied ? " denied" : ""}`}>
                                     <label className="session-tool-row-main">
                                       <input
                                         type="checkbox"
                                         checked={isEnabled}
                                         onChange={() => toggleTool(tool.value)}
-                                        disabled={mutationLocked}
+                                        disabled={mutationLocked || isDenied}
                                       />
                                       <Tooltip
                                         content={toolDescription}
@@ -1327,6 +1658,12 @@ export function SessionsScreen() {
                                       </Tooltip>
                                     </label>
                                     <div className="session-tool-row-meta">
+                                      {isDenied ? (
+                                        <span className="status-pill state-failed session-tool-badge">Denied by policy</span>
+                                      ) : null}
+                                      {isInheritedApprovalRequired && !isDenied ? (
+                                        <span className="status-pill state-idle session-tool-badge">Admin required</span>
+                                      ) : null}
                                       {isApprovalRequired ? (
                                         <span className="status-pill state-idle session-tool-badge">Approval required</span>
                                       ) : null}
@@ -1335,11 +1672,24 @@ export function SessionsScreen() {
                                           type="checkbox"
                                           checked={isApprovalRequired}
                                           onChange={() => toggleApprovalRequirement(tool.value)}
-                                          disabled={mutationLocked || !isEnabled}
+                                          disabled={mutationLocked || !isEnabled || isDenied || isInheritedApprovalRequired}
                                           aria-label={`Require approval for ${tool.label}`}
                                         />
                                         <span>Require approval</span>
                                       </label>
+                                      {isApprovalRequired && isEnabled && !isDenied ? (
+                                        <Tooltip content={`Configure approval TTL, use count, and payload matching for ${tool.label}.`}>
+                                          <button
+                                            type="button"
+                                            className="session-tool-settings-button"
+                                            onClick={() => openApprovalSettings(tool.value)}
+                                            disabled={mutationLocked}
+                                            aria-label={`Configure approval settings for ${tool.label}`}
+                                          >
+                                            <SettingsIcon />
+                                          </button>
+                                        </Tooltip>
+                                      ) : null}
                                     </div>
                                   </div>
                                 );
@@ -1628,6 +1978,19 @@ export function SessionsScreen() {
               onChange={setRenewExtension}
               onClose={() => setShowRenewModal(false)}
               onSubmit={() => void runSessionAction("renew")}
+            />
+            <ApprovalSettingsModal
+              open={Boolean(approvalSettingsTool && approvalSettingsToolOption)}
+              toolLabel={approvalSettingsToolOption?.label ?? approvalSettingsTool}
+              toolValue={approvalSettingsTool}
+              settings={approvalSettingsDraftForTool(approvalSettingsTool)}
+              inheritedSettings={effectiveApprovalSettingsForTool(approvalSettingsTool)}
+              hardRule={effectiveRuleForTool(approvalSettingsTool)}
+              busy={busy === "settings"}
+              locked={mutationLocked}
+              onChange={(settings) => updateApprovalSettingsDraft(approvalSettingsTool, settings)}
+              onReset={() => resetApprovalSettingsDraft(approvalSettingsTool)}
+              onClose={() => setApprovalSettingsTool("")}
             />
           </div>
         ) : (

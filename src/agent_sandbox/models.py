@@ -366,6 +366,95 @@ class ApprovalStatus(str, Enum):
     APPROVED = "approved"
     DENIED = "denied"
     EXPIRED = "expired"
+    EXHAUSTED = "exhausted"
+
+
+class ApprovalPayloadMode(str, Enum):
+    EXACT = "exact"
+    ANY = "any"
+
+
+class ApprovalGrantSettings(BaseModel):
+    ttl_seconds: int = Field(default=3600, ge=1)
+    max_uses: int | None = Field(default=1, ge=1)
+    payload_mode: ApprovalPayloadMode = ApprovalPayloadMode.EXACT
+
+    @field_validator("max_uses", mode="before")
+    @classmethod
+    def normalize_max_uses(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if not normalized or normalized in {"unlimited", "none", "null"}:
+                return None
+        return value
+
+
+class McpToolPolicyRule(BaseModel):
+    denied: bool = Field(default=False, validation_alias=AliasChoices("denied", "deny"))
+    require_approval: bool = False
+    default_settings: ApprovalGrantSettings | None = None
+    max_ttl_seconds: int | None = Field(default=None, ge=1)
+    max_uses: int | None = Field(default=None, ge=1)
+    require_exact_payload: bool = False
+
+    @field_validator("max_uses", mode="before")
+    @classmethod
+    def normalize_max_uses(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if not normalized or normalized in {"unlimited", "none", "null"}:
+                return None
+        return value
+
+
+def normalize_approval_tool_settings(
+    value: object, *, field_name: str
+) -> dict[str, object]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be a JSON object mapping tool names to settings")
+    normalized: dict[str, object] = {}
+    seen_tools: set[str] = set()
+    for raw_tool_name, raw_settings in value.items():
+        candidate = raw_tool_name.value if isinstance(raw_tool_name, ToolName) else str(raw_tool_name).strip()
+        if not candidate:
+            raise ValueError(f"{field_name} tool names must be non-empty")
+        try:
+            tool_name = ToolName(candidate).value
+        except ValueError as exc:
+            raise ValueError(f"{field_name} contains unknown tool name: {candidate!r}") from exc
+        if tool_name in seen_tools:
+            raise ValueError(f"duplicate {field_name} entry for tool: {tool_name}")
+        seen_tools.add(tool_name)
+        normalized[tool_name] = raw_settings
+    return normalized
+
+
+def normalize_mcp_tool_policies(value: object, *, field_name: str) -> dict[str, object]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be a JSON object mapping tool names to policies")
+    normalized: dict[str, object] = {}
+    seen_tools: set[str] = set()
+    for raw_tool_name, raw_policy in value.items():
+        candidate = raw_tool_name.value if isinstance(raw_tool_name, ToolName) else str(raw_tool_name).strip()
+        if not candidate:
+            raise ValueError(f"{field_name} tool names must be non-empty")
+        try:
+            tool_name = ToolName(candidate).value
+        except ValueError as exc:
+            raise ValueError(f"{field_name} contains unknown tool name: {candidate!r}") from exc
+        if tool_name in seen_tools:
+            raise ValueError(f"duplicate {field_name} entry for tool: {tool_name}")
+        seen_tools.add(tool_name)
+        normalized[tool_name] = raw_policy
+    return normalized
 
 
 class ApprovalNotificationStatus(str, Enum):
@@ -390,6 +479,7 @@ class SessionManifest(BaseModel):
     directory_path: str = "root"
     allowed_tools: list[ToolName]
     approval_required_tools: list[ToolName] = Field(default_factory=list)
+    approval_tool_settings: dict[str, ApprovalGrantSettings] = Field(default_factory=dict)
     allowed_script_names: list[str] = Field(default_factory=list)
     discord_channel_allowlist: list[str] = Field(default_factory=list)
     teams_channel_allowlist: list[str] = Field(default_factory=list)
@@ -443,6 +533,13 @@ class SessionManifest(BaseModel):
     def normalize_approval_required_tools(cls, value: object) -> list[ToolName]:
         return normalize_tool_names(value, field_name="approval_required_tools")
 
+    @field_validator("approval_tool_settings", mode="before")
+    @classmethod
+    def normalize_approval_tool_settings_field(
+        cls, value: object
+    ) -> dict[str, object]:
+        return normalize_approval_tool_settings(value, field_name="approval_tool_settings")
+
     @field_validator("tool_argument_policies", mode="before")
     @classmethod
     def normalize_tool_argument_policies_field(
@@ -494,6 +591,8 @@ class SessionToolApprovalLease(BaseModel):
     workflow_run_id: str = Field(min_length=1)
     tools: list[ToolName]
     effect_execution_id: str | None = None
+    approval_settings: dict[str, ApprovalGrantSettings] = Field(default_factory=dict)
+    used_counts: dict[str, int] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
     expires_at: datetime
     revoked_at: datetime | None = None
@@ -503,6 +602,29 @@ class SessionToolApprovalLease(BaseModel):
     @classmethod
     def normalize_tools(cls, value: object) -> list[ToolName]:
         return normalize_tool_names(value, field_name="tools")
+
+    @field_validator("approval_settings", mode="before")
+    @classmethod
+    def normalize_approval_settings(
+        cls, value: object
+    ) -> dict[str, object]:
+        return normalize_approval_tool_settings(value, field_name="approval_settings")
+
+    @field_validator("used_counts", mode="before")
+    @classmethod
+    def normalize_used_counts(cls, value: object) -> dict[str, int]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("used_counts must be a JSON object")
+        normalized: dict[str, int] = {}
+        for raw_tool_name, raw_count in value.items():
+            tool_name = ToolName(str(raw_tool_name).strip()).value
+            count = int(raw_count)
+            if count < 0:
+                raise ValueError("used_counts values must be non-negative")
+            normalized[tool_name] = count
+        return normalized
 
 
 class HttpTargetMetadata(BaseModel):
@@ -977,6 +1099,9 @@ class ApprovalRequest(BaseModel):
     tool_name: str | None = None
     intended_effect: str | None = None
     status: ApprovalStatus = ApprovalStatus.PENDING
+    approval_settings: ApprovalGrantSettings | None = None
+    used_count: int = Field(default=0, ge=0)
+    last_used_at: datetime | None = None
     notification_status: ApprovalNotificationStatus = ApprovalNotificationStatus.DISABLED
     notification_target_ids: list[str] = Field(default_factory=list)
     notification_attempted_at: datetime | None = None
@@ -1030,6 +1155,7 @@ class ApprovalQueueHealth(BaseModel):
     approved: int = 0
     denied: int = 0
     expired: int = 0
+    exhausted: int = 0
     oldest_pending_age_seconds: int | None = None
 
 

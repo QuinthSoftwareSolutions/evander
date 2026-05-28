@@ -7,6 +7,7 @@ export type AdminTab =
   | "vms"
   | "issues"
   | "sessions"
+  | "mcp-tools"
   | "tool-calls"
   | "configuration"
   | "reports"
@@ -35,8 +36,9 @@ export const TABS: ReadonlyArray<AdminTabDefinition> = [
   { key: "artifacts", label: "Artifacts", shortLabel: "Artifacts", description: "Resolve and download durable agent artifact archives." },
   { key: "skills", label: "Skills", shortLabel: "Skills", description: "Managed Codex skill library." },
   { key: "vms", label: "VMs", shortLabel: "VMs", description: "VM host lifecycle and machine details." },
-  { key: "issues", label: "Issues", shortLabel: "Issues", description: "Local issue intake and VM creation." },
+  { key: "issues", label: "Issues", shortLabel: "Issues", description: "Local issue intake and issue records." },
   { key: "sessions", label: "Sessions", shortLabel: "Sessions", description: "Session state, tools, and wake schedules." },
+  { key: "mcp-tools", label: "MCP Tools", shortLabel: "MCP", description: "Directory-scoped MCP tool approval and deny policy." },
   { key: "tool-calls", label: "Tool Calls", shortLabel: "Calls", description: "Search MCP tool invocation audit entries." },
   { key: "configuration", label: "Configuration", shortLabel: "Config", description: "Directory-scoped config and policy." },
   { key: "reports", label: "Reports", shortLabel: "Reports", description: "Workflow activity and operational reporting." },

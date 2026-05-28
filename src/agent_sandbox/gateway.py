@@ -90,6 +90,8 @@ from agent_sandbox.models import (
     AdoBacklogQueryResponse,
     AdoBacklogTagsUpdateRequest,
     AdoBacklogTextUpdateRequest,
+    ApprovalRequest,
+    ApprovalStatus,
     AuditEvent,
     CommunicationAttachmentRef,
     CommunicationCopyArtifactToWorkspaceRequest,
@@ -8429,25 +8431,26 @@ def create_server(context: RuntimeContext) -> FastMCP:
         raw_arguments: dict[str, Any],
         sanitized_arguments: dict[str, Any],
         call_context: _ToolCallAuditContext,
-    ) -> None:
+    ) -> ApprovalRequest | None:
         tool_enum = ToolName._value2member_map_.get(raw_tool_name)
         if tool_enum is None or raw_tool_name in _APPROVAL_REQUEST_ID_SCHEMA_EXCLUDED_TOOLS:
-            return
+            return None
         session_id = call_context.session_id
         if not session_id:
-            return
+            return None
         try:
             session = context.policy.require_tool(session_id, tool_enum)
         except PolicyError:
-            return
+            return None
         if not context.policy.approval_required_for_tool(session, tool_enum):
-            return
+            return None
 
         approval_payload = _approval_gate_payload(
             tool_name=tool_enum.value,
             session_id=session_id,
             arguments=sanitized_arguments,
         )
+        grant_settings = context.policy.approval_grant_settings_for_tool(session, tool_enum)
         payload_digest = digest_payload(approval_payload)
         supplied_request_id = str(raw_arguments.get("approval_request_id") or "").strip()
         if not supplied_request_id:
@@ -8458,11 +8461,19 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 _approval_gate_human_summary(tool_enum.value, session_id),
                 tool_name=tool_enum.value,
                 intended_effect=_approval_gate_intended_effect(tool_enum.value, session_id),
+                approval_settings=grant_settings,
+            )
+            status = (
+                "pending_approval"
+                if approval.status == ApprovalStatus.PENDING
+                else approval.status.value
             )
             result = {
-                "status": "pending_approval",
+                "status": status,
                 "approval_request_id": approval.request_id,
                 "payload_digest": payload_digest,
+                "approval_settings": grant_settings.model_dump(mode="json"),
+                "used_count": approval.used_count,
                 "message": (
                     f"Tool {tool_enum.value} requires approval before execution. "
                     f"Retry the exact same payload with approval_request_id={approval.request_id} "
@@ -8475,12 +8486,16 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 tool_name=tool_enum,
                 raw_args=raw_arguments,
                 result=result,
-                decision="pending_approval",
+                decision=status,
             )
             raise ToolError(result["message"])
 
         try:
-            approval = context.policy.require_approved(supplied_request_id, approval_payload)
+            approval = context.policy.require_approved(
+                supplied_request_id,
+                approval_payload,
+                consume=True,
+            )
             if approval.session_id != session_id:
                 raise PolicyError(
                     f"Approval request {supplied_request_id} does not belong to session "
@@ -8509,6 +8524,7 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 reason=str(exc),
             )
             raise ToolError(f"approval_blocked: {exc}") from exc
+        return approval
 
     original_call_tool = server._tool_manager.call_tool
 
@@ -8555,12 +8571,23 @@ def create_server(context: RuntimeContext) -> FastMCP:
                 sanitized_arguments=sanitized_arguments,
                 call_context=call_context,
             )
-            maybe_require_invocation_approval(
+            consumed_approval = maybe_require_invocation_approval(
                 raw_tool_name=raw_tool_name,
                 raw_arguments=raw_arguments,
                 sanitized_arguments=sanitized_arguments,
                 call_context=call_context,
             )
+            tool_enum = ToolName._value2member_map_.get(raw_tool_name)
+            if tool_enum is not None and consumed_approval is None:
+                try:
+                    context.policy.consume_tool_approval_lease_use(
+                        session_id=call_context.session_id,
+                        tool_name=tool_enum,
+                        workflow_run_id=call_context.workflow_run_id,
+                        mcp_tool_approval_lease_id=call_context.mcp_tool_approval_lease_id,
+                    )
+                except PolicyError as exc:
+                    raise ToolError(str(exc)) from exc
             return await original_call_tool(*dispatch_call_args, **dispatch_call_kwargs)
         except Exception as exc:
             if not call_context.audit_emitted:

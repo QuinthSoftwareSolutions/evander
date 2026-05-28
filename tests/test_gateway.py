@@ -477,13 +477,34 @@ def test_approval_required_tool_approved_exact_retry_executes_and_links_audit(
     )
 
     assert result["worker_id"] == "trigger-orchestrator"
+    consumed = context.approvals.get(approval.request_id)
+    assert consumed is not None
+    assert consumed.status == ApprovalStatus.EXHAUSTED
+    assert consumed.used_count == 1
+    with pytest.raises(ToolError, match="approval_blocked"):
+        _call_tool(
+            server,
+            "get_workflow_snapshot",
+            {"session_id": "session-1", "approval_request_id": approval.request_id},
+        )
     tool_events = [
         event
         for event in read_audit_events(context.config.audit_log_path)
         if event.get("tool_name") == ToolName.GET_WORKFLOW_SNAPSHOT.value
     ]
-    assert [event["decision"] for event in tool_events] == ["pending_approval", "allowed"]
+    assert [event["decision"] for event in tool_events] == [
+        "pending_approval",
+        "allowed",
+        "blocked",
+    ]
     assert tool_events[1]["approval_request_id"] == approval.request_id
+
+    with pytest.raises(ToolError, match="requires approval"):
+        _call_tool(server, "get_workflow_snapshot", {"session_id": "session-1"})
+    refreshed = context.approvals.get(approval.request_id)
+    assert refreshed is not None
+    assert refreshed.status == ApprovalStatus.PENDING
+    assert refreshed.used_count == 0
 
 
 def test_approval_required_tool_blocks_mismatched_denied_and_disallowed_retries(

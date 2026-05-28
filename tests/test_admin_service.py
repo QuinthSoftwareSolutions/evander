@@ -3899,12 +3899,30 @@ def test_list_approval_requests_filters_health_and_redacts_payload(tmp_path: Pat
         tool_name="email_send_approved",
     )
     health = service.approval_queue_health(directory_path=team_path, direct_only=True)
+    root_descendants = service.list_approval_requests(
+        directory_path="root",
+        direct_only=False,
+    )
+    root_direct = service.list_approval_requests(
+        directory_path="root",
+        direct_only=True,
+    )
+    root_descendant_health = service.approval_queue_health(
+        directory_path="root",
+        direct_only=False,
+    )
     review = service.get_approval_review("approval-pending")
 
     assert [request.request_id for request in pending] == ["approval-pending"]
     assert health.total == 2
     assert health.pending == 1
     assert health.denied == 1
+    assert {request.request_id for request in root_descendants} == {
+        "approval-pending",
+        "approval-denied",
+    }
+    assert root_direct == []
+    assert root_descendant_health.total == 2
     assert review["request"]["intended_effect"] == "Send the approved email payload to the recipient."
     assert review["redacted_payload"]["token"] == "<redacted>"
     assert review["request"]["payload"]["token"] == "<redacted>"
@@ -7679,6 +7697,7 @@ def test_effective_tool_policy_payload_combines_directory_and_session_rules(
 
     assert effective is not None
     assert effective["allowed_tools"] == ["claim_next_issue", "approval_check"]
+    assert effective["inherited_approval_required_tools"] == ["approval_check"]
     assert effective["approval_required_tools"] == [
         "approval_check",
         "complete_issue",
