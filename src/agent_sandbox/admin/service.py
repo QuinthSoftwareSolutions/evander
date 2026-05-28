@@ -9638,7 +9638,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     worker_backend.inspect(agent_id)
                 except Exception:
                     pass
-                return worker_backend.get_log_snapshot(agent_id, lines=lines, mode="raw")
+                return worker_backend.get_log_snapshot(agent_id, lines=lines, mode="execution")
             if not execution_records:
                 return f"No container executions have run for session {session_id}.\n"
             if self._normalize_agent_log_view(view) == "threads":
@@ -9658,7 +9658,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     f"execution={execution.execution_id}",
                     f"status={self._container_agent_status(execution.last_status)}",
                     f"worker_job={execution.worker_job_id}",
-                    "log=raw",
+                    "log=execution",
                 ]
                 if execution.started_at is not None:
                     header_parts.append(f"started={execution.started_at.isoformat()}")
@@ -9668,7 +9668,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     text = worker_backend.get_log_snapshot(
                         execution.execution_id,
                         lines=per_execution_lines,
-                        mode="raw",
+                        mode="execution",
                     ).rstrip()
                 except Exception as exc:
                     text = f"[log unavailable: {exc}]"
@@ -9709,6 +9709,33 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
     def _join_container_log_chunks(chunks: list[str]) -> str:
         return "\n\n".join(chunk for chunk in chunks if chunk).rstrip() + "\n"
 
+    def _container_execution_thread_probe_text(self, worker_backend: Any, execution: Any) -> str:
+        page_reader = getattr(worker_backend, "get_log_page", None)
+        if callable(page_reader):
+            try:
+                page = page_reader(
+                    execution.execution_id,
+                    limit=1,
+                    offset=0,
+                    query="session id:",
+                    mode="raw",
+                )
+                text = str(page.get("text") or "")
+                if text:
+                    return text
+            except Exception:
+                pass
+        try:
+            return str(
+                worker_backend.get_log_snapshot(
+                    execution.execution_id,
+                    lines=0,
+                    mode="raw",
+                )
+            )
+        except Exception as exc:
+            return f"[log unavailable: {exc}]"
+
     def _container_thread_log_chunks(
         self,
         worker_backend: Any,
@@ -9721,11 +9748,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         unthreaded_chunks: list[tuple[tuple[datetime, str], str]] = []
         for execution in sorted_records:
             try:
-                raw_text = worker_backend.get_log_snapshot(
-                    execution.execution_id,
-                    lines=0,
-                    mode="raw",
-                )
+                raw_text = self._container_execution_thread_probe_text(worker_backend, execution)
             except Exception as exc:
                 raw_text = f"[log unavailable: {exc}]"
             thread_id = self._container_log_thread_id(raw_text)
@@ -9783,6 +9806,72 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             )
         ]
 
+    def _container_thread_groups(
+        self,
+        worker_backend: Any,
+        execution_records: list[Any],
+    ) -> list[tuple[tuple[datetime, str], str | None, list[Any], str | None]]:
+        sorted_records = sorted(execution_records, key=self._container_execution_sort_key)
+        grouped_records: dict[str, list[Any]] = {}
+        unthreaded_groups: list[tuple[tuple[datetime, str], str | None, list[Any], str | None]] = []
+        for execution in sorted_records:
+            raw_text = self._container_execution_thread_probe_text(worker_backend, execution)
+            thread_id = self._container_log_thread_id(raw_text)
+            if thread_id is None:
+                unthreaded_groups.append(
+                    (
+                        self._container_execution_sort_key(execution),
+                        None,
+                        [execution],
+                        raw_text,
+                    )
+                )
+                continue
+            grouped_records.setdefault(thread_id, []).append(execution)
+
+        threaded_groups: list[tuple[tuple[datetime, str], str | None, list[Any], str | None]] = []
+        for thread_id, records in grouped_records.items():
+            ordered_records = sorted(records, key=self._container_execution_sort_key)
+            threaded_groups.append(
+                (
+                    self._container_execution_sort_key(ordered_records[0]),
+                    thread_id,
+                    ordered_records,
+                    None,
+                )
+            )
+        return sorted([*threaded_groups, *unthreaded_groups], key=lambda item: item[0])
+
+    def _container_thread_group_chunk(
+        self,
+        worker_backend: Any,
+        *,
+        thread_id: str | None,
+        records: list[Any],
+        raw_text: str | None,
+    ) -> str:
+        first_execution = records[0]
+        header_parts = [
+            f"thread={thread_id or 'unthreaded'}",
+            f"first_execution={first_execution.execution_id}",
+            f"executions={len(records)}",
+        ]
+        if first_execution.started_at is not None:
+            header_parts.append(f"started={first_execution.started_at.isoformat()}")
+        header = "=== " + " ".join(header_parts) + " ==="
+        if thread_id is None:
+            body = str(raw_text or "").rstrip()
+            return header if not body else header + "\n" + body
+        try:
+            transcript = worker_backend.get_log_snapshot(
+                first_execution.execution_id,
+                lines=0,
+                mode="session",
+            ).rstrip()
+        except Exception as exc:
+            transcript = f"[log unavailable: {exc}]"
+        return header if not transcript else header + "\n" + transcript
+
     def _container_thread_log_page(
         self,
         *,
@@ -9794,29 +9883,42 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         query: str | None,
     ) -> dict[str, object]:
         if not execution_records:
-            return _log_page_from_end(
+            return _log_page_from_start(
                 f"No container executions have run for session {session_id}.\n",
                 limit=limit,
                 offset=offset,
                 query=query,
             )
         normalized_query = str(query or "").strip()
-        transcript_lines = 0
-        if not normalized_query:
-            transcript_lines = max(1, int(limit)) + max(0, int(offset)) + 1
-        text = self._join_container_log_chunks(
-            self._container_thread_log_chunks(
+        chunks: list[str] = []
+        target_lines = max(1, int(limit)) + max(0, int(offset)) + 1
+        line_count = 0
+        truncated_after = False
+        groups = self._container_thread_groups(worker_backend, execution_records)
+        for index, (_sort_key, thread_id, records, raw_text) in enumerate(groups):
+            chunk = self._container_thread_group_chunk(
                 worker_backend,
-                execution_records,
-                lines=transcript_lines,
+                thread_id=thread_id,
+                records=records,
+                raw_text=raw_text,
             )
-        )
-        return _log_page_from_end(
-            text,
+            chunks.append(chunk)
+            if not normalized_query:
+                line_count += len(chunk.splitlines()) + (1 if len(chunks) > 1 else 0)
+                if line_count >= target_lines:
+                    truncated_after = index < len(groups) - 1
+                    break
+        page = _log_page_from_start(
+            self._join_container_log_chunks(chunks),
             limit=limit,
             offset=offset,
             query=normalized_query or None,
         )
+        if truncated_after:
+            page["has_more_before"] = True
+            page["total_lines"] = None
+            page["end_line"] = None
+        return page
 
     def _container_execution_log_page(
         self,
@@ -9844,7 +9946,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     worker_backend,
                     sorted_records[-1],
                     lines=0,
-                    mode="raw",
+                    mode="execution",
                 ),
                 limit=limit,
                 offset=0,
@@ -9870,7 +9972,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 worker_backend,
                 execution,
                 lines=0,
-                mode="raw",
+                mode="execution",
             )
             if normalized_query:
                 chunks.append(chunk)
@@ -9985,12 +10087,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                     limit=normalized_limit,
                     offset=normalized_offset,
                     query=normalized_query or None,
-                    mode="raw",
+                    mode="execution",
                 )
                 page["view"] = normalized_view
                 return page
             text = worker_backend.get_log_snapshot(
-                target, lines=normalized_limit + normalized_offset, mode="raw"
+                target, lines=normalized_limit + normalized_offset, mode="execution"
             )
             page = _log_page_from_end(
                 text,
@@ -17381,6 +17483,37 @@ def _log_page_from_end(
         "start_line": start_index + 1 if page_lines else 0,
         "end_line": end_index if page_lines else 0,
         "has_more_before": start_index > 0,
+        "query": normalized_query or None,
+    }
+
+
+def _log_page_from_start(
+    text: str,
+    *,
+    limit: int,
+    offset: int,
+    query: str | None = None,
+) -> dict[str, object]:
+    lines = text.splitlines()
+    normalized_query = str(query or "").strip()
+    if normalized_query:
+        needle = normalized_query.casefold()
+        lines = [line for line in lines if needle in line.casefold()]
+    total_lines = len(lines)
+    normalized_limit = max(1, int(limit))
+    normalized_offset = max(0, int(offset))
+    start_index = min(total_lines, normalized_offset)
+    end_index = min(total_lines, start_index + normalized_limit)
+    page_lines = lines[start_index:end_index]
+    return {
+        "text": "\n".join(page_lines) + ("\n" if page_lines else ""),
+        "limit": normalized_limit,
+        "offset": normalized_offset,
+        "returned_lines": len(page_lines),
+        "total_lines": total_lines,
+        "start_line": start_index + 1 if page_lines else 0,
+        "end_line": end_index if page_lines else 0,
+        "has_more_before": end_index < total_lines,
         "query": normalized_query or None,
     }
 

@@ -40,6 +40,7 @@ class DebounceGateStateRecord(BaseModel):
     quiet_period_seconds: float = Field(gt=0)
     max_delay_seconds: float = Field(gt=0)
     latest_payload: dict[str, Any] = Field(default_factory=dict)
+    latest_event_payload: dict[str, Any] = Field(default_factory=dict)
     inputs_by_source: dict[str, dict[str, Any]] = Field(default_factory=dict)
     input_event_ids_by_source: dict[str, str] = Field(default_factory=dict)
     input_occurred_at_by_source: dict[str, datetime] = Field(default_factory=dict)
@@ -156,6 +157,7 @@ class DebounceGateProvider(GateProviderBase):
             return True
 
         latest_payload = _forwardable_payload(queue_record.payload)
+        latest_event_payload = dict(queue_record.payload)
         if state is None:
             first_seen_at = now
             max_release_at = first_seen_at + max_delay
@@ -175,6 +177,7 @@ class DebounceGateProvider(GateProviderBase):
                 quiet_period_seconds=quiet_period.total_seconds(),
                 max_delay_seconds=max_delay.total_seconds(),
                 latest_payload=latest_payload,
+                latest_event_payload=latest_event_payload,
                 inputs_by_source=inputs_by_source,
                 input_event_ids_by_source=input_event_ids_by_source,
                 input_occurred_at_by_source=input_occurred_at_by_source,
@@ -191,6 +194,7 @@ class DebounceGateProvider(GateProviderBase):
             state.quiet_period_seconds = quiet_period.total_seconds()
             state.max_delay_seconds = max_delay.total_seconds()
             state.latest_payload = latest_payload
+            state.latest_event_payload = latest_event_payload
             state.inputs_by_source = inputs_by_source
             state.input_event_ids_by_source = input_event_ids_by_source
             state.input_occurred_at_by_source = input_occurred_at_by_source
@@ -230,7 +234,7 @@ class DebounceGateProvider(GateProviderBase):
                 trigger_type=state.source_trigger_type,
                 trace_id=state.trace_id,
                 occurred_at=state.last_seen_at,
-                payload=dict(state.latest_payload),
+                payload=dict(state.latest_event_payload or state.latest_payload),
                 delivery_state="delivered",
             )
             resolved_config = {

@@ -5,6 +5,7 @@ import {
   declaredOutputsForNode,
   deriveWorkflowOutputSchemas,
   flattenOutputPaths,
+  guaranteedUpstreamNodeIds,
   selectedNodeOutputContract,
   upstreamBindingOptions,
 } from "../src/workflowNodeOutputs.ts";
@@ -231,6 +232,73 @@ test("preserves binding option ordering for downstream fields", () => {
   assert.ok(options.some((option) => option.value === "${{gate-debounce-1.ticket.issue_number}}"));
   assert.ok(options.findIndex((option) => option.value === "${{gate-filter-1.ticket.issue_number}}") < options.findIndex((option) => option.value === "${{trigger-1.ticket.issue_number}}"));
   assert.ok(options.findIndex((option) => option.value === "${{gate-debounce-1.ticket.issue_number}}") < options.findIndex((option) => option.value === "${{trigger-1.ticket.issue_number}}"));
+});
+
+test("suggests only guaranteed upstream bindings after branch merge", () => {
+  const config = {
+    triggers: [
+      {
+        id: "trigger-1",
+        display_name: "Trigger",
+        type: "trigger:manual",
+        outputs: { ticket: { type: "object" } },
+      },
+    ],
+    gates: [
+      {
+        id: "gate-merge",
+        display_name: "Merge",
+        type: "gate:merge",
+        outputs: { shared: { type: "string" } },
+      },
+    ],
+    effects: [
+      {
+        id: "effect-pre",
+        display_name: "Pre",
+        type: "effect:agent:prompt",
+        outputs: { session_id: { type: "string" } },
+      },
+      {
+        id: "effect-a",
+        display_name: "A",
+        type: "effect:agent:prompt",
+        outputs: { branch_value: { type: "string" }, shared: { type: "string" } },
+      },
+      {
+        id: "effect-b",
+        display_name: "B",
+        type: "effect:agent:prompt",
+        outputs: { branch_value: { type: "string" }, shared: { type: "string" } },
+      },
+      {
+        id: "effect-after",
+        display_name: "After",
+        type: "effect:agent:prompt",
+      },
+    ],
+    queries: [],
+    edges: [
+      { source_id: "trigger-1", target_id: "effect-pre" },
+      { source_id: "effect-pre", target_id: "effect-a" },
+      { source_id: "effect-pre", target_id: "effect-b" },
+      { source_id: "effect-a", target_id: "gate-merge" },
+      { source_id: "effect-b", target_id: "gate-merge" },
+      { source_id: "gate-merge", target_id: "effect-after" },
+    ],
+  };
+  const outputSchemas = deriveWorkflowOutputSchemas(config);
+  const options = upstreamBindingOptions(config, "effect-after", outputSchemas);
+
+  assert.deepEqual(guaranteedUpstreamNodeIds(config, "effect-after"), [
+    "gate-merge",
+    "effect-pre",
+    "trigger-1",
+  ]);
+  assert.ok(options.some((option) => option.value === "${{effect-pre.session_id}}"));
+  assert.ok(options.some((option) => option.value === "${{gate-merge.shared}}"));
+  assert.ok(!options.some((option) => option.value === "${{effect-a.branch_value}}"));
+  assert.ok(!options.some((option) => option.value === "${{effect-b.branch_value}}"));
 });
 
 test("declared outputs fall back to node outputs when no derived schema exists", () => {

@@ -95,6 +95,7 @@ import {
 import {
   declaredOutputsForNode,
   deriveWorkflowOutputSchemas,
+  guaranteedUpstreamNodeIds,
   isPassThroughGateType,
   selectedNodeOutputContract as workflowNodeOutputContract,
   upstreamBindingOptions,
@@ -143,7 +144,10 @@ type GraphNodeData = {
   dominantStatus: string | null;
   statusBadges: ReadonlyArray<GraphNodeStatusBadge>;
   diagnosticCount: number;
+  diagnosticErrorCount: number;
+  diagnosticWarningCount: number;
   hasDiagnostics: boolean;
+  hasErrorDiagnostics: boolean;
   hasUnsavedChanges: boolean;
   isDisabled: boolean;
   isInspectGhost?: boolean;
@@ -517,7 +521,7 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
     <div
       className={`node-card node-${nodeData.kind}${selected ? " selected" : ""}${
         nodeData.dominantStatus ? ` runtime-${nodeData.dominantStatus}` : ""
-      }${nodeData.hasDiagnostics ? " invalid" : ""}${
+      }${nodeData.hasErrorDiagnostics ? " invalid" : ""}${
         nodeData.pendingConnectionRole ? ` connection-${nodeData.pendingConnectionRole}` : ""
       }${nodeData.hasUnsavedChanges ? " unsaved" : ""}${nodeData.isDisabled ? " trigger-disabled" : ""}${nodeData.isInspectGhost ? " inspect-ghost" : ""}${
         nodeData.tutorialHighlight ? ` tutorial-highlight tutorial-highlight-${nodeData.tutorialHighlightMode ?? "pulse"}` : ""
@@ -539,9 +543,14 @@ function WorkflowNodeCard({ data, selected }: NodeProps) {
             <div className="node-kind">{nodeData.kind}</div>
           </Tooltip>
           <div className="node-badges">
-            {nodeData.hasDiagnostics ? (
-              <Tooltip content={`${nodeData.diagnosticCount} workflow binding problem${nodeData.diagnosticCount === 1 ? "" : "s"}`}>
-                <div className="node-diagnostic-badge">{nodeData.diagnosticCount}</div>
+            {nodeData.diagnosticErrorCount > 0 ? (
+              <Tooltip content={`${nodeData.diagnosticErrorCount} workflow binding error${nodeData.diagnosticErrorCount === 1 ? "" : "s"}`}>
+                <div className="node-diagnostic-badge error">{nodeData.diagnosticErrorCount}</div>
+              </Tooltip>
+            ) : null}
+            {nodeData.diagnosticWarningCount > 0 ? (
+              <Tooltip content={`${nodeData.diagnosticWarningCount} workflow binding warning${nodeData.diagnosticWarningCount === 1 ? "" : "s"}`}>
+                <div className="node-diagnostic-badge warning">{nodeData.diagnosticWarningCount}</div>
               </Tooltip>
             ) : null}
             {nodeData.hasUnsavedChanges ? (
@@ -847,7 +856,10 @@ function buildNodes(
     const activity = nodeActivity[node.id];
     const catalogEntry = getCatalogEntry(catalog, node.type);
     const outputPorts = workflowOutputPortsForNode(node, catalogEntry?.output_ports ?? []);
-    const diagnosticCount = diagnostics.filter((diagnostic) => diagnostic.node_id === node.id).length;
+    const nodeDiagnostics = diagnostics.filter((diagnostic) => diagnostic.node_id === node.id);
+    const diagnosticErrorCount = nodeDiagnostics.filter((diagnostic) => (diagnostic.severity ?? "error") !== "warning").length;
+    const diagnosticWarningCount = nodeDiagnostics.filter((diagnostic) => (diagnostic.severity ?? "error") === "warning").length;
+    const diagnosticCount = diagnosticErrorCount + diagnosticWarningCount;
     return {
       id: node.id,
       type: "workflowNode",
@@ -866,7 +878,10 @@ function buildNodes(
         dominantStatus: dominantNodeStatus(activity),
         statusBadges: nodeStatusBadges(activity),
         diagnosticCount,
+        diagnosticErrorCount,
+        diagnosticWarningCount,
         hasDiagnostics: diagnosticCount > 0,
+        hasErrorDiagnostics: diagnosticErrorCount > 0,
         hasUnsavedChanges: dirtyNodeIds.has(node.id),
         isDisabled: kind === "trigger" && !workflowTriggerEnabled(node),
         isInspectGhost: ghostNodeIds.has(node.id),
@@ -2763,8 +2778,10 @@ function validateWorkflowBindingDiagnostics(
   const allNodeIds = new Set(nodes.map((node) => node.id));
 
   for (const node of nodes) {
+    const ancestorNodeIds = collectAncestorNodeIds(config, node.id);
+    const guaranteedNodeIds = new Set(guaranteedUpstreamNodeIds(config, node.id));
     const declaredOutputs = new Map(
-      collectAncestorNodeIds(config, node.id)
+      ancestorNodeIds
         .map((upstreamNodeId) => [upstreamNodeId, declaredOutputsForNode(nodesById.get(upstreamNodeId), outputSchemas)] as const),
     );
     for (const [fieldPath, value] of walkEditableNodeConfigValues(node)) {
@@ -2774,6 +2791,7 @@ function validateWorkflowBindingDiagnostics(
           fieldPath,
           node,
           declaredOutputs,
+          guaranteedNodeIds,
           allNodeIds,
         }),
       );
@@ -2840,12 +2858,14 @@ function validateBindingValue({
   fieldPath,
   node,
   declaredOutputs,
+  guaranteedNodeIds,
   allNodeIds,
 }: {
   value: unknown;
   fieldPath: string;
   node: WorkflowNodeConfig;
   declaredOutputs: Map<string, Record<string, unknown>>;
+  guaranteedNodeIds: Set<string>;
   allNodeIds: Set<string>;
 }): WorkflowValidationDiagnostic[] {
   if (typeof value !== "string" || !value.includes("${{")) return [];
@@ -2878,6 +2898,7 @@ function validateBindingValue({
           fieldPath,
           node,
           declaredOutputs,
+          guaranteedNodeIds,
           allNodeIds,
         }),
       );
@@ -2905,12 +2926,14 @@ function validateBindingExpression({
   fieldPath,
   node,
   declaredOutputs,
+  guaranteedNodeIds,
   allNodeIds,
 }: {
   expression: ParsedBindingExpression;
   fieldPath: string;
   node: WorkflowNodeConfig;
   declaredOutputs: Map<string, Record<string, unknown>>;
+  guaranteedNodeIds: Set<string>;
   allNodeIds: Set<string>;
 }): WorkflowValidationDiagnostic[] {
   const diagnostics = validateBindingReference({
@@ -2918,6 +2941,7 @@ function validateBindingExpression({
     fieldPath,
     node,
     declaredOutputs,
+    guaranteedNodeIds,
     allNodeIds,
   });
   if (!expression.hasFallback) return diagnostics;
@@ -2929,6 +2953,7 @@ function validateBindingExpression({
         fieldPath,
         node,
         declaredOutputs,
+        guaranteedNodeIds,
         allNodeIds,
       }),
     );
@@ -2939,6 +2964,7 @@ function validateBindingExpression({
         fieldPath,
         node,
         declaredOutputs,
+        guaranteedNodeIds,
         allNodeIds,
       }),
     );
@@ -2951,12 +2977,14 @@ function validateBindingReference({
   fieldPath,
   node,
   declaredOutputs,
+  guaranteedNodeIds,
   allNodeIds,
 }: {
   reference: ParsedBindingReference;
   fieldPath: string;
   node: WorkflowNodeConfig;
   declaredOutputs: Map<string, Record<string, unknown>>;
+  guaranteedNodeIds: Set<string>;
   allNodeIds: Set<string>;
 }): WorkflowValidationDiagnostic[] {
   const resolved = resolveAvailableBindingReference(reference, declaredOutputs, allNodeIds);
@@ -2979,6 +3007,17 @@ function validateBindingReference({
     return [{
       code: "missing_binding_output",
       message: `${fieldPath} references missing output ${outputRef}`,
+      node_id: node.id,
+      node_type: node.type,
+      field_path: fieldPath,
+      reference: outputRef,
+    }];
+  }
+  if (!guaranteedNodeIds.has(resolved.nodeId)) {
+    return [{
+      code: "conditional_binding_node",
+      message: `${fieldPath} references conditionally available upstream node ${resolved.nodeId}; bind through a merge-projected output when this value must be available after branching`,
+      severity: "warning",
       node_id: node.id,
       node_type: node.type,
       field_path: fieldPath,

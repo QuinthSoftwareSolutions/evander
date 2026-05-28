@@ -3080,7 +3080,7 @@ def test_get_admin_agent_log_page_container_session_pages_across_runs(
     assert latest_page["has_more_before"] is True
     assert latest_page["total_lines"] is None
     assert latest_page["view"] == "executions"
-    assert fake_backend.calls == [("exec-new", 0, "raw")]
+    assert fake_backend.calls == [("exec-new", 0, "execution")]
 
     older_page = service.get_admin_agent_log_page(
         "session-1",
@@ -3097,13 +3097,13 @@ def test_get_admin_agent_log_page_container_session_pages_across_runs(
     assert older_page["has_more_before"] is False
     assert older_page["view"] == "executions"
     assert fake_backend.calls == [
-        ("exec-new", 0, "raw"),
-        ("exec-new", 0, "raw"),
-        ("exec-old", 0, "raw"),
+        ("exec-new", 0, "execution"),
+        ("exec-new", 0, "execution"),
+        ("exec-old", 0, "execution"),
     ]
 
 
-def test_get_admin_agent_log_snapshot_and_page_container_session_use_raw_only(
+def test_get_admin_agent_log_snapshot_and_page_container_session_use_execution_logs(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -3149,8 +3149,10 @@ def test_get_admin_agent_log_snapshot_and_page_container_session_use_raw_only(
             mode: str | None = None,
         ) -> str:
             self.calls.append((target, lines, mode))
+            if mode == "execution":
+                return "execution transcript for exec-raw-default\n"
             if mode == "raw":
-                return "raw transcript for exec-raw-default\n"
+                return "raw stdout for exec-raw-default\n"
             if mode == "session":
                 return "session transcript for exec-raw-default\n"
             if mode == "augmented":
@@ -3174,15 +3176,17 @@ def test_get_admin_agent_log_snapshot_and_page_container_session_use_raw_only(
         limit=20,
     )
 
-    assert "raw transcript for exec-raw-default" in snapshot_text
+    assert "execution transcript for exec-raw-default" in snapshot_text
+    assert "raw stdout for exec-raw-default" not in snapshot_text
     assert "session transcript for exec-raw-default" not in snapshot_text
     assert "augmented transcript for exec-raw-default" not in snapshot_text
-    assert "log=raw" in snapshot_text
-    assert "raw transcript for exec-raw-default" in page["text"]
+    assert "log=execution" in snapshot_text
+    assert "execution transcript for exec-raw-default" in page["text"]
+    assert "raw stdout for exec-raw-default" not in page["text"]
     assert "session transcript for exec-raw-default" not in page["text"]
     assert "augmented transcript for exec-raw-default" not in page["text"]
     assert page["view"] == "executions"
-    assert all(mode == "raw" for _, _, mode in fake_backend.calls)
+    assert all(mode == "execution" for _, _, mode in fake_backend.calls)
 
 
 def test_get_admin_agent_log_page_container_session_threads_group_by_thread_id(
@@ -3299,8 +3303,8 @@ def test_get_admin_agent_log_page_container_session_threads_group_by_thread_id(
         ("exec-b1", 0, "raw"),
         ("exec-a1", 0, "raw"),
         ("exec-a2", 0, "raw"),
-        ("exec-b1", 201, "session"),
-        ("exec-a1", 201, "session"),
+        ("exec-b1", 0, "session"),
+        ("exec-a1", 0, "session"),
     ]
 
 
@@ -3375,11 +3379,11 @@ def test_get_admin_agent_log_page_container_session_threads_fetches_offset_windo
     )
 
     assert page["view"] == "threads"
-    assert page["text"] == "thread line 5\nthread line 6\nthread line 7\n"
+    assert page["text"] == "thread line 3\nthread line 4\nthread line 5\n"
     assert page["has_more_before"] is True
     assert fake_backend.calls == [
         ("exec-thread-window", 0, "raw"),
-        ("exec-thread-window", 7, "session"),
+        ("exec-thread-window", 0, "session"),
     ]
 
 

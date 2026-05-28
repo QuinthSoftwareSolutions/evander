@@ -143,7 +143,7 @@ export function upstreamBindingOptions(
     seen.add(option.label.replace(/^\[System\] /, ""));
     seen.add(option.value);
   }
-  for (const upstreamNodeId of collectAncestorNodeIds(config, nodeId)) {
+  for (const upstreamNodeId of guaranteedUpstreamNodeIds(config, nodeId)) {
     const outputs = declaredOutputsForNode(nodeById(config, upstreamNodeId), outputSchemas);
     for (const outputName of Object.keys(outputs)) {
       for (const outputPath of flattenOutputPaths(outputName, outputs[outputName])) {
@@ -364,8 +364,67 @@ function collectAncestorNodeIds(config: WorkflowConfig, nodeId: string): string[
   return ordered;
 }
 
+export function guaranteedUpstreamNodeIds(config: WorkflowConfig, nodeId: string): string[] {
+  const nodeIds = workflowNodes(config).map((node) => node.id);
+  const nodeIdSet = new Set(nodeIds);
+  if (!nodeIdSet.has(nodeId)) return [];
+  const predecessors = new Map<string, Set<string>>();
+  for (const currentNodeId of nodeIds) {
+    predecessors.set(currentNodeId, new Set<string>());
+  }
+  for (const edge of config.edges) {
+    if (edge.allow_cycle) continue;
+    if (!nodeIdSet.has(edge.source_id) || !nodeIdSet.has(edge.target_id)) continue;
+    predecessors.get(edge.target_id)?.add(edge.source_id);
+  }
+
+  const dominators = new Map<string, Set<string>>();
+  for (const currentNodeId of nodeIds) {
+    const preds = predecessors.get(currentNodeId) ?? new Set<string>();
+    dominators.set(currentNodeId, preds.size === 0 ? new Set([currentNodeId]) : new Set(nodeIds));
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const currentNodeId of [...nodeIds].sort()) {
+      const preds = predecessors.get(currentNodeId) ?? new Set<string>();
+      let nextDominators: Set<string>;
+      if (preds.size === 0) {
+        nextDominators = new Set([currentNodeId]);
+      } else {
+        const shared = new Set(nodeIds);
+        for (const predecessorId of preds) {
+          for (const candidate of [...shared]) {
+            if (!(dominators.get(predecessorId) ?? new Set([predecessorId])).has(candidate)) {
+              shared.delete(candidate);
+            }
+          }
+        }
+        nextDominators = new Set([...shared, currentNodeId]);
+      }
+      const currentDominators = dominators.get(currentNodeId) ?? new Set<string>();
+      if (!setsEqual(currentDominators, nextDominators)) {
+        dominators.set(currentNodeId, nextDominators);
+        changed = true;
+      }
+    }
+  }
+
+  const guaranteed = dominators.get(nodeId) ?? new Set<string>();
+  return collectAncestorNodeIds(config, nodeId).filter((currentNodeId) => guaranteed.has(currentNodeId));
+}
+
 function copyOutputSchema(schema: Record<string, unknown> | undefined): Record<string, unknown> {
   return { ...(schema ?? {}) };
+}
+
+function setsEqual(left: Set<string>, right: Set<string>): boolean {
+  if (left.size !== right.size) return false;
+  for (const item of left) {
+    if (!right.has(item)) return false;
+  }
+  return true;
 }
 
 function mapTemplateOutputSchema(template: Record<string, unknown>): Record<string, unknown> {

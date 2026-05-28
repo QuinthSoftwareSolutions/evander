@@ -223,11 +223,14 @@ class WorkerDaemon:
         tail_lines: int | None = None,
     ) -> str:
         selected_mode = str(mode or "augmented").strip().casefold()
-        if selected_mode not in {"augmented", "raw", "session"}:
-            raise ValueError("log mode must be one of: augmented, raw, session")
+        if selected_mode not in {"augmented", "execution", "raw", "session"}:
+            raise ValueError("log mode must be one of: augmented, execution, raw, session")
         text = self._raw_logs(record, tail_lines=tail_lines)
         if selected_mode == "raw":
             return text
+        if selected_mode == "execution":
+            execution_log = self._codex_execution_log(record, text, skip_existing=True)
+            return self._append_codex_session_log(text, execution_log)
         session_log = self._codex_session_log(
             record,
             text,
@@ -305,6 +308,39 @@ class WorkerDaemon:
             for message in self._codex_session_messages(
                 agent_home,
                 thread_id,
+                include_running_context=record.status == "running",
+            ):
+                if message in seen or (skip_existing and message in text):
+                    continue
+                seen.add(message)
+                messages.append(message)
+        if not messages:
+            return ""
+        return "\n".join(messages) + "\n"
+
+    def _codex_execution_log(
+        self,
+        record: WorkerJobRecord,
+        text: str,
+        *,
+        skip_existing: bool,
+    ) -> str:
+        if record.started_at is None and record.finished_at is None:
+            return ""
+        agent_home = Path(record.agent_home_path)
+        thread_ids = list(dict.fromkeys(_CODEX_SESSION_ID_LOG_PATTERN.findall(text)))
+        if not thread_ids:
+            thread_ids = _recent_codex_session_ids(agent_home)
+        if not thread_ids:
+            return ""
+        messages: list[str] = []
+        seen: set[str] = set()
+        for thread_id in thread_ids:
+            for message in self._codex_session_messages(
+                agent_home,
+                thread_id,
+                started_at=record.started_at,
+                finished_at=record.finished_at,
                 include_running_context=record.status == "running",
             ):
                 if message in seen or (skip_existing and message in text):

@@ -445,6 +445,141 @@ def test_binding_diagnostics_accept_merge_derived_outputs() -> None:
     assert diagnostics == []
 
 
+def test_binding_diagnostics_accept_guaranteed_pre_branch_output_after_merge() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-main",
+                "display_name": "Trigger",
+                "type": "trigger:cron",
+                "expression": "* * * * *",
+                "outputs": {"payload": {"type": "object"}},
+            }
+        ],
+        "queries": [
+            {
+                "id": "query-pre-branch",
+                "display_name": "Pre branch",
+                "type": "query:session-context",
+                "target": "session-1",
+                "outputs": {"session_id": {"type": "string"}},
+            }
+        ],
+        "effects": [
+            {
+                "id": "effect-branch-a",
+                "display_name": "Branch A",
+                "type": "effect:agent:prompt",
+                "prompt": "A",
+                "outputs": {"shared": {"type": "string"}},
+            },
+            {
+                "id": "effect-branch-b",
+                "display_name": "Branch B",
+                "type": "effect:agent:prompt",
+                "prompt": "B",
+                "outputs": {"shared": {"type": "string"}},
+            },
+            {
+                "id": "effect-downstream",
+                "display_name": "Downstream",
+                "type": "effect:agent:prompt",
+                "session_id": "${{query-pre-branch.session_id}}",
+                "prompt": "Merged ${{gate-merge.shared}}",
+            },
+        ],
+        "gates": [
+            {
+                "id": "gate-merge",
+                "display_name": "Merge",
+                "type": "gate:merge",
+                "outputs": {"shared": {"type": "string"}},
+            }
+        ],
+        "edges": [
+            {"source_id": "trigger-main", "target_id": "query-pre-branch"},
+            {"source_id": "query-pre-branch", "target_id": "effect-branch-a"},
+            {"source_id": "query-pre-branch", "target_id": "effect-branch-b"},
+            {"source_id": "effect-branch-a", "target_id": "gate-merge"},
+            {"source_id": "effect-branch-b", "target_id": "gate-merge"},
+            {"source_id": "gate-merge", "target_id": "effect-downstream"},
+        ],
+    }
+
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert diagnostics == []
+
+
+def test_binding_diagnostics_warn_for_conditional_branch_output_after_merge() -> None:
+    config = {
+        "triggers": [
+            {
+                "id": "trigger-main",
+                "display_name": "Trigger",
+                "type": "trigger:cron",
+                "expression": "* * * * *",
+            }
+        ],
+        "effects": [
+            {
+                "id": "effect-branch-a",
+                "display_name": "Branch A",
+                "type": "effect:agent:prompt",
+                "prompt": "A",
+                "outputs": {"branch_value": {"type": "string"}},
+            },
+            {
+                "id": "effect-branch-b",
+                "display_name": "Branch B",
+                "type": "effect:agent:prompt",
+                "prompt": "B",
+                "outputs": {"branch_value": {"type": "string"}},
+            },
+            {
+                "id": "effect-downstream",
+                "display_name": "Downstream",
+                "type": "effect:agent:prompt",
+                "session_id": "session-1",
+                "prompt": "Branch ${{effect-branch-a.branch_value}}",
+            },
+        ],
+        "gates": [
+            {
+                "id": "gate-merge",
+                "display_name": "Merge",
+                "type": "gate:merge",
+                "outputs": {"branch_value": {"type": "string"}},
+            }
+        ],
+        "edges": [
+            {"source_id": "trigger-main", "target_id": "effect-branch-a"},
+            {"source_id": "trigger-main", "target_id": "effect-branch-b"},
+            {"source_id": "effect-branch-a", "target_id": "gate-merge"},
+            {"source_id": "effect-branch-b", "target_id": "gate-merge"},
+            {"source_id": "gate-merge", "target_id": "effect-downstream"},
+        ],
+    }
+
+    diagnostics = validate_workflow_binding_diagnostics(config)
+
+    assert [diagnostic.model_dump() for diagnostic in diagnostics] == [
+        {
+            "code": "conditional_binding_node",
+            "message": (
+                "prompt references conditionally available upstream node effect-branch-a; "
+                "bind through a merge-projected output when this value must be available "
+                "after branching"
+            ),
+            "severity": "warning",
+            "node_id": "effect-downstream",
+            "node_type": "effect:agent:prompt",
+            "field_path": "prompt",
+            "reference": "effect-branch-a.branch_value",
+        }
+    ]
+
+
 def test_ci_run_completed_outputs_are_bindable() -> None:
     config = {
         "triggers": [
@@ -645,6 +780,7 @@ def test_output_schema_derivation_respects_explicit_deserialize_json_format() ->
         {
             "code": "missing_binding_output",
             "message": "prompt references missing output gate-deserialize-1.title",
+            "severity": "error",
             "node_id": "prompt-agent",
             "node_type": "effect:agent:prompt",
             "field_path": "prompt",

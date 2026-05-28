@@ -1169,6 +1169,76 @@ def test_logs_recover_codex_messages_from_session_jsonl(tmp_path: Path) -> None:
     assert log_path.read_text(encoding="utf-8") == f"session id: {thread_id}\n"
 
 
+def test_execution_logs_limit_resumed_thread_to_job_window(tmp_path: Path) -> None:
+    thread_id = "019de31a-8393-71d2-8990-e5f4fb0a4df2"
+    started_at = datetime(2026, 5, 5, 8, 19, tzinfo=UTC)
+    finished_at = started_at + timedelta(minutes=1)
+    runtime = FakeContainerRuntime()
+    runtime.logs["job-1"] = f"session id: {thread_id}\n"
+    daemon = WorkerDaemon(
+        runtime_dir=tmp_path / "runtime",
+        worker_root=tmp_path / "worker-root",
+        container_runtime=runtime,
+        token="test-token",
+    )
+    paths = WorkerSessionPaths.resolve(tmp_path / "worker-root", "session-1")
+    record = WorkerJobRecord(
+        job_id="job-1",
+        session_id="session-1",
+        image="codex:latest",
+        command=["true"],
+        container_name="agent-worker-job-1",
+        status="removed",
+        started_at=started_at,
+        finished_at=finished_at,
+        agent_home_path=str(paths.agent_home),
+        repo_root_path=str(paths.repo_root),
+        artifacts_path=str(paths.artifacts),
+        logs_path=str(paths.logs),
+    )
+    session_dir = (
+        paths.agent_home
+        / ".config"
+        / "agent-sandbox"
+        / "codex"
+        / "sessions"
+        / "2026"
+        / "05"
+        / "05"
+    )
+    session_dir.mkdir(parents=True)
+    rollout = session_dir / f"rollout-2026-05-05T08-19-00-{thread_id}.jsonl"
+    rollout.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {
+                    "timestamp": (started_at - timedelta(minutes=1)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {"type": "agent_message", "message": "old planner message"},
+                },
+                {
+                    "timestamp": (started_at + timedelta(seconds=10)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {"type": "agent_message", "message": "message during this job"},
+                },
+                {
+                    "timestamp": (finished_at + timedelta(minutes=1)).isoformat(),
+                    "type": "event_msg",
+                    "payload": {"type": "agent_message", "message": "message after this job"},
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert daemon.get_logs(record, mode="execution") == (
+        f"session id: {thread_id}\n"
+        "message during this job\n"
+    )
+
+
 def test_logs_recover_live_codex_messages_without_thread_id_in_container_output(
     tmp_path: Path,
 ) -> None:

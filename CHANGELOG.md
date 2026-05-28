@@ -5,6 +5,24 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-28 - Agent Log View Corrections
+
+- Made container-worker execution logs include only execution-scoped Codex
+  messages, avoiding restored-thread history while still showing assistant
+  progress that is not present in raw container stdout.
+- Changed Admin Web thread logs to page from the oldest thread forward and
+  stopped auto-polling the expensive thread transcript view.
+- Rendered the Admin Web execution/thread log switch as attached tabs so the
+  active log view is clearer.
+
+## 2026-05-28 - Workflow Binding Context
+
+- Made workflow binding diagnostics distinguish guaranteed upstream references
+  from path-conditional branch references.
+- Preserved guaranteed pre-branch context across merge gates while keeping
+  branch-local data available through explicit merge projections.
+- Kept debounce gate releases from dropping inherited workflow binding context.
+
 ## 2026-05-28 - Approval Queue Review Fixes
 
 - Kept any-payload MCP approval grants from consuming uses until the retry
