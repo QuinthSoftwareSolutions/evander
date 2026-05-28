@@ -364,6 +364,55 @@ def test_session_prepare_and_file_write_surface_targets_durable_paths(tmp_path: 
     ).read_text(encoding="utf-8") == "task: test\n"
 
 
+def test_session_file_write_skips_identical_existing_content_and_mode(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    prepared = client.post(
+        "/v1/sessions",
+        headers=_auth(),
+        json={"session_id": "session-1"},
+    )
+    assert prepared.status_code == 201
+
+    payload = {
+        "files": [
+            {
+                "destination_path": "/home/agent/AGENTS.md",
+                "content": "# Agent\n",
+                "mode": "0644",
+                "overwrite": True,
+            }
+        ]
+    }
+    first = client.post("/v1/sessions/session-1/files", headers=_auth(), json=payload)
+    second = client.post("/v1/sessions/session-1/files", headers=_auth(), json=payload)
+    mode_change = client.post(
+        "/v1/sessions/session-1/files",
+        headers=_auth(),
+        json={
+            "files": [
+                {
+                    "destination_path": "/home/agent/AGENTS.md",
+                    "content": "# Agent\n",
+                    "mode": "0600",
+                    "overwrite": True,
+                }
+            ]
+        },
+    )
+
+    assert first.status_code == 200
+    assert first.json()["copied_count"] == 1
+    assert first.json()["copied_paths"] == ["/home/agent/AGENTS.md"]
+    assert second.status_code == 200
+    assert second.json()["copied_count"] == 0
+    assert second.json()["copied_paths"] == []
+    assert mode_change.status_code == 200
+    assert mode_change.json()["copied_count"] == 1
+    target = tmp_path / "worker-root" / "sessions" / "session-1" / "agent_home" / "AGENTS.md"
+    assert target.read_text(encoding="utf-8") == "# Agent\n"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
 def test_session_artifact_text_endpoint_reads_utf8_artifact_and_rejects_escape(
     tmp_path: Path,
 ) -> None:
