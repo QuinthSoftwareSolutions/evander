@@ -29,6 +29,7 @@ class NodeCapability:
 class WorkflowValidationDiagnostic(BaseModel):
     code: str
     message: str
+    severity: str = "error"
     node_id: str | None = None
     node_type: str | None = None
     field_path: str | None = None
@@ -163,6 +164,7 @@ def validate_workflow_binding_diagnostics(
     edges = config.get("edges", [])
     edge_list = edges if isinstance(edges, list) else []
     output_schemas = derive_workflow_output_schemas(config)
+    dominators_by_node = _compute_dominators(edge_list, set(nodes_by_id))
 
     diagnostics: list[WorkflowValidationDiagnostic] = []
     for node_id, node in nodes:
@@ -181,6 +183,8 @@ def validate_workflow_binding_diagnostics(
                     node_id=node_id,
                     node_type=node_type,
                     declared_outputs=declared_outputs,
+                    guaranteed_node_ids=dominators_by_node.get(node_id, {node_id})
+                    - {node_id},
                     all_node_ids=all_node_ids,
                 )
             )
@@ -396,6 +400,7 @@ def _validate_binding_value(
     node_id: str,
     node_type: str,
     declared_outputs: Mapping[str, Mapping[str, Any]],
+    guaranteed_node_ids: set[str],
     all_node_ids: set[str],
 ) -> list[WorkflowValidationDiagnostic]:
     if not isinstance(value, str) or "${{" not in value:
@@ -450,6 +455,7 @@ def _validate_binding_value(
                 node_id=node_id,
                 node_type=node_type,
                 declared_outputs=declared_outputs,
+                guaranteed_node_ids=guaranteed_node_ids,
                 all_node_ids=all_node_ids,
             )
         )
@@ -463,6 +469,7 @@ def _validate_binding_expression(
     node_id: str,
     node_type: str,
     declared_outputs: Mapping[str, Mapping[str, Any]],
+    guaranteed_node_ids: set[str],
     all_node_ids: set[str],
 ) -> list[WorkflowValidationDiagnostic]:
     diagnostics = _validate_binding_reference(
@@ -471,6 +478,7 @@ def _validate_binding_expression(
         node_id=node_id,
         node_type=node_type,
         declared_outputs=declared_outputs,
+        guaranteed_node_ids=guaranteed_node_ids,
         all_node_ids=all_node_ids,
     )
     if not bool(getattr(expression, "has_fallback", False)):
@@ -484,6 +492,7 @@ def _validate_binding_expression(
                 node_id=node_id,
                 node_type=node_type,
                 declared_outputs=declared_outputs,
+                guaranteed_node_ids=guaranteed_node_ids,
                 all_node_ids=all_node_ids,
             )
         )
@@ -495,6 +504,7 @@ def _validate_binding_expression(
                 node_id=node_id,
                 node_type=node_type,
                 declared_outputs=declared_outputs,
+                guaranteed_node_ids=guaranteed_node_ids,
                 all_node_ids=all_node_ids,
             )
         )
@@ -508,6 +518,7 @@ def _validate_binding_reference(
     node_id: str,
     node_type: str,
     declared_outputs: Mapping[str, Mapping[str, Any]],
+    guaranteed_node_ids: set[str],
     all_node_ids: set[str],
 ) -> list[WorkflowValidationDiagnostic]:
     resolved_node_id, output_path = _resolve_available_reference(
@@ -545,6 +556,22 @@ def _validate_binding_reference(
                 reference=output_ref,
             )
         ]
+    if resolved_node_id not in guaranteed_node_ids:
+        return [
+            WorkflowValidationDiagnostic(
+                code="conditional_binding_node",
+                message=(
+                    f"{field_path} references conditionally available upstream node "
+                    f"{resolved_node_id}; bind through a merge-projected output when this "
+                    "value must be available after branching"
+                ),
+                severity="warning",
+                node_id=node_id,
+                node_type=node_type,
+                field_path=field_path,
+                reference=output_ref,
+            )
+        ]
     return []
 
 
@@ -567,6 +594,44 @@ def _resolve_available_reference(
         ):
             return candidate_node_id, candidate_output_path
     return reference_node_id, output_path
+
+
+def _compute_dominators(
+    edges: list[Any], node_ids: set[str]
+) -> dict[str, set[str]]:
+    """Return node -> nodes that are guaranteed to execute before it on acyclic paths."""
+
+    predecessors: dict[str, set[str]] = {node_id: set() for node_id in node_ids}
+    for edge in edges:
+        if not isinstance(edge, Mapping):
+            continue
+        if bool(edge.get("allow_cycle", False)):
+            continue
+        source_id = str(edge.get("source_id") or "").strip()
+        target_id = str(edge.get("target_id") or "").strip()
+        if source_id in node_ids and target_id in node_ids:
+            predecessors[target_id].add(source_id)
+
+    dominators: dict[str, set[str]] = {}
+    for node_id in node_ids:
+        dominators[node_id] = {node_id} if not predecessors[node_id] else set(node_ids)
+
+    changed = True
+    while changed:
+        changed = False
+        for node_id in sorted(node_ids):
+            preds = predecessors[node_id]
+            if not preds:
+                next_dominators = {node_id}
+            else:
+                shared = set(node_ids)
+                for predecessor_id in preds:
+                    shared &= dominators.get(predecessor_id, {predecessor_id})
+                next_dominators = shared | {node_id}
+            if next_dominators != dominators[node_id]:
+                dominators[node_id] = next_dominators
+                changed = True
+    return dominators
 
 
 def _is_binding_expression(value: Any) -> bool:

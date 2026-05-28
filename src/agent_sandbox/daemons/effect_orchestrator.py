@@ -710,7 +710,7 @@ class EffectOrchestratorWorker:
         completion_events_published += count
 
         phase_started = time.perf_counter()
-        count = self._retry_pending_gate_completion_publications()
+        count = self._retry_pending_gate_completion_publications(graph=graph)
         self._log_phase_duration(
             "retry_pending_gate_completion_publications",
             phase_started,
@@ -1237,7 +1237,7 @@ class EffectOrchestratorWorker:
         self.execution_store.record_execution(record)
         self._update_event_delivery_state(record.event_id)
 
-    def _retry_pending_gate_completion_publications(self) -> int:
+    def _retry_pending_gate_completion_publications(self, *, graph: ExecutionGraph) -> int:
         retried = 0
         list_completion_pending = getattr(
             self.gate_execution_store, "list_completion_pending_records", None
@@ -1271,6 +1271,11 @@ class EffectOrchestratorWorker:
                 outputs=outputs,
                 branch_port=branch_port,
                 for_execution_ids=for_execution_ids,
+                preserved_context_node_ids=_gate_completion_preserved_context_node_ids(
+                    graph=graph,
+                    gate_id=getattr(record, "gate_id", ""),
+                    gate_type=getattr(record, "gate_type", ""),
+                ),
                 pending_status=str(
                     getattr(record, "completion_pending_status", None) or "succeeded"
                 ),
@@ -1316,6 +1321,7 @@ class EffectOrchestratorWorker:
         pending_status: str,
         branch_port: str | None = None,
         for_execution_ids: dict[str, str] | None = None,
+        preserved_context_node_ids: set[str] | None = None,
         finished_at: datetime | None = None,
     ) -> str | None:
         resolved_finished_at = finished_at or datetime.now(UTC)
@@ -1326,6 +1332,7 @@ class EffectOrchestratorWorker:
                     outputs=outputs,
                     branch_port=branch_port,
                     for_execution_ids=for_execution_ids,
+                    preserved_context_node_ids=preserved_context_node_ids,
                 )
             )
         except Exception as exc:  # noqa: BLE001
@@ -1483,6 +1490,12 @@ class EffectOrchestratorWorker:
             event_id=queue_record.event_id,
             node_id=node_id,
         )
+
+    @staticmethod
+    def _guaranteed_context_node_ids_for(
+        *, graph: ExecutionGraph, node_id: str
+    ) -> set[str]:
+        return _guaranteed_context_node_ids(graph=graph, node_id=node_id)
 
     def claim_dedupe_key(
         self,
@@ -2025,6 +2038,7 @@ class EffectOrchestratorWorker:
         outputs: dict[str, Any],
         branch_port: str | None = None,
         for_execution_ids: dict[str, str] | None = None,
+        preserved_context_node_ids: set[str] | None = None,
     ) -> str:
         completion_event, idempotency_key, completion_event_id = (
             self._build_gate_completion_event_from_record(
@@ -2032,6 +2046,7 @@ class EffectOrchestratorWorker:
                 outputs=outputs,
                 branch_port=branch_port,
                 for_execution_ids=for_execution_ids,
+                preserved_context_node_ids=preserved_context_node_ids,
             )
         )
         self.event_queue.publish(completion_event, idempotency_key=idempotency_key)
@@ -2044,6 +2059,7 @@ class EffectOrchestratorWorker:
         outputs: dict[str, Any],
         branch_port: str | None = None,
         for_execution_ids: dict[str, str] | None = None,
+        preserved_context_node_ids: set[str] | None = None,
     ) -> tuple[TriggerEvent, str, str]:
         completion_event_id = _completion_event_id(
             parent_event_id=record.event_id,
@@ -2062,6 +2078,7 @@ class EffectOrchestratorWorker:
                 completed_node_id=record.gate_id,
                 outputs=outputs,
                 reset_context=record.gate_type == "gate:merge",
+                preserved_context_node_ids=preserved_context_node_ids,
                 branch_port=branch_port,
                 for_execution_ids=for_execution_ids,
             ),
@@ -2220,6 +2237,7 @@ class EffectOrchestratorWorker:
         publish_completion_event: bool = False,
         branch_port: str | None = None,
         for_execution_ids: dict[str, str] | None = None,
+        preserved_context_node_ids: set[str] | None = None,
     ) -> None:
         idempotency_key = _execution_idempotency_key(queue_record.event_id, gate.id)
         if self.gate_execution_store.find_execution_by_idempotency_key(idempotency_key) is not None:
@@ -2261,6 +2279,7 @@ class EffectOrchestratorWorker:
                 outputs=outputs,
                 branch_port=branch_port,
                 for_execution_ids=for_execution_ids,
+                preserved_context_node_ids=preserved_context_node_ids,
                 pending_status=status,
                 finished_at=finished_at,
             )
@@ -2655,6 +2674,7 @@ def _payload_with_node_output_context(
     completed_node_id: str,
     outputs: dict[str, Any],
     reset_context: bool,
+    preserved_context_node_ids: set[str] | None = None,
     branch_port: str | None = None,
     for_execution_ids: dict[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -2671,7 +2691,16 @@ def _payload_with_node_output_context(
         for_execution_ids=for_execution_ids,
     )
     if reset_context:
-        payload[NODE_OUTPUTS_CONTEXT_KEY] = {completed_node_id: dict(outputs)}
+        if preserved_context_node_ids is None:
+            preserved_context: dict[str, dict[str, Any]] = {}
+        else:
+            preserved_context = {
+                node_id: dict(node_payload)
+                for node_id, node_payload in inherited_context.items()
+                if node_id in preserved_context_node_ids
+            }
+        preserved_context[completed_node_id] = dict(outputs)
+        payload[NODE_OUTPUTS_CONTEXT_KEY] = preserved_context
         if branch_port is not None:
             payload[_BRANCH_PORT_PAYLOAD_KEY] = branch_port
         if merged_for_execution_ids:
@@ -2823,6 +2852,52 @@ def _compute_depth(
 
 def _is_gate(node: WorkflowNodeDefinition) -> bool:
     return str(getattr(node, "type", "")).startswith("gate:")
+
+
+def _gate_completion_preserved_context_node_ids(
+    *, graph: ExecutionGraph, gate_id: str, gate_type: str
+) -> set[str] | None:
+    if str(gate_type or "").strip() != "gate:merge":
+        return None
+    return _guaranteed_context_node_ids(graph=graph, node_id=str(gate_id or "").strip())
+
+
+def _guaranteed_context_node_ids(*, graph: ExecutionGraph, node_id: str) -> set[str]:
+    node_ids = set(graph.nodes_by_id)
+    if node_id not in node_ids:
+        return set()
+    predecessors: dict[str, set[str]] = {current_node_id: set() for current_node_id in node_ids}
+    for inbound_edges in graph.inbound_index.values():
+        for edge in inbound_edges:
+            if _edge_allows_cycle(edge):
+                continue
+            source_id = _edge_source_id(edge)
+            target_id = _edge_target_id(edge)
+            if source_id in node_ids and target_id in node_ids:
+                predecessors[target_id].add(source_id)
+
+    dominators: dict[str, set[str]] = {}
+    for current_node_id in node_ids:
+        dominators[current_node_id] = (
+            {current_node_id} if not predecessors[current_node_id] else set(node_ids)
+        )
+
+    changed = True
+    while changed:
+        changed = False
+        for current_node_id in sorted(node_ids):
+            preds = predecessors[current_node_id]
+            if not preds:
+                next_dominators = {current_node_id}
+            else:
+                shared = set(node_ids)
+                for predecessor_id in preds:
+                    shared &= dominators.get(predecessor_id, {predecessor_id})
+                next_dominators = shared | {current_node_id}
+            if next_dominators != dominators[current_node_id]:
+                dominators[current_node_id] = next_dominators
+                changed = True
+    return dominators.get(node_id, {node_id}) - {node_id}
 
 
 def _edge_source_id(edge: Any) -> str:

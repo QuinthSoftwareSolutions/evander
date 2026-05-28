@@ -2504,6 +2504,7 @@ def test_admin_web_validate_reports_deleted_binding_node_without_rejecting_save(
     diagnostics = validate_response.json()["validation_diagnostics"]
     assert {
         "code": "invalid_binding_node",
+        "severity": "error",
         "node_id": "prompt-agent",
         "node_type": "effect:agent:prompt",
         "field_path": "prompt",
@@ -2615,6 +2616,7 @@ def test_admin_web_validate_reports_missing_binding_output(tmp_path: Path) -> No
     assert response.status_code == 200
     assert {
         "code": "missing_binding_output",
+        "severity": "error",
         "node_id": "prompt-agent",
         "node_type": "effect:agent:prompt",
         "field_path": "prompt",
@@ -2687,6 +2689,7 @@ def test_admin_web_validate_preserves_domain_diagnostics_for_for_gate(
     assert {
         "code": "node_capability",
         "message": "gate:for gate-for-1 uses invalid source_port value(s): other",
+        "severity": "error",
     } in diagnostics
 
 
@@ -2913,6 +2916,7 @@ def test_admin_web_validate_scopes_binding_diagnostics_to_workflow_graphs(
     )
     assert {
         "code": "invalid_binding_node",
+        "severity": "error",
         "node_id": "effect-agent-clone-repo-copy",
         "node_type": "effect:agent:clone-repo",
         "field_path": "target",
@@ -2933,6 +2937,7 @@ def test_admin_web_validate_reports_malformed_binding_fallback(tmp_path: Path) -
     assert response.status_code == 200
     assert {
         "code": "malformed_binding_fallback",
+        "severity": "error",
         "node_id": "prompt-agent",
         "node_type": "effect:agent:prompt",
         "field_path": "prompt",

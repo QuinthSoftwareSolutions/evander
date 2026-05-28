@@ -90,6 +90,8 @@ Troubleshooting checklist:
 2. **Bindings fail with missing output references**
    - Check upstream node `outputs` declarations and the actual upstream payload keys.
    - Exact `${{node.output_name}}` and embedded `"...${{node.output_name}}..."` both require the referenced key to exist.
+   - After a branch re-merges, bind directly only to nodes that are guaranteed on every path to
+     the downstream node. Map branch-local values into merge outputs when they must be used later.
 3. **Merge gate output is not being emitted**
    - Confirm the merge gate has at least one inbound edge and that the configured edges point at
      the upstream node ids you expect to observe.

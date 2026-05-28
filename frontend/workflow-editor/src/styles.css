@@ -2639,9 +2639,18 @@ select {
 .node-diagnostic-badge {
   min-width: 1.5rem;
   text-align: center;
+}
+
+.node-diagnostic-badge.error {
   background: #ffe3dc;
   color: #9a3412;
   border: 1px solid rgba(178, 59, 26, 0.22);
+}
+
+.node-diagnostic-badge.warning {
+  background: #fff4cc;
+  color: #854d0e;
+  border: 1px solid rgba(161, 98, 7, 0.22);
 }
 
 .node-unsaved-badge {
