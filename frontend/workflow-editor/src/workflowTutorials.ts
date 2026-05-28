@@ -149,7 +149,7 @@ const TUTORIAL_GRAPH: WorkflowGraphMetadata = {
   id: TUTORIAL_GRAPH_ID,
   name: "First steps",
   description: "Isolated tutorial graph for the first workflow editor walkthrough.",
-  directory_paths: [],
+  directory_path: "root",
   user_ids: [],
   node_ids: [TUTORIAL_TRIGGER_NODE_ID, TUTORIAL_EFFECT_NODE_ID],
 };

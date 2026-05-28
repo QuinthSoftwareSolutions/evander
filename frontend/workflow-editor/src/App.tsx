@@ -711,13 +711,16 @@ function normalizeWorkflowGraphs(
       id: graph.id.trim(),
       name: graph.name.trim(),
       description: graph.description?.trim() || null,
-      directory_paths: Array.from(
-        new Set(
-          (Array.isArray(graph.directory_paths) ? graph.directory_paths : [])
-            .map((directoryPath) => directoryPath.trim())
-            .filter(Boolean),
-        ),
-      ),
+      directory_path:
+        typeof graph.directory_path === "string" && graph.directory_path.trim()
+          ? graph.directory_path.trim()
+          : Array.from(
+              new Set(
+                (Array.isArray(graph.directory_paths) ? graph.directory_paths : [])
+                  .map((directoryPath) => directoryPath.trim())
+                  .filter(Boolean),
+              ),
+            )[0] ?? defaultDirectoryPath,
       user_ids: Array.from(
         new Set(
           (Array.isArray(graph.user_ids) ? graph.user_ids : [])
@@ -757,7 +760,7 @@ function normalizeWorkflowGraphs(
       id,
       name: graph?.name ?? defaultWorkflowGraphName(config, component, index),
       description: graph?.description ?? null,
-      directory_paths: graph?.directory_paths.length ? graph.directory_paths : [defaultDirectoryPath],
+      directory_path: graph?.directory_path ?? defaultDirectoryPath,
       user_ids: graph?.user_ids ?? [],
       node_ids: component,
     };
@@ -766,8 +769,8 @@ function normalizeWorkflowGraphs(
 
 function graphVisibleInDirectory(graph: WorkflowGraphMetadata, selectedDirectoryPath: string): boolean {
   const selectedPath = selectedDirectoryPath.trim() || "root";
-  const directoryPaths = graph.directory_paths.length > 0 ? graph.directory_paths : ["root"];
-  return directoryPaths.includes(selectedPath);
+  const graphDirectoryPath = graph.directory_path.trim() || "root";
+  return graphDirectoryPath === selectedPath || graphDirectoryPath.startsWith(`${selectedPath}/`);
 }
 
 function fallbackPosition(index: number): { x: number; y: number } {
@@ -1381,7 +1384,7 @@ function mergeGeneratedDraftIntoWorkflow(
     return {
       ...graph,
       id: nextId,
-      directory_paths: graph.directory_paths.length > 0 ? graph.directory_paths : [defaultDirectoryPath],
+      directory_path: graph.directory_path || defaultDirectoryPath,
       node_ids: graph.node_ids.map((nodeId) => idMap.get(nodeId)).filter((nodeId): nodeId is string => Boolean(nodeId)),
     };
   }).filter((graph) => graph.node_ids.length > 0);
@@ -2477,13 +2480,23 @@ function coerceWorkflowGraphMetadataList(value: unknown): WorkflowGraphMetadata[
       ? entry.node_ids.filter((nodeId): nodeId is string => typeof nodeId === "string" && Boolean(nodeId.trim()))
       : [];
     if (!id || !name || nodeIds.length === 0) return [];
+    const directoryPath = typeof entry.directory_path === "string" ? entry.directory_path.trim() : "";
+    const legacyDirectoryPaths = Array.isArray(entry.directory_paths)
+      ? entry.directory_paths
+      : typeof entry.directory_paths === "string"
+        ? [entry.directory_paths]
+        : [];
+    const normalizedDirectoryPath =
+      directoryPath ||
+      legacyDirectoryPaths
+        .map((directoryPathValue) => (typeof directoryPathValue === "string" ? directoryPathValue.trim() : ""))
+        .find((directoryPathValue) => Boolean(directoryPathValue)) ||
+      "root";
     return [{
       id,
       name,
       description: typeof entry.description === "string" ? entry.description : null,
-      directory_paths: Array.isArray(entry.directory_paths)
-        ? entry.directory_paths.filter((directoryPath): directoryPath is string => typeof directoryPath === "string" && Boolean(directoryPath.trim()))
-        : [],
+      directory_path: normalizedDirectoryPath,
       user_ids: Array.isArray(entry.user_ids)
         ? entry.user_ids.filter((userId): userId is string => typeof userId === "string" && Boolean(userId.trim()))
         : [],
@@ -3311,7 +3324,15 @@ function renderToolArgumentPolicyErrorMessages(messages: string[]) {
 }
 
 export default function App() {
-  const { privilegedUnlocked, selectedDirectoryPath, directoryTree, setWorkflowHasUnsavedChanges } = useAdminUi();
+  const {
+    privilegedUnlocked,
+    selectedDirectoryPath,
+    directoryTree,
+    setWorkflowHasUnsavedChanges,
+    canReadWorkflows,
+    canWriteWorkflows,
+    canControlWorkflowRuns,
+  } = useAdminUi();
   const initialWorkflowRunLookup = workflowRunLookupFromHash();
   const appShellRef = useRef<HTMLDivElement | null>(null);
   const canvasShellRef = useRef<HTMLElement | null>(null);
@@ -3373,7 +3394,7 @@ export default function App() {
   const [nodeEditOrigins, setNodeEditOrigins] = useState<Record<string, string>>({});
   const [graphNameDraft, setGraphNameDraft] = useState("");
   const [graphDescriptionDraft, setGraphDescriptionDraft] = useState("");
-  const [graphDirectoriesDraft, setGraphDirectoriesDraft] = useState("");
+  const [graphDirectoryDraft, setGraphDirectoryDraft] = useState("");
   const [graphUsersDraft, setGraphUsersDraft] = useState("");
   const [inspectorNodeId, setInspectorNodeId] = useState("");
   const [inspectorDisplayName, setInspectorDisplayName] = useState("");
@@ -3408,7 +3429,8 @@ export default function App() {
     ? activeWorkflowTutorialDefinition.steps[activeWorkflowTutorial?.stepIndex ?? 0] ?? null
     : null;
   const isTutorialMode = Boolean(activeWorkflowTutorialDefinition && activeWorkflowTutorialStep);
-  const workflowEditLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial);
+  const workflowEditLocked = editLocked || isInspectMode || Boolean(activeWorkflowTutorial) || !canWriteWorkflows;
+  const workflowRunControlLocked = !canControlWorkflowRuns;
   const workflowTutorialProgressSets = useMemo(() => ({
     completed: new Set(workflowTutorialProgress.completedTutorialIds),
     skipped: new Set(workflowTutorialProgress.skippedTutorialIds),
@@ -3424,6 +3446,7 @@ export default function App() {
   const activeWorkflowCatalog = activeWorkflowTutorialDefinition?.catalog ?? catalog;
   const config = document?.config ?? emptyConfig();
   const workflowGraphs = document?.graphs ?? [];
+  const workflowReadLocked = !canReadWorkflows;
   const visibleWorkflowGraphs = workflowGraphs.filter((graph) =>
     graphVisibleInDirectory(graph, selectedDirectoryPath),
   );
@@ -4004,7 +4027,7 @@ export default function App() {
 
   async function clearWorkflowRun(eventId: string, runState?: string) {
     const normalizedEventId = eventId.trim();
-    if (!normalizedEventId || clearingRunIds[normalizedEventId] || workflowEditLocked) return;
+    if (!normalizedEventId || clearingRunIds[normalizedEventId] || workflowRunControlLocked) return;
     const inspectedRunEventId = (runDetail as WorkflowRunDetail | null)?.event_id ?? null;
     const verb = runState === "errored" ? "Dismiss" : "Clear";
     if (!window.confirm(`${verb} workflow run ${normalizedEventId}?`)) return;
@@ -4037,7 +4060,7 @@ export default function App() {
 
   async function dismissNodeFailures(nodeId: string, failedCount: number) {
     const normalizedNodeId = nodeId.trim();
-    if (!normalizedNodeId || dismissingNodeFailureIds[normalizedNodeId] || workflowEditLocked) return;
+    if (!normalizedNodeId || dismissingNodeFailureIds[normalizedNodeId] || workflowRunControlLocked) return;
     const countLabel = failedCount === 1 ? "1 active fail log" : `${failedCount} active fail logs`;
     if (!window.confirm(`Dismiss all ${countLabel} for node ${normalizedNodeId}?`)) return;
     setDismissingNodeFailureIds((current) => ({ ...current, [normalizedNodeId]: true }));
@@ -4063,7 +4086,7 @@ export default function App() {
 
   async function resumeWorkflowRun(eventId: string) {
     const normalizedEventId = eventId.trim();
-    if (!normalizedEventId || resumingRunIds[normalizedEventId] || workflowEditLocked) return;
+    if (!normalizedEventId || resumingRunIds[normalizedEventId] || workflowRunControlLocked) return;
     const inspectedRunEventId = (runDetail as WorkflowRunDetail | null)?.event_id ?? null;
     setResumingRunIds((current) => ({ ...current, [normalizedEventId]: true }));
     try {
@@ -4126,6 +4149,7 @@ export default function App() {
 
   function inspectWorkflowRun(eventId: string) {
     if (activeWorkflowTutorial) return;
+    if (workflowReadLocked) return;
     const normalizedEventId = eventId.trim();
     if (!normalizedEventId) return;
     void loadWorkflowRunDetail(new URLSearchParams({ event_id: normalizedEventId }), normalizedEventId);
@@ -4149,6 +4173,7 @@ export default function App() {
 
   function submitWorkflowRunDetailLookup(event: ReactFormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (workflowReadLocked) return;
     const normalizedLookup = runDetailLookup.trim();
     if (!normalizedLookup) return;
     void loadWorkflowRunDetail(workflowRunDetailLookupQuery(normalizedLookup, runDetailLookupKind), normalizedLookup);
@@ -4156,6 +4181,7 @@ export default function App() {
 
   function submitWorkflowRunSearch(event: ReactFormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (workflowReadLocked) return;
     const query = workflowRunSearchQuery(runSearchScope, {
       withoutSession: runSearchWithoutSession,
       includeCompleted: runSearchIncludeCompleted,
@@ -4443,6 +4469,7 @@ export default function App() {
   }
 
   function openWorkflowGenerator() {
+    if (workflowEditLocked) return;
     if (hasUnsavedWorkflowChanges) {
       const confirmed = window.confirm(
         "Opening the workflow generator will discard unsaved workflow edits. Continue?",
@@ -4496,7 +4523,7 @@ export default function App() {
   }
 
   function acceptWorkflowGeneratorDraft() {
-    if (!workflowGeneratorOpen || !document || !savedDocument) return;
+    if (workflowEditLocked || !workflowGeneratorOpen || !document || !savedDocument) return;
     if (workflowGeneratorState !== "ready") {
       setWorkflowGeneratorError("Generate a ready draft before accepting it.");
       return;
@@ -4550,7 +4577,7 @@ export default function App() {
   }
 
   async function generateWorkflowGeneratorDraft() {
-    if (!workflowGeneratorOpen) return;
+    if (workflowEditLocked || !workflowGeneratorOpen) return;
     const description = workflowGeneratorDescription.trim();
     workflowGeneratorAbortRef.current?.abort();
     workflowGeneratorRequestIdRef.current += 1;
@@ -4748,13 +4775,13 @@ export default function App() {
     if (!selectedGraph) {
       setGraphNameDraft("");
       setGraphDescriptionDraft("");
-      setGraphDirectoriesDraft("");
+      setGraphDirectoryDraft("");
       setGraphUsersDraft("");
       return;
     }
     setGraphNameDraft(selectedGraph.name);
     setGraphDescriptionDraft(selectedGraph.description ?? "");
-    setGraphDirectoriesDraft((selectedGraph.directory_paths.length ? selectedGraph.directory_paths : [selectedDirectoryPath]).join("\n"));
+    setGraphDirectoryDraft(selectedGraph.directory_path || selectedDirectoryPath);
     setGraphUsersDraft(selectedGraph.user_ids.join("\n"));
   }, [selectedGraph, selectedDirectoryPath]);
 
@@ -5752,16 +5779,9 @@ export default function App() {
       setError("Graph name is required.");
       return;
     }
-    const nextDirectoryPaths = Array.from(
-      new Set(
-        graphDirectoriesDraft
-          .split("\n")
-          .map((directoryPath) => directoryPath.trim())
-          .filter(Boolean),
-      ),
-    );
-    if (nextDirectoryPaths.length === 0) {
-      setError("At least one graph directory is required.");
+    const nextDirectoryPath = graphDirectoryDraft.trim();
+    if (!nextDirectoryPath) {
+      setError("Graph directory is required.");
       return;
     }
     const nextUserIds = Array.from(
@@ -5773,12 +5793,12 @@ export default function App() {
       ),
     );
     const nextGraphs = document.graphs.map((graph) =>
-      graph.id === selectedGraph.id
-        ? {
+        graph.id === selectedGraph.id
+          ? {
             ...graph,
             name: nextName,
             description: graphDescriptionDraft.trim() || null,
-            directory_paths: nextDirectoryPaths,
+            directory_path: nextDirectoryPath,
             user_ids: nextUserIds,
           }
         : graph,
@@ -6115,7 +6135,7 @@ export default function App() {
   }
 
   async function validateDocument() {
-    if (!document || workflowEditLocked) return;
+    if (!document || workflowReadLocked) return;
     const validation = await fetchJson<WorkflowEditorValidation>(
       "/api/workflow-editor/validate",
       {
@@ -8026,6 +8046,7 @@ export default function App() {
     const canGenerateDraft =
       workflowGeneratorOpen &&
       workflowGeneratorState !== "generating" &&
+      !workflowEditLocked &&
       generatorDescription.length >= WORKFLOW_GENERATOR_MIN_DESCRIPTION_LENGTH;
     const generatedDraftMatchesDescription =
       workflowGeneratorState === "ready" &&
@@ -8064,6 +8085,7 @@ export default function App() {
             rows={7}
             placeholder="Describe the workflow to draft."
             onChange={(event) => handleWorkflowGeneratorDescriptionChange(event.target.value)}
+            disabled={workflowEditLocked}
           />
         </label>
         {workflowGeneratorError ? <div className="runtime-run-error">{workflowGeneratorError}</div> : null}
@@ -8394,14 +8416,14 @@ export default function App() {
           ) : null}
         </div>
         <div className="runtime-run-actions">
-          <button
-            type="button"
-            className="subtle-button"
-            onClick={() => inspectWorkflowRun(run.event_id)}
-            disabled={runDetailLoading || workflowEditLocked}
-          >
-            Inspect
-          </button>
+                      <button
+                        type="button"
+                        className="subtle-button"
+                        onClick={() => inspectWorkflowRun(run.event_id)}
+                        disabled={runDetailLoading || workflowReadLocked}
+                      >
+                        Inspect
+                      </button>
         </div>
       </div>
     );
@@ -8537,10 +8559,10 @@ export default function App() {
           ) : (
             <>
               {renderWorkflowTutorialLauncher()}
-              {editLocked ? <div className="callout warning-callout workflow-lock-callout">Unlock privileged operations to modify workflow state or clear runtime runs.</div> : null}
+              {editLocked ? <div className="callout warning-callout workflow-lock-callout">Unlock privileged operations to modify workflow state.</div> : null}
 
               <div className="workflow-generator-launcher">
-                <button type="button" className="subtle-button" onClick={openWorkflowGenerator}>
+                <button type="button" className="subtle-button" onClick={openWorkflowGenerator} disabled={workflowEditLocked}>
                   Generate workflow
                 </button>
               </div>
@@ -8578,7 +8600,7 @@ export default function App() {
                   <button
                     type="submit"
                     className="subtle-button"
-                    disabled={runDetailLoading || !runDetailLookup.trim() || workflowEditLocked}
+                    disabled={runDetailLoading || !runDetailLookup.trim() || workflowReadLocked}
                   >
                     {runDetailLoading ? "Loading..." : "Inspect"}
                   </button>
@@ -8635,7 +8657,7 @@ export default function App() {
                     <button
                       type="submit"
                       className="subtle-button"
-                      disabled={runSearchLoading || !selectedRunSearchScope || workflowEditLocked}
+                      disabled={runSearchLoading || !selectedRunSearchScope || workflowReadLocked}
                     >
                       {runSearchLoading ? "Loading..." : "Find"}
                     </button>
@@ -8686,7 +8708,7 @@ export default function App() {
                           type="button"
                           className="subtle-button"
                           onClick={() => inspectWorkflowRun(run.event_id)}
-                          disabled={runDetailLoading || workflowEditLocked}
+                          disabled={runDetailLoading || workflowReadLocked}
                         >
                           Inspect
                         </button>
@@ -8695,7 +8717,7 @@ export default function App() {
                             type="button"
                             className="subtle-button"
                             onClick={() => void resumeWorkflowRun(run.event_id)}
-                            disabled={Boolean(resumingRunIds[run.event_id]) || workflowEditLocked}
+                            disabled={Boolean(resumingRunIds[run.event_id]) || workflowRunControlLocked}
                           >
                             {resumingRunIds[run.event_id] ? "Resuming..." : "Resume from failure"}
                           </button>
@@ -8704,7 +8726,7 @@ export default function App() {
                           type="button"
                           className="subtle-button runtime-run-clear"
                           onClick={() => void clearWorkflowRun(run.event_id, run.run_state)}
-                          disabled={Boolean(clearingRunIds[run.event_id]) || workflowEditLocked}
+                          disabled={Boolean(clearingRunIds[run.event_id]) || workflowRunControlLocked}
                         >
                           {clearingRunIds[run.event_id]
                             ? run.run_state === "errored"
@@ -8768,15 +8790,14 @@ export default function App() {
                     />
                   </label>
                   <label className="inspector-label">
-                    <span>Directories</span>
+                    <span>Directory path</span>
                     <p className="field-description">
-                      One directory path per line. If the graph has no saved directories, the editor shows the selected directory/root default. Applying edits still requires at least one directory line.
+                      Single canonical directory scope for this graph. If omitted in older data, the editor falls back to the selected directory or root.
                     </p>
-                    <textarea
-                      value={graphDirectoriesDraft}
-                      rows={3}
+                    <input
+                      value={graphDirectoryDraft}
                       placeholder={selectedDirectoryPath}
-                      onChange={(event) => setGraphDirectoriesDraft(event.target.value)}
+                      onChange={(event) => setGraphDirectoryDraft(event.target.value)}
                       disabled={workflowEditLocked}
                     />
                   </label>
@@ -8865,7 +8886,7 @@ export default function App() {
 
             <div className="sidebar-section">
               <div className="section-label">Save</div>
-              <button onClick={() => void validateDocument()} disabled={workflowEditLocked}>
+              <button onClick={() => void validateDocument()} disabled={workflowReadLocked}>
                 Validate
               </button>
               <button className="primary" onClick={() => void saveDocument()} disabled={workflowEditLocked}>
@@ -9157,7 +9178,7 @@ export default function App() {
                       type="button"
                       className="node-context-menu-item node-context-menu-danger"
                       onClick={() => void dismissNodeFailures(nodeConnectionMenu.nodeId, nodeConnectionMenu.failedCount)}
-                      disabled={Boolean(dismissingNodeFailureIds[nodeConnectionMenu.nodeId]) || workflowEditLocked}
+                      disabled={Boolean(dismissingNodeFailureIds[nodeConnectionMenu.nodeId]) || workflowRunControlLocked}
                       role="menuitem"
                     >
                       {dismissingNodeFailureIds[nodeConnectionMenu.nodeId] ? "Dismissing fail logs..." : "Dismiss all fail logs"}

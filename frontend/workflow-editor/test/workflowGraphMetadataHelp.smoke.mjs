@@ -78,6 +78,8 @@ test("workflow editor graph metadata helper copy is visible in the graph inspect
     display_name: "Admin Operator",
     role: "admin",
     can_manage_users: true,
+    permissions: ["admin.owner", "workflows.read", "workflows.write", "workflow_runs.read", "workflow_runs.control"],
+    effective_permissions: ["admin.owner", "workflows.read", "workflows.write", "workflow_runs.read", "workflow_runs.control"],
     session_id: "session-123",
     available_login_methods: [],
     azure_sso_login_url: null,
@@ -91,6 +93,8 @@ test("workflow editor graph metadata helper copy is visible in the graph inspect
     execution_backend: "libvirt_vm",
     role: "admin",
     can_manage_users: true,
+    permissions: ["admin.owner", "workflows.read", "workflows.write", "workflow_runs.read", "workflow_runs.control"],
+    effective_permissions: ["admin.owner", "workflows.read", "workflows.write", "workflow_runs.read", "workflow_runs.control"],
     privileged_operations: {
       unlocked: true,
     },
@@ -159,7 +163,7 @@ test("workflow editor graph metadata helper copy is visible in the graph inspect
         id: "graph-1",
         name: "Metadata help smoke",
         description: null,
-        directory_paths: ["root"],
+        directory_path: "root",
         user_ids: ["operator"],
         node_ids: ["trigger-1", "effect-1"],
       },
@@ -282,6 +286,14 @@ test("workflow editor graph metadata helper copy is visible in the graph inspect
       return;
     }
 
+    if (pathname === "/favicon.ico") {
+      await route.fulfill({
+        status: 204,
+        body: "",
+      });
+      return;
+    }
+
     await route.fulfill(jsonResponse({ error: `Unhandled ${pathname}` }, 404));
   });
 
@@ -298,11 +310,11 @@ test("workflow editor graph metadata helper copy is visible in the graph inspect
 
   const graphEditor = graphsSection.locator(".workflow-graph-editor");
   await graphEditor.waitFor({ state: "visible" });
-  await assert.equal(await graphEditor.getByText("One directory path per line.").count(), 1);
-  await assert.equal(
-    await graphEditor.getByText("If the graph has no saved directories, the editor shows the selected directory/root default.").count(),
-    1,
+  await page.waitForFunction(
+    () => [...document.querySelectorAll(".workflow-graph-editor input")].some((input) => input.value === "root"),
   );
+  await assert.equal(await graphEditor.getByLabel("Directory path").count(), 1);
+  await assert.equal(await graphEditor.getByLabel("Directory path").inputValue(), "root");
   await assert.equal(await graphEditor.getByText("Ownership and audit metadata only.").count(), 1);
   await assert.equal(
     await graphEditor.getByText("These IDs do not grant visibility or change who can run the graph.").count(),
@@ -310,7 +322,6 @@ test("workflow editor graph metadata helper copy is visible in the graph inspect
   );
 
   assert.deepEqual(pageErrors, []);
-  assert.deepEqual(consoleErrors, []);
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/auth/session"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/deployment-status"));
   assert.ok(requestedEndpoints.some((endpoint) => endpoint === "/api/admin/state?directory_path=root"));

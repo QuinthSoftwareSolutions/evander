@@ -98,7 +98,7 @@ test("workflow editor inspects a stored workflow run detail", async (t) => {
     id: "graph-1",
     name: "Support flow",
     description: null,
-    directory_paths: ["root"],
+    directory_path: "root",
     user_ids: [],
     node_ids: ["trigger-1", "agent-1", "notify-1", "legacy-gap-1"],
   };
