@@ -18,6 +18,9 @@ material. Newer entries are added incrementally as changes land.
 - Added Azure DevOps PR feedback metadata for prior same-thread authors and ADO
   mention names, plus optional PR-feedback trigger configuration that annotates
   whether a comment is directed at an agent.
+- Shared agent-directed feedback annotation between the trigger provider and the
+  ADO worker publisher so workflow gates see the same metadata on live ADO
+  feedback events.
 
 ## 2026-05-28 - Session Metadata Equals Flattening
 

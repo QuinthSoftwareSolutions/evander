@@ -44,6 +44,7 @@ from agent_sandbox.pr_tracking import (
     is_pr_completed,
     status_snapshot_from_pull_request,
 )
+from agent_sandbox.pr_feedback.agent_directed import annotate_agent_directed_feedback
 from agent_sandbox.pr_feedback.providers import (
     AzureDevOpsFeedbackAdapter,
     pr_feedback_item_payload,
@@ -1977,15 +1978,20 @@ def _publish_directory_pr_feedback_events(
                     continue
                 raise
             for envelope in result.feedback:
+                feedback_item = annotate_agent_directed_feedback(
+                    PrFeedbackItem.model_validate(pr_feedback_item_payload(envelope)),
+                    agent_author_names=trigger.agent_author_names,
+                    agent_mention_names=trigger.agent_mention_names,
+                )
                 discovered.append(
                     (
                         {
-                            "provider": envelope.provider,
-                            "repo": envelope.repo,
-                            "pr_id": envelope.pr_id,
+                            "provider": feedback_item.provider,
+                            "repo": feedback_item.repo,
+                            "pr_id": feedback_item.pr_id,
                         },
                         binding,
-                        PrFeedbackItem.model_validate(pr_feedback_item_payload(envelope)),
+                        feedback_item,
                     )
                 )
             next_cursors[stream_key] = _latest_cursor_value(

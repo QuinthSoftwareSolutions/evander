@@ -1656,6 +1656,8 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
             "provider": "ado",
             "organization_url": "https://dev.azure.com/example-org",
             "project": "Example Project",
+            "agent_author_names": ["evander Bot"],
+            "agent_mention_names": ["Truman Bot"],
         }
     )
 
@@ -1684,6 +1686,7 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
                     author="jonathan",
                     body="Please fix this",
                     created_at="2026-04-08T05:33:41.433000Z",
+                    metadata={"prior_thread_comment_author_names": ["evander Bot"]},
                 )
             ],
             next_cursor="2026-04-08T05:33:41.433000Z",
@@ -1710,10 +1713,18 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
         "repo": "org/repo",
         "pr_id": "6070",
     }
+    assert events[0].payload["feedback"]["metadata"]["agent_directed"] is True
+    assert events[0].payload["feedback"]["metadata"]["agent_directed_reason"] == "same_thread"
     feedback_store_payload = json.loads(
         (worker_config.runtime_dir / "pr-feedback-store.json").read_text(encoding="utf-8")
     )
     assert "azure_devops:thread_comment:30830:1" in feedback_store_payload["feedback"]
+    assert (
+        feedback_store_payload["feedback"]["azure_devops:thread_comment:30830:1"]["metadata"][
+            "agent_directed"
+        ]
+        is True
+    )
     service = PrFeedbackService(worker_config.runtime_dir / "pr-feedback-store.json")
     unread = service.list_unread_feedback(
         streams=[{"provider": "azure_devops", "repo": "org/repo", "pr_id": "6070"}],
