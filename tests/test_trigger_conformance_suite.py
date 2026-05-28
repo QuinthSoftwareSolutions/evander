@@ -1733,6 +1733,7 @@ def test_pr_feedback_trigger_marks_agent_directed_feedback(
                 "provider": "github",
                 "agent_author_names": ["evander Bot"],
                 "agent_mention_names": ["Truman Bot"],
+                "agent_mention_ids": ["c74221cb-ee08-6a83-9055-af01c3333112"],
             }
         ),
         _build_runtime_context(runtime_dir, env={"GITHUB_TOKEN": "secret"}),
@@ -1769,8 +1770,18 @@ def test_pr_feedback_trigger_marks_agent_directed_feedback(
                     body="For human reviewers only.",
                     created_at=datetime(2026, 4, 8, 5, 33, 43, tzinfo=timezone.utc),
                 ),
+                PrFeedbackItem(
+                    feedback_id="github:comment:4",
+                    provider="github",
+                    repo="org/repo",
+                    pr_id="11",
+                    author="reviewer",
+                    body="@<C74221CB-EE08-6A83-9055-AF01C3333112> can you take this?",
+                    created_at=datetime(2026, 4, 8, 5, 33, 44, tzinfo=timezone.utc),
+                    metadata={"mentioned_ids": ["c74221cb-ee08-6a83-9055-af01c3333112"]},
+                ),
             ]
-            self.next_cursor = "2026-04-08T05:33:43Z"
+            self.next_cursor = "2026-04-08T05:33:44Z"
 
     class _Adapter:
         def poll(self, **_kwargs):
@@ -1797,6 +1808,9 @@ def test_pr_feedback_trigger_marks_agent_directed_feedback(
     assert metadata_by_id["github:comment:2"]["agent_directed_reason"] == "mention"
     assert metadata_by_id["github:comment:3"]["agent_directed"] is False
     assert metadata_by_id["github:comment:3"]["agent_directed_reason"] == "not_agent_directed"
+    assert metadata_by_id["github:comment:4"]["agent_directed"] is True
+    assert metadata_by_id["github:comment:4"]["agent_directed_mentioned"] is True
+    assert metadata_by_id["github:comment:4"]["agent_directed_reason"] == "mention"
 
 
 def test_pr_completed_trigger_github_refreshes_status_before_emitting(

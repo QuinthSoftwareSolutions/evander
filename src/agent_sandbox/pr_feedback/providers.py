@@ -29,6 +29,10 @@ from agent_sandbox.pr_feedback.store import (
 )
 
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+_ADO_COMPACT_MENTION_ID_RE = re.compile(
+    r"@<\s*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\s*>"
+)
 _INLINE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 
 
@@ -157,6 +161,12 @@ def _extract_ado_mention_names(content: str) -> list[str]:
     return _unique_non_empty(parser.mentioned_names)
 
 
+def _extract_ado_mention_ids(content: str) -> list[str]:
+    return _unique_non_empty(
+        match.group(1).casefold() for match in _ADO_COMPACT_MENTION_ID_RE.finditer(content or "")
+    )
+
+
 def _ado_comment_metadata(
     *,
     comments: list[dict[str, Any]],
@@ -186,6 +196,7 @@ def _ado_comment_metadata(
             _ado_author_field(comment, "id") for comment in prior_comments
         ),
         "mentioned_names": _extract_ado_mention_names(body),
+        "mentioned_ids": _extract_ado_mention_ids(body),
         "thread_comment_count": len(
             [comment for comment in comments if not comment.get("isDeleted")]
         ),

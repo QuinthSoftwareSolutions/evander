@@ -21,6 +21,8 @@ material. Newer entries are added incrementally as changes land.
 - Shared agent-directed feedback annotation between the trigger provider and the
   ADO worker publisher so workflow gates see the same metadata on live ADO
   feedback events.
+- Added support for ADO compact mention identity IDs, including trigger config
+  fields for matching raw agent author and mention GUIDs.
 
 ## 2026-05-28 - Session Metadata Equals Flattening
 

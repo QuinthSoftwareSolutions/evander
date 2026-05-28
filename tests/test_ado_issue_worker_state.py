@@ -1658,6 +1658,7 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
             "project": "Example Project",
             "agent_author_names": ["evander Bot"],
             "agent_mention_names": ["Truman Bot"],
+            "agent_mention_ids": ["c74221cb-ee08-6a83-9055-af01c3333112"],
         }
     )
 
@@ -1684,9 +1685,9 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
                     thread_id="30830",
                     comment_id="1",
                     author="jonathan",
-                    body="Please fix this",
+                    body="@<C74221CB-EE08-6A83-9055-AF01C3333112> please fix this",
                     created_at="2026-04-08T05:33:41.433000Z",
-                    metadata={"prior_thread_comment_author_names": ["evander Bot"]},
+                    metadata={"mentioned_ids": ["c74221cb-ee08-6a83-9055-af01c3333112"]},
                 )
             ],
             next_cursor="2026-04-08T05:33:41.433000Z",
@@ -1714,7 +1715,7 @@ def test_publish_directory_pr_feedback_events_enqueues_azure_feedback(
         "pr_id": "6070",
     }
     assert events[0].payload["feedback"]["metadata"]["agent_directed"] is True
-    assert events[0].payload["feedback"]["metadata"]["agent_directed_reason"] == "same_thread"
+    assert events[0].payload["feedback"]["metadata"]["agent_directed_reason"] == "mention"
     feedback_store_payload = json.loads(
         (worker_config.runtime_dir / "pr-feedback-store.json").read_text(encoding="utf-8")
     )

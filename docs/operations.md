@@ -1311,8 +1311,9 @@ live provider APIs.
   selected by setting `repo` on the PR trigger; it lists candidate PRs from ADO
   using the trigger criteria, stores trigger-owned cursors outside
   `pr-map.json`, and emits normalized PR events without session bindings.
-  `trigger:pull-request:new-feedback` can set `agent_author_names` and
-  `agent_mention_names` so downstream gates can filter on
+  `trigger:pull-request:new-feedback` can set `agent_author_names`,
+  `agent_mention_names`, `agent_author_ids`, and `agent_mention_ids` so
+  downstream gates can filter on
   `feedback.metadata.agent_directed` without running host scripts.
   Keep `pr-map.json` compatibility until a later cleanup removes the older path.
 - Recommended service lifecycle commands:

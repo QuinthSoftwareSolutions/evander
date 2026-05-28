@@ -1603,6 +1603,23 @@ def _pull_request_trigger_fields(
                         "Mention display names that should mark a PR feedback event as agent-directed."
                     ),
                 ),
+                _field(
+                    "agent_author_ids",
+                    "Agent author IDs",
+                    "string_list",
+                    description=(
+                        "Feedback author identity IDs that should mark same-thread PR feedback "
+                        "as agent-directed."
+                    ),
+                ),
+                _field(
+                    "agent_mention_ids",
+                    "Agent mention IDs",
+                    "string_list",
+                    description=(
+                        "Mention identity IDs that should mark a PR feedback event as agent-directed."
+                    ),
+                ),
             ]
         )
     return fields
