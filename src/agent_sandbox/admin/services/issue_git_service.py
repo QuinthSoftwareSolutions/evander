@@ -716,9 +716,12 @@ class IssueGitAdminService:
         if directory_path is not None:
             normalized_directory_path = admin.normalize_directory_path(directory_path)
             request_directory_path = admin.normalize_directory_path(request.directory_path)
-            if direct_only or request_directory_path != normalized_directory_path:
-                if request_directory_path != normalized_directory_path:
-                    return False
+            if not _admin_service._directory_path_matches_scope(
+                request_directory_path,
+                normalized_directory_path,
+                direct_only=direct_only,
+            ):
+                return False
         if session_id is not None and request.session_id != session_id.strip():
             return False
         if vm_id is not None and (request.vm_id or "") != vm_id.strip():

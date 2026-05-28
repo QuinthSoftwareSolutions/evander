@@ -486,6 +486,86 @@ def test_mcp_tool_approval_can_allow_payload_variance_until_use_count_exhausted(
         )
 
 
+def test_mcp_tool_any_payload_approval_validates_owner_before_consuming(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.RUN_SCRIPT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s2",
+            allowed_tools=[ToolName.RUN_SCRIPT],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+    approval = engine.create_approval(
+        "s1",
+        "mcp_tool_invocation",
+        {
+            "tool_name": ToolName.RUN_SCRIPT.value,
+            "session_id": "s1",
+            "arguments": {"script_name": "one"},
+        },
+        "Run script",
+        tool_name=ToolName.RUN_SCRIPT.value,
+        approval_settings=ApprovalGrantSettings(
+            ttl_seconds=3600,
+            max_uses=1,
+            payload_mode=ApprovalPayloadMode.ANY,
+        ),
+    )
+    approval.status = ApprovalStatus.APPROVED
+    engine.approval_store.put(approval.request_id, approval)
+
+    with pytest.raises(PolicyError, match="does not belong to session s2"):
+        engine.require_approved(
+            approval.request_id,
+            {
+                "tool_name": ToolName.RUN_SCRIPT.value,
+                "session_id": "s2",
+                "arguments": {"script_name": "two"},
+            },
+            consume=True,
+        )
+    stored = engine.approval_store.get(approval.request_id)
+    assert stored is not None
+    assert stored.status == ApprovalStatus.APPROVED
+    assert stored.used_count == 0
+
+    with pytest.raises(PolicyError, match="is not for tool complete_issue"):
+        engine.require_approved(
+            approval.request_id,
+            {
+                "tool_name": ToolName.COMPLETE_ISSUE.value,
+                "session_id": "s1",
+                "arguments": {"issue_number": "1"},
+            },
+            consume=True,
+        )
+    stored = engine.approval_store.get(approval.request_id)
+    assert stored is not None
+    assert stored.status == ApprovalStatus.APPROVED
+    assert stored.used_count == 0
+
+    consumed = engine.require_approved(
+        approval.request_id,
+        {
+            "tool_name": ToolName.RUN_SCRIPT.value,
+            "session_id": "s1",
+            "arguments": {"script_name": "three"},
+        },
+        consume=True,
+    )
+    assert consumed.used_count == 1
+    assert consumed.status == ApprovalStatus.EXHAUSTED
+
+
 def test_require_tool_schedule_resume_requires_vm_binding(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     engine.session_store.upsert_session(

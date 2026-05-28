@@ -1352,6 +1352,20 @@ class PolicyEngine:
                 error = PolicyError(f"Approval request {request_id} has expired")
                 return request
             if request.action_type == "mcp_tool_invocation":
+                expected_session_id = str(payload.get("session_id") or "").strip()
+                if expected_session_id and request.session_id != expected_session_id:
+                    error = PolicyError(
+                        f"Approval request {request_id} does not belong to session "
+                        f"{expected_session_id}"
+                    )
+                    return request
+                expected_tool_name = str(payload.get("tool_name") or "").strip()
+                actual_tool_name = str(request.tool_name or request.action_type).strip()
+                if expected_tool_name and actual_tool_name != expected_tool_name:
+                    error = PolicyError(
+                        f"Approval request {request_id} is not for tool {expected_tool_name}"
+                    )
+                    return request
                 session = self.session_store.get_session(request.session_id)
                 if session is None:
                     error = PolicyError(f"Unknown session: {request.session_id}")

@@ -4454,6 +4454,21 @@ def _approval_sort_key(request: ApprovalRequest) -> tuple[int, datetime, str]:
     return (_APPROVAL_STATUS_ORDER[request.status], request.created_at, request.request_id)
 
 
+def _directory_path_matches_scope(
+    request_directory_path: str | None,
+    selected_directory_path: str | None,
+    *,
+    direct_only: bool,
+) -> bool:
+    request_path = str(request_directory_path or "root").strip() or "root"
+    selected_path = str(selected_directory_path or "root").strip() or "root"
+    if request_path == selected_path:
+        return True
+    if direct_only:
+        return False
+    return request_path.startswith(f"{selected_path}/")
+
+
 def _redact_sensitive_payload(value: Any, *, key_name: str | None = None) -> Any:
     normalized_key = (key_name or "").strip().lower()
     if normalized_key and any(marker in normalized_key for marker in _SENSITIVE_PAYLOAD_MARKERS):
@@ -8391,6 +8406,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if session is None:
             return None
         effective_policy = self.runtime.policy_config.resolve_for_session_manifest(session)
+        inherited_approval_required_tools: list[str] = []
         approval_required_tools: list[str] = []
         seen_tools: set[str] = set()
         for tool in effective_policy.approval_required_tools:
@@ -8398,6 +8414,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             if value in seen_tools:
                 continue
             seen_tools.add(value)
+            inherited_approval_required_tools.append(value)
             approval_required_tools.append(value)
         for tool in session.approval_required_tools:
             value = tool.value if isinstance(tool, ToolName) else str(tool)
@@ -8428,6 +8445,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 tool.value if isinstance(tool, ToolName) else str(tool)
                 for tool in session.allowed_tools
             ],
+            "inherited_approval_required_tools": inherited_approval_required_tools,
             "approval_required_tools": approval_required_tools,
             "approval_tool_settings": approval_tool_settings,
             "mcp_tool_policies": mcp_tool_policies,
@@ -10933,9 +10951,12 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
         if directory_path is not None:
             normalized_directory_path = self._normalize_directory_path(directory_path)
             request_directory_path = self._normalize_directory_path(request.directory_path)
-            if direct_only or request_directory_path != normalized_directory_path:
-                if request_directory_path != normalized_directory_path:
-                    return False
+            if not _directory_path_matches_scope(
+                request_directory_path,
+                normalized_directory_path,
+                direct_only=direct_only,
+            ):
+                return False
         if session_id is not None and request.session_id != session_id.strip():
             return False
         if vm_id is not None and (request.vm_id or "") != vm_id.strip():

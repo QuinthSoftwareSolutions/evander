@@ -5,6 +5,15 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-28 - Approval Queue Review Fixes
+
+- Kept any-payload MCP approval grants from consuming uses until the retry
+  matches the approved session and tool.
+- Made Admin Web approval directory filters include descendant queues when
+  direct-only matching is disabled.
+- Kept per-session approval requirements removable in the Sessions tool editor
+  while preserving inherited admin-required gates.
+
 ## 2026-05-28 - Configurable MCP Tool Approvals
 
 - Added configurable MCP invocation approval grants with restrictive defaults:

@@ -5,6 +5,7 @@ import { useAdminUi } from "../admin/AdminContext";
 import { DeleteIcon, ExtendIcon, RevokeIcon, SettingsIcon } from "../admin/PageActionIcons";
 import { Tooltip } from "../admin/Tooltip";
 import { readAdminHashQuery } from "../admin/hash";
+import { isInheritedApprovalRequiredForTool, type SessionEffectiveToolPolicy } from "./sessionPolicy";
 
 type ApprovalPayloadMode = "exact" | "any";
 
@@ -23,9 +24,8 @@ type McpToolPolicyRule = {
   require_exact_payload?: boolean;
 };
 
-type EffectiveToolPolicy = {
+type EffectiveToolPolicy = SessionEffectiveToolPolicy & {
   allowed_tools?: string[];
-  approval_required_tools?: string[];
   approval_tool_settings?: Record<string, ApprovalGrantSettings>;
   mcp_tool_policies?: Record<string, McpToolPolicyRule>;
   tool_argument_policies?: Record<string, unknown>;
@@ -1009,10 +1009,12 @@ export function SessionsScreen() {
     return selectedSession?.effective_tool_policy?.mcp_tool_policies?.[toolValue] ?? null;
   }
 
-  function effectiveApprovalRequiredForTool(toolValue: string): boolean {
-    const effectivePolicy = selectedSession?.effective_tool_policy;
-    const rule = effectivePolicy?.mcp_tool_policies?.[toolValue];
-    return Boolean(rule?.require_approval || effectivePolicy?.approval_required_tools?.includes(toolValue));
+  function inheritedApprovalRequiredForTool(toolValue: string): boolean {
+    return isInheritedApprovalRequiredForTool(
+      toolValue,
+      selectedSession?.effective_tool_policy,
+      selectedSession?.approval_required_tools,
+    );
   }
 
   function effectiveApprovalSettingsForTool(toolValue: string): ApprovalGrantSettings {
@@ -1616,7 +1618,7 @@ export function SessionsScreen() {
                         const approvalRequiredCount = group.items.filter(
                           (tool) => toolsDraft.includes(tool.value) && (
                             policyDraft.approvalRequiredTools.includes(tool.value) ||
-                            effectiveApprovalRequiredForTool(tool.value)
+                            inheritedApprovalRequiredForTool(tool.value)
                           ),
                         ).length;
                         return (
@@ -1634,9 +1636,9 @@ export function SessionsScreen() {
                                 const isEnabled = toolsDraft.includes(tool.value);
                                 const toolRule = effectiveRuleForTool(tool.value);
                                 const isDenied = Boolean(toolRule?.denied);
-                                const isForcedApproval = effectiveApprovalRequiredForTool(tool.value);
+                                const isInheritedApprovalRequired = inheritedApprovalRequiredForTool(tool.value);
                                 const isLocalApprovalRequired = policyDraft.approvalRequiredTools.includes(tool.value);
-                                const isApprovalRequired = isLocalApprovalRequired || isForcedApproval;
+                                const isApprovalRequired = isLocalApprovalRequired || isInheritedApprovalRequired;
                                 return (
                                   <div key={tool.value} className={`session-tool-row${isDenied ? " denied" : ""}`}>
                                     <label className="session-tool-row-main">
@@ -1659,7 +1661,7 @@ export function SessionsScreen() {
                                       {isDenied ? (
                                         <span className="status-pill state-failed session-tool-badge">Denied by policy</span>
                                       ) : null}
-                                      {isForcedApproval && !isDenied ? (
+                                      {isInheritedApprovalRequired && !isDenied ? (
                                         <span className="status-pill state-idle session-tool-badge">Admin required</span>
                                       ) : null}
                                       {isApprovalRequired ? (
@@ -1668,9 +1670,9 @@ export function SessionsScreen() {
                                       <label className="checkbox-row session-tool-approval-row">
                                         <input
                                           type="checkbox"
-                                          checked={isLocalApprovalRequired || isForcedApproval}
+                                          checked={isApprovalRequired}
                                           onChange={() => toggleApprovalRequirement(tool.value)}
-                                          disabled={mutationLocked || !isEnabled || isDenied || isForcedApproval}
+                                          disabled={mutationLocked || !isEnabled || isDenied || isInheritedApprovalRequired}
                                           aria-label={`Require approval for ${tool.label}`}
                                         />
                                         <span>Require approval</span>
