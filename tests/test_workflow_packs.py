@@ -26,7 +26,7 @@ def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
                     {
                         "id": "graph-a",
                         "name": "Graph A",
-                        "directory_paths": "root",
+                        "directory_path": "root",
                         "user_ids": "alice",
                         "node_ids": "trigger-a",
                     }
@@ -56,7 +56,7 @@ def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
                     {
                         "id": "graph-b",
                         "name": "Graph B",
-                        "directory_paths": ["root/team-a"],
+                        "directory_path": "root/team-a",
                         "user_ids": ["bob"],
                         "node_ids": ["effect-b"],
                     }
@@ -83,7 +83,7 @@ def test_compose_workflow_ir_merges_selected_packs(tmp_path: Path) -> None:
     assert [trigger["id"] for trigger in composed.triggers] == ["trigger-a"]
     assert [effect["id"] for effect in composed.effects] == ["effect-b"]
     assert [graph.id for graph in composed.graphs] == ["graph-a", "graph-b"]
-    assert [graph.directory_paths for graph in composed.graphs] == [["root"], ["root/team-a"]]
+    assert [graph.directory_path for graph in composed.graphs] == ["root", "root/team-a"]
     assert [graph.user_ids for graph in composed.graphs] == [["alice"], ["bob"]]
     assert [graph.node_ids for graph in composed.graphs] == [["trigger-a"], ["effect-b"]]
     assert composed.edges == [
@@ -238,14 +238,14 @@ def test_workflow_pack_can_store_multiple_named_graphs(tmp_path: Path) -> None:
                         "id": "graph-first",
                         "name": "First graph",
                         "description": "First connected component.",
-                        "directory_paths": ["root"],
+                        "directory_path": "root",
                         "user_ids": ["alice"],
                         "node_ids": ["trigger-a", "effect-a"],
                     },
                     {
                         "id": "graph-second",
                         "name": "Second graph",
-                        "directory_paths": ["root/team-a"],
+                        "directory_path": "root/team-a",
                         "user_ids": ["bob"],
                         "node_ids": ["trigger-b", "effect-b"],
                     },
@@ -291,7 +291,7 @@ def test_workflow_pack_can_store_multiple_named_graphs(tmp_path: Path) -> None:
     pack = load_workflow_pack(tmp_path, "multi.v1")
 
     assert [graph.name for graph in pack.graphs] == ["First graph", "Second graph"]
-    assert [graph.directory_paths for graph in pack.graphs] == [["root"], ["root/team-a"]]
+    assert [graph.directory_path for graph in pack.graphs] == ["root", "root/team-a"]
     assert [graph.user_ids for graph in pack.graphs] == [["alice"], ["bob"]]
     assert pack.graphs[0].node_ids == ["trigger-a", "effect-a"]
 

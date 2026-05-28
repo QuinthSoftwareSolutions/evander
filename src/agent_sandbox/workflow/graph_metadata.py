@@ -170,11 +170,8 @@ def _validate_unique_graph_ids(graphs: Iterable[WorkflowPackGraph]) -> None:
 
 
 def _first_directory_path(graph: WorkflowPackGraph) -> str:
-    for directory_path in graph.directory_paths:
-        text = _normalize_text(directory_path)
-        if text:
-            return text
-    return "root"
+    text = _normalize_text(graph.directory_path)
+    return text or "root"
 
 
 def _graphs_overlapping_component(

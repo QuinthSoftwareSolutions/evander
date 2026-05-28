@@ -455,7 +455,7 @@ def test_load_config_composes_workflow_pack_ir(tmp_path: Path) -> None:
                     {
                         "id": "graph-synthetic-trivial",
                         "name": "Synthetic graph",
-                        "directory_paths": ["root/team-a"],
+                        "directory_path": "root/team-a",
                         "user_ids": ["alice"],
                         "node_ids": [
                             "trigger-cron-synthetic",
@@ -512,7 +512,7 @@ def test_load_config_composes_workflow_pack_ir(tmp_path: Path) -> None:
         ),
     ]
     assert [graph.id for graph in config.workflow_graphs] == ["graph-synthetic-trivial"]
-    assert config.workflow_graphs[0].directory_paths == ["root/team-a"]
+    assert config.workflow_graphs[0].directory_path == "root/team-a"
 
 
 def test_load_config_composes_hidden_system_pack_without_operator_packs(
@@ -555,7 +555,7 @@ def test_load_config_preserves_editor_workflow_graph_metadata(tmp_path: Path) ->
                         "id": "graph-cron",
                         "name": "Cron graph",
                         "description": "Editor-only graph metadata.",
-                        "directory_paths": ["root"],
+                        "directory_path": "root",
                         "user_ids": ["alice"],
                         "node_ids": ["trigger-cron"],
                     }
@@ -581,7 +581,7 @@ def test_load_config_preserves_editor_workflow_graph_metadata(tmp_path: Path) ->
 
     assert _node_ids(config.triggers) == ["trigger-cron", "system.chat_assistant"]
     assert [graph.id for graph in config.workflow_graphs] == ["graph-cron"]
-    assert config.workflow_graphs[0].directory_paths == ["root"]
+    assert config.workflow_graphs[0].directory_path == "root"
     assert config.workflow_graphs[0].user_ids == ["alice"]
     assert config.workflow_graphs[0].node_ids == ["trigger-cron"]
 
@@ -601,7 +601,7 @@ def test_load_config_preserves_inline_workflow_graph_metadata_without_inline_ir(
                         "id": "graph-inline-only",
                         "name": "Inline-only graph",
                         "description": "Runtime graph metadata without inline IR.",
-                        "directory_paths": "root/team-a",
+                        "directory_path": "root/team-a",
                         "user_ids": "alice",
                         "node_ids": "trigger-cron",
                     }
@@ -626,7 +626,7 @@ def test_load_config_preserves_inline_workflow_graph_metadata_without_inline_ir(
     )
 
     assert [graph.id for graph in config.workflow_graphs] == ["graph-inline-only"]
-    assert config.workflow_graphs[0].directory_paths == ["root/team-a"]
+    assert config.workflow_graphs[0].directory_path == "root/team-a"
     assert config.workflow_graphs[0].user_ids == ["alice"]
     assert config.workflow_graphs[0].node_ids == ["trigger-cron"]
 
@@ -716,7 +716,7 @@ def test_load_config_exposes_workflow_pack_graph_metadata(tmp_path: Path) -> Non
                         "id": "graph-synthetic",
                         "name": "Synthetic graph",
                         "description": "Pack-level workflow graph metadata.",
-                        "directory_paths": "root/team-a",
+                        "directory_path": "root/team-a",
                         "user_ids": "alice",
                         "node_ids": "trigger-cron-synthetic",
                     }
@@ -756,7 +756,7 @@ def test_load_config_exposes_workflow_pack_graph_metadata(tmp_path: Path) -> Non
     )
 
     assert [graph.id for graph in config.workflow_graphs] == ["graph-synthetic"]
-    assert config.workflow_graphs[0].directory_paths == ["root/team-a"]
+    assert config.workflow_graphs[0].directory_path == "root/team-a"
     assert config.workflow_graphs[0].user_ids == ["alice"]
     assert config.workflow_graphs[0].node_ids == ["trigger-cron-synthetic"]
 
@@ -774,7 +774,7 @@ def test_load_config_preserves_state_workflow_graph_metadata(tmp_path: Path) -> 
                         "id": "graph-state",
                         "name": "State graph",
                         "description": "Persisted state graph metadata.",
-                        "directory_paths": ["root/team-a"],
+                        "directory_path": "root/team-a",
                         "node_ids": [
                             "trigger-state",
                             "effect-state-update",
@@ -824,7 +824,7 @@ def test_load_config_preserves_state_workflow_graph_metadata(tmp_path: Path) -> 
     )
 
     assert [graph.id for graph in config.workflow_graphs] == ["graph-state"]
-    assert config.workflow_graphs[0].directory_paths == ["root/team-a"]
+    assert config.workflow_graphs[0].directory_path == "root/team-a"
     assert config.workflow_graphs[0].node_ids == [
         "trigger-state",
         "effect-state-update",
@@ -844,13 +844,13 @@ def test_load_config_rejects_duplicate_state_workflow_graph_ids(tmp_path: Path) 
                     {
                         "id": "graph-state",
                         "name": "Alpha state graph",
-                        "directory_paths": ["root/team-a"],
+                        "directory_path": "root/team-a",
                         "node_ids": ["trigger-alpha", "effect-state-alpha"],
                     },
                     {
                         "id": "graph-state",
                         "name": "Beta state graph",
-                        "directory_paths": ["root/team-a"],
+                        "directory_path": "root/team-a",
                         "node_ids": ["trigger-beta", "effect-state-beta"],
                     },
                 ],

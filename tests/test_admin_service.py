@@ -5065,14 +5065,14 @@ def test_workflow_editor_reads_and_saves_named_graphs_inside_single_pack(
                         "id": "graph-ticket",
                         "name": "Ticket intake",
                         "description": "Handles new tickets.",
-                        "directory_paths": ["root"],
+                        "directory_path": "root",
                         "user_ids": ["alice"],
                         "node_ids": ["trigger-ticket", "effect-ticket"],
                     },
                     {
                         "id": "graph-cron",
                         "name": "Scheduled cleanup",
-                        "directory_paths": ["root/team-a"],
+                        "directory_path": "root/team-a",
                         "user_ids": ["bob"],
                         "node_ids": ["trigger-cron", "effect-cron"],
                     },
@@ -5126,14 +5126,14 @@ def test_workflow_editor_reads_and_saves_named_graphs_inside_single_pack(
     document = service.read_workflow_editor_document()
 
     assert [
-        (graph.id, graph.name, graph.directory_paths, graph.user_ids, graph.node_ids)
+        (graph.id, graph.name, graph.directory_path, graph.user_ids, graph.node_ids)
         for graph in document.graphs
     ] == [
-        ("graph-ticket", "Ticket intake", ["root"], ["alice"], ["trigger-ticket", "effect-ticket"]),
+        ("graph-ticket", "Ticket intake", "root", ["alice"], ["trigger-ticket", "effect-ticket"]),
         (
             "graph-cron",
             "Scheduled cleanup",
-            ["root/team-a"],
+            "root/team-a",
             ["bob"],
             ["trigger-cron", "effect-cron"],
         ),
@@ -5153,30 +5153,18 @@ def test_workflow_editor_reads_and_saves_named_graphs_inside_single_pack(
     assert wrapper_config["workflow_packs"] == ["demo.v1.json"]
     assert "workflow_graphs" not in wrapper_config
     pack_payload = json.loads(pack_path.read_text(encoding="utf-8"))
-    assert pack_payload["graphs"] == [
-        {
-            "id": "graph-ticket",
-            "name": "Root ticket intake",
-            "description": "Visible root-directory graph edit.",
-            "directory_paths": ["root"],
-            "user_ids": ["alice"],
-            "node_ids": ["trigger-ticket", "effect-ticket"],
-        },
-        {
-            "id": "graph-cron",
-            "name": "Scheduled cleanup",
-            "directory_paths": ["root/team-a"],
-            "user_ids": ["bob"],
-            "node_ids": ["trigger-cron", "effect-cron"],
-        },
-    ]
-    assert pack_payload["graphs"][1] == {
-        "id": "graph-cron",
-        "name": "Scheduled cleanup",
-        "directory_paths": ["root/team-a"],
-        "user_ids": ["bob"],
-        "node_ids": ["trigger-cron", "effect-cron"],
-    }
+    assert pack_payload["graphs"][0]["id"] == "graph-ticket"
+    assert pack_payload["graphs"][0]["name"] == "Root ticket intake"
+    assert pack_payload["graphs"][0]["description"] == "Visible root-directory graph edit."
+    assert pack_payload["graphs"][0]["directory_path"] == "root"
+    assert pack_payload["graphs"][0]["directory_paths"] == ["root"]
+    assert pack_payload["graphs"][0]["user_ids"] == ["alice"]
+    assert pack_payload["graphs"][0]["node_ids"] == ["trigger-ticket", "effect-ticket"]
+    assert pack_payload["graphs"][1]["id"] == "graph-cron"
+    assert pack_payload["graphs"][1]["name"] == "Scheduled cleanup"
+    assert pack_payload["graphs"][1]["directory_path"] == "root/team-a"
+    assert pack_payload["graphs"][1]["user_ids"] == ["bob"]
+    assert pack_payload["graphs"][1]["node_ids"] == ["trigger-cron", "effect-cron"]
 
 
 def test_workflow_graph_activity_report_groups_runtime_records_by_graph(
@@ -5194,14 +5182,14 @@ def test_workflow_graph_activity_report_groups_runtime_records_by_graph(
                     {
                         "id": "graph-ticket",
                         "name": "Ticket intake",
-                        "directory_paths": ["root"],
+                        "directory_path": "root",
                         "user_ids": ["alice"],
                         "node_ids": ["trigger-ticket", "gate-filter", "effect-ticket"],
                     },
                     {
                         "id": "graph-cron",
                         "name": "Scheduled cleanup",
-                        "directory_paths": ["root"],
+                        "directory_path": "root",
                         "node_ids": ["trigger-cron", "effect-cron"],
                     },
                 ],
@@ -5380,7 +5368,7 @@ def test_workflow_graph_activity_report_initializes_fresh_sqlite_backend(
                     {
                         "id": "graph-ticket",
                         "name": "Ticket intake",
-                        "directory_paths": ["root"],
+                        "directory_path": "root",
                         "node_ids": ["trigger-ticket"],
                     }
                 ],
@@ -5612,7 +5600,7 @@ def test_admin_service_read_workflow_run_detail_from_sqlite_backend(
                     "id": "graph-sqlite",
                     "name": "SQLite Graph",
                     "description": "SQLite run detail fixture",
-                    "directory_paths": ["root"],
+                    "directory_path": "root",
                     "user_ids": ["operator"],
                     "node_ids": ["trigger-ticket", "effect-prompt", "gate-await"],
                 }
