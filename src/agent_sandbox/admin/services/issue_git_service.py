@@ -904,6 +904,62 @@ class IssueGitAdminService:
         )
         return request
 
+    def revoke_approval_request(
+        self,
+        request_id: str,
+        *,
+        approver: str,
+        reason: str,
+    ) -> ApprovalRequest:
+        admin = self._deps
+        request = self.get_approval_request(request_id)
+        normalized_approver = approver.strip()
+        normalized_reason = reason.strip()
+        if not normalized_approver:
+            raise ValueError("approver is required")
+        if not normalized_reason:
+            raise ValueError("reason is required")
+        if request.status != ApprovalStatus.APPROVED:
+            raise ValueError(f"Approval request {request_id} is not approved")
+        if request.expires_at <= _admin_service._utc_now():
+            raise ValueError(f"Approval request {request_id} has expired")
+        decided_at = _admin_service._utc_now()
+        request.status = ApprovalStatus.DENIED
+        request.approver = normalized_approver
+        request.decision_at = decided_at
+        request.decision_reason = normalized_reason
+        request.decision_history.append(
+            ApprovalDecisionRecord(
+                status=ApprovalStatus.DENIED,
+                approver=normalized_approver,
+                reason=normalized_reason,
+                decided_at=decided_at,
+            )
+        )
+        admin.runtime.approvals.put(request.request_id, request)
+        admin.runtime.audit.log_decision(
+            event_type="approval_decision",
+            session_id=request.session_id,
+            vm_id=request.vm_id,
+            approval_request_id=request.request_id,
+            decision=request.status.value,
+            reason=normalized_reason,
+            args={
+                "request_id": request.request_id,
+                "tool_name": request.tool_name or request.action_type,
+                "approver": normalized_approver,
+                "payload_digest": request.payload_digest,
+            },
+            result={
+                "status": request.status.value,
+                "action": "revoke_approval",
+                "tool_name": request.tool_name or request.action_type,
+                "payload_digest": request.payload_digest,
+                "request_id": request.request_id,
+            },
+        )
+        return request
+
     def list_actionable_local_issues(
         self,
         *,

@@ -160,6 +160,21 @@ def _approval_review_payload(review: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _approval_actor_from_request(
+    auth: AdminWebAuth, request: Request, payload: dict[str, Any]
+) -> str:
+    if not auth.config.auth_required:
+        return str(payload.get("approver") or "").strip()
+    session = auth.require(request)
+    return str(
+        session.get("name")
+        or session.get("login")
+        or session.get("sub")
+        or session.get("sid")
+        or ""
+    ).strip()
+
+
 def _session_payload(service: AdminService, summary: SessionSummary) -> dict[str, Any]:
     payload = summary.model_dump(mode="json")
     payload["allowed_tools"] = [
@@ -185,7 +200,7 @@ def _wake_schedule_payload(item: dict[str, Any]) -> dict[str, Any]:
 
 def session_approval_routes(
     service: AdminService,
-    _auth: AdminWebAuth,
+    auth: AdminWebAuth,
     cache: AdminWebJsonResponseCache | None = None,
 ) -> list[BaseRoute]:
     async def approvals_index(request: Request) -> JSONResponse:
@@ -240,7 +255,7 @@ def session_approval_routes(
             return json_error("Request body must be valid JSON.")
         if not isinstance(payload, dict):
             return json_error("Request body must be a JSON object.")
-        approver = str(payload.get("approver") or "").strip()
+        approver = _approval_actor_from_request(auth, request, payload)
         reason = str(payload.get("reason") or "").strip()
         approve_raw = payload.get("approve")
         if not approver:
@@ -254,6 +269,31 @@ def session_approval_routes(
                 request_id,
                 approver=approver,
                 approve=approve_raw,
+                reason=reason,
+            )
+        except ValueError as exc:
+            status_code = 404 if "Unknown approval request" in str(exc) else 400
+            return json_error(str(exc), status_code=status_code)
+        return JSONResponse({"request": _approval_payload(updated)})
+
+    async def revoke_approval(request: Request) -> JSONResponse:
+        request_id = request.path_params.get("request_id", "")
+        try:
+            payload = await request.json()
+        except Exception:
+            return json_error("Request body must be valid JSON.")
+        if not isinstance(payload, dict):
+            return json_error("Request body must be a JSON object.")
+        approver = _approval_actor_from_request(auth, request, payload)
+        reason = str(payload.get("reason") or "").strip()
+        if not approver:
+            return json_error("Approver is required.")
+        if not reason:
+            return json_error("Reason is required.")
+        try:
+            updated = service.revoke_approval_request(
+                request_id,
+                approver=approver,
                 reason=reason,
             )
         except ValueError as exc:
@@ -530,6 +570,7 @@ def session_approval_routes(
         ),
         Route("/api/admin/approvals/{request_id:str}", get_approval_detail, methods=["GET"]),
         Route("/api/admin/approvals/{request_id:str}/decision", decide_approval, methods=["POST"]),
+        Route("/api/admin/approvals/{request_id:str}/revoke", revoke_approval, methods=["POST"]),
         Route("/api/admin/sessions/catalog", sessions_catalog, methods=["GET"]),
         Route(
             "/api/admin/sessions",

@@ -20,6 +20,7 @@ from agent_sandbox.models import (
     ApprovalNotificationDeliveryStatus,
     ApprovalNotificationStatus,
     ApprovalRequest,
+    ApprovalStatus,
     SessionManifest,
     ToolName,
 )
@@ -200,6 +201,108 @@ def test_admin_web_rejects_invalid_approval_decisions(tmp_path: Path) -> None:
     assert missing_reason.json()["error"] == "Reason is required."
     assert bad_approve_type.status_code == 400
     assert bad_approve_type.json()["error"] == "approve must be a boolean."
+
+
+def test_admin_web_uses_authenticated_identity_for_approval_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_USERNAME", "operator")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_PASSWORD", "swordfish")
+    monkeypatch.setenv("AGENT_SANDBOX_ADMIN_WEB_SESSION_SECRET", "test-secret")
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-14084-session",
+            vm_id="vm-14084",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    service.runtime.approvals.put(
+        "approval-1",
+        ApprovalRequest(
+            request_id="approval-1",
+            session_id="issue-14084-session",
+            action_type="email_send_approved",
+            tool_name="email_send_approved",
+            payload_digest="digest",
+            human_summary="Send release email",
+            payload={"body": "hello"},
+            directory_path="root",
+            vm_id="vm-14084",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    client = TestClient(create_app(service))
+
+    login = client.post("/api/auth/login", json={"username": "operator", "password": "swordfish"})
+    decision = client.post(
+        "/api/admin/approvals/approval-1/decision",
+        json={"approver": "spoofed-user", "approve": True, "reason": "safe"},
+    )
+
+    stored = service.runtime.approvals.get("approval-1")
+    assert login.status_code == 200
+    assert decision.status_code == 200
+    assert stored is not None
+    assert stored.status == ApprovalStatus.APPROVED
+    assert stored.approver == "operator"
+    assert stored.decision_history[-1].approver == "operator"
+
+
+def test_admin_web_revokes_valid_approved_approval(tmp_path: Path) -> None:
+    service = AdminService(write_config(tmp_path))
+    service.runtime.session_repository.upsert_session(
+        SessionManifest(
+            session_id="issue-14084-session",
+            vm_id="vm-14084",
+            allowed_tools=[ToolName.APPROVAL_SUBMIT, ToolName.APPROVAL_CHECK],
+            expires_at=datetime.now(UTC) + timedelta(hours=2),
+        ),
+    )
+    service.runtime.approvals.put(
+        "approval-1",
+        ApprovalRequest(
+            request_id="approval-1",
+            session_id="issue-14084-session",
+            action_type="email_send_approved",
+            tool_name="email_send_approved",
+            payload_digest="digest",
+            human_summary="Send release email",
+            payload={"body": "hello"},
+            directory_path="root",
+            vm_id="vm-14084",
+            status=ApprovalStatus.APPROVED,
+            approver="ops",
+            decision_at=datetime.now(UTC),
+            decision_reason="safe",
+            decision_history=[
+                {
+                    "status": "approved",
+                    "approver": "ops",
+                    "reason": "safe",
+                    "decided_at": datetime.now(UTC),
+                }
+            ],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    client = TestClient(create_app(service))
+
+    revoked = client.post(
+        "/api/admin/approvals/approval-1/revoke",
+        json={"approver": "alice", "reason": "approval no longer applies"},
+    )
+
+    stored = service.runtime.approvals.get("approval-1")
+    assert revoked.status_code == 200
+    assert revoked.json()["request"]["status"] == "denied"
+    assert stored is not None
+    assert stored.status == ApprovalStatus.DENIED
+    assert stored.approver == "alice"
+    assert stored.decision_reason == "approval no longer applies"
+    assert stored.decision_history[-1].status == ApprovalStatus.DENIED
+    assert stored.decision_history[-1].reason == "approval no longer applies"
 
 
 def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: Path) -> None:

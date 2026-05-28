@@ -10,6 +10,13 @@ material. Newer entries are added incrementally as changes land.
 - Reworded the Admin Web Issues tab summary so it describes issue intake and
   records instead of presenting VM creation as the page purpose.
 
+## 2026-05-28 - Admin Approval Decisions
+
+- Used the signed-in Admin Web user as the approval decision actor when
+  authentication is enabled, leaving the editable approver field only for
+  anonymous/no-auth operation.
+- Added an Admin Web revoke action for still-valid approved requests.
+
 ## 2026-05-28 - Admin Approval List Layout
 
 - Kept approval status badges inside approval list cards when long request

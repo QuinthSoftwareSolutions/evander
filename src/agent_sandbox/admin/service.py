@@ -11283,6 +11283,19 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             reason=reason,
         )
 
+    def revoke_approval_request(
+        self,
+        request_id: str,
+        *,
+        approver: str,
+        reason: str,
+    ) -> ApprovalRequest:
+        return self.issue_git_admin.revoke_approval_request(
+            request_id,
+            approver=approver,
+            reason=reason,
+        )
+
     def list_actionable_local_issues(
         self,
         *,

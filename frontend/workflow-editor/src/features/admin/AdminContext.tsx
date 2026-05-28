@@ -25,6 +25,9 @@ export type AdminResult<T> = {
 export type AdminUiState = {
   privilegedUnlocked: boolean;
   authBusy: boolean;
+  authMode: "none" | "local_password" | "azure_sso";
+  authRequired: boolean;
+  authenticated: boolean;
   directoryScopedConfigEnabled: boolean;
   currentUserId: string;
   currentUserLabel: string;
@@ -48,6 +51,9 @@ export type AdminUiState = {
 const DEFAULT_ADMIN_UI_STATE: AdminUiState = {
   privilegedUnlocked: false,
   authBusy: false,
+  authMode: "none",
+  authRequired: false,
+  authenticated: true,
   directoryScopedConfigEnabled: false,
   currentUserId: "anonymous",
   currentUserLabel: "anonymous",

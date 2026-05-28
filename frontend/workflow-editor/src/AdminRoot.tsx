@@ -1439,6 +1439,9 @@ export default function AdminRoot() {
   const adminUiState = {
     privilegedUnlocked: privilegeUnlocked,
     authBusy,
+    authMode: session?.auth_mode ?? "none",
+    authRequired: session?.auth_required ?? false,
+    authenticated: session?.authenticated ?? false,
     directoryScopedConfigEnabled: adminState?.directory_scoped_config_enabled ?? false,
     currentUserId,
     currentUserLabel,
