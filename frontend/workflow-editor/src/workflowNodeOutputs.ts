@@ -5,6 +5,11 @@ export type WorkflowBindingOption = {
   label: string;
 };
 
+export type WorkflowUpstreamIndex = {
+  ancestorNodeIdsByNodeId: Map<string, string[]>;
+  guaranteedUpstreamNodeIdsByNodeId: Map<string, string[]>;
+};
+
 export type WorkflowNodeOutputContractState = "declared" | "derived" | "empty" | "unknown";
 
 export type WorkflowNodeOutputContractRow = {
@@ -143,7 +148,8 @@ export function upstreamBindingOptions(
     seen.add(option.label.replace(/^\[System\] /, ""));
     seen.add(option.value);
   }
-  for (const upstreamNodeId of guaranteedUpstreamNodeIds(config, nodeId)) {
+  const upstreamIndex = buildWorkflowUpstreamIndex(config);
+  for (const upstreamNodeId of upstreamIndex.guaranteedUpstreamNodeIdsByNodeId.get(nodeId) ?? []) {
     const outputs = declaredOutputsForNode(nodeById(config, upstreamNodeId), outputSchemas);
     for (const outputName of Object.keys(outputs)) {
       for (const outputPath of flattenOutputPaths(outputName, outputs[outputName])) {
@@ -344,18 +350,15 @@ function flattenOutputPathEntries(
   return entries;
 }
 
-function collectAncestorNodeIds(config: WorkflowConfig, nodeId: string): string[] {
-  const inboundByTarget = new Map<string, string[]>();
-  for (const edge of config.edges) {
-    const current = inboundByTarget.get(edge.target_id) ?? [];
-    current.push(edge.source_id);
-    inboundByTarget.set(edge.target_id, current);
-  }
+function collectAncestorNodeIdsFromInbound(
+  inboundByTarget: Map<string, string[]>,
+  nodeId: string,
+): string[] {
   const ordered: string[] = [];
   const queue = [...(inboundByTarget.get(nodeId) ?? [])];
   const seen = new Set<string>();
-  while (queue.length > 0) {
-    const current = queue.shift()!;
+  for (let index = 0; index < queue.length; index += 1) {
+    const current = queue[index]!;
     if (seen.has(current)) continue;
     seen.add(current);
     ordered.push(current);
@@ -365,17 +368,33 @@ function collectAncestorNodeIds(config: WorkflowConfig, nodeId: string): string[
 }
 
 export function guaranteedUpstreamNodeIds(config: WorkflowConfig, nodeId: string): string[] {
+  return buildWorkflowUpstreamIndex(config).guaranteedUpstreamNodeIdsByNodeId.get(nodeId) ?? [];
+}
+
+export function buildWorkflowUpstreamIndex(config: WorkflowConfig): WorkflowUpstreamIndex {
   const nodeIds = workflowNodes(config).map((node) => node.id);
   const nodeIdSet = new Set(nodeIds);
-  if (!nodeIdSet.has(nodeId)) return [];
+  const inboundByTarget = new Map<string, string[]>();
   const predecessors = new Map<string, Set<string>>();
   for (const currentNodeId of nodeIds) {
+    inboundByTarget.set(currentNodeId, []);
     predecessors.set(currentNodeId, new Set<string>());
   }
   for (const edge of config.edges) {
+    const inbound = inboundByTarget.get(edge.target_id) ?? [];
+    inbound.push(edge.source_id);
+    inboundByTarget.set(edge.target_id, inbound);
     if (edge.allow_cycle) continue;
     if (!nodeIdSet.has(edge.source_id) || !nodeIdSet.has(edge.target_id)) continue;
     predecessors.get(edge.target_id)?.add(edge.source_id);
+  }
+
+  const ancestorNodeIdsByNodeId = new Map<string, string[]>();
+  for (const currentNodeId of nodeIds) {
+    ancestorNodeIdsByNodeId.set(
+      currentNodeId,
+      collectAncestorNodeIdsFromInbound(inboundByTarget, currentNodeId),
+    );
   }
 
   const dominators = new Map<string, Set<string>>();
@@ -384,10 +403,11 @@ export function guaranteedUpstreamNodeIds(config: WorkflowConfig, nodeId: string
     dominators.set(currentNodeId, preds.size === 0 ? new Set([currentNodeId]) : new Set(nodeIds));
   }
 
+  const sortedNodeIds = [...nodeIds].sort();
   let changed = true;
   while (changed) {
     changed = false;
-    for (const currentNodeId of [...nodeIds].sort()) {
+    for (const currentNodeId of sortedNodeIds) {
       const preds = predecessors.get(currentNodeId) ?? new Set<string>();
       let nextDominators: Set<string>;
       if (preds.size === 0) {
@@ -411,8 +431,21 @@ export function guaranteedUpstreamNodeIds(config: WorkflowConfig, nodeId: string
     }
   }
 
-  const guaranteed = dominators.get(nodeId) ?? new Set<string>();
-  return collectAncestorNodeIds(config, nodeId).filter((currentNodeId) => guaranteed.has(currentNodeId));
+  const guaranteedUpstreamNodeIdsByNodeId = new Map<string, string[]>();
+  for (const currentNodeId of nodeIds) {
+    const guaranteed = dominators.get(currentNodeId) ?? new Set<string>();
+    guaranteedUpstreamNodeIdsByNodeId.set(
+      currentNodeId,
+      (ancestorNodeIdsByNodeId.get(currentNodeId) ?? []).filter((upstreamNodeId) =>
+        upstreamNodeId !== currentNodeId && guaranteed.has(upstreamNodeId),
+      ),
+    );
+  }
+
+  return {
+    ancestorNodeIdsByNodeId,
+    guaranteedUpstreamNodeIdsByNodeId,
+  };
 }
 
 function copyOutputSchema(schema: Record<string, unknown> | undefined): Record<string, unknown> {
