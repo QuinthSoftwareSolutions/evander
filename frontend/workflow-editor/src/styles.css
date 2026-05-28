@@ -4105,6 +4105,28 @@ select {
   line-height: 1.25;
 }
 
+.approval-list-item {
+  overflow: hidden;
+}
+
+.approval-list-item-title-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  width: 100%;
+}
+
+.approval-list-item-title-row strong {
+  min-width: 0;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.approval-list-item-title-row .status-pill {
+  justify-self: end;
+  margin-top: 0.02rem;
+}
+
 .approvals-page .stack-layout {
   display: flex;
   flex-direction: column;

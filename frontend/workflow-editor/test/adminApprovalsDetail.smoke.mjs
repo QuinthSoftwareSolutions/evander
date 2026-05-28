@@ -30,7 +30,7 @@ test("admin shell approvals detail renders intended effect and payload digest", 
   assert.ok(address && typeof address === "object" && "port" in address, "expected Vite to bind an ephemeral port");
 
   const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
+  const context = await browser.newContext({ viewport: { width: 960, height: 900 } });
   const page = await context.newPage();
 
   const requestedEndpoints = [];
@@ -40,7 +40,7 @@ test("admin shell approvals detail renders intended effect and payload digest", 
     action_type: "mcp_tool_invocation",
     tool_name: "email_send_approved",
     payload_digest: "digest-approval-1",
-    human_summary: "Approve sending the email draft.",
+    human_summary: "Approve MCP tool get_ado_backlog_item for session auto-dev-roadmap-lead-root-example-truman-auto-dev",
     intended_effect: "Send the approved email payload to the recipient.",
     directory_path: "root/team",
     vm_id: "vm-1",
@@ -229,6 +229,40 @@ test("admin shell approvals detail renders intended effect and payload digest", 
   );
   await assert.doesNotReject(() =>
     page.locator(".approval-review-summary").getByText("digest-approval-1", { exact: true }).waitFor({ state: "visible" }),
+  );
+  const approvalCard = page.locator(".approval-list-item").first();
+  await assert.doesNotReject(() => approvalCard.waitFor({ state: "visible" }));
+  const badgeLayout = await approvalCard.evaluate((element) => {
+    const titleRow = element.querySelector(".approval-list-item-title-row");
+    const title = element.querySelector(".approval-list-item-title-row strong");
+    const badge = element.querySelector(".approval-list-item-title-row .status-pill");
+    if (!(titleRow instanceof HTMLElement) || !(title instanceof HTMLElement) || !(badge instanceof HTMLElement)) {
+      return null;
+    }
+    const cardBox = element.getBoundingClientRect();
+    const titleBox = title.getBoundingClientRect();
+    const badgeBox = badge.getBoundingClientRect();
+    return {
+      cardClientWidth: element.clientWidth,
+      cardRight: cardBox.right,
+      cardScrollWidth: element.scrollWidth,
+      titleRight: titleBox.right,
+      badgeLeft: badgeBox.left,
+      badgeRight: badgeBox.right,
+    };
+  });
+  assert.ok(badgeLayout, "expected approval card title and status badge");
+  assert.ok(
+    badgeLayout.badgeRight <= badgeLayout.cardRight + 1,
+    `approval status badge should stay inside the card: badgeRight=${badgeLayout.badgeRight}, cardRight=${badgeLayout.cardRight}`,
+  );
+  assert.ok(
+    badgeLayout.cardScrollWidth <= badgeLayout.cardClientWidth + 1,
+    `approval card should not create horizontal overflow: scrollWidth=${badgeLayout.cardScrollWidth}, clientWidth=${badgeLayout.cardClientWidth}`,
+  );
+  assert.ok(
+    badgeLayout.titleRight <= badgeLayout.badgeLeft,
+    `approval title should wrap before the badge column: titleRight=${badgeLayout.titleRight}, badgeLeft=${badgeLayout.badgeLeft}`,
   );
 
   assert.equal(await page.evaluate(() => window.location.hash), "#approvals");

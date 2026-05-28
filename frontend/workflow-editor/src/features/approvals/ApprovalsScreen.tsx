@@ -291,13 +291,13 @@ export function ApprovalsScreen() {
               <button
                 key={item.request_id}
                 type="button"
-                className={`feature-list-item${selectedId === item.request_id ? " selected" : ""}`}
+                className={`feature-list-item approval-list-item${selectedId === item.request_id ? " selected" : ""}`}
                 onClick={() => {
                   setDeepLinkedRequestId("");
                   setSelectedId(item.request_id);
                 }}
               >
-                <div className="feature-list-title-row">
+                <div className="feature-list-title-row approval-list-item-title-row">
                   <strong>{item.human_summary}</strong>
                   <span className={`status-pill state-${item.status === "approved" ? "running" : item.status === "pending" ? "idle" : "failed"}`}>
                     {item.status}
