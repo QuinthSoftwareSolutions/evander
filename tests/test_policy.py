@@ -580,6 +580,59 @@ def test_require_tool_schedule_resume_requires_vm_binding(tmp_path: Path) -> Non
         engine.require_tool("s1", ToolName.SCHEDULE_RESUME)
 
 
+def test_require_tool_schedule_resume_allows_container_worker_vm_without_vm_binding(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            vm_provider="container_worker_vm",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    session = engine.require_tool("s1", ToolName.SCHEDULE_RESUME)
+
+    assert session.session_id == "s1"
+
+
+def test_require_tool_schedule_resume_allows_container_backend_metadata_without_vm_binding(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            metadata={"execution_backend": "container_worker_vm"},
+        ),
+    )
+
+    session = engine.require_tool("s1", ToolName.SCHEDULE_RESUME)
+
+    assert session.session_id == "s1"
+
+
+def test_require_tool_schedule_resume_rejects_non_container_session_without_vm_binding(
+    tmp_path: Path,
+) -> None:
+    engine = make_engine(tmp_path)
+    engine.session_store.upsert_session(
+        SessionManifest(
+            session_id="s1",
+            vm_provider="libvirt_vm",
+            allowed_tools=[ToolName.SCHEDULE_RESUME],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    with pytest.raises(PolicyError, match="requires a session with a VM binding"):
+        engine.require_tool("s1", ToolName.SCHEDULE_RESUME)
+
+
 def test_assistant_mutation_tools_require_explicit_mutation_policy(tmp_path: Path) -> None:
     engine = make_engine(tmp_path)
     engine.session_store.upsert_session(
