@@ -267,6 +267,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
                             prompt=record.prompt,
                             model=model,
                             resume_thread_id=effective_resume_thread_id,
+                            resume_mode=getattr(record, "resume_mode", None),
                             mcp_gateway_url=mcp_gateway_url,
                         ),
                         metadata={
@@ -342,6 +343,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "model": model,
             "vm_user": vm_user,
             "resume_thread_id": effective_resume_thread_id,
+            "resume_mode": getattr(record, "resume_mode", None),
             "resume_thread_metadata_key": getattr(record, "resume_thread_metadata_key", None),
             "resume_thread_metadata_collection": self._resume_thread_metadata_collection(record),
             "directory_path": directory_path,
@@ -369,6 +371,7 @@ class AgentEnqueuePromptQueueDispatchHook(EffectLifecycleHookBase):
             "model": model,
             "vm_user": vm_user,
             "resume_thread_id": effective_resume_thread_id,
+            "resume_mode": getattr(record, "resume_mode", None),
             "resume_thread_metadata_key": getattr(record, "resume_thread_metadata_key", None),
             "resume_thread_metadata_collection": self._resume_thread_metadata_collection(record),
             "queue_key": queue_key,

@@ -225,6 +225,7 @@ def test_resume_container_binding_queues_busy_session_and_records_queue_metadata
     assert queued.queue_key == "scheduled-wake:wake-busy"
     assert queued.target == "session-1"
     assert queued.vm_name == "metadata-target"
+    assert queued.resume_mode == "same_context"
     assert queued.metadata["source"] == "scheduled_cron"
     assert queued.metadata["resume_mode"] == "same_context"
     assert queued.metadata["request_id"] == "wake-busy"

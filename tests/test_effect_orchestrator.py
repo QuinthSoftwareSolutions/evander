@@ -4759,6 +4759,79 @@ def test_agent_enqueue_prompt_dispatch_hook_tracks_container_queue_until_complet
     assert "teams:chat-1:agent_thread_id" not in refreshed_session.metadata
 
 
+def test_agent_enqueue_prompt_dispatch_hook_uses_queued_container_resume_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = GatewayConfig(
+        runtime_dir=tmp_path,
+        execution_backend="container_worker_vm",
+        container_worker_base_url="http://worker.test",
+    )
+    session_repository = JsonSessionManifestRepository(config.session_store_path)
+    session_repository.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id=None,
+            allowed_tools=[ToolName.LIST_PENDING_AGENT_PROMPTS],
+            expires_at=datetime.now(timezone.utc),
+            vm_provider="container_worker_vm",
+            vm_provider_id="truman",
+            model="gpt-5.4-mini",
+            metadata={"execution_backend": "container_worker_vm", "target_name": "truman"},
+        )
+    )
+    queue_store = AgentPromptQueueStore(tmp_path / "queued-agent-prompts.json")
+    queue_store.put(
+        QueuedAgentPromptRecord(
+            queue_key="scheduled-wake:wake-1",
+            target="session-1",
+            vm_name="truman",
+            session_id="session-1",
+            prompt="resume scheduled work",
+            model=None,
+            vm_user="agent",
+            resume_thread_id=None,
+            resume_mode="same_context",
+            effect_id="scheduled-wake:wake-1",
+        )
+    )
+    backend = _ContainerDispatchBackendStub()
+    monkeypatch.setattr(
+        "agent_sandbox.effects.providers.lifecycle_hooks.build_execution_backend",
+        lambda config, admin_service: backend,
+    )
+    execution_store = JsonExecutionStore(tmp_path / "effect-orchestrator-executions.json")
+    published_events: list[tuple[str | None, dict[str, object]]] = []
+    worker = SimpleNamespace(
+        config=config,
+        execution_store=execution_store,
+        queued_agent_prompt_store=queue_store,
+        agent_prompt_dispatch_port=object(),
+        provider_config_resolver=SimpleNamespace(resolve_for_session_id=lambda session_id: config),
+        provider_factory=SimpleNamespace(
+            admin_service=SimpleNamespace(
+                runtime=SimpleNamespace(session_repository=session_repository)
+            )
+        ),
+        _publish_completion_event_from_record=lambda record, outputs, branch_port=None: (
+            published_events.append((branch_port, outputs)) or "effect-completed"
+        ),
+        _update_event_delivery_state=lambda event_id: None,
+    )
+
+    dispatched = AgentEnqueuePromptQueueDispatchHook().on_post_completion_dispatch(worker=worker)
+
+    assert dispatched == 1
+    assert queue_store.read_all() == {}
+    command = str(backend.started_specs[0].command)
+    assert "codex exec resume --last" in command
+    assert "resume scheduled work" in command
+    waiting_records = list(execution_store.read_all().values())
+    assert waiting_records[0].resolved_config["resume_mode"] == "same_context"
+    assert waiting_records[0].input_payload["resume_mode"] == "same_context"
+    assert published_events[0][0] == "started"
+
+
 def test_agent_prompt_container_reconciliation_times_out_running_job(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

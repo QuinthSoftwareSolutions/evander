@@ -352,6 +352,7 @@ class HostWakeDispatcher:
                     vm_user=worker_config.wake_vm_user,
                     resume_thread_id=None,
                     effect_id=queue_key,
+                    resume_mode=effective_resume_mode,
                     queue_key=queue_key,
                     metadata=queue_metadata,
                 )

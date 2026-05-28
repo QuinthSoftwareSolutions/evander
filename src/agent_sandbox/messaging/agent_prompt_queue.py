@@ -21,6 +21,7 @@ class QueuedAgentPromptRecord(BaseModel):
     model: str | None = None
     vm_user: str = Field(min_length=1, default="agent")
     resume_thread_id: str | None = None
+    resume_mode: str | None = None
     resume_thread_metadata_key: str | None = None
     resume_thread_metadata_collection: str | None = None
     effect_id: str = Field(min_length=1)
@@ -29,6 +30,18 @@ class QueuedAgentPromptRecord(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     coalesced_count: int = Field(default=1, ge=1)
+
+    @field_validator("resume_mode")
+    @classmethod
+    def validate_resume_mode(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        if not normalized:
+            return None
+        if normalized not in {"same_context", "new_context"}:
+            raise ValueError("resume_mode must be one of: same_context, new_context")
+        return normalized
 
     @field_validator("workflow_context", mode="before")
     @classmethod
