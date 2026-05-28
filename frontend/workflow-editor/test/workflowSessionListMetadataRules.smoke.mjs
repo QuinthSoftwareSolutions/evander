@@ -67,6 +67,10 @@ function createWorkflowDocument() {
           metadata_equals: {
             "task.pr.id": 42,
             "task.code": "42",
+            user: {
+              name: "Jesper",
+              age: 42,
+            },
           },
           metadata_exists: ["user.name"],
           metadata_prefix: {
@@ -330,25 +334,31 @@ test("workflow editor exposes query session metadata filters as metadata rules",
 
   const rows = inspector.locator(".metadata-rule-row");
   await rows.first().waitFor({ state: "visible" });
-  await assert.equal(await rows.count(), 4);
+  await assert.equal(await rows.count(), 6);
   await assert.equal(await rows.nth(0).locator("select").inputValue(), "equals");
   await assert.equal(await rows.nth(0).getByLabel("Metadata key").inputValue(), "task.pr.id");
   await assert.equal(await rows.nth(0).getByLabel("Exact value").inputValue(), "42");
   await assert.equal(await rows.nth(1).locator("select").inputValue(), "equals");
   await assert.equal(await rows.nth(1).getByLabel("Metadata key").inputValue(), "task.code");
   await assert.equal(await rows.nth(1).getByLabel("Exact value").inputValue(), "\"42\"");
-  await assert.equal(await rows.nth(2).locator("select").inputValue(), "exists");
+  await assert.equal(await rows.nth(2).locator("select").inputValue(), "equals");
   await assert.equal(await rows.nth(2).getByLabel("Metadata key").inputValue(), "user.name");
-  await assert.equal(await rows.nth(2).getByLabel("Exact value").count(), 0);
-  await assert.equal(await rows.nth(3).locator("select").inputValue(), "prefix");
-  await assert.equal(await rows.nth(3).getByLabel("Metadata key").inputValue(), "task.branch");
+  await assert.equal(await rows.nth(2).getByLabel("Exact value").inputValue(), "Jesper");
+  await assert.equal(await rows.nth(3).locator("select").inputValue(), "equals");
+  await assert.equal(await rows.nth(3).getByLabel("Metadata key").inputValue(), "user.age");
+  await assert.equal(await rows.nth(3).getByLabel("Exact value").inputValue(), "42");
+  await assert.equal(await rows.nth(4).locator("select").inputValue(), "exists");
+  await assert.equal(await rows.nth(4).getByLabel("Metadata key").inputValue(), "user.name");
+  await assert.equal(await rows.nth(4).getByLabel("Exact value").count(), 0);
+  await assert.equal(await rows.nth(5).locator("select").inputValue(), "prefix");
+  await assert.equal(await rows.nth(5).getByLabel("Metadata key").inputValue(), "task.branch");
   await assert.equal(
-    await rows.nth(3).getByRole("textbox", { name: "Prefix" }).inputValue(),
+    await rows.nth(5).getByRole("textbox", { name: "Prefix" }).inputValue(),
     "feature/",
   );
 
   await inspector.getByRole("button", { name: "Add metadata rule" }).click();
-  const newRule = rows.nth(4);
+  const newRule = rows.nth(6);
   await assert.equal(await newRule.locator("select").inputValue(), "equals");
   await newRule.getByLabel("Metadata key").fill("task.owner");
   await newRule.getByLabel("Exact value").fill("Jesper");
@@ -359,6 +369,8 @@ test("workflow editor exposes query session metadata filters as metadata rules",
   assert.deepEqual(saveRequests[0].config.queries[0].metadata_equals, {
     "task.pr.id": 42,
     "task.code": "42",
+    "user.name": "Jesper",
+    "user.age": 42,
     "task.owner": "Jesper",
   });
   assert.deepEqual(saveRequests[0].config.queries[0].metadata_exists, ["user.name"]);

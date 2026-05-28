@@ -2395,6 +2395,25 @@ function sessionListMetadataExistsFlagIsPresent(value: unknown): boolean {
   return false;
 }
 
+function appendSessionListMetadataEqualsRuleRows(
+  rows: SessionListMetadataRuleDraftRow[],
+  selector: string,
+  value: unknown,
+) {
+  if (isRecord(value) && Object.keys(value).length > 0) {
+    for (const [nestedKey, nestedValue] of Object.entries(value)) {
+      const nestedSelector = selector ? `${selector}.${nestedKey}` : nestedKey;
+      appendSessionListMetadataEqualsRuleRows(rows, nestedSelector, nestedValue);
+    }
+    return;
+  }
+  rows.push(createSessionListMetadataRuleDraftRow(
+    "equals",
+    selector,
+    sessionListMetadataEqualsRuleValueText(value),
+  ));
+}
+
 function sessionListMetadataRuleDraftRowsFromValues(values: Record<string, unknown>): {
   rows: SessionListMetadataRuleDraftRow[];
   supported: boolean;
@@ -2418,11 +2437,7 @@ function sessionListMetadataRuleDraftRowsFromValues(values: Record<string, unkno
   }
   if (isRecord(metadataEquals)) {
     for (const [key, value] of Object.entries(metadataEquals)) {
-      rows.push(createSessionListMetadataRuleDraftRow(
-        "equals",
-        key,
-        sessionListMetadataEqualsRuleValueText(value),
-      ));
+      appendSessionListMetadataEqualsRuleRows(rows, key, value);
     }
   }
   if (typeof metadataExists === "string") {
