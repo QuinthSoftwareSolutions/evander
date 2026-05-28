@@ -1292,6 +1292,34 @@ def test_container_prompt_command_does_not_resume_synthetic_chat_thread_id() -> 
     assert "-C /home/agent" in command
 
 
+def test_container_prompt_command_uses_resume_last_for_same_context_without_thread() -> None:
+    command = container_prompt_command(
+        prompt="check teams",
+        model="gpt-5.4-mini",
+        resume_thread_id=None,
+        resume_mode="same_context",
+    )
+
+    assert "codex exec resume --last" in command
+    assert "--json" in command
+    assert "-s danger-full-access" not in command
+    assert "-C /home/agent" not in command
+
+
+def test_container_prompt_command_uses_fresh_context_for_new_context_without_thread() -> None:
+    command = container_prompt_command(
+        prompt="check teams",
+        model="gpt-5.4-mini",
+        resume_thread_id=None,
+        resume_mode="new_context",
+    )
+
+    assert "codex exec resume --last" not in command
+    assert "codex exec --json" in command
+    assert "-s danger-full-access" in command
+    assert "-C /home/agent" in command
+
+
 def test_codex_json_log_filter_handles_current_exec_event_stream() -> None:
     events = [
         {"type": "session_meta", "payload": {"id": "019de31a-8393-71d2-8990-e5f4fb0a4df2"}},

@@ -6,6 +6,7 @@ import os
 import random
 import subprocess
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,20 @@ from agent_sandbox.admin.service import (
 )
 from agent_sandbox.agent_control import AgentControlStore
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.effects.providers.agent_session import (
+    container_prompt_command,
+    container_worker_guest_gateway_url,
+    gateway_url_with_session_context,
+    normalize_optional_string,
+    safe_effect_execution_id,
+)
+from agent_sandbox.execution import (
+    ExecutionBackendKind,
+    ExecutionSpec,
+    ExecutionStatusKind,
+    build_execution_backend,
+)
+from agent_sandbox.messaging.agent_prompt_enqueue import enqueue_agent_prompt
 from agent_sandbox.models import WakeDispatchRecord, WakeResumePromptPayload
 from agent_sandbox.orchestration.host_polling import single_instance_lock
 from agent_sandbox.runtime import RuntimeContext
@@ -25,6 +40,15 @@ from agent_sandbox.worker_directory_context import WorkerDirectoryContextResolve
 logger = logging.getLogger(__name__)
 
 __all__ = ["single_instance_lock"]
+
+_ACTIVE_CONTAINER_STATUSES = {
+    ExecutionStatusKind.PREPARING.value,
+    ExecutionStatusKind.STARTING.value,
+    ExecutionStatusKind.RUNNING.value,
+    "created",
+    "starting",
+    "running",
+}
 
 
 @dataclass(frozen=True)
@@ -252,6 +276,193 @@ class HostWakeDispatcher:
             wake_store.record_dispatch(dispatch_record)
         return dispatch_record
 
+    def resume_container_binding(
+        self,
+        session: Any,
+        *,
+        worker_config: GatewayConfig,
+        prompt: str,
+        resume_mode: str | None = "same_context",
+        dispatch_source: str,
+        request_id: str | None = None,
+        scheduled_for: datetime | None = None,
+        wake_metadata: dict[str, Any] | None = None,
+    ) -> WakeDispatchRecord | None:
+        wake_store = getattr(self.runtime, "wake_store", None)
+        session_id = normalize_optional_string(getattr(session, "session_id", None))
+        if not session_id:
+            raise ValueError("container wake dispatch requires a session_id")
+        directory_path = normalize_optional_string(getattr(session, "directory_path", None)) or "root"
+        target_name = self._container_target_name(session=session, session_id=session_id)
+        effective_resume_mode = normalize_optional_string(resume_mode) or "same_context"
+        dispatch_id = f"wake-{int(time.time() * 1_000_000)}-{session_id}"
+        base_config = worker_config.model_copy(
+            update={"execution_backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value}
+        )
+        agent_model = self._resolve_agent_model_for_binding(
+            SessionWakeBinding(
+                session_id=session_id,
+                vm_id=None,
+                source=dispatch_source,
+                directory_path=directory_path,
+            )
+        )
+        try:
+            backend = build_execution_backend(
+                base_config,
+                admin_service=getattr(self.runtime, "admin_service", None),
+            )
+        except Exception as exc:
+            dispatch_record = self._build_container_dispatch_record(
+                dispatch_id=dispatch_id,
+                session_id=session_id,
+                request_id=request_id,
+                prompt=prompt,
+                resume_mode=effective_resume_mode,
+                scheduled_for=scheduled_for,
+                dispatch_source=dispatch_source,
+                wake_metadata=wake_metadata,
+                status="failed",
+                target_name=target_name,
+                backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                error=str(exc) or type(exc).__name__,
+            )
+            if wake_store is not None:
+                wake_store.record_dispatch(dispatch_record)
+            return dispatch_record
+
+        if self._container_session_is_busy_for_backend(backend=backend, session_id=session_id):
+            queue_key = f"scheduled-wake:{request_id or session_id}"
+            queue_metadata: dict[str, str] = {
+                "source": dispatch_source,
+                "resume_mode": effective_resume_mode,
+                "backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                "target_name": target_name,
+            }
+            if request_id:
+                queue_metadata["request_id"] = request_id
+            try:
+                queued_record = enqueue_agent_prompt(
+                    runtime_dir=worker_config.runtime_dir,
+                    target=session_id,
+                    vm_name=target_name,
+                    session_id=session_id,
+                    prompt=prompt,
+                    model=agent_model,
+                    vm_user=worker_config.wake_vm_user,
+                    resume_thread_id=None,
+                    effect_id=queue_key,
+                    queue_key=queue_key,
+                    metadata=queue_metadata,
+                )
+            except Exception as exc:
+                dispatch_record = self._build_container_dispatch_record(
+                    dispatch_id=dispatch_id,
+                    session_id=session_id,
+                    prompt=prompt,
+                    resume_mode=effective_resume_mode,
+                    scheduled_for=scheduled_for,
+                    dispatch_source=dispatch_source,
+                    wake_metadata=wake_metadata,
+                    status="failed",
+                    target_name=target_name,
+                    backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                    error=str(exc) or type(exc).__name__,
+                )
+                if wake_store is not None:
+                    wake_store.record_dispatch(dispatch_record)
+                return dispatch_record
+            dispatch_record = self._build_container_dispatch_record(
+                dispatch_id=dispatch_id,
+                session_id=session_id,
+                request_id=request_id,
+                prompt=prompt,
+                resume_mode=effective_resume_mode,
+                scheduled_for=scheduled_for,
+                dispatch_source=dispatch_source,
+                wake_metadata={
+                    **(wake_metadata or {}),
+                    "backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                    "target_name": target_name,
+                    "queue_key": queued_record.queue_key,
+                },
+                status="queued",
+                target_name=target_name,
+                backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+            )
+            if wake_store is not None:
+                wake_store.record_dispatch(dispatch_record)
+            return dispatch_record
+
+        execution_id = safe_effect_execution_id("agent", session_id)
+        command = container_prompt_command(
+            prompt=prompt,
+            model=agent_model or str(getattr(session, "model", "") or "").strip() or "gpt-5.4",
+            resume_thread_id=None,
+            resume_mode=effective_resume_mode,
+            mcp_gateway_url=gateway_url_with_session_context(
+                container_worker_guest_gateway_url(base_config),
+                session_id=session_id,
+            ),
+        )
+        try:
+            handle = backend.start(
+                backend.prepare(
+                    ExecutionSpec(
+                        backend=ExecutionBackendKind.CONTAINER_WORKER_VM,
+                        target_name=execution_id,
+                        session_id=session_id,
+                        directory_path=directory_path,
+                        command=command,
+                        metadata={
+                            "source": dispatch_source,
+                            "dispatch_id": dispatch_id,
+                            "resume_mode": effective_resume_mode,
+                        },
+                    )
+                )
+            )
+        except Exception as exc:
+            dispatch_record = self._build_container_dispatch_record(
+                dispatch_id=dispatch_id,
+                session_id=session_id,
+                request_id=request_id,
+                prompt=prompt,
+                resume_mode=effective_resume_mode,
+                scheduled_for=scheduled_for,
+                dispatch_source=dispatch_source,
+                wake_metadata=wake_metadata,
+                status="failed",
+                target_name=execution_id,
+                backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                error=str(exc) or type(exc).__name__,
+            )
+            if wake_store is not None:
+                wake_store.record_dispatch(dispatch_record)
+            return dispatch_record
+
+        dispatch_record = self._build_container_dispatch_record(
+            dispatch_id=dispatch_id,
+            session_id=session_id,
+            request_id=request_id,
+            prompt=prompt,
+            resume_mode=effective_resume_mode,
+            scheduled_for=scheduled_for,
+            dispatch_source=dispatch_source,
+            wake_metadata={
+                **(wake_metadata or {}),
+                "backend": ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+                "target_name": execution_id,
+                "execution_id": getattr(handle, "execution_id", execution_id),
+            },
+            status="dispatched",
+            target_name=execution_id,
+            backend=ExecutionBackendKind.CONTAINER_WORKER_VM.value,
+        )
+        if wake_store is not None:
+            wake_store.record_dispatch(dispatch_record)
+        return dispatch_record
+
     def _resolve_agent_model_for_binding(self, binding: SessionWakeBinding) -> str | None:
         session = self.runtime.session_repository.get_session(binding.session_id)
         if session is None:
@@ -274,6 +485,88 @@ class HostWakeDispatcher:
             if session_model:
                 return session_model
             return os.environ.get("AGENT_MODEL") or None
+
+    def _build_container_dispatch_record(
+        self,
+        *,
+        dispatch_id: str,
+        session_id: str,
+        request_id: str | None,
+        prompt: str,
+        resume_mode: str,
+        scheduled_for: datetime | None,
+        dispatch_source: str,
+        wake_metadata: dict[str, Any] | None,
+        status: str,
+        target_name: str,
+        backend: str,
+        error: str | None = None,
+    ) -> WakeDispatchRecord:
+        payload_metadata: dict[str, Any] = {
+            "backend": backend,
+            "target_name": target_name,
+            "source": dispatch_source,
+            **(wake_metadata or {}),
+        }
+        return WakeDispatchRecord(
+            dispatch_id=dispatch_id,
+            request_id=request_id,
+            session_id=session_id,
+            status=status,
+            resume_prompt=WakeResumePromptPayload(
+                prompt=prompt,
+                metadata=dict(wake_metadata or {}),
+            ),
+            resume_mode=resume_mode,
+            scheduled_for=scheduled_for,
+            source=dispatch_source,
+            metadata=payload_metadata,
+            error=error,
+        )
+
+    @staticmethod
+    def _container_target_name(*, session: Any | None, session_id: str) -> str:
+        metadata = getattr(session, "metadata", {}) if session is not None else {}
+        if isinstance(metadata, Mapping):
+            target_name = normalize_optional_string(metadata.get("target_name"))
+            if target_name:
+                return target_name
+        provider_id = normalize_optional_string(getattr(session, "vm_provider_id", None))
+        return provider_id or session_id
+
+    @staticmethod
+    def _container_session_is_busy_for_backend(*, backend: Any, session_id: str) -> bool:
+        normalized_session_id = normalize_optional_string(session_id)
+        if not normalized_session_id:
+            return False
+        repository = getattr(backend, "repository", None)
+        list_active_by_session = getattr(repository, "list_active_by_session", None)
+        if callable(list_active_by_session):
+            records = list_active_by_session(normalized_session_id, _ACTIVE_CONTAINER_STATUSES)
+        else:
+            read_all = getattr(repository, "read_all", None)
+            if not callable(read_all):
+                return False
+            records = [
+                record
+                for record in read_all().values()
+                if normalize_optional_string(getattr(record, "session_id", None))
+                == normalized_session_id
+                and (normalize_optional_string(getattr(record, "last_status", None)) or "").casefold()
+                in _ACTIVE_CONTAINER_STATUSES
+            ]
+
+        for record in records:
+            status = normalize_optional_string(getattr(record, "last_status", None)) or ""
+            try:
+                inspected = backend.inspect(getattr(record, "execution_id"))
+                inspected_status = getattr(inspected, "status", None)
+                status = normalize_optional_string(getattr(inspected_status, "value", inspected_status))
+            except Exception:
+                pass
+            if (status or "").casefold() in _ACTIVE_CONTAINER_STATUSES:
+                return True
+        return False
 
 def probe_agent_dispatch_state(*, session_id: str, vm_id: str, script_path: Path) -> str:
     if not script_path.exists():

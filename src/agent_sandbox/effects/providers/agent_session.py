@@ -729,9 +729,11 @@ def container_prompt_command(
     prompt: str,
     model: str,
     resume_thread_id: str | None,
+    resume_mode: str | None = None,
     mcp_gateway_url: str | None = None,
 ) -> str:
     effective_resume_thread_id = _container_resume_thread_id(resume_thread_id)
+    effective_resume_mode = normalize_optional_string(resume_mode)
     common_args = [
         "--json",
         "--dangerously-bypass-approvals-and-sandbox",
@@ -748,6 +750,8 @@ def container_prompt_command(
         )
     if effective_resume_thread_id:
         args = ["codex", "exec", "resume", *common_args, effective_resume_thread_id, prompt]
+    elif effective_resume_mode == "same_context":
+        args = ["codex", "exec", "resume", "--last", *common_args, prompt]
     else:
         args = [
             "codex",
