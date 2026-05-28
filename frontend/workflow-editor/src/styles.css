@@ -1858,9 +1858,19 @@ select {
 
 .metadata-rule-editor,
 .metadata-rule-list,
+.metadata-rule-field-modes,
 .metadata-rule-raw-fields {
   display: grid;
   gap: 0.65rem;
+}
+
+.metadata-rule-field-modes {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.metadata-rule-field-mode {
+  display: grid;
+  gap: 0.3rem;
 }
 
 .metadata-rule-row {
@@ -1888,6 +1898,7 @@ select {
 
 @media (max-width: 720px) {
   .string-map-row,
+  .metadata-rule-field-modes,
   .metadata-rule-row,
   .metadata-rule-row-exists {
     grid-template-columns: 1fr;

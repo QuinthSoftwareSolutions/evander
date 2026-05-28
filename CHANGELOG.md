@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-28 - Workflow Editor Bindable Selectors
+
+- Kept bindable enum workflow fields, including `query:session:list` State,
+  editable through either a finite literal selector or an upstream binding.
+- Kept `query:session:list` metadata filter bindings reachable from the
+  structured metadata rule editor.
+- Exposed PR-feedback agent identity fields in the workflow editor catalog.
+
 ## 2026-05-28 - PR Feedback Agent-Directed Metadata
 
 - Added Azure DevOps PR feedback metadata for prior same-thread authors and ADO

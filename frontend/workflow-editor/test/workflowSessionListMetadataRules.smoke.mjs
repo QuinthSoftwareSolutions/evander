@@ -167,6 +167,7 @@ test("workflow editor exposes query session metadata filters as metadata rules",
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1100 } });
   const page = await context.newPage();
+  page.setDefaultTimeout(5000);
   const pageErrors = [];
   const consoleErrors = [];
   const saveRequests = [];
@@ -330,7 +331,8 @@ test("workflow editor exposes query session metadata filters as metadata rules",
   const inspector = page.locator(".sidebar-section.inspector").filter({ hasText: "query:session:list" });
   await inspector.waitFor({ state: "visible" });
   await inspector.getByText("Metadata rules").waitFor({ state: "visible" });
-  assert.equal(await inspector.getByText("Metadata equals").count(), 0);
+  assert.equal(await inspector.locator(".metadata-rule-raw-fields").count(), 0);
+  assert.equal(await inspector.locator(".metadata-rule-field-mode").count(), 3);
 
   const rows = inspector.locator(".metadata-rule-row");
   await rows.first().waitFor({ state: "visible" });
@@ -377,6 +379,26 @@ test("workflow editor exposes query session metadata filters as metadata rules",
   assert.deepEqual(saveRequests[0].config.queries[0].metadata_prefix, {
     "task.branch": "feature/",
   });
+
+  const prefixModeControl = inspector.locator(".metadata-rule-field-mode").filter({ hasText: "Metadata prefix" });
+  await prefixModeControl.locator(".mode-select select").selectOption("bind");
+  const rawPrefixField = inspector.locator(".metadata-rule-raw-fields .inspector-field").filter({ hasText: "Metadata prefix" });
+  await rawPrefixField.waitFor({ state: "visible" });
+  await rawPrefixField.locator(".binding-editor input").fill("${{trigger-1.feedback.metadata.prefix_filter}}");
+
+  const stateField = inspector.locator(".inspector-field").filter({ hasText: "State" }).last();
+  await assert.equal(await stateField.locator(".mode-select select").inputValue(), "literal");
+  await stateField.locator(".mode-select select").selectOption("bind");
+  await stateField.locator(".binding-editor input").fill("${{trigger-1.session_state}}");
+
+  await page.getByRole("button", { name: "Save workflow" }).click();
+  await page.waitForFunction(() => document.querySelectorAll(".node-unsaved-badge").length === 0);
+  assert.equal(saveRequests.length, 2);
+  assert.equal(
+    saveRequests[1].config.queries[0].metadata_prefix,
+    "${{trigger-1.feedback.metadata.prefix_filter}}",
+  );
+  assert.equal(saveRequests[1].config.queries[0].state, "${{trigger-1.session_state}}");
 
   assert.deepEqual(pageErrors, []);
   assert.deepEqual(consoleErrors, []);

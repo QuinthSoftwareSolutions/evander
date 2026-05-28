@@ -1533,8 +1533,10 @@ def _field(
     )
 
 
-def _pull_request_trigger_fields() -> list[WorkflowEditorFieldDefinition]:
-    return [
+def _pull_request_trigger_fields(
+    *, include_agent_identity_fields: bool = False
+) -> list[WorkflowEditorFieldDefinition]:
+    fields = [
         _field(
             "provider",
             "Provider",
@@ -1581,6 +1583,29 @@ def _pull_request_trigger_fields() -> list[WorkflowEditorFieldDefinition]:
         _field("skip", "Skip", "number"),
         _field("cursor", "Cursor", "string"),
     ]
+    if include_agent_identity_fields:
+        fields.extend(
+            [
+                _field(
+                    "agent_author_names",
+                    "Agent author names",
+                    "string_list",
+                    description=(
+                        "Feedback author display names that should mark a PR feedback event "
+                        "as agent-directed."
+                    ),
+                ),
+                _field(
+                    "agent_mention_names",
+                    "Agent mention names",
+                    "string_list",
+                    description=(
+                        "Mention display names that should mark a PR feedback event as agent-directed."
+                    ),
+                ),
+            ]
+        )
+    return fields
 
 
 _WORKFLOW_EDITOR_NODE_DESCRIPTIONS: dict[str, str] = {
@@ -2009,7 +2034,7 @@ _WORKFLOW_EDITOR_NODE_CATALOG: tuple[WorkflowEditorNodeCatalogEntry, ...] = (
         kind="trigger",
         type="trigger:pull-request:new-feedback",
         label="PR feedback",
-        fields=_pull_request_trigger_fields(),
+        fields=_pull_request_trigger_fields(include_agent_identity_fields=True),
     ),
     WorkflowEditorNodeCatalogEntry(
         kind="trigger",

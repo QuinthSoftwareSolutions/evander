@@ -3193,6 +3193,20 @@ function fieldValueMode(field: WorkflowEditorFieldDefinition, value: unknown): "
   return "literal";
 }
 
+function enumOptionValue(field: WorkflowEditorFieldDefinition, value: unknown): string {
+  const stringValue = typeof value === "string" ? value : "";
+  if (!stringValue) return "";
+  return field.options.some((option) => option.value === stringValue) ? stringValue : "";
+}
+
+function enumLiteralFallbackValue(field: WorkflowEditorFieldDefinition, value: unknown): string {
+  const currentValue = enumOptionValue(field, value);
+  if (currentValue) return currentValue;
+  const defaultValue = enumOptionValue(field, field.default_value);
+  if (defaultValue) return defaultValue;
+  return field.required ? field.options[0]?.value ?? "" : "";
+}
+
 function parseJsonDraft(text: string, fallback: unknown): unknown {
   const trimmed = text.trim();
   if (!trimmed) return fallback;
@@ -6249,6 +6263,32 @@ export default function App() {
     setInspectorFieldModes((current) => ({ ...current, [key]: mode }));
   }
 
+  function updateBindableEnumFieldMode(
+    field: WorkflowEditorFieldDefinition,
+    value: unknown,
+    nextMode: "literal" | "bind" | "template",
+  ) {
+    updateFieldMode(field.key, nextMode);
+    if (nextMode === "bind") {
+      updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
+    } else {
+      updateKnownField(field.key, enumLiteralFallbackValue(field, value));
+    }
+  }
+
+  function updateMetadataFieldMode(
+    field: WorkflowEditorFieldDefinition,
+    value: unknown,
+    nextMode: "literal" | "bind" | "template",
+  ) {
+    updateFieldMode(field.key, nextMode);
+    if (nextMode === "bind") {
+      updateKnownField(field.key, selectedNodeBindingOptions[0]?.value ?? "");
+    } else if (isExactBindingValue(value)) {
+      updateKnownField(field.key, undefined);
+    }
+  }
+
   async function copyBindingExpression(bindingExpression: string) {
     try {
       if (!navigator.clipboard?.writeText) {
@@ -7400,6 +7440,23 @@ export default function App() {
         <div className="field-toolbar">
           {renderFieldHeader(headerField)}
         </div>
+        <div className="metadata-rule-field-modes">
+          {metadataFields.map((field) => {
+            const fieldValue = inspectorKnownValues[field.key];
+            const fieldMode = inspectorFieldModes[field.key] ?? fieldValueMode(field, fieldValue);
+            return (
+              <div key={`${field.key}-mode`} className="metadata-rule-field-mode">
+                {renderFieldHeader(field)}
+                {renderModeSelect(
+                  field,
+                  fieldMode,
+                  (nextMode) => updateMetadataFieldMode(field, fieldValue, nextMode),
+                  isDisabled,
+                )}
+              </div>
+            );
+          })}
+        </div>
         <div className="metadata-rule-list">
           {metadataRuleRows.map((row, index) => {
             const rowClassName = row.kind === "exists"
@@ -7702,23 +7759,33 @@ export default function App() {
         );
       }
       return (
-        <label key={field.key} className="inspector-field">
+        <div key={field.key} className="inspector-field">
           <div className="field-toolbar">
             {renderFieldHeader(field)}
+            {renderModeSelect(
+              field,
+              mode,
+              (nextMode) => updateBindableEnumFieldMode(field, value, nextMode),
+              isDisabled,
+            )}
           </div>
-          <select
-            value={typeof value === "string" ? value : ""}
-            onChange={(event) => updateKnownField(field.key, event.target.value)}
-            disabled={isDisabled}
-          >
-            <option value="">Select</option>
-            {field.options.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+          {mode === "bind"
+            ? renderBindingSelect(field, selectedNodeBindingOptions, value, (nextValue) => updateKnownField(field.key, nextValue))
+            : (
+              <select
+                value={enumOptionValue(field, value)}
+                onChange={(event) => updateKnownField(field.key, event.target.value || undefined)}
+                disabled={isDisabled}
+              >
+                <option value="">Select</option>
+                {field.options.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            )}
+        </div>
       );
     }
 
