@@ -10,6 +10,12 @@ material. Newer entries are added incrementally as changes land.
 - Reworded the Admin Web Issues tab summary so it describes issue intake and
   records instead of presenting VM creation as the page purpose.
 
+## 2026-05-28 - Approvals Review Panel Layout
+
+- Removed the Admin Web Approvals `Queue health` panel.
+- Promoted approval `Summary` content out of its nested card so it reads as a
+  root section inside the `Review` panel.
+
 ## 2026-05-27 - Thread Log Pagination
 
 - Fixed container worker thread-log paging so older transcript lines are fetched

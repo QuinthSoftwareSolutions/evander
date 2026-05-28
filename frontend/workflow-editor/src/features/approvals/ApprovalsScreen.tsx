@@ -230,7 +230,6 @@ export function ApprovalsScreen() {
   }
 
   const items = response?.items ?? [];
-  const health = response?.health;
   const mutationLocked = !privilegedUnlocked;
 
   return (
@@ -331,23 +330,6 @@ export function ApprovalsScreen() {
         {error ? <div className="callout error-callout">{error}</div> : null}
         {statusMessage ? <div className="callout success-callout">{statusMessage}</div> : null}
 
-        <div className="feature-grid">
-          <article className="panel">
-            <div className="panel-header">
-              <h3>Queue health</h3>
-              <span className="panel-meta">Current filter scope</span>
-            </div>
-            <dl className="property-grid">
-              <div><dt>Total</dt><dd>{health?.total ?? 0}</dd></div>
-              <div><dt>Pending</dt><dd>{health?.pending ?? 0}</dd></div>
-              <div><dt>Approved</dt><dd>{health?.approved ?? 0}</dd></div>
-              <div><dt>Denied</dt><dd>{health?.denied ?? 0}</dd></div>
-              <div><dt>Expired</dt><dd>{health?.expired ?? 0}</dd></div>
-              <div><dt>Oldest pending</dt><dd>{formatRelativeSeconds(health?.oldest_pending_age_seconds)}</dd></div>
-            </dl>
-          </article>
-        </div>
-
         <article className="panel">
           <div className="panel-header">
             <h3>Review</h3>
@@ -366,25 +348,25 @@ export function ApprovalsScreen() {
                 <div><dt>Expires in</dt><dd>{formatRelativeSeconds(detail.expires_in_seconds)}</dd></div>
               </dl>
 
-              <article className="panel">
-                <div className="panel-header">
+              <section className="approval-review-summary">
+                <div className="panel-header approval-review-summary-header">
                   <h3>Summary</h3>
                   <span className="panel-meta">{detail.request.directory_path}</span>
                 </div>
-                <div className="panel-body">
-                <p>{detail.request.human_summary}</p>
-                {detail.request.intended_effect ? (
-                  <p className="muted-copy">
-                    Intended effect:{" "}
-                    <Tooltip content={detail.request.intended_effect}>
-                      <span>{detail.request.intended_effect}</span>
-                    </Tooltip>
-                  </p>
-                ) : null}
-                <p className="muted-copy">Directory: <Tooltip content={`Directory scope for this approval request: ${detail.request.directory_path}`}><span>{detail.request.directory_path}</span></Tooltip></p>
-                <p className="muted-copy">Payload digest: <Tooltip content={`Payload digest: ${detail.request.payload_digest}`}><span>{detail.request.payload_digest}</span></Tooltip></p>
+                <div className="approval-review-summary-body">
+                  <p>{detail.request.human_summary}</p>
+                  {detail.request.intended_effect ? (
+                    <p className="muted-copy">
+                      Intended effect:{" "}
+                      <Tooltip content={detail.request.intended_effect}>
+                        <span>{detail.request.intended_effect}</span>
+                      </Tooltip>
+                    </p>
+                  ) : null}
+                  <p className="muted-copy">Directory: <Tooltip content={`Directory scope for this approval request: ${detail.request.directory_path}`}><span>{detail.request.directory_path}</span></Tooltip></p>
+                  <p className="muted-copy">Payload digest: <Tooltip content={`Payload digest: ${detail.request.payload_digest}`}><span>{detail.request.payload_digest}</span></Tooltip></p>
                 </div>
-              </article>
+              </section>
 
               <div className="feature-grid">
                 <article className="panel">

@@ -216,17 +216,19 @@ test("admin shell approvals detail renders intended effect and payload digest", 
   await assert.doesNotReject(() => navEntry.waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Approvals" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "approval-1" }).waitFor({ state: "visible" }));
+  await assert.doesNotReject(() => page.getByRole("heading", { name: "Summary" }).waitFor({ state: "visible" }));
+  assert.equal(await page.getByRole("heading", { name: "Queue health" }).count(), 0);
   await assert.doesNotReject(() =>
-    page.locator(".panel-body p.muted-copy").filter({ hasText: "Intended effect:" }).waitFor({ state: "visible" }),
+    page.locator(".approval-review-summary p.muted-copy").filter({ hasText: "Intended effect:" }).waitFor({ state: "visible" }),
   );
   await assert.doesNotReject(() =>
-    page.locator(".panel-body").getByText("Send the approved email payload to the recipient.", { exact: true }).waitFor({ state: "visible" }),
+    page.locator(".approval-review-summary").getByText("Send the approved email payload to the recipient.", { exact: true }).waitFor({ state: "visible" }),
   );
   await assert.doesNotReject(() =>
-    page.locator(".panel-body p.muted-copy").filter({ hasText: "Payload digest:" }).waitFor({ state: "visible" }),
+    page.locator(".approval-review-summary p.muted-copy").filter({ hasText: "Payload digest:" }).waitFor({ state: "visible" }),
   );
   await assert.doesNotReject(() =>
-    page.locator(".panel-body").getByText("digest-approval-1", { exact: true }).waitFor({ state: "visible" }),
+    page.locator(".approval-review-summary").getByText("digest-approval-1", { exact: true }).waitFor({ state: "visible" }),
   );
 
   assert.equal(await page.evaluate(() => window.location.hash), "#approvals");
