@@ -5,6 +5,15 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-28 - Configurable MCP Tool Approvals
+
+- Added configurable MCP invocation approval grants with restrictive defaults:
+  single use, 3600 second TTL, and exact-payload matching.
+- Added directory-scoped MCP tool policies for admin defaults, hard approval
+  limits, forced approval, and inherited tool deny rules.
+- Added Admin Web MCP Tools policy editing and per-session approval settings
+  controls, and made workflow-run MCP tool leases honor directory rules.
+
 ## 2026-05-28 - Admin Approval Directory Scope
 
 - Defaulted the Approvals page to include descendant directories instead of

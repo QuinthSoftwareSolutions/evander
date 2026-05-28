@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from agent_sandbox.config import GatewayConfig
+from agent_sandbox.directory_config import DirectoryConfigStore
+from agent_sandbox.directories import DirectoryStore
 from agent_sandbox.effects.providers.base import EffectRuntimeContext
 from agent_sandbox.effects.providers.session_approve_mcp_tools import (
     SessionApproveMcpToolsForRunEffectProvider,
@@ -58,6 +60,17 @@ def _build_provider(
     return provider, session_repository, lease_repository
 
 
+def _write_root_policy(tmp_path: Path, payload: dict[str, object]) -> None:
+    config = GatewayConfig(runtime_dir=tmp_path)
+    directory_store = DirectoryStore(config.directories_store_path)
+    directory_store.ensure_root()
+    DirectoryConfigStore(directory_store, runtime_dir=config.runtime_dir).write(
+        "root",
+        domain="policy",
+        payload=payload,
+    )
+
+
 def test_approve_mcp_tools_for_run_creates_scoped_lease_without_manifest_mutation(
     tmp_path: Path,
 ) -> None:
@@ -105,6 +118,81 @@ def test_approve_mcp_tools_for_run_creates_scoped_lease_without_manifest_mutatio
     )
     assert manifest is not None
     assert manifest.allowed_tools == []
+
+
+def test_approve_mcp_tools_for_run_rejects_directory_denied_tool(
+    tmp_path: Path,
+) -> None:
+    _write_root_policy(
+        tmp_path,
+        {"mcp_tool_policies": {ToolName.RUN_SCRIPT.value: {"denied": True}}},
+    )
+    provider, sessions, _leases = _build_provider(
+        tmp_path,
+        SessionApproveMcpToolsForRunEffectDefinition(
+            id="approve-tools",
+            display_name="Approve tools",
+            type="effect:session:approve-mcp-tools-for-run",
+            session_id="session-1",
+            tools=["run_script"],
+        ),
+    )
+    sessions.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    with pytest.raises(ValueError, match="denied by directory policy"):
+        provider.execute(execution_context={"workflow_run_id": "run-1"})
+
+
+def test_approve_mcp_tools_for_run_clamps_lease_with_directory_hard_limits(
+    tmp_path: Path,
+) -> None:
+    _write_root_policy(
+        tmp_path,
+        {
+            "mcp_tool_policies": {
+                ToolName.RUN_SCRIPT.value: {
+                    "max_ttl_seconds": 120,
+                    "max_uses": 1,
+                }
+            }
+        },
+    )
+    provider, sessions, leases = _build_provider(
+        tmp_path,
+        SessionApproveMcpToolsForRunEffectDefinition(
+            id="approve-tools",
+            display_name="Approve tools",
+            type="effect:session:approve-mcp-tools-for-run",
+            session_id="session-1",
+            tools=["run_script"],
+            expires_in_seconds=600,
+        ),
+    )
+    sessions.upsert_session(
+        SessionManifest(
+            session_id="session-1",
+            vm_id="vm-1",
+            allowed_tools=[],
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+    )
+
+    started_at = datetime.now(UTC)
+    output = provider.execute(execution_context={"workflow_run_id": "run-1"})
+
+    lease = leases.get_lease(output["lease_id"])
+    assert lease is not None
+    assert lease.expires_at <= started_at + timedelta(seconds=121)
+    assert lease.approval_settings[ToolName.RUN_SCRIPT.value].ttl_seconds == 120
+    assert lease.approval_settings[ToolName.RUN_SCRIPT.value].max_uses == 1
+    assert output["approval_settings"][ToolName.RUN_SCRIPT.value]["max_uses"] == 1
 
 
 def test_approve_mcp_tools_for_run_resolves_vm_name_and_caps_expiry(

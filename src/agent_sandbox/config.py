@@ -21,8 +21,10 @@ from pydantic import (
 
 from agent_sandbox.models import (
     DirectoryPath,
+    McpToolPolicyRule,
     ToolArgumentPolicyRule,
     ToolName,
+    normalize_mcp_tool_policies,
     normalize_tool_argument_policies,
     normalize_tool_names,
     validate_tool_argument_policy_map,
@@ -228,6 +230,7 @@ class GatewayConfig(BaseModel):
     communication_file_require_approval_for_send: bool = False
     pr_reply_require_approval: bool = False
     approval_required_tools: list[ToolName] = Field(default_factory=list)
+    mcp_tool_policies: dict[str, McpToolPolicyRule] = Field(default_factory=dict)
     tool_argument_policies: dict[str, list[ToolArgumentPolicyRule]] = Field(default_factory=dict)
     github_token_env: str = "GITHUB_TOKEN"
     agent_prompt_token_secret_env: str = "AGENT_PROMPT_TOKEN_SECRET"
@@ -332,6 +335,11 @@ class GatewayConfig(BaseModel):
     @classmethod
     def normalize_approval_required_tools(cls, value: object) -> list[ToolName]:
         return normalize_tool_names(value, field_name="approval_required_tools")
+
+    @field_validator("mcp_tool_policies", mode="before")
+    @classmethod
+    def normalize_mcp_tool_policies_field(cls, value: object) -> dict[str, object]:
+        return normalize_mcp_tool_policies(value, field_name="mcp_tool_policies")
 
     @field_validator("tool_argument_policies", mode="before")
     @classmethod

@@ -800,6 +800,8 @@ class IssueGitAdminService:
                 health.denied += 1
             elif request.status == ApprovalStatus.EXPIRED:
                 health.expired += 1
+            elif request.status == ApprovalStatus.EXHAUSTED:
+                health.exhausted += 1
         if pending_ages:
             health.oldest_pending_age_seconds = max(pending_ages)
         return health

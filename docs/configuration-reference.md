@@ -1112,7 +1112,7 @@ Supported directory config domains:
 
 | Domain file | Purpose | YAML fields allowed |
 |---|---|---|
-| `policy.json` | Session/policy defaults and operator restrictions | `approval_ttl_seconds`, `approval_notification_target_ids`, `default_session_ttl_seconds`, Discord/email allowlists, `email_send_enabled`, `pr_reply_require_approval`, `redacted_keys`, `tool_argument_policies` |
+| `policy.json` | Session/policy defaults and operator restrictions | `approval_ttl_seconds`, `approval_notification_target_ids`, `default_session_ttl_seconds`, Discord/email allowlists, `email_send_enabled`, `pr_reply_require_approval`, `redacted_keys`, `mcp_tool_policies`, `tool_argument_policies` |
 | `providers.json` | Upstream/provider endpoints and credentials-by-reference | Discord, OpenAI, HTTP target relay, NuGet, GitHub, Azure DevOps, Teams, container worker, Retell |
 | `contacts.json` | Directory contact list and admin-user contact attachments | `contacts`, `user_contact_links` |
 | `email.json` | Mailbox provider definitions and email provider runtime settings | `email_mailboxes`, `email_provider_timeout_seconds` |
@@ -1179,6 +1179,26 @@ Approval-required tool policy:
   id.
 - `approval_submit` and `approval_check` are excluded from generic invocation gating so agents can
   request and inspect approvals.
+
+MCP tool approval policy:
+
+- `mcp_tool_policies` is a tool-keyed map of directory rules. Keys must match a known MCP
+  `ToolName`.
+- Each rule can set:
+  - `denied`: fully disallow the tool in this directory and descendants.
+  - `require_approval`: force per-invocation approval for the tool.
+  - `default_settings`: default grant settings with `ttl_seconds`, `max_uses` (`null` means
+    unlimited), and `payload_mode` (`exact` or `any`).
+  - `max_ttl_seconds`: hard upper bound for any approval grant TTL.
+  - `max_uses`: hard upper bound for finite or unlimited approval grants.
+  - `require_exact_payload`: hard rule that forbids payload variance.
+- Approval grants default to `ttl_seconds: 3600`, `max_uses: 1`, and `payload_mode: exact`.
+- Session-specific approval settings may relax those defaults only until a directory hard rule
+  clamps them. Directory `denied` rules are inherited downward and cannot be undone by descendant
+  directories or session policy.
+- `effect:session:approve-mcp-tools-for-run` respects these rules: denied tools, tools that require
+  per-invocation approval, and tools that force exact payload matching cannot be approved by a
+  workflow-run lease.
 
 Tool argument policy:
 

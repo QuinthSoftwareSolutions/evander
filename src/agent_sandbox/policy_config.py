@@ -21,9 +21,11 @@ from agent_sandbox.messaging.targets import (
     load_communication_targets_config,
 )
 from agent_sandbox.models import (
+    McpToolPolicyRule,
     SessionManifest,
     ToolArgumentPolicyRule,
     ToolName,
+    normalize_mcp_tool_policies,
     normalize_tool_argument_policies,
     normalize_tool_names,
     validate_tool_argument_policy_map,
@@ -40,6 +42,36 @@ from agent_sandbox.services import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _apply_inherited_mcp_tool_denies(
+    effective_config: dict[str, object], overlays: list[dict[str, object]]
+) -> dict[str, object]:
+    denied_tools: set[str] = set()
+    for overlay in overlays:
+        policies = overlay.get("mcp_tool_policies")
+        if not isinstance(policies, dict):
+            continue
+        for raw_tool_name, raw_policy in policies.items():
+            if not isinstance(raw_policy, dict):
+                continue
+            denied = raw_policy.get("denied", raw_policy.get("deny", False))
+            if not bool(denied):
+                continue
+            try:
+                denied_tools.add(ToolName(str(raw_tool_name).strip()).value)
+            except ValueError:
+                continue
+    if not denied_tools:
+        return effective_config
+    patched = dict(effective_config)
+    policies = dict(patched.get("mcp_tool_policies") or {})
+    for tool_name in sorted(denied_tools):
+        policy = dict(policies.get(tool_name) or {})
+        policy["denied"] = True
+        policies[tool_name] = policy
+    patched["mcp_tool_policies"] = policies
+    return patched
 
 
 class EffectivePolicyConfig(BaseModel):
@@ -64,6 +96,7 @@ class EffectivePolicyConfig(BaseModel):
     communication_file_require_approval_for_send: bool = False
     pr_reply_require_approval: bool = False
     approval_required_tools: list[ToolName] = Field(default_factory=list)
+    mcp_tool_policies: dict[str, McpToolPolicyRule] = Field(default_factory=dict)
     tool_argument_policies: dict[str, list[ToolArgumentPolicyRule]] = Field(default_factory=dict)
     redacted_keys: set[str] = Field(
         default_factory=lambda: {
@@ -101,6 +134,11 @@ class EffectivePolicyConfig(BaseModel):
     @classmethod
     def normalize_approval_required_tools(cls, value: object) -> list[ToolName]:
         return normalize_tool_names(value, field_name="approval_required_tools")
+
+    @field_validator("mcp_tool_policies", mode="before")
+    @classmethod
+    def normalize_mcp_tool_policies_field(cls, value: object) -> dict[str, object]:
+        return normalize_mcp_tool_policies(value, field_name="mcp_tool_policies")
 
     @field_validator("tool_argument_policies", mode="before")
     @classmethod
@@ -155,7 +193,11 @@ class PolicyConfigResolver:
             base_config=get_domain_base_config(self.config, "policy"),
             validator=lambda candidate: validate_effective_domain_payload("policy", candidate),
         )
-        return EffectivePolicyConfig.model_validate(resolution.effective_config)
+        effective_config = _apply_inherited_mcp_tool_denies(
+            resolution.effective_config,
+            [layer.overlay for layer in resolution.applied_layers],
+        )
+        return EffectivePolicyConfig.model_validate(effective_config)
 
     def resolve_for_session_id(self, session_id: str) -> EffectivePolicyConfig:
         session = self.session_store.get_session(session_id)

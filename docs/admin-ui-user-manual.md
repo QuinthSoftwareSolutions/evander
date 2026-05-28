@@ -69,7 +69,7 @@ or environment scope.
 5. Empty non-root directories can be deleted with the delete button when privileges are unlocked.
 
 Changing directory affects pages that filter or edit directory-owned state, including Agents,
-Approvals, VMs, Issues, Sessions, Tool Calls, Configuration, Users, Workflow, and dashboard panels.
+Approvals, VMs, Issues, Sessions, MCP Tools, Tool Calls, Configuration, Users, Workflow, and dashboard panels.
 
 ### Unlock Privileged Operations
 
@@ -301,15 +301,33 @@ Common tasks:
 8. Use delete only when you intend to remove saved local session state.
 9. Edit the model field when a session needs a different model for future resume/prompt work.
 10. Toggle allowed tools and **Require approval** for tools that should queue human decisions.
-11. Edit allowed scripts and communication allowlists.
-12. Configure communication-file receive/send permissions, max bytes, MIME types, extensions, and
+11. Use the settings button next to **Require approval** to set approval TTL, use count, and payload
+    matching for that session.
+12. Edit allowed scripts and communication allowlists.
+13. Configure communication-file receive/send permissions, max bytes, MIME types, extensions, and
     metadata.
-13. Save settings.
-14. Create, update, enable/disable, or delete wake schedules for recurring cron or one-time resume
+14. Save settings.
+15. Create, update, enable/disable, or delete wake schedules for recurring cron or one-time resume
     prompts.
 
 Changing allowed tools can also remove approval requirements for tools that are no longer allowed.
 Review both tool access and approval policy before saving.
+
+## MCP Tools
+
+The MCP Tools tab manages directory-scoped tool rules and approval defaults.
+
+Common tasks:
+
+1. Open **MCP Tools** and choose the directory.
+2. Unlock privileges before editing.
+3. Select a tool.
+4. Set a local rule to disallow the tool, always require approval, define default TTL/use/payload
+   settings, or set hard TTL/use/payload limits.
+5. Save policy.
+
+Inherited disallow rules remain effective in child directories. A child directory or session cannot
+re-enable a tool that an ancestor directory has denied.
 
 ## Tool Calls
 
@@ -538,8 +556,10 @@ view or changing directory while there are unsaved workflow changes prompts for 
 4. Select the session.
 5. In **Model and access**, enable the target tool if it is not already allowed.
 6. Check **Require approval** for the same tool.
-7. Save settings.
-8. When the session uses that tool, review the queued request in **Approvals**.
+7. Use the settings button if the approval should allow more than one use, a shorter TTL, or payload
+   variance.
+8. Save settings.
+9. When the session uses that tool, review the queued request in **Approvals**.
 
 ### Review And Decide An Approval
 

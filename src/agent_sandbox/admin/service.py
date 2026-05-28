@@ -106,6 +106,7 @@ from agent_sandbox.vm.defaults_config import EffectiveVmDefaultsConfig, VmDefaul
 from agent_sandbox.pr_feedback.store import PrFeedbackStore
 from agent_sandbox.models import (
     ApprovalQueueHealth,
+    ApprovalGrantSettings,
     ApprovalRequest,
     ApprovalStatus,
     AgentRecord,
@@ -125,6 +126,7 @@ from agent_sandbox.models import (
     WakeScheduleDefinition,
     WorkerActionResult,
     WorkerSummary,
+    normalize_approval_tool_settings,
 )
 from agent_sandbox.runtime import RuntimeContext, build_runtime
 from agent_sandbox.storage import JsonStore
@@ -5731,6 +5733,7 @@ def _session_policy_update_from_payload(
 ) -> dict[str, Any]:
     allowed_fields = {
         "approval_required_tools",
+        "approval_tool_settings",
         "tool_argument_policies",
         "allowed_script_names",
         "discord_channel_allowlist",
@@ -5760,6 +5763,15 @@ def _session_policy_update_from_payload(
                 field_name="approval_required_tools",
             )
         )
+    if "approval_tool_settings" in payload:
+        normalized_settings = normalize_approval_tool_settings(
+            payload.get("approval_tool_settings"),
+            field_name="approval_tool_settings",
+        )
+        update["approval_tool_settings"] = {
+            tool_name: ApprovalGrantSettings.model_validate(settings)
+            for tool_name, settings in normalized_settings.items()
+        }
     if "tool_argument_policies" in payload:
         update["tool_argument_policies"] = _session_tool_argument_policies_from_payload(
             session,
@@ -8338,6 +8350,10 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 tool.value if isinstance(tool, ToolName) else str(tool)
                 for tool in session.approval_required_tools
             ],
+            "approval_tool_settings": {
+                tool_name: settings.model_dump(mode="json")
+                for tool_name, settings in session.approval_tool_settings.items()
+            },
             "tool_argument_policies": {
                 tool_name: [rule.model_dump(mode="json") for rule in rules]
                 for tool_name, rules in session.tool_argument_policies.items()
@@ -8396,12 +8412,25 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
                 tool_rules = tool_argument_policies.setdefault(tool_name, [])
                 tool_rules.extend(rule.model_dump(mode="json") for rule in rules)
 
+        approval_tool_settings = {
+            tool.value: self.runtime.policy.approval_grant_settings_for_tool(session, tool).model_dump(
+                mode="json"
+            )
+            for tool in ToolName
+        }
+        mcp_tool_policies = {
+            tool_name: rule.model_dump(mode="json")
+            for tool_name, rule in effective_policy.mcp_tool_policies.items()
+        }
+
         return {
             "allowed_tools": [
                 tool.value if isinstance(tool, ToolName) else str(tool)
                 for tool in session.allowed_tools
             ],
             "approval_required_tools": approval_required_tools,
+            "approval_tool_settings": approval_tool_settings,
+            "mcp_tool_policies": mcp_tool_policies,
             "tool_argument_policies": tool_argument_policies,
         }
 
@@ -9331,6 +9360,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             "ttl_hours",
             "allowed_tools",
             "approval_required_tools",
+            "approval_tool_settings",
             "tool_argument_policies",
             "allowed_script_names",
             "discord_channels",
@@ -9373,6 +9403,7 @@ git -C "${{TARGET_DIR}}" config alias.sync-base '!f(){{ repo_root=$(git rev-pars
             key: body[key]
             for key in (
                 "approval_required_tools",
+                "approval_tool_settings",
                 "tool_argument_policies",
                 "allowed_script_names",
                 "discord_channels",

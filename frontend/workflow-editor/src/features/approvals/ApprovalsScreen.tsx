@@ -5,7 +5,7 @@ import { useAdminUi } from "../admin/AdminContext";
 import { Tooltip } from "../admin/Tooltip";
 import { hashQueryParam } from "../../adminRouting";
 
-type ApprovalStatus = "pending" | "approved" | "denied" | "expired";
+type ApprovalStatus = "pending" | "approved" | "denied" | "expired" | "exhausted";
 
 type ApprovalItem = {
   request_id: string;
@@ -38,6 +38,7 @@ type ApprovalHealth = {
   approved: number;
   denied: number;
   expired: number;
+  exhausted: number;
   oldest_pending_age_seconds?: number | null;
 };
 

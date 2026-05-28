@@ -422,6 +422,73 @@ def test_admin_web_exposes_sessions_catalog_list_detail_and_mutations(tmp_path: 
     assert revoke_response.json()["action"] == "revoke_session"
 
 
+def test_admin_web_exposes_mcp_tools_directory_policy_api(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    with config_path.open("a", encoding="utf-8") as handle:
+        handle.write("\nenable_directory_scoped_config: true\n")
+    service = AdminService(config_path)
+    client = TestClient(create_app(service))
+
+    initial_response = client.get("/api/admin/mcp-tools?directory_path=root")
+    assert initial_response.status_code == 200
+    initial_payload = initial_response.json()
+    run_script = next(
+        item for item in initial_payload["items"] if item["value"] == "run_script"
+    )
+    assert run_script["effective_settings"] == {
+        "ttl_seconds": 3600,
+        "max_uses": 1,
+        "payload_mode": "exact",
+    }
+
+    locked_response = client.put(
+        "/api/admin/mcp-tools?directory_path=root",
+        json={
+            "expected_revision": initial_payload["revision"],
+            "mcp_tool_policies": {},
+        },
+    )
+    assert locked_response.status_code == 403
+
+    unlock_response = client.post("/api/admin/privileged/unlock")
+    assert unlock_response.status_code == 200
+    update_response = client.put(
+        "/api/admin/mcp-tools?directory_path=root",
+        json={
+            "expected_revision": initial_payload["revision"],
+            "mcp_tool_policies": {
+                "run_script": {
+                    "require_approval": True,
+                    "default_settings": {
+                        "ttl_seconds": 600,
+                        "max_uses": 2,
+                        "payload_mode": "any",
+                    },
+                    "max_ttl_seconds": 300,
+                    "max_uses": 5,
+                    "require_exact_payload": True,
+                },
+                "get_agent_status": {"denied": True},
+            },
+        },
+    )
+
+    assert update_response.status_code == 200
+    payload = update_response.json()
+    by_tool = {item["value"]: item for item in payload["items"]}
+    assert by_tool["run_script"]["approval_required"] is True
+    assert by_tool["run_script"]["effective_settings"] == {
+        "ttl_seconds": 300,
+        "max_uses": 2,
+        "payload_mode": "exact",
+    }
+    assert by_tool["get_agent_status"]["denied"] is True
+    stored = service.read_directory_domain_config("root", "policy")
+    assert stored.ok
+    assert stored.data is not None
+    assert stored.data.config["mcp_tool_policies"]["get_agent_status"]["denied"] is True
+
+
 def test_admin_web_exposes_container_session_lifecycle_and_cleanup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -611,7 +678,7 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
         SessionManifest(
             session_id="issue-14085-session",
             vm_id="vm-14085",
-            allowed_tools=[ToolName.APPROVAL_CHECK],
+            allowed_tools=[ToolName.APPROVAL_CHECK, ToolName.RUN_SCRIPT],
             allowed_script_names=["old-script"],
             discord_channel_allowlist=["old-discord"],
             teams_channel_allowlist=["team-a/channel-1"],
@@ -654,6 +721,14 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
             "communication_file_allowed_extensions": [".pdf"],
             "communication_file_blocked_extensions": [".exe"],
             "communication_file_require_approval_for_send": True,
+            "approval_required_tools": ["run_script"],
+            "approval_tool_settings": {
+                "run_script": {
+                    "ttl_seconds": 120,
+                    "max_uses": None,
+                    "payload_mode": "any",
+                }
+            },
             "metadata": {"keep": "new-value"},
         },
     )
@@ -672,9 +747,25 @@ def test_admin_web_patches_session_policy_fields(tmp_path: Path) -> None:
     assert response.json()["session"]["effective_tool_policy"]["tool_argument_policies"][
         "create_ado_backlog_item"
     ][0]["id"] == "issue-policy"
+    assert response.json()["session"]["approval_required_tools"] == ["run_script"]
+    assert response.json()["session"]["approval_tool_settings"]["run_script"] == {
+        "ttl_seconds": 120,
+        "max_uses": None,
+        "payload_mode": "any",
+    }
+    assert response.json()["session"]["effective_tool_policy"]["approval_tool_settings"][
+        "run_script"
+    ] == {
+        "ttl_seconds": 120,
+        "max_uses": None,
+        "payload_mode": "any",
+    }
     updated = service.runtime.session_repository.get_session("issue-14085-session")
     assert updated is not None
     assert updated.tool_argument_policies["create_ado_backlog_item"][0].id == "issue-policy"
+    assert updated.approval_required_tools == [ToolName.RUN_SCRIPT]
+    assert updated.approval_tool_settings["run_script"].ttl_seconds == 120
+    assert updated.approval_tool_settings["run_script"].max_uses is None
     assert updated.communication_file_receive_enabled is True
     assert updated.communication_file_send_enabled is True
     assert updated.communication_file_max_bytes == 4096
