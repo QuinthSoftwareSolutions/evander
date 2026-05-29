@@ -55,6 +55,9 @@ from agent_sandbox.effects.providers.session_update_metadata import (
 from agent_sandbox.effects.providers.session_approve_mcp_tools import (
     SessionApproveMcpToolsForRunEffectProvider,
 )
+from agent_sandbox.effects.providers.session_revoke_mcp_tool_approval_lease import (
+    SessionRevokeMcpToolApprovalLeaseEffectProvider,
+)
 from agent_sandbox.effects.providers.session_renew_if_expired import (
     SessionRenewIfExpiredEffectProvider,
 )
@@ -205,6 +208,9 @@ def register_providers() -> dict[str, dict[str, type]]:
             "effect:notification:send": NotificationSendEffectProvider,
             "effect:session:approve-mcp-tools-for-run": (
                 SessionApproveMcpToolsForRunEffectProvider
+            ),
+            "effect:session:revoke-mcp-tool-approval-lease": (
+                SessionRevokeMcpToolApprovalLeaseEffectProvider
             ),
             "effect:session:update-metadata": SessionUpdateMetadataEffectProvider,
             "effect:session:renew-if-expired": SessionRenewIfExpiredEffectProvider,
