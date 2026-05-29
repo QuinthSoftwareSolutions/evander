@@ -208,18 +208,47 @@ function optionalNumber(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-async function loadAgentList(
+type AgentListLoadOptions = {
+  summaryOnly?: boolean;
+  dashboardCache?: boolean;
+  dashboardRefresh?: boolean;
+  reconcileContainers?: boolean;
+  omitVmState?: boolean;
+};
+
+function buildAgentListQuery(
   directoryPath: string,
   directOnly: boolean,
   backend: AgentBackend | "all",
-): Promise<AgentListResponse> {
+  options: AgentListLoadOptions = {},
+): string {
+  const summaryOnly = options.summaryOnly ?? false;
   const query = new URLSearchParams({
     directory_path: directoryPath,
     direct_only: String(directOnly),
     include_inactive: "true",
     backend,
+    summary_only: String(summaryOnly),
+    reconcile_containers: String(options.reconcileContainers ?? !summaryOnly),
+    omit_vm_state: String(options.omitVmState ?? summaryOnly),
   });
-  return fetchJson<AgentListResponse>(`/api/admin/agents?${query.toString()}`);
+  if (options.dashboardRefresh) {
+    query.set("_dashboard_refresh", "1");
+  } else if (options.dashboardCache) {
+    query.set("_dashboard", "1");
+  }
+  return query.toString();
+}
+
+async function loadAgentList(
+  directoryPath: string,
+  directOnly: boolean,
+  backend: AgentBackend | "all",
+  options: AgentListLoadOptions = {},
+): Promise<AgentListResponse> {
+  return fetchJson<AgentListResponse>(
+    `/api/admin/agents?${buildAgentListQuery(directoryPath, directOnly, backend, options)}`,
+  );
 }
 
 async function loadSkillList(): Promise<SkillLibraryItem[]> {
@@ -775,16 +804,25 @@ export function AgentsPage() {
     setAgentPromptResumeThreadId((current) => (current === nextThreadId ? current : nextThreadId));
   }, [selectedAgent, showPromptForm]);
 
-  const refreshAgents = useCallback(async () => {
-    const payload = await loadAgentList(selectedDirectoryPath, true, backendFilter);
+  const refreshAgents = useCallback(async (options: AgentListLoadOptions = {}) => {
+    const payload = await loadAgentList(selectedDirectoryPath, true, backendFilter, options);
     setItems(payload.items);
+    return payload;
   }, [backendFilter, selectedDirectoryPath]);
+
+  const refreshSummaryAgents = useCallback(async () => {
+    await refreshAgents({ summaryOnly: true, dashboardCache: true });
+  }, [refreshAgents]);
+
+  const refreshLiveAgents = useCallback(async () => {
+    await refreshAgents({ summaryOnly: false, reconcileContainers: true, omitVmState: false });
+  }, [refreshAgents]);
 
   useEffect(() => {
     let cancelled = false;
     const refresh = async () => {
       try {
-        await refreshAgents();
+        await refreshSummaryAgents();
         if (!cancelled) setError(null);
       } catch (reason: unknown) {
         if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
@@ -800,7 +838,7 @@ export function AgentsPage() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [refreshAgents]);
+  }, [refreshSummaryAgents]);
 
   useEffect(() => {
     if (!selectedAgent) {
@@ -888,7 +926,7 @@ export function AgentsPage() {
   async function handleManualRefresh() {
     setLoading(true);
     try {
-      await refreshAgents();
+      await refreshLiveAgents();
       setError(null);
       setStatus("Refreshed agent list.");
     } catch (reason: unknown) {
@@ -992,7 +1030,7 @@ export function AgentsPage() {
         setAgentPromptResumeThreadId("");
         setShowPromptForm(false);
       }
-      await refreshAgents();
+      await refreshLiveAgents();
       setSelectedKey(agentKey(selectedAgent));
     } catch (reason: unknown) {
       const message = reason instanceof Error ? reason.message : String(reason);
@@ -1021,7 +1059,7 @@ export function AgentsPage() {
       setActionLog((current) => [{ at: new Date().toISOString(), message, tone: "info" as const }, ...current].slice(0, 30));
       setStatus(payload.message);
       setError(null);
-      await refreshAgents();
+      await refreshLiveAgents();
       setSelectedKey(agentKey(selectedAgent));
     } catch (reason: unknown) {
       const message = reason instanceof Error ? reason.message : String(reason);
@@ -1088,7 +1126,7 @@ export function AgentsPage() {
       setError(null);
       setShowCreateForm(false);
       setCreateForm(emptyCreateForm(selectedDirectoryPath));
-      await refreshAgents();
+      await refreshLiveAgents();
       setSelectedKey(`${payload.backend}:${payload.agent_id}`);
     } catch (reason: unknown) {
       const message = reason instanceof Error ? reason.message : String(reason);
@@ -1161,7 +1199,7 @@ export function AgentsPage() {
       setStatus(payload.message);
       setError(null);
       setShowSkillInstallForm(false);
-      await refreshAgents();
+      await refreshLiveAgents();
       setSelectedKey(agentKey(selectedAgent));
     } catch (reason: unknown) {
       const message = reason instanceof Error ? reason.message : String(reason);
@@ -1196,7 +1234,7 @@ export function AgentsPage() {
       setStatus(payload.message);
       setError(null);
       setShowEditForm(false);
-      await refreshAgents();
+      await refreshLiveAgents();
       setSelectedKey(agentKey(selectedAgent));
     } catch (reason: unknown) {
       const message = reason instanceof Error ? reason.message : String(reason);
@@ -1223,7 +1261,7 @@ export function AgentsPage() {
       setStatus(payload.message);
       setError(null);
       setShowEditForm(false);
-      await refreshAgents();
+      await refreshLiveAgents();
     } catch (reason: unknown) {
       const message = reason instanceof Error ? reason.message : String(reason);
       setError(message);

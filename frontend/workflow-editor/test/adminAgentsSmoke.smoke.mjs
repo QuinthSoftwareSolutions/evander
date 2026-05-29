@@ -201,6 +201,16 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
       assert.equal(url.searchParams.get("direct_only"), "true");
       assert.equal(url.searchParams.get("include_inactive"), "true");
       assert.equal(url.searchParams.get("backend"), "all");
+      if (url.searchParams.get("summary_only") === "true") {
+        assert.equal(url.searchParams.get("reconcile_containers"), "false");
+        assert.equal(url.searchParams.get("omit_vm_state"), "true");
+        assert.equal(url.searchParams.get("_dashboard"), "1");
+      } else {
+        assert.equal(url.searchParams.get("summary_only"), "false");
+        assert.equal(url.searchParams.get("reconcile_containers"), "true");
+        assert.equal(url.searchParams.get("omit_vm_state"), "false");
+        assert.equal(url.searchParams.get("_dashboard"), null);
+      }
       await route.fulfill(jsonResponse(agentsResponse));
       return;
     }
@@ -231,6 +241,19 @@ test("admin shell agents page deep-links to a selected agent", async (t) => {
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Agents" }).waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.locator(".agent-list-item.selected").waitFor({ state: "visible" }));
   await assert.doesNotReject(() => page.getByRole("heading", { name: "Dispatch agent" }).waitFor({ state: "visible" }));
+  await Promise.all([
+    page.waitForRequest((request) => {
+      if (!request.url().includes("/api/admin/agents?")) return false;
+      const url = new URL(request.url());
+      return (
+        url.searchParams.get("summary_only") === "false" &&
+        url.searchParams.get("reconcile_containers") === "true" &&
+        url.searchParams.get("omit_vm_state") === "false" &&
+        url.searchParams.get("_dashboard") === null
+      );
+    }),
+    page.getByRole("button", { name: "Refresh" }).click(),
+  ]);
   assert.equal(await page.evaluate(() => window.location.hash), "#agents?agent_id=agent-1&session_id=session-1");
   assert.match(await page.locator(".agent-list-item.selected").innerText(), /Dispatch agent/);
   assert.match(await page.locator(".feature-toolbar h2").innerText(), /Dispatch agent/);
