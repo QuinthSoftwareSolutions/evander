@@ -489,11 +489,11 @@ Storage layout for directory config:
 ## Host-Side LLM Access
 
 - The firewall allows only the host TCP ports listed in `ALLOWED_TCP_PORTS`.
-- Defaults: `22` for host SSH/Git, `8000` for the MCP gateway, `11434` for the host-side OpenAI relay or a local OpenAI-compatible LLM endpoint such as Ollama, `11666` for the host-side NuGet relay, `11777` for the host-side HTTP target relay used to reach approved external web endpoints such as APP demo environments, `8081` for the host-side Nexus package cache used by worker PyPI/npm restores, and `3142` for the host-side apt-cacher-ng relay used by worker apt provisioning. The optional Qdrant semantic store binds to `127.0.0.1:6333` by default and is intentionally host-local in this slice.
+- Defaults: `22` for host SSH/Git, `8000` for the MCP gateway, `11434` for the host-side OpenAI relay or a local OpenAI-compatible LLM endpoint such as Ollama, `11666` for the host-side NuGet relay, `11777` for the host-side HTTP target relay used to reach approved external web endpoints such as APP demo environments, `11881` for the host-side npm audit facade, `8081` for the host-side Nexus package cache used by worker PyPI/npm restores, and `3142` for the host-side apt-cacher-ng relay used by worker apt provisioning. The optional Qdrant semantic store binds to `127.0.0.1:6333` by default and is intentionally host-local in this slice.
 - Override when applying firewall rules, for example:
 
   ```bash
-  sudo ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 8081 3142 4000" ./scripts/apply_firewall.sh
+  sudo ALLOWED_TCP_PORTS="22 8000 11434 11666 11777 11881 8081 3142 4000" ./scripts/apply_firewall.sh
   ```
 
 - The guest receives `AGENT_SANDBOX_LLM_BASE_URL` and `OPENAI_BASE_URL` in `/etc/agent-sandbox/session.env`.
@@ -1523,6 +1523,21 @@ agent-sandbox-cli create-session real-session --runtime-dir runtime
 - Configure the relay environment in `config/nuget-relay.env`.
 - After installing units, run `./scripts/bootstrap_nuget_vm.sh <vm-name>` so guest restores target relay URLs on `http://192.168.250.1:11666`.
 
+## Host-Side npm Audit Facade
+
+- The scaffold includes `agent-sandbox-npm-audit-facade`, a host-side relay that forwards npm audit POSTs to `https://registry.npmjs.org` while routing package metadata and tarballs through the control-plane Nexus npm group.
+- The facade listens on `11881` and exposes `/healthz` for host-side and guest-side smoke checks.
+- Configure any optional host-local overrides in `config/npm-audit-facade.env`. The runtime bind and upstream settings still come from the directory/runtime config surface.
+- Manual smoke commands:
+
+```bash
+curl -fsS http://127.0.0.1:11881/healthz
+curl -fsS http://127.0.0.1:11881/left-pad
+curl -fsS -X POST http://127.0.0.1:11881/-/npm/v1/security/audits/quick \
+  -H 'content-type: application/json' \
+  --data '{}'
+```
+
 ## Host-Side Azure DevOps PR Worker And Work-Item Workflow Intake
 
 - The scaffold includes `agent-sandbox-ado-worker` and the equivalent foreground CLI command
@@ -1753,6 +1768,7 @@ This creates:
 - `agent-sandbox-gateway.service`
 - `agent-sandbox-openai-relay.service`
 - `agent-sandbox-nuget-relay.service`
+- `agent-sandbox-npm-audit-facade.service`
 - `agent-sandbox-http-target-relay.service`
 - `agent-sandbox-ado-worker.service`
 - `agent-sandbox-proxy-issue-sync.service`
@@ -1772,7 +1788,9 @@ Before running install mode, ensure preflight is clean (or only warning-only), t
 3. Ensure the needed service env vars are available. The rendered units will load optional
    per-service `config/*.env` files and optional repo-root `secrets.env`.
 4. Ensure `OPENAI_API_KEY` is available for the OpenAI relay and `AZURE_ARTIFACTS_PAT` when the
-   NuGet relay needs private Azure Artifacts access. Additional directory-specific key env vars
+   NuGet relay needs private Azure Artifacts access. The npm audit facade does not require a host
+   secret by default, but you can keep optional local overrides in `config/npm-audit-facade.env`.
+   Additional directory-specific key env vars
    should be supplied through `config/admin-web.env`, `secrets.env`, or the service manager
    environment. The HTTP
    target relay is auth-transparent and exists to enforce destination allowlisting for approved external web
@@ -1788,6 +1806,7 @@ sudo systemctl start agent-sandbox-firewall.service
 sudo systemctl start agent-sandbox-gateway.service
 sudo systemctl start agent-sandbox-openai-relay.service
 sudo systemctl start agent-sandbox-nuget-relay.service
+sudo systemctl start agent-sandbox-npm-audit-facade.service
 sudo systemctl start agent-sandbox-http-target-relay.service
 sudo systemctl start agent-sandbox-ado-worker.service
 sudo systemctl start agent-sandbox-proxy-issue-sync.service
@@ -1802,6 +1821,7 @@ sudo systemctl status agent-sandbox-firewall.service
 sudo systemctl status agent-sandbox-gateway.service
 sudo systemctl status agent-sandbox-openai-relay.service
 sudo systemctl status agent-sandbox-nuget-relay.service
+sudo systemctl status agent-sandbox-npm-audit-facade.service
 sudo systemctl status agent-sandbox-http-target-relay.service
 sudo systemctl status agent-sandbox-ado-worker.service
 sudo systemctl status agent-sandbox-proxy-issue-sync.service

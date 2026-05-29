@@ -5,6 +5,14 @@ were reconstructed from the `main` history through `0680fb85` on 2026-05-04,
 using non-merge commit messages and changed-file clusters as the source
 material. Newer entries are added incrementally as changes land.
 
+## 2026-05-29 - npm Audit Facade Deployment Wiring
+
+- Added the host-side npm audit facade to the persistent systemd install flow and start list.
+- Rendered the facade's optional env file through Ansible, enabled it in the managed service map,
+  and included its `11881` listener in the control-plane firewall and worker egress allowlists.
+- Documented the facade's health endpoint, upstream routing, and manual smoke checks in the
+  operator guides.
+
 ## 2026-05-28 - Workflow Editor Bindable Selectors
 
 - Kept bindable enum workflow fields, including `query:session:list` State,
